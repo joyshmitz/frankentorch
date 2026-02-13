@@ -1,5 +1,9 @@
 # FrankenTorch
 
+<div align="center">
+  <img src="frankentorch_illustration.webp" alt="FrankenTorch - memory-safe clean-room Rust reimplementation of PyTorch">
+</div>
+
 FrankenTorch is a clean-room Rust reimplementation targeting grand-scope excellence: semantic fidelity, mathematical rigor, operational safety, and profile-proven performance.
 
 ## What Makes This Project Special
