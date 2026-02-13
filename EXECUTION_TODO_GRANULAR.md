@@ -188,6 +188,11 @@ Objective: complete `FT-P2C-002`, `FT-P2C-004`, and `FT-P2C-006` end-to-end (cod
 - [x] Verify zero missing labels for all three method tags.
 - [x] Pull high-confidence (`>=0.95`) dependency suggestions via `bv --robot-suggest`.
 - [x] Apply cycle-safe `missing_dependency` suggestions with `br dep add` (18 edges added).
+- [x] Add explicit packet test-gating dependencies:
+- [x] For `FT-P2C-001..008`, make every `*-G` (E2E/logging) depend on `*-E` (unit/property/logging).
+- [x] For `FT-P2C-001..008`, make every `*-H` (optimization proof) depend on `*-E` (unit/property/logging).
+- [x] For `FT-P2C-001..008`, make every `*-I` (final evidence) depend on both `*-E` and `*-F`.
+- [x] Confirm added test-gating edges are cycle-safe (32 additional edges).
 - [x] Reject cycle-inducing suggestions (2 rejected by cycle guard, intentionally not forced).
 - [x] Verify dependency graph is acyclic (`br dep cycles --json` => empty).
 - [x] Mark `bd-3v0.8` in-progress and log measured optimization evidence.
