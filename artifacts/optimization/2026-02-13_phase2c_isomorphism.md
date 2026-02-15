@@ -7,6 +7,8 @@
 - Floating-point: identical (`ft-kernel-cpu` math path unchanged).
 - RNG seeds: N/A.
 - Golden outputs: `sha256sum -c artifacts/optimization/golden_checksums.txt` passed.
+- Differential parity anchor refresh (2026-02-15): `artifacts/phase2c/conformance/differential_report_v1.json` has `failed_checks=0` with `oracle.available=true`.
+- E2E replay anchor refresh (2026-02-15): `artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl` contains strict+hardened packet slice (6 entries, 0 failures).
 
 ## Change: FT-P2C-004 Autograd Scheduler
 

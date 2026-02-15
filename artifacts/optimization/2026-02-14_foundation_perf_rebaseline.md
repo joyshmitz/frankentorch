@@ -27,6 +27,22 @@ Behavior-isomorphism proof anchors:
 - `artifacts/optimization/2026-02-13_phase2c_isomorphism.md`
 - `artifacts/phase2c/conformance/differential_report_v1.json`
 - `artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl`
+- `artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl`
+
+## FT-P2C-002 Refresh (2026-02-15)
+
+Bead: `bd-3v0.13.8`
+
+Command:
+- `~/.local/bin/rch exec -- /usr/bin/time -fmax_rss_kb=%M,elapsed_s=%e cargo test -q -p ft-conformance microbench_produces_percentiles -- --nocapture`
+
+Observed output:
+- `microbench_ns p50=2454 p95=4036 p99=4036 mean=8226`
+- `max_rss_kb=418792,elapsed_s=1.69`
+
+Post-refresh parity anchors:
+- `artifacts/phase2c/conformance/differential_report_v1.json` (`oracle.available=true`, `failed_checks=0`)
+- `artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl` (strict+hardened packet slice, 6 entries, 0 failures)
 
 ## Gate Anchors
 

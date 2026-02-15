@@ -1,0 +1,14 @@
+{
+  "packet_id": "FT-P2C-003",
+  "suite": "op_schema",
+  "strict": {
+    "cases_total": 5,
+    "cases_passed": 5
+  },
+  "hardened": {
+    "cases_total": 5,
+    "cases_passed": 5
+  },
+  "status": "parity_green",
+  "generated_from": "rch exec -- cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-003 --output artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl --print-full-log"
+}

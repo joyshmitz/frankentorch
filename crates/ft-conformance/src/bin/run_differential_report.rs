@@ -9,6 +9,7 @@ use serde_json::json;
 fn main() -> Result<(), String> {
     let mut mode = String::from("both");
     let mut output: Option<PathBuf> = None;
+    let mut print_full_report = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -25,9 +26,12 @@ fn main() -> Result<(), String> {
                     .ok_or_else(|| "--output requires a file path".to_string())?;
                 output = Some(PathBuf::from(value));
             }
+            "--print-full-report" => {
+                print_full_report = true;
+            }
             other => {
                 return Err(format!(
-                    "unknown arg '{other}'. usage: run_differential_report [--mode strict|hardened|both] [--output path]"
+                    "unknown arg '{other}'. usage: run_differential_report [--mode strict|hardened|both] [--output path] [--print-full-report]"
                 ));
             }
         }
@@ -44,6 +48,15 @@ fn main() -> Result<(), String> {
         output_path.as_path(),
         modes.as_slice(),
     )?;
+
+    if print_full_report {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|error| format!("failed to serialize differential report: {error}"))?
+        );
+        return Ok(());
+    }
 
     println!(
         "{}",

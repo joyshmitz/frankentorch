@@ -1,0 +1,86 @@
+{
+  "schema_version": "ft-p2c-003-unit-property-quality-v1",
+  "generated_on": "2026-02-15",
+  "packet_id": "FT-P2C-003",
+  "coverage": {
+    "line_percent": 92.07232267037551,
+    "region_percent": 93.30472103004291,
+    "line_floor": 90.0,
+    "region_floor": 80.0,
+    "line_floor_pass": true,
+    "region_floor_pass": true,
+    "command": "cargo llvm-cov -p ft-dispatch --json --summary-only --output-path artifacts/phase2c/FT-P2C-003/unit_property_coverage_v1.json"
+  },
+  "property_suite": {
+    "invariant_family_count": 5,
+    "shrink_enabled": true,
+    "invariant_families": [
+      "schema_name_roundtrip_contract",
+      "schema_shape_parse_contract",
+      "out_variant_alias_contract",
+      "schema_fail_closed_contract",
+      "schema_dispatch_key_compatibility_contract"
+    ],
+    "test_ids": [
+      "schema_row_parse_round_trips_add_tensor_signature",
+      "operator_name_parse_preserves_overload_token",
+      "base_operator_name_parse_inplace_suffix_contract",
+      "schema_out_variant_requires_mutable_out_alias",
+      "schema_parser_rejects_malformed_tokens",
+      "schema_parser_rejects_illegal_overload_name",
+      "schema_dispatch_keyset_rejects_unknown_backend_key",
+      "schema_dispatch_keyset_requires_cpu_backend_for_scoped_ops",
+      "prop_schema_name_roundtrip"
+    ]
+  },
+  "structured_log_contract": {
+    "required_fields": [
+      "ts_utc",
+      "suite_id",
+      "test_id",
+      "packet_id",
+      "fixture_id",
+      "scenario_id",
+      "mode",
+      "seed",
+      "op_name",
+      "overload_name",
+      "schema_digest",
+      "dispatch_keyset_bits",
+      "env_fingerprint",
+      "artifact_refs",
+      "replay_command",
+      "duration_ms",
+      "outcome",
+      "reason_code"
+    ],
+    "test_helper_anchor": "crates/ft-dispatch/src/lib.rs"
+  },
+  "e2e_scenario_mapping": {
+    "schema_row_parse_round_trips_add_tensor_signature": [
+      "op_schema/strict:add_tensor_schema_roundtrip",
+      "op_schema/hardened:add_tensor_schema_roundtrip"
+    ],
+    "operator_name_parse_preserves_overload_token": [
+      "op_schema/strict:operator_name_normalization",
+      "op_schema/hardened:operator_name_normalization"
+    ],
+    "schema_out_variant_requires_mutable_out_alias": [
+      "op_schema/strict:add_out_schema_alignment",
+      "op_schema/hardened:add_out_schema_alignment"
+    ],
+    "schema_parser_rejects_malformed_tokens": [
+      "op_schema/strict:malformed_schema_rejected",
+      "op_schema/hardened:malformed_schema_rejected"
+    ],
+    "schema_dispatch_keyset_rejects_unknown_backend_key": [
+      "op_schema/strict:dispatch_metadata_incompatible",
+      "op_schema/hardened:dispatch_metadata_incompatible"
+    ],
+    "prop_schema_name_roundtrip": [
+      "op_schema/strict:operator_name_normalization",
+      "op_schema/hardened:operator_name_normalization"
+    ]
+  },
+  "status": "pass"
+}

@@ -233,6 +233,215 @@ impl From<DispatchKeyError> for DispatchError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpSchemaError {
+    EmptyInput,
+    InvalidOperatorName { reason: &'static str },
+    InvalidOverloadName { overload: String },
+    MalformedSchema { reason: &'static str },
+    UnknownDispatchKey { key: String },
+    IncompatibleDispatchKeyset(DispatchKeyError),
+}
+
+impl fmt::Display for OpSchemaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyInput => write!(f, "schema input is empty"),
+            Self::InvalidOperatorName { reason } => write!(f, "invalid operator name: {reason}"),
+            Self::InvalidOverloadName { overload } => {
+                write!(f, "invalid overload name: {overload}")
+            }
+            Self::MalformedSchema { reason } => write!(f, "malformed schema: {reason}"),
+            Self::UnknownDispatchKey { key } => {
+                write!(f, "unknown schema dispatch key '{key}'")
+            }
+            Self::IncompatibleDispatchKeyset(error) => {
+                write!(f, "incompatible schema dispatch keyset: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OpSchemaError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpSchemaName {
+    pub base: String,
+    pub overload: Option<String>,
+    pub is_inplace: bool,
+}
+
+impl OpSchemaName {
+    #[must_use]
+    pub fn unambiguous_name(&self) -> String {
+        match &self.overload {
+            Some(overload) => format!("{}_{}", self.base, overload),
+            None => self.base.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedOpSchema {
+    pub op: OpSchemaName,
+    pub arguments: String,
+    pub returns: String,
+    pub is_out_variant: bool,
+    pub schema_digest: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedSchemaInput {
+    Name(OpSchemaName),
+    Schema(ParsedOpSchema),
+}
+
+fn is_valid_ident(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn digest64(input: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+pub fn parse_schema_name(input: &str) -> Result<OpSchemaName, OpSchemaError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(OpSchemaError::EmptyInput);
+    }
+
+    let op_without_namespace = match trimmed.rsplit_once("::") {
+        Some((_, op)) => op,
+        None => trimmed,
+    };
+    if op_without_namespace.is_empty() {
+        return Err(OpSchemaError::InvalidOperatorName {
+            reason: "missing operator token after namespace",
+        });
+    }
+
+    let (raw_base, overload) = match op_without_namespace.split_once('.') {
+        Some((name, overload_token)) => {
+            if overload_token.is_empty() {
+                return Err(OpSchemaError::InvalidOverloadName {
+                    overload: overload_token.to_string(),
+                });
+            }
+            if overload_token == "default" || overload_token.starts_with("__") {
+                return Err(OpSchemaError::InvalidOverloadName {
+                    overload: overload_token.to_string(),
+                });
+            }
+            if !is_valid_ident(overload_token) {
+                return Err(OpSchemaError::InvalidOverloadName {
+                    overload: overload_token.to_string(),
+                });
+            }
+            (name, Some(overload_token.to_string()))
+        }
+        None => (op_without_namespace, None),
+    };
+
+    if raw_base.is_empty() {
+        return Err(OpSchemaError::InvalidOperatorName {
+            reason: "empty base operator name",
+        });
+    }
+
+    let is_inplace = raw_base.ends_with('_');
+    let base = if is_inplace {
+        raw_base.trim_end_matches('_')
+    } else {
+        raw_base
+    };
+    if base.is_empty() || !is_valid_ident(base) {
+        return Err(OpSchemaError::InvalidOperatorName {
+            reason: "operator base contains invalid characters",
+        });
+    }
+
+    Ok(OpSchemaName {
+        base: base.to_string(),
+        overload,
+        is_inplace,
+    })
+}
+
+pub fn parse_schema_or_name(input: &str) -> Result<ParsedSchemaInput, OpSchemaError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(OpSchemaError::EmptyInput);
+    }
+
+    if let Some(open_idx) = trimmed.find('(') {
+        let arrow_idx = trimmed
+            .rfind(") -> ")
+            .ok_or(OpSchemaError::MalformedSchema {
+                reason: "expected ') ->' separator",
+            })?;
+        if arrow_idx < open_idx {
+            return Err(OpSchemaError::MalformedSchema {
+                reason: "found return separator before argument list",
+            });
+        }
+        let op_name = parse_schema_name(&trimmed[..open_idx])?;
+        let args = trimmed[open_idx + 1..arrow_idx].trim();
+        let returns = trimmed[arrow_idx + 5..].trim();
+        if returns.is_empty() {
+            return Err(OpSchemaError::MalformedSchema {
+                reason: "missing return declaration",
+            });
+        }
+        let is_out_variant = op_name.overload.as_deref() == Some("out")
+            || args.contains("Tensor(a!) out")
+            || args.contains("Tensor(a!) out)");
+
+        return Ok(ParsedSchemaInput::Schema(ParsedOpSchema {
+            op: op_name,
+            arguments: args.to_string(),
+            returns: returns.to_string(),
+            is_out_variant,
+            schema_digest: digest64(trimmed),
+        }));
+    }
+
+    Ok(ParsedSchemaInput::Name(parse_schema_name(trimmed)?))
+}
+
+pub fn schema_dispatch_key_from_tag(tag: &str) -> Result<DispatchKey, OpSchemaError> {
+    match tag {
+        "BackendSelect" => Ok(DispatchKey::BackendSelect),
+        "CompositeImplicitAutograd" => Ok(DispatchKey::CompositeImplicitAutograd),
+        "CompositeExplicitAutograd" => Ok(DispatchKey::CompositeExplicitAutograd),
+        "CPU" => Ok(DispatchKey::CPU),
+        "AutogradCPU" => Ok(DispatchKey::AutogradCPU),
+        _ => Err(OpSchemaError::UnknownDispatchKey {
+            key: tag.to_string(),
+        }),
+    }
+}
+
+pub fn schema_dispatch_keyset_from_tags(tags: &[&str]) -> Result<DispatchKeySet, OpSchemaError> {
+    let mut keyset = DispatchKeySet::empty();
+    for tag in tags {
+        keyset.add(schema_dispatch_key_from_tag(tag)?);
+    }
+    keyset
+        .validate_for_scalar_binary()
+        .map_err(OpSchemaError::IncompatibleDispatchKeyset)?;
+    Ok(keyset)
+}
+
 #[must_use]
 pub fn dispatch_keyset_for_tensors(
     lhs: &ScalarTensor,
@@ -334,8 +543,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        BinaryOp, DispatchKey, DispatchKeyError, DispatchKeySet, TYPE_PRIORITY,
-        dispatch_keyset_for_tensors, dispatch_scalar_binary, dispatch_scalar_binary_with_keyset,
+        BinaryOp, DispatchKey, DispatchKeyError, DispatchKeySet, OpSchemaError, ParsedSchemaInput,
+        TYPE_PRIORITY, dispatch_keyset_for_tensors, dispatch_scalar_binary,
+        dispatch_scalar_binary_with_keyset, parse_schema_name, parse_schema_or_name,
+        schema_dispatch_keyset_from_tags,
     };
 
     fn det_seed(parts: &[u64]) -> u64 {
@@ -418,6 +629,96 @@ mod tests {
             assert!(
                 log.contains_key(key),
                 "property log missing required key '{key}'"
+            );
+        }
+    }
+
+    struct SchemaLogParams<'a> {
+        test_id: &'a str,
+        mode: &'a str,
+        seed: u64,
+        op_name: &'a str,
+        overload_name: &'a str,
+        schema_digest: u64,
+        dispatch_keyset_bits: u64,
+        reason_code: &'a str,
+    }
+
+    fn build_schema_property_log(params: SchemaLogParams<'_>) -> BTreeMap<String, String> {
+        let mut log = BTreeMap::new();
+        let scenario_id = format!("op_schema/{}:{}", params.mode, params.test_id);
+        log.insert("ts_utc".to_string(), "1970-01-01T00:00:00Z".to_string());
+        log.insert(
+            "suite_id".to_string(),
+            "ft_dispatch_schema_property".to_string(),
+        );
+        log.insert("test_id".to_string(), params.test_id.to_string());
+        log.insert("packet_id".to_string(), "FT-P2C-003".to_string());
+        log.insert(
+            "fixture_id".to_string(),
+            "ft_dispatch_schema_property_generated".to_string(),
+        );
+        log.insert("scenario_id".to_string(), scenario_id);
+        log.insert("mode".to_string(), params.mode.to_string());
+        log.insert("seed".to_string(), params.seed.to_string());
+        log.insert("op_name".to_string(), params.op_name.to_string());
+        log.insert(
+            "overload_name".to_string(),
+            params.overload_name.to_string(),
+        );
+        log.insert(
+            "schema_digest".to_string(),
+            format!("det64:{:016x}", params.schema_digest),
+        );
+        log.insert(
+            "dispatch_keyset_bits".to_string(),
+            format!("0x{:016x}", params.dispatch_keyset_bits),
+        );
+        log.insert(
+            "env_fingerprint".to_string(),
+            "det64:ft-dispatch-schema-test".to_string(),
+        );
+        log.insert(
+            "artifact_refs".to_string(),
+            "artifacts/phase2c/FT-P2C-003/contract_table.md".to_string(),
+        );
+        log.insert(
+            "replay_command".to_string(),
+            format!(
+                "cargo test -p ft-dispatch {} -- --nocapture",
+                params.test_id
+            ),
+        );
+        log.insert("duration_ms".to_string(), "0".to_string());
+        log.insert("outcome".to_string(), "pass".to_string());
+        log.insert("reason_code".to_string(), params.reason_code.to_string());
+        log
+    }
+
+    fn assert_schema_log_contract(log: &BTreeMap<String, String>) {
+        for key in [
+            "ts_utc",
+            "suite_id",
+            "test_id",
+            "packet_id",
+            "fixture_id",
+            "scenario_id",
+            "mode",
+            "seed",
+            "op_name",
+            "overload_name",
+            "schema_digest",
+            "dispatch_keyset_bits",
+            "env_fingerprint",
+            "artifact_refs",
+            "replay_command",
+            "duration_ms",
+            "outcome",
+            "reason_code",
+        ] {
+            assert!(
+                log.contains_key(key),
+                "schema property log missing required key '{key}'"
             );
         }
     }
@@ -615,6 +916,112 @@ mod tests {
     }
 
     #[test]
+    fn schema_row_parse_round_trips_add_tensor_signature() {
+        let schema_text = "add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor";
+        let parsed = parse_schema_or_name(schema_text).expect("schema should parse");
+        let schema = match parsed {
+            ParsedSchemaInput::Schema(schema) => schema,
+            other => panic!("expected full schema parse, got {other:?}"),
+        };
+        assert_eq!(schema.op.base, "add");
+        assert_eq!(schema.op.overload.as_deref(), Some("Tensor"));
+        assert!(!schema.op.is_inplace);
+        assert!(!schema.is_out_variant);
+        assert!(schema.arguments.contains("Tensor self"));
+        assert_eq!(schema.returns, "Tensor");
+
+        let seed = det_seed(&[schema.schema_digest, 0x0034, 0x1405]);
+        let log = build_schema_property_log(SchemaLogParams {
+            test_id: "schema_row_parse_round_trips_add_tensor_signature",
+            mode: "strict",
+            seed,
+            op_name: &schema.op.base,
+            overload_name: schema.op.overload.as_deref().unwrap_or(""),
+            schema_digest: schema.schema_digest,
+            dispatch_keyset_bits: 0,
+            reason_code: "op_schema_row_roundtrip_ok",
+        });
+        assert_schema_log_contract(&log);
+    }
+
+    #[test]
+    fn operator_name_parse_preserves_overload_token() {
+        let parsed = parse_schema_name("add.Tensor").expect("name should parse");
+        assert_eq!(parsed.base, "add");
+        assert_eq!(parsed.overload.as_deref(), Some("Tensor"));
+        assert_eq!(parsed.unambiguous_name(), "add_Tensor");
+        assert!(!parsed.is_inplace);
+    }
+
+    #[test]
+    fn base_operator_name_parse_inplace_suffix_contract() {
+        let parsed = parse_schema_name("add_").expect("inplace name should parse");
+        assert_eq!(parsed.base, "add");
+        assert!(parsed.is_inplace);
+        assert!(parsed.overload.is_none());
+    }
+
+    #[test]
+    fn schema_out_variant_requires_mutable_out_alias() {
+        let schema_text =
+            "add.out(Tensor self, Tensor other, *, Scalar alpha=1, Tensor(a!) out) -> Tensor(a!)";
+        let parsed = parse_schema_or_name(schema_text).expect("schema should parse");
+        let schema = match parsed {
+            ParsedSchemaInput::Schema(schema) => schema,
+            other => panic!("expected full schema parse, got {other:?}"),
+        };
+        assert_eq!(schema.op.overload.as_deref(), Some("out"));
+        assert!(schema.is_out_variant);
+        assert!(schema.arguments.contains("Tensor(a!) out"));
+        assert_eq!(schema.returns, "Tensor(a!)");
+    }
+
+    #[test]
+    fn parse_schema_or_name_classifies_name_only_vs_full_schema() {
+        let name_only = parse_schema_or_name("add.Tensor").expect("name-only form should parse");
+        assert!(matches!(name_only, ParsedSchemaInput::Name(_)));
+
+        let full_schema = parse_schema_or_name(
+            "add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor",
+        )
+        .expect("full schema should parse");
+        assert!(matches!(full_schema, ParsedSchemaInput::Schema(_)));
+    }
+
+    #[test]
+    fn schema_parser_rejects_malformed_tokens() {
+        let malformed = "add.Tensor(Tensor self, Tensor other -> Tensor";
+        let err = parse_schema_or_name(malformed).expect_err("malformed schema must fail");
+        assert!(matches!(err, OpSchemaError::MalformedSchema { .. }));
+    }
+
+    #[test]
+    fn schema_parser_rejects_illegal_overload_name() {
+        let err = parse_schema_name("add.default").expect_err("default overload must fail");
+        assert!(matches!(err, OpSchemaError::InvalidOverloadName { .. }));
+
+        let err = parse_schema_name("add.__magic").expect_err("dunder overload must fail");
+        assert!(matches!(err, OpSchemaError::InvalidOverloadName { .. }));
+    }
+
+    #[test]
+    fn schema_dispatch_keyset_rejects_unknown_backend_key() {
+        let err = schema_dispatch_keyset_from_tags(&["CPU", "NotARealKey"])
+            .expect_err("unknown dispatch key tags must fail");
+        assert!(matches!(err, OpSchemaError::UnknownDispatchKey { .. }));
+    }
+
+    #[test]
+    fn schema_dispatch_keyset_requires_cpu_backend_for_scoped_ops() {
+        let err = schema_dispatch_keyset_from_tags(&["AutogradCPU"])
+            .expect_err("autograd key without cpu backend should fail");
+        assert!(matches!(
+            err,
+            OpSchemaError::IncompatibleDispatchKeyset(DispatchKeyError::IncompatibleSet { .. })
+        ));
+    }
+
+    #[test]
     fn property_log_contract_maps_to_dispatch_scenarios() {
         let seed = det_seed(&[0x13, 0x5, 0x2]);
         let log = build_property_log(
@@ -644,6 +1051,56 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn prop_schema_name_roundtrip(
+            base in "[a-z][a-z0-9]{0,8}",
+            overload in "[A-Z][A-Za-z0-9_]{0,8}",
+            has_overload in any::<bool>(),
+            inplace in any::<bool>(),
+        ) {
+            let mut full_name = base.clone();
+            if inplace {
+                full_name.push('_');
+            }
+            if has_overload {
+                full_name.push('.');
+                full_name.push_str(&overload);
+            }
+
+            let parsed = parse_schema_name(&full_name)
+                .expect("generated schema names should parse");
+            prop_assert_eq!(parsed.base.as_str(), base.as_str());
+            prop_assert_eq!(parsed.is_inplace, inplace);
+            if has_overload {
+                prop_assert_eq!(parsed.overload.as_deref(), Some(overload.as_str()));
+                prop_assert_eq!(
+                    parsed.unambiguous_name(),
+                    format!("{}_{}", base, overload),
+                );
+            } else {
+                prop_assert!(parsed.overload.is_none());
+                prop_assert_eq!(parsed.unambiguous_name(), base.clone());
+            }
+
+            let schema_digest = det_seed(&[
+                parsed.base.len() as u64,
+                parsed.overload.as_ref().map_or(0, |value| value.len() as u64),
+                inplace as u64,
+            ]);
+            let seed = det_seed(&[schema_digest, has_overload as u64]);
+            let log = build_schema_property_log(SchemaLogParams {
+                test_id: "prop_schema_name_roundtrip",
+                mode: "strict",
+                seed,
+                op_name: &parsed.base,
+                overload_name: parsed.overload.as_deref().unwrap_or(""),
+                schema_digest,
+                dispatch_keyset_bits: 0,
+                reason_code: "op_schema_name_roundtrip_ok",
+            });
+            assert_schema_log_contract(&log);
+        }
+
         #[test]
         fn prop_known_bits_roundtrip(
             backend_select in any::<bool>(),

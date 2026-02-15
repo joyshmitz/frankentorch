@@ -255,6 +255,36 @@ fn build_suite_templates() -> BTreeMap<String, SuiteEvidenceTemplate> {
     );
 
     map.insert(
+        "op_schema".to_string(),
+        SuiteEvidenceTemplate {
+            unit_property_commands: vec![
+                "cargo test -p ft-dispatch schema_parser_rejects_malformed_tokens -- --nocapture"
+                    .to_string(),
+                "cargo test -p ft-dispatch schema_out_variant_requires_mutable_out_alias -- --nocapture"
+                    .to_string(),
+                "cargo test -p ft-dispatch schema_dispatch_keyset_requires_cpu_backend_for_scoped_ops -- --nocapture"
+                    .to_string(),
+                "cargo test -p ft-conformance strict_op_schema_conformance_is_green -- --nocapture"
+                    .to_string(),
+            ],
+            differential_refs: vec![
+                "artifacts/phase2c/conformance/differential_report_v1.json".to_string(),
+                "artifacts/phase2c/FT-P2C-003/differential_packet_report_v1.json".to_string(),
+            ],
+            e2e_refs: vec![
+                "artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl".to_string(),
+                "artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl".to_string(),
+            ],
+            performance_refs: vec![
+                "artifacts/phase2c/METHOD_STACK_REPORT_2026-02-14.md".to_string(),
+                "artifacts/phase2c/VALIDATOR_OPTIMIZATION_EVIDENCE_20260213.md".to_string(),
+            ],
+            raptorq_ref_pattern: "artifacts/phase2c/{packet_id}/parity_report.{raptorq|decode_proof}.json"
+                .to_string(),
+        },
+    );
+
+    map.insert(
         "autograd_scheduler".to_string(),
         SuiteEvidenceTemplate {
             unit_property_commands: vec![
@@ -564,6 +594,27 @@ mod tests {
                 .evidence_links
                 .iter()
                 .any(|link| link.category == "raptorq")
+        );
+    }
+
+    #[test]
+    fn suite_templates_include_op_schema_contract_evidence() {
+        let templates = build_suite_templates();
+        let op_schema = templates
+            .get("op_schema")
+            .expect("op_schema template should be present");
+
+        assert!(
+            op_schema
+                .unit_property_commands
+                .iter()
+                .any(|cmd| cmd.contains("strict_op_schema_conformance_is_green"))
+        );
+        assert!(
+            op_schema
+                .differential_refs
+                .iter()
+                .any(|path| path.ends_with("differential_report_v1.json"))
         );
     }
 }

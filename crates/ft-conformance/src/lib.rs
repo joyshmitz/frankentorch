@@ -13,8 +13,8 @@ use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, BackwardOptions, ReentrantPolicy, Tape};
 use ft_core::{DType, Device, ExecutionMode, ScalarTensor, TensorMeta, contiguous_strides};
 use ft_dispatch::{
-    BinaryOp, DispatchKey, DispatchKeySet, dispatch_scalar_binary,
-    dispatch_scalar_binary_with_keyset,
+    BinaryOp, DispatchKey, DispatchKeySet, ParsedSchemaInput, dispatch_scalar_binary,
+    dispatch_scalar_binary_with_keyset, parse_schema_or_name, schema_dispatch_keyset_from_tags,
 };
 use ft_serialize::{
     CheckpointMode, DecodeMode, SnapshotEntry as SerializedSnapshotEntry, decode_checkpoint,
@@ -120,6 +120,29 @@ impl SerializationCaseReport {
     #[must_use]
     pub fn passed(&self) -> bool {
         self.decode_ok && self.sidecar_ok && self.proof_deterministic_ok
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpSchemaCaseReport {
+    pub name: String,
+    pub mode: ExecutionMode,
+    pub parse_ok: bool,
+    pub schema_variant_ok: bool,
+    pub out_variant_ok: bool,
+    pub dispatch_ok: bool,
+    pub normalization_ok: bool,
+    pub forensic_log: StructuredCaseLog,
+}
+
+impl OpSchemaCaseReport {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.parse_ok
+            && self.schema_variant_ok
+            && self.out_variant_ok
+            && self.dispatch_ok
+            && self.normalization_ok
     }
 }
 
@@ -258,6 +281,24 @@ struct SerializationCaseEntry {
     grad: Option<f64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct OpSchemaFixtureFile {
+    cases: Vec<OpSchemaCase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpSchemaCase {
+    name: String,
+    schema_input: String,
+    name_input: Option<String>,
+    dispatch_tags: Option<Vec<String>>,
+    expect_parse_ok: bool,
+    expect_schema_variant: Option<bool>,
+    expect_out_variant: Option<bool>,
+    expect_dispatch_ok: Option<bool>,
+    expect_name_normalization: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ScalarObservation {
     output: f64,
@@ -362,6 +403,10 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
         .map_or((0, 0), |(_, cases)| {
             summarize_passes(cases.iter().map(DispatchCaseReport::passed))
         });
+    let (op_schema_total, op_schema_passed) = run_op_schema_conformance(config, mode)
+        .map_or((0, 0), |(_, cases)| {
+            summarize_passes(cases.iter().map(OpSchemaCaseReport::passed))
+        });
     let (scheduler_total, scheduler_passed) = run_autograd_scheduler_conformance(config, mode)
         .map_or((0, 0), |(_, cases)| {
             summarize_passes(cases.iter().map(SchedulerCaseReport::passed))
@@ -379,11 +424,13 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
         cases_total: scalar_total
             + tensor_meta_total
             + dispatch_total
+            + op_schema_total
             + scheduler_total
             + serialization_total,
         cases_passed: scalar_passed
             + tensor_meta_passed
             + dispatch_passed
+            + op_schema_passed
             + scheduler_passed
             + serialization_passed,
     }
@@ -473,6 +520,33 @@ pub fn run_dispatch_conformance(
     Ok((report, case_reports))
 }
 
+pub fn run_op_schema_conformance(
+    config: &HarnessConfig,
+    mode: ExecutionMode,
+) -> Result<(HarnessReport, Vec<OpSchemaCaseReport>), String> {
+    let fixture_path = config.fixture_root.join("op_schema_cases.json");
+    let fixture: OpSchemaFixtureFile = load_fixture(&fixture_path)?;
+
+    let mut case_reports = Vec::with_capacity(fixture.cases.len());
+    for case in fixture.cases {
+        case_reports.push(run_op_schema_case(&case, mode)?);
+    }
+
+    let (cases_total, cases_passed) =
+        summarize_passes(case_reports.iter().map(OpSchemaCaseReport::passed));
+
+    let report = HarnessReport {
+        suite: "op_schema",
+        oracle_present: config.oracle_root.exists(),
+        fixture_count: 1,
+        strict_mode: mode == ExecutionMode::Strict,
+        cases_total,
+        cases_passed,
+    };
+
+    Ok((report, case_reports))
+}
+
 pub fn run_autograd_scheduler_conformance(
     config: &HarnessConfig,
     mode: ExecutionMode,
@@ -549,24 +623,37 @@ pub fn emit_e2e_forensics_matrix_filtered(
 
     let mut logs = Vec::new();
     for mode in selected_modes.iter().copied() {
-        let (_, scalar_cases) = run_scalar_conformance(config, mode)?;
-        logs.extend(scalar_cases.into_iter().map(|case| case.forensic_log));
+        if packet_in_scope(packet_filter, "FT-P2C-001") {
+            let (_, scalar_cases) = run_scalar_conformance(config, mode)?;
+            logs.extend(scalar_cases.into_iter().map(|case| case.forensic_log));
 
-        let (_, tensor_meta_cases) = run_tensor_meta_conformance(config, mode)?;
-        logs.extend(tensor_meta_cases.into_iter().map(|case| case.forensic_log));
+            let (_, tensor_meta_cases) = run_tensor_meta_conformance(config, mode)?;
+            logs.extend(tensor_meta_cases.into_iter().map(|case| case.forensic_log));
+        }
 
-        let (_, dispatch_cases) = run_dispatch_conformance(config, mode)?;
-        logs.extend(dispatch_cases.into_iter().map(|case| case.forensic_log));
+        if packet_in_scope(packet_filter, "FT-P2C-002") {
+            let (_, dispatch_cases) = run_dispatch_conformance(config, mode)?;
+            logs.extend(dispatch_cases.into_iter().map(|case| case.forensic_log));
+        }
 
-        let (_, scheduler_cases) = run_autograd_scheduler_conformance(config, mode)?;
-        logs.extend(scheduler_cases.into_iter().map(|case| case.forensic_log));
+        if packet_in_scope(packet_filter, "FT-P2C-003") {
+            let (_, op_schema_cases) = run_op_schema_conformance(config, mode)?;
+            logs.extend(op_schema_cases.into_iter().map(|case| case.forensic_log));
+        }
 
-        let (_, serialization_cases) = run_serialization_conformance(config, mode)?;
-        logs.extend(
-            serialization_cases
-                .into_iter()
-                .map(|case| case.forensic_log),
-        );
+        if packet_in_scope(packet_filter, "FT-P2C-004") {
+            let (_, scheduler_cases) = run_autograd_scheduler_conformance(config, mode)?;
+            logs.extend(scheduler_cases.into_iter().map(|case| case.forensic_log));
+        }
+
+        if packet_in_scope(packet_filter, "FT-P2C-005") {
+            let (_, serialization_cases) = run_serialization_conformance(config, mode)?;
+            logs.extend(
+                serialization_cases
+                    .into_iter()
+                    .map(|case| case.forensic_log),
+            );
+        }
     }
 
     if let Some(packet_id) = packet_filter {
@@ -605,6 +692,10 @@ pub fn emit_e2e_forensics_matrix_filtered(
         failed_entries,
         modes: selected_modes,
     })
+}
+
+fn packet_in_scope(packet_filter: Option<&str>, packet_id: &str) -> bool {
+    packet_filter.is_none_or(|filter| filter == packet_id)
 }
 
 pub fn run_differential_conformance(
@@ -1247,6 +1338,129 @@ pub fn run_differential_conformance(
             ],
         ));
 
+        let op_schema_fixture: OpSchemaFixtureFile =
+            load_fixture(&config.fixture_root.join("op_schema_cases.json"))?;
+        for case in op_schema_fixture.cases {
+            let parsed_schema = parse_schema_or_name(case.schema_input.as_str());
+            let parse_ok = parsed_schema.is_ok();
+            let (parse_comparator, parse_drift_id) = if case.expect_parse_ok {
+                ("schema_parse", "op_schema.parse_rejected")
+            } else {
+                (
+                    "adversarial_malformed_schema_rejected",
+                    "op_schema.adversarial_malformed_schema_accepted",
+                )
+            };
+            let evidence_refs = op_schema_evidence_refs();
+            checks.push(compare_bool(
+                &allowlist,
+                "op_schema",
+                "FT-P2C-003",
+                mode,
+                case.name.as_str(),
+                parse_comparator,
+                parse_drift_id,
+                parse_ok,
+                case.expect_parse_ok,
+                evidence_refs.clone(),
+            ));
+
+            if let Some(expected_schema_variant) = case.expect_schema_variant {
+                let observed_schema_variant =
+                    matches!(parsed_schema.as_ref(), Ok(ParsedSchemaInput::Schema(_)));
+                checks.push(compare_bool(
+                    &allowlist,
+                    "op_schema",
+                    "FT-P2C-003",
+                    mode,
+                    case.name.as_str(),
+                    "schema_variant_classification",
+                    "op_schema.schema_variant_classification_mismatch",
+                    observed_schema_variant,
+                    expected_schema_variant,
+                    evidence_refs.clone(),
+                ));
+            }
+
+            if let Some(expected_out_variant) = case.expect_out_variant {
+                let observed_out_variant = matches!(
+                    parsed_schema.as_ref(),
+                    Ok(ParsedSchemaInput::Schema(schema)) if schema.is_out_variant
+                );
+                checks.push(compare_bool(
+                    &allowlist,
+                    "op_schema",
+                    "FT-P2C-003",
+                    mode,
+                    case.name.as_str(),
+                    "out_variant_alias_contract",
+                    "op_schema.out_variant_alias_mismatch",
+                    observed_out_variant,
+                    expected_out_variant,
+                    evidence_refs.clone(),
+                ));
+            }
+
+            if let Some(expected_dispatch_ok) = case.expect_dispatch_ok {
+                let observed_dispatch_ok = case.dispatch_tags.as_ref().is_some_and(|tags| {
+                    let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+                    schema_dispatch_keyset_from_tags(tag_refs.as_slice()).is_ok()
+                });
+                let (comparator, drift_id) = if expected_dispatch_ok {
+                    (
+                        "dispatch_keyset_contract",
+                        "op_schema.dispatch_keyset_contract_mismatch",
+                    )
+                } else {
+                    (
+                        "adversarial_dispatch_metadata_rejected",
+                        "op_schema.adversarial_dispatch_metadata_accepted",
+                    )
+                };
+                checks.push(compare_bool(
+                    &allowlist,
+                    "op_schema",
+                    "FT-P2C-003",
+                    mode,
+                    case.name.as_str(),
+                    comparator,
+                    drift_id,
+                    observed_dispatch_ok,
+                    expected_dispatch_ok,
+                    evidence_refs.clone(),
+                ));
+            }
+
+            if let Some(expected_name_normalization) = case.expect_name_normalization {
+                let observed_name_normalization = case.name_input.as_deref().is_some_and(|input| {
+                    let lhs_name = match parsed_schema.as_ref() {
+                        Ok(ParsedSchemaInput::Schema(schema)) => Some(schema.op.unambiguous_name()),
+                        Ok(ParsedSchemaInput::Name(name)) => Some(name.unambiguous_name()),
+                        Err(_) => None,
+                    };
+                    let rhs_name = match parse_schema_or_name(input) {
+                        Ok(ParsedSchemaInput::Name(name)) => Some(name.unambiguous_name()),
+                        _ => None,
+                    };
+                    lhs_name
+                        .zip(rhs_name)
+                        .is_some_and(|(left, right)| left == right)
+                });
+                checks.push(compare_bool(
+                    &allowlist,
+                    "op_schema",
+                    "FT-P2C-003",
+                    mode,
+                    case.name.as_str(),
+                    "metamorphic_name_normalization",
+                    "op_schema.metamorphic_name_normalization_mismatch",
+                    observed_name_normalization,
+                    expected_name_normalization,
+                    evidence_refs,
+                ));
+            }
+        }
+
         let scheduler_fixture: SchedulerFixtureFile =
             load_fixture(&config.fixture_root.join("autograd_scheduler_cases.json"))?;
         for case in scheduler_fixture.cases {
@@ -1478,6 +1692,49 @@ pub fn run_scalar_microbench(iterations: usize, mode: ExecutionMode) -> BenchRep
         p99_ns: percentile(&samples, 99),
         mean_ns: mean,
     }
+}
+
+pub fn run_packet_e2e_microbench(
+    config: &HarnessConfig,
+    iterations: usize,
+    packet_id: &str,
+) -> Result<BenchReport, String> {
+    let mut samples = Vec::with_capacity(iterations.max(1));
+    let output_path = std::env::temp_dir().join(format!(
+        "ft_conformance_packet_e2e_microbench_{}_{}.jsonl",
+        packet_id.to_ascii_lowercase(),
+        std::process::id()
+    ));
+
+    for _ in 0..iterations.max(1) {
+        let started = Instant::now();
+        let summary = emit_e2e_forensics_matrix_filtered(
+            config,
+            output_path.as_path(),
+            &[ExecutionMode::Strict, ExecutionMode::Hardened],
+            Some(packet_id),
+        )?;
+        if summary.failed_entries > 0 {
+            return Err(format!(
+                "packet e2e microbench observed {} failed entries for packet {}",
+                summary.failed_entries, packet_id
+            ));
+        }
+        samples.push(started.elapsed().as_nanos());
+    }
+
+    let _ = fs::remove_file(output_path);
+    samples.sort_unstable();
+    let sum = samples.iter().copied().sum::<u128>();
+    let mean = sum / (samples.len() as u128);
+
+    Ok(BenchReport {
+        iterations: samples.len(),
+        p50_ns: percentile(&samples, 50),
+        p95_ns: percentile(&samples, 95),
+        p99_ns: percentile(&samples, 99),
+        mean_ns: mean,
+    })
 }
 
 fn run_scalar_case(case: &ScalarCase, mode: ExecutionMode) -> Result<CaseReport, String> {
@@ -1821,6 +2078,98 @@ fn run_dispatch_case(
             } else {
                 "dispatch_expectation_mismatch"
             },
+        ),
+    })
+}
+
+fn run_op_schema_case(
+    case: &OpSchemaCase,
+    mode: ExecutionMode,
+) -> Result<OpSchemaCaseReport, String> {
+    let parsed_schema = parse_schema_or_name(case.schema_input.as_str());
+    let parse_ok = parsed_schema.is_ok() == case.expect_parse_ok;
+
+    let schema_variant_ok = case.expect_schema_variant.is_none_or(|expected| {
+        matches!(parsed_schema.as_ref(), Ok(ParsedSchemaInput::Schema(_))) == expected
+    });
+
+    let out_variant_ok = case.expect_out_variant.is_none_or(|expected| {
+        matches!(
+            parsed_schema.as_ref(),
+            Ok(ParsedSchemaInput::Schema(schema)) if schema.is_out_variant
+        ) == expected
+    });
+
+    let dispatch_observed = case.dispatch_tags.as_ref().is_some_and(|tags| {
+        let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+        schema_dispatch_keyset_from_tags(tag_refs.as_slice()).is_ok()
+    });
+    let dispatch_ok = case
+        .expect_dispatch_ok
+        .is_none_or(|expected| dispatch_observed == expected);
+
+    let normalization_observed = case.name_input.as_deref().is_some_and(|input| {
+        let lhs_name = match parsed_schema.as_ref() {
+            Ok(ParsedSchemaInput::Schema(schema)) => Some(schema.op.unambiguous_name()),
+            Ok(ParsedSchemaInput::Name(name)) => Some(name.unambiguous_name()),
+            Err(_) => None,
+        };
+        let rhs_name = match parse_schema_or_name(input) {
+            Ok(ParsedSchemaInput::Name(name)) => Some(name.unambiguous_name()),
+            _ => None,
+        };
+        lhs_name
+            .zip(rhs_name)
+            .is_some_and(|(left, right)| left == right)
+    });
+    let normalization_ok = case
+        .expect_name_normalization
+        .is_none_or(|expected| normalization_observed == expected);
+
+    let passed = parse_ok && schema_variant_ok && out_variant_ok && dispatch_ok && normalization_ok;
+    let reason_code = if passed {
+        if case.expect_parse_ok {
+            "op_schema_parity_ok"
+        } else {
+            "op_schema_adversarial_fail_closed_ok"
+        }
+    } else if !parse_ok {
+        "op_schema_parse_expectation_mismatch"
+    } else if !schema_variant_ok {
+        "op_schema_schema_variant_mismatch"
+    } else if !out_variant_ok {
+        "op_schema_out_variant_mismatch"
+    } else if !dispatch_ok {
+        "op_schema_dispatch_expectation_mismatch"
+    } else {
+        "op_schema_name_normalization_mismatch"
+    };
+
+    Ok(OpSchemaCaseReport {
+        name: case.name.clone(),
+        mode,
+        parse_ok,
+        schema_variant_ok,
+        out_variant_ok,
+        dispatch_ok,
+        normalization_ok,
+        forensic_log: StructuredCaseLog::new(
+            "op_schema",
+            "op_schema_cases.json",
+            "FT-P2C-003",
+            case.name.as_str(),
+            mode,
+            vec![
+                "crates/ft-conformance/fixtures/op_schema_cases.json".to_string(),
+                "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json".to_string(),
+                "artifacts/phase2c/FT-P2C-003/differential_packet_report_v1.json".to_string(),
+            ],
+            format!(
+                "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode {} --packet FT-P2C-003 --output artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl",
+                mode_label(mode),
+            ),
+            if passed { "pass" } else { "fail" },
+            reason_code,
         ),
     })
 }
@@ -2557,6 +2906,15 @@ fn parse_keyset(keys: &[String]) -> Result<DispatchKeySet, String> {
     Ok(DispatchKeySet::from_keys(parsed.as_slice()))
 }
 
+fn op_schema_evidence_refs() -> Vec<String> {
+    vec![
+        "crates/ft-conformance/fixtures/op_schema_cases.json".to_string(),
+        "artifacts/phase2c/FT-P2C-003/contract_table.md".to_string(),
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md".to_string(),
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json".to_string(),
+    ]
+}
+
 fn load_fixture<T>(path: &Path) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
@@ -2603,9 +2961,9 @@ mod tests {
     use super::{
         ExecutionMode, HarnessConfig, emit_differential_report, emit_e2e_forensics_matrix,
         emit_e2e_forensics_matrix_filtered, load_allowlist, run_autograd_scheduler_conformance,
-        run_differential_conformance, run_dispatch_conformance, run_scalar_conformance,
-        run_scalar_microbench, run_serialization_conformance, run_smoke,
-        run_tensor_meta_conformance,
+        run_differential_conformance, run_dispatch_conformance, run_op_schema_conformance,
+        run_packet_e2e_microbench, run_scalar_conformance, run_scalar_microbench,
+        run_serialization_conformance, run_smoke, run_tensor_meta_conformance,
     };
 
     #[test]
@@ -2667,6 +3025,17 @@ mod tests {
             run_dispatch_conformance(&cfg, ExecutionMode::Hardened).expect("dispatch should run");
 
         assert_eq!(report.cases_total, report.cases_passed);
+    }
+
+    #[test]
+    fn strict_op_schema_conformance_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let (report, cases) =
+            run_op_schema_conformance(&cfg, ExecutionMode::Strict).expect("op schema should run");
+
+        assert_eq!(report.suite, "op_schema");
+        assert!(!cases.is_empty());
+        assert!(cases.iter().all(|case| case.passed()));
     }
 
     #[test]
@@ -2803,10 +3172,62 @@ mod tests {
     }
 
     #[test]
+    fn e2e_matrix_packet_filter_includes_op_schema_packet_entries() {
+        let cfg = HarnessConfig::default_paths();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let output_path = std::env::temp_dir().join(format!(
+            "ft_conformance_e2e_packet_filter_op_schema_{}_{}.jsonl",
+            std::process::id(),
+            now
+        ));
+
+        let summary = emit_e2e_forensics_matrix_filtered(
+            &cfg,
+            output_path.as_path(),
+            &[ExecutionMode::Strict, ExecutionMode::Hardened],
+            Some("FT-P2C-003"),
+        )
+        .expect("packet-filtered e2e matrix should emit logs");
+
+        assert!(summary.log_entries > 0);
+        let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
+        for line in raw.lines() {
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("jsonl line should be valid json");
+            assert_eq!(
+                value.get("packet_id").and_then(serde_json::Value::as_str),
+                Some("FT-P2C-003")
+            );
+            assert_eq!(
+                value.get("suite_id").and_then(serde_json::Value::as_str),
+                Some("op_schema")
+            );
+        }
+
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
     fn microbench_produces_percentiles() {
         let report = run_scalar_microbench(10, ExecutionMode::Strict);
         eprintln!(
             "microbench_ns p50={} p95={} p99={} mean={}",
+            report.p50_ns, report.p95_ns, report.p99_ns, report.mean_ns
+        );
+        assert_eq!(report.iterations, 10);
+        assert!(report.p50_ns > 0);
+        assert!(report.p95_ns >= report.p50_ns);
+        assert!(report.p99_ns >= report.p95_ns);
+    }
+
+    #[test]
+    fn packet_e2e_microbench_op_schema_produces_percentiles() {
+        let report = run_packet_e2e_microbench(&HarnessConfig::default_paths(), 10, "FT-P2C-003")
+            .expect("packet e2e microbench should run");
+        eprintln!(
+            "packet_e2e_microbench_ns packet=FT-P2C-003 p50={} p95={} p99={} mean={}",
             report.p50_ns, report.p95_ns, report.p99_ns, report.mean_ns
         );
         assert_eq!(report.iterations, 10);
@@ -2890,6 +3311,29 @@ mod tests {
             check.suite == "dispatch_key"
                 && check.case_name == "adversarial_autograd_without_cpu"
                 && check.comparator == "adversarial_autograd_without_cpu_rejected"
+        }));
+    }
+
+    #[test]
+    fn differential_op_schema_adds_metamorphic_and_adversarial_checks() {
+        let cfg = HarnessConfig::default_paths();
+        let report = run_differential_conformance(&cfg, &[ExecutionMode::Strict])
+            .expect("differential report should run");
+
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "op_schema"
+                && check.case_name == "operator_name_normalization"
+                && check.comparator == "metamorphic_name_normalization"
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "op_schema"
+                && check.case_name == "malformed_schema_rejected"
+                && check.comparator == "adversarial_malformed_schema_rejected"
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "op_schema"
+                && check.case_name == "dispatch_metadata_incompatible"
+                && check.comparator == "adversarial_dispatch_metadata_rejected"
         }));
     }
 

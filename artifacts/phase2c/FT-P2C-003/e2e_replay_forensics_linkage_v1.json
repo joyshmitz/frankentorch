@@ -1,0 +1,65 @@
+{
+  "schema_version": "ft-p2c-e2e-linkage-v1",
+  "packet_id": "FT-P2C-003",
+  "generated_at": "2026-02-15T06:16:48Z",
+  "source_e2e_log": "artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl",
+  "source_triage": "artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_003_v1.json",
+  "source_failure_index": "artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_003_v1.json",
+  "total_entries": 10,
+  "failed_entries": 0,
+  "suite_breakdown": [
+    {
+      "suite_id": "op_schema",
+      "count": 10
+    }
+  ],
+  "mode_breakdown": [
+    {
+      "mode": "hardened",
+      "count": 5
+    },
+    {
+      "mode": "strict",
+      "count": 5
+    }
+  ],
+  "deterministic_replay_field_coverage": {
+    "scenario_id": true,
+    "seed": true,
+    "env_fingerprint": true,
+    "artifact_refs": true,
+    "replay_command": true,
+    "reason_code": true
+  },
+  "replay_command_catalog": [
+    "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode hardened --packet FT-P2C-003 --output artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl",
+    "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode strict --packet FT-P2C-003 --output artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl"
+  ],
+  "scenario_ids": [
+    "op_schema/hardened:add_out_schema_alignment",
+    "op_schema/hardened:add_tensor_schema_roundtrip",
+    "op_schema/hardened:dispatch_metadata_incompatible",
+    "op_schema/hardened:malformed_schema_rejected",
+    "op_schema/hardened:operator_name_normalization",
+    "op_schema/strict:add_out_schema_alignment",
+    "op_schema/strict:add_tensor_schema_roundtrip",
+    "op_schema/strict:dispatch_metadata_incompatible",
+    "op_schema/strict:malformed_schema_rejected",
+    "op_schema/strict:operator_name_normalization"
+  ],
+  "linkage_refs": {
+    "unit_property": [
+      "cargo test -p ft-dispatch schema_parser_rejects_malformed_tokens -- --nocapture",
+      "cargo test -p ft-dispatch schema_out_variant_requires_mutable_out_alias -- --nocapture",
+      "cargo test -p ft-dispatch schema_dispatch_keyset_requires_cpu_backend_for_scoped_ops -- --nocapture",
+      "cargo test -p ft-conformance strict_op_schema_conformance_is_green -- --nocapture"
+    ],
+    "differential": [
+      "artifacts/phase2c/conformance/differential_report_v1.json",
+      "artifacts/phase2c/FT-P2C-003/differential_packet_report_v1.json",
+      "artifacts/phase2c/FT-P2C-003/differential_reconciliation_v1.md"
+    ],
+    "risk_note": "artifacts/phase2c/FT-P2C-003/risk_note.md"
+  },
+  "status": "pass"
+}

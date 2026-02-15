@@ -190,6 +190,15 @@ fn classify(reason_code: &str) -> (&'static str, &'static str, &'static str) {
     {
         return ("autograd_state", "critical", "ft-autograd-owners");
     }
+    if normalized.contains("op_schema")
+        || (normalized.contains("schema")
+            && (normalized.contains("parse")
+                || normalized.contains("variant")
+                || normalized.contains("alias")
+                || normalized.contains("metadata")))
+    {
+        return ("op_schema_contract", "high", "ft-dispatch-owners");
+    }
     if normalized.contains("dispatch")
         || normalized.contains("keyset")
         || normalized.contains("fallback")
@@ -327,6 +336,10 @@ mod tests {
         assert_eq!(
             classify("dispatch_expectation_mismatch"),
             ("dispatch_routing", "high", "ft-dispatch-owners")
+        );
+        assert_eq!(
+            classify("op_schema_parse_expectation_mismatch"),
+            ("op_schema_contract", "high", "ft-dispatch-owners")
         );
         assert_eq!(
             classify("serialization_expectation_mismatch"),

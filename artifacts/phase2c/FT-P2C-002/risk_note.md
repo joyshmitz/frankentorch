@@ -60,6 +60,9 @@ Required artifact linkage chain:
 3. failure index envelope (`artifacts/phase2c/e2e_forensics/failure_forensics_index_v1.json`)
 4. reliability budget report (`artifacts/phase2c/e2e_forensics/reliability_gate_report_v1.json`)
 
+Packet-scoped refresh for `bd-3v0.13.7`:
+- `artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl` regenerated via `run_e2e_matrix --packet FT-P2C-002` in strict+hardened modes (6 entries, 0 failures).
+
 ## 4.1) Differential Evidence Status (`bd-3v0.13.6`)
 
 Implemented dispatch differential coverage in `crates/ft-conformance/src/lib.rs` includes:
@@ -94,3 +97,19 @@ Execution evidence ownership remains:
 - `bd-3v0.13.5` (unit/property + structured logs)
 - `bd-3v0.13.6` (differential/metamorphic/adversarial)
 - `bd-3v0.13.7` (e2e/replay forensics)
+
+## 7) Final Evidence Pack Closure (`bd-3v0.13.9`)
+
+Final packet evidence links are now explicitly wired for FT-P2C-002:
+- fixture manifest: `artifacts/phase2c/FT-P2C-002/fixture_manifest.json`
+- parity gate/report anchors: `artifacts/phase2c/FT-P2C-002/parity_gate.yaml`, `artifacts/phase2c/FT-P2C-002/parity_report.json`
+- differential anchor: `artifacts/phase2c/conformance/differential_report_v1.json` (`failed_checks=0`)
+- packet e2e anchor: `artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl` (6 entries, 0 failures)
+- packet RaptorQ sidecars:
+  - `artifacts/phase2c/FT-P2C-002/parity_report.raptorq.json`
+  - `artifacts/phase2c/FT-P2C-002/parity_report.decode_proof.json`
+
+RaptorQ durability chain linkage remains green:
+- repair-symbol manifest entry present in `artifacts/phase2c/RAPTORQ_REPAIR_SYMBOL_MANIFEST_V1.json` (`repair_symbol_count=4`, `proof_hash_hex=det64:e29747f4c9f90e38`)
+- integrity scrub entry present in `artifacts/phase2c/RAPTORQ_INTEGRITY_SCRUB_REPORT_V1.json` (`status=ok`)
+- decode-proof event present in `artifacts/phase2c/RAPTORQ_DECODE_PROOF_EVENTS_V1.json` (`artifact_id=FT-P2C-002-parity-report`)

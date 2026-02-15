@@ -1,0 +1,22 @@
+packet_id: FT-P2C-003
+suite: op_schema
+release_blocking: true
+
+strict:
+  required_cases_passed_ratio: 1.0
+  critical_drift_budget: 0
+
+hardened:
+  required_cases_passed_ratio: 1.0
+  divergence_budget_ratio: 0.0
+
+checks:
+  - command: CARGO_TARGET_DIR=target_codex cargo test -p ft-conformance strict_op_schema_conformance_is_green -- --nocapture
+  - command: rch exec -- cargo run -p ft-conformance --bin run_differential_report -- --mode both --output artifacts/phase2c/conformance/differential_report_v1.json
+  - command: rch exec -- cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-003 --output artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl --print-full-log
+
+artifacts:
+  - crates/ft-conformance/fixtures/op_schema_cases.json
+  - artifacts/phase2c/FT-P2C-003/fixture_manifest.json
+  - artifacts/phase2c/FT-P2C-003/differential_packet_report_v1.json
+  - artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl

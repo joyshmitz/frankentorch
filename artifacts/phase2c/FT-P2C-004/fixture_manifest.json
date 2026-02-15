@@ -1,5 +1,7 @@
 {
   "packet_id": "FT-P2C-004",
+  "behavior_ledger": "artifacts/phase2c/FT-P2C-004/behavior_extraction_ledger.md",
+  "legacy_anchor_map": "artifacts/phase2c/FT-P2C-004/legacy_anchor_map.md",
   "fixtures": [
     {
       "id": "autograd_scheduler_composite_dac",
@@ -10,5 +12,41 @@
     }
   ],
   "modes": ["strict", "hardened"],
+  "logging_fields_required": [
+    "suite_id",
+    "scenario_id",
+    "fixture_id",
+    "packet_id",
+    "mode",
+    "seed",
+    "env_fingerprint",
+    "artifact_refs",
+    "replay_command",
+    "outcome",
+    "reason_code",
+    "execution_order",
+    "queue_pushes",
+    "queue_pops",
+    "max_queue_len",
+    "dependency_snapshot",
+    "reentrant_depth",
+    "reentrant_guard_triggered",
+    "hardened_fallback_used"
+  ],
+  "scenario_seed_map": {
+    "autograd_scheduler/strict:composite_scheduler_dac": 7059225966474559304,
+    "autograd_scheduler/hardened:composite_scheduler_dac": 12527830154622575501
+  },
+  "deferred_seed_candidates": {
+    "autograd_scheduler/strict:scheduler_chain": 12856897130756503459,
+    "autograd_scheduler/hardened:scheduler_chain": 4056182831483653040,
+    "autograd_scheduler/strict:dependency_underflow_probe": 8420101970047811095,
+    "autograd_scheduler/hardened:dependency_underflow_probe": 5298414977992276633
+  },
+  "contract_artifacts": [
+    "artifacts/phase2c/FT-P2C-004/legacy_anchor_map.md",
+    "artifacts/phase2c/FT-P2C-004/behavior_extraction_ledger.md",
+    "artifacts/phase2c/FT-P2C-004/contract_table.md"
+  ],
   "status": "active"
 }

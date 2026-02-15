@@ -29,6 +29,10 @@
         }
       ]
     },
+    "FT-P2C-003": {
+      "disallowed_by_default": true,
+      "allowed_deviations": []
+    },
     "FT-P2C-004": {
       "disallowed_by_default": true,
       "allowed_deviations": [

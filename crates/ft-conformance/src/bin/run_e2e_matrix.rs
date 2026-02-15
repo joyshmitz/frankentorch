@@ -10,6 +10,7 @@ fn main() -> Result<(), String> {
     let mut mode = String::from("both");
     let mut output: Option<PathBuf> = None;
     let mut packet: Option<String> = None;
+    let mut print_full_log = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -32,9 +33,12 @@ fn main() -> Result<(), String> {
                 })?;
                 packet = Some(value);
             }
+            "--print-full-log" => {
+                print_full_log = true;
+            }
             other => {
                 return Err(format!(
-                    "unknown arg '{other}'. usage: run_e2e_matrix [--mode strict|hardened|both] [--packet FT-P2C-00X] [--output path]"
+                    "unknown arg '{other}'. usage: run_e2e_matrix [--mode strict|hardened|both] [--packet FT-P2C-00X] [--output path] [--print-full-log]"
                 ));
             }
         }
@@ -51,6 +55,17 @@ fn main() -> Result<(), String> {
         modes.as_slice(),
         packet.as_deref(),
     )?;
+
+    if print_full_log {
+        let raw = std::fs::read_to_string(summary.output_path.as_path()).map_err(|error| {
+            format!(
+                "failed to read generated e2e log {}: {error}",
+                summary.output_path.display()
+            )
+        })?;
+        print!("{raw}");
+        return Ok(());
+    }
 
     let mode_labels: Vec<&str> = summary
         .modes

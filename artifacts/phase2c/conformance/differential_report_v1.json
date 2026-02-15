@@ -10,7 +10,7 @@
     "strict",
     "hardened"
   ],
-  "total_checks": 108,
+  "total_checks": 146,
   "failed_checks": 0,
   "allowlisted_drifts": 2,
   "blocking_drifts": 0,
@@ -1812,6 +1812,766 @@
       "evidence_refs": [
         "crates/ft-conformance/fixtures/dispatch_key_cases.json",
         "artifacts/phase2c/FT-P2C-002/parity_report.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "hardened",
+      "comparator": "dispatch_keyset_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "hardened",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "hardened",
+      "comparator": "out_variant_alias_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "hardened",
+      "comparator": "schema_parse",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "hardened",
+      "comparator": "schema_variant_classification",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "hardened",
+      "comparator": "dispatch_keyset_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "hardened",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "hardened",
+      "comparator": "out_variant_alias_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "false",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "hardened",
+      "comparator": "schema_parse",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "hardened",
+      "comparator": "schema_variant_classification",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:dispatch_metadata_incompatible",
+      "case_name": "dispatch_metadata_incompatible",
+      "mode": "hardened",
+      "comparator": "adversarial_dispatch_metadata_rejected",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "false",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:dispatch_metadata_incompatible",
+      "case_name": "dispatch_metadata_incompatible",
+      "mode": "hardened",
+      "comparator": "schema_parse",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:dispatch_metadata_incompatible",
+      "case_name": "dispatch_metadata_incompatible",
+      "mode": "hardened",
+      "comparator": "schema_variant_classification",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:malformed_schema_rejected",
+      "case_name": "malformed_schema_rejected",
+      "mode": "hardened",
+      "comparator": "adversarial_malformed_schema_rejected",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "false",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "hardened",
+      "comparator": "dispatch_keyset_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "hardened",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "hardened",
+      "comparator": "out_variant_alias_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "false",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "hardened",
+      "comparator": "schema_parse",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/hardened:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "hardened",
+      "comparator": "schema_variant_classification",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "strict",
+      "comparator": "dispatch_keyset_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "strict",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "strict",
+      "comparator": "out_variant_alias_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "strict",
+      "comparator": "schema_parse",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "strict",
+      "comparator": "schema_variant_classification",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "strict",
+      "comparator": "dispatch_keyset_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "strict",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "strict",
+      "comparator": "out_variant_alias_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "false",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "strict",
+      "comparator": "schema_parse",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "strict",
+      "comparator": "schema_variant_classification",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:dispatch_metadata_incompatible",
+      "case_name": "dispatch_metadata_incompatible",
+      "mode": "strict",
+      "comparator": "adversarial_dispatch_metadata_rejected",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "false",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:dispatch_metadata_incompatible",
+      "case_name": "dispatch_metadata_incompatible",
+      "mode": "strict",
+      "comparator": "schema_parse",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:dispatch_metadata_incompatible",
+      "case_name": "dispatch_metadata_incompatible",
+      "mode": "strict",
+      "comparator": "schema_variant_classification",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:malformed_schema_rejected",
+      "case_name": "malformed_schema_rejected",
+      "mode": "strict",
+      "comparator": "adversarial_malformed_schema_rejected",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "false",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "strict",
+      "comparator": "dispatch_keyset_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "strict",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "strict",
+      "comparator": "out_variant_alias_contract",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "false",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "strict",
+      "comparator": "schema_parse",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
+      ]
+    },
+    {
+      "suite": "op_schema",
+      "packet_id": "FT-P2C-003",
+      "scenario_id": "op_schema/strict:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "strict",
+      "comparator": "schema_variant_classification",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json",
+        "artifacts/phase2c/FT-P2C-003/contract_table.md",
+        "artifacts/phase2c/FT-P2C-003/behavior_extraction_ledger.md",
+        "artifacts/phase2c/FT-P2C-003/unit_property_quality_report_v1.json"
       ]
     },
     {

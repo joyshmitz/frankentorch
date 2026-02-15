@@ -80,6 +80,30 @@
       "note": "FT-P2C-002 strict+hardened oracle-backed, metamorphic, and adversarial checks are present in refreshed report; hardened allowlisted drift remains bounded to dispatch.composite_backend_fallback."
     }
   },
+  "e2e_validation": {
+    "bead_id": "bd-3v0.13.7",
+    "packet_log_path": "artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl",
+    "command": "rch exec -- cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-002 --output artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl",
+    "as_of_utc": "2026-02-15T05:14:29Z",
+    "log_entries": 6,
+    "failed_entries": 0,
+    "modes": [
+      "strict",
+      "hardened"
+    ],
+    "scenario_ids": [
+      "dispatch_key/strict:strict_autograd_route",
+      "dispatch_key/strict:strict_cpu_route",
+      "dispatch_key/strict:composite_route_mode_split",
+      "dispatch_key/hardened:strict_autograd_route",
+      "dispatch_key/hardened:strict_cpu_route",
+      "dispatch_key/hardened:composite_route_mode_split"
+    ],
+    "reason_codes": [
+      "dispatch_parity_ok",
+      "expected_error_observed"
+    ]
+  },
   "deferred_seed_candidates": {
     "dispatch_key/strict:unknown_bits_mask_candidate": 201313001,
     "dispatch_key/hardened:unknown_bits_mask_candidate": 201313002,
@@ -89,10 +113,61 @@
     "dispatch_key/hardened:non_cpu_backend_key_candidate": 201313006
   },
   "security_compatibility_artifact": "artifacts/phase2c/FT-P2C-002/risk_note.md",
+  "performance_baseline_artifacts": [
+    "artifacts/optimization/2026-02-14_foundation_perf_rebaseline.md",
+    "artifacts/optimization/2026-02-14_foundation_perf_rebaseline.json",
+    "artifacts/optimization/2026-02-14_packet_parallel_validation.md",
+    "artifacts/optimization/2026-02-13_phase2c_isomorphism.md"
+  ],
+  "validation_refresh": {
+    "executed_via": "rch",
+    "bead_id": "bd-3v0.13.8",
+    "command": "~/.local/bin/rch exec -- /usr/bin/time -fmax_rss_kb=%M,elapsed_s=%e cargo test -q -p ft-conformance microbench_produces_percentiles -- --nocapture",
+    "observed": {
+      "microbench_ns": {
+        "p50": 2454,
+        "p95": 4036,
+        "p99": 4036,
+        "mean": 8226
+      },
+      "memory": {
+        "max_rss_kb": 418792,
+        "elapsed_s": 1.69
+      },
+      "parity_anchors": [
+        "artifacts/phase2c/conformance/differential_report_v1.json",
+        "artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl"
+      ]
+    }
+  },
   "contract_artifacts": [
     "artifacts/phase2c/FT-P2C-002/contract_table.md",
     "artifacts/phase2c/FT-P2C-002/parity_gate.yaml",
     "artifacts/phase2c/FT-P2C-002/parity_report.json"
   ],
+  "raptorq_sidecars": [
+    "artifacts/phase2c/FT-P2C-002/parity_report.raptorq.json",
+    "artifacts/phase2c/FT-P2C-002/parity_report.decode_proof.json"
+  ],
+  "final_evidence_pack": {
+    "bead_id": "bd-3v0.13.9",
+    "completed_on": "2026-02-15",
+    "parity_gate_outcome": "green",
+    "differential_report": "artifacts/phase2c/conformance/differential_report_v1.json",
+    "e2e_packet_log": "artifacts/phase2c/e2e_forensics/ft-p2c-002.jsonl",
+    "risk_note": "artifacts/phase2c/FT-P2C-002/risk_note.md",
+    "raptorq_references": [
+      "artifacts/phase2c/RAPTORQ_REPAIR_SYMBOL_MANIFEST_V1.json",
+      "artifacts/phase2c/RAPTORQ_INTEGRITY_SCRUB_REPORT_V1.json",
+      "artifacts/phase2c/RAPTORQ_DECODE_PROOF_EVENTS_V1.json"
+    ],
+    "gate_summary": {
+      "strict": "pass",
+      "hardened": "pass",
+      "differential_failed_checks": 0,
+      "e2e_failed_entries": 0,
+      "raptorq_decode_status": "decode_verified"
+    }
+  },
   "status": "active"
 }

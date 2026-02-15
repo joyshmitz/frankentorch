@@ -1,0 +1,165 @@
+{
+  "schema_version": "ft-p2c-differential-packet-v1",
+  "packet_id": "FT-P2C-003",
+  "source_report": "artifacts/phase2c/conformance/differential_report_v1.json",
+  "generated_at": "2026-02-15T06:00:43Z",
+  "total_checks": 38,
+  "pass_checks": 38,
+  "non_pass_checks": 0,
+  "allowlisted_checks": 0,
+  "blocking_checks": 0,
+  "suite_breakdown": [
+    {
+      "suite": "op_schema",
+      "count": 38
+    }
+  ],
+  "mode_breakdown": [
+    {
+      "mode": "hardened",
+      "count": 19
+    },
+    {
+      "mode": "strict",
+      "count": 19
+    }
+  ],
+  "status_breakdown": [
+    {
+      "status": "pass",
+      "count": 38
+    }
+  ],
+  "comparator_breakdown": [
+    {
+      "comparator": "adversarial_dispatch_metadata_rejected",
+      "count": 2
+    },
+    {
+      "comparator": "adversarial_malformed_schema_rejected",
+      "count": 2
+    },
+    {
+      "comparator": "dispatch_keyset_contract",
+      "count": 6
+    },
+    {
+      "comparator": "metamorphic_name_normalization",
+      "count": 6
+    },
+    {
+      "comparator": "out_variant_alias_contract",
+      "count": 6
+    },
+    {
+      "comparator": "schema_parse",
+      "count": 8
+    },
+    {
+      "comparator": "schema_variant_classification",
+      "count": 8
+    }
+  ],
+  "metamorphic_checks": [
+    {
+      "scenario_id": "op_schema/hardened:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "hardened",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "op_schema/hardened:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "hardened",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "op_schema/hardened:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "hardened",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "op_schema/strict:add_out_schema_alignment",
+      "case_name": "add_out_schema_alignment",
+      "mode": "strict",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "op_schema/strict:add_tensor_schema_roundtrip",
+      "case_name": "add_tensor_schema_roundtrip",
+      "mode": "strict",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "op_schema/strict:operator_name_normalization",
+      "case_name": "operator_name_normalization",
+      "mode": "strict",
+      "comparator": "metamorphic_name_normalization",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    }
+  ],
+  "adversarial_fail_closed_checks": [
+    {
+      "scenario_id": "op_schema/hardened:dispatch_metadata_incompatible",
+      "case_name": "dispatch_metadata_incompatible",
+      "mode": "hardened",
+      "comparator": "adversarial_dispatch_metadata_rejected",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "op_schema/hardened:malformed_schema_rejected",
+      "case_name": "malformed_schema_rejected",
+      "mode": "hardened",
+      "comparator": "adversarial_malformed_schema_rejected",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "op_schema/strict:dispatch_metadata_incompatible",
+      "case_name": "dispatch_metadata_incompatible",
+      "mode": "strict",
+      "comparator": "adversarial_dispatch_metadata_rejected",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "op_schema/strict:malformed_schema_rejected",
+      "case_name": "malformed_schema_rejected",
+      "mode": "strict",
+      "comparator": "adversarial_malformed_schema_rejected",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    }
+  ],
+  "packet_allowlist_reconciliation": {
+    "global_allowlisted_drifts": 2,
+    "packet_allowlisted_drifts": 0,
+    "note": "Global allowlists remain confined to FT-P2C-002 and FT-P2C-004; FT-P2C-003 has zero allowlisted drift in strict and hardened modes."
+  },
+  "risk_linkage": {
+    "threat_ids_covered": [
+      "THR-301",
+      "THR-302",
+      "THR-303",
+      "THR-304",
+      "THR-305"
+    ],
+    "deferred_gap_ids": [
+      "GAP-SCHEMA-001"
+    ],
+    "risk_note_path": "artifacts/phase2c/FT-P2C-003/risk_note.md"
+  }
+}
