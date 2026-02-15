@@ -73,18 +73,17 @@ Dispatch-only regression suite is green under remote execution:
 
 Differential report refresh status:
 - `rch exec -- cargo run -p ft-conformance --bin run_differential_report -- --mode both --output artifacts/phase2c/conformance/differential_report_v1.json` completed (2026-02-15 UTC).
-- refreshed report includes strict+hardened metamorphic/adversarial checks for `FT-P2C-002` and hardened allowlisted drift classification for `dispatch.composite_backend_fallback`.
-- remaining caveat: oracle-backed dispatch comparisons are currently `oracle_unavailable` on worker due missing `torch` in worker Python environment.
+- refreshed report includes strict+hardened oracle-backed, metamorphic, and adversarial checks for `FT-P2C-002`.
+- oracle status in report is now available (`torch_available:2.10.0+cpu`) after worker provisioning.
+- hardened allowlisted drift classification remains bounded to `dispatch.composite_backend_fallback`.
 
 ## 5) Residual Risks and Deferred Controls
 
 Residual risks:
 - key-domain scope remains CPU + autograd CPU for this packet.
 - dedicated failure-injection seed runs for unknown/incompatible raw keysets remain deferred to the packet E2E track.
-- remote differential runs still lack PyTorch-backed oracle checks until worker Python environments include `torch`.
 
 Deferred controls and ownership:
-- provision worker-side Python `torch` for legacy-oracle queries, then rerun differential report to clear `oracle_unavailable` status entries.
 - attach dedicated packet e2e fail-injection traces under `bd-3v0.13.7`.
 - extend non-CPU dispatch key families under `FT-P2C-007`.
 

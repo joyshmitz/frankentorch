@@ -74,10 +74,10 @@
       "dispatch_key/hardened:composite_route_mode_split"
     ],
     "report_refresh_status": {
-      "as_of_utc": "2026-02-15T04:49:23Z",
+      "as_of_utc": "2026-02-15T05:12:24Z",
       "command": "rch exec -- cargo run -p ft-conformance --bin run_differential_report -- --mode both --output artifacts/phase2c/conformance/differential_report_v1.json",
       "status": "completed",
-      "note": "FT-P2C-002 metamorphic/adversarial checks are present in refreshed report; oracle-backed checks are still oracle_unavailable on worker due missing Python torch."
+      "note": "FT-P2C-002 strict+hardened oracle-backed, metamorphic, and adversarial checks are present in refreshed report; hardened allowlisted drift remains bounded to dispatch.composite_backend_fallback."
     }
   },
   "deferred_seed_candidates": {
