@@ -3,6 +3,13 @@
   "behavior_ledger": "artifacts/phase2c/FT-P2C-004/behavior_extraction_ledger.md",
   "legacy_anchor_map": "artifacts/phase2c/FT-P2C-004/legacy_anchor_map.md",
   "implementation_plan": "artifacts/phase2c/FT-P2C-004/implementation_plan.md",
+  "differential_packet_report": "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+  "differential_reconciliation_note": "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md",
+  "e2e_log_artifact": "artifacts/phase2c/e2e_forensics/ft-p2c-004.jsonl",
+  "e2e_crash_triage_artifact": "artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_004_v1.json",
+  "e2e_failure_forensics_index": "artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_004_v1.json",
+  "e2e_linkage_summary": "artifacts/phase2c/FT-P2C-004/e2e_replay_forensics_linkage_v1.json",
+  "e2e_linkage_note": "artifacts/phase2c/FT-P2C-004/e2e_replay_forensics_linkage_v1.md",
   "fixtures": [
     {
       "id": "autograd_scheduler_composite_dac",
@@ -79,6 +86,67 @@
     "quality_report": "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
     "coverage_report": "artifacts/phase2c/FT-P2C-004/unit_property_coverage_v1.json"
   },
+  "differential_validation": {
+    "bead_id": "bd-3v0.15.6",
+    "report_path": "artifacts/phase2c/conformance/differential_report_v1.json",
+    "packet_report": "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+    "reconciliation_note": "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md",
+    "required_comparators": [
+      "abs_tol",
+      "policy",
+      "metamorphic_scale_relation_local",
+      "metamorphic_scale_relation_oracle",
+      "adversarial_strict_reentrant_overflow_rejected",
+      "adversarial_hardened_reentrant_overflow_guarded"
+    ],
+    "regression_tests": [
+      "rch exec -- env CARGO_TARGET_DIR=target_rosebison_diff cargo test -p ft-conformance differential_autograd_scheduler_adds_metamorphic_and_adversarial_checks -- --nocapture",
+      "rch exec -- env CARGO_TARGET_DIR=target_rosebison_diff cargo test -p ft-conformance differential_harness_emits_sorted_checks -- --nocapture",
+      "rch exec -- env CARGO_TARGET_DIR=target_rosebison_diff cargo test -p ft-autograd prop_scheduler_replay_is_deterministic -- --nocapture"
+    ],
+    "e2e_scenario_hooks": [
+      "autograd_scheduler/strict:composite_scheduler_dac",
+      "autograd_scheduler/hardened:composite_scheduler_dac",
+      "autograd_scheduler/strict:scheduler_chain",
+      "autograd_scheduler/hardened:scheduler_chain",
+      "autograd_scheduler/strict:dependency_underflow_probe",
+      "autograd_scheduler/hardened:dependency_underflow_probe"
+    ],
+    "report_refresh_status": {
+      "as_of_utc": "2026-02-15T20:20:35Z",
+      "command": "rch exec --quiet -- env CARGO_TARGET_DIR=target_rosebison_diff cargo run -p ft-conformance --bin run_differential_report -- --mode both --print-full-report",
+      "status": "completed",
+      "note": "Remote full differential report captured via rch stdout stream and materialized locally into conformance + packet FT-P2C-004 artifacts."
+    }
+  },
+  "e2e_validation": {
+    "bead_id": "bd-3v0.15.7",
+    "packet_log_path": "artifacts/phase2c/e2e_forensics/ft-p2c-004.jsonl",
+    "triage_path": "artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_004_v1.json",
+    "failure_forensics_index": "artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_004_v1.json",
+    "linkage_summary": "artifacts/phase2c/FT-P2C-004/e2e_replay_forensics_linkage_v1.json",
+    "linkage_note": "artifacts/phase2c/FT-P2C-004/e2e_replay_forensics_linkage_v1.md",
+    "command": "rch exec --quiet -- env CARGO_TARGET_DIR=target_rosebison_e2e cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-004 --output artifacts/phase2c/e2e_forensics/ft-p2c-004.jsonl --print-full-log",
+    "as_of_utc": "2026-02-15T20:34:09Z",
+    "log_entries": 6,
+    "failed_entries": 0,
+    "modes": [
+      "strict",
+      "hardened"
+    ],
+    "scenario_ids": [
+      "autograd_scheduler/strict:composite_scheduler_dac",
+      "autograd_scheduler/strict:scheduler_chain",
+      "autograd_scheduler/strict:dependency_underflow_probe",
+      "autograd_scheduler/hardened:composite_scheduler_dac",
+      "autograd_scheduler/hardened:scheduler_chain",
+      "autograd_scheduler/hardened:dependency_underflow_probe"
+    ],
+    "reason_codes": [
+      "scheduler_parity_ok"
+    ],
+    "triage_incidents": 0
+  },
   "security_compatibility_artifact": "artifacts/phase2c/FT-P2C-004/risk_note.md",
   "contract_artifacts": [
     "artifacts/phase2c/FT-P2C-004/legacy_anchor_map.md",
@@ -86,7 +154,11 @@
     "artifacts/phase2c/FT-P2C-004/contract_table.md",
     "artifacts/phase2c/FT-P2C-004/implementation_plan.md",
     "artifacts/phase2c/FT-P2C-004/risk_note.md",
-    "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json"
+    "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+    "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+    "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md",
+    "artifacts/phase2c/FT-P2C-004/e2e_replay_forensics_linkage_v1.json",
+    "artifacts/phase2c/FT-P2C-004/e2e_replay_forensics_linkage_v1.md"
   ],
   "status": "active"
 }

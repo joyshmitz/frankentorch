@@ -1,0 +1,92 @@
+{
+  "schema_version": "ft-p2c-004-unit-property-quality-v1",
+  "generated_on": "2026-02-15",
+  "packet_id": "FT-P2C-004",
+  "coverage": {
+    "scope": "packet_module",
+    "target_file": "crates/ft-autograd/src/lib.rs",
+    "line_percent": 95.73283858998145,
+    "region_percent": 95.79067121729238,
+    "line_floor": 90.0,
+    "region_floor": 80.0,
+    "line_floor_pass": true,
+    "region_floor_pass": true,
+    "workspace_rollup_line_percent": 59.62732919254658,
+    "workspace_rollup_region_percent": 63.319044703000614,
+    "command": "rch exec -- env CARGO_TARGET_DIR=target_rosebison_cov4 cargo llvm-cov -p ft-autograd --json --summary-only --output-path artifacts/phase2c/FT-P2C-004/unit_property_coverage_v1.json",
+    "extraction_command": "jq '.data[].files[] | select(.filename==\"/data/projects/frankentorch/crates/ft-autograd/src/lib.rs\") | {line_percent:.summary.lines.percent, region_percent:.summary.regions.percent}' artifacts/phase2c/FT-P2C-004/unit_property_coverage_v1.json",
+    "status": "coverage_floor_pass"
+  },
+  "property_suite": {
+    "invariant_family_count": 5,
+    "shrink_enabled": true,
+    "invariant_families": [
+      "scheduler_replay_stability_contract",
+      "shared_parent_dependency_release_contract",
+      "strict_reentrant_overflow_fail_closed_contract",
+      "hardened_reentrant_guard_flagging_contract",
+      "scheduler_telemetry_self_consistency_contract"
+    ],
+    "test_ids": [
+      "prop_scheduler_replay_is_deterministic",
+      "prop_shared_parent_waits_for_all_children",
+      "prop_strict_reentrant_overflow_is_fail_closed",
+      "prop_hardened_reentrant_overflow_is_explicitly_flagged",
+      "prop_scheduler_telemetry_is_self_consistent",
+      "dependency_underflow_is_fail_closed"
+    ]
+  },
+  "structured_log_contract": {
+    "required_fields": [
+      "ts_utc",
+      "suite_id",
+      "test_id",
+      "packet_id",
+      "fixture_id",
+      "scenario_id",
+      "mode",
+      "seed",
+      "input_digest",
+      "output_digest",
+      "env_fingerprint",
+      "artifact_refs",
+      "replay_command",
+      "duration_ms",
+      "outcome",
+      "reason_code",
+      "execution_order",
+      "queue_pushes",
+      "queue_pops",
+      "max_queue_len",
+      "dependency_snapshot",
+      "reentrant_depth",
+      "reentrant_guard_triggered",
+      "hardened_fallback_used"
+    ],
+    "test_helper_anchors": [
+      "crates/ft-autograd/src/lib.rs",
+      "crates/ft-conformance/src/logging.rs"
+    ]
+  },
+  "e2e_scenario_mapping": {
+    "prop_scheduler_replay_is_deterministic": [
+      "autograd_scheduler/strict:composite_scheduler_dac",
+      "autograd_scheduler/hardened:composite_scheduler_dac"
+    ],
+    "prop_shared_parent_waits_for_all_children": [
+      "autograd_scheduler/strict:scheduler_chain",
+      "autograd_scheduler/hardened:scheduler_chain"
+    ],
+    "dependency_underflow_is_fail_closed": [
+      "autograd_scheduler/strict:dependency_underflow_probe",
+      "autograd_scheduler/hardened:dependency_underflow_probe"
+    ]
+  },
+  "validation_runs": {
+    "autograd_tests": "rch exec -- env CARGO_TARGET_DIR=target_rosebison cargo test -p ft-autograd",
+    "conformance_scheduler_tests": "rch exec -- env CARGO_TARGET_DIR=target_rosebison2 cargo test -p ft-conformance --lib scheduler",
+    "coverage_capture": "rch exec -- env CARGO_TARGET_DIR=target_rosebison_cov4 cargo llvm-cov -p ft-autograd --json --summary-only --output-path artifacts/phase2c/FT-P2C-004/unit_property_coverage_v1.json",
+    "status": "completed"
+  },
+  "status": "completed"
+}

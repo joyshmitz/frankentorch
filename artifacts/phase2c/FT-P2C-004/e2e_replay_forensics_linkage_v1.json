@@ -1,0 +1,61 @@
+{
+  "schema_version": "ft-p2c-e2e-linkage-v1",
+  "packet_id": "FT-P2C-004",
+  "generated_at": "2026-02-15T20:34:09Z",
+  "source_e2e_log": "artifacts/phase2c/e2e_forensics/ft-p2c-004.jsonl",
+  "source_triage": "artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_004_v1.json",
+  "source_failure_index": "artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_004_v1.json",
+  "total_entries": 6,
+  "failed_entries": 0,
+  "suite_breakdown": [
+    {
+      "suite_id": "autograd_scheduler",
+      "count": 6
+    }
+  ],
+  "mode_breakdown": [
+    {
+      "mode": "hardened",
+      "count": 3
+    },
+    {
+      "mode": "strict",
+      "count": 3
+    }
+  ],
+  "deterministic_replay_field_coverage": {
+    "scenario_id": true,
+    "seed": true,
+    "env_fingerprint": true,
+    "artifact_refs": true,
+    "replay_command": true,
+    "reason_code": true
+  },
+  "replay_command_catalog": [
+    "cargo test -p ft-conformance strict_scheduler_conformance_is_green -- --nocapture # mode=hardened",
+    "cargo test -p ft-conformance strict_scheduler_conformance_is_green -- --nocapture # mode=strict"
+  ],
+  "scenario_ids": [
+    "autograd_scheduler/hardened:composite_scheduler_dac",
+    "autograd_scheduler/hardened:dependency_underflow_probe",
+    "autograd_scheduler/hardened:scheduler_chain",
+    "autograd_scheduler/strict:composite_scheduler_dac",
+    "autograd_scheduler/strict:dependency_underflow_probe",
+    "autograd_scheduler/strict:scheduler_chain"
+  ],
+  "linkage_refs": {
+    "unit_property": [
+      "rch exec -- env CARGO_TARGET_DIR=target_rosebison_diff cargo test -p ft-autograd composite_graph_gradient_is_deterministic -- --nocapture",
+      "rch exec -- env CARGO_TARGET_DIR=target_rosebison_diff cargo test -p ft-autograd dependency_scheduler_waits_for_all_children -- --nocapture",
+      "rch exec -- env CARGO_TARGET_DIR=target_rosebison_diff cargo test -p ft-autograd strict_mode_reentrant_depth_overflow_fails -- --nocapture",
+      "rch exec -- env CARGO_TARGET_DIR=target_rosebison_diff cargo test -p ft-autograd hardened_mode_reentrant_depth_overflow_fallbacks -- --nocapture"
+    ],
+    "differential": [
+      "artifacts/phase2c/conformance/differential_report_v1.json",
+      "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+      "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+    ],
+    "risk_note": "artifacts/phase2c/FT-P2C-004/risk_note.md"
+  },
+  "status": "pass"
+}

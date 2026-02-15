@@ -11,12 +11,22 @@ hardened:
   divergence_budget_ratio: 0.0
 
 checks:
-  - command: CARGO_TARGET_DIR=target_codex cargo test -p ft-autograd
-  - command: CARGO_TARGET_DIR=target_codex cargo test -p ft-conformance strict_scheduler_conformance_is_green -- --nocapture
-  - command: CARGO_TARGET_DIR=target_codex cargo test -p ft-conformance hardened_scheduler_conformance_is_green -- --nocapture
-  - command: CARGO_TARGET_DIR=target_codex cargo test --workspace
+  - command: rch exec -- env CARGO_TARGET_DIR=target_codex cargo test -p ft-autograd
+  - command: rch exec -- env CARGO_TARGET_DIR=target_codex cargo test -p ft-conformance strict_scheduler_conformance_is_green -- --nocapture
+  - command: rch exec -- env CARGO_TARGET_DIR=target_codex cargo test -p ft-conformance hardened_scheduler_conformance_is_green -- --nocapture
+  - command: rch exec -- env CARGO_TARGET_DIR=target_codex cargo test -p ft-conformance differential_autograd_scheduler_adds_metamorphic_and_adversarial_checks -- --nocapture
+  - command: rch exec -- env CARGO_TARGET_DIR=target_codex cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-004 --output artifacts/phase2c/e2e_forensics/ft-p2c-004.jsonl
+  - command: rch exec -- env CARGO_TARGET_DIR=target_codex cargo test --workspace
 
 artifacts:
   - crates/ft-conformance/fixtures/autograd_scheduler_cases.json
   - artifacts/phase2c/FT-P2C-004/fixture_manifest.json
   - artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json
+  - artifacts/phase2c/conformance/differential_report_v1.json
+  - artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json
+  - artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md
+  - artifacts/phase2c/e2e_forensics/ft-p2c-004.jsonl
+  - artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_004_v1.json
+  - artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_004_v1.json
+  - artifacts/phase2c/FT-P2C-004/e2e_replay_forensics_linkage_v1.json
+  - artifacts/phase2c/FT-P2C-004/e2e_replay_forensics_linkage_v1.md

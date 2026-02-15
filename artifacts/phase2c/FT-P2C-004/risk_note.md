@@ -63,7 +63,9 @@ Required artifact linkage chain:
 2. packet failure triage (`artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_004_v1.json`)
 3. packet failure forensics index (`artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_004_v1.json`)
 4. differential source report (`artifacts/phase2c/conformance/differential_report_v1.json`)
-5. packet contract anchor (`artifacts/phase2c/FT-P2C-004/contract_table.md`)
+5. packet differential slice (`artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json`)
+6. packet differential reconciliation (`artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md`)
+7. packet contract anchor (`artifacts/phase2c/FT-P2C-004/contract_table.md`)
 
 ## 5) Residual Risks and Deferred Controls
 

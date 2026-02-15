@@ -10,9 +10,9 @@
     "strict",
     "hardened"
   ],
-  "total_checks": 146,
+  "total_checks": 180,
   "failed_checks": 0,
-  "allowlisted_drifts": 2,
+  "allowlisted_drifts": 4,
   "blocking_drifts": 0,
   "checks": [
     {
@@ -2589,7 +2589,10 @@
       "expected": "10.000000000000000",
       "evidence_refs": [
         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
-        "artifacts/phase2c/FT-P2C-004/parity_report.json"
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
       ]
     },
     {
@@ -2607,7 +2610,10 @@
       "expected": "7.000000000000000",
       "evidence_refs": [
         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
-        "artifacts/phase2c/FT-P2C-004/parity_report.json"
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
       ]
     },
     {
@@ -2625,7 +2631,73 @@
       "expected": "2.000000000000000",
       "evidence_refs": [
         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
-        "artifacts/phase2c/FT-P2C-004/parity_report.json"
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "hardened",
+      "comparator": "adversarial_hardened_reentrant_overflow_guarded",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
       ]
     },
     {
@@ -2643,6 +2715,306 @@
       "expected": "false",
       "evidence_refs": [
         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md",
+        "artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "-0.750000000000000",
+      "expected": "-0.750000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "1.000000000000000",
+      "expected": "1.000000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "1.500000000000000",
+      "expected": "1.500000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "adversarial_hardened_reentrant_overflow_guarded",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "policy",
+      "status": "allowlisted_drift",
+      "allowlisted": true,
+      "drift_id": "autograd.reentrant_depth_bounded_fallback",
+      "reason_code": "autograd.reentrant_depth_bounded_fallback",
+      "observed": "true",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md",
+        "artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "20.000000000000000",
+      "expected": "20.000000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "9.000000000000000",
+      "expected": "9.000000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "5.000000000000000",
+      "expected": "5.000000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "adversarial_hardened_reentrant_overflow_guarded",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "policy",
+      "status": "allowlisted_drift",
+      "allowlisted": true,
+      "drift_id": "autograd.reentrant_depth_bounded_fallback",
+      "reason_code": "autograd.reentrant_depth_bounded_fallback",
+      "observed": "true",
+      "expected": "false",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md",
         "artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json"
       ]
     },
@@ -2661,7 +3033,10 @@
       "expected": "10.000000000000000",
       "evidence_refs": [
         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
-        "artifacts/phase2c/FT-P2C-004/parity_report.json"
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
       ]
     },
     {
@@ -2679,7 +3054,10 @@
       "expected": "7.000000000000000",
       "evidence_refs": [
         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
-        "artifacts/phase2c/FT-P2C-004/parity_report.json"
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
       ]
     },
     {
@@ -2697,7 +3075,73 @@
       "expected": "2.000000000000000",
       "evidence_refs": [
         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
-        "artifacts/phase2c/FT-P2C-004/parity_report.json"
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "strict",
+      "comparator": "adversarial_strict_reentrant_overflow_rejected",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
       ]
     },
     {
@@ -2714,7 +3158,305 @@
       "observed": "guard_not_triggered",
       "expected": "strict_fail_closed",
       "evidence_refs": [
-        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json"
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "-0.750000000000000",
+      "expected": "-0.750000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "1.000000000000000",
+      "expected": "1.000000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "1.500000000000000",
+      "expected": "1.500000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "adversarial_strict_reentrant_overflow_rejected",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "policy",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "reentrant_policy_match",
+      "observed": "guard_not_triggered",
+      "expected": "strict_fail_closed",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "20.000000000000000",
+      "expected": "20.000000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "9.000000000000000",
+      "expected": "9.000000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "abs_tol",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "5.000000000000000",
+      "expected": "5.000000000000000",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "adversarial_strict_reentrant_overflow_rejected",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "parity_ok",
+      "observed": "true",
+      "expected": "true",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
+      ]
+    },
+    {
+      "suite": "autograd_scheduler",
+      "packet_id": "FT-P2C-004",
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "policy",
+      "status": "pass",
+      "allowlisted": false,
+      "drift_id": null,
+      "reason_code": "reentrant_policy_match",
+      "observed": "guard_not_triggered",
+      "expected": "strict_fail_closed",
+      "evidence_refs": [
+        "crates/ft-conformance/fixtures/autograd_scheduler_cases.json",
+        "artifacts/phase2c/FT-P2C-004/parity_report.json",
+        "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json",
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md"
       ]
     }
   ]

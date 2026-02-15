@@ -1,0 +1,229 @@
+{
+  "schema_version": "ft-p2c-differential-packet-v1",
+  "packet_id": "FT-P2C-004",
+  "source_report": "artifacts/phase2c/conformance/differential_report_v1.json",
+  "generated_at": "2026-02-15T20:20:35Z",
+  "total_checks": 42,
+  "pass_checks": 39,
+  "non_pass_checks": 3,
+  "allowlisted_checks": 3,
+  "blocking_checks": 0,
+  "suite_breakdown": [
+    {
+      "suite": "autograd_scheduler",
+      "count": 42
+    }
+  ],
+  "mode_breakdown": [
+    {
+      "mode": "hardened",
+      "count": 21
+    },
+    {
+      "mode": "strict",
+      "count": 21
+    }
+  ],
+  "status_breakdown": [
+    {
+      "status": "allowlisted_drift",
+      "count": 3
+    },
+    {
+      "status": "pass",
+      "count": 39
+    }
+  ],
+  "comparator_breakdown": [
+    {
+      "comparator": "abs_tol",
+      "count": 18
+    },
+    {
+      "comparator": "adversarial_hardened_reentrant_overflow_guarded",
+      "count": 3
+    },
+    {
+      "comparator": "adversarial_strict_reentrant_overflow_rejected",
+      "count": 3
+    },
+    {
+      "comparator": "metamorphic_scale_relation_local",
+      "count": 6
+    },
+    {
+      "comparator": "metamorphic_scale_relation_oracle",
+      "count": 6
+    },
+    {
+      "comparator": "policy",
+      "count": 6
+    }
+  ],
+  "metamorphic_checks": [
+    {
+      "scenario_id": "autograd_scheduler/hardened:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/hardened:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_local",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "metamorphic_scale_relation_oracle",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    }
+  ],
+  "adversarial_fail_closed_checks": [
+    {
+      "scenario_id": "autograd_scheduler/hardened:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "hardened",
+      "comparator": "adversarial_hardened_reentrant_overflow_guarded",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/hardened:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "hardened",
+      "comparator": "adversarial_hardened_reentrant_overflow_guarded",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/hardened:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "hardened",
+      "comparator": "adversarial_hardened_reentrant_overflow_guarded",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:composite_scheduler_dac",
+      "case_name": "composite_scheduler_dac",
+      "mode": "strict",
+      "comparator": "adversarial_strict_reentrant_overflow_rejected",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:dependency_underflow_probe",
+      "case_name": "dependency_underflow_probe",
+      "mode": "strict",
+      "comparator": "adversarial_strict_reentrant_overflow_rejected",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    },
+    {
+      "scenario_id": "autograd_scheduler/strict:scheduler_chain",
+      "case_name": "scheduler_chain",
+      "mode": "strict",
+      "comparator": "adversarial_strict_reentrant_overflow_rejected",
+      "status": "pass",
+      "reason_code": "parity_ok"
+    }
+  ],
+  "packet_allowlist_reconciliation": {
+    "global_allowlisted_drifts": 4,
+    "packet_allowlisted_drifts": 3,
+    "note": "Global allowlisted drifts include FT-P2C-004 reentrant fallback and other packet-scoped allowlists; this packet slice isolates FT-P2C-004 drift posture."
+  },
+  "risk_linkage": {
+    "threat_ids_covered": [
+      "THR-401",
+      "THR-402",
+      "THR-403",
+      "THR-404",
+      "THR-405"
+    ],
+    "deferred_gap_ids": [
+      "autograd_scheduler:multithread_queue_interleave_gap"
+    ],
+    "risk_note_path": "artifacts/phase2c/FT-P2C-004/risk_note.md"
+  }
+}

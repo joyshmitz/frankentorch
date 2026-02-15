@@ -1464,8 +1464,11 @@ pub fn run_differential_conformance(
         let scheduler_fixture: SchedulerFixtureFile =
             load_fixture(&config.fixture_root.join("autograd_scheduler_cases.json"))?;
         for case in scheduler_fixture.cases {
+            let tolerance = case.tolerance.unwrap_or(1e-12);
+            let scheduler_evidence_refs = autograd_scheduler_evidence_refs();
             let local = evaluate_scheduler_with_tape(&case, mode)?;
-            match query_legacy_scheduler_oracle(config, &case) {
+            let oracle = query_legacy_scheduler_oracle(config, &case);
+            match oracle.as_ref() {
                 Ok(oracle) => {
                     checks.push(compare_abs_tol(
                         &allowlist,
@@ -1477,8 +1480,8 @@ pub fn run_differential_conformance(
                         "autograd.output_mismatch",
                         local.output,
                         oracle.output,
-                        case.tolerance.unwrap_or(1e-12),
-                        autograd_scheduler_evidence_refs(),
+                        tolerance,
+                        scheduler_evidence_refs.clone(),
                     ));
                     checks.push(compare_abs_tol(
                         &allowlist,
@@ -1490,8 +1493,8 @@ pub fn run_differential_conformance(
                         "autograd.x_grad_mismatch",
                         local.x_grad,
                         oracle.x_grad,
-                        case.tolerance.unwrap_or(1e-12),
-                        autograd_scheduler_evidence_refs(),
+                        tolerance,
+                        scheduler_evidence_refs.clone(),
                     ));
                     checks.push(compare_abs_tol(
                         &allowlist,
@@ -1503,8 +1506,8 @@ pub fn run_differential_conformance(
                         "autograd.y_grad_mismatch",
                         local.y_grad,
                         oracle.y_grad,
-                        case.tolerance.unwrap_or(1e-12),
-                        autograd_scheduler_evidence_refs(),
+                        tolerance,
+                        scheduler_evidence_refs.clone(),
                     ));
                 }
                 Err(reason) => checks.push(DifferentialCheck {
@@ -1518,12 +1521,91 @@ pub fn run_differential_conformance(
                     allowlisted: false,
                     drift_id: None,
                     reason_code: "legacy_oracle_unavailable".to_string(),
-                    observed: reason,
+                    observed: reason.clone(),
                     expected: "legacy_oracle_response".to_string(),
                     evidence_refs: vec![
                         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json".to_string(),
                     ],
                 }),
+            }
+
+            let scaled_case = scaled_scheduler_case(&case, 2.0);
+            let scaled_local = evaluate_scheduler_with_tape(&scaled_case, mode)?;
+            checks.push(compare_bool(
+                &allowlist,
+                "autograd_scheduler",
+                "FT-P2C-004",
+                mode,
+                case.name.as_str(),
+                "metamorphic_scale_relation_local",
+                "autograd.metamorphic_scale_relation_local_mismatch",
+                scheduler_scale_relation_holds(&local, &scaled_local, 2.0, tolerance),
+                true,
+                scheduler_evidence_refs.clone(),
+            ));
+
+            if let Ok(base_oracle) = oracle.as_ref() {
+                match query_legacy_scheduler_oracle(config, &scaled_case) {
+                    Ok(scaled_oracle) => checks.push(compare_bool(
+                        &allowlist,
+                        "autograd_scheduler",
+                        "FT-P2C-004",
+                        mode,
+                        case.name.as_str(),
+                        "metamorphic_scale_relation_oracle",
+                        "autograd.metamorphic_scale_relation_oracle_mismatch",
+                        scheduler_scale_relation_holds(base_oracle, &scaled_oracle, 2.0, tolerance),
+                        true,
+                        scheduler_evidence_refs.clone(),
+                    )),
+                    Err(reason) => checks.push(DifferentialCheck {
+                        suite: "autograd_scheduler",
+                        packet_id: "FT-P2C-004",
+                        scenario_id: scenario_id(
+                            "autograd_scheduler",
+                            mode,
+                            scaled_case.name.as_str(),
+                        ),
+                        case_name: scaled_case.name.clone(),
+                        mode: mode_str,
+                        comparator: "metamorphic_oracle.autograd",
+                        status: "oracle_unavailable",
+                        allowlisted: false,
+                        drift_id: None,
+                        reason_code: "legacy_oracle_unavailable".to_string(),
+                        observed: reason,
+                        expected: "legacy_oracle_response".to_string(),
+                        evidence_refs: scheduler_evidence_refs.clone(),
+                    }),
+                }
+            }
+
+            if mode == ExecutionMode::Strict {
+                checks.push(compare_bool(
+                    &allowlist,
+                    "autograd_scheduler",
+                    "FT-P2C-004",
+                    mode,
+                    case.name.as_str(),
+                    "adversarial_strict_reentrant_overflow_rejected",
+                    "autograd.adversarial_strict_reentrant_overflow_accepted",
+                    strict_overflow_rejected(&case)?,
+                    true,
+                    scheduler_evidence_refs.clone(),
+                ));
+            } else {
+                checks.push(compare_bool(
+                    &allowlist,
+                    "autograd_scheduler",
+                    "FT-P2C-004",
+                    mode,
+                    case.name.as_str(),
+                    "adversarial_hardened_reentrant_overflow_guarded",
+                    "autograd.adversarial_hardened_reentrant_overflow_unflagged",
+                    hardened_overflow_guarded(&case)?,
+                    true,
+                    scheduler_evidence_refs.clone(),
+                ));
             }
 
             if mode == ExecutionMode::Hardened && local.reentrant_guard_triggered {
@@ -1569,7 +1651,7 @@ pub fn run_differential_conformance(
                         "hardened_guard_optional"
                     }
                     .to_string(),
-                    evidence_refs: autograd_scheduler_evidence_refs(),
+                    evidence_refs: scheduler_evidence_refs,
                 });
             }
         }
@@ -2559,6 +2641,87 @@ fn evaluate_scheduler_with_tape(
     })
 }
 
+fn scaled_scheduler_case(base: &SchedulerCase, scale: f64) -> SchedulerCase {
+    SchedulerCase {
+        name: format!("{}__scaled_x{scale}", base.name),
+        x: base.x * scale,
+        y: base.y * scale,
+        expected_x_grad: base.expected_x_grad * scale,
+        expected_y_grad: base.expected_y_grad * scale,
+        expected_execution_order: base.expected_execution_order.clone(),
+        tolerance: base.tolerance,
+    }
+}
+
+fn scheduler_scale_relation_holds(
+    base: &LegacyUnaryGradObservation,
+    scaled: &LegacyUnaryGradObservation,
+    scale: f64,
+    tolerance: f64,
+) -> bool {
+    within(scaled.output, base.output * scale * scale, tolerance)
+        && within(scaled.x_grad, base.x_grad * scale, tolerance)
+        && within(scaled.y_grad, base.y_grad * scale, tolerance)
+}
+
+fn strict_overflow_rejected(case: &SchedulerCase) -> Result<bool, String> {
+    let mut tape = Tape::new();
+    let x = tape.leaf(case.x, true);
+    let y = tape.leaf(case.y, true);
+    let (sum, _) = tape
+        .add(x, y, ExecutionMode::Strict)
+        .map_err(|error| format!("strict overflow probe '{}' add failed: {error}", case.name))?;
+    let (out, _) = tape
+        .mul(sum, x, ExecutionMode::Strict)
+        .map_err(|error| format!("strict overflow probe '{}' mul failed: {error}", case.name))?;
+    let overflow = tape.backward_with_options(
+        out,
+        BackwardOptions {
+            max_reentrant_depth: 1,
+            current_reentrant_depth: 2,
+            policy: ReentrantPolicy::StrictFail,
+        },
+    );
+    Ok(matches!(
+        overflow,
+        Err(AutogradError::ReentrantDepthExceeded { .. })
+    ))
+}
+
+fn hardened_overflow_guarded(case: &SchedulerCase) -> Result<bool, String> {
+    let mut tape = Tape::new();
+    let x = tape.leaf(case.x, true);
+    let y = tape.leaf(case.y, true);
+    let (sum, _) = tape.add(x, y, ExecutionMode::Hardened).map_err(|error| {
+        format!(
+            "hardened overflow probe '{}' add failed: {error}",
+            case.name
+        )
+    })?;
+    let (out, _) = tape.mul(sum, x, ExecutionMode::Hardened).map_err(|error| {
+        format!(
+            "hardened overflow probe '{}' mul failed: {error}",
+            case.name
+        )
+    })?;
+    let report = tape
+        .backward_with_options(
+            out,
+            BackwardOptions {
+                max_reentrant_depth: 1,
+                current_reentrant_depth: 2,
+                policy: ReentrantPolicy::HardenedBoundedFallback,
+            },
+        )
+        .map_err(|error| {
+            format!(
+                "hardened overflow probe '{}' backward failed unexpectedly: {error}",
+                case.name
+            )
+        })?;
+    Ok(report.telemetry.reentrant_guard_triggered && report.telemetry.hardened_fallback_used)
+}
+
 fn query_legacy_scalar_oracle(
     config: &HarnessConfig,
     case: &ScalarCase,
@@ -2942,6 +3105,8 @@ fn autograd_scheduler_evidence_refs() -> Vec<String> {
         "crates/ft-conformance/fixtures/autograd_scheduler_cases.json".to_string(),
         "artifacts/phase2c/FT-P2C-004/parity_report.json".to_string(),
         "artifacts/phase2c/FT-P2C-004/unit_property_quality_report_v1.json".to_string(),
+        "artifacts/phase2c/FT-P2C-004/differential_packet_report_v1.json".to_string(),
+        "artifacts/phase2c/FT-P2C-004/differential_reconciliation_v1.md".to_string(),
     ]
 }
 
@@ -3266,6 +3431,44 @@ mod tests {
     }
 
     #[test]
+    fn e2e_matrix_packet_filter_includes_autograd_scheduler_packet_entries() {
+        let cfg = HarnessConfig::default_paths();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let output_path = std::env::temp_dir().join(format!(
+            "ft_conformance_e2e_packet_filter_autograd_scheduler_{}_{}.jsonl",
+            std::process::id(),
+            now
+        ));
+
+        let summary = emit_e2e_forensics_matrix_filtered(
+            &cfg,
+            output_path.as_path(),
+            &[ExecutionMode::Strict, ExecutionMode::Hardened],
+            Some("FT-P2C-004"),
+        )
+        .expect("packet-filtered e2e matrix should emit logs");
+
+        assert_eq!(summary.log_entries, 6);
+        let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
+        for line in raw.lines() {
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("jsonl line should be valid json");
+            assert_eq!(
+                value.get("packet_id").and_then(serde_json::Value::as_str),
+                Some("FT-P2C-004")
+            );
+            assert_eq!(
+                value.get("suite_id").and_then(serde_json::Value::as_str),
+                Some("autograd_scheduler")
+            );
+        }
+
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
     fn microbench_produces_percentiles() {
         let report = run_scalar_microbench(10, ExecutionMode::Strict);
         eprintln!(
@@ -3390,6 +3593,35 @@ mod tests {
             check.suite == "op_schema"
                 && check.case_name == "dispatch_metadata_incompatible"
                 && check.comparator == "adversarial_dispatch_metadata_rejected"
+        }));
+    }
+
+    #[test]
+    fn differential_autograd_scheduler_adds_metamorphic_and_adversarial_checks() {
+        let cfg = HarnessConfig::default_paths();
+        let report =
+            run_differential_conformance(&cfg, &[ExecutionMode::Strict, ExecutionMode::Hardened])
+                .expect("differential report should run");
+
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "autograd_scheduler"
+                && check.comparator == "metamorphic_scale_relation_local"
+        }));
+        if report.oracle.available {
+            assert!(report.checks.iter().any(|check| {
+                check.suite == "autograd_scheduler"
+                    && check.comparator == "metamorphic_scale_relation_oracle"
+            }));
+        }
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "autograd_scheduler"
+                && check.mode == "strict"
+                && check.comparator == "adversarial_strict_reentrant_overflow_rejected"
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "autograd_scheduler"
+                && check.mode == "hardened"
+                && check.comparator == "adversarial_hardened_reentrant_overflow_guarded"
         }));
     }
 
