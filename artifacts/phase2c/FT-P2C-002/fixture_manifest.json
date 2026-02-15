@@ -48,6 +48,38 @@
     "dispatch_key/hardened:strict_cpu_route": 7720564810062027209,
     "dispatch_key/hardened:composite_route_mode_split": 2146157517907283417
   },
+  "differential_validation": {
+    "bead_id": "bd-3v0.13.6",
+    "report_path": "artifacts/phase2c/conformance/differential_report_v1.json",
+    "required_dispatch_comparators": [
+      "abs_tol",
+      "mode_split_policy",
+      "metamorphic_commutative_local",
+      "adversarial_unknown_key_rejected",
+      "adversarial_autograd_without_cpu_rejected"
+    ],
+    "regression_tests": [
+      "cargo test -p ft-dispatch strict_mode_rejects_composite_fallback -- --nocapture",
+      "cargo test -p ft-dispatch hardened_mode_allows_composite_fallback -- --nocapture",
+      "cargo test -p ft-dispatch validate_requires_cpu_for_autograd -- --nocapture",
+      "cargo test -p ft-dispatch unknown_bits_fail_closed -- --nocapture",
+      "cargo test -p ft-conformance differential_dispatch_adds_metamorphic_and_adversarial_checks -- --nocapture"
+    ],
+    "e2e_scenario_hooks": [
+      "dispatch_key/strict:strict_autograd_route",
+      "dispatch_key/strict:strict_cpu_route",
+      "dispatch_key/strict:composite_route_mode_split",
+      "dispatch_key/hardened:strict_autograd_route",
+      "dispatch_key/hardened:strict_cpu_route",
+      "dispatch_key/hardened:composite_route_mode_split"
+    ],
+    "report_refresh_status": {
+      "as_of_utc": "2026-02-15T04:49:23Z",
+      "command": "rch exec -- cargo run -p ft-conformance --bin run_differential_report -- --mode both --output artifacts/phase2c/conformance/differential_report_v1.json",
+      "status": "completed",
+      "note": "FT-P2C-002 metamorphic/adversarial checks are present in refreshed report; oracle-backed checks are still oracle_unavailable on worker due missing Python torch."
+    }
+  },
   "deferred_seed_candidates": {
     "dispatch_key/strict:unknown_bits_mask_candidate": 201313001,
     "dispatch_key/hardened:unknown_bits_mask_candidate": 201313002,
