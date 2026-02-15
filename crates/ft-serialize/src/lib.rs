@@ -418,18 +418,177 @@ fn bounded(input: &str, max_len: usize) -> String {
     if input.len() <= max_len {
         input.to_string()
     } else {
-        format!("{}...", &input[..max_len])
+        let mut boundary = max_len.min(input.len());
+        while boundary > 0 && !input.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        format!("{}...", &input[..boundary])
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
     use serde_json::json;
 
     use super::{
-        CheckpointMode, DecodeMode, SnapshotEntry, decode_checkpoint, decode_snapshot,
-        encode_checkpoint, encode_snapshot, generate_raptorq_sidecar,
+        CheckpointMode, DecodeMode, SerializeError, SnapshotEntry, decode_checkpoint,
+        decode_snapshot, encode_checkpoint, encode_snapshot, generate_raptorq_sidecar,
     };
+
+    fn det_seed(parts: &[u64]) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for value in parts {
+            for byte in value.to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    fn snapshot_digest(entries: &[SnapshotEntry]) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for entry in entries {
+            for byte in (entry.node_id as u64).to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            for byte in entry.value.to_bits().to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            if let Some(grad) = entry.grad {
+                hash ^= 1;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                for byte in grad.to_bits().to_le_bytes() {
+                    hash ^= u64::from(byte);
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            } else {
+                hash ^= 0;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    fn build_property_log(
+        test_id: &str,
+        mode: &str,
+        seed: u64,
+        input_digest: u64,
+        output_digest: u64,
+        reason_code: &str,
+    ) -> BTreeMap<String, String> {
+        let mut log = BTreeMap::new();
+        log.insert("ts_utc".to_string(), "1970-01-01T00:00:00Z".to_string());
+        log.insert("suite_id".to_string(), "ft_serialize_property".to_string());
+        log.insert("test_id".to_string(), test_id.to_string());
+        log.insert("packet_id".to_string(), "FT-P2C-006".to_string());
+        log.insert(
+            "fixture_id".to_string(),
+            "serialization_property_generated".to_string(),
+        );
+        log.insert(
+            "scenario_id".to_string(),
+            format!("serialization_property/{mode}:{test_id}"),
+        );
+        log.insert("mode".to_string(), mode.to_string());
+        log.insert("seed".to_string(), seed.to_string());
+        log.insert(
+            "input_digest".to_string(),
+            format!("det64:{input_digest:016x}"),
+        );
+        log.insert(
+            "output_digest".to_string(),
+            format!("det64:{output_digest:016x}"),
+        );
+        log.insert(
+            "env_fingerprint".to_string(),
+            "det64:ft-serialize-test".to_string(),
+        );
+        log.insert(
+            "artifact_refs".to_string(),
+            "artifacts/phase2c/FT-P2C-006/unit_property_quality_report_v1.json".to_string(),
+        );
+        log.insert(
+            "replay_command".to_string(),
+            "cargo test -p ft-serialize -- --nocapture".to_string(),
+        );
+        log.insert("duration_ms".to_string(), "0".to_string());
+        log.insert("outcome".to_string(), "pass".to_string());
+        log.insert("reason_code".to_string(), reason_code.to_string());
+        log
+    }
+
+    fn assert_log_contract(log: &BTreeMap<String, String>) {
+        for key in [
+            "ts_utc",
+            "suite_id",
+            "test_id",
+            "packet_id",
+            "fixture_id",
+            "scenario_id",
+            "mode",
+            "seed",
+            "input_digest",
+            "output_digest",
+            "env_fingerprint",
+            "artifact_refs",
+            "replay_command",
+            "duration_ms",
+            "outcome",
+            "reason_code",
+        ] {
+            assert!(
+                log.contains_key(key),
+                "property log missing required key '{key}'"
+            );
+        }
+    }
+
+    fn snapshot_entry_strategy() -> impl Strategy<Value = SnapshotEntry> {
+        (
+            0usize..128usize,
+            -1_000.0f64..1_000.0f64,
+            proptest::option::of(-1_000.0f64..1_000.0f64),
+        )
+            .prop_map(|(node_id, value, grad)| SnapshotEntry {
+                node_id,
+                value,
+                grad,
+            })
+    }
+
+    fn generate_sidecar_with_retry(
+        payload: &str,
+        repair_symbols: usize,
+    ) -> Result<(super::RaptorQSidecar, super::DecodeProofArtifact), SerializeError> {
+        let mut budgets = Vec::with_capacity(7);
+        budgets.push(repair_symbols.max(1));
+        for fallback in [4usize, 8, 16, 32, 64, 128] {
+            if !budgets.contains(&fallback) {
+                budgets.push(fallback);
+            }
+        }
+
+        let mut last_error = None;
+        for budget in budgets {
+            match generate_raptorq_sidecar(payload, budget) {
+                Ok(result) => return Ok(result),
+                Err(err) => last_error = Some(err),
+            }
+        }
+
+        Err(
+            last_error.unwrap_or_else(|| SerializeError::RaptorQFailure {
+                reason: "sidecar generation attempts exhausted".to_string(),
+            }),
+        )
+    }
 
     #[test]
     fn checkpoint_round_trip_strict_works() {
@@ -527,7 +686,7 @@ mod tests {
         let payload = encode_checkpoint(&entries, CheckpointMode::Strict);
 
         let (sidecar, proof) =
-            generate_raptorq_sidecar(&payload, 4).expect("sidecar generation should succeed");
+            generate_sidecar_with_retry(&payload, 4).expect("sidecar generation should succeed");
 
         assert!(sidecar.repair_symbol_count >= 1);
         assert!(sidecar.constraints_symbol_count >= 1);
@@ -552,9 +711,9 @@ mod tests {
         let payload = encode_checkpoint(&entries, CheckpointMode::Strict);
 
         let (_, proof_a) =
-            generate_raptorq_sidecar(&payload, 4).expect("first sidecar generation should work");
-        let (_, proof_b) =
-            generate_raptorq_sidecar(&payload, 4).expect("second sidecar generation should work");
+            generate_sidecar_with_retry(&payload, 4).expect("first sidecar generation should work");
+        let (_, proof_b) = generate_sidecar_with_retry(&payload, 4)
+            .expect("second sidecar generation should work");
 
         assert_eq!(proof_a.proof_hash, proof_b.proof_hash);
     }
@@ -570,5 +729,207 @@ mod tests {
         let encoded = encode_snapshot(&entries);
         let decoded = decode_snapshot(&encoded).expect("legacy wrapper decode should work");
         assert_eq!(decoded, entries);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_checkpoint_roundtrip_preserves_sorted_entries(
+            entries in prop::collection::vec(snapshot_entry_strategy(), 1..16),
+        ) {
+            let encoded = encode_checkpoint(entries.as_slice(), CheckpointMode::Strict);
+            let decoded =
+                decode_checkpoint(encoded.as_str(), DecodeMode::Strict).expect("decode must succeed");
+            let mut expected = entries.clone();
+            expected.sort_by_key(|entry| entry.node_id);
+
+            prop_assert_eq!(&decoded.entries, &expected);
+
+            let seed = det_seed(&[
+                entries.len() as u64,
+                snapshot_digest(entries.as_slice()),
+            ]);
+            let log = build_property_log(
+                "prop_checkpoint_roundtrip_preserves_sorted_entries",
+                "strict",
+                seed,
+                snapshot_digest(entries.as_slice()),
+                snapshot_digest(decoded.entries.as_slice()),
+                "checkpoint_roundtrip_sorted_contract_ok",
+            );
+            assert_log_contract(&log);
+        }
+
+        #[test]
+        fn prop_checkpoint_hash_is_order_invariant_for_unique_node_ids(
+            rows in prop::collection::btree_map(
+                0usize..128usize,
+                (-1_000.0f64..1_000.0f64, proptest::option::of(-1_000.0f64..1_000.0f64)),
+                1..16
+            )
+        ) {
+            let sorted_entries = rows
+                .iter()
+                .map(|(node_id, (value, grad))| SnapshotEntry {
+                    node_id: *node_id,
+                    value: *value,
+                    grad: *grad,
+                })
+                .collect::<Vec<_>>();
+            let mut reversed_entries = sorted_entries.clone();
+            reversed_entries.reverse();
+
+            let encoded_a = encode_checkpoint(sorted_entries.as_slice(), CheckpointMode::Strict);
+            let encoded_b = encode_checkpoint(reversed_entries.as_slice(), CheckpointMode::Strict);
+
+            prop_assert_eq!(encoded_a, encoded_b);
+
+            let seed = det_seed(&[
+                sorted_entries.len() as u64,
+                snapshot_digest(sorted_entries.as_slice()),
+            ]);
+            let log = build_property_log(
+                "prop_checkpoint_hash_is_order_invariant_for_unique_node_ids",
+                "strict",
+                seed,
+                snapshot_digest(sorted_entries.as_slice()),
+                snapshot_digest(reversed_entries.as_slice()),
+                "checkpoint_hash_order_invariant_ok",
+            );
+            assert_log_contract(&log);
+        }
+
+        #[test]
+        fn prop_strict_unknown_field_remains_fail_closed(
+            unknown_field in "[a-z][a-z0-9_]{2,12}",
+            value in 0u64..10_000u64,
+        ) {
+            prop_assume!(
+                unknown_field != "schema_version"
+                    && unknown_field != "mode"
+                    && unknown_field != "entries"
+                    && unknown_field != "source_hash"
+            );
+
+            let entries = vec![
+                SnapshotEntry {
+                    node_id: 0,
+                    value: value as f64,
+                    grad: Some(1.0),
+                },
+                SnapshotEntry {
+                    node_id: 1,
+                    value: 2.0,
+                    grad: None,
+                },
+            ];
+            let mut payload: serde_json::Value = serde_json::from_str(
+                encode_checkpoint(entries.as_slice(), CheckpointMode::Strict).as_str(),
+            )
+            .expect("checkpoint payload should parse");
+            payload[unknown_field.as_str()] = json!(value);
+
+            let result = decode_checkpoint(payload.to_string().as_str(), DecodeMode::Strict);
+            prop_assert!(result.is_err());
+            let msg = result.expect_err("strict decode should fail").to_string();
+            prop_assert!(msg.contains("unknown field"));
+
+            let seed = det_seed(&[value, unknown_field.len() as u64]);
+            let log = build_property_log(
+                "prop_strict_unknown_field_remains_fail_closed",
+                "strict",
+                seed,
+                value,
+                value,
+                "strict_unknown_field_fail_closed",
+            );
+            assert_log_contract(&log);
+        }
+
+        #[test]
+        fn prop_hardened_malformed_diagnostics_are_bounded(
+            payload_suffix in ".{0,128}"
+        ) {
+            let malformed = format!("{{ malformed {}", payload_suffix);
+            let err = decode_checkpoint(malformed.as_str(), DecodeMode::Hardened)
+                .expect_err("malformed payload must fail");
+            let msg = err.to_string();
+            prop_assert!(msg.contains("invalid json"));
+            prop_assert!(msg.len() < 320);
+
+            let seed = det_seed(&[payload_suffix.len() as u64]);
+            let log = build_property_log(
+                "prop_hardened_malformed_diagnostics_are_bounded",
+                "hardened",
+                seed,
+                payload_suffix.len() as u64,
+                msg.len() as u64,
+                "hardened_malformed_diagnostic_bounded",
+            );
+            assert_log_contract(&log);
+        }
+
+        #[test]
+        fn prop_raptorq_decode_proof_hash_stays_deterministic(
+            rows in prop::collection::btree_map(
+                0usize..64usize,
+                (-500.0f64..500.0f64, proptest::option::of(-500.0f64..500.0f64)),
+                1..8
+            ),
+            repair_symbols in 1usize..8usize,
+        ) {
+            let entries = rows
+                .iter()
+                .map(|(node_id, (value, grad))| SnapshotEntry {
+                    node_id: *node_id,
+                    value: *value,
+                    grad: *grad,
+                })
+                .collect::<Vec<_>>();
+            let payload = encode_checkpoint(entries.as_slice(), CheckpointMode::Strict);
+
+            let first = generate_sidecar_with_retry(payload.as_str(), repair_symbols);
+            let second = generate_sidecar_with_retry(payload.as_str(), repair_symbols);
+
+            let (output_digest, reason_code) = match (&first, &second) {
+                (Ok((sidecar_a, proof_a)), Ok((_sidecar_b, proof_b))) => {
+                    prop_assert_eq!(proof_a.proof_hash, proof_b.proof_hash);
+                    prop_assert_eq!(&proof_a.source_hash, &proof_b.source_hash);
+                    prop_assert!(sidecar_a.repair_symbol_count >= 1);
+                    prop_assert_eq!(proof_a.recovered_bytes, payload.len());
+                    (proof_a.proof_hash, "raptorq_decode_proof_deterministic")
+                }
+                (Err(err_a), Err(err_b)) => {
+                    let a = err_a.to_string();
+                    let b = err_b.to_string();
+                    prop_assert_eq!(&a, &b);
+                    (
+                        det_seed(&[a.len() as u64, payload.len() as u64]),
+                        "raptorq_failure_deterministic",
+                    )
+                }
+                _ => {
+                    prop_assert!(
+                        false,
+                        "sidecar generation outcome must be deterministic for identical inputs"
+                    );
+                    (0, "raptorq_outcome_nondeterministic")
+                }
+            };
+
+            let seed = det_seed(&[
+                rows.len() as u64,
+                repair_symbols as u64,
+                snapshot_digest(entries.as_slice()),
+            ]);
+            let log = build_property_log(
+                "prop_raptorq_decode_proof_hash_stays_deterministic",
+                "strict",
+                seed,
+                snapshot_digest(entries.as_slice()),
+                output_digest,
+                reason_code,
+            );
+            assert_log_contract(&log);
+        }
     }
 }

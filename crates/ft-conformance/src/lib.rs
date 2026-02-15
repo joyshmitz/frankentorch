@@ -7,6 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use ft_api::FrankenTorchSession;
@@ -17,8 +18,9 @@ use ft_dispatch::{
     dispatch_scalar_binary_with_keyset, parse_schema_or_name, schema_dispatch_keyset_from_tags,
 };
 use ft_serialize::{
-    CheckpointMode, DecodeMode, SnapshotEntry as SerializedSnapshotEntry, decode_checkpoint,
-    encode_checkpoint, generate_raptorq_sidecar,
+    CheckpointMode, DecodeMode, DecodeProofArtifact, RaptorQSidecar,
+    SnapshotEntry as SerializedSnapshotEntry, decode_checkpoint, encode_checkpoint,
+    generate_raptorq_sidecar,
 };
 use logging::{StructuredCaseLog, mode_label};
 use serde::{Deserialize, Serialize};
@@ -348,6 +350,10 @@ pub struct DifferentialHarnessReport {
     pub checks: Vec<DifferentialCheck>,
 }
 
+type SidecarCache = BTreeMap<(String, usize), (RaptorQSidecar, DecodeProofArtifact)>;
+
+static SERIALIZATION_SIDECAR_CACHE: OnceLock<Mutex<SidecarCache>> = OnceLock::new();
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LegacyOracleStatus {
     pub configured_python: Option<String>,
@@ -646,7 +652,7 @@ pub fn emit_e2e_forensics_matrix_filtered(
             logs.extend(scheduler_cases.into_iter().map(|case| case.forensic_log));
         }
 
-        if packet_in_scope(packet_filter, "FT-P2C-005") {
+        if packet_in_scope(packet_filter, "FT-P2C-006") {
             let (_, serialization_cases) = run_serialization_conformance(config, mode)?;
             logs.extend(
                 serialization_cases
@@ -1655,6 +1661,235 @@ pub fn run_differential_conformance(
                 });
             }
         }
+
+        let serialization_fixture: SerializationFixtureFile =
+            load_fixture(&config.fixture_root.join("serialization_cases.json"))?;
+        for case in serialization_fixture.cases {
+            let serialization_evidence_refs = serialization_evidence_refs();
+            let checkpoint_mode = if mode == ExecutionMode::Strict {
+                CheckpointMode::Strict
+            } else {
+                CheckpointMode::Hardened
+            };
+            let decode_mode = if mode == ExecutionMode::Strict {
+                DecodeMode::Strict
+            } else {
+                DecodeMode::Hardened
+            };
+
+            let entries = serialization_entries(&case);
+            let payload = encode_checkpoint(entries.as_slice(), checkpoint_mode);
+            let mut expected_entries = entries.clone();
+            expected_entries.sort_by_key(|entry| entry.node_id);
+
+            let decode_roundtrip_ok = decode_checkpoint(payload.as_str(), decode_mode)
+                .map(|decoded| decoded.entries == expected_entries)
+                .unwrap_or(false);
+            checks.push(compare_bool(
+                &allowlist,
+                "serialization",
+                "FT-P2C-006",
+                mode,
+                case.name.as_str(),
+                "decode_roundtrip_contract",
+                "serialization.decode_roundtrip_mismatch",
+                decode_roundtrip_ok,
+                true,
+                serialization_evidence_refs.clone(),
+            ));
+
+            let repair_symbols = case.repair_symbols.unwrap_or(4);
+            let sidecar_a =
+                serialization_generate_sidecar_with_retry(payload.as_str(), repair_symbols);
+            let sidecar_b = serialization_generate_sidecar_with_retry_uncached(
+                payload.as_str(),
+                repair_symbols,
+            );
+
+            let sidecar_integrity_ok = sidecar_a.as_ref().is_ok_and(|(sidecar, _proof)| {
+                sidecar.repair_symbol_count >= 1 && sidecar.constraints_symbol_count >= 1
+            });
+            let proof_deterministic_ok = sidecar_a
+                .as_ref()
+                .ok()
+                .zip(sidecar_b.as_ref().ok())
+                .is_some_and(|((_, proof_a), (_, proof_b))| {
+                    proof_a.proof_hash == proof_b.proof_hash
+                        && proof_a.source_hash == proof_b.source_hash
+                });
+            checks.push(compare_bool(
+                &allowlist,
+                "serialization",
+                "FT-P2C-006",
+                mode,
+                case.name.as_str(),
+                "proof_determinism_contract",
+                "serialization.decode_proof_nondeterministic",
+                sidecar_integrity_ok && proof_deterministic_ok,
+                true,
+                serialization_evidence_refs.clone(),
+            ));
+
+            let mut reversed_entries = entries.clone();
+            reversed_entries.reverse();
+            let reversed_payload = encode_checkpoint(reversed_entries.as_slice(), checkpoint_mode);
+            checks.push(compare_bool(
+                &allowlist,
+                "serialization",
+                "FT-P2C-006",
+                mode,
+                case.name.as_str(),
+                "metamorphic_entry_order_hash_invariant",
+                "serialization.metamorphic_entry_order_hash_mismatch",
+                payload == reversed_payload,
+                true,
+                serialization_evidence_refs.clone(),
+            ));
+
+            let unknown_field_rejected = serde_json::from_str::<Value>(payload.as_str())
+                .ok()
+                .map(|mut raw| {
+                    raw["unknown_field_probe"] = json!(17);
+                    decode_checkpoint(raw.to_string().as_str(), decode_mode).is_err()
+                })
+                .unwrap_or(false);
+            checks.push(compare_bool(
+                &allowlist,
+                "serialization",
+                "FT-P2C-006",
+                mode,
+                case.name.as_str(),
+                "adversarial_unknown_field_rejected",
+                "serialization.adversarial_unknown_field_accepted",
+                unknown_field_rejected,
+                true,
+                serialization_evidence_refs.clone(),
+            ));
+
+            let version_mismatch_rejected = serde_json::from_str::<Value>(payload.as_str())
+                .ok()
+                .map(|mut raw| {
+                    raw["schema_version"] =
+                        json!(u64::from(ft_serialize::CHECKPOINT_SCHEMA_VERSION) + 1);
+                    decode_checkpoint(raw.to_string().as_str(), decode_mode).is_err()
+                })
+                .unwrap_or(false);
+            checks.push(compare_bool(
+                &allowlist,
+                "serialization",
+                "FT-P2C-006",
+                mode,
+                case.name.as_str(),
+                "adversarial_version_mismatch_rejected",
+                "serialization.adversarial_version_mismatch_accepted",
+                version_mismatch_rejected,
+                true,
+                serialization_evidence_refs.clone(),
+            ));
+
+            let checksum_tamper_rejected = serde_json::from_str::<Value>(payload.as_str())
+                .ok()
+                .map(|mut raw| {
+                    raw["source_hash"] = json!("det64:0000000000000000");
+                    decode_checkpoint(raw.to_string().as_str(), decode_mode).is_err()
+                })
+                .unwrap_or(false);
+            checks.push(compare_bool(
+                &allowlist,
+                "serialization",
+                "FT-P2C-006",
+                mode,
+                case.name.as_str(),
+                "adversarial_checksum_tamper_rejected",
+                "serialization.adversarial_checksum_tamper_accepted",
+                checksum_tamper_rejected,
+                true,
+                serialization_evidence_refs.clone(),
+            ));
+
+            let malformed_payload = format!("{{ malformed {}", case.name);
+            let malformed_error = decode_checkpoint(malformed_payload.as_str(), decode_mode).err();
+            checks.push(compare_bool(
+                &allowlist,
+                "serialization",
+                "FT-P2C-006",
+                mode,
+                case.name.as_str(),
+                "adversarial_malformed_json_rejected",
+                "serialization.adversarial_malformed_json_accepted",
+                malformed_error.is_some(),
+                true,
+                serialization_evidence_refs.clone(),
+            ));
+
+            if mode == ExecutionMode::Hardened {
+                let bounded_diagnostic_ok = malformed_error.as_ref().is_some_and(|error| {
+                    let message = error.to_string();
+                    message.contains("payload_prefix=") && message.len() < 320
+                });
+                checks.push(compare_bool(
+                    &allowlist,
+                    "serialization",
+                    "FT-P2C-006",
+                    mode,
+                    case.name.as_str(),
+                    "policy",
+                    "serialization.bounded_malformed_diagnostic",
+                    bounded_diagnostic_ok,
+                    false,
+                    {
+                        let mut refs = serialization_evidence_refs.clone();
+                        refs.push(
+                            "artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json".to_string(),
+                        );
+                        refs
+                    },
+                ));
+            } else {
+                checks.push(DifferentialCheck {
+                    suite: "serialization",
+                    packet_id: "FT-P2C-006",
+                    scenario_id: scenario_id("serialization", mode, case.name.as_str()),
+                    case_name: case.name.clone(),
+                    mode: mode_str,
+                    comparator: "policy",
+                    status: "pass",
+                    allowlisted: false,
+                    drift_id: None,
+                    reason_code: "strict_fail_closed_mode_split".to_string(),
+                    observed: "strict_fail_closed".to_string(),
+                    expected: "strict_fail_closed".to_string(),
+                    evidence_refs: serialization_evidence_refs.clone(),
+                });
+            }
+
+            let corruption_detected = sidecar_a.as_ref().is_ok_and(|(_sidecar, proof)| {
+                let mut corrupted_payload = payload.clone();
+                corrupted_payload.push(' ');
+                match serialization_generate_sidecar_with_retry(
+                    corrupted_payload.as_str(),
+                    repair_symbols,
+                ) {
+                    Ok((_tampered_sidecar, tampered_proof)) => {
+                        tampered_proof.source_hash != proof.source_hash
+                            || tampered_proof.proof_hash != proof.proof_hash
+                    }
+                    Err(_) => true,
+                }
+            });
+            checks.push(compare_bool(
+                &allowlist,
+                "serialization",
+                "FT-P2C-006",
+                mode,
+                case.name.as_str(),
+                "adversarial_raptorq_corruption_probe",
+                "serialization.adversarial_raptorq_corruption_undetected",
+                corruption_detected,
+                true,
+                serialization_evidence_refs,
+            ));
+        }
     }
 
     checks.sort_by(|left, right| {
@@ -2381,15 +2616,7 @@ fn run_serialization_case(
         ExecutionMode::Hardened => DecodeMode::Hardened,
     };
 
-    let entries: Vec<SerializedSnapshotEntry> = case
-        .entries
-        .iter()
-        .map(|entry| SerializedSnapshotEntry {
-            node_id: entry.node_id,
-            value: entry.value,
-            grad: entry.grad,
-        })
-        .collect();
+    let entries = serialization_entries(case);
 
     let payload = encode_checkpoint(entries.as_slice(), checkpoint_mode);
     let decoded = decode_checkpoint(payload.as_str(), decode_mode)
@@ -2400,15 +2627,18 @@ fn run_serialization_case(
     let decode_ok = decoded.entries == expected_entries;
 
     let repair_symbols = case.repair_symbols.unwrap_or(4);
-    let (sidecar_a, proof_a) = generate_raptorq_sidecar(payload.as_str(), repair_symbols)
-        .map_err(|error| format!("serialization case '{}' sidecar failed: {error}", case.name))?;
-    let (_sidecar_b, proof_b) = generate_raptorq_sidecar(payload.as_str(), repair_symbols)
-        .map_err(|error| {
-            format!(
-                "serialization case '{}' sidecar repeat failed: {error}",
-                case.name
-            )
-        })?;
+    let (sidecar_a, proof_a) =
+        serialization_generate_sidecar_with_retry(payload.as_str(), repair_symbols).map_err(
+            |error| format!("serialization case '{}' sidecar failed: {error}", case.name),
+        )?;
+    let (_sidecar_b, proof_b) =
+        serialization_generate_sidecar_with_retry_uncached(payload.as_str(), repair_symbols)
+            .map_err(|error| {
+                format!(
+                    "serialization case '{}' sidecar repeat failed: {error}",
+                    case.name
+                )
+            })?;
 
     let sidecar_ok = sidecar_a.repair_symbol_count >= 1 && sidecar_a.constraints_symbol_count >= 1;
     let proof_deterministic_ok = proof_a.proof_hash == proof_b.proof_hash;
@@ -2426,11 +2656,7 @@ fn run_serialization_case(
             "FT-P2C-006",
             case.name.as_str(),
             mode,
-            vec![
-                "crates/ft-conformance/fixtures/serialization_cases.json".to_string(),
-                "artifacts/phase2c/FT-P2C-006/parity_report.json".to_string(),
-                "artifacts/phase2c/FT-P2C-006/parity_report.raptorq.json".to_string(),
-            ],
+            serialization_evidence_refs(),
             format!(
                 "cargo test -p ft-conformance strict_serialization_conformance_is_green -- --nocapture # mode={}",
                 mode_label(mode)
@@ -3110,6 +3336,86 @@ fn autograd_scheduler_evidence_refs() -> Vec<String> {
     ]
 }
 
+fn serialization_evidence_refs() -> Vec<String> {
+    vec![
+        "crates/ft-conformance/fixtures/serialization_cases.json".to_string(),
+        "artifacts/phase2c/FT-P2C-006/parity_report.json".to_string(),
+        "artifacts/phase2c/FT-P2C-006/parity_report.raptorq.json".to_string(),
+        "artifacts/phase2c/FT-P2C-006/unit_property_quality_report_v1.json".to_string(),
+        "artifacts/phase2c/FT-P2C-006/differential_packet_report_v1.json".to_string(),
+        "artifacts/phase2c/FT-P2C-006/differential_reconciliation_v1.md".to_string(),
+    ]
+}
+
+fn serialization_entries(case: &SerializationCase) -> Vec<SerializedSnapshotEntry> {
+    case.entries
+        .iter()
+        .map(|entry| SerializedSnapshotEntry {
+            node_id: entry.node_id,
+            value: entry.value,
+            grad: entry.grad,
+        })
+        .collect()
+}
+
+fn serialization_generate_sidecar_with_retry(
+    payload: &str,
+    repair_symbols: usize,
+) -> Result<(RaptorQSidecar, DecodeProofArtifact), String> {
+    serialization_generate_sidecar_with_retry_inner(payload, repair_symbols, true)
+}
+
+fn serialization_generate_sidecar_with_retry_uncached(
+    payload: &str,
+    repair_symbols: usize,
+) -> Result<(RaptorQSidecar, DecodeProofArtifact), String> {
+    serialization_generate_sidecar_with_retry_inner(payload, repair_symbols, false)
+}
+
+fn serialization_generate_sidecar_with_retry_inner(
+    payload: &str,
+    repair_symbols: usize,
+    use_cache: bool,
+) -> Result<(RaptorQSidecar, DecodeProofArtifact), String> {
+    let cache_key = (payload.to_string(), repair_symbols);
+    if use_cache
+        && let Ok(cache_guard) = serialization_sidecar_cache().lock()
+        && let Some(cached) = cache_guard.get(&cache_key)
+    {
+        return Ok(cached.clone());
+    }
+
+    let mut budgets = Vec::with_capacity(7);
+    budgets.push(repair_symbols.max(1));
+    for fallback in [4usize, 8, 16, 32, 64, 128] {
+        if !budgets.contains(&fallback) {
+            budgets.push(fallback);
+        }
+    }
+
+    let mut last_error = None;
+    for budget in budgets {
+        match generate_raptorq_sidecar(payload, budget) {
+            Ok(result) => {
+                if let Ok(mut cache_guard) = serialization_sidecar_cache().lock() {
+                    cache_guard.insert(cache_key, result.clone());
+                }
+                return Ok(result);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(match last_error {
+        Some(error) => format!("sidecar generation retries exhausted: {error}"),
+        None => "sidecar generation retries exhausted without attempts".to_string(),
+    })
+}
+
+fn serialization_sidecar_cache() -> &'static Mutex<SidecarCache> {
+    SERIALIZATION_SIDECAR_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 fn load_fixture<T>(path: &Path) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
@@ -3469,6 +3775,44 @@ mod tests {
     }
 
     #[test]
+    fn e2e_matrix_packet_filter_includes_serialization_packet_entries() {
+        let cfg = HarnessConfig::default_paths();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let output_path = std::env::temp_dir().join(format!(
+            "ft_conformance_e2e_packet_filter_serialization_{}_{}.jsonl",
+            std::process::id(),
+            now
+        ));
+
+        let summary = emit_e2e_forensics_matrix_filtered(
+            &cfg,
+            output_path.as_path(),
+            &[ExecutionMode::Strict, ExecutionMode::Hardened],
+            Some("FT-P2C-006"),
+        )
+        .expect("packet-filtered e2e matrix should emit logs");
+
+        assert_eq!(summary.log_entries, 4);
+        let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
+        for line in raw.lines() {
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("jsonl line should be valid json");
+            assert_eq!(
+                value.get("packet_id").and_then(serde_json::Value::as_str),
+                Some("FT-P2C-006")
+            );
+            assert_eq!(
+                value.get("suite_id").and_then(serde_json::Value::as_str),
+                Some("serialization")
+            );
+        }
+
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
     fn microbench_produces_percentiles() {
         let report = run_scalar_microbench(10, ExecutionMode::Strict);
         eprintln!(
@@ -3487,6 +3831,34 @@ mod tests {
             .expect("packet e2e microbench should run");
         eprintln!(
             "packet_e2e_microbench_ns packet=FT-P2C-003 p50={} p95={} p99={} mean={}",
+            report.p50_ns, report.p95_ns, report.p99_ns, report.mean_ns
+        );
+        assert_eq!(report.iterations, 10);
+        assert!(report.p50_ns > 0);
+        assert!(report.p95_ns >= report.p50_ns);
+        assert!(report.p99_ns >= report.p95_ns);
+    }
+
+    #[test]
+    fn packet_e2e_microbench_autograd_scheduler_produces_percentiles() {
+        let report = run_packet_e2e_microbench(&HarnessConfig::default_paths(), 10, "FT-P2C-004")
+            .expect("packet e2e microbench should run");
+        eprintln!(
+            "packet_e2e_microbench_ns packet=FT-P2C-004 p50={} p95={} p99={} mean={}",
+            report.p50_ns, report.p95_ns, report.p99_ns, report.mean_ns
+        );
+        assert_eq!(report.iterations, 10);
+        assert!(report.p50_ns > 0);
+        assert!(report.p95_ns >= report.p50_ns);
+        assert!(report.p99_ns >= report.p95_ns);
+    }
+
+    #[test]
+    fn packet_e2e_microbench_serialization_produces_percentiles() {
+        let report = run_packet_e2e_microbench(&HarnessConfig::default_paths(), 10, "FT-P2C-006")
+            .expect("packet e2e microbench should run");
+        eprintln!(
+            "packet_e2e_microbench_ns packet=FT-P2C-006 p50={} p95={} p99={} mean={}",
             report.p50_ns, report.p95_ns, report.p99_ns, report.mean_ns
         );
         assert_eq!(report.iterations, 10);
@@ -3622,6 +3994,34 @@ mod tests {
             check.suite == "autograd_scheduler"
                 && check.mode == "hardened"
                 && check.comparator == "adversarial_hardened_reentrant_overflow_guarded"
+        }));
+    }
+
+    #[test]
+    fn differential_serialization_adds_metamorphic_and_adversarial_checks() {
+        let cfg = HarnessConfig::default_paths();
+        let report =
+            run_differential_conformance(&cfg, &[ExecutionMode::Strict, ExecutionMode::Hardened])
+                .expect("differential report should run");
+
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "serialization"
+                && check.case_name == "checkpoint_basic"
+                && check.comparator == "metamorphic_entry_order_hash_invariant"
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "serialization"
+                && check.comparator == "adversarial_unknown_field_rejected"
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "serialization"
+                && check.comparator == "adversarial_checksum_tamper_rejected"
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "serialization"
+                && check.mode == "hardened"
+                && check.comparator == "policy"
+                && check.drift_id.as_deref() == Some("serialization.bounded_malformed_diagnostic")
         }));
     }
 

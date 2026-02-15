@@ -5,8 +5,11 @@ edition = "2024"
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 asupersync = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.6.0"
 
 [lints]
 workspace = true

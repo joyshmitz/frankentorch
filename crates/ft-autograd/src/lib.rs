@@ -103,6 +103,15 @@ struct ReadyQueue {
 }
 
 impl ReadyQueue {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            heap: BinaryHeap::with_capacity(capacity),
+            pushes: 0,
+            pops: 0,
+            max_len: 0,
+        }
+    }
+
     fn push(&mut self, node: NodeId) {
         self.heap.push(ReadyTask { node });
         self.pushes += 1;
@@ -305,17 +314,13 @@ impl Tape {
         let mut grads = vec![0.0; self.nodes.len()];
         grads[root.0] = 1.0;
 
-        let mut queue = ReadyQueue::default();
+        let mut queue = ReadyQueue::with_capacity(self.nodes.len().max(1));
         queue.push(root);
 
-        let mut steps = Vec::new();
-        let mut execution_order = Vec::new();
+        let mut steps = Vec::with_capacity(self.nodes.len());
+        let mut execution_order = Vec::with_capacity(self.nodes.len());
 
         while let Some(node_id) = queue.pop() {
-            if !reachable[node_id.0] {
-                continue;
-            }
-
             let incoming = grads[node_id.0];
             execution_order.push(node_id);
 
