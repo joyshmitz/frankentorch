@@ -277,3 +277,40 @@ Phase-2C is complete only when:
 4. High-risk packets have at least one optimization proof artifact.
 5. RaptorQ sidecars + decode proofs are scrub-clean.
 6. Residual risks are explicitly assigned and tracked.
+
+## 18. Complexity, Performance, and Memory Characterization (`bd-3v0.23.6`)
+
+### 18.1 Source-anchored operation complexity matrix
+
+| Subsystem | Operation family | Time complexity class | Memory growth | Hotspot hypothesis | Anchors |
+|---|---|---|---|---|---|
+| Tensor metadata (`ft-core`) | shape/stride validation (`validate`), linear index projection (`storage_index_for`), contiguous stride synthesis | `O(rank)` per call | `O(1)` extra for validate/index; `O(rank)` for contiguous stride vector | high-frequency indexing and metadata checks can dominate small-op workloads before kernel dispatch starts | `crates/ft-core/src/lib.rs:85`, `crates/ft-core/src/lib.rs:158`, `crates/ft-core/src/lib.rs:393` |
+| Dispatch (`ft-dispatch`) | keyset validation + type/backend selection + mode split routing | `O(k)` over priority lists (`k` = key classes, currently small/fixed) | `O(1)` | dispatch path is per-op and latency-sensitive; constant-factor regression here inflates all eager traces | `crates/ft-dispatch/src/lib.rs:123`, `crates/ft-dispatch/src/lib.rs:145`, `crates/ft-dispatch/src/lib.rs:264` |
+| Autograd (`ft-autograd`) | backward scheduler (`compute_reachable` + `compute_dependencies` + ready-queue execution) | `O(V + E)` for graph traversal and dependency resolution | `O(V)` vectors (`reachable`, `pending`, `grads`) + queue/order telemetry | wide/deep DAGs amplify scheduler overhead and allocation churn, impacting backward p95/p99 tails | `crates/ft-autograd/src/lib.rs:273`, `crates/ft-autograd/src/lib.rs:393`, `crates/ft-autograd/src/lib.rs:418` |
+| Serialization/durability (`ft-serialize`) | checkpoint normalize/hash/encode/decode and RaptorQ sidecar generation | normalize `O(n log n)` (entry sort), hash `O(n)`, parse/decode `O(payload_bytes)`, sidecar/decode-proof `O(symbol_count + decode_work)` | `O(n)` normalized entry copy + symbol buffers/proof artifacts | large checkpoints make normalization/symbolization dominant; decode-proof retries can inflate tail cost | `crates/ft-serialize/src/lib.rs:114`, `crates/ft-serialize/src/lib.rs:148`, `crates/ft-serialize/src/lib.rs:352` |
+| Conformance harness (`ft-conformance`) | differential check synthesis/sort and e2e forensics emit | build checks `O(total_cases * comparators)`, canonical sort `O(C log C)`, e2e emit `O(L)` | `O(C)` check vector + `O(L)` forensic log vector | full-packet CI runs are sensitive to comparator volume and in-memory log accumulation before flush | `crates/ft-conformance/src/lib.rs:538`, `crates/ft-conformance/src/lib.rs:610`, `crates/ft-conformance/src/lib.rs:1375` |
+
+### 18.2 Measurable hotspot probes and required observability
+
+| Probe target | Minimal benchmark input envelope | Required observability fields | Expected artifact touchpoints |
+|---|---|---|---|
+| Dispatch fast path | packet `FT-P2C-002` differential/e2e suite with strict+hardened mode split cases | `suite_id`, `scenario_id`, `mode`, `reason_code`, `artifact_refs`, `replay_command` | `artifacts/phase2c/FT-P2C-002/parity_report.json`, e2e forensics matrix entries |
+| Autograd scheduler tail | scheduler fixtures with branching DAG cases and reentrant-depth edges | `seed`, `scenario_id`, `mode`, `execution_order`, `queue_pushes`, `queue_pops` | `artifacts/phase2c/FT-P2C-004/parity_report.json`, scheduler telemetry logs |
+| Serialization throughput + durability overhead | checkpoint encode/decode + sidecar/proof generation runs over representative entry counts | `scenario_id`, `mode`, `artifact_refs`, `reason_code`, decode proof hash fields | `artifacts/phase2c/FT-P2C-006/parity_report.json`, sidecar/proof artifacts |
+| Harness scaling | full differential report and e2e matrix generation across enabled packets | `suite_id`, `scenario_id`, `packet_id`, `outcome`, `replay_command` | `artifacts/phase2c/conformance/differential_report_v1.json`, `artifacts/phase2c/e2e_forensics/e2e_matrix.jsonl` |
+
+### 18.3 Optimization-risk notes (non-regression doctrine)
+
+- Dispatch optimization risk: key-resolution caching that omits `mode` or full keyset bits can merge strict/hardened behavior and silently break policy semantics.
+- Autograd optimization risk: parallel/reordered queue processing can alter deterministic execution order and gradient accumulation invariants (`FT-I3` outranks speed gains).
+- Serialization optimization risk: changing entry-normalization or hash inputs breaks deterministic replay and sidecar proof stability (`FT-I5`/`FT-I6`).
+- Conformance optimization risk: removing canonical sort or mutating comparator order can make drift reports non-deterministic and invalidate replay/audit workflows.
+
+### 18.4 Evidence traceability linkage (docs-pass N/A rule)
+
+This bead is docs/planning-only and does not itself change executable behavior.
+
+Execution evidence remains owned by implementation beads:
+- unit/property evidence: `bd-3v0.12.5`, `bd-3v0.13.5`, `bd-3v0.14.5`, `bd-3v0.15.5`, `bd-3v0.17.5`
+- differential/metamorphic/adversarial evidence: `bd-3v0.12.6`, `bd-3v0.13.6`, `bd-3v0.14.6`, `bd-3v0.15.6`, `bd-3v0.17.6`
+- e2e/logging evidence: `bd-3v0.12.7`, `bd-3v0.13.7`, `bd-3v0.14.7`, `bd-3v0.15.7`, `bd-3v0.17.7`

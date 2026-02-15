@@ -1010,9 +1010,46 @@ Anchors:
 - `crates/ft-conformance/src/logging.rs:24`
 - `artifacts/phase2c/e2e_forensics/failure_forensics_index_v1.json`
 
-## 22. Cross-Cutting Validation Gate Note
+## 22. Complexity, Performance, and Memory Characterization (`bd-3v0.23.6`)
 
-This pass (`bd-3v0.23.2` + `bd-3v0.23.3` + `bd-3v0.23.4` + `bd-3v0.23.5` + `bd-3v0.23.7` + `bd-3v0.23.8` + `bd-3v0.23.9` + `bd-3v0.23.10` + `bd-3v0.23.15`) is docs/planning only.
+### 22.1 Algorithmic complexity and memory-growth map
+
+| Area | Core operations | Time class | Memory growth | Performance implication | Anchors |
+|---|---|---|---|---|---|
+| Tensor metadata (`FT-P2C-001`) | `TensorMeta::validate`, `storage_index_for`, `contiguous_strides` | `O(rank)` per metadata/index call | validate/index are `O(1)` extra; stride synthesis allocates `O(rank)` | metadata overhead can dominate micro-ops and shape-heavy workflows before kernels run | `crates/ft-core/src/lib.rs:85`, `crates/ft-core/src/lib.rs:158`, `crates/ft-core/src/lib.rs:393` |
+| Dispatch key model (`FT-P2C-002`) | `validate_for_scalar_binary`, `highest_priority_type_id`, `dispatch_scalar_binary_with_keyset` | `O(k)` over key priority lists + constant kernel routing | `O(1)` | dispatch latency is paid on every eager op; small regressions amplify globally | `crates/ft-dispatch/src/lib.rs:123`, `crates/ft-dispatch/src/lib.rs:145`, `crates/ft-dispatch/src/lib.rs:264` |
+| Autograd scheduler (`FT-P2C-004`) | `backward_with_options`, `compute_reachable`, `compute_dependencies` | `O(V + E)` | `O(V)` for gradients/reachability/dependency vectors + queue/order telemetry | backward p95/p99 tails are sensitive to graph width/depth and allocation churn | `crates/ft-autograd/src/lib.rs:273`, `crates/ft-autograd/src/lib.rs:393`, `crates/ft-autograd/src/lib.rs:418` |
+| Serialization + durability (`FT-P2C-006`) | `encode_checkpoint`/`decode_checkpoint`, `normalize_entries`, `generate_raptorq_sidecar` | normalize `O(n log n)` + hash `O(n)` + parse/decode `O(payload_bytes)` + sidecar/decode-proof `O(symbol_count + decode_work)` | `O(n)` normalized entries + symbol/proof buffers | large checkpoint traces will concentrate cost in normalization + sidecar proof generation | `crates/ft-serialize/src/lib.rs:114`, `crates/ft-serialize/src/lib.rs:148`, `crates/ft-serialize/src/lib.rs:352` |
+| Differential/e2e harness (`FT-P2C-001/002/004/006`) | `run_differential_conformance`, canonical check sort, `emit_e2e_forensics_matrix_filtered` | check synthesis `O(total_cases * comparators)`, sort `O(C log C)`, emit `O(L)` | `O(C)` checks + `O(L)` forensic logs before write | CI tail latency scales with comparator cardinality and in-memory forensic accumulation | `crates/ft-conformance/src/lib.rs:538`, `crates/ft-conformance/src/lib.rs:610`, `crates/ft-conformance/src/lib.rs:1375` |
+
+### 22.2 Hotspot hypotheses and measurable probes
+
+| Hotspot family | Hypothesis | Probe and benchmark input | Required observability | Evidence destination |
+|---|---|---|---|---|
+| Dispatch per-op routing | keyset validation + mode split branch dominates scalar-op overhead at high op counts | packet `FT-P2C-002` strict+hardened differential/e2e replay across full `dispatch_key_cases.json` | `scenario_id`, `mode`, `reason_code`, `artifact_refs`, `replay_command` | `artifacts/phase2c/FT-P2C-002/parity_report.json`, e2e matrix slices |
+| Scheduler graph traversal | vector setup and queue churn become backward bottleneck on branched DAGs | packet `FT-P2C-004` scheduler scenarios with branch fanout + reentrant edge cases | `execution_order`, `queue_pushes`, `queue_pops`, `max_queue_len`, `seed` | `artifacts/phase2c/FT-P2C-004/parity_report.json`, structured scheduler logs |
+| Checkpoint durability path | entry normalization sort + sidecar/proof work dominates checkpoint latency tails | packet `FT-P2C-006` decode/sidecar cases with representative entry counts | decode-proof hashes, `artifact_refs`, `mode`, `reason_code` | packet parity report + sidecar/decode proof artifacts |
+| Harness report generation | canonical sort + full log buffering drives conformance p95 for large suites | full differential report + e2e matrix generation under packet-wide runs | `suite_id`, `packet_id`, `outcome`, `replay_command` | `artifacts/phase2c/conformance/differential_report_v1.json`, e2e forensics logs |
+
+### 22.3 Optimization isomorphism risk register (speed vs parity)
+
+| Candidate optimization | Potential benefit | Primary parity risk | Non-negotiable guardrail |
+|---|---|---|---|
+| dispatch decision caching | lower repeated key-resolution cost | cache key omission (`mode`, keyset bits) can merge strict/hardened semantics | include full dispatch context in cache identity; differential mode-split checks must remain green |
+| scheduler parallelization/reordering | lower backward wall time on large DAGs | non-deterministic gradient accumulation and execution-order drift | preserve deterministic dependency-complete ordering and telemetry invariants (`FT-I3`) |
+| serialization normalization shortcuts | faster checkpoint encode/decode | source-hash instability and decode-proof mismatch | preserve deterministic entry ordering/hash contract (`FT-I5`/`FT-I6`) |
+| differential pipeline short-circuiting | faster report generation | missing drift classes, unstable ordering, weaker forensic replay | retain canonical sort and full comparator coverage for packet gates |
+
+### 22.4 Explicit traceability to execution evidence
+
+This docs pass is N/A for direct executable-behavior evidence and delegates to implementation beads:
+- unit/property evidence: `bd-3v0.12.5`, `bd-3v0.13.5`, `bd-3v0.14.5`, `bd-3v0.15.5`, `bd-3v0.17.5`
+- differential/metamorphic/adversarial evidence: `bd-3v0.12.6`, `bd-3v0.13.6`, `bd-3v0.14.6`, `bd-3v0.15.6`, `bd-3v0.17.6`
+- e2e/logging evidence: `bd-3v0.12.7`, `bd-3v0.13.7`, `bd-3v0.14.7`, `bd-3v0.15.7`, `bd-3v0.17.7`
+
+## 23. Cross-Cutting Validation Gate Note
+
+This pass (`bd-3v0.23.2` + `bd-3v0.23.3` + `bd-3v0.23.4` + `bd-3v0.23.5` + `bd-3v0.23.6` + `bd-3v0.23.7` + `bd-3v0.23.8` + `bd-3v0.23.9` + `bd-3v0.23.10` + `bd-3v0.23.15`) is docs/planning only.
 
 Execution evidence is explicitly deferred to implementation/conformance beads:
 - unit/property evidence: `bd-3v0.12.5`, `bd-3v0.13.5`, `bd-3v0.14.5`, `bd-3v0.15.5`, `bd-3v0.17.5`
