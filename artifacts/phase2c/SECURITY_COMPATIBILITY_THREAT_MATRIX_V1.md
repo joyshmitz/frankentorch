@@ -31,7 +31,7 @@ Scope: Phase-2C packet families (`FT-P2C-001`, `FT-P2C-002`, `FT-P2C-003`, `FT-P
 | `FT-P2C-002` | dispatch key routing | reject unknown bits and incompatible keysets | composite/backend-select fallback to backend key only |
 | `FT-P2C-003` | op schema ingestion | reject malformed/ambiguous schema strings and incompatible dispatch metadata | none (parity-only) |
 | `FT-P2C-004` | autograd scheduling/reentrancy | reentrant depth overflow fails | bounded depth clamp with explicit telemetry flag |
-| `FT-P2C-006` | checkpoint parsing/recovery | unknown field/version/hash mismatch fails | bounded diagnostics for malformed payloads; no incompatible acceptance |
+| `FT-P2C-006` | checkpoint parsing/recovery | unknown field/version/hash mismatch fails closed | bounded malformed diagnostic context only (`serialization.bounded_malformed_diagnostic`); no incompatible acceptance |
 
 ## Drift Gates
 
@@ -44,4 +44,5 @@ Scope: Phase-2C packet families (`FT-P2C-001`, `FT-P2C-002`, `FT-P2C-003`, `FT-P
 
 - `artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json`
 - packet `risk_note.md` files with compatibility/security mitigations
+- packet threat-model artifacts for active packet C tasks (current: `artifacts/phase2c/FT-P2C-006/threat_model.md`)
 - packet parity sidecars and decode proofs
