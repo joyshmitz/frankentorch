@@ -26,5 +26,13 @@ perf.data
 perf.data.*
 frankentorch_illustration.png
 
+# Ephemeral agent/runtime artifacts
+storage.sqlite3
+storage.sqlite3-*
+rustc-ice-*.txt
+a.out
+--graph-format.svg
+target-codex*/
+
 # Local legacy-oracle mirrors (too large for source repo)
 /legacy_*/
