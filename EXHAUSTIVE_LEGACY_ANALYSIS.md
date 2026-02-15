@@ -314,3 +314,140 @@ Execution evidence remains owned by implementation beads:
 - unit/property evidence: `bd-3v0.12.5`, `bd-3v0.13.5`, `bd-3v0.14.5`, `bd-3v0.15.5`, `bd-3v0.17.5`
 - differential/metamorphic/adversarial evidence: `bd-3v0.12.6`, `bd-3v0.13.6`, `bd-3v0.14.6`, `bd-3v0.15.6`, `bd-3v0.17.6`
 - e2e/logging evidence: `bd-3v0.12.7`, `bd-3v0.13.7`, `bd-3v0.14.7`, `bd-3v0.15.7`, `bd-3v0.17.7`
+
+## 19. Pass-B Behavior and Invariant Expansion (`bd-3v0.23.12`)
+
+### 19.1 Packet-level behavior obligations with strict/hardened semantics
+
+| Packet | Behavioral core | Strict mode contract | Hardened mode contract | Invariant families | Source anchors | Evidence outputs |
+|---|---|---|---|---|---|---|
+| `FT-P2C-001` tensor metadata | shape/stride/storage offset validity, index projection, alias/version safety preconditions | invalid shape/index/offset fails closed with typed `TensorMetaError` | same fail-closed behavior (no automatic repair/coercion) | `FT-I1`, `FT-I4` | `crates/ft-core/src/lib.rs:61`, `crates/ft-core/src/lib.rs:85`, `crates/ft-core/src/lib.rs:158` | `artifacts/phase2c/FT-P2C-001/parity_report.json` + tensor_meta e2e logs |
+| `FT-P2C-002` dispatch key model | deterministic key selection, mode split on composite/backend fallback, malformed-key rejection | composite/backend fallback rejected (`IncompatibleSet`), unknown/invalid keysets fail closed | bounded composite/backend fallback only when policy branch explicitly allows it | `FT-I2` | `crates/ft-dispatch/src/lib.rs:145`, `crates/ft-dispatch/src/lib.rs:264`, `crates/ft-dispatch/src/lib.rs:280` | `artifacts/phase2c/FT-P2C-002/parity_report.json`, hardened allowlist artifacts |
+| `FT-P2C-004` autograd scheduler | reachable graph discovery, dependency counting, deterministic ready-queue execution | reentrant depth overflow fails closed; dependency underflow fails closed | bounded reentrant fallback path with explicit telemetry (`reentrant_guard_triggered`) | `FT-I3` | `crates/ft-autograd/src/lib.rs:273`, `crates/ft-autograd/src/lib.rs:393`, `crates/ft-autograd/src/lib.rs:418` | `artifacts/phase2c/FT-P2C-004/parity_report.json`, scheduler e2e logs |
+| `FT-P2C-006` serialization + durability | deterministic checkpoint envelope/hash, strict decode gate, sidecar/proof generation | unknown fields/version/hash mismatch fail closed; decode proof failures block readiness | malformed JSON diagnostics allowed, but unknown/incompatible schema still fail closed | `FT-I5`, `FT-I6` | `crates/ft-serialize/src/lib.rs:114`, `crates/ft-serialize/src/lib.rs:128`, `crates/ft-serialize/src/lib.rs:148`, `crates/ft-serialize/src/lib.rs:352` | `artifacts/phase2c/FT-P2C-006/parity_report.json`, `*.raptorq.json`, `*.decode_proof.json` |
+
+### 19.2 Evidence-carrying API/runtime behavior contract
+
+Behavioral contract from API entrypoints through runtime evidence ledger:
+- session operations (`add`, `mul`) must append dispatch evidence entries including key and fallback context.
+- backward execution must append scheduler telemetry summaries with queue push/pop and reentrant guard fields.
+- mode transitions must emit policy events so strict/hardened branch selection is reconstructible in forensic replay.
+
+Anchors:
+- `crates/ft-api/src/lib.rs:36`
+- `crates/ft-api/src/lib.rs:57`
+- `crates/ft-api/src/lib.rs:93`
+- `crates/ft-runtime/src/lib.rs:31`
+- `crates/ft-runtime/src/lib.rs:77`
+
+### 19.3 High-risk edge-case semantics (expanded)
+
+| Edge-case family | Trigger | Expected behavior | Failure class | Required regression/e2e hook |
+|---|---|---|---|---|
+| rank/stride mismatch and offset overflow | malformed tensor metadata fixture | fail closed before dispatch/autograd | `TensorMetaError::{RankStrideMismatch,StrideOverflow,StorageOffsetOverflow}` | tensor_meta invalid-case differential + packet `FT-P2C-001` e2e slice |
+| unknown dispatch key bits | invalid key token in fixture or parse path | deterministic reject with explicit error reason | `DispatchKeyError::UnknownBits` or parse failure | dispatch adversarial comparator + replay command in logs |
+| autograd depth overflow | reentrant depth exceeds configured max | strict rejects; hardened may continue only via bounded fallback branch | `AutogradError::ReentrantDepthExceeded` | scheduler mode-split differential and e2e reentrant scenario |
+| checkpoint schema/hash drift | unknown field, version mismatch, checksum mismatch | decode rejected; no silent coercion | `SerializeError::{UnknownField,VersionMismatch,ChecksumMismatch}` | serialization differential + durability validator run |
+| sidecar/decode proof mismatch | decode candidate cannot prove payload recovery | fail closed, mark artifact not ready | `SerializeError::RaptorQFailure` | packet sidecar/proof regeneration + validator replay |
+
+## 20. Security/Compatibility and Failure-Semantics Integration
+
+### 20.1 Threat-to-control matrix with artifact references
+
+| Threat class | Control mechanism | Mode semantics | Artifact/evidence refs |
+|---|---|---|---|
+| gradient corruption via nondeterministic scheduling | dependency accounting + deterministic queue execution + telemetry | strict/hardened both require dependency closure; hardened only changes reentrant overflow handling | `artifacts/phase2c/FT-P2C-004/parity_report.json`, e2e scheduler logs |
+| dispatch confusion/fallback misuse | keyset validation + explicit mode split + allowlisted hardened drift IDs | strict forbids fallback; hardened fallback is explicit, traceable, and scoped | `artifacts/phase2c/FT-P2C-002/parity_report.json`, `artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json` |
+| serialization replay inconsistency | normalized entries + deterministic hash + strict schema/version checks | strict/hardened both fail closed on incompatible schema/hash | `artifacts/phase2c/FT-P2C-006/parity_report.json`, durability proofs |
+| evidence loss/corruption | sidecar generation + scrub + decode proof verification | both modes block promotion on decode-proof failure | `packet_<id>_<artifact>.raptorq.json`, `packet_<id>_<artifact>.decode_proof.json` |
+
+### 20.2 Failure lifecycle and recovery obligations
+
+Recovery semantics are explicit and bounded:
+1. detect failure with typed error/reason code,
+2. emit structured forensic record (`scenario_id`, `mode`, `reason_code`, `artifact_refs`, `replay_command`),
+3. fail closed unless hardened policy explicitly allows bounded fallback,
+4. require deterministic replay command before allowlist or closure decisions.
+
+Primary anchors:
+- `crates/ft-conformance/src/lib.rs:610`
+- `crates/ft-conformance/src/lib.rs:1375`
+- `crates/ft-conformance/src/lib.rs:2191`
+- `crates/ft-conformance/src/lib.rs:2352`
+- `crates/ft-conformance/src/logging.rs:11`
+
+## 21. Subsystem Test/E2E/Logging Expectations (Explicit)
+
+| Subsystem | Unit/property minimum | Differential/metamorphic/adversarial minimum | E2E minimum | Mandatory forensic fields |
+|---|---|---|---|---|
+| tensor metadata | property coverage over shape/stride/index invalid and boundary cases | oracle + metamorphic offset-shift checks, fail-closed checks for invalid fixtures | packet-filtered `FT-P2C-001` matrix with valid/invalid scenario IDs | `scenario_id`, `mode`, `reason_code`, `artifact_refs`, `replay_command` |
+| dispatch | key-priority/mode-split unit assertions, unknown-key and incompatible-set negatives | oracle output comparison + commutativity metamorphic check + adversarial unknown/autograd-without-cpu rejection checks | packet-filtered `FT-P2C-002` matrix including fallback branch evidence | `scenario_id`, `mode`, `fallback_used`, `reason_code`, `replay_command` |
+| autograd scheduler | dependency ordering and reentrant policy unit/property coverage | oracle compare for output/grads + hardened policy comparator checks | packet-filtered `FT-P2C-004` matrix with telemetry replay | `seed`, `execution_order`, `queue_pushes`, `queue_pops`, `replay_command` |
+| serialization/durability | decode strict/hardened negative tests + sidecar determinism checks | oracle/schema/hash parity checks + adversarial malformed payload/recovery checks | packet-filtered `FT-P2C-006` matrix + sidecar/decode-proof validation runs | `scenario_id`, `mode`, `artifact_refs`, `reason_code`, proof hash |
+
+Execution entrypoints:
+- `crates/ft-conformance/src/lib.rs:422`
+- `crates/ft-conformance/src/lib.rs:449`
+- `crates/ft-conformance/src/lib.rs:476`
+- `crates/ft-conformance/src/lib.rs:503`
+- `crates/ft-conformance/src/lib.rs:538`
+- `crates/ft-conformance/src/lib.rs:1423`
+
+## 22. Contradiction Check vs Pass-A Structure Doc
+
+Pass-B consistency review against `EXISTING_PYTORCH_STRUCTURE.md` (sections 14-23):
+
+| Check area | Pass-A anchor | Pass-B status | Outcome |
+|---|---|---|---|
+| dispatch mode-split semantics | workflow/state-machine and edge-case tables | preserved and expanded with complexity + risk coupling | aligned |
+| autograd ordering and reentrant policy | ordering/lifecycle and error taxonomy sections | preserved and expanded with explicit recovery obligations | aligned |
+| serialization fail-closed doctrine | edge-case and threat narrative sections | preserved and expanded with durability proof gating | aligned |
+| logging/replay schema requirements | invariant and crosswalk sections | preserved with explicit subsystem minimums and failure lifecycle steps | aligned |
+| docs-only N/A gate linkage | cross-cutting validation note | preserved and explicitly restated in this pass | aligned |
+
+No direct contradictions detected in current source anchors. Any future behavior drift requires updating both documents in the same bead series to avoid split-brain planning artifacts.
+
+## 23. Cross-Cutting Validation Gate Note (Pass B)
+
+This pass (`bd-3v0.23.12`) is docs/planning only and does not introduce executable behavior changes.
+
+Execution evidence remains delegated to implementation/conformance beads:
+- unit/property evidence: `bd-3v0.12.5`, `bd-3v0.13.5`, `bd-3v0.14.5`, `bd-3v0.15.5`, `bd-3v0.17.5`
+- differential/metamorphic/adversarial evidence: `bd-3v0.12.6`, `bd-3v0.13.6`, `bd-3v0.14.6`, `bd-3v0.15.6`, `bd-3v0.17.6`
+- e2e/logging evidence: `bd-3v0.12.7`, `bd-3v0.13.7`, `bd-3v0.14.7`, `bd-3v0.15.7`, `bd-3v0.17.7`
+
+## 24. Red-Team Review Attachment (`bd-3v0.23.13`)
+
+Independent contradiction/completeness review results are attached in:
+- `EXISTING_PYTORCH_STRUCTURE.md` section `24. Red-Team Contradiction and Completeness Review`
+
+Review disposition summary:
+- traceability drift in docs-pass listing was corrected,
+- no doctrine-breaking contradictions were found in strict/hardened behavior statements,
+- remaining completeness gaps are explicitly tracked via `GAP-UX-*` and packet follow-up beads (not silently accepted).
+
+## 25. Behavior-Specialist Attachment (`bd-3v0.23.16`)
+
+Specialist deep-dive output is attached in:
+- `EXISTING_PYTORCH_STRUCTURE.md` section `25. Behavior-Specialist Deep Dive`
+
+Handoff rule for integration passes:
+- treat section-25 drift-sensitive semantics and rewrite prerequisites as mandatory merge-check inputs for `bd-3v0.23.14` and `bd-3v0.23.17`.
+
+## 26. Risk/Perf/Test Specialist Attachment (`bd-3v0.23.17`)
+
+Specialist pass output is attached in:
+- `EXISTING_PYTORCH_STRUCTURE.md` section `26. Risk/Perf/Test Specialist Deep Dive`
+
+Integration gate:
+- section-26 ambiguity register and benchmark/e2e realism prerequisites are mandatory inputs for final integrated rewrite sign-off (`bd-3v0.23.14`).
+
+## 27. Final Integration Sign-off Attachment (`bd-3v0.23.14`)
+
+Integrated sweep/sign-off output is attached in:
+- `EXISTING_PYTORCH_STRUCTURE.md` section `27. Final Integrated Consistency Sweep + Sign-off`
+
+Sign-off interpretation for this document:
+- Phase-2C docs overhaul is planning-complete for current scope,
+- no unresolved critical doc contradictions remain,
+- unresolved execution risks remain explicitly tracked (`bd-3v0.13.6`, `GAP-UX-*`, `RPT-*`) and are not considered closed.

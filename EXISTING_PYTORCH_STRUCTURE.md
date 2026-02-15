@@ -1049,9 +1049,159 @@ This docs pass is N/A for direct executable-behavior evidence and delegates to i
 
 ## 23. Cross-Cutting Validation Gate Note
 
-This pass (`bd-3v0.23.2` + `bd-3v0.23.3` + `bd-3v0.23.4` + `bd-3v0.23.5` + `bd-3v0.23.6` + `bd-3v0.23.7` + `bd-3v0.23.8` + `bd-3v0.23.9` + `bd-3v0.23.10` + `bd-3v0.23.15`) is docs/planning only.
+This pass (`bd-3v0.23.2` + `bd-3v0.23.3` + `bd-3v0.23.4` + `bd-3v0.23.5` + `bd-3v0.23.6` + `bd-3v0.23.7` + `bd-3v0.23.8` + `bd-3v0.23.9` + `bd-3v0.23.10` + `bd-3v0.23.12` + `bd-3v0.23.13` + `bd-3v0.23.15` + `bd-3v0.23.16` + `bd-3v0.23.17`) is docs/planning only.
 
 Execution evidence is explicitly deferred to implementation/conformance beads:
 - unit/property evidence: `bd-3v0.12.5`, `bd-3v0.13.5`, `bd-3v0.14.5`, `bd-3v0.15.5`, `bd-3v0.17.5`
 - differential/metamorphic/adversarial evidence: `bd-3v0.12.6`, `bd-3v0.13.6`, `bd-3v0.14.6`, `bd-3v0.15.6`, `bd-3v0.17.6`
 - e2e/logging evidence: `bd-3v0.12.7`, `bd-3v0.13.7`, `bd-3v0.14.7`, `bd-3v0.15.7`, `bd-3v0.17.7`
+
+## 24. Red-Team Contradiction and Completeness Review (`bd-3v0.23.13`)
+
+### 24.1 Reproducible review procedure
+
+Reproduce the contradiction/completeness review from repo root:
+
+```bash
+rg -n "FT-P2C-00[1-8]|Cross-Cutting Validation Gate|GAP-UX-" \
+  EXHAUSTIVE_LEGACY_ANALYSIS.md EXISTING_PYTORCH_STRUCTURE.md
+
+rg -n "bd-3v0\\.23\\.(2|3|4|5|6|7|8|9|10|12|13|15)" \
+  EXHAUSTIVE_LEGACY_ANALYSIS.md EXISTING_PYTORCH_STRUCTURE.md
+
+rg -n "scenario_id|replay_command|artifact_refs|reason_code" \
+  EXHAUSTIVE_LEGACY_ANALYSIS.md EXISTING_PYTORCH_STRUCTURE.md
+```
+
+### 24.2 Findings ledger
+
+| Finding ID | Severity | Finding | Impact | Resolution status | Follow-up linkage |
+|---|---|---|---|---|---|
+| `RT-001` | high | docs-pass set in cross-cutting note was missing newer passes (`bd-3v0.23.12`, `bd-3v0.23.13`) | traceability/audit drift across doc passes | fixed in section 23 pass list | none |
+| `RT-002` | high | packet behavior depth was strongest for `FT-P2C-001/002/004/006`, with weaker explicit closure narrative for `003/005/007/008` in this doc pair | risk of false completion signals for uncovered packet families | tracked; closure remains in packet execution chain and parent packet beads | `bd-3v0.14`, `bd-3v0.15`, `bd-3v0.16`, `bd-3v0.17` |
+| `RT-003` | medium | known coverage gaps (device mismatch e2e, oracle timeout taxonomy, runtime durability-ledger linkage) remained unresolved and needed explicit red-team carry-forward | can mask completeness confidence if treated as closed | already documented and reaffirmed in review | `GAP-UX-001`, `GAP-UX-002`, `GAP-UX-003` |
+| `RT-004` | medium | docs claim determinism and replay rigor, but external oracle/runtime dependency failures can temporarily block evidence generation | operational risk to timely bead closure, not semantic contract | tracked as operational blocker in active packet thread | `bd-3v0.13.6` thread updates |
+
+### 24.3 Missing-evidence mapping (explicit)
+
+| Evidence class | Missing/at-risk area | Required closure artifact |
+|---|---|---|
+| unit/property | device mismatch and tensor compatibility adversarial negatives | updated conformance fixtures + packet unit/property beads |
+| differential/adversarial | timeout/cancel oracle branch taxonomy | differential reason-code extension + explicit timeout replay command |
+| e2e/logging | durability-ledger linkage from sidecar/decode events to e2e index | cross-linked e2e evidence entries and failure-forensics index updates |
+
+### 24.4 Review outcome
+
+- No contradiction was found that invalidates current strict/hardened doctrine.
+- High-severity documentation traceability drift (`RT-001`) is resolved in this pass.
+- Remaining high/medium findings are explicitly tracked in bead dependencies and gap ledgers, not silently accepted.
+
+## 25. Behavior-Specialist Deep Dive (`bd-3v0.23.16`)
+
+### 25.1 Drift-sensitive semantics validation matrix
+
+| Semantics surface | Drift trigger | Why drift-sensitive | Required evidence coupling | Anchors |
+|---|---|---|---|---|
+| dispatch mode split (strict reject vs hardened fallback) | composite/backendselect selection path | small routing changes can silently alter strict/hardened parity boundary | unit mode-split tests + differential comparator + e2e fallback log evidence | `crates/ft-dispatch/src/lib.rs:280`, `crates/ft-dispatch/src/lib.rs:286`, `crates/ft-conformance/src/lib.rs:1060` |
+| autograd dependency scheduling order | queue/dependency accounting changes | order drift can preserve scalar outputs while violating deterministic DAC evidence | scheduler unit/property + differential policy checks + e2e telemetry replay | `crates/ft-autograd/src/lib.rs:302`, `crates/ft-autograd/src/lib.rs:418`, `crates/ft-conformance/src/lib.rs:1250` |
+| serialization normalization/hash contract | entry sort/hash field changes | replay compatibility and proof determinism depend on exact normalization and hash rules | strict/hardened decode tests + differential serialization comparators + sidecar/decode proof artifacts | `crates/ft-serialize/src/lib.rs:114`, `crates/ft-serialize/src/lib.rs:336`, `crates/ft-serialize/src/lib.rs:352` |
+| differential report ordering | comparator ordering or canonical sort mutations | unstable ordering degrades auditability and can hide regression patterns in diff workflows | report-generation tests + deterministic sort assertions + repeat-run artifact compare | `crates/ft-conformance/src/lib.rs:1375`, `crates/ft-conformance/src/lib.rs:1423` |
+
+### 25.2 Unit/property vs differential vs e2e completeness check
+
+| Packet | Unit/property mapping quality | Differential/adversarial mapping quality | E2E/logging mapping quality | Deep-dive disposition |
+|---|---|---|---|---|
+| `FT-P2C-001` tensor metadata | strong shape/stride/index fail-closed mapping documented | strong local+oracle + metamorphic offset-shift mapping documented | strong scenario/log schema mapping, with known device-mismatch edge gap tracked | acceptable with tracked gap (`GAP-UX-001`) |
+| `FT-P2C-002` dispatch | strong key-validation and mode-split mapping documented | strong oracle + metamorphic + adversarial mapping documented | fallback evidence and reason-code obligations explicit | acceptable; operational validator blocker remains external (`bd-3v0.13.6`) |
+| `FT-P2C-004` autograd scheduler | strong dependency/reentrant semantics mapped | strong policy comparator mapping documented | scheduler telemetry replay requirements explicit | acceptable |
+| `FT-P2C-006` serialization/durability | strong strict/hardened decode invariants mapped | strong schema/hash/drift mapping documented | strong sidecar/proof and forensics mapping, with runtime-link gap tracked | acceptable with tracked gap (`GAP-UX-003`) |
+
+### 25.3 Logging/replay requirement hardening fixes
+
+This deep-dive pass enforces the following non-optional interpretation:
+- Every drift-sensitive behavior claim in this doc pair must map to at least one replayable command path and one artifact path.
+- Evidence narratives are incomplete unless they include `scenario_id`, `mode`, `reason_code`, `artifact_refs`, and `replay_command`.
+- Any hardened fallback claim must explicitly state strict-mode counterpart behavior and the allowlist/telemetry evidence path.
+
+Anchors:
+- `crates/ft-conformance/src/logging.rs:11`
+- `crates/ft-conformance/src/lib.rs:2418`
+- `crates/ft-conformance/src/lib.rs:538`
+- `crates/ft-conformance/src/lib.rs:610`
+
+### 25.4 Final integrated rewrite prerequisites (handoff to downstream beads)
+
+Prerequisites for `bd-3v0.23.14` and `bd-3v0.23.17`:
+1. Preserve the red-team findings ledger (`RT-*`) and ensure each unresolved item links to an active closure bead.
+2. Keep packet-behavior tables synchronized across both docs when strict/hardened semantics change.
+3. Retain explicit triad mapping (unit/property + differential/adversarial + e2e/logging) for every behavior claim promoted as “complete”.
+4. Carry forward docs-only N/A gate note with stable links to execution beads, not free-text placeholders.
+5. Re-run the section-24 reproducible review commands after integrated rewrite and include delta notes.
+
+## 26. Risk/Perf/Test Specialist Deep Dive (`bd-3v0.23.17`)
+
+### 26.1 Unresolved high-risk ambiguity register (owner + closure plan)
+
+| Ambiguity ID | Risk statement | Current owner path | Closure plan | Evidence class gating closure |
+|---|---|---|---|---|
+| `RPT-001` | oracle timeout/cancel semantics remain under-specified for differential reliability budgets | conformance + scenario UX track | extend timeout reason taxonomy and enforce replayable timeout branch fixtures | differential/adversarial + e2e/logging |
+| `RPT-002` | device mismatch and tensor compatibility adversarial scenarios are still underrepresented in e2e corpus | tensor-meta + conformance packet chain | add fixture rows and packet-filtered e2e slices with explicit fail-closed expectations | unit/property + differential/adversarial + e2e/logging |
+| `RPT-003` | runtime durability-ledger linkage into conformance/e2e remains incomplete | durability/runtime + packet `FT-P2C-006` chain | bind sidecar/decode events to runtime evidence entries and forensics index | e2e/logging + durability artifacts |
+| `RPT-004` | operational dependency failures (external oracle/runtime crates) can block validation timelines | active packet threads (`bd-3v0.13.6`) | keep blocker state explicit in packet thread; do not mark evidence beads complete without green replay | all three evidence classes |
+
+### 26.2 Benchmark realism and optimization-proof expectations
+
+| Workload family | Minimum benchmark realism envelope | Required metrics | Optimization proof requirement | Artifact target |
+|---|---|---|---|---|
+| dispatch-heavy scalar traces | strict+hardened runs across mixed keysets including fallback edge cases | p50/p95/p99 latency, blocking drift count, allowlisted drift count | demonstrate semantics unchanged via differential + metamorphic + adversarial checks | `artifacts/phase2c/FT-P2C-002/parity_report.json` + benchmark delta artifact |
+| autograd branching DAG traces | branch fanout + reentrant depth stress seeds | p50/p95/p99 backward latency, queue depth stats, reentrant guard incidence | prove deterministic order and gradient equivalence before/after optimization | `artifacts/phase2c/FT-P2C-004/parity_report.json` + scheduler telemetry evidence |
+| serialization + sidecar durability | representative payload sizes and repair symbol settings | throughput, p95 decode time, proof generation success rate, memory churn | verify decode-proof stability and replay compatibility invariants | `artifacts/phase2c/FT-P2C-006/parity_report.json` + sidecar/proof bundle |
+| full harness scaling | packet-wide differential + e2e matrix generation | report generation p95/p99, peak memory, oracle-unavailable rate | retain canonical order and complete comparator coverage | `artifacts/phase2c/conformance/differential_report_v1.json`, e2e matrix artifacts |
+
+### 26.3 E2E realism and failure-forensics completeness checks
+
+Minimum realism requirements:
+- every e2e scenario family must include at least one nominal path and one adversarial/failure path with deterministic replay data.
+- every failure path must include a reason-code family that maps to a closure owner bead.
+- for any allowlisted hardened deviation, logs must show strict-mode counterpart behavior and explicit allowlist drift ID linkage.
+
+Forensics completeness contract:
+- mandatory fields: `scenario_id`, `mode`, `seed` (or explicit `seed=n/a`), `reason_code`, `artifact_refs`, `replay_command`, `env_fingerprint`.
+- failure artifacts must be linkable from e2e matrix entry -> failure index -> packet parity artifact.
+
+### 26.4 Final integration prerequisites for `bd-3v0.23.14`
+
+1. Carry forward `RT-*` and `RPT-*` ledgers unchanged unless closed with explicit artifact references.
+2. Reject “complete” labeling for any packet without full triad evidence mapping (unit/property + differential/adversarial + e2e/logging).
+3. Preserve explicit blocker annotations for operational dependency failures until replay commands run green.
+4. Require one integrated consistency sweep that verifies section numbering, bead lists, and cross-doc anchor parity.
+5. Keep docs-only N/A note synchronized with the exact execution beads that own runtime evidence.
+
+## 27. Final Integrated Consistency Sweep + Sign-off (`bd-3v0.23.14`)
+
+### 27.1 Sweep checklist
+
+| Sweep item | Status | Evidence |
+|---|---|---|
+| Section numbering and pass chronology are internally consistent | pass | contiguous `##` ordering through section 27; pass lineage updated in section 23 |
+| Cross-doc terminology and doctrine alignment (`strict/hardened`, fail-closed, DAC-first) | pass | aligned language across sections 21-27 and EXHAUSTIVE attachments 24-26 |
+| Triad evidence mapping (unit/property + differential/adversarial + e2e/logging) is explicit for drift-sensitive behaviors | pass | sections 20, 21, 25, 26 and associated packet tables |
+| Critical red-team findings resolved or explicitly tracked | pass | `RT-001` resolved; remaining `RT-*`/`RPT-*` mapped to closure beads |
+| Non-critical unresolved ambiguities have owner + closure path | pass | `GAP-UX-*` and `RPT-*` rows include owner paths and closure expectations |
+
+### 27.2 Final sign-off decision
+
+- Documentation integration for the overhaul scope is accepted for planning use.
+- No unresolved critical contradiction remains in the docs set.
+- Remaining non-critical gaps are explicitly tracked and must not be treated as closed without artifact-backed evidence.
+
+Open execution blockers and ownership:
+- `bd-3v0.13.6`: validation currently blocked by upstream `/dp/asupersync` compile failure (`E0599` in `sync/mutex.rs:138`), tracked in packet thread.
+- `GAP-UX-001/002/003` and `RPT-001/002/003`: remain active until corresponding execution beads attach passing triad evidence artifacts.
+
+### 27.3 Cross-cutting validation gate note (integration pass)
+
+This integration pass is docs/planning only. Runtime evidence remains delegated to:
+- unit/property: `bd-3v0.12.5`, `bd-3v0.13.5`, `bd-3v0.14.5`, `bd-3v0.15.5`, `bd-3v0.17.5`
+- differential/metamorphic/adversarial: `bd-3v0.12.6`, `bd-3v0.13.6`, `bd-3v0.14.6`, `bd-3v0.15.6`, `bd-3v0.17.6`
+- e2e/logging: `bd-3v0.12.7`, `bd-3v0.13.7`, `bd-3v0.14.7`, `bd-3v0.15.7`, `bd-3v0.17.7`
