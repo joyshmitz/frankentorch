@@ -2,6 +2,7 @@
   "packet_id": "FT-P2C-004",
   "behavior_ledger": "artifacts/phase2c/FT-P2C-004/behavior_extraction_ledger.md",
   "legacy_anchor_map": "artifacts/phase2c/FT-P2C-004/legacy_anchor_map.md",
+  "implementation_plan": "artifacts/phase2c/FT-P2C-004/implementation_plan.md",
   "fixtures": [
     {
       "id": "autograd_scheduler_composite_dac",
@@ -43,10 +44,13 @@
     "autograd_scheduler/strict:dependency_underflow_probe": 8420101970047811095,
     "autograd_scheduler/hardened:dependency_underflow_probe": 5298414977992276633
   },
+  "security_compatibility_artifact": "artifacts/phase2c/FT-P2C-004/risk_note.md",
   "contract_artifacts": [
     "artifacts/phase2c/FT-P2C-004/legacy_anchor_map.md",
     "artifacts/phase2c/FT-P2C-004/behavior_extraction_ledger.md",
-    "artifacts/phase2c/FT-P2C-004/contract_table.md"
+    "artifacts/phase2c/FT-P2C-004/contract_table.md",
+    "artifacts/phase2c/FT-P2C-004/implementation_plan.md",
+    "artifacts/phase2c/FT-P2C-004/risk_note.md"
   ],
   "status": "active"
 }
