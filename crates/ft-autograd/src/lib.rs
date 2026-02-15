@@ -811,7 +811,10 @@ mod tests {
             let second = tape.backward(out).expect("backward should succeed");
 
             prop_assert_eq!(first.gradients(), second.gradients());
-            prop_assert_eq!(first.telemetry.execution_order, second.telemetry.execution_order);
+            prop_assert_eq!(
+                &first.telemetry.execution_order,
+                &second.telemetry.execution_order
+            );
 
             let seed = det_seed(&[
                 u64::from(x_in.unsigned_abs()),
@@ -899,7 +902,10 @@ mod tests {
                     policy: ReentrantPolicy::StrictFail,
                 },
             );
-            prop_assert!(matches!(overflow, Err(AutogradError::ReentrantDepthExceeded { .. })));
+            assert!(matches!(
+                overflow,
+                Err(AutogradError::ReentrantDepthExceeded { .. })
+            ));
         }
 
         #[test]
