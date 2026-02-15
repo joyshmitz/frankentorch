@@ -33,6 +33,7 @@ rustc-ice-*.txt
 a.out
 --graph-format.svg
 target-codex*/
+target_*/
 
 # Local legacy-oracle mirrors (too large for source repo)
 /legacy_*/
