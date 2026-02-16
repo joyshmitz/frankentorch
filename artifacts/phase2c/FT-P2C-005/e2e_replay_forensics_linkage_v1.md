@@ -35,11 +35,15 @@ Required fields are present for every log entry:
   - `artifacts/phase2c/conformance/differential_report_v1.json`
   - `artifacts/phase2c/FT-P2C-005/differential_packet_report_v1.json`
   - `artifacts/phase2c/FT-P2C-005/differential_reconciliation_v1.md`
+- optimization linkage references:
+  - `artifacts/phase2c/FT-P2C-005/optimization_delta_v1.json`
+  - `artifacts/phase2c/FT-P2C-005/optimization_isomorphism_v1.md`
+  - `artifacts/phase2c/FT-P2C-005/bd-3v0.16.8_profile_v1.md`
 - risk linkage: `artifacts/phase2c/FT-P2C-005/threat_model.md`
 
 ## Method-Stack Note
 
 - alien-artifact-coding: packet-scoped replay + forensics artifacts emitted with deterministic scenario and seed lineage.
-- extreme-software-optimization: no optimization lever changed; this bead validates e2e reproducibility and forensics completeness only.
+- extreme-software-optimization: fixture-preload optimization for FT-P2C-005 now has explicit legacy-vs-optimized isomorphism proof artifacts.
 - RaptorQ-everywhere durability: durability sidecars remain anchored in packet parity artifacts and final evidence-pack closure.
 - security/compatibility doctrine: strict+hardened packet e2e runs are replayable and classify to zero incidents under current fixture envelope.

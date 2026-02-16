@@ -1,0 +1,75 @@
+{
+  "schema_version": "ft-p2c-optimization-delta-v1",
+  "packet_id": "FT-P2C-005",
+  "bead_id": "bd-3v0.16.8",
+  "generated_at": "2026-02-16T04:03:08Z",
+  "optimization_lever": {
+    "id": "cpu-kernel-e2e-fixture-preload-with-shared-projection-execution",
+    "description": "Preload scalar/tensor-meta/dispatch fixtures once per e2e invocation and reuse them across strict+hardened mode execution while preserving FT-P2C-005 packet projection and forensic envelope behavior.",
+    "implementation_paths": [
+      "crates/ft-conformance/src/lib.rs"
+    ]
+  },
+  "benchmark": {
+    "name": "packet_e2e_microbench_cpu_kernel_legacy_vs_optimized_profiles",
+    "command": "rch exec -- cargo test -p ft-conformance packet_e2e_microbench_cpu_kernel_legacy_vs_optimized_profiles -- --nocapture",
+    "mode": "strict+hardened",
+    "packet_filter": "FT-P2C-005"
+  },
+  "baseline": {
+    "variant": "legacy_fixture_loading_per_mode",
+    "p50_ns": 4809861,
+    "p95_ns": 5100683,
+    "p99_ns": 5100683,
+    "mean_ns": 4880602,
+    "iterations": 10
+  },
+  "post": {
+    "variant": "optimized_fixture_preload_shared_across_modes",
+    "p50_ns": 4218929,
+    "p95_ns": 4351767,
+    "p99_ns": 4351767,
+    "mean_ns": 4237366,
+    "iterations": 10
+  },
+  "delta_ns": {
+    "p50_ns": -590932,
+    "p95_ns": -748916,
+    "p99_ns": -748916,
+    "mean_ns": -643236
+  },
+  "improvement": {
+    "p50_pct_reduction": 12.286,
+    "p95_pct_reduction": 14.683,
+    "p99_pct_reduction": 14.683,
+    "mean_pct_reduction": 13.179
+  },
+  "memory_churn": {
+    "baseline_max_rss_kb": null,
+    "post_max_rss_kb": null,
+    "note": "Comparator microbench runs legacy and optimized variants in one process for stable timing; max RSS instrumentation remains tracked by dedicated perf harness integration."
+  },
+  "isomorphism_evidence": {
+    "unit_property": [
+      "rch exec -- cargo test -p ft-conformance packet_e2e_microbench_cpu_kernel_legacy_vs_optimized_profiles -- --nocapture",
+      "rch exec -- cargo test -p ft-conformance e2e_matrix_packet_filter_includes_cpu_kernel_packet_entries -- --nocapture",
+      "rch exec -- cargo test -p ft-conformance e2e_matrix_unfiltered_keeps_ft_p2c_005_projection_entries -- --nocapture"
+    ],
+    "differential": [
+      "artifacts/phase2c/conformance/differential_report_v1.json",
+      "artifacts/phase2c/FT-P2C-005/differential_packet_report_v1.json",
+      "artifacts/phase2c/FT-P2C-005/differential_reconciliation_v1.md"
+    ],
+    "e2e": [
+      "rch exec -- cargo run -p ft-conformance --bin run_e2e_matrix -- --mode strict --mode hardened --packet FT-P2C-005 --output artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl",
+      "artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl",
+      "artifacts/phase2c/FT-P2C-005/e2e_replay_forensics_linkage_v1.json"
+    ],
+    "quality_gates": [
+      "rch exec -- cargo check --workspace --all-targets",
+      "rch exec -- cargo clippy --workspace --all-targets -- -D warnings",
+      "rch exec -- cargo fmt --check"
+    ]
+  },
+  "status": "pass"
+}

@@ -65,6 +65,9 @@ Required linkage chain for packet forensics:
 4. differential report (`artifacts/phase2c/conformance/differential_report_v1.json`)
 5. packet differential slice (`artifacts/phase2c/FT-P2C-005/differential_packet_report_v1.json`)
 6. packet reconciliation note (`artifacts/phase2c/FT-P2C-005/differential_reconciliation_v1.md`)
+7. optimization delta (`artifacts/phase2c/FT-P2C-005/optimization_delta_v1.json`)
+8. optimization isomorphism note (`artifacts/phase2c/FT-P2C-005/optimization_isomorphism_v1.md`)
+9. profiling note (`artifacts/phase2c/FT-P2C-005/bd-3v0.16.8_profile_v1.md`)
 
 ## 5) Residual Risks and Deferred Controls
 
@@ -76,7 +79,8 @@ Deferred controls and ownership:
 - `bd-3v0.16.5`: unit/property coverage expansion for dtype/device, broadcast, in-place adversarial probes.
 - `bd-3v0.16.6`: differential/metamorphic/adversarial reconciliation and allowlist-policy checks.
 - `bd-3v0.16.7`: packet e2e replay/forensics artifact emission (`ft-p2c-005` slice).
-- `bd-3v0.16.8`: packet performance optimization with behavior-isomorphism evidence.
+- `bd-3v0.16.8`: packet performance optimization with behavior-isomorphism evidence
+  (`optimization_delta_v1.json`, `optimization_isomorphism_v1.md`, `bd-3v0.16.8_profile_v1.md`).
 - `bd-3v0.16.9`: final evidence-pack closure with parity+RaptorQ artifacts.
 
 ## 6) N/A Cross-Cutting Validation Note

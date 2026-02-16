@@ -1,7 +1,7 @@
 {
   "schema_version": "ft-p2c-e2e-linkage-v1",
   "packet_id": "FT-P2C-005",
-  "generated_at": "2026-02-16T02:36:12Z",
+  "generated_at": "2026-02-16T04:03:08Z",
   "source_e2e_log": "artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl",
   "source_triage": "artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_005_v1.json",
   "source_failure_index": "artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_005_v1.json",
@@ -108,6 +108,11 @@
       "artifacts/phase2c/conformance/differential_report_v1.json",
       "artifacts/phase2c/FT-P2C-005/differential_packet_report_v1.json",
       "artifacts/phase2c/FT-P2C-005/differential_reconciliation_v1.md"
+    ],
+    "optimization": [
+      "artifacts/phase2c/FT-P2C-005/optimization_delta_v1.json",
+      "artifacts/phase2c/FT-P2C-005/optimization_isomorphism_v1.md",
+      "artifacts/phase2c/FT-P2C-005/bd-3v0.16.8_profile_v1.md"
     ],
     "risk_note": "artifacts/phase2c/FT-P2C-005/threat_model.md"
   },
