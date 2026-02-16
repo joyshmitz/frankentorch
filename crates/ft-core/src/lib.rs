@@ -152,7 +152,32 @@ impl TensorMeta {
 
     #[must_use]
     pub fn is_contiguous(&self) -> bool {
-        self.strides == contiguous_strides(self.shape.as_slice())
+        if self.shape.len() != self.strides.len() {
+            return false;
+        }
+
+        let mut expected_stride = 1usize;
+        for (size, stride) in self
+            .shape
+            .iter()
+            .copied()
+            .zip(self.strides.iter().copied())
+            .rev()
+        {
+            // Match PyTorch semantics: singleton dimensions are contiguous
+            // regardless of stride.
+            if size == 1 {
+                continue;
+            }
+            if stride != expected_stride {
+                return false;
+            }
+            let Some(next_expected) = expected_stride.checked_mul(size) else {
+                return false;
+            };
+            expected_stride = next_expected;
+        }
+        true
     }
 
     pub fn storage_index_for(&self, index: &[usize]) -> Result<usize, TensorMetaError> {
@@ -519,6 +544,41 @@ mod tests {
         assert_eq!(meta.strides(), &[12, 4, 1]);
         assert_eq!(meta.numel(), 24);
         assert!(meta.is_contiguous());
+    }
+
+    #[test]
+    fn singleton_dim_stride_variation_is_still_contiguous() {
+        let broadcast_meta =
+            TensorMeta::from_shape_and_strides(vec![1, 3], vec![0, 1], 0, DType::F64, Device::Cpu)
+                .expect("broadcast shape should validate");
+        assert!(
+            broadcast_meta.is_contiguous(),
+            "singleton stride should not break contiguous semantics"
+        );
+
+        let interior_singleton_meta = TensorMeta::from_shape_and_strides(
+            vec![2, 1, 4],
+            vec![4, 99, 1],
+            0,
+            DType::F64,
+            Device::Cpu,
+        )
+        .expect("interior singleton stride should validate");
+        assert!(
+            interior_singleton_meta.is_contiguous(),
+            "interior singleton stride should be ignored for contiguity"
+        );
+    }
+
+    #[test]
+    fn non_singleton_stride_mismatch_is_not_contiguous() {
+        let meta =
+            TensorMeta::from_shape_and_strides(vec![2, 3], vec![0, 1], 0, DType::F64, Device::Cpu)
+                .expect("meta should validate");
+        assert!(
+            !meta.is_contiguous(),
+            "non-singleton zero stride should fail contiguous check"
+        );
     }
 
     #[test]

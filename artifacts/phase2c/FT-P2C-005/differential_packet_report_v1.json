@@ -1,129 +1,47 @@
 {
   "schema_version": "ft-p2c-differential-packet-v1",
+  "generated_at": "2026-02-16T06:57:16Z",
   "packet_id": "FT-P2C-005",
   "source_report": "artifacts/phase2c/conformance/differential_report_v1.json",
-  "generated_at": "2026-02-16T02:27:12Z",
   "total_checks": 168,
-  "pass_checks": 158,
-  "non_pass_checks": 10,
+  "pass_checks": 160,
   "allowlisted_checks": 8,
-  "blocking_checks": 2,
-  "suite_breakdown": [
-    {
-      "suite": "dispatch_key",
-      "count": 28
-    },
-    {
-      "suite": "scalar_dac",
-      "count": 36
-    },
-    {
-      "suite": "tensor_meta",
-      "count": 104
-    }
-  ],
-  "mode_breakdown": [
-    {
-      "mode": "hardened",
-      "count": 84
-    },
-    {
-      "mode": "strict",
-      "count": 84
-    }
-  ],
-  "status_breakdown": [
-    {
-      "status": "allowlisted_drift",
-      "count": 8
-    },
-    {
-      "status": "blocking_drift",
-      "count": 2
-    },
-    {
-      "status": "pass",
-      "count": 158
-    }
-  ],
-  "comparator_breakdown": [
-    {
-      "comparator": "abs_tol",
-      "count": 40
-    },
-    {
-      "comparator": "adversarial_autograd_without_cpu_rejected",
-      "count": 2
-    },
-    {
-      "comparator": "adversarial_unknown_key_rejected",
-      "count": 2
-    },
-    {
-      "comparator": "alias_policy",
-      "count": 8
-    },
-    {
-      "comparator": "contiguous",
-      "count": 8
-    },
-    {
-      "comparator": "fail_closed",
-      "count": 8
-    },
-    {
-      "comparator": "fail_closed_oracle",
-      "count": 4
-    },
-    {
-      "comparator": "fail_closed_oracle_guard",
-      "count": 4
-    },
-    {
-      "comparator": "linear_index",
-      "count": 8
-    },
-    {
-      "comparator": "metamorphic_commutative_local",
-      "count": 4
-    },
-    {
-      "comparator": "metamorphic_offset_shift_contiguous_local",
-      "count": 8
-    },
-    {
-      "comparator": "metamorphic_offset_shift_contiguous_oracle",
-      "count": 8
-    },
-    {
-      "comparator": "metamorphic_offset_shift_linear_local",
-      "count": 8
-    },
-    {
-      "comparator": "metamorphic_offset_shift_linear_oracle",
-      "count": 8
-    },
-    {
-      "comparator": "metamorphic_offset_shift_numel_local",
-      "count": 8
-    },
-    {
-      "comparator": "metamorphic_offset_shift_numel_oracle",
-      "count": 8
-    },
-    {
-      "comparator": "mode_split_policy",
-      "count": 16
-    },
-    {
-      "comparator": "numel",
-      "count": 8
-    },
-    {
-      "comparator": "oracle_guard",
-      "count": 8
-    }
-  ],
+  "blocking_checks": 0,
+  "non_pass_checks": 8,
+  "status_breakdown": {
+    "pass": 160,
+    "allowlisted_drift": 8
+  },
+  "suite_breakdown": {
+    "scalar_dac": 36,
+    "tensor_meta": 104,
+    "dispatch_key": 28
+  },
+  "mode_breakdown": {
+    "hardened": 84,
+    "strict": 84
+  },
+  "comparator_breakdown": {
+    "abs_tol": 40,
+    "alias_policy": 8,
+    "contiguous": 8,
+    "linear_index": 8,
+    "metamorphic_offset_shift_contiguous_local": 8,
+    "metamorphic_offset_shift_contiguous_oracle": 8,
+    "metamorphic_offset_shift_linear_local": 8,
+    "metamorphic_offset_shift_linear_oracle": 8,
+    "metamorphic_offset_shift_numel_local": 8,
+    "metamorphic_offset_shift_numel_oracle": 8,
+    "numel": 8,
+    "oracle_guard": 8,
+    "fail_closed": 8,
+    "fail_closed_oracle": 4,
+    "fail_closed_oracle_guard": 4,
+    "adversarial_autograd_without_cpu_rejected": 2,
+    "adversarial_unknown_key_rejected": 2,
+    "mode_split_policy": 16,
+    "metamorphic_commutative_local": 4
+  },
   "metamorphic_checks": [
     {
       "scenario_id": "ft_p2c_005/FT-P2C-001/tensor_meta/hardened:broadcast_stride_zero_valid",
@@ -707,7 +625,7 @@
   "packet_allowlist_reconciliation": {
     "global_allowlisted_drifts": 8,
     "packet_allowlisted_drifts": 8,
-    "note": "FT-P2C-005 projection carries hardened dispatch policy allowlists from FT-P2C-002; tensor-meta contiguous drifts remain blocking in strict and hardened modes."
+    "note": "FT-P2C-005 projection carries hardened dispatch policy allowlists from FT-P2C-002; no blocking drifts remain."
   },
   "risk_linkage": {
     "threat_ids_covered": [

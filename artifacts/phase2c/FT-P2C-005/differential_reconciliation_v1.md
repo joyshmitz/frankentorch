@@ -9,20 +9,17 @@
 ## Result
 
 - packet checks: `168`
-- pass checks: `158`
-- non-pass checks: `10`
+- pass checks: `160`
+- non-pass checks: `8`
 - packet allowlisted drifts: `8`
-- packet blocking drifts: `2`
+- packet blocking drifts: `0`
 
 Allowlisted drifts are constrained to hardened dispatch mode-split policy cases projected from FT-P2C-002:
 - drift id: `dispatch.composite_backend_fallback`
 - comparator: `mode_split_policy`
 - cases: `autograd_without_cpu_fail_closed`, `composite_route_mode_split`, `device_mismatch_fail_closed`, `dtype_mismatch_fail_closed`, `empty_keyset_fail_closed`, `no_backend_key_fail_closed`, `no_type_key_fail_closed`, `unknown_dispatch_key_fail_closed`
 
-Blocking drift remains in tensor-meta projection from FT-P2C-001:
-- drift id: `tensor_meta.contiguous_mismatch`
-- comparator: `contiguous`
-- case: `broadcast_stride_zero_valid` (strict + hardened)
+No blocking drift remains in the FT-P2C-005 packet projection.
 
 ## Metamorphic + Adversarial Coverage
 

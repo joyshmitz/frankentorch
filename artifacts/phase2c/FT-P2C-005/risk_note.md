@@ -24,15 +24,14 @@ High.
 ## Current Drift Posture
 
 - Allowlisted drifts: `8` (hardened dispatch mode-split drift `dispatch.composite_backend_fallback`, projected from `FT-P2C-002`).
-- Blocking drifts: `2` (`tensor_meta.contiguous_mismatch` for `broadcast_stride_zero_valid`, strict + hardened).
+- Blocking drifts: `0`.
 
 ## Residual Risk
 
-- Packet remains blocked for full parity closure while `tensor_meta.contiguous_mismatch` remains unresolved in FT-P2C-005 projection.
 - First-wave scope does not yet cover full TensorIterator dtype/vectorized/sparse parity surface.
 
 ## Next Controls
 
-1. Resolve the blocking tensor-meta contiguous drift (`broadcast_stride_zero_valid`) in projected packet checks.
-2. Re-run packet differential projection and require zero blocking drifts before parity-green promotion.
-3. Carry resolved state into FT-P2C-007 dependency chain and readiness-gate evidence.
+1. Preserve zero-blocking packet differential posture on subsequent evidence refreshes.
+2. Carry resolved state into FT-P2C-007 dependency chain and readiness-gate evidence.
+3. Expand first-wave coverage toward TensorIterator dtype/vectorized/sparse parity closure.
