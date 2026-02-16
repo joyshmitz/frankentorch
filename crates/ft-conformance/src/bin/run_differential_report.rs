@@ -2,13 +2,14 @@
 
 use std::path::PathBuf;
 
-use ft_conformance::{HarnessConfig, emit_differential_report};
+use ft_conformance::{HarnessConfig, emit_differential_report_filtered};
 use ft_core::ExecutionMode;
 use serde_json::json;
 
 fn main() -> Result<(), String> {
     let mut mode = String::from("both");
     let mut output: Option<PathBuf> = None;
+    let mut packet: Option<String> = None;
     let mut print_full_report = false;
 
     let mut args = std::env::args().skip(1);
@@ -26,12 +27,18 @@ fn main() -> Result<(), String> {
                     .ok_or_else(|| "--output requires a file path".to_string())?;
                 output = Some(PathBuf::from(value));
             }
+            "--packet" => {
+                let value = args.next().ok_or_else(|| {
+                    "--packet requires a packet id (e.g., FT-P2C-005)".to_string()
+                })?;
+                packet = Some(value);
+            }
             "--print-full-report" => {
                 print_full_report = true;
             }
             other => {
                 return Err(format!(
-                    "unknown arg '{other}'. usage: run_differential_report [--mode strict|hardened|both] [--output path] [--print-full-report]"
+                    "unknown arg '{other}'. usage: run_differential_report [--mode strict|hardened|both] [--packet FT-P2C-00X] [--output path] [--print-full-report]"
                 ));
             }
         }
@@ -40,13 +47,21 @@ fn main() -> Result<(), String> {
     let modes = parse_modes(mode.as_str())?;
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output_path = output.unwrap_or_else(|| {
-        repo_root.join("artifacts/phase2c/conformance/differential_report_v1.json")
+        packet.as_deref().map_or_else(
+            || repo_root.join("artifacts/phase2c/conformance/differential_report_v1.json"),
+            |packet_id| {
+                repo_root.join(format!(
+                    "artifacts/phase2c/{packet_id}/differential_packet_report_v1.json"
+                ))
+            },
+        )
     });
 
-    let report = emit_differential_report(
+    let report = emit_differential_report_filtered(
         &HarnessConfig::default_paths(),
         output_path.as_path(),
         modes.as_slice(),
+        packet.as_deref(),
     )?;
 
     if print_full_report {
@@ -70,6 +85,7 @@ fn main() -> Result<(), String> {
             "failed_checks": report.failed_checks,
             "allowlisted_drifts": report.allowlisted_drifts,
             "blocking_drifts": report.blocking_drifts,
+            "packet_filter": packet,
         }))
         .map_err(|error| format!("failed to serialize summary: {error}"))?
     );

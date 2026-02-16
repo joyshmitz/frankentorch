@@ -1,0 +1,115 @@
+{
+  "schema_version": "ft-p2c-e2e-linkage-v1",
+  "packet_id": "FT-P2C-005",
+  "generated_at": "2026-02-16T02:36:12Z",
+  "source_e2e_log": "artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl",
+  "source_triage": "artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_005_v1.json",
+  "source_failure_index": "artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_005_v1.json",
+  "total_entries": 48,
+  "failed_entries": 0,
+  "suite_breakdown": [
+    {
+      "suite_id": "dispatch_key",
+      "count": 20
+    },
+    {
+      "suite_id": "scalar_dac",
+      "count": 12
+    },
+    {
+      "suite_id": "tensor_meta",
+      "count": 16
+    }
+  ],
+  "mode_breakdown": [
+    {
+      "mode": "hardened",
+      "count": 24
+    },
+    {
+      "mode": "strict",
+      "count": 24
+    }
+  ],
+  "deterministic_replay_field_coverage": {
+    "scenario_id": true,
+    "seed": true,
+    "env_fingerprint": true,
+    "artifact_refs": true,
+    "replay_command": true,
+    "reason_code": true
+  },
+  "replay_command_catalog": [
+    "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode hardened --packet FT-P2C-005 --output artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl",
+    "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode strict --packet FT-P2C-005 --output artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl"
+  ],
+  "scenario_ids": [
+    "ft_p2c_005/dispatch_key/hardened:autograd_without_cpu_fail_closed",
+    "ft_p2c_005/dispatch_key/hardened:composite_route_mode_split",
+    "ft_p2c_005/dispatch_key/hardened:device_mismatch_fail_closed",
+    "ft_p2c_005/dispatch_key/hardened:dtype_mismatch_fail_closed",
+    "ft_p2c_005/dispatch_key/hardened:empty_keyset_fail_closed",
+    "ft_p2c_005/dispatch_key/hardened:no_backend_key_fail_closed",
+    "ft_p2c_005/dispatch_key/hardened:no_type_key_fail_closed",
+    "ft_p2c_005/dispatch_key/hardened:strict_autograd_route",
+    "ft_p2c_005/dispatch_key/hardened:strict_cpu_route",
+    "ft_p2c_005/dispatch_key/hardened:unknown_dispatch_key_fail_closed",
+    "ft_p2c_005/dispatch_key/strict:autograd_without_cpu_fail_closed",
+    "ft_p2c_005/dispatch_key/strict:composite_route_mode_split",
+    "ft_p2c_005/dispatch_key/strict:device_mismatch_fail_closed",
+    "ft_p2c_005/dispatch_key/strict:dtype_mismatch_fail_closed",
+    "ft_p2c_005/dispatch_key/strict:empty_keyset_fail_closed",
+    "ft_p2c_005/dispatch_key/strict:no_backend_key_fail_closed",
+    "ft_p2c_005/dispatch_key/strict:no_type_key_fail_closed",
+    "ft_p2c_005/dispatch_key/strict:strict_autograd_route",
+    "ft_p2c_005/dispatch_key/strict:strict_cpu_route",
+    "ft_p2c_005/dispatch_key/strict:unknown_dispatch_key_fail_closed",
+    "ft_p2c_005/scalar_dac/hardened:add_basic",
+    "ft_p2c_005/scalar_dac/hardened:add_negative_rhs",
+    "ft_p2c_005/scalar_dac/hardened:add_zero_identity",
+    "ft_p2c_005/scalar_dac/hardened:mul_basic",
+    "ft_p2c_005/scalar_dac/hardened:mul_negative_lhs",
+    "ft_p2c_005/scalar_dac/hardened:mul_zero_absorber",
+    "ft_p2c_005/scalar_dac/strict:add_basic",
+    "ft_p2c_005/scalar_dac/strict:add_negative_rhs",
+    "ft_p2c_005/scalar_dac/strict:add_zero_identity",
+    "ft_p2c_005/scalar_dac/strict:mul_basic",
+    "ft_p2c_005/scalar_dac/strict:mul_negative_lhs",
+    "ft_p2c_005/scalar_dac/strict:mul_zero_absorber",
+    "ft_p2c_005/tensor_meta/hardened:broadcast_stride_zero_valid",
+    "ft_p2c_005/tensor_meta/hardened:contiguous_basic_index",
+    "ft_p2c_005/tensor_meta/hardened:invalid_rank_stride_extra_fail_closed",
+    "ft_p2c_005/tensor_meta/hardened:invalid_rank_stride_mismatch",
+    "ft_p2c_005/tensor_meta/hardened:invalid_storage_offset_overflow",
+    "ft_p2c_005/tensor_meta/hardened:invalid_storage_offset_overflow_large",
+    "ft_p2c_005/tensor_meta/hardened:scalar_offset_index",
+    "ft_p2c_005/tensor_meta/hardened:strided_offset_index",
+    "ft_p2c_005/tensor_meta/strict:broadcast_stride_zero_valid",
+    "ft_p2c_005/tensor_meta/strict:contiguous_basic_index",
+    "ft_p2c_005/tensor_meta/strict:invalid_rank_stride_extra_fail_closed",
+    "ft_p2c_005/tensor_meta/strict:invalid_rank_stride_mismatch",
+    "ft_p2c_005/tensor_meta/strict:invalid_storage_offset_overflow",
+    "ft_p2c_005/tensor_meta/strict:invalid_storage_offset_overflow_large",
+    "ft_p2c_005/tensor_meta/strict:scalar_offset_index",
+    "ft_p2c_005/tensor_meta/strict:strided_offset_index"
+  ],
+  "linkage_refs": {
+    "unit_property": [
+      "rch exec -- cargo test -p ft-api session_add_backward_records_evidence -- --nocapture",
+      "rch exec -- cargo test -p ft-autograd add_backward_matches_expected_gradient -- --nocapture",
+      "rch exec -- cargo test -p ft-autograd mul_backward_matches_expected_gradient -- --nocapture",
+      "rch exec -- cargo test -p ft-core index_rank_and_bounds_are_guarded -- --nocapture",
+      "rch exec -- cargo test -p ft-core custom_strides_validate_and_index_into_storage -- --nocapture",
+      "rch exec -- cargo test -p ft-dispatch strict_mode_rejects_composite_fallback -- --nocapture",
+      "rch exec -- cargo test -p ft-dispatch hardened_mode_allows_composite_fallback -- --nocapture",
+      "rch exec -- cargo test -p ft-dispatch unknown_bits_fail_closed -- --nocapture"
+    ],
+    "differential": [
+      "artifacts/phase2c/conformance/differential_report_v1.json",
+      "artifacts/phase2c/FT-P2C-005/differential_packet_report_v1.json",
+      "artifacts/phase2c/FT-P2C-005/differential_reconciliation_v1.md"
+    ],
+    "risk_note": "artifacts/phase2c/FT-P2C-005/threat_model.md"
+  },
+  "status": "pass"
+}

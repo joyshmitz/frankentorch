@@ -747,6 +747,24 @@ fn project_log_to_ft_p2c_005(mut log: StructuredCaseLog) -> StructuredCaseLog {
     let original_packet = log.packet_id;
     log.packet_id = "FT-P2C-005";
     log.scenario_id = format!("ft_p2c_005/{}", log.scenario_id);
+    // Flattened structured logs must not shadow top-level envelope fields.
+    for shadowed_key in [
+        "schema_version",
+        "ts_unix_ms",
+        "suite_id",
+        "scenario_id",
+        "fixture_id",
+        "packet_id",
+        "mode",
+        "seed",
+        "env_fingerprint",
+        "artifact_refs",
+        "replay_command",
+        "outcome",
+        "reason_code",
+    ] {
+        log.extra_fields.remove(shadowed_key);
+    }
     log.replay_command = format!(
         "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode {} --packet FT-P2C-005 --output artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl",
         log.mode
@@ -2011,7 +2029,21 @@ pub fn emit_differential_report(
     output_path: &Path,
     modes: &[ExecutionMode],
 ) -> Result<DifferentialHarnessReport, String> {
+    emit_differential_report_filtered(config, output_path, modes, None)
+}
+
+pub fn emit_differential_report_filtered(
+    config: &HarnessConfig,
+    output_path: &Path,
+    modes: &[ExecutionMode],
+    packet_filter: Option<&str>,
+) -> Result<DifferentialHarnessReport, String> {
     let report = run_differential_conformance(config, modes)?;
+    let report = if let Some(packet_id) = packet_filter {
+        project_differential_report_to_packet(report, packet_id)
+    } else {
+        report
+    };
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -2034,6 +2066,64 @@ pub fn emit_differential_report(
     })?;
 
     Ok(report)
+}
+
+fn project_differential_report_to_packet(
+    mut report: DifferentialHarnessReport,
+    packet_id: &str,
+) -> DifferentialHarnessReport {
+    report.checks = report
+        .checks
+        .into_iter()
+        .filter_map(|check| project_differential_check_to_packet(check, packet_id))
+        .collect();
+    report.total_checks = report.checks.len();
+    report.allowlisted_drifts = report
+        .checks
+        .iter()
+        .filter(|check| check.status == "allowlisted_drift")
+        .count();
+    report.blocking_drifts = report
+        .checks
+        .iter()
+        .filter(|check| check.status == "blocking_drift")
+        .count();
+    report.failed_checks = report
+        .checks
+        .iter()
+        .filter(|check| check.status == "blocking_drift" || check.status == "oracle_unavailable")
+        .count();
+    report
+}
+
+fn project_differential_check_to_packet(
+    check: DifferentialCheck,
+    packet_id: &str,
+) -> Option<DifferentialCheck> {
+    match packet_id {
+        "FT-P2C-005" => project_differential_check_to_ft_p2c_005(check),
+        _ => (check.packet_id == packet_id).then_some(check),
+    }
+}
+
+fn project_differential_check_to_ft_p2c_005(
+    mut check: DifferentialCheck,
+) -> Option<DifferentialCheck> {
+    if !(matches!(check.packet_id, "FT-P2C-001" | "FT-P2C-002")
+        && matches!(check.suite, "scalar_dac" | "tensor_meta" | "dispatch_key"))
+    {
+        return None;
+    }
+
+    let source_packet = check.packet_id;
+    check.packet_id = "FT-P2C-005";
+    check.scenario_id = format!("ft_p2c_005/{source_packet}/{}", check.scenario_id);
+    check
+        .evidence_refs
+        .extend(ft_p2c_005_differential_evidence_refs());
+    check.evidence_refs.sort();
+    check.evidence_refs.dedup();
+    Some(check)
 }
 
 #[must_use]
@@ -3678,6 +3768,17 @@ fn serialization_evidence_refs() -> Vec<String> {
     ]
 }
 
+fn ft_p2c_005_differential_evidence_refs() -> Vec<String> {
+    vec![
+        "artifacts/phase2c/FT-P2C-005/contract_table.md".to_string(),
+        "artifacts/phase2c/FT-P2C-005/threat_model.md".to_string(),
+        "artifacts/phase2c/FT-P2C-005/behavior_extraction_ledger.md".to_string(),
+        "artifacts/phase2c/FT-P2C-005/differential_packet_report_v1.json".to_string(),
+        "artifacts/phase2c/FT-P2C-005/differential_reconciliation_v1.md".to_string(),
+        "artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl".to_string(),
+    ]
+}
+
 fn serialization_entries(case: &SerializationCase) -> Vec<SerializedSnapshotEntry> {
     case.entries
         .iter()
@@ -3787,16 +3888,20 @@ fn percentile(samples: &[u128], p: usize) -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use serde_json::json;
+
     use super::{
-        ExecutionMode, HarnessConfig, emit_differential_report, emit_e2e_forensics_matrix,
-        emit_e2e_forensics_matrix_filtered, load_allowlist, run_autograd_scheduler_conformance,
-        run_differential_conformance, run_dispatch_conformance, run_op_schema_conformance,
-        run_packet_e2e_microbench, run_scalar_conformance, run_scalar_microbench,
-        run_serialization_conformance, run_smoke, run_tensor_meta_conformance,
+        ExecutionMode, HarnessConfig, StructuredCaseLog, emit_differential_report,
+        emit_differential_report_filtered, emit_e2e_forensics_matrix,
+        emit_e2e_forensics_matrix_filtered, load_allowlist, project_log_to_ft_p2c_005,
+        run_autograd_scheduler_conformance, run_differential_conformance, run_dispatch_conformance,
+        run_op_schema_conformance, run_packet_e2e_microbench, run_scalar_conformance,
+        run_scalar_microbench, run_serialization_conformance, run_smoke,
+        run_tensor_meta_conformance,
     };
 
     #[test]
@@ -4154,6 +4259,47 @@ mod tests {
     }
 
     #[test]
+    fn ft_p2c_005_projection_strips_shadowed_flatten_keys() {
+        let mut extra_fields = BTreeMap::new();
+        extra_fields.insert("mode".to_string(), json!("shadowed_mode"));
+        extra_fields.insert("reason_code".to_string(), json!("shadowed_reason"));
+        extra_fields.insert("contract_ids".to_string(), json!(["CPU-KERNEL-001"]));
+
+        let base_log = StructuredCaseLog::new(
+            "scalar_dac",
+            "scalar_autograd_cases.json",
+            "FT-P2C-001",
+            "add_basic",
+            ExecutionMode::Strict,
+            vec!["artifacts/phase2c/FT-P2C-001/parity_report.json".to_string()],
+            "cargo test -p ft-conformance strict_scalar_conformance_is_green -- --nocapture"
+                .to_string(),
+            "pass",
+            "parity_ok",
+        )
+        .with_extra_fields(extra_fields);
+
+        let projected = project_log_to_ft_p2c_005(base_log);
+        assert_eq!(projected.packet_id, "FT-P2C-005");
+        assert!(
+            projected.scenario_id.starts_with("ft_p2c_005/"),
+            "scenario must be namespaced under FT-P2C-005 projection"
+        );
+        assert!(
+            !projected.extra_fields.contains_key("mode"),
+            "mode must stay only at top-level envelope"
+        );
+        assert!(
+            !projected.extra_fields.contains_key("reason_code"),
+            "reason_code must stay only at top-level envelope"
+        );
+        assert!(
+            projected.extra_fields.contains_key("contract_ids"),
+            "non-shadowed forensic fields must be preserved"
+        );
+    }
+
+    #[test]
     fn e2e_matrix_packet_filter_includes_serialization_packet_entries() {
         let cfg = HarnessConfig::default_paths();
         let now = SystemTime::now()
@@ -4434,6 +4580,103 @@ mod tests {
         ] {
             assert!(value.get(key).is_some(), "missing required key {key}");
         }
+
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn differential_report_packet_filter_limits_output() {
+        let cfg = HarnessConfig::default_paths();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let output_path = std::env::temp_dir().join(format!(
+            "ft_conformance_differential_packet_filter_{}_{}.json",
+            std::process::id(),
+            now
+        ));
+
+        let report = emit_differential_report_filtered(
+            &cfg,
+            output_path.as_path(),
+            &[ExecutionMode::Strict, ExecutionMode::Hardened],
+            Some("FT-P2C-003"),
+        )
+        .expect("packet-filtered differential report should emit");
+        assert!(report.total_checks > 0);
+        assert_eq!(report.total_checks, report.checks.len());
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|check| check.packet_id == "FT-P2C-003"),
+            "packet filter must only emit FT-P2C-003 checks"
+        );
+
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn differential_report_packet_filter_projects_ft_p2c_005() {
+        let cfg = HarnessConfig::default_paths();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let output_path = std::env::temp_dir().join(format!(
+            "ft_conformance_differential_packet_projection_{}_{}.json",
+            std::process::id(),
+            now
+        ));
+
+        let report = emit_differential_report_filtered(
+            &cfg,
+            output_path.as_path(),
+            &[ExecutionMode::Strict, ExecutionMode::Hardened],
+            Some("FT-P2C-005"),
+        )
+        .expect("FT-P2C-005 differential projection should emit");
+        assert!(report.total_checks > 0);
+        assert_eq!(report.total_checks, report.checks.len());
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|check| check.packet_id == "FT-P2C-005"),
+            "projection must retag checks to FT-P2C-005"
+        );
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| { check.scenario_id.starts_with("ft_p2c_005/FT-P2C-001/") })
+        );
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| { check.scenario_id.starts_with("ft_p2c_005/FT-P2C-002/") })
+        );
+        assert!(report.checks.iter().all(|check| {
+            check
+                .evidence_refs
+                .iter()
+                .any(|path| path == "artifacts/phase2c/FT-P2C-005/contract_table.md")
+        }));
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.comparator.contains("metamorphic")),
+            "projection should retain metamorphic comparators"
+        );
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.comparator.contains("adversarial")
+                    || check.comparator == "fail_closed"),
+            "projection should retain adversarial/fail-closed comparators"
+        );
 
         let _ = fs::remove_file(output_path);
     }
