@@ -155,6 +155,16 @@ pub fn generate_raptorq_sidecar(
     let source_symbol_count = source_symbols.len();
     let seed = 0x4654_5f52_4150_5451;
 
+    let decoder = InactivationDecoder::new(source_symbol_count, symbol_size, seed);
+    let params = decoder.params();
+    let min_repair_symbols = params.k_prime.saturating_sub(source_symbol_count);
+    // Keep a small deterministic headroom so decode can try alternative symbol mixes
+    // when the first linear system is singular.
+    let repair_count = repair_symbols
+        .max(1)
+        .max(min_repair_symbols)
+        .saturating_add(8);
+
     let mut encoder =
         SystematicEncoder::new(&source_symbols, symbol_size, seed).ok_or_else(|| {
             SerializeError::RaptorQFailure {
@@ -163,10 +173,7 @@ pub fn generate_raptorq_sidecar(
         })?;
 
     let systematic = encoder.emit_systematic();
-    let repair_count = repair_symbols.max(1);
     let repair = encoder.emit_repair(repair_count);
-
-    let decoder = InactivationDecoder::new(source_symbol_count, symbol_size, seed);
     let constraints = decoder.constraint_symbols();
     let source_received: Vec<ReceivedSymbol> = systematic
         .iter()
@@ -186,22 +193,44 @@ pub fn generate_raptorq_sidecar(
 
     let mut candidates: Vec<Vec<ReceivedSymbol>> = Vec::new();
 
-    let mut candidate_a = constraints.clone();
-    candidate_a.extend(source_received.clone());
-    candidates.push(candidate_a);
+    let mut min_required_candidate = constraints.clone();
+    min_required_candidate.extend(source_received.clone());
+    min_required_candidate.extend(repair_received.iter().take(min_repair_symbols).cloned());
+    candidates.push(min_required_candidate);
 
-    if !repair_received.is_empty() && !source_received.is_empty() {
-        let mut candidate_b = constraints.clone();
-        candidate_b.extend(source_received.iter().skip(1).cloned());
-        candidate_b.push(repair_received[0].clone());
-        candidate_b.extend(repair_received.iter().skip(1).cloned());
-        candidates.push(candidate_b);
+    let max_swaps = source_received
+        .len()
+        .min(repair_received.len().saturating_sub(min_repair_symbols))
+        .min(16);
+    for swap in 1..=max_swaps {
+        let mut swapped = constraints.clone();
+        swapped.extend(source_received.iter().skip(swap).cloned());
+        swapped.extend(
+            repair_received
+                .iter()
+                .take(min_repair_symbols + swap)
+                .cloned(),
+        );
+        candidates.push(swapped);
     }
 
-    let mut candidate_c = constraints.clone();
-    candidate_c.extend(source_received);
-    candidate_c.extend(repair_received);
-    candidates.push(candidate_c);
+    if repair_received.len() > min_repair_symbols {
+        let mut tail_repairs = constraints.clone();
+        tail_repairs.extend(source_received.iter().cloned());
+        tail_repairs.extend(
+            repair_received
+                .iter()
+                .rev()
+                .take(min_repair_symbols)
+                .cloned(),
+        );
+        candidates.push(tail_repairs);
+    }
+
+    let mut all_symbols = constraints.clone();
+    all_symbols.extend(source_received);
+    all_symbols.extend(repair_received);
+    candidates.push(all_symbols);
 
     let mut selected_received = None;
     let mut selected_decoded = None;
