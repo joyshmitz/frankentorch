@@ -43,8 +43,9 @@ Rationale:
 - Hardened allowlist:
   - `artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json`
 - CI workflow-dispatch evidence:
-  - failed run: `https://github.com/Dicklesworthstone/frankentorch/actions/runs/22076739517`
-  - failure cause: absolute local `ftui` path (`/dp/frankentui/...`) missing on GitHub runners; remediation tracked in `bd-s4hd`.
+  - failed run: `https://github.com/Dicklesworthstone/frankentorch/actions/runs/22076739517` (G1, fixed by removing absolute `ftui` path dependency)
+  - failed run: `https://github.com/Dicklesworthstone/frankentorch/actions/runs/22076831591` (G2: `smoke_harness_finds_oracle_and_fixtures` + `differential_tensor_meta_adds_metamorphic_and_adversarial_checks`)
+  - active remediation tracking: `bd-s4hd`
 
 ## Residual Risk Register
 
@@ -53,10 +54,10 @@ Rationale:
 | `RSK-P2C-READINESS-001` | resolved | Gate-window packet coverage closure for `FT-P2C-003/005/007/008` completed. | Previously risked understated packet coverage in readiness reports. | `WhiteGlacier` | `bd-3v0.24` (closed) |
 | `RSK-P2C-READINESS-002` | resolved | Failure-forensics outputs now include explicit runtime durability ledger + sidecar refs via `runtime_durability_refs` and per-failure `durability` evidence links. | Closed: G7/G8 triage now has direct runtime durability provenance references. | `WhiteGlacier` | `bd-3v0.25` (closed) |
 | `RSK-P2C-READINESS-003` | resolved | Expanded gate-window reliability run initially reported unknown reason codes; classifier coverage was extended and rerun now passes with `unknown_reason_code_count=0`. | Previously blocked readiness reliability gating. | `WhiteGlacier` | `bd-3v0.26` (closed) |
-| `RSK-P2C-READINESS-004` | open | CI `workflow_dispatch` run `22076739517` failed at G1 because workspace dependency `ftui` referenced an absolute local path unavailable on GitHub runners. | Prevents completion evidence for G8 CI enforcement gate. | `WhiteGlacier` | `bd-s4hd` |
+| `RSK-P2C-READINESS-004` | open | CI workflow-dispatch now passes G1 after `ftui` path fix, but latest run `22076831591` fails at G2 due two `ft-conformance` tests that assumed local oracle availability in assertions. | Prevents completion evidence for G8 CI enforcement gate. | `WhiteGlacier` | `bd-s4hd` |
 
 ## Closure Criteria for Final G8 Sign-off
 
 1. `bd-3v0.25` closed with runtime durability linkage visible in failure-forensics outputs. ✅
-2. CI run of `.github/workflows/phase2c_reliability_gates.yml` with `workflow_dispatch` and `enforce_g8=true` completes successfully (latest attempt `22076739517` failed due runner path portability issue; rerun pending `bd-s4hd` landing).
+2. CI run of `.github/workflows/phase2c_reliability_gates.yml` with `workflow_dispatch` and `enforce_g8=true` completes successfully (latest attempts `22076739517` and `22076831591` failed at G1 and G2 respectively; rerun pending `bd-s4hd` landing).
 3. `bd-3v0.11` status can then be moved from `in_progress` to `closed` with this sign-off updated to READY.
