@@ -1,7 +1,7 @@
 {
   "schema_version": "ft-reliability-budget-policy-v1",
   "policy_version": 1,
-  "generated_on": "2026-02-14",
+  "generated_on": "2026-02-16",
   "scope": "Phase-2C conformance + e2e reliability gating",
   "coverage_floors": {
     "FT-P2C-001": {
@@ -19,6 +19,13 @@
         "dispatch_key"
       ]
     },
+    "FT-P2C-004": {
+      "min_scenarios": 2,
+      "min_pass_ratio": 1.0,
+      "required_suites": [
+        "autograd_scheduler"
+      ]
+    },
     "FT-P2C-005": {
       "min_scenarios": 24,
       "min_pass_ratio": 1.0,
@@ -28,13 +35,6 @@
         "tensor_meta"
       ]
     },
-    "FT-P2C-004": {
-      "min_scenarios": 2,
-      "min_pass_ratio": 1.0,
-      "required_suites": [
-        "autograd_scheduler"
-      ]
-    },
     "FT-P2C-006": {
       "min_scenarios": 4,
       "min_pass_ratio": 1.0,
@@ -42,6 +42,42 @@
         "serialization"
       ]
     }
+  },
+  "deferred_coverage_targets": {
+    "FT-P2C-003": {
+      "target_log": "artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl",
+      "target_min_scenarios": 10,
+      "target_required_suites": [
+        "op_schema"
+      ],
+      "activation_condition": "enable once packet scenarios are merged into e2e_matrix_full_v1.jsonl aggregation"
+    },
+    "FT-P2C-007": {
+      "target_log": "artifacts/phase2c/e2e_forensics/ft-p2c-007.jsonl",
+      "target_min_scenarios": 20,
+      "target_required_suites": [
+        "dispatch_key"
+      ],
+      "activation_condition": "enable once packet scenarios are merged into e2e_matrix_full_v1.jsonl aggregation"
+    },
+    "FT-P2C-008": {
+      "target_log": "artifacts/phase2c/e2e_forensics/ft-p2c-008.jsonl",
+      "target_min_scenarios": 20,
+      "target_required_suites": [
+        "nn_state"
+      ],
+      "activation_condition": "enable once packet scenarios are merged into e2e_matrix_full_v1.jsonl aggregation"
+    }
+  },
+  "gate_topology": {
+    "g1": "fmt/lint",
+    "g2": "unit+property+structured_log_contract",
+    "g3": "differential+metamorphic+adversarial",
+    "g4": "e2e+replay_forensics",
+    "g5": "perf_regression+isomorphism",
+    "g6": "artifact_schema+packet_validator",
+    "g7": "raptorq_sidecar+decode_proof+integrity_scrub",
+    "g8": "readiness_signoff+residual_risk_audit"
   },
   "flake_budget": {
     "max_flake_suspects": 0,

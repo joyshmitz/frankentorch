@@ -90,6 +90,20 @@
           ]
         }
       ]
+    },
+    "FT-P2C-008": {
+      "disallowed_by_default": true,
+      "allowed_deviations": [
+        {
+          "id": "nn_state.non_strict_missing_unexpected",
+          "description": "Permit hardened mode to continue load_state_dict when only missing/unexpected keys are present and no incompatible shapes are detected",
+          "constraints": [
+            "mode == hardened",
+            "incompatible_shapes is empty",
+            "missing/unexpected key telemetry recorded deterministically"
+          ]
+        }
+      ]
     }
   }
 }

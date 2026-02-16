@@ -1,7 +1,7 @@
 # Security + Compatibility Threat Matrix v1
 
 Version: `security-compat-matrix-v1`  
-Scope: Phase-2C packet families (`FT-P2C-001`, `FT-P2C-002`, `FT-P2C-003`, `FT-P2C-004`, `FT-P2C-005`, `FT-P2C-006`, `FT-P2C-007`)
+Scope: Phase-2C packet families (`FT-P2C-001`, `FT-P2C-002`, `FT-P2C-003`, `FT-P2C-004`, `FT-P2C-005`, `FT-P2C-006`, `FT-P2C-007`, `FT-P2C-008`)
 
 ## Policy Core
 
@@ -34,6 +34,7 @@ Scope: Phase-2C packet families (`FT-P2C-001`, `FT-P2C-002`, `FT-P2C-003`, `FT-P
 | `FT-P2C-005` | CPU kernel first-wave semantics and packet projection drift | reject dtype/device mismatch, invalid keysets, and incompatible tensor-meta states | projected dispatch fallback only (`dispatch.composite_backend_fallback`); contiguous projection drift remains blocking until resolved |
 | `FT-P2C-006` | checkpoint parsing/recovery | unknown field/version/hash mismatch fails closed | bounded malformed diagnostic context only (`serialization.bounded_malformed_diagnostic`); no incompatible acceptance |
 | `FT-P2C-007` | device guards and backend transitions | reject cross-device operations, unknown key paths, and incompatible backend transitions | bounded composite fallback (`dispatch.composite_backend_fallback`) with strict fail-closed behavior for unknown keys and incompatible device/dtype transitions |
+| `FT-P2C-008` | nn module/state contract drift and malformed state payload handling | reject invalid registration names, missing/unexpected key mismatches, incompatible shapes, and assign-path drift with deterministic structured evidence | bounded hardened allowlist for non-strict missing/unexpected key handling (`nn_state.non_strict_missing_unexpected`) while incompatible-shape and assign-path checks remain fail-closed |
 
 ## Drift Gates
 
@@ -46,5 +47,5 @@ Scope: Phase-2C packet families (`FT-P2C-001`, `FT-P2C-002`, `FT-P2C-003`, `FT-P
 
 - `artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json`
 - packet `risk_note.md` files with compatibility/security mitigations
-- packet threat-model artifacts for active packet C tasks (current: `artifacts/phase2c/FT-P2C-007/threat_model.md`)
+- packet threat-model artifacts for active packet C tasks (current: `artifacts/phase2c/FT-P2C-007/threat_model.md`, `artifacts/phase2c/FT-P2C-008/threat_model.md`)
 - packet parity sidecars and decode proofs

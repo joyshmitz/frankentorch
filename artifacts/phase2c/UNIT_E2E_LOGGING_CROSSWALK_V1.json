@@ -1,7 +1,7 @@
 {
   "schema_version": "ft-unit-e2e-logging-crosswalk-v1",
   "artifact_version": 1,
-  "generated_on": "2026-02-14",
+  "generated_on": "2026-02-16",
   "source_artifacts": {
     "scenario_corpus": "artifacts/phase2c/USER_WORKFLOW_SCENARIO_CORPUS_V1.json",
     "e2e_matrix": "artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl",
@@ -258,17 +258,21 @@
       "packet_scope": [
         "FT-P2C-001",
         "FT-P2C-002",
+        "FT-P2C-003",
         "FT-P2C-004",
-        "FT-P2C-006"
+        "FT-P2C-005",
+        "FT-P2C-006",
+        "FT-P2C-007",
+        "FT-P2C-008"
       ],
       "unit_property_tests": [
         {
           "test_id": "triage_forensics_failures::reason_code_classification_is_stable",
-          "command": "cargo test -p ft-conformance --bin triage_forensics_failures"
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-conformance --bin triage_forensics_failures"
         },
         {
           "test_id": "build_failure_forensics_index::failure_envelope_carries_replay_and_environment_fields",
-          "command": "cargo test -p ft-conformance --bin build_failure_forensics_index"
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-conformance --bin build_failure_forensics_index"
         }
       ],
       "differential_assertions": [
@@ -286,10 +290,111 @@
           "all_scenarios_in_e2e_matrix_full_v1"
         ],
         "replay_commands": [
-          "cargo run -p ft-conformance --bin triage_forensics_failures -- --input artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl --output artifacts/phase2c/e2e_forensics/crash_triage_full_v1.json",
-          "cargo run -p ft-conformance --bin build_failure_forensics_index -- --e2e artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl --triage artifacts/phase2c/e2e_forensics/crash_triage_full_v1.json --output artifacts/phase2c/e2e_forensics/failure_forensics_index_v1.json"
+          "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo run -p ft-conformance --bin triage_forensics_failures -- --input artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl --output artifacts/phase2c/e2e_forensics/crash_triage_full_v1.json",
+          "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo run -p ft-conformance --bin build_failure_forensics_index -- --e2e artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl --triage artifacts/phase2c/e2e_forensics/crash_triage_full_v1.json --output artifacts/phase2c/e2e_forensics/failure_forensics_index_v1.json"
         ],
         "artifact": "artifacts/phase2c/e2e_forensics/failure_forensics_index_v1.json"
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "behavior_id": "BHV-FT-007",
+      "name": "Device-guard dispatch transitions + fail-closed backend routing",
+      "subsystem": "ft-dispatch/ft-device",
+      "packet_scope": [
+        "FT-P2C-007"
+      ],
+      "unit_property_tests": [
+        {
+          "test_id": "ft_dispatch::prop_packet_007_autograd_without_cpu_stays_fail_closed",
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-dispatch prop_packet_007_autograd_without_cpu_stays_fail_closed -- --nocapture"
+        },
+        {
+          "test_id": "ft_dispatch::prop_packet_007_dtype_or_device_mismatch_stays_fail_closed",
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-dispatch prop_packet_007_dtype_or_device_mismatch_stays_fail_closed -- --nocapture"
+        },
+        {
+          "test_id": "ft_conformance::e2e_matrix_packet_filter_includes_device_guard_packet_entries",
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-conformance e2e_matrix_packet_filter_includes_device_guard_packet_entries -- --nocapture"
+        }
+      ],
+      "differential_assertions": [
+        {
+          "suite": "dispatch_key",
+          "comparators": [
+            "mode_split_policy",
+            "adversarial_unknown_key_rejected",
+            "adversarial_autograd_without_cpu_rejected"
+          ],
+          "artifact": "artifacts/phase2c/FT-P2C-007/differential_packet_report_v1.json"
+        }
+      ],
+      "e2e_coverage": {
+        "scenario_ids": [
+          "ft_p2c_007/dispatch_key/strict:autograd_without_cpu_fail_closed",
+          "ft_p2c_007/dispatch_key/hardened:autograd_without_cpu_fail_closed",
+          "ft_p2c_007/dispatch_key/strict:device_mismatch_fail_closed",
+          "ft_p2c_007/dispatch_key/hardened:device_mismatch_fail_closed",
+          "ft_p2c_007/dispatch_key/strict:dtype_mismatch_fail_closed",
+          "ft_p2c_007/dispatch_key/hardened:dtype_mismatch_fail_closed"
+        ],
+        "replay_commands": [
+          "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-007 --output artifacts/phase2c/e2e_forensics/ft-p2c-007.jsonl"
+        ],
+        "artifact": "artifacts/phase2c/e2e_forensics/ft-p2c-007.jsonl"
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "behavior_id": "BHV-FT-008",
+      "name": "NN module/state contract parity with structured replay evidence",
+      "subsystem": "ft-conformance/ft-nn state contract",
+      "packet_scope": [
+        "FT-P2C-008"
+      ],
+      "unit_property_tests": [
+        {
+          "test_id": "strict_nn_state_conformance_is_green",
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-conformance strict_nn_state_conformance_is_green -- --nocapture"
+        },
+        {
+          "test_id": "hardened_nn_state_conformance_is_green",
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-conformance hardened_nn_state_conformance_is_green -- --nocapture"
+        },
+        {
+          "test_id": "nn_state_property_key_validation_stays_fail_closed",
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-conformance nn_state_property_key_validation_stays_fail_closed -- --nocapture"
+        },
+        {
+          "test_id": "nn_state_property_export_excludes_non_persistent_buffers",
+          "command": "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo test -p ft-conformance nn_state_property_export_excludes_non_persistent_buffers -- --nocapture"
+        }
+      ],
+      "differential_assertions": [
+        {
+          "suite": "nn_state",
+          "comparators": [
+            "contract_expectation",
+            "policy",
+            "metamorphic_prefix_normalization_idempotent",
+            "adversarial_incompatible_shape_rejected"
+          ],
+          "artifact": "artifacts/phase2c/FT-P2C-008/differential_packet_report_v1.json"
+        }
+      ],
+      "e2e_coverage": {
+        "scenario_ids": [
+          "nn_state/strict:register_parameter_rejects_invalid_name",
+          "nn_state/hardened:register_parameter_rejects_invalid_name",
+          "nn_state/strict:load_state_missing_unexpected_mode_split",
+          "nn_state/hardened:load_state_missing_unexpected_mode_split",
+          "nn_state/strict:prefix_consumption_maps_ddp_state_dict_keys",
+          "nn_state/hardened:prefix_consumption_maps_ddp_state_dict_keys"
+        ],
+        "replay_commands": [
+          "rch exec -- env CARGO_TARGET_DIR=target_phase2c cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-008 --output artifacts/phase2c/e2e_forensics/ft-p2c-008.jsonl"
+        ],
+        "artifact": "artifacts/phase2c/e2e_forensics/ft-p2c-008.jsonl"
       },
       "coverage_status": "covered"
     }
