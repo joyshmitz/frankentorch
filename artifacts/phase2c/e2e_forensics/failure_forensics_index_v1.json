@@ -1,6 +1,6 @@
 {
   "schema_version": "ft-failure-forensics-index-v1",
-  "generated_unix_ms": 1771265803737,
+  "generated_unix_ms": 1771273739819,
   "source_artifacts": {
     "e2e_log_path": "artifacts/phase2c/e2e_forensics/e2e_matrix_gate_window_v1.jsonl",
     "triage_path": "artifacts/phase2c/e2e_forensics/crash_triage_full_v1.json",
@@ -125,6 +125,58 @@
       "raptorq_ref_pattern": "artifacts/phase2c/{packet_id}/parity_report.{raptorq|decode_proof}.json"
     }
   },
+  "runtime_durability_refs": [
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/RAPTORQ_REPAIR_SYMBOL_MANIFEST_V1.json",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/RAPTORQ_INTEGRITY_SCRUB_REPORT_V1.json",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/RAPTORQ_DECODE_PROOF_EVENTS_V1.json",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/RAPTORQ_DURABILITY_PIPELINE_REPORT_V1.md",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/raptorq_sidecars/phase2c-benchmark-baseline-validator-optimization-evidence.decode_proof.json",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/raptorq_sidecars/phase2c-conformance-differential-report-v1.decode_proof.json",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/raptorq_sidecars/phase2c-long-lived-state-snapshot-e2e-matrix-full-v1.decode_proof.json",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/raptorq_sidecars/phase2c-migration-manifest-schema-lock-v1.decode_proof.json",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/raptorq_sidecars/phase2c-reproducibility-ledger-v1.raptorq.json",
+      "exists": true
+    },
+    {
+      "category": "durability",
+      "path_or_ref": "artifacts/phase2c/raptorq_sidecars/phase2c-reproducibility-ledger-v1.decode_proof.json",
+      "exists": true
+    }
+  ],
   "failures": [],
   "triaged_incidents": []
 }

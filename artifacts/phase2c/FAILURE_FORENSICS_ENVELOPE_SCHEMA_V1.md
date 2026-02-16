@@ -15,6 +15,7 @@ Required keys:
 - `source_artifacts`
 - `summary`
 - `suite_evidence_templates`
+- `runtime_durability_refs`
 - `failures`
 - `triaged_incidents`
 
@@ -24,6 +25,20 @@ Required keys:
 - `e2e_log_path`
 - `triage_path`
 - `differential_report_path`
+
+## Runtime Durability Refs (`runtime_durability_refs[]`)
+
+Required keys:
+- `category` (must be `durability`)
+- `path_or_ref`
+- `exists`
+
+Behavioral expectations:
+- Must include global runtime durability ledger outputs:
+  - `RAPTORQ_REPAIR_SYMBOL_MANIFEST_V1.json`
+  - `RAPTORQ_INTEGRITY_SCRUB_REPORT_V1.json`
+  - `RAPTORQ_DECODE_PROOF_EVENTS_V1.json`
+- Must include RaptorQ sidecar decode-proof linkage entries under `artifacts/phase2c/raptorq_sidecars/`.
 
 ## Failure Envelope (`failures[]`)
 
@@ -44,7 +59,7 @@ Required keys:
 ## Evidence Link (`evidence_links[]`)
 
 Required keys:
-- `category` (`unit_property`, `differential`, `e2e`, `performance`, `raptorq`)
+- `category` (`unit_property`, `differential`, `e2e`, `performance`, `raptorq`, `durability`)
 - `path_or_ref`
 - `exists`
 
@@ -58,6 +73,7 @@ Required keys:
    - e2e
    - performance
    - RaptorQ
+   - durability
 4. Envelope generation must be deterministic for equal inputs (stable `failure_id` hashing).
 5. Forensics UX must allow direct triage from one JSON object without requiring manual file discovery.
 

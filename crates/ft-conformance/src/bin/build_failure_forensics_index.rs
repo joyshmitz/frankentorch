@@ -7,6 +7,18 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 const INDEX_SCHEMA_VERSION: &str = "ft-failure-forensics-index-v1";
+const GLOBAL_RUNTIME_DURABILITY_PATHS: &[&str] = &[
+    "artifacts/phase2c/RAPTORQ_REPAIR_SYMBOL_MANIFEST_V1.json",
+    "artifacts/phase2c/RAPTORQ_INTEGRITY_SCRUB_REPORT_V1.json",
+    "artifacts/phase2c/RAPTORQ_DECODE_PROOF_EVENTS_V1.json",
+    "artifacts/phase2c/RAPTORQ_DURABILITY_PIPELINE_REPORT_V1.md",
+    "artifacts/phase2c/raptorq_sidecars/phase2c-benchmark-baseline-validator-optimization-evidence.decode_proof.json",
+    "artifacts/phase2c/raptorq_sidecars/phase2c-conformance-differential-report-v1.decode_proof.json",
+    "artifacts/phase2c/raptorq_sidecars/phase2c-long-lived-state-snapshot-e2e-matrix-full-v1.decode_proof.json",
+    "artifacts/phase2c/raptorq_sidecars/phase2c-migration-manifest-schema-lock-v1.decode_proof.json",
+    "artifacts/phase2c/raptorq_sidecars/phase2c-reproducibility-ledger-v1.raptorq.json",
+    "artifacts/phase2c/raptorq_sidecars/phase2c-reproducibility-ledger-v1.decode_proof.json",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 struct ForensicsLogEntry {
@@ -64,6 +76,7 @@ struct FailureForensicsIndex {
     source_artifacts: SourceArtifacts,
     summary: IndexSummary,
     suite_evidence_templates: BTreeMap<String, SuiteEvidenceTemplate>,
+    runtime_durability_refs: Vec<EvidenceLink>,
     failures: Vec<FailureEnvelope>,
     triaged_incidents: Vec<TriagedIncident>,
 }
@@ -149,6 +162,7 @@ fn main() -> Result<(), String> {
             triaged_incidents: triage.incidents.len(),
         },
         suite_evidence_templates: suite_templates,
+        runtime_durability_refs: runtime_durability_index_links(),
         failures,
         triaged_incidents: triage.incidents,
     };
@@ -399,6 +413,10 @@ fn build_failure_envelope(
         evidence_links.push(path_link("raptorq", raptorq_path.as_str()));
     }
 
+    for durability_path in runtime_durability_paths(entry.packet_id.as_str()) {
+        evidence_links.push(path_link("durability", durability_path.as_str()));
+    }
+
     FailureEnvelope {
         failure_id,
         packet_id: entry.packet_id.clone(),
@@ -421,6 +439,27 @@ fn packet_raptorq_paths(packet_id: &str) -> Vec<String> {
         format!("artifacts/phase2c/{packet_id}/parity_report.decode_proof.json"),
         format!("artifacts/phase2c/{packet_id}/parity_report.json"),
     ]
+}
+
+fn runtime_durability_paths(packet_id: &str) -> Vec<String> {
+    let mut paths = GLOBAL_RUNTIME_DURABILITY_PATHS
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect::<Vec<_>>();
+    paths.push(format!(
+        "artifacts/phase2c/{packet_id}/raptorq_integrity_scrub_report_v1.json"
+    ));
+    paths.push(format!(
+        "artifacts/phase2c/{packet_id}/raptorq_decode_proof_events_v1.json"
+    ));
+    paths
+}
+
+fn runtime_durability_index_links() -> Vec<EvidenceLink> {
+    GLOBAL_RUNTIME_DURABILITY_PATHS
+        .iter()
+        .map(|path| path_link("durability", path))
+        .collect()
 }
 
 fn path_link(category: &str, path: &str) -> EvidenceLink {
@@ -533,7 +572,7 @@ fn now_unix_ms() -> u128 {
 mod tests {
     use super::{
         ForensicsLogEntry, build_failure_envelope, build_suite_templates, det_hash64,
-        packet_raptorq_paths,
+        packet_raptorq_paths, runtime_durability_index_links, runtime_durability_paths,
     };
     use std::path::Path;
 
@@ -557,6 +596,31 @@ mod tests {
                 .iter()
                 .any(|path| path.ends_with("parity_report.decode_proof.json"))
         );
+    }
+
+    #[test]
+    fn runtime_durability_paths_include_global_and_packet_entries() {
+        let paths = runtime_durability_paths("FT-P2C-008");
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.ends_with("RAPTORQ_DECODE_PROOF_EVENTS_V1.json"))
+        );
+        assert!(paths.iter().any(|path| {
+            path.ends_with("raptorq_sidecars/phase2c-reproducibility-ledger-v1.decode_proof.json")
+        }));
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.ends_with("FT-P2C-008/raptorq_decode_proof_events_v1.json"))
+        );
+    }
+
+    #[test]
+    fn runtime_durability_index_links_are_categorized() {
+        let links = runtime_durability_index_links();
+        assert!(!links.is_empty());
+        assert!(links.iter().all(|link| link.category == "durability"));
     }
 
     #[test]
@@ -594,6 +658,12 @@ mod tests {
                 .evidence_links
                 .iter()
                 .any(|link| link.category == "raptorq")
+        );
+        assert!(
+            envelope
+                .evidence_links
+                .iter()
+                .any(|link| link.category == "durability")
         );
     }
 

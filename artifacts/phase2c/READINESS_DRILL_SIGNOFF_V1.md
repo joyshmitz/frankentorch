@@ -10,7 +10,8 @@ Readiness status: **CONDITIONAL HOLD (not ready to final-close program gate)**.
 
 Rationale:
 - Core quality gates and durability artifacts are green in currently available evidence.
-- Runtime durability evidence linkage in failure forensics outputs is still incomplete.
+- Runtime durability linkage is now embedded in failure-forensics outputs.
+- CI workflow-dispatch evidence is currently blocked by a runner portability issue discovered in run `22076739517` (see residual risk register).
 
 ## Gate Status Snapshot (G1..G8)
 
@@ -23,7 +24,7 @@ Rationale:
 | `G5` perf tails + isomorphism | pass (artifact-backed) | packet `optimization_delta_v1.json` + `optimization_isomorphism_v1.md` under `artifacts/phase2c/FT-P2C-*` |
 | `G6` artifact schema + packet lock validation | pass (artifact set present) | packet parity/contract artifacts + schema lock (`artifacts/phase2c/SCHEMA_LOCK_V1.md`) |
 | `G7` RaptorQ durability | pass | `artifacts/phase2c/RAPTORQ_REPAIR_SYMBOL_MANIFEST_V1.json`, `artifacts/phase2c/RAPTORQ_INTEGRITY_SCRUB_REPORT_V1.json`, `artifacts/phase2c/RAPTORQ_DECODE_PROOF_EVENTS_V1.json` |
-| `G8` readiness sign-off + residual risk | in progress | this document + linked follow-up beads and risk register below |
+| `G8` readiness sign-off + residual risk | in progress | this document + linked follow-up beads and risk register below (`bd-3v0.25` resolved; CI dispatch still pending) |
 
 ## Evidence Traceability
 
@@ -41,17 +42,21 @@ Rationale:
   - `artifacts/phase2c/RAPTORQ_DECODE_PROOF_EVENTS_V1.json`
 - Hardened allowlist:
   - `artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json`
+- CI workflow-dispatch evidence:
+  - failed run: `https://github.com/Dicklesworthstone/frankentorch/actions/runs/22076739517`
+  - failure cause: absolute local `ftui` path (`/dp/frankentui/...`) missing on GitHub runners; remediation tracked in `bd-s4hd`.
 
 ## Residual Risk Register
 
 | Risk ID | Status | Description | Impact | Owner | Follow-up bead |
 |---|---|---|---|---|---|
 | `RSK-P2C-READINESS-001` | resolved | Gate-window packet coverage closure for `FT-P2C-003/005/007/008` completed. | Previously risked understated packet coverage in readiness reports. | `WhiteGlacier` | `bd-3v0.24` (closed) |
-| `RSK-P2C-READINESS-002` | open | Failure-forensics outputs still need runtime durability/ledger linkage as first-class evidence refs. | G7/G8 triage lacks direct runtime-side durability provenance links. | `WhiteGlacier` | `bd-3v0.25` |
+| `RSK-P2C-READINESS-002` | resolved | Failure-forensics outputs now include explicit runtime durability ledger + sidecar refs via `runtime_durability_refs` and per-failure `durability` evidence links. | Closed: G7/G8 triage now has direct runtime durability provenance references. | `WhiteGlacier` | `bd-3v0.25` (closed) |
 | `RSK-P2C-READINESS-003` | resolved | Expanded gate-window reliability run initially reported unknown reason codes; classifier coverage was extended and rerun now passes with `unknown_reason_code_count=0`. | Previously blocked readiness reliability gating. | `WhiteGlacier` | `bd-3v0.26` (closed) |
+| `RSK-P2C-READINESS-004` | open | CI `workflow_dispatch` run `22076739517` failed at G1 because workspace dependency `ftui` referenced an absolute local path unavailable on GitHub runners. | Prevents completion evidence for G8 CI enforcement gate. | `WhiteGlacier` | `bd-s4hd` |
 
 ## Closure Criteria for Final G8 Sign-off
 
-1. `bd-3v0.25` closed with runtime durability linkage visible in failure-forensics outputs.
-2. CI run of `.github/workflows/phase2c_reliability_gates.yml` with `workflow_dispatch` and `enforce_g8=true` completes successfully.
+1. `bd-3v0.25` closed with runtime durability linkage visible in failure-forensics outputs. ✅
+2. CI run of `.github/workflows/phase2c_reliability_gates.yml` with `workflow_dispatch` and `enforce_g8=true` completes successfully (latest attempt `22076739517` failed due runner path portability issue; rerun pending `bd-s4hd` landing).
 3. `bd-3v0.11` status can then be moved from `in_progress` to `closed` with this sign-off updated to READY.
