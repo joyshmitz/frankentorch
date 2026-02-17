@@ -2,8 +2,11 @@
 
 use std::fmt;
 
-use ft_core::{Device, ExecutionMode, ScalarTensor};
-use ft_kernel_cpu::{KernelError, add_scalar, div_scalar, mul_scalar, sub_scalar};
+use ft_core::{Device, ExecutionMode, ScalarTensor, TensorMeta};
+use ft_kernel_cpu::{
+    KernelError, add_scalar, add_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64,
+    mul_scalar, mul_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
@@ -203,6 +206,12 @@ pub struct DispatchDecision {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DispatchOutcome {
     pub tensor: ScalarTensor,
+    pub decision: DispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorDispatchOutcome {
+    pub values: Vec<f64>,
     pub decision: DispatchDecision,
 }
 
@@ -445,20 +454,68 @@ pub fn schema_dispatch_keyset_from_tags(tags: &[&str]) -> Result<DispatchKeySet,
 }
 
 #[must_use]
-pub fn dispatch_keyset_for_tensors(
-    lhs: &ScalarTensor,
-    _rhs: &ScalarTensor,
-    requires_grad: bool,
-) -> DispatchKeySet {
+fn dispatch_keyset_for_device(device: Device, requires_grad: bool) -> DispatchKeySet {
     let mut keyset = DispatchKeySet::empty();
     keyset.add(DispatchKey::BackendSelect);
-    if lhs.meta().device() == Device::Cpu {
+    if device == Device::Cpu {
         keyset.add(DispatchKey::CPU);
     }
     if requires_grad {
         keyset.add(DispatchKey::AutogradCPU);
     }
     keyset
+}
+
+#[must_use]
+pub fn dispatch_keyset_for_tensors(
+    lhs: &ScalarTensor,
+    _rhs: &ScalarTensor,
+    requires_grad: bool,
+) -> DispatchKeySet {
+    dispatch_keyset_for_device(lhs.meta().device(), requires_grad)
+}
+
+#[must_use]
+pub fn dispatch_keyset_for_tensor_meta(
+    lhs: &TensorMeta,
+    _rhs: &TensorMeta,
+    requires_grad: bool,
+) -> DispatchKeySet {
+    dispatch_keyset_for_device(lhs.device(), requires_grad)
+}
+
+fn resolve_dispatch_keys(
+    mode: ExecutionMode,
+    keyset: DispatchKeySet,
+) -> Result<(DispatchKey, DispatchKey, DispatchKey, bool), DispatchError> {
+    keyset.validate_for_scalar_binary()?;
+    let selected_key = keyset.highest_priority_type_id()?;
+    let backend_key = keyset.highest_priority_backend_type_id()?;
+
+    let (effective_key, fallback_used) = match selected_key {
+        DispatchKey::AutogradCPU | DispatchKey::CPU => (selected_key, false),
+        DispatchKey::CompositeExplicitAutograd
+        | DispatchKey::CompositeImplicitAutograd
+        | DispatchKey::BackendSelect => match mode {
+            ExecutionMode::Strict => {
+                return Err(DispatchKeyError::IncompatibleSet {
+                    reason: "strict mode forbids composite/backend fallback routing",
+                }
+                .into());
+            }
+            ExecutionMode::Hardened => (backend_key, true),
+        },
+        DispatchKey::Undefined => return Err(DispatchKeyError::NoTypeKey.into()),
+    };
+
+    if effective_key != backend_key && effective_key != DispatchKey::AutogradCPU {
+        return Err(DispatchKeyError::IncompatibleSet {
+            reason: "resolved key/backend key drifted to incompatible pair",
+        }
+        .into());
+    }
+
+    Ok((selected_key, backend_key, effective_key, fallback_used))
 }
 
 pub fn dispatch_scalar_binary(
@@ -479,25 +536,8 @@ pub fn dispatch_scalar_binary_with_keyset(
     rhs: &ScalarTensor,
     keyset: DispatchKeySet,
 ) -> Result<DispatchOutcome, DispatchError> {
-    keyset.validate_for_scalar_binary()?;
-    let selected_key = keyset.highest_priority_type_id()?;
-    let backend_key = keyset.highest_priority_backend_type_id()?;
-
-    let (effective_key, fallback_used) = match selected_key {
-        DispatchKey::AutogradCPU | DispatchKey::CPU => (selected_key, false),
-        DispatchKey::CompositeExplicitAutograd
-        | DispatchKey::CompositeImplicitAutograd
-        | DispatchKey::BackendSelect => match mode {
-            ExecutionMode::Strict => {
-                return Err(DispatchKeyError::IncompatibleSet {
-                    reason: "strict mode forbids composite/backend fallback routing",
-                }
-                .into());
-            }
-            ExecutionMode::Hardened => (backend_key, true),
-        },
-        DispatchKey::Undefined => return Err(DispatchKeyError::NoTypeKey.into()),
-    };
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
 
     let (tensor, kernel) = match (effective_key, op) {
         (DispatchKey::AutogradCPU, BinaryOp::Add) => {
@@ -524,15 +564,90 @@ pub fn dispatch_scalar_binary_with_keyset(
         }
     };
 
-    if effective_key != backend_key && effective_key != DispatchKey::AutogradCPU {
-        return Err(DispatchKeyError::IncompatibleSet {
-            reason: "resolved key/backend key drifted to incompatible pair",
-        }
-        .into());
-    }
-
     Ok(DispatchOutcome {
         tensor,
+        decision: DispatchDecision {
+            op,
+            mode,
+            kernel,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+pub fn dispatch_tensor_binary_contiguous_f64(
+    op: BinaryOp,
+    mode: ExecutionMode,
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    requires_grad: bool,
+) -> Result<TensorDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_tensor_meta(lhs_meta, rhs_meta, requires_grad);
+    dispatch_tensor_binary_contiguous_f64_with_keyset(
+        op, mode, lhs, rhs, lhs_meta, rhs_meta, keyset,
+    )
+}
+
+pub fn dispatch_tensor_binary_contiguous_f64_with_keyset(
+    op: BinaryOp,
+    mode: ExecutionMode,
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    keyset: DispatchKeySet,
+) -> Result<TensorDispatchOutcome, DispatchError> {
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match (effective_key, op) {
+        (DispatchKey::AutogradCPU, BinaryOp::Add) => (
+            add_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::add_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Sub) => (
+            sub_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::sub_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Div) => (
+            div_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::div_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Mul) => (
+            mul_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::mul_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Add) => (
+            add_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::add_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Sub) => (
+            sub_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::sub_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Div) => (
+            div_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::div_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Mul) => (
+            mul_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::mul_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor binary ops",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorDispatchOutcome {
+        values,
         decision: DispatchDecision {
             op,
             mode,
@@ -549,14 +664,16 @@ pub fn dispatch_scalar_binary_with_keyset(
 mod tests {
     use std::collections::BTreeMap;
 
-    use ft_core::{DType, Device, ExecutionMode, ScalarTensor};
+    use ft_core::{DType, Device, ExecutionMode, ScalarTensor, TensorCompatError, TensorMeta};
+    use ft_kernel_cpu::KernelError;
     use proptest::prelude::*;
 
     use super::{
-        BinaryOp, DispatchKey, DispatchKeyError, DispatchKeySet, OpSchemaError, ParsedSchemaInput,
-        TYPE_PRIORITY, dispatch_keyset_for_tensors, dispatch_scalar_binary,
-        dispatch_scalar_binary_with_keyset, parse_schema_name, parse_schema_or_name,
-        schema_dispatch_keyset_from_tags,
+        BinaryOp, DispatchError, DispatchKey, DispatchKeyError, DispatchKeySet, OpSchemaError,
+        ParsedSchemaInput, TYPE_PRIORITY, dispatch_keyset_for_tensor_meta,
+        dispatch_keyset_for_tensors, dispatch_scalar_binary, dispatch_scalar_binary_with_keyset,
+        dispatch_tensor_binary_contiguous_f64, dispatch_tensor_binary_contiguous_f64_with_keyset,
+        parse_schema_name, parse_schema_or_name, schema_dispatch_keyset_from_tags,
     };
 
     fn det_seed(parts: &[u64]) -> u64 {
@@ -999,6 +1116,157 @@ mod tests {
         assert_eq!(outcome.decision.selected_key, DispatchKey::AutogradCPU);
         assert_eq!(outcome.decision.backend_key, DispatchKey::CPU);
         assert!(!outcome.decision.fallback_used);
+    }
+
+    #[test]
+    fn dispatch_keyset_for_tensor_meta_tracks_requires_grad() {
+        let lhs_meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let rhs_meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+
+        let no_grad = dispatch_keyset_for_tensor_meta(&lhs_meta, &rhs_meta, false);
+        assert!(no_grad.has(DispatchKey::CPU));
+        assert!(no_grad.has(DispatchKey::BackendSelect));
+        assert!(!no_grad.has(DispatchKey::AutogradCPU));
+
+        let with_grad = dispatch_keyset_for_tensor_meta(&lhs_meta, &rhs_meta, true);
+        assert!(with_grad.has(DispatchKey::CPU));
+        assert!(with_grad.has(DispatchKey::BackendSelect));
+        assert!(with_grad.has(DispatchKey::AutogradCPU));
+    }
+
+    #[test]
+    fn tensor_dispatch_strict_mode_uses_cpu_add_kernel() {
+        let lhs_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let rhs_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let lhs = vec![1.0, 2.0, 3.0, 4.0];
+        let rhs = vec![0.5, 1.5, 2.5, 3.5];
+        let keyset = DispatchKeySet::from_keys(&[DispatchKey::BackendSelect, DispatchKey::CPU]);
+
+        let out = dispatch_tensor_binary_contiguous_f64_with_keyset(
+            BinaryOp::Add,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &lhs_meta,
+            &rhs_meta,
+            keyset,
+        )
+        .expect("strict tensor dispatch should resolve to cpu add");
+
+        assert_eq!(out.values, vec![1.5, 3.5, 5.5, 7.5]);
+        assert_eq!(out.decision.kernel, "cpu::add_tensor_contiguous_f64");
+        assert_eq!(out.decision.selected_key, DispatchKey::CPU);
+        assert_eq!(out.decision.backend_key, DispatchKey::CPU);
+        assert!(!out.decision.fallback_used);
+    }
+
+    #[test]
+    fn tensor_dispatch_hardened_mode_allows_composite_fallback() {
+        let lhs_meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let rhs_meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let lhs = vec![2.0, 4.0];
+        let rhs = vec![3.0, 5.0];
+        let keyset = DispatchKeySet::from_keys(&[
+            DispatchKey::CompositeExplicitAutograd,
+            DispatchKey::CPU,
+            DispatchKey::BackendSelect,
+        ]);
+
+        let out = dispatch_tensor_binary_contiguous_f64_with_keyset(
+            BinaryOp::Mul,
+            ExecutionMode::Hardened,
+            &lhs,
+            &rhs,
+            &lhs_meta,
+            &rhs_meta,
+            keyset,
+        )
+        .expect("hardened tensor dispatch should fallback to cpu");
+
+        assert_eq!(out.values, vec![6.0, 20.0]);
+        assert_eq!(
+            out.decision.selected_key,
+            DispatchKey::CompositeExplicitAutograd
+        );
+        assert_eq!(out.decision.backend_key, DispatchKey::CPU);
+        assert!(out.decision.fallback_used);
+    }
+
+    #[test]
+    fn tensor_dispatch_strict_mode_rejects_composite_fallback() {
+        let lhs_meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let rhs_meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let lhs = vec![2.0, 4.0];
+        let rhs = vec![3.0, 5.0];
+        let keyset = DispatchKeySet::from_keys(&[
+            DispatchKey::CompositeExplicitAutograd,
+            DispatchKey::CPU,
+            DispatchKey::BackendSelect,
+        ]);
+
+        let err = dispatch_tensor_binary_contiguous_f64_with_keyset(
+            BinaryOp::Mul,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &lhs_meta,
+            &rhs_meta,
+            keyset,
+        )
+        .expect_err("strict tensor dispatch must fail closed");
+        assert!(err.to_string().contains("strict mode forbids"));
+    }
+
+    #[test]
+    fn tensor_dispatch_propagates_kernel_dtype_mismatch() {
+        let lhs_meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let rhs_meta = TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu);
+        let lhs = vec![1.0, 2.0];
+        let rhs = vec![3.0, 4.0];
+
+        let err = dispatch_tensor_binary_contiguous_f64(
+            BinaryOp::Add,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &lhs_meta,
+            &rhs_meta,
+            false,
+        )
+        .expect_err("dtype mismatch should bubble as kernel error");
+
+        assert!(matches!(
+            err,
+            DispatchError::Kernel(KernelError::Incompatible(
+                TensorCompatError::DTypeMismatch { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn tensor_dispatch_propagates_non_contiguous_layout_rejection() {
+        let lhs_meta =
+            TensorMeta::from_shape_and_strides(vec![2, 2], vec![1, 2], 0, DType::F64, Device::Cpu)
+                .expect("test meta should be valid");
+        let rhs_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let lhs = vec![1.0, 2.0, 3.0, 4.0];
+        let rhs = vec![5.0, 6.0, 7.0, 8.0];
+
+        let err = dispatch_tensor_binary_contiguous_f64(
+            BinaryOp::Add,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &lhs_meta,
+            &rhs_meta,
+            false,
+        )
+        .expect_err("non-contiguous layout must fail closed");
+
+        assert!(matches!(
+            err,
+            DispatchError::Kernel(KernelError::UnsupportedLayout { side: "lhs" })
+        ));
     }
 
     #[test]
