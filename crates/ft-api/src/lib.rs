@@ -45,6 +45,18 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    pub fn sub(&mut self, lhs: NodeId, rhs: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.sub(lhs, rhs, self.mode())?;
+        self.record_operation(&event);
+        Ok(out)
+    }
+
+    pub fn div(&mut self, lhs: NodeId, rhs: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.div(lhs, rhs, self.mode())?;
+        self.record_operation(&event);
+        Ok(out)
+    }
+
     pub fn value(&self, node: NodeId) -> Result<f64, AutogradError> {
         self.tape.value(node)
     }
@@ -163,5 +175,39 @@ mod tests {
             .expect("hardened fallback should succeed");
 
         assert!(report.telemetry.reentrant_guard_triggered);
+    }
+
+    #[test]
+    fn session_sub_backward_records_negative_rhs_gradient() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.0, true);
+        let y = session.variable(3.0, true);
+        let z = session.sub(x, y).expect("sub should succeed");
+        let value = session.value(z).expect("value should resolve");
+        assert_eq!(value, -1.0);
+
+        let report = session.backward(z).expect("backward should succeed");
+        assert_eq!(session.gradient(&report, x), Some(1.0));
+        assert_eq!(session.gradient(&report, y), Some(-1.0));
+    }
+
+    #[test]
+    fn session_div_backward_records_expected_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(6.0, true);
+        let y = session.variable(3.0, true);
+        let z = session.div(x, y).expect("div should succeed");
+        let value = session.value(z).expect("value should resolve");
+        assert_eq!(value, 2.0);
+
+        let report = session.backward(z).expect("backward should succeed");
+        let x_grad = session
+            .gradient(&report, x)
+            .expect("x grad should be present");
+        let y_grad = session
+            .gradient(&report, y)
+            .expect("y grad should be present");
+        assert!((x_grad - (1.0 / 3.0)).abs() <= 1e-12);
+        assert!((y_grad - (-2.0 / 3.0)).abs() <= 1e-12);
     }
 }

@@ -2842,6 +2842,8 @@ fn run_scalar_case(case: &ScalarCase, mode: ExecutionMode) -> Result<CaseReport,
 
     let out = match case.op.as_str() {
         "add" => session.add(lhs, rhs),
+        "sub" => session.sub(lhs, rhs),
+        "div" => session.div(lhs, rhs),
         "mul" => session.mul(lhs, rhs),
         _ => return Err(format!("unsupported operation '{}'", case.op)),
     }
@@ -3908,6 +3910,8 @@ fn evaluate_scalar_with_session(
     let rhs = session.variable(case.rhs, true);
     let out = match case.op.as_str() {
         "add" => session.add(lhs, rhs),
+        "sub" => session.sub(lhs, rhs),
+        "div" => session.div(lhs, rhs),
         "mul" => session.mul(lhs, rhs),
         _ => return Err(format!("unsupported operation '{}'", case.op)),
     }
@@ -4355,6 +4359,10 @@ rhs = torch.tensor(payload["rhs"], dtype=torch.float64, requires_grad=True)
 op = payload["op"]
 if op == "add":
     out = lhs + rhs
+elif op == "sub":
+    out = lhs - rhs
+elif op == "div":
+    out = lhs / rhs
 elif op == "mul":
     out = lhs * rhs
 else:
@@ -4432,6 +4440,8 @@ fn scalar_forensic_fields(
     let mut fields = BTreeMap::new();
     let selected_kernel = match case.op.as_str() {
         "add" => "autograd_cpu::add_scalar",
+        "sub" => "autograd_cpu::sub_scalar",
+        "div" => "autograd_cpu::div_scalar",
         "mul" => "autograd_cpu::mul_scalar",
         _ => "autograd_cpu::unknown",
     };
@@ -4681,6 +4691,8 @@ fn nn_state_forensic_fields(
 fn parse_binary_op(op: &str) -> Result<BinaryOp, String> {
     match op {
         "add" => Ok(BinaryOp::Add),
+        "sub" => Ok(BinaryOp::Sub),
+        "div" => Ok(BinaryOp::Div),
         "mul" => Ok(BinaryOp::Mul),
         _ => Err(format!("unsupported binary op '{op}'")),
     }
@@ -4901,15 +4913,16 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ExecutionMode, HarnessConfig, NnStateCase, NnStateCaseReport, NnStateModeExpectation,
-        StructuredCaseLog, emit_differential_report, emit_differential_report_filtered,
-        emit_e2e_forensics_matrix, emit_e2e_forensics_matrix_filtered, load_allowlist,
-        nn_state_export_keys, nn_state_is_valid_key, project_log_to_ft_p2c_005,
-        project_log_to_ft_p2c_007, run_autograd_scheduler_conformance,
-        run_differential_conformance, run_dispatch_conformance, run_nn_state_conformance,
-        run_op_schema_conformance, run_packet_e2e_microbench, run_packet_e2e_microbench_legacy,
-        run_scalar_conformance, run_scalar_microbench, run_serialization_conformance, run_smoke,
-        run_tensor_meta_conformance,
+        DispatchFixtureFile, ExecutionMode, HarnessConfig, NnStateCase, NnStateCaseReport,
+        NnStateFixtureFile, NnStateModeExpectation, OpSchemaFixtureFile, ScalarFixtureFile,
+        SchedulerFixtureFile, SerializationFixtureFile, StructuredCaseLog, TensorMetaFixtureFile,
+        emit_differential_report, emit_differential_report_filtered, emit_e2e_forensics_matrix,
+        emit_e2e_forensics_matrix_filtered, load_allowlist, load_fixture, nn_state_export_keys,
+        nn_state_is_valid_key, project_log_to_ft_p2c_005, project_log_to_ft_p2c_007,
+        run_autograd_scheduler_conformance, run_differential_conformance, run_dispatch_conformance,
+        run_nn_state_conformance, run_op_schema_conformance, run_packet_e2e_microbench,
+        run_packet_e2e_microbench_legacy, run_scalar_conformance, run_scalar_microbench,
+        run_serialization_conformance, run_smoke, run_tensor_meta_conformance,
     };
 
     #[test]
@@ -5238,11 +5251,11 @@ mod tests {
         )
         .expect("e2e matrix should emit logs");
 
-        assert!(summary.log_entries >= 8);
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
-        let mut lines = raw.lines();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(summary.log_entries, lines.len());
         let first = lines
-            .next()
+            .first()
             .expect("jsonl should contain at least one line");
         let value: serde_json::Value =
             serde_json::from_str(first).expect("jsonl line should be valid json");
@@ -5285,14 +5298,15 @@ mod tests {
         )
         .expect("unfiltered e2e matrix should emit logs");
 
-        assert!(summary.log_entries >= 20);
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(summary.log_entries, lines.len());
         let mut saw_ft_p2c_001 = false;
         let mut saw_ft_p2c_002 = false;
         let mut saw_ft_p2c_007 = false;
         let mut saw_ft_p2c_008 = false;
         let mut ft_p2c_005_suites = BTreeSet::new();
-        for line in raw.lines() {
+        for line in lines {
             let value: serde_json::Value =
                 serde_json::from_str(line).expect("jsonl line should be valid json");
             let packet_id = value
@@ -5368,9 +5382,15 @@ mod tests {
         )
         .expect("packet-filtered e2e matrix should emit logs");
 
-        assert!(summary.log_entries > 0);
+        let scheduler_fixture: SchedulerFixtureFile =
+            load_fixture(&cfg.fixture_root.join("autograd_scheduler_cases.json"))
+                .expect("autograd scheduler fixture should load");
+        let expected_log_entries = scheduler_fixture.cases.len() * 2;
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
-        for line in raw.lines() {
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(summary.log_entries, expected_log_entries);
+        assert_eq!(summary.log_entries, lines.len());
+        for line in lines {
             let value: serde_json::Value =
                 serde_json::from_str(line).expect("jsonl line should be valid json");
             assert_eq!(
@@ -5402,9 +5422,15 @@ mod tests {
         )
         .expect("packet-filtered e2e matrix should emit logs");
 
-        assert!(summary.log_entries > 0);
+        let op_schema_fixture: OpSchemaFixtureFile =
+            load_fixture(&cfg.fixture_root.join("op_schema_cases.json"))
+                .expect("op_schema fixture should load");
+        let expected_log_entries = op_schema_fixture.cases.len() * 2;
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
-        for line in raw.lines() {
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(summary.log_entries, expected_log_entries);
+        assert_eq!(summary.log_entries, lines.len());
+        for line in lines {
             let value: serde_json::Value =
                 serde_json::from_str(line).expect("jsonl line should be valid json");
             assert_eq!(
@@ -5440,7 +5466,11 @@ mod tests {
         )
         .expect("packet-filtered e2e matrix should emit logs");
 
-        assert_eq!(summary.log_entries, 6);
+        let scheduler_fixture: SchedulerFixtureFile =
+            load_fixture(&cfg.fixture_root.join("autograd_scheduler_cases.json"))
+                .expect("autograd scheduler fixture should load");
+        let expected_log_entries = scheduler_fixture.cases.len() * 2;
+        assert_eq!(summary.log_entries, expected_log_entries);
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
         for line in raw.lines() {
             let value: serde_json::Value =
@@ -5478,7 +5508,20 @@ mod tests {
         )
         .expect("packet-filtered e2e matrix should emit logs");
 
-        assert!(summary.log_entries >= 24);
+        let scalar_fixture: ScalarFixtureFile =
+            load_fixture(&cfg.fixture_root.join("scalar_autograd_cases.json"))
+                .expect("scalar fixture should load");
+        let dispatch_fixture: DispatchFixtureFile =
+            load_fixture(&cfg.fixture_root.join("dispatch_key_cases.json"))
+                .expect("dispatch fixture should load");
+        let tensor_meta_fixture: TensorMetaFixtureFile =
+            load_fixture(&cfg.fixture_root.join("tensor_meta_cases.json"))
+                .expect("tensor_meta fixture should load");
+        let expected_log_entries = (scalar_fixture.cases.len()
+            + dispatch_fixture.cases.len()
+            + tensor_meta_fixture.cases.len())
+            * 2;
+        assert_eq!(summary.log_entries, expected_log_entries);
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
         let mut suites = BTreeSet::new();
         for line in raw.lines() {
@@ -5623,7 +5666,11 @@ mod tests {
         )
         .expect("packet-filtered e2e matrix should emit logs");
 
-        assert_eq!(summary.log_entries, 4);
+        let serialization_fixture: SerializationFixtureFile =
+            load_fixture(&cfg.fixture_root.join("serialization_cases.json"))
+                .expect("serialization fixture should load");
+        let expected_log_entries = serialization_fixture.cases.len() * 2;
+        assert_eq!(summary.log_entries, expected_log_entries);
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
         for line in raw.lines() {
             let value: serde_json::Value =
@@ -5661,7 +5708,11 @@ mod tests {
         )
         .expect("packet-filtered e2e matrix should emit logs");
 
-        assert_eq!(summary.log_entries, 20);
+        let dispatch_fixture: DispatchFixtureFile =
+            load_fixture(&cfg.fixture_root.join("dispatch_key_cases.json"))
+                .expect("dispatch fixture should load");
+        let expected_log_entries = dispatch_fixture.cases.len() * 2;
+        assert_eq!(summary.log_entries, expected_log_entries);
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
         for line in raw.lines() {
             let value: serde_json::Value =
@@ -5707,7 +5758,11 @@ mod tests {
         )
         .expect("packet-filtered e2e matrix should emit logs");
 
-        assert_eq!(summary.log_entries, 20);
+        let nn_state_fixture: NnStateFixtureFile =
+            load_fixture(&cfg.fixture_root.join("nn_state_cases.json"))
+                .expect("nn_state fixture should load");
+        let expected_log_entries = nn_state_fixture.cases.len() * 2;
+        assert_eq!(summary.log_entries, expected_log_entries);
         let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
         for line in raw.lines() {
             let value: serde_json::Value =

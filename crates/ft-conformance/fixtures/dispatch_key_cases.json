@@ -27,6 +27,58 @@
       "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
     },
     {
+      "name": "strict_autograd_sub_route",
+      "op": "sub",
+      "lhs": 7.0,
+      "rhs": 2.5,
+      "requires_grad": true,
+      "strict": {
+        "expected_output": 4.5,
+        "expected_selected_key": "AutogradCPU",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "autograd_cpu::sub_scalar",
+        "expected_fallback": false,
+        "expect_error": false
+      },
+      "hardened": {
+        "expected_output": 4.5,
+        "expected_selected_key": "AutogradCPU",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "autograd_cpu::sub_scalar",
+        "expected_fallback": false,
+        "expect_error": false
+      },
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-003", "INV-DISPATCH-RESOLUTION"],
+      "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
+    },
+    {
+      "name": "strict_autograd_div_route",
+      "op": "div",
+      "lhs": 9.0,
+      "rhs": 3.0,
+      "requires_grad": true,
+      "strict": {
+        "expected_output": 3.0,
+        "expected_selected_key": "AutogradCPU",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "autograd_cpu::div_scalar",
+        "expected_fallback": false,
+        "expect_error": false
+      },
+      "hardened": {
+        "expected_output": 3.0,
+        "expected_selected_key": "AutogradCPU",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "autograd_cpu::div_scalar",
+        "expected_fallback": false,
+        "expect_error": false
+      },
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-004", "INV-DISPATCH-RESOLUTION"],
+      "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
+    },
+    {
       "name": "strict_cpu_route",
       "op": "mul",
       "lhs": 2.0,
@@ -53,6 +105,58 @@
       "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
     },
     {
+      "name": "strict_cpu_sub_route",
+      "op": "sub",
+      "lhs": 9.0,
+      "rhs": 4.0,
+      "requires_grad": false,
+      "strict": {
+        "expected_output": 5.0,
+        "expected_selected_key": "CPU",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "cpu::sub_scalar",
+        "expected_fallback": false,
+        "expect_error": false
+      },
+      "hardened": {
+        "expected_output": 5.0,
+        "expected_selected_key": "CPU",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "cpu::sub_scalar",
+        "expected_fallback": false,
+        "expect_error": false
+      },
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-003", "INV-DISPATCH-RESOLUTION"],
+      "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
+    },
+    {
+      "name": "strict_cpu_div_route",
+      "op": "div",
+      "lhs": 8.0,
+      "rhs": 2.0,
+      "requires_grad": false,
+      "strict": {
+        "expected_output": 4.0,
+        "expected_selected_key": "CPU",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "cpu::div_scalar",
+        "expected_fallback": false,
+        "expect_error": false
+      },
+      "hardened": {
+        "expected_output": 4.0,
+        "expected_selected_key": "CPU",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "cpu::div_scalar",
+        "expected_fallback": false,
+        "expect_error": false
+      },
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-004", "INV-DISPATCH-RESOLUTION"],
+      "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
+    },
+    {
       "name": "composite_route_mode_split",
       "op": "add",
       "lhs": 4.0,
@@ -72,6 +176,50 @@
       },
       "tolerance": 1e-12,
       "contract_ids": ["CPU-KERNEL-003", "INV-HARDENED-BOUNDARY"],
+      "e2e_scenarios": ["cpu_kernel:broadcast_shape_match"]
+    },
+    {
+      "name": "composite_sub_route_mode_split",
+      "op": "sub",
+      "lhs": 9.0,
+      "rhs": 4.0,
+      "requires_grad": false,
+      "keyset": ["CompositeExplicitAutograd", "CPU", "BackendSelect"],
+      "strict": {
+        "expect_error": true
+      },
+      "hardened": {
+        "expected_output": 5.0,
+        "expected_selected_key": "CompositeExplicitAutograd",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "cpu::sub_scalar",
+        "expected_fallback": true,
+        "expect_error": false
+      },
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-003", "INV-HARDENED-BOUNDARY"],
+      "e2e_scenarios": ["cpu_kernel:broadcast_shape_match"]
+    },
+    {
+      "name": "composite_div_route_mode_split",
+      "op": "div",
+      "lhs": 8.0,
+      "rhs": 2.0,
+      "requires_grad": false,
+      "keyset": ["CompositeExplicitAutograd", "CPU", "BackendSelect"],
+      "strict": {
+        "expect_error": true
+      },
+      "hardened": {
+        "expected_output": 4.0,
+        "expected_selected_key": "CompositeExplicitAutograd",
+        "expected_backend_key": "CPU",
+        "expected_kernel": "cpu::div_scalar",
+        "expected_fallback": true,
+        "expect_error": false
+      },
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-004", "INV-HARDENED-BOUNDARY"],
       "e2e_scenarios": ["cpu_kernel:broadcast_shape_match"]
     },
     {

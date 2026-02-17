@@ -14,6 +14,8 @@ pub struct NodeId(pub usize);
 enum NodeOp {
     Leaf,
     Add { lhs: NodeId, rhs: NodeId },
+    Sub { lhs: NodeId, rhs: NodeId },
+    Div { lhs: NodeId, rhs: NodeId },
     Mul { lhs: NodeId, rhs: NodeId },
 }
 
@@ -236,6 +238,24 @@ impl Tape {
         self.binary(BinaryOp::Mul, lhs, rhs, mode)
     }
 
+    pub fn sub(
+        &mut self,
+        lhs: NodeId,
+        rhs: NodeId,
+        mode: ExecutionMode,
+    ) -> Result<(NodeId, OperationEvent), AutogradError> {
+        self.binary(BinaryOp::Sub, lhs, rhs, mode)
+    }
+
+    pub fn div(
+        &mut self,
+        lhs: NodeId,
+        rhs: NodeId,
+        mode: ExecutionMode,
+    ) -> Result<(NodeId, OperationEvent), AutogradError> {
+        self.binary(BinaryOp::Div, lhs, rhs, mode)
+    }
+
     fn binary(
         &mut self,
         op: BinaryOp,
@@ -259,6 +279,8 @@ impl Tape {
             requires_grad,
             op: match op {
                 BinaryOp::Add => NodeOp::Add { lhs, rhs },
+                BinaryOp::Sub => NodeOp::Sub { lhs, rhs },
+                BinaryOp::Div => NodeOp::Div { lhs, rhs },
                 BinaryOp::Mul => NodeOp::Mul { lhs, rhs },
             },
         });
@@ -347,6 +369,34 @@ impl Tape {
                         rule: "d(a+b)/da=1; d(a+b)/db=1",
                     });
                 }
+                NodeOp::Sub { lhs, rhs } => {
+                    grads[lhs.0] += incoming;
+                    grads[rhs.0] -= incoming;
+
+                    Self::complete_dependency(&mut pending, lhs, &mut queue)?;
+                    Self::complete_dependency(&mut pending, rhs, &mut queue)?;
+
+                    steps.push(BackwardStep {
+                        node: node_id,
+                        incoming_grad: incoming,
+                        rule: "d(a-b)/da=1; d(a-b)/db=-1",
+                    });
+                }
+                NodeOp::Div { lhs, rhs } => {
+                    let lhs_value = self.nodes[lhs.0].tensor.value();
+                    let rhs_value = self.nodes[rhs.0].tensor.value();
+                    grads[lhs.0] += incoming / rhs_value;
+                    grads[rhs.0] -= incoming * lhs_value / (rhs_value * rhs_value);
+
+                    Self::complete_dependency(&mut pending, lhs, &mut queue)?;
+                    Self::complete_dependency(&mut pending, rhs, &mut queue)?;
+
+                    steps.push(BackwardStep {
+                        node: node_id,
+                        incoming_grad: incoming,
+                        rule: "d(a/b)/da=1/b; d(a/b)/db=-(a/b^2)",
+                    });
+                }
                 NodeOp::Mul { lhs, rhs } => {
                     let lhs_value = self.nodes[lhs.0].tensor.value();
                     let rhs_value = self.nodes[rhs.0].tensor.value();
@@ -410,7 +460,10 @@ impl Tape {
 
             match self.nodes[node.0].op {
                 NodeOp::Leaf => {}
-                NodeOp::Add { lhs, rhs } | NodeOp::Mul { lhs, rhs } => {
+                NodeOp::Add { lhs, rhs }
+                | NodeOp::Sub { lhs, rhs }
+                | NodeOp::Div { lhs, rhs }
+                | NodeOp::Mul { lhs, rhs } => {
                     stack.push(lhs);
                     stack.push(rhs);
                 }
@@ -433,7 +486,10 @@ impl Tape {
             }
             match node.op {
                 NodeOp::Leaf => {}
-                NodeOp::Add { lhs, rhs } | NodeOp::Mul { lhs, rhs } => {
+                NodeOp::Add { lhs, rhs }
+                | NodeOp::Sub { lhs, rhs }
+                | NodeOp::Div { lhs, rhs }
+                | NodeOp::Mul { lhs, rhs } => {
                     pending[lhs.0] = pending[lhs.0].saturating_add(1);
                     pending[rhs.0] = pending[rhs.0].saturating_add(1);
                 }
@@ -661,6 +717,37 @@ mod tests {
         let report = tape.backward(z).expect("backward should succeed");
         assert_eq!(report.gradient(x), Some(3.0));
         assert_eq!(report.gradient(y), Some(2.0));
+    }
+
+    #[test]
+    fn sub_backward_matches_expected_gradient() {
+        let mut tape = Tape::new();
+        let x = tape.leaf(2.0, true);
+        let y = tape.leaf(3.0, true);
+        let (z, _) = tape
+            .sub(x, y, ExecutionMode::Strict)
+            .expect("sub should succeed");
+
+        let report = tape.backward(z).expect("backward should succeed");
+        assert_eq!(report.gradient(x), Some(1.0));
+        assert_eq!(report.gradient(y), Some(-1.0));
+    }
+
+    #[test]
+    fn div_backward_matches_expected_gradient() {
+        let mut tape = Tape::new();
+        let x = tape.leaf(6.0, true);
+        let y = tape.leaf(3.0, true);
+        let (z, _) = tape
+            .div(x, y, ExecutionMode::Strict)
+            .expect("div should succeed");
+
+        let report = tape.backward(z).expect("backward should succeed");
+        let x_grad = report.gradient(x).expect("x grad should exist");
+        let y_grad = report.gradient(y).expect("y grad should exist");
+
+        assert!((x_grad - (1.0 / 3.0)).abs() <= 1e-12);
+        assert!((y_grad - (-2.0 / 3.0)).abs() <= 1e-12);
     }
 
     #[test]

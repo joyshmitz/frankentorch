@@ -3,11 +3,13 @@
 use std::fmt;
 
 use ft_core::{Device, ExecutionMode, ScalarTensor};
-use ft_kernel_cpu::{KernelError, add_scalar, mul_scalar};
+use ft_kernel_cpu::{KernelError, add_scalar, div_scalar, mul_scalar, sub_scalar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     Add,
+    Sub,
+    Div,
     Mul,
 }
 
@@ -501,10 +503,18 @@ pub fn dispatch_scalar_binary_with_keyset(
         (DispatchKey::AutogradCPU, BinaryOp::Add) => {
             (add_scalar(lhs, rhs)?, "autograd_cpu::add_scalar")
         }
+        (DispatchKey::AutogradCPU, BinaryOp::Sub) => {
+            (sub_scalar(lhs, rhs)?, "autograd_cpu::sub_scalar")
+        }
+        (DispatchKey::AutogradCPU, BinaryOp::Div) => {
+            (div_scalar(lhs, rhs)?, "autograd_cpu::div_scalar")
+        }
         (DispatchKey::AutogradCPU, BinaryOp::Mul) => {
             (mul_scalar(lhs, rhs)?, "autograd_cpu::mul_scalar")
         }
         (DispatchKey::CPU, BinaryOp::Add) => (add_scalar(lhs, rhs)?, "cpu::add_scalar"),
+        (DispatchKey::CPU, BinaryOp::Sub) => (sub_scalar(lhs, rhs)?, "cpu::sub_scalar"),
+        (DispatchKey::CPU, BinaryOp::Div) => (div_scalar(lhs, rhs)?, "cpu::div_scalar"),
         (DispatchKey::CPU, BinaryOp::Mul) => (mul_scalar(lhs, rhs)?, "cpu::mul_scalar"),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
@@ -882,6 +892,48 @@ mod tests {
         assert_eq!(out.decision.backend_key, DispatchKey::CPU);
         assert!(!out.decision.fallback_used);
         assert_eq!(out.decision.kernel, "cpu::add_scalar");
+    }
+
+    #[test]
+    fn strict_mode_subtracts_with_cpu_kernel() {
+        let lhs = ScalarTensor::new(2.0, DType::F64, Device::Cpu);
+        let rhs = ScalarTensor::new(3.0, DType::F64, Device::Cpu);
+        let keyset = DispatchKeySet::from_keys(&[DispatchKey::BackendSelect, DispatchKey::CPU]);
+
+        let out = dispatch_scalar_binary_with_keyset(
+            BinaryOp::Sub,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            keyset,
+        )
+        .expect("strict mode should resolve subtraction directly to cpu");
+        assert_eq!(out.tensor.value(), -1.0);
+        assert_eq!(out.decision.selected_key, DispatchKey::CPU);
+        assert_eq!(out.decision.backend_key, DispatchKey::CPU);
+        assert!(!out.decision.fallback_used);
+        assert_eq!(out.decision.kernel, "cpu::sub_scalar");
+    }
+
+    #[test]
+    fn strict_mode_divides_with_cpu_kernel() {
+        let lhs = ScalarTensor::new(7.0, DType::F64, Device::Cpu);
+        let rhs = ScalarTensor::new(2.0, DType::F64, Device::Cpu);
+        let keyset = DispatchKeySet::from_keys(&[DispatchKey::BackendSelect, DispatchKey::CPU]);
+
+        let out = dispatch_scalar_binary_with_keyset(
+            BinaryOp::Div,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            keyset,
+        )
+        .expect("strict mode should resolve division directly to cpu");
+        assert_eq!(out.tensor.value(), 3.5);
+        assert_eq!(out.decision.selected_key, DispatchKey::CPU);
+        assert_eq!(out.decision.backend_key, DispatchKey::CPU);
+        assert!(!out.decision.fallback_used);
+        assert_eq!(out.decision.kernel, "cpu::div_scalar");
     }
 
     #[test]
