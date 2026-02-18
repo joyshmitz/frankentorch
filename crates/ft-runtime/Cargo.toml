@@ -13,5 +13,8 @@ ft-core = { workspace = true }
 asupersync = { workspace = true, optional = true }
 ftui = { workspace = true, optional = true }
 
+[dev-dependencies]
+ft-serialize = { workspace = true }
+
 [lints]
 workspace = true

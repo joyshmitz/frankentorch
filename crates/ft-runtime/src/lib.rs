@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use std::fmt;
+
 use ft_core::ExecutionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +90,16 @@ impl RuntimeContext {
     pub fn ledger_mut(&mut self) -> &mut EvidenceLedger {
         &mut self.ledger
     }
+
+    pub fn record_checkpoint_decode_failure<E>(&mut self, mode: &str, error: &E)
+    where
+        E: fmt::Display + ?Sized,
+    {
+        self.ledger.record(
+            EvidenceKind::Durability,
+            format!("checkpoint decode failure mode={mode}: {error}"),
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +182,7 @@ fn now_unix_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use ft_core::ExecutionMode;
+    use ft_serialize::{DecodeMode, decode_checkpoint};
 
     use super::{DurabilityEnvelope, EvidenceKind, RuntimeContext, ScrubStatus};
 
@@ -201,5 +214,41 @@ mod tests {
 
         assert_eq!(envelope.scrub_status, ScrubStatus::Recovered);
         assert_eq!(envelope.decode_proofs.len(), 1);
+    }
+
+    #[test]
+    fn decode_failure_records_durability_evidence() {
+        let mut ctx = RuntimeContext::new(ExecutionMode::Strict);
+        let payload = r#"{
+            "schema_version": 1,
+            "mode": "strict",
+            "entries": [],
+            "source_hash": "det64:placeholder",
+            "extra": 1
+        }"#;
+
+        let err = decode_checkpoint(payload, DecodeMode::Strict)
+            .expect_err("unknown field payload must fail strict decode");
+        ctx.record_checkpoint_decode_failure("strict", &err);
+
+        let durability_entry = ctx
+            .ledger()
+            .entries()
+            .iter()
+            .rev()
+            .find(|entry| entry.kind == EvidenceKind::Durability)
+            .expect("durability evidence entry should be present");
+        assert!(
+            durability_entry
+                .summary
+                .contains("checkpoint decode failure"),
+            "unexpected durability summary: {}",
+            durability_entry.summary
+        );
+        assert!(
+            durability_entry.summary.contains("unknown field"),
+            "durability summary should include decode diagnostic: {}",
+            durability_entry.summary
+        );
     }
 }
