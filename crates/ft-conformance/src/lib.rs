@@ -4,10 +4,11 @@ mod logging;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use ft_api::FrankenTorchSession;
@@ -455,9 +456,11 @@ type SidecarCache = BTreeMap<(String, usize), (RaptorQSidecar, DecodeProofArtifa
 
 static SERIALIZATION_SIDECAR_CACHE: OnceLock<Mutex<SidecarCache>> = OnceLock::new();
 const MAX_FIXTURE_BYTES: u64 = 1_048_576;
+const MAX_LEGACY_ORACLE_STDIN_BYTES: usize = 1_048_576;
 const MAX_LEGACY_ORACLE_STDOUT_BYTES: usize = 1_048_576;
 const MAX_LEGACY_ORACLE_STDERR_BYTES: usize = 262_144;
 const MAX_LEGACY_ORACLE_OUTPUT_LINE_BYTES: usize = 65_536;
+const MAX_LEGACY_ORACLE_WAIT_MILLIS: u64 = 30_000;
 const LEGACY_ORACLE_RAW_DIAGNOSTIC_BYTES: usize = 256;
 const LEGACY_ORACLE_STDERR_DIAGNOSTIC_BYTES: usize = 256;
 
@@ -4269,10 +4272,22 @@ fn run_legacy_oracle_script(
     script: &str,
     payload: &Value,
 ) -> Result<Value, String> {
+    run_legacy_oracle_script_with_timeout(config, script, payload, MAX_LEGACY_ORACLE_WAIT_MILLIS)
+}
+
+fn run_legacy_oracle_script_with_timeout(
+    config: &HarnessConfig,
+    script: &str,
+    payload: &Value,
+    timeout_millis: u64,
+) -> Result<Value, String> {
     let python = config
         .legacy_oracle_python
         .clone()
         .unwrap_or_else(|| PathBuf::from("python3"));
+    let body = serde_json::to_vec(payload)
+        .map_err(|error| format!("failed to serialize oracle payload: {error}"))?;
+    validate_legacy_oracle_stdin_bounds(body.len())?;
 
     let mut child = Command::new(&python)
         .arg("-c")
@@ -4288,29 +4303,113 @@ fn run_legacy_oracle_script(
             )
         })?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        let body = serde_json::to_vec(payload)
-            .map_err(|error| format!("failed to serialize oracle payload: {error}"))?;
-        stdin
-            .write_all(body.as_slice())
-            .map_err(|error| format!("failed writing oracle stdin payload: {error}"))?;
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            terminate_and_reap_child(&mut child);
+            return Err("legacy oracle stdin stream unavailable".to_string());
+        }
+    };
+    if let Err(error) = stdin.write_all(body.as_slice()) {
+        terminate_and_reap_child(&mut child);
+        return Err(format!("failed writing oracle stdin payload: {error}"));
     }
+    drop(stdin);
 
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("legacy oracle process wait failed: {error}"))?;
-    validate_legacy_oracle_stream_bounds(output.stdout.len(), output.stderr.len())?;
-    if !output.status.success() {
-        let status_display = output.status.to_string();
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            terminate_and_reap_child(&mut child);
+            return Err("legacy oracle stdout stream unavailable".to_string());
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            terminate_and_reap_child(&mut child);
+            return Err("legacy oracle stderr stream unavailable".to_string());
+        }
+    };
+
+    let overflow_flag = Arc::new(AtomicBool::new(false));
+    let stdout_overflow = Arc::clone(&overflow_flag);
+    let stdout_reader = std::thread::spawn(move || {
+        read_stream_capped(
+            stdout,
+            MAX_LEGACY_ORACLE_STDOUT_BYTES,
+            stdout_overflow.as_ref(),
+            "stdout",
+        )
+    });
+    let stderr_overflow = Arc::clone(&overflow_flag);
+    let stderr_reader = std::thread::spawn(move || {
+        read_stream_capped(
+            stderr,
+            MAX_LEGACY_ORACLE_STDERR_BYTES,
+            stderr_overflow.as_ref(),
+            "stderr",
+        )
+    });
+
+    let wait_result =
+        wait_for_legacy_oracle_exit(&mut child, overflow_flag.as_ref(), timeout_millis);
+    let stdout_capture = stdout_reader
+        .join()
+        .map_err(|_| "legacy oracle stdout reader thread panicked".to_string())??;
+    let stderr_capture = stderr_reader
+        .join()
+        .map_err(|_| "legacy oracle stderr reader thread panicked".to_string())??;
+    let status = wait_result?;
+
+    validate_legacy_oracle_stream_bounds(stdout_capture.total_bytes, stderr_capture.total_bytes)?;
+    if !status.success() {
+        let status_display = status.to_string();
         return Err(format_legacy_oracle_exit_error(
             status_display.as_str(),
-            output.stderr.as_slice(),
+            stderr_capture.bytes.as_slice(),
         ));
     }
 
-    let stdout = String::from_utf8(output.stdout)
+    let stdout = String::from_utf8(stdout_capture.bytes)
         .map_err(|error| format!("legacy oracle stdout was not utf8: {error}"))?;
     parse_legacy_oracle_stdout(stdout.as_str())
+}
+
+fn wait_for_legacy_oracle_exit(
+    child: &mut Child,
+    overflow_flag: &AtomicBool,
+    timeout_millis: u64,
+) -> Result<ExitStatus, String> {
+    let started_at = Instant::now();
+    let mut killed_for_overflow = false;
+    loop {
+        if overflow_flag.load(Ordering::Relaxed) && !killed_for_overflow {
+            terminate_and_reap_child(child);
+            killed_for_overflow = true;
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => {
+                terminate_and_reap_child(child);
+                return Err(format!("legacy oracle process wait failed: {error}"));
+            }
+        }
+
+        if started_at.elapsed().as_millis() > u128::from(timeout_millis) {
+            terminate_and_reap_child(child);
+            return Err(format!(
+                "legacy oracle process timed out after {timeout_millis}ms"
+            ));
+        }
+        std::thread::yield_now();
+    }
+}
+
+fn terminate_and_reap_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn parse_legacy_oracle_stdout(stdout: &str) -> Result<Value, String> {
@@ -4335,7 +4434,48 @@ fn parse_legacy_oracle_stdout(stdout: &str) -> Result<Value, String> {
     })
 }
 
-fn validate_legacy_oracle_stream_bounds(stdout_len: usize, stderr_len: usize) -> Result<(), String> {
+#[derive(Debug)]
+struct CappedStreamCapture {
+    bytes: Vec<u8>,
+    total_bytes: usize,
+}
+
+fn read_stream_capped<R: Read>(
+    mut reader: R,
+    max_bytes: usize,
+    overflow_flag: &AtomicBool,
+    stream_label: &str,
+) -> Result<CappedStreamCapture, String> {
+    let mut bytes = Vec::with_capacity(max_bytes.min(8192));
+    let mut total_bytes = 0usize;
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        let read_len = reader
+            .read(&mut chunk)
+            .map_err(|error| format!("legacy oracle {stream_label} read failed: {error}"))?;
+        if read_len == 0 {
+            break;
+        }
+
+        total_bytes = total_bytes.saturating_add(read_len);
+        if bytes.len() < max_bytes {
+            let remaining = max_bytes - bytes.len();
+            let copy_len = read_len.min(remaining);
+            bytes.extend_from_slice(&chunk[..copy_len]);
+        }
+        if total_bytes > max_bytes {
+            overflow_flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    Ok(CappedStreamCapture { bytes, total_bytes })
+}
+
+fn validate_legacy_oracle_stream_bounds(
+    stdout_len: usize,
+    stderr_len: usize,
+) -> Result<(), String> {
     if stdout_len > MAX_LEGACY_ORACLE_STDOUT_BYTES {
         return Err(format!(
             "legacy oracle stdout exceeds max bytes: actual={stdout_len} max={MAX_LEGACY_ORACLE_STDOUT_BYTES}"
@@ -4344,6 +4484,15 @@ fn validate_legacy_oracle_stream_bounds(stdout_len: usize, stderr_len: usize) ->
     if stderr_len > MAX_LEGACY_ORACLE_STDERR_BYTES {
         return Err(format!(
             "legacy oracle stderr exceeds max bytes: actual={stderr_len} max={MAX_LEGACY_ORACLE_STDERR_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_legacy_oracle_stdin_bounds(stdin_len: usize) -> Result<(), String> {
+    if stdin_len > MAX_LEGACY_ORACLE_STDIN_BYTES {
+        return Err(format!(
+            "legacy oracle stdin exceeds max bytes: actual={stdin_len} max={MAX_LEGACY_ORACLE_STDIN_BYTES}"
         ));
     }
     Ok(())
@@ -5106,6 +5255,10 @@ fn percentile(samples: &[u128], p: usize) -> u128 {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
+    use std::io::Cursor;
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde_json::{Value, json};
@@ -6567,11 +6720,128 @@ mod tests {
     }
 
     #[test]
+    fn validate_legacy_oracle_stdin_bounds_allows_exact_cap() {
+        let result =
+            super::validate_legacy_oracle_stdin_bounds(super::MAX_LEGACY_ORACLE_STDIN_BYTES);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_legacy_oracle_stdin_bounds_rejects_oversized_stdin() {
+        let err =
+            super::validate_legacy_oracle_stdin_bounds(super::MAX_LEGACY_ORACLE_STDIN_BYTES + 1)
+                .expect_err("oversized stdin must fail");
+        assert!(err.contains("stdin exceeds max bytes"));
+    }
+
+    #[test]
     fn format_legacy_oracle_exit_error_bounds_stderr_diagnostic() {
         let stderr = "e".repeat(super::LEGACY_ORACLE_STDERR_DIAGNOSTIC_BYTES + 64);
         let message = super::format_legacy_oracle_exit_error("exit status: 1", stderr.as_bytes());
         assert!(message.contains("legacy oracle exited with status exit status: 1"));
         assert!(message.contains("..."));
         assert!(message.len() < 420);
+    }
+
+    #[test]
+    fn read_stream_capped_buffers_all_bytes_within_cap() {
+        let input = b"{\"ok\":true}".to_vec();
+        let overflow = AtomicBool::new(false);
+        let capture =
+            super::read_stream_capped(Cursor::new(input.clone()), input.len(), &overflow, "stdout")
+                .expect("in-cap read should succeed");
+        assert_eq!(capture.total_bytes, input.len());
+        assert_eq!(capture.bytes, input);
+        assert!(!overflow.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn read_stream_capped_truncates_buffer_and_marks_overflow() {
+        let input = vec![b'x'; 96];
+        let overflow = AtomicBool::new(false);
+        let capture = super::read_stream_capped(Cursor::new(input), 64, &overflow, "stderr")
+            .expect("overflowing read should still return capture");
+        assert_eq!(capture.total_bytes, 96);
+        assert_eq!(capture.bytes.len(), 64);
+        assert!(overflow.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn wait_for_legacy_oracle_exit_times_out_fail_closed() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep subprocess should spawn");
+        let overflow = AtomicBool::new(false);
+        let err = super::wait_for_legacy_oracle_exit(&mut child, &overflow, 5)
+            .expect_err("long-running subprocess should time out");
+        assert!(err.contains("timed out after 5ms"));
+        assert!(
+            child
+                .try_wait()
+                .expect("child status should be queryable")
+                .is_some(),
+            "timed out child should be reaped"
+        );
+    }
+
+    #[test]
+    fn run_legacy_oracle_script_times_out_fail_closed() {
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let python_available = Command::new(&python)
+            .arg("-c")
+            .arg("import json")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !python_available {
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json
+import sys
+import time
+json.loads(sys.stdin.read())
+time.sleep(0.2)
+print(json.dumps({"ok": True}))
+"#;
+
+        let err =
+            super::run_legacy_oracle_script_with_timeout(&config, script, &json!({"x": 1}), 5)
+                .expect_err("stalled oracle process must time out");
+        assert!(err.contains("timed out after 5ms"));
+    }
+
+    #[test]
+    fn terminate_and_reap_child_reaps_running_process() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep subprocess should spawn");
+        super::terminate_and_reap_child(&mut child);
+        assert!(
+            child
+                .try_wait()
+                .expect("child status should be queryable")
+                .is_some(),
+            "terminated child should be reaped"
+        );
     }
 }
