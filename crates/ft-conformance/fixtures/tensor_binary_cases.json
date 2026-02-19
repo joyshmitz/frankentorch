@@ -1,0 +1,56 @@
+{
+  "cases": [
+    {
+      "name": "tensor_add_basic",
+      "op": "add",
+      "lhs": [2.0, 4.0],
+      "rhs": [3.0, 2.0],
+      "shape": [2],
+      "expected_output": [5.0, 6.0],
+      "expected_lhs_grad": [1.0, 1.0],
+      "expected_rhs_grad": [1.0, 1.0],
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-001", "INV-KERNEL-MATH"],
+      "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
+    },
+    {
+      "name": "tensor_sub_basic",
+      "op": "sub",
+      "lhs": [2.0, 4.0],
+      "rhs": [3.0, 2.0],
+      "shape": [2],
+      "expected_output": [-1.0, 2.0],
+      "expected_lhs_grad": [1.0, 1.0],
+      "expected_rhs_grad": [-1.0, -1.0],
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-003", "INV-KERNEL-MATH"],
+      "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
+    },
+    {
+      "name": "tensor_mul_basic",
+      "op": "mul",
+      "lhs": [2.0, 4.0],
+      "rhs": [3.0, 2.0],
+      "shape": [2],
+      "expected_output": [6.0, 8.0],
+      "expected_lhs_grad": [3.0, 2.0],
+      "expected_rhs_grad": [2.0, 4.0],
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-002", "INV-KERNEL-MATH"],
+      "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
+    },
+    {
+      "name": "tensor_div_basic",
+      "op": "div",
+      "lhs": [2.0, 4.0],
+      "rhs": [3.0, 2.0],
+      "shape": [2],
+      "expected_output": [0.6666666666666666, 2.0],
+      "expected_lhs_grad": [0.3333333333333333, 0.5],
+      "expected_rhs_grad": [-0.2222222222222222, -1.0],
+      "tolerance": 1e-12,
+      "contract_ids": ["CPU-KERNEL-004", "INV-KERNEL-MATH"],
+      "e2e_scenarios": ["cpu_kernel:add_mul_scalar_core"]
+    }
+  ]
+}

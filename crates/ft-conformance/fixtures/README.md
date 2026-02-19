@@ -4,6 +4,7 @@ This folder stores normalized oracle-vs-target fixtures for `ft-conformance`.
 
 - `smoke_case.json`: minimal bootstrap fixture ensuring harness wiring works.
 - `scalar_autograd_cases.json`: deterministic scalar DAC fixture family (strict + hardened).
+- `tensor_binary_cases.json`: deterministic tensor binary DAC fixture family (strict + hardened) for add/sub/mul/div forward and gradient parity.
 - `tensor_meta_cases.json`: tensor metadata/indexing/alias invariants (contiguous, strided, scalar-offset, and adversarial fail-closed) for packet `FT-P2C-001`.
 - `dispatch_key_cases.json`: dispatch key routing + mode-split fallback contract.
 - `op_schema_cases.json`: op schema ingestion differential/metamorphic/adversarial contract for packet `FT-P2C-003`.

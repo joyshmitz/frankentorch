@@ -69,6 +69,23 @@ pub struct CaseReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct TensorBinaryCaseReport {
+    pub name: String,
+    pub mode: ExecutionMode,
+    pub output_ok: bool,
+    pub lhs_grad_ok: bool,
+    pub rhs_grad_ok: bool,
+    pub forensic_log: StructuredCaseLog,
+}
+
+impl TensorBinaryCaseReport {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.output_ok && self.lhs_grad_ok && self.rhs_grad_ok
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct DispatchCaseReport {
     pub name: String,
     pub mode: ExecutionMode,
@@ -217,6 +234,28 @@ struct ScalarCase {
     expected_output: f64,
     expected_lhs_grad: f64,
     expected_rhs_grad: f64,
+    tolerance: Option<f64>,
+    #[serde(default)]
+    contract_ids: Vec<String>,
+    #[serde(default)]
+    e2e_scenarios: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorBinaryFixtureFile {
+    cases: Vec<TensorBinaryCase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorBinaryCase {
+    name: String,
+    op: String,
+    lhs: Vec<f64>,
+    rhs: Vec<f64>,
+    shape: Vec<usize>,
+    expected_output: Vec<f64>,
+    expected_lhs_grad: Vec<f64>,
+    expected_rhs_grad: Vec<f64>,
     tolerance: Option<f64>,
     #[serde(default)]
     contract_ids: Vec<String>,
@@ -512,6 +551,10 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
                     .map(|case| case.output_ok && case.lhs_grad_ok && case.rhs_grad_ok),
             )
         });
+    let (tensor_binary_total, tensor_binary_passed) = run_tensor_binary_conformance(config, mode)
+        .map_or((0, 0), |(_, cases)| {
+            summarize_passes(cases.iter().map(TensorBinaryCaseReport::passed))
+        });
     let (tensor_meta_total, tensor_meta_passed) = run_tensor_meta_conformance(config, mode)
         .map_or((0, 0), |(_, cases)| {
             summarize_passes(cases.iter().map(TensorMetaCaseReport::passed))
@@ -543,6 +586,7 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
         fixture_count,
         strict_mode: config.strict_mode,
         cases_total: scalar_total
+            + tensor_binary_total
             + tensor_meta_total
             + dispatch_total
             + op_schema_total
@@ -550,6 +594,7 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
             + serialization_total
             + nn_state_total,
         cases_passed: scalar_passed
+            + tensor_binary_passed
             + tensor_meta_passed
             + dispatch_passed
             + op_schema_passed
@@ -586,6 +631,40 @@ fn run_scalar_conformance_with_fixture(
 
     let report = HarnessReport {
         suite: "scalar_dac",
+        oracle_present: config.oracle_root.exists(),
+        fixture_count: 1,
+        strict_mode: mode == ExecutionMode::Strict,
+        cases_total,
+        cases_passed,
+    };
+
+    Ok((report, case_reports))
+}
+
+pub fn run_tensor_binary_conformance(
+    config: &HarnessConfig,
+    mode: ExecutionMode,
+) -> Result<(HarnessReport, Vec<TensorBinaryCaseReport>), String> {
+    let fixture_path = config.fixture_root.join("tensor_binary_cases.json");
+    let fixture: TensorBinaryFixtureFile = load_fixture(&fixture_path)?;
+    run_tensor_binary_conformance_with_fixture(config, mode, &fixture)
+}
+
+fn run_tensor_binary_conformance_with_fixture(
+    config: &HarnessConfig,
+    mode: ExecutionMode,
+    fixture: &TensorBinaryFixtureFile,
+) -> Result<(HarnessReport, Vec<TensorBinaryCaseReport>), String> {
+    let mut case_reports = Vec::with_capacity(fixture.cases.len());
+    for case in &fixture.cases {
+        case_reports.push(run_tensor_binary_case(case, mode)?);
+    }
+
+    let (cases_total, cases_passed) =
+        summarize_passes(case_reports.iter().map(TensorBinaryCaseReport::passed));
+
+    let report = HarnessReport {
+        suite: "tensor_binary",
         oracle_present: config.oracle_root.exists(),
         fixture_count: 1,
         strict_mode: mode == ExecutionMode::Strict,
@@ -2952,6 +3031,108 @@ fn run_scalar_case(case: &ScalarCase, mode: ExecutionMode) -> Result<CaseReport,
     })
 }
 
+fn run_tensor_binary_case(
+    case: &TensorBinaryCase,
+    mode: ExecutionMode,
+) -> Result<TensorBinaryCaseReport, String> {
+    let mut session = FrankenTorchSession::new(mode);
+    let lhs = session
+        .tensor_variable(case.lhs.clone(), case.shape.clone(), true)
+        .map_err(|error| format!("lhs tensor build failed for '{}': {error}", case.name))?;
+    let rhs = session
+        .tensor_variable(case.rhs.clone(), case.shape.clone(), true)
+        .map_err(|error| format!("rhs tensor build failed for '{}': {error}", case.name))?;
+
+    let out = match case.op.as_str() {
+        "add" => session.tensor_add(lhs, rhs),
+        "sub" => session.tensor_sub(lhs, rhs),
+        "div" => session.tensor_div(lhs, rhs),
+        "mul" => session.tensor_mul(lhs, rhs),
+        _ => return Err(format!("unsupported tensor operation '{}'", case.op)),
+    }
+    .map_err(|error| format!("tensor operation '{}' failed: {error}", case.name))?;
+
+    let actual_output = session
+        .tensor_values(out)
+        .map_err(|error| format!("tensor value read failed for '{}': {error}", case.name))?;
+    let backward = session
+        .tensor_backward(out)
+        .map_err(|error| format!("tensor backward failed for '{}': {error}", case.name))?;
+    let actual_lhs_grad = session
+        .tensor_gradient(&backward, lhs)
+        .ok_or_else(|| format!("missing lhs tensor grad for '{}'", case.name))?
+        .to_vec();
+    let actual_rhs_grad = session
+        .tensor_gradient(&backward, rhs)
+        .ok_or_else(|| format!("missing rhs tensor grad for '{}'", case.name))?
+        .to_vec();
+
+    let tolerance = case.tolerance.unwrap_or(1e-12);
+    let output_ok = vec_within(
+        actual_output.as_slice(),
+        case.expected_output.as_slice(),
+        tolerance,
+    );
+    let lhs_grad_ok = vec_within(
+        actual_lhs_grad.as_slice(),
+        case.expected_lhs_grad.as_slice(),
+        tolerance,
+    );
+    let rhs_grad_ok = vec_within(
+        actual_rhs_grad.as_slice(),
+        case.expected_rhs_grad.as_slice(),
+        tolerance,
+    );
+    let outcome = if output_ok && lhs_grad_ok && rhs_grad_ok {
+        "pass"
+    } else {
+        "fail"
+    };
+    let reason_code = if outcome == "pass" {
+        "tensor_binary_parity_ok"
+    } else {
+        "tensor_binary_mismatch"
+    };
+
+    let mut extra_fields = tensor_binary_forensic_fields(
+        case,
+        actual_output.as_slice(),
+        actual_lhs_grad.as_slice(),
+        actual_rhs_grad.as_slice(),
+        outcome == "pass",
+    );
+    extra_fields.insert(
+        "runtime_evidence".to_string(),
+        runtime_evidence_field(session.evidence()),
+    );
+
+    Ok(TensorBinaryCaseReport {
+        name: case.name.clone(),
+        mode,
+        output_ok,
+        lhs_grad_ok,
+        rhs_grad_ok,
+        forensic_log: StructuredCaseLog::new(
+            "tensor_binary",
+            "tensor_binary_cases.json",
+            "FT-P2C-001",
+            case.name.as_str(),
+            mode,
+            vec![
+                "crates/ft-conformance/fixtures/tensor_binary_cases.json".to_string(),
+                "artifacts/phase2c/FT-P2C-001/parity_report.json".to_string(),
+            ],
+            format!(
+                "cargo test -p ft-conformance strict_tensor_binary_conformance_is_green -- --nocapture # mode={}",
+                mode_label(mode)
+            ),
+            outcome,
+            reason_code,
+        )
+        .with_extra_fields(extra_fields),
+    })
+}
+
 fn run_tensor_meta_case(
     case: &TensorMetaCase,
     mode: ExecutionMode,
@@ -4775,6 +4956,52 @@ fn scalar_forensic_fields(
     fields
 }
 
+fn tensor_binary_forensic_fields(
+    case: &TensorBinaryCase,
+    actual_output: &[f64],
+    actual_lhs_grad: &[f64],
+    actual_rhs_grad: &[f64],
+    passed: bool,
+) -> BTreeMap<String, Value> {
+    let mut fields = BTreeMap::new();
+    let selected_kernel = match case.op.as_str() {
+        "add" => "autograd_cpu::add_tensor",
+        "sub" => "autograd_cpu::sub_tensor",
+        "div" => "autograd_cpu::div_tensor",
+        "mul" => "autograd_cpu::mul_tensor",
+        _ => "autograd_cpu::unknown_tensor",
+    };
+    fields.insert("contract_ids".to_string(), json!(case.contract_ids));
+    fields.insert(
+        "downstream_e2e_scenarios".to_string(),
+        json!(case.e2e_scenarios),
+    );
+    fields.insert("op".to_string(), json!(case.op));
+    fields.insert("shape".to_string(), json!(case.shape));
+    fields.insert("lhs".to_string(), json!(case.lhs));
+    fields.insert("rhs".to_string(), json!(case.rhs));
+    fields.insert("expected_output".to_string(), json!(case.expected_output));
+    fields.insert("actual_output".to_string(), json!(actual_output));
+    fields.insert(
+        "expected_lhs_grad".to_string(),
+        json!(case.expected_lhs_grad),
+    );
+    fields.insert("actual_lhs_grad".to_string(), json!(actual_lhs_grad));
+    fields.insert(
+        "expected_rhs_grad".to_string(),
+        json!(case.expected_rhs_grad),
+    );
+    fields.insert("actual_rhs_grad".to_string(), json!(actual_rhs_grad));
+    fields.insert("dispatch_key".to_string(), json!("AutogradCPU"));
+    fields.insert("selected_kernel".to_string(), json!(selected_kernel));
+    fields.insert("backend_key".to_string(), json!("CPU"));
+    fields.insert("dtype_pair".to_string(), json!("F64/F64"));
+    fields.insert("broadcast_applied".to_string(), json!(false));
+    fields.insert("fallback_path".to_string(), json!(false));
+    fields.insert("pass".to_string(), json!(passed));
+    fields
+}
+
 fn tensor_meta_forensic_fields(
     case: &TensorMetaCase,
     observed: &TensorMetaObservation,
@@ -5307,6 +5534,14 @@ fn within(actual: f64, expected: f64, tolerance: f64) -> bool {
     (actual - expected).abs() <= tolerance
 }
 
+fn vec_within(actual: &[f64], expected: &[f64], tolerance: f64) -> bool {
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected.iter())
+            .all(|(actual, expected)| within(*actual, *expected, tolerance))
+}
+
 fn percentile(samples: &[u128], p: usize) -> u128 {
     if samples.is_empty() {
         return 0;
@@ -5338,7 +5573,8 @@ mod tests {
         run_autograd_scheduler_conformance, run_differential_conformance, run_dispatch_conformance,
         run_nn_state_conformance, run_op_schema_conformance, run_packet_e2e_microbench,
         run_packet_e2e_microbench_legacy, run_scalar_conformance, run_scalar_microbench,
-        run_serialization_conformance, run_smoke, run_tensor_meta_conformance,
+        run_serialization_conformance, run_smoke, run_tensor_binary_conformance,
+        run_tensor_meta_conformance,
     };
 
     #[test]
@@ -5403,6 +5639,26 @@ mod tests {
                 .any(|entry| entry.get("kind") == Some(&json!("backward"))),
             "runtime evidence should include backward entries"
         );
+    }
+
+    #[test]
+    fn strict_tensor_binary_conformance_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let (report, cases) = run_tensor_binary_conformance(&cfg, ExecutionMode::Strict)
+            .expect("tensor binary conformance should run");
+
+        assert_eq!(report.cases_total, cases.len());
+        assert_eq!(report.cases_total, report.cases_passed);
+    }
+
+    #[test]
+    fn hardened_tensor_binary_conformance_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let (report, cases) = run_tensor_binary_conformance(&cfg, ExecutionMode::Hardened)
+            .expect("tensor binary conformance should run");
+
+        assert_eq!(report.cases_total, cases.len());
+        assert_eq!(report.cases_total, report.cases_passed);
     }
 
     #[test]
