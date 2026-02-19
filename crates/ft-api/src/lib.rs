@@ -256,6 +256,7 @@ pub use ft_autograd::{
 mod tests {
     use ft_autograd::{BackwardOptions, ReentrantPolicy};
     use ft_core::{DType, DenseTensor, Device, ExecutionMode, TensorMeta};
+    use ft_runtime::EvidenceKind;
 
     use super::FrankenTorchSession;
 
@@ -300,6 +301,44 @@ mod tests {
             .expect("hardened fallback should succeed");
 
         assert!(report.telemetry.reentrant_guard_triggered);
+    }
+
+    #[test]
+    fn tensor_backward_with_options_supports_hardened_reentrant_fallback() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Hardened);
+        let x = session
+            .tensor_variable(vec![2.0, 4.0], vec![2], true)
+            .expect("lhs tensor variable should succeed");
+        let y = session
+            .tensor_variable(vec![3.0, 2.0], vec![2], true)
+            .expect("rhs tensor variable should succeed");
+        let z = session.tensor_add(x, y).expect("tensor add should succeed");
+
+        let report = session
+            .tensor_backward_with_options(
+                z,
+                BackwardOptions {
+                    max_reentrant_depth: 1,
+                    current_reentrant_depth: 2,
+                    policy: ReentrantPolicy::HardenedBoundedFallback,
+                },
+            )
+            .expect("hardened tensor fallback should succeed");
+
+        assert!(report.telemetry.reentrant_guard_triggered);
+        let entry = session
+            .evidence()
+            .iter()
+            .rev()
+            .find(|entry| {
+                entry.kind == EvidenceKind::Backward && entry.summary.contains("tensor_root=")
+            })
+            .expect("tensor backward evidence should be recorded");
+        assert!(
+            entry.summary.contains("reentrant_guard=true"),
+            "missing fallback marker in evidence summary: {}",
+            entry.summary
+        );
     }
 
     #[test]
