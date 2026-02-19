@@ -96,6 +96,32 @@ pub fn tanh_scalar(input: &ScalarTensor) -> ScalarTensor {
     input.with_value(input.value().tanh())
 }
 
+pub fn sqrt_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().sqrt())
+}
+
+pub fn reciprocal_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(1.0 / input.value())
+}
+
+pub fn pow_scalar(input: &ScalarTensor, exponent: f64) -> ScalarTensor {
+    input.with_value(input.value().powf(exponent))
+}
+
+pub fn clamp_scalar(input: &ScalarTensor, min_val: f64, max_val: f64) -> ScalarTensor {
+    input.with_value(input.value().clamp(min_val, max_val))
+}
+
+pub fn min_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
+    ensure_compatible(lhs, rhs)?;
+    Ok(lhs.with_value(lhs.value().min(rhs.value())))
+}
+
+pub fn max_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
+    ensure_compatible(lhs, rhs)?;
+    Ok(lhs.with_value(lhs.value().max(rhs.value())))
+}
+
 pub fn eq_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
     ensure_compatible(lhs, rhs)?;
     Ok(lhs.with_value(if (lhs.value() - rhs.value()).abs() == 0.0 { 1.0 } else { 0.0 }))
@@ -356,6 +382,75 @@ pub fn tanh_tensor_contiguous_f64(
     unary_contiguous_f64(input, meta, |value| value.tanh())
 }
 
+pub fn sqrt_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.sqrt())
+}
+
+pub fn reciprocal_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| 1.0 / value)
+}
+
+pub fn pow_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    exponent: f64,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+
+    let start = meta.storage_offset();
+    let window = &input[start..start + numel];
+
+    Ok(window.iter().map(|value| value.powf(exponent)).collect())
+}
+
+pub fn clamp_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    min_val: f64,
+    max_val: f64,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+
+    let start = meta.storage_offset();
+    let window = &input[start..start + numel];
+
+    Ok(window.iter().map(|value| value.clamp(min_val, max_val)).collect())
+}
+
+pub fn min_tensor_contiguous_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l.min(r))
+}
+
+pub fn max_tensor_contiguous_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l.max(r))
+}
+
 pub fn eq_tensor_contiguous_f64(
     lhs: &[f64],
     rhs: &[f64],
@@ -521,14 +616,17 @@ mod tests {
 
     use super::{
         KernelError, abs_scalar, abs_tensor_contiguous_f64, add_scalar, add_tensor_contiguous_f64,
-        div_scalar, div_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, exp_scalar,
-        exp_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gt_scalar,
-        gt_tensor_contiguous_f64, le_scalar, le_tensor_contiguous_f64, log_scalar,
-        log_tensor_contiguous_f64, lt_scalar, lt_tensor_contiguous_f64,
-        matmul_tensor_contiguous_f64, mean_tensor_contiguous_f64, mul_scalar,
-        mul_tensor_contiguous_f64, ne_scalar, ne_tensor_contiguous_f64, neg_scalar,
-        neg_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64, sigmoid_scalar,
-        sigmoid_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
+        clamp_scalar, clamp_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64,
+        eq_scalar, eq_tensor_contiguous_f64, exp_scalar, exp_tensor_contiguous_f64, ge_scalar,
+        ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
+        le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
+        lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
+        max_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_scalar,
+        min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
+        ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64, pow_scalar,
+        pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
+        relu_scalar, relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64,
+        sqrt_scalar, sqrt_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
         sum_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64,
     };
 
@@ -1209,5 +1307,170 @@ mod tests {
         let out = ge_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
             .expect("ge should succeed");
         assert_eq!(out, vec![0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn sqrt_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(9.0, DType::F64, Device::Cpu);
+        let out = sqrt_scalar(&input);
+        assert_eq!(out.value(), 3.0);
+    }
+
+    #[test]
+    fn sqrt_scalar_of_zero() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = sqrt_scalar(&input);
+        assert_eq!(out.value(), 0.0);
+    }
+
+    #[test]
+    fn sqrt_scalar_of_one() {
+        let input = ScalarTensor::new(1.0, DType::F64, Device::Cpu);
+        let out = sqrt_scalar(&input);
+        assert_eq!(out.value(), 1.0);
+    }
+
+    #[test]
+    fn sqrt_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let input = vec![0.0, 1.0, 4.0, 9.0];
+        let out = sqrt_tensor_contiguous_f64(&input, &meta)
+            .expect("contiguous sqrt should succeed");
+        assert_eq!(out, vec![0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn reciprocal_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(4.0, DType::F64, Device::Cpu);
+        let out = reciprocal_scalar(&input);
+        assert_eq!(out.value(), 0.25);
+    }
+
+    #[test]
+    fn reciprocal_scalar_of_one() {
+        let input = ScalarTensor::new(1.0, DType::F64, Device::Cpu);
+        let out = reciprocal_scalar(&input);
+        assert_eq!(out.value(), 1.0);
+    }
+
+    #[test]
+    fn reciprocal_scalar_negative() {
+        let input = ScalarTensor::new(-2.0, DType::F64, Device::Cpu);
+        let out = reciprocal_scalar(&input);
+        assert_eq!(out.value(), -0.5);
+    }
+
+    #[test]
+    fn reciprocal_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 4.0];
+        let out = reciprocal_tensor_contiguous_f64(&input, &meta)
+            .expect("contiguous reciprocal should succeed");
+        assert_eq!(out, vec![1.0, 0.5, 0.25]);
+    }
+
+    #[test]
+    fn pow_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(3.0, DType::F64, Device::Cpu);
+        let out = pow_scalar(&input, 2.0);
+        assert_eq!(out.value(), 9.0);
+    }
+
+    #[test]
+    fn pow_scalar_zero_exponent() {
+        let input = ScalarTensor::new(5.0, DType::F64, Device::Cpu);
+        let out = pow_scalar(&input, 0.0);
+        assert_eq!(out.value(), 1.0);
+    }
+
+    #[test]
+    fn pow_scalar_fractional_exponent() {
+        let input = ScalarTensor::new(4.0, DType::F64, Device::Cpu);
+        let out = pow_scalar(&input, 0.5);
+        assert!((out.value() - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pow_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0];
+        let out = pow_tensor_contiguous_f64(&input, &meta, 2.0)
+            .expect("contiguous pow should succeed");
+        assert_eq!(out, vec![1.0, 4.0, 9.0]);
+    }
+
+    #[test]
+    fn pow_tensor_contiguous_negative_exponent() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let input = vec![2.0, 4.0];
+        let out = pow_tensor_contiguous_f64(&input, &meta, -1.0)
+            .expect("pow with negative exponent should succeed");
+        assert_eq!(out, vec![0.5, 0.25]);
+    }
+
+    #[test]
+    fn clamp_scalar_within_range() {
+        let input = ScalarTensor::new(3.0, DType::F64, Device::Cpu);
+        let out = clamp_scalar(&input, 1.0, 5.0);
+        assert_eq!(out.value(), 3.0);
+    }
+
+    #[test]
+    fn clamp_scalar_below_min() {
+        let input = ScalarTensor::new(-1.0, DType::F64, Device::Cpu);
+        let out = clamp_scalar(&input, 0.0, 5.0);
+        assert_eq!(out.value(), 0.0);
+    }
+
+    #[test]
+    fn clamp_scalar_above_max() {
+        let input = ScalarTensor::new(10.0, DType::F64, Device::Cpu);
+        let out = clamp_scalar(&input, 0.0, 5.0);
+        assert_eq!(out.value(), 5.0);
+    }
+
+    #[test]
+    fn clamp_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![5], DType::F64, Device::Cpu);
+        let input = vec![-2.0, 0.0, 3.0, 5.0, 8.0];
+        let out = clamp_tensor_contiguous_f64(&input, &meta, 0.0, 5.0)
+            .expect("contiguous clamp should succeed");
+        assert_eq!(out, vec![0.0, 0.0, 3.0, 5.0, 5.0]);
+    }
+
+    #[test]
+    fn min_scalar_returns_expected_value() {
+        let a = ScalarTensor::new(3.0, DType::F64, Device::Cpu);
+        let b = ScalarTensor::new(5.0, DType::F64, Device::Cpu);
+        let out = min_scalar(&a, &b).expect("min should succeed");
+        assert_eq!(out.value(), 3.0);
+    }
+
+    #[test]
+    fn max_scalar_returns_expected_value() {
+        let a = ScalarTensor::new(3.0, DType::F64, Device::Cpu);
+        let b = ScalarTensor::new(5.0, DType::F64, Device::Cpu);
+        let out = max_scalar(&a, &b).expect("max should succeed");
+        assert_eq!(out.value(), 5.0);
+    }
+
+    #[test]
+    fn min_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let lhs = vec![1.0, 5.0, 3.0];
+        let rhs = vec![2.0, 4.0, 3.0];
+        let out = min_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
+            .expect("min should succeed");
+        assert_eq!(out, vec![1.0, 4.0, 3.0]);
+    }
+
+    #[test]
+    fn max_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let lhs = vec![1.0, 5.0, 3.0];
+        let rhs = vec![2.0, 4.0, 3.0];
+        let out = max_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
+            .expect("max should succeed");
+        assert_eq!(out, vec![2.0, 5.0, 3.0]);
     }
 }

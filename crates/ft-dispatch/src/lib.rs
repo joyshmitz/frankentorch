@@ -5,14 +5,17 @@ use std::{collections::BTreeMap, fmt};
 use ft_core::{Device, ExecutionMode, ScalarTensor, TensorMeta};
 use ft_kernel_cpu::{
     KernelError, abs_scalar, abs_tensor_contiguous_f64, add_scalar, add_tensor_contiguous_f64,
-    div_scalar, div_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, exp_scalar,
-    exp_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gt_scalar,
-    gt_tensor_contiguous_f64, le_scalar, le_tensor_contiguous_f64, log_scalar,
-    log_tensor_contiguous_f64, lt_scalar, lt_tensor_contiguous_f64,
-    matmul_tensor_contiguous_f64, mean_tensor_contiguous_f64, mul_scalar,
-    mul_tensor_contiguous_f64, ne_scalar, ne_tensor_contiguous_f64, neg_scalar,
-    neg_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64, sigmoid_scalar,
-    sigmoid_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
+    clamp_scalar, clamp_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64, eq_scalar,
+    eq_tensor_contiguous_f64, exp_scalar, exp_tensor_contiguous_f64, ge_scalar,
+    ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
+    le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
+    lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
+    max_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_scalar,
+    min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
+    ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64, pow_scalar,
+    pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64, relu_scalar,
+    relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sqrt_scalar,
+    sqrt_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
     sum_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64,
 };
 
@@ -23,6 +26,8 @@ pub enum BinaryOp {
     Div,
     Mul,
     MatMul,
+    Min,
+    Max,
 }
 
 impl BinaryOp {
@@ -34,6 +39,8 @@ impl BinaryOp {
             "div" => Some(Self::Div),
             "mul" => Some(Self::Mul),
             "matmul" => Some(Self::MatMul),
+            "min" => Some(Self::Min),
+            "max" => Some(Self::Max),
             _ => None,
         }
     }
@@ -48,6 +55,8 @@ pub enum UnaryOp {
     Relu,
     Sigmoid,
     Tanh,
+    Sqrt,
+    Reciprocal,
 }
 
 impl UnaryOp {
@@ -61,6 +70,8 @@ impl UnaryOp {
             "relu" => Some(Self::Relu),
             "sigmoid" => Some(Self::Sigmoid),
             "tanh" => Some(Self::Tanh),
+            "sqrt" => Some(Self::Sqrt),
+            "reciprocal" => Some(Self::Reciprocal),
             _ => None,
         }
     }
@@ -864,6 +875,12 @@ pub fn dispatch_scalar_binary_with_keyset(
             }
             .into());
         }
+        (DispatchKey::AutogradCPU, BinaryOp::Min) => {
+            (min_scalar(lhs, rhs)?, "autograd_cpu::min_scalar")
+        }
+        (DispatchKey::AutogradCPU, BinaryOp::Max) => {
+            (max_scalar(lhs, rhs)?, "autograd_cpu::max_scalar")
+        }
         (DispatchKey::CPU, BinaryOp::Add) => (add_scalar(lhs, rhs)?, "cpu::add_scalar"),
         (DispatchKey::CPU, BinaryOp::Sub) => (sub_scalar(lhs, rhs)?, "cpu::sub_scalar"),
         (DispatchKey::CPU, BinaryOp::Div) => (div_scalar(lhs, rhs)?, "cpu::div_scalar"),
@@ -874,6 +891,8 @@ pub fn dispatch_scalar_binary_with_keyset(
             }
             .into());
         }
+        (DispatchKey::CPU, BinaryOp::Min) => (min_scalar(lhs, rhs)?, "cpu::min_scalar"),
+        (DispatchKey::CPU, BinaryOp::Max) => (max_scalar(lhs, rhs)?, "cpu::max_scalar"),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
                 reason: "resolved dispatch key is unsupported for scalar binary ops",
@@ -955,6 +974,14 @@ pub fn dispatch_tensor_binary_contiguous_f64_with_keyset(
             matmul_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
             "autograd_cpu::matmul_tensor_contiguous_f64",
         ),
+        (DispatchKey::AutogradCPU, BinaryOp::Min) => (
+            min_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::min_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Max) => (
+            max_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::max_tensor_contiguous_f64",
+        ),
         (DispatchKey::CPU, BinaryOp::Add) => (
             add_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
             "cpu::add_tensor_contiguous_f64",
@@ -974,6 +1001,14 @@ pub fn dispatch_tensor_binary_contiguous_f64_with_keyset(
         (DispatchKey::CPU, BinaryOp::MatMul) => (
             matmul_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
             "cpu::matmul_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Min) => (
+            min_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::min_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Max) => (
+            max_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::max_tensor_contiguous_f64",
         ),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
@@ -1045,6 +1080,12 @@ pub fn dispatch_scalar_unary(
         (DispatchKey::AutogradCPU, UnaryOp::Tanh) => {
             (tanh_scalar(input), "autograd_cpu::tanh_scalar")
         }
+        (DispatchKey::AutogradCPU, UnaryOp::Sqrt) => {
+            (sqrt_scalar(input), "autograd_cpu::sqrt_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Reciprocal) => {
+            (reciprocal_scalar(input), "autograd_cpu::reciprocal_scalar")
+        }
         (DispatchKey::CPU, UnaryOp::Neg) => (neg_scalar(input), "cpu::neg_scalar"),
         (DispatchKey::CPU, UnaryOp::Abs) => (abs_scalar(input), "cpu::abs_scalar"),
         (DispatchKey::CPU, UnaryOp::Exp) => (exp_scalar(input), "cpu::exp_scalar"),
@@ -1052,6 +1093,10 @@ pub fn dispatch_scalar_unary(
         (DispatchKey::CPU, UnaryOp::Relu) => (relu_scalar(input), "cpu::relu_scalar"),
         (DispatchKey::CPU, UnaryOp::Sigmoid) => (sigmoid_scalar(input), "cpu::sigmoid_scalar"),
         (DispatchKey::CPU, UnaryOp::Tanh) => (tanh_scalar(input), "cpu::tanh_scalar"),
+        (DispatchKey::CPU, UnaryOp::Sqrt) => (sqrt_scalar(input), "cpu::sqrt_scalar"),
+        (DispatchKey::CPU, UnaryOp::Reciprocal) => {
+            (reciprocal_scalar(input), "cpu::reciprocal_scalar")
+        }
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
                 reason: "resolved dispatch key is unsupported for scalar unary ops",
@@ -1114,6 +1159,14 @@ pub fn dispatch_tensor_unary_contiguous_f64(
             tanh_tensor_contiguous_f64(input, meta)?,
             "autograd_cpu::tanh_tensor_contiguous_f64",
         ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sqrt) => (
+            sqrt_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::sqrt_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Reciprocal) => (
+            reciprocal_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::reciprocal_tensor_contiguous_f64",
+        ),
         (DispatchKey::CPU, UnaryOp::Neg) => (
             neg_tensor_contiguous_f64(input, meta)?,
             "cpu::neg_tensor_contiguous_f64",
@@ -1141,6 +1194,14 @@ pub fn dispatch_tensor_unary_contiguous_f64(
         (DispatchKey::CPU, UnaryOp::Tanh) => (
             tanh_tensor_contiguous_f64(input, meta)?,
             "cpu::tanh_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sqrt) => (
+            sqrt_tensor_contiguous_f64(input, meta)?,
+            "cpu::sqrt_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Reciprocal) => (
+            reciprocal_tensor_contiguous_f64(input, meta)?,
+            "cpu::reciprocal_tensor_contiguous_f64",
         ),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
@@ -1319,6 +1380,214 @@ pub fn dispatch_tensor_comparison_contiguous_f64(
             op,
             mode,
             kernel,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowDispatchDecision {
+    pub mode: ExecutionMode,
+    pub kernel: &'static str,
+    pub exponent: f64,
+    pub selected_key: DispatchKey,
+    pub backend_key: DispatchKey,
+    pub keyset_bits: u64,
+    pub fallback_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PowDispatchOutcome {
+    pub tensor: ScalarTensor,
+    pub decision: PowDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorPowDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: PowDispatchDecision,
+}
+
+pub fn dispatch_scalar_pow(
+    mode: ExecutionMode,
+    input: &ScalarTensor,
+    exponent: f64,
+    requires_grad: bool,
+) -> Result<PowDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor(input, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (tensor, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (pow_scalar(input, exponent), "autograd_cpu::pow_scalar"),
+        DispatchKey::CPU => (pow_scalar(input, exponent), "cpu::pow_scalar"),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for scalar pow op",
+            }
+            .into());
+        }
+    };
+
+    Ok(PowDispatchOutcome {
+        tensor,
+        decision: PowDispatchDecision {
+            mode,
+            kernel,
+            exponent,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+pub fn dispatch_tensor_pow_contiguous_f64(
+    mode: ExecutionMode,
+    input: &[f64],
+    meta: &TensorMeta,
+    exponent: f64,
+    requires_grad: bool,
+) -> Result<TensorPowDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            pow_tensor_contiguous_f64(input, meta, exponent)?,
+            "autograd_cpu::pow_tensor_contiguous_f64",
+        ),
+        DispatchKey::CPU => (
+            pow_tensor_contiguous_f64(input, meta, exponent)?,
+            "cpu::pow_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor pow op",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorPowDispatchOutcome {
+        values,
+        decision: PowDispatchDecision {
+            mode,
+            kernel,
+            exponent,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClampDispatchDecision {
+    pub mode: ExecutionMode,
+    pub kernel: &'static str,
+    pub min_val: f64,
+    pub max_val: f64,
+    pub selected_key: DispatchKey,
+    pub backend_key: DispatchKey,
+    pub keyset_bits: u64,
+    pub fallback_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClampDispatchOutcome {
+    pub tensor: ScalarTensor,
+    pub decision: ClampDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorClampDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: ClampDispatchDecision,
+}
+
+pub fn dispatch_scalar_clamp(
+    mode: ExecutionMode,
+    input: &ScalarTensor,
+    min_val: f64,
+    max_val: f64,
+    requires_grad: bool,
+) -> Result<ClampDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor(input, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (tensor, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            clamp_scalar(input, min_val, max_val),
+            "autograd_cpu::clamp_scalar",
+        ),
+        DispatchKey::CPU => (clamp_scalar(input, min_val, max_val), "cpu::clamp_scalar"),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for scalar clamp op",
+            }
+            .into());
+        }
+    };
+
+    Ok(ClampDispatchOutcome {
+        tensor,
+        decision: ClampDispatchDecision {
+            mode,
+            kernel,
+            min_val,
+            max_val,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+pub fn dispatch_tensor_clamp_contiguous_f64(
+    mode: ExecutionMode,
+    input: &[f64],
+    meta: &TensorMeta,
+    min_val: f64,
+    max_val: f64,
+    requires_grad: bool,
+) -> Result<TensorClampDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            clamp_tensor_contiguous_f64(input, meta, min_val, max_val)?,
+            "autograd_cpu::clamp_tensor_contiguous_f64",
+        ),
+        DispatchKey::CPU => (
+            clamp_tensor_contiguous_f64(input, meta, min_val, max_val)?,
+            "cpu::clamp_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor clamp op",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorClampDispatchOutcome {
+        values,
+        decision: ClampDispatchDecision {
+            mode,
+            kernel,
+            min_val,
+            max_val,
             selected_key,
             backend_key,
             keyset_bits: keyset.bits(),

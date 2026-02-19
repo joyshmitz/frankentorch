@@ -1,12 +1,13 @@
 #![forbid(unsafe_code)]
 
 use ft_autograd::{
-    AutogradError, BackwardOptions, BackwardReport, NodeId, OperationEvent, Tape,
-    TensorBackwardReport, TensorNodeId, TensorOperationEvent, TensorReductionOperationEvent,
-    TensorTape, TensorUnaryOperationEvent, UnaryOperationEvent,
+    AutogradError, BackwardOptions, BackwardReport, ClampOperationEvent, NodeId, OperationEvent,
+    PowOperationEvent, Tape, TensorBackwardReport, TensorClampOperationEvent, TensorNodeId,
+    TensorOperationEvent, TensorPowOperationEvent, TensorReductionOperationEvent, TensorTape,
+    TensorUnaryOperationEvent, UnaryOperationEvent,
 };
 use ft_dispatch::{
-    ComparisonDispatchDecision, ComparisonOp, dispatch_scalar_comparison,
+    ClampDispatchDecision, ComparisonDispatchDecision, ComparisonOp, dispatch_scalar_comparison,
     dispatch_tensor_comparison_contiguous_f64,
 };
 use ft_core::{DenseTensor, ExecutionMode};
@@ -106,6 +107,47 @@ impl FrankenTorchSession {
     pub fn tanh(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
         let (out, event) = self.tape.tanh(input, self.mode())?;
         self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn sqrt(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.sqrt(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn reciprocal(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.reciprocal(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn pow(&mut self, input: NodeId, exponent: f64) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.pow(input, exponent, self.mode())?;
+        self.record_pow_operation(&event);
+        Ok(out)
+    }
+
+    pub fn min(&mut self, lhs: NodeId, rhs: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.min(lhs, rhs, self.mode())?;
+        self.record_operation(&event);
+        Ok(out)
+    }
+
+    pub fn max(&mut self, lhs: NodeId, rhs: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.max(lhs, rhs, self.mode())?;
+        self.record_operation(&event);
+        Ok(out)
+    }
+
+    pub fn clamp(
+        &mut self,
+        input: NodeId,
+        min_val: f64,
+        max_val: f64,
+    ) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.clamp(input, min_val, max_val, self.mode())?;
+        self.record_clamp_operation(&event);
         Ok(out)
     }
 
@@ -294,6 +336,67 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.tanh(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_sqrt(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.sqrt(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_reciprocal(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.reciprocal(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_pow(
+        &mut self,
+        input: TensorNodeId,
+        exponent: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.pow(input, exponent, self.mode())?;
+        self.record_tensor_pow_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_min(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.tensor_min(lhs, rhs, self.mode())?;
+        self.record_tensor_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_max(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.tensor_max(lhs, rhs, self.mode())?;
+        self.record_tensor_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_clamp(
+        &mut self,
+        input: TensorNodeId,
+        min_val: f64,
+        max_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) =
+            self.tensor_tape
+                .tensor_clamp(input, min_val, max_val, self.mode())?;
+        self.record_tensor_clamp_operation(&event);
         Ok(out)
     }
 
@@ -634,6 +737,80 @@ impl FrankenTorchSession {
                 decision.backend_key,
                 decision.keyset_bits,
                 decision.fallback_used
+            ),
+        );
+    }
+
+    fn record_pow_operation(&mut self, event: &PowOperationEvent) {
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "pow_op input={} out={} exponent={} mode={:?} kernel={} key={:?} backend={:?} keyset=0x{:016x} fallback={}",
+                event.input.0,
+                event.out.0,
+                event.exponent,
+                event.decision.mode,
+                event.decision.kernel,
+                event.decision.selected_key,
+                event.decision.backend_key,
+                event.decision.keyset_bits,
+                event.decision.fallback_used
+            ),
+        );
+    }
+
+    fn record_tensor_pow_operation(&mut self, event: &TensorPowOperationEvent) {
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "tensor_pow_op input={} out={} exponent={} mode={:?} kernel={} key={:?} backend={:?} keyset=0x{:016x} fallback={}",
+                event.input.0,
+                event.out.0,
+                event.exponent,
+                event.decision.mode,
+                event.decision.kernel,
+                event.decision.selected_key,
+                event.decision.backend_key,
+                event.decision.keyset_bits,
+                event.decision.fallback_used
+            ),
+        );
+    }
+
+    fn record_clamp_operation(&mut self, event: &ClampOperationEvent) {
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "clamp_op input={} out={} min={} max={} mode={:?} kernel={} key={:?} backend={:?} keyset=0x{:016x} fallback={}",
+                event.input.0,
+                event.out.0,
+                event.min_val,
+                event.max_val,
+                event.decision.mode,
+                event.decision.kernel,
+                event.decision.selected_key,
+                event.decision.backend_key,
+                event.decision.keyset_bits,
+                event.decision.fallback_used
+            ),
+        );
+    }
+
+    fn record_tensor_clamp_operation(&mut self, event: &TensorClampOperationEvent) {
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "tensor_clamp_op input={} out={} min={} max={} mode={:?} kernel={} key={:?} backend={:?} keyset=0x{:016x} fallback={}",
+                event.input.0,
+                event.out.0,
+                event.min_val,
+                event.max_val,
+                event.decision.mode,
+                event.decision.kernel,
+                event.decision.selected_key,
+                event.decision.backend_key,
+                event.decision.keyset_bits,
+                event.decision.fallback_used
             ),
         );
     }
@@ -1879,5 +2056,322 @@ mod tests {
         // Comparison result is a leaf with requires_grad=false, so backward should fail
         let err = session.tensor_backward(cmp);
         assert!(err.is_err(), "backward on comparison result should fail");
+    }
+
+    #[test]
+    fn session_sqrt_scalar_returns_expected_value() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.variable(9.0, false);
+        let r = session.sqrt(a).expect("sqrt");
+        assert_eq!(session.value(r).expect("val"), 3.0);
+    }
+
+    #[test]
+    fn session_sqrt_scalar_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(4.0, true);
+        let y = session.sqrt(x).expect("sqrt");
+        let report = session.backward(y).expect("backward");
+        // d(sqrt(x))/dx = 0.5/sqrt(x) = 0.5/2.0 = 0.25
+        let grad = report.gradient(x).expect("grad");
+        assert!((grad - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn session_reciprocal_scalar_returns_expected_value() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.variable(4.0, false);
+        let r = session.reciprocal(a).expect("reciprocal");
+        assert_eq!(session.value(r).expect("val"), 0.25);
+    }
+
+    #[test]
+    fn session_reciprocal_scalar_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.0, true);
+        let y = session.reciprocal(x).expect("reciprocal");
+        let report = session.backward(y).expect("backward");
+        // d(1/x)/dx = -1/x^2 = -1/4 = -0.25
+        let grad = report.gradient(x).expect("grad");
+        assert!((grad - (-0.25)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn session_pow_scalar_returns_expected_value() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.variable(3.0, false);
+        let r = session.pow(a, 2.0).expect("pow");
+        assert_eq!(session.value(r).expect("val"), 9.0);
+    }
+
+    #[test]
+    fn session_pow_scalar_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(3.0, true);
+        let y = session.pow(x, 2.0).expect("pow");
+        let report = session.backward(y).expect("backward");
+        // d(x^2)/dx = 2*x = 6.0
+        let grad = report.gradient(x).expect("grad");
+        assert!((grad - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn session_pow_scalar_fractional_exponent() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(4.0, true);
+        let y = session.pow(x, 0.5).expect("pow");
+        // 4^0.5 = 2.0
+        assert!((session.value(y).expect("val") - 2.0).abs() < 1e-10);
+        let report = session.backward(y).expect("backward");
+        // d(x^0.5)/dx = 0.5 * x^(-0.5) = 0.5/2 = 0.25
+        let grad = report.gradient(x).expect("grad");
+        assert!((grad - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn session_tensor_sqrt_returns_expected_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 4.0, 9.0, 16.0], vec![4], false)
+            .expect("tensor variable");
+        let r = session.tensor_sqrt(t).expect("tensor_sqrt");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn session_tensor_sqrt_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0, 9.0], vec![2], true)
+            .expect("tensor variable");
+        let y = session.tensor_sqrt(x).expect("tensor_sqrt");
+        let s = session.tensor_sum(y).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        // d(sqrt(4))/dx = 0.5/2 = 0.25, d(sqrt(9))/dx = 0.5/3 ~ 0.1667
+        assert!((grad[0] - 0.25).abs() < 1e-10);
+        assert!((grad[1] - 1.0 / 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn session_tensor_reciprocal_returns_expected_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 4.0], vec![3], false)
+            .expect("tensor variable");
+        let r = session.tensor_reciprocal(t).expect("tensor_reciprocal");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![1.0, 0.5, 0.25]);
+    }
+
+    #[test]
+    fn session_tensor_reciprocal_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![2.0, 4.0], vec![2], true)
+            .expect("tensor variable");
+        let y = session.tensor_reciprocal(x).expect("tensor_reciprocal");
+        let s = session.tensor_sum(y).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        // d(1/2)/dx = -1/4 = -0.25, d(1/4)/dx = -1/16 = -0.0625
+        assert!((grad[0] - (-0.25)).abs() < 1e-10);
+        assert!((grad[1] - (-0.0625)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn session_tensor_pow_returns_expected_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("tensor variable");
+        let r = session.tensor_pow(t, 2.0).expect("tensor_pow");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![1.0, 4.0, 9.0]);
+    }
+
+    #[test]
+    fn session_tensor_pow_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![2.0, 3.0], vec![2], true)
+            .expect("tensor variable");
+        let y = session.tensor_pow(x, 3.0).expect("tensor_pow");
+        let s = session.tensor_sum(y).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        // d(x^3)/dx = 3*x^2: for x=2 -> 12.0, for x=3 -> 27.0
+        assert!((grad[0] - 12.0).abs() < 1e-10);
+        assert!((grad[1] - 27.0).abs() < 1e-10);
+    }
+
+    // --- min/max/clamp scalar tests ---
+
+    #[test]
+    fn session_min_returns_smaller_value() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.variable(3.0, false);
+        let b = session.variable(5.0, false);
+        let r = session.min(a, b).expect("min");
+        assert_eq!(session.value(r).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn session_max_returns_larger_value() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.variable(3.0, false);
+        let b = session.variable(5.0, false);
+        let r = session.max(a, b).expect("max");
+        assert_eq!(session.value(r).unwrap(), 5.0);
+    }
+
+    #[test]
+    fn session_clamp_restricts_to_range() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let low = session.variable(-5.0, false);
+        let mid = session.variable(3.0, false);
+        let high = session.variable(15.0, false);
+        let r1 = session.clamp(low, 0.0, 10.0).expect("clamp low");
+        let r2 = session.clamp(mid, 0.0, 10.0).expect("clamp mid");
+        let r3 = session.clamp(high, 0.0, 10.0).expect("clamp high");
+        assert_eq!(session.value(r1).unwrap(), 0.0);
+        assert_eq!(session.value(r2).unwrap(), 3.0);
+        assert_eq!(session.value(r3).unwrap(), 10.0);
+    }
+
+    #[test]
+    fn session_min_backward_grad_flows_to_smaller() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.variable(2.0, true);
+        let b = session.variable(5.0, true);
+        let r = session.min(a, b).expect("min");
+        let report = session.backward(r).expect("backward");
+        // a < b, so grad flows to a
+        assert_eq!(report.gradient(a), Some(1.0));
+        assert_eq!(report.gradient(b), Some(0.0));
+    }
+
+    #[test]
+    fn session_max_backward_grad_flows_to_larger() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.variable(2.0, true);
+        let b = session.variable(5.0, true);
+        let r = session.max(a, b).expect("max");
+        let report = session.backward(r).expect("backward");
+        // b > a, so grad flows to b
+        assert_eq!(report.gradient(a), Some(0.0));
+        assert_eq!(report.gradient(b), Some(1.0));
+    }
+
+    #[test]
+    fn session_clamp_backward_grad_passes_in_range() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(3.0, true);
+        let r = session.clamp(x, 0.0, 10.0).expect("clamp");
+        let report = session.backward(r).expect("backward");
+        assert_eq!(report.gradient(x), Some(1.0));
+    }
+
+    #[test]
+    fn session_clamp_backward_grad_zero_outside_range() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(-5.0, true);
+        let r = session.clamp(x, 0.0, 10.0).expect("clamp");
+        let report = session.backward(r).expect("backward");
+        assert_eq!(report.gradient(x), Some(0.0));
+    }
+
+    // --- min/max/clamp tensor tests ---
+
+    #[test]
+    fn session_tensor_min_returns_elementwise_minimum() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session
+            .tensor_variable(vec![1.0, 5.0, 3.0], vec![3], false)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![4.0, 2.0, 3.0], vec![3], false)
+            .expect("b");
+        let r = session.tensor_min(a, b).expect("tensor_min");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn session_tensor_max_returns_elementwise_maximum() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session
+            .tensor_variable(vec![1.0, 5.0, 3.0], vec![3], false)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![4.0, 2.0, 3.0], vec![3], false)
+            .expect("b");
+        let r = session.tensor_max(a, b).expect("tensor_max");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![4.0, 5.0, 3.0]);
+    }
+
+    #[test]
+    fn session_tensor_clamp_restricts_elements() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![-2.0, 0.5, 3.0, 7.0], vec![4], false)
+            .expect("t");
+        let r = session.tensor_clamp(t, 0.0, 5.0).expect("tensor_clamp");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![0.0, 0.5, 3.0, 5.0]);
+    }
+
+    #[test]
+    fn session_tensor_min_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session
+            .tensor_variable(vec![1.0, 5.0], vec![2], true)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![4.0, 2.0], vec![2], true)
+            .expect("b");
+        let r = session.tensor_min(a, b).expect("tensor_min");
+        let s = session.tensor_sum(r).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad_a = report.gradient(a).expect("grad_a");
+        let grad_b = report.gradient(b).expect("grad_b");
+        // Element 0: a=1 < b=4, grad -> a. Element 1: b=2 < a=5, grad -> b
+        assert_eq!(grad_a, vec![1.0, 0.0]);
+        assert_eq!(grad_b, vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn session_tensor_max_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session
+            .tensor_variable(vec![1.0, 5.0], vec![2], true)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![4.0, 2.0], vec![2], true)
+            .expect("b");
+        let r = session.tensor_max(a, b).expect("tensor_max");
+        let s = session.tensor_sum(r).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad_a = report.gradient(a).expect("grad_a");
+        let grad_b = report.gradient(b).expect("grad_b");
+        // Element 0: b=4 > a=1, grad -> b. Element 1: a=5 > b=2, grad -> a
+        assert_eq!(grad_a, vec![0.0, 1.0]);
+        assert_eq!(grad_b, vec![1.0, 0.0]);
+    }
+
+    #[test]
+    fn session_tensor_clamp_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![-2.0, 0.5, 3.0, 7.0], vec![4], true)
+            .expect("x");
+        let r = session.tensor_clamp(x, 0.0, 5.0).expect("tensor_clamp");
+        let s = session.tensor_sum(r).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        // -2.0 < 0 -> 0, 0.5 in [0,5] -> 1, 3.0 in [0,5] -> 1, 7.0 > 5 -> 0
+        assert_eq!(grad, vec![0.0, 1.0, 1.0, 0.0]);
     }
 }
