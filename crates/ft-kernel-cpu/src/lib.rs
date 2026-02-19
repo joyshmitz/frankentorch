@@ -24,6 +24,10 @@ pub enum KernelError {
         needed: usize,
         available: usize,
     },
+    InvalidDimension {
+        dim: usize,
+        ndim: usize,
+    },
 }
 
 impl fmt::Display for KernelError {
@@ -51,6 +55,10 @@ impl fmt::Display for KernelError {
             } => write!(
                 f,
                 "insufficient storage on {side}: needed={needed}, available={available}"
+            ),
+            Self::InvalidDimension { dim, ndim } => write!(
+                f,
+                "invalid reduction dimension {dim} for tensor with {ndim} dimensions"
             ),
         }
     }
@@ -541,6 +549,63 @@ pub fn mean_tensor_contiguous_f64(
     Ok(sum / numel as f64)
 }
 
+pub fn sum_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let outer_size: usize = shape[..dim].iter().product();
+    let inner_size: usize = shape[dim + 1..].iter().product();
+    let out_numel = outer_size * inner_size;
+    let mut output = vec![0.0; out_numel];
+    let data = &input[offset..];
+
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut sum = 0.0;
+            for r in 0..reduce_size {
+                sum += data[outer * reduce_size * inner_size + r * inner_size + inner];
+            }
+            output[outer * inner_size + inner] = sum;
+        }
+    }
+
+    Ok(output)
+}
+
+pub fn mean_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let reduce_size = shape[dim];
+    if reduce_size == 0 {
+        let outer_size: usize = shape[..dim].iter().product();
+        let inner_size: usize = shape[dim + 1..].iter().product();
+        return Ok(vec![f64::NAN; outer_size * inner_size]);
+    }
+    let mut output = sum_dim_tensor_contiguous_f64(input, meta, dim)?;
+    let scale = 1.0 / reduce_size as f64;
+    for v in &mut output {
+        *v *= scale;
+    }
+    Ok(output)
+}
+
 pub fn add_tensor_contiguous_f64(
     lhs: &[f64],
     rhs: &[f64],
@@ -621,13 +686,14 @@ mod tests {
         ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
         le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
         lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
-        max_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_scalar,
-        min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
+        max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64,
+        min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
         ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64, pow_scalar,
         pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
         relu_scalar, relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64,
         sqrt_scalar, sqrt_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
-        sum_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64,
+        sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
+        tanh_tensor_contiguous_f64,
     };
 
     #[test]
@@ -1472,5 +1538,74 @@ mod tests {
         let out = max_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
             .expect("max should succeed");
         assert_eq!(out, vec![2.0, 5.0, 3.0]);
+    }
+
+    #[test]
+    fn sum_dim_reduces_along_dim0() {
+        // shape [2, 3]: [[1, 2, 3], [4, 5, 6]]
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = sum_dim_tensor_contiguous_f64(&input, &meta, 0).expect("sum_dim 0");
+        // reduce rows: [1+4, 2+5, 3+6] = [5, 7, 9]
+        assert_eq!(out, vec![5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn sum_dim_reduces_along_dim1() {
+        // shape [2, 3]: [[1, 2, 3], [4, 5, 6]]
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = sum_dim_tensor_contiguous_f64(&input, &meta, 1).expect("sum_dim 1");
+        // reduce cols: [1+2+3, 4+5+6] = [6, 15]
+        assert_eq!(out, vec![6.0, 15.0]);
+    }
+
+    #[test]
+    fn sum_dim_3d_reduces_middle_dim() {
+        // shape [2, 3, 2]: 12 elements
+        let meta = TensorMeta::from_shape(vec![2, 3, 2], DType::F64, Device::Cpu);
+        let input = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, // first [3,2] slice
+            7.0, 8.0, 9.0, 10.0, 11.0, 12.0, // second [3,2] slice
+        ];
+        let out = sum_dim_tensor_contiguous_f64(&input, &meta, 1).expect("sum_dim 1 on 3d");
+        // Output shape [2, 2]: reduce along dim 1 (size 3)
+        // [0,0]: 1+3+5=9, [0,1]: 2+4+6=12, [1,0]: 7+9+11=27, [1,1]: 8+10+12=30
+        assert_eq!(out, vec![9.0, 12.0, 27.0, 30.0]);
+    }
+
+    #[test]
+    fn sum_dim_invalid_dim_returns_error() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let err = sum_dim_tensor_contiguous_f64(&input, &meta, 2).unwrap_err();
+        assert!(matches!(err, KernelError::InvalidDimension { dim: 2, ndim: 2 }));
+    }
+
+    #[test]
+    fn mean_dim_reduces_along_dim0() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = mean_dim_tensor_contiguous_f64(&input, &meta, 0).expect("mean_dim 0");
+        // [2.5, 3.5, 4.5]
+        assert_eq!(out, vec![2.5, 3.5, 4.5]);
+    }
+
+    #[test]
+    fn mean_dim_reduces_along_dim1() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = mean_dim_tensor_contiguous_f64(&input, &meta, 1).expect("mean_dim 1");
+        // [6/3, 15/3] = [2.0, 5.0]
+        assert_eq!(out, vec![2.0, 5.0]);
+    }
+
+    #[test]
+    fn sum_dim_1d_reduces_to_scalar() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let out = sum_dim_tensor_contiguous_f64(&input, &meta, 0).expect("sum_dim on 1d");
+        // Reduces [4] along dim 0 -> scalar-like vec of len 1? No, outer=1, inner=1 -> output len 1
+        assert_eq!(out, vec![10.0]);
     }
 }

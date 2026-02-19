@@ -3,11 +3,11 @@
 use ft_autograd::{
     AutogradError, BackwardOptions, BackwardReport, ClampOperationEvent, NodeId, OperationEvent,
     PowOperationEvent, Tape, TensorBackwardReport, TensorClampOperationEvent, TensorNodeId,
-    TensorOperationEvent, TensorPowOperationEvent, TensorReductionOperationEvent, TensorTape,
-    TensorUnaryOperationEvent, UnaryOperationEvent,
+    TensorOperationEvent, TensorPowOperationEvent, TensorReductionDimOperationEvent,
+    TensorReductionOperationEvent, TensorTape, TensorUnaryOperationEvent, UnaryOperationEvent,
 };
 use ft_dispatch::{
-    ClampDispatchDecision, ComparisonDispatchDecision, ComparisonOp, dispatch_scalar_comparison,
+    ComparisonDispatchDecision, ComparisonOp, dispatch_scalar_comparison,
     dispatch_tensor_comparison_contiguous_f64,
 };
 use ft_core::{DenseTensor, ExecutionMode};
@@ -490,6 +490,26 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    pub fn tensor_sum_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.sum_dim(input, dim, self.mode())?;
+        self.record_tensor_reduction_dim_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_mean_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.mean_dim(input, dim, self.mode())?;
+        self.record_tensor_reduction_dim_operation(&event);
+        Ok(out)
+    }
+
     pub fn tensor_values(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
         self.tensor_tape.values(node)
     }
@@ -637,6 +657,28 @@ impl FrankenTorchSession {
                 event.op,
                 event.input.0,
                 event.out.0,
+                event.decision.mode,
+                event.decision.kernel,
+                event.decision.selected_key,
+                event.decision.backend_key,
+                event.decision.keyset_bits,
+                event.decision.fallback_used
+            ),
+        );
+    }
+
+    fn record_tensor_reduction_dim_operation(
+        &mut self,
+        event: &TensorReductionDimOperationEvent,
+    ) {
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "tensor_reduction_dim_op={:?} input={} out={} dim={} mode={:?} kernel={} key={:?} backend={:?} keyset=0x{:016x} fallback={}",
+                event.op,
+                event.input.0,
+                event.out.0,
+                event.dim,
                 event.decision.mode,
                 event.decision.kernel,
                 event.decision.selected_key,
@@ -2373,5 +2415,138 @@ mod tests {
         let grad = report.gradient(x).expect("grad");
         // -2.0 < 0 -> 0, 0.5 in [0,5] -> 1, 3.0 in [0,5] -> 1, 7.0 > 5 -> 0
         assert_eq!(grad, vec![0.0, 1.0, 1.0, 0.0]);
+    }
+
+    // --- dim-aware reduction tests ---
+
+    #[test]
+    fn session_tensor_sum_dim0_2d() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape [2, 3]: [[1, 2, 3], [4, 5, 6]]
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("t");
+        let r = session.tensor_sum_dim(t, 0).expect("sum_dim 0");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn session_tensor_sum_dim1_2d() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("t");
+        let r = session.tensor_sum_dim(t, 1).expect("sum_dim 1");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![6.0, 15.0]);
+    }
+
+    #[test]
+    fn session_tensor_mean_dim0_2d() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("t");
+        let r = session.tensor_mean_dim(t, 0).expect("mean_dim 0");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![2.5, 3.5, 4.5]);
+    }
+
+    #[test]
+    fn session_tensor_mean_dim1_2d() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("t");
+        let r = session.tensor_mean_dim(t, 1).expect("mean_dim 1");
+        let vals = session.tensor_values(r).expect("vals");
+        assert_eq!(vals, vec![2.0, 5.0]);
+    }
+
+    #[test]
+    fn session_tensor_sum_dim_backward_broadcasts_grad() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape [2, 3]
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
+        let r = session.tensor_sum_dim(x, 0).expect("sum_dim 0");
+        // r has shape [3], need to sum to scalar for backward
+        let s = session.tensor_sum(r).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        // sum_dim(0) broadcasts grad along dim 0: all elements get 1.0
+        assert_eq!(grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn session_tensor_sum_dim1_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape [2, 3]
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
+        let r = session.tensor_sum_dim(x, 1).expect("sum_dim 1");
+        // r has shape [2]
+        let s = session.tensor_sum(r).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        // sum_dim(1) broadcasts grad along dim 1: all elements get 1.0
+        assert_eq!(grad, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn session_tensor_mean_dim_backward_scales_grad() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape [2, 3]
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
+        let r = session.tensor_mean_dim(x, 0).expect("mean_dim 0");
+        // r has shape [3]
+        let s = session.tensor_sum(r).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        // mean_dim(0) with reduce_size=2: grad = 1/2 = 0.5 for all elements
+        assert_eq!(grad, vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn session_tensor_mean_dim1_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape [2, 3]
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
+        let r = session.tensor_mean_dim(x, 1).expect("mean_dim 1");
+        // r has shape [2]
+        let s = session.tensor_sum(r).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        // mean_dim(1) with reduce_size=3: grad = 1/3 for all elements
+        let expected = 1.0 / 3.0;
+        for g in grad {
+            assert!((*g - expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn session_tensor_sum_dim_3d_middle() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape [2, 3, 2]
+        let t = session
+            .tensor_variable(
+                vec![
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+                ],
+                vec![2, 3, 2],
+                false,
+            )
+            .expect("t");
+        let r = session.tensor_sum_dim(t, 1).expect("sum_dim 1 on 3d");
+        let vals = session.tensor_values(r).expect("vals");
+        // Output shape [2, 2]: [9, 12, 27, 30]
+        assert_eq!(vals, vec![9.0, 12.0, 27.0, 30.0]);
     }
 }

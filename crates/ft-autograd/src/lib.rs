@@ -7,10 +7,11 @@ use std::fmt;
 use ft_core::{DType, DenseTensor, DenseTensorError, Device, ExecutionMode, ScalarTensor};
 use ft_dispatch::{
     BinaryOp, ClampDispatchDecision, DispatchDecision, DispatchError, DispatchKeyError,
-    PowDispatchDecision, ReductionDispatchDecision, ReductionOp, UnaryDispatchDecision, UnaryOp,
-    dispatch_scalar_binary, dispatch_scalar_clamp, dispatch_scalar_pow, dispatch_scalar_unary,
-    dispatch_tensor_binary_contiguous_f64, dispatch_tensor_clamp_contiguous_f64,
-    dispatch_tensor_pow_contiguous_f64, dispatch_tensor_reduction_contiguous_f64,
+    PowDispatchDecision, ReductionDimDispatchDecision, ReductionDispatchDecision, ReductionOp,
+    UnaryDispatchDecision, UnaryOp, dispatch_scalar_binary, dispatch_scalar_clamp,
+    dispatch_scalar_pow, dispatch_scalar_unary, dispatch_tensor_binary_contiguous_f64,
+    dispatch_tensor_clamp_contiguous_f64, dispatch_tensor_pow_contiguous_f64,
+    dispatch_tensor_reduction_contiguous_f64, dispatch_tensor_reduction_dim_contiguous_f64,
     dispatch_tensor_unary_contiguous_f64,
 };
 
@@ -49,7 +50,7 @@ struct Node {
     op: NodeOp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum TensorNodeOp {
     Leaf,
     Add {
@@ -123,6 +124,16 @@ enum TensorNodeOp {
     Mean {
         input: TensorNodeId,
         input_numel: usize,
+    },
+    SumDim {
+        input: TensorNodeId,
+        dim: usize,
+        input_shape: Vec<usize>,
+    },
+    MeanDim {
+        input: TensorNodeId,
+        dim: usize,
+        input_shape: Vec<usize>,
     },
 }
 
@@ -326,6 +337,15 @@ pub struct TensorReductionOperationEvent {
     pub input: TensorNodeId,
     pub out: TensorNodeId,
     pub decision: ReductionDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorReductionDimOperationEvent {
+    pub op: ReductionOp,
+    pub input: TensorNodeId,
+    pub out: TensorNodeId,
+    pub dim: usize,
+    pub decision: ReductionDimDispatchDecision,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2342,6 +2362,128 @@ impl TensorTape {
         ))
     }
 
+    pub fn sum_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        mode: ExecutionMode,
+    ) -> Result<(TensorNodeId, TensorReductionDimOperationEvent), AutogradError> {
+        let (requires_grad, input_shape, output_shape, output_dtype, output_device, outcome) = {
+            let input_node = self.node(input)?;
+            let requires_grad = input_node.requires_grad;
+            let meta = input_node.tensor.meta().clone();
+            let outcome = dispatch_tensor_reduction_dim_contiguous_f64(
+                ReductionOp::Sum,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                dim,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
+            let input_shape = meta.shape().to_vec();
+            let mut out_shape = input_shape.clone();
+            out_shape.remove(dim);
+            if out_shape.is_empty() {
+                out_shape.push(1);
+            }
+            (
+                requires_grad,
+                input_shape,
+                out_shape,
+                meta.dtype(),
+                meta.device(),
+                outcome,
+            )
+        };
+
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(
+                ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
+                outcome.values,
+            )?,
+            requires_grad,
+            op: TensorNodeOp::SumDim {
+                input,
+                dim,
+                input_shape,
+            },
+        });
+
+        Ok((
+            out,
+            TensorReductionDimOperationEvent {
+                op: ReductionOp::Sum,
+                input,
+                out,
+                dim,
+                decision: outcome.decision,
+            },
+        ))
+    }
+
+    pub fn mean_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        mode: ExecutionMode,
+    ) -> Result<(TensorNodeId, TensorReductionDimOperationEvent), AutogradError> {
+        let (requires_grad, input_shape, output_shape, output_dtype, output_device, outcome) = {
+            let input_node = self.node(input)?;
+            let requires_grad = input_node.requires_grad;
+            let meta = input_node.tensor.meta().clone();
+            let outcome = dispatch_tensor_reduction_dim_contiguous_f64(
+                ReductionOp::Mean,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                dim,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
+            let input_shape = meta.shape().to_vec();
+            let mut out_shape = input_shape.clone();
+            out_shape.remove(dim);
+            if out_shape.is_empty() {
+                out_shape.push(1);
+            }
+            (
+                requires_grad,
+                input_shape,
+                out_shape,
+                meta.dtype(),
+                meta.device(),
+                outcome,
+            )
+        };
+
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(
+                ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
+                outcome.values,
+            )?,
+            requires_grad,
+            op: TensorNodeOp::MeanDim {
+                input,
+                dim,
+                input_shape,
+            },
+        });
+
+        Ok((
+            out,
+            TensorReductionDimOperationEvent {
+                op: ReductionOp::Mean,
+                input,
+                out,
+                dim,
+                decision: outcome.decision,
+            },
+        ))
+    }
+
     fn binary(
         &mut self,
         op: BinaryOp,
@@ -2981,6 +3123,81 @@ impl TensorTape {
                         rule: "d(mean(x))/dx_i=1/n",
                     });
                 }
+                TensorNodeOp::SumDim {
+                    input,
+                    dim,
+                    ref input_shape,
+                } => {
+                    let reduce_size = input_shape[dim];
+                    let outer_size: usize = input_shape[..dim].iter().product();
+                    let inner_size: usize = input_shape[dim + 1..].iter().product();
+                    let input_numel: usize = input_shape.iter().product();
+                    let mut sum_dim_contrib = vec![0.0; input_numel];
+
+                    for outer in 0..outer_size {
+                        for inner in 0..inner_size {
+                            let grad_val = incoming[outer * inner_size + inner];
+                            for r in 0..reduce_size {
+                                sum_dim_contrib
+                                    [outer * reduce_size * inner_size + r * inner_size + inner] =
+                                    grad_val;
+                            }
+                        }
+                    }
+                    Self::accumulate_tensor_gradient(
+                        input,
+                        &mut grads[input.0],
+                        &sum_dim_contrib,
+                    )?;
+
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(sum_dim(x))/dx=broadcast_grad_along_dim",
+                    });
+                }
+                TensorNodeOp::MeanDim {
+                    input,
+                    dim,
+                    ref input_shape,
+                } => {
+                    let reduce_size = input_shape[dim];
+                    let outer_size: usize = input_shape[..dim].iter().product();
+                    let inner_size: usize = input_shape[dim + 1..].iter().product();
+                    let input_numel: usize = input_shape.iter().product();
+                    let scale = if reduce_size > 0 {
+                        1.0 / reduce_size as f64
+                    } else {
+                        0.0
+                    };
+                    let mut mean_dim_contrib = vec![0.0; input_numel];
+
+                    for outer in 0..outer_size {
+                        for inner in 0..inner_size {
+                            let grad_val = incoming[outer * inner_size + inner] * scale;
+                            for r in 0..reduce_size {
+                                mean_dim_contrib
+                                    [outer * reduce_size * inner_size + r * inner_size + inner] =
+                                    grad_val;
+                            }
+                        }
+                    }
+                    Self::accumulate_tensor_gradient(
+                        input,
+                        &mut grads[input.0],
+                        &mean_dim_contrib,
+                    )?;
+
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(mean_dim(x))/dx=broadcast_grad_along_dim/reduce_size",
+                    });
+                }
             }
         }
 
@@ -3051,7 +3268,9 @@ impl TensorTape {
                 | TensorNodeOp::Pow { input, .. }
                 | TensorNodeOp::Clamp { input, .. }
                 | TensorNodeOp::Sum { input, .. }
-                | TensorNodeOp::Mean { input, .. } => {
+                | TensorNodeOp::Mean { input, .. }
+                | TensorNodeOp::SumDim { input, .. }
+                | TensorNodeOp::MeanDim { input, .. } => {
                     stack.push(input);
                 }
             }
@@ -3097,7 +3316,9 @@ impl TensorTape {
                 | TensorNodeOp::Pow { input, .. }
                 | TensorNodeOp::Clamp { input, .. }
                 | TensorNodeOp::Sum { input, .. }
-                | TensorNodeOp::Mean { input, .. } => {
+                | TensorNodeOp::Mean { input, .. }
+                | TensorNodeOp::SumDim { input, .. }
+                | TensorNodeOp::MeanDim { input, .. } => {
                     pending[input.0] = pending[input.0].saturating_add(1);
                 }
             }

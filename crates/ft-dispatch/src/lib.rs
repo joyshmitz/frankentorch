@@ -10,13 +10,14 @@ use ft_kernel_cpu::{
     ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
     le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
     lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
-    max_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_scalar,
-    min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
+    max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64,
+    min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
     ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64, pow_scalar,
     pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64, relu_scalar,
     relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sqrt_scalar,
     sqrt_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
-    sum_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64,
+    sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
+    tanh_tensor_contiguous_f64,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1265,6 +1266,77 @@ pub fn dispatch_tensor_reduction_contiguous_f64(
         value,
         decision: ReductionDispatchDecision {
             op,
+            mode,
+            kernel,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReductionDimDispatchDecision {
+    pub op: ReductionOp,
+    pub dim: usize,
+    pub mode: ExecutionMode,
+    pub kernel: &'static str,
+    pub selected_key: DispatchKey,
+    pub backend_key: DispatchKey,
+    pub keyset_bits: u64,
+    pub fallback_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorReductionDimDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: ReductionDimDispatchDecision,
+}
+
+pub fn dispatch_tensor_reduction_dim_contiguous_f64(
+    op: ReductionOp,
+    mode: ExecutionMode,
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+    requires_grad: bool,
+) -> Result<TensorReductionDimDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match (effective_key, op) {
+        (DispatchKey::AutogradCPU, ReductionOp::Sum) => (
+            sum_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "autograd_cpu::sum_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, ReductionOp::Mean) => (
+            mean_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "autograd_cpu::mean_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, ReductionOp::Sum) => (
+            sum_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "cpu::sum_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, ReductionOp::Mean) => (
+            mean_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "cpu::mean_dim_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason:
+                    "resolved dispatch key is unsupported for contiguous tensor dim reduction ops",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorReductionDimDispatchOutcome {
+        values,
+        decision: ReductionDimDispatchDecision {
+            op,
+            dim,
             mode,
             kernel,
             selected_key,
