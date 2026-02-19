@@ -10,14 +10,28 @@ use ft_kernel_cpu::{
     ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
     le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
     lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
-    max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64,
+    log_softmax_dim_tensor_contiguous_f64, max_tensor_contiguous_f64,
+    mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64,
+    softmax_dim_tensor_contiguous_f64,
     min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
     ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64, pow_scalar,
     pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64, relu_scalar,
     relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sqrt_scalar,
-    sqrt_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
-    sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
-    tanh_tensor_contiguous_f64,
+    sin_scalar, sin_tensor_contiguous_f64, sqrt_tensor_contiguous_f64, sub_scalar,
+    std_dim_tensor_contiguous_f64, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64,
+    sum_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
+    tanh_scalar, tanh_tensor_contiguous_f64, tan_scalar, tan_tensor_contiguous_f64, cos_scalar,
+    cos_tensor_contiguous_f64, floor_scalar, floor_tensor_contiguous_f64, ceil_scalar,
+    ceil_tensor_contiguous_f64, round_scalar, round_tensor_contiguous_f64, log2_scalar,
+    log2_tensor_contiguous_f64, log10_scalar, log10_tensor_contiguous_f64, log1p_scalar,
+    log1p_tensor_contiguous_f64, expm1_scalar, expm1_tensor_contiguous_f64,
+    sign_scalar, sign_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
+    frac_scalar, frac_tensor_contiguous_f64,
+    asin_scalar, asin_tensor_contiguous_f64, acos_scalar, acos_tensor_contiguous_f64,
+    atan_scalar, atan_tensor_contiguous_f64,
+    sinh_scalar, sinh_tensor_contiguous_f64, cosh_scalar, cosh_tensor_contiguous_f64,
+    gelu_scalar, gelu_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64,
+    leaky_relu_scalar, leaky_relu_tensor_contiguous_f64, elu_scalar, elu_tensor_contiguous_f64,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +72,28 @@ pub enum UnaryOp {
     Tanh,
     Sqrt,
     Reciprocal,
+    Sin,
+    Cos,
+    Tan,
+    Floor,
+    Ceil,
+    Round,
+    Log2,
+    Log10,
+    Log1p,
+    Expm1,
+    Sign,
+    Trunc,
+    Frac,
+    Asin,
+    Acos,
+    Atan,
+    Sinh,
+    Cosh,
+    Gelu,
+    Silu,
+    LeakyRelu,
+    Elu,
 }
 
 impl UnaryOp {
@@ -73,6 +109,28 @@ impl UnaryOp {
             "tanh" => Some(Self::Tanh),
             "sqrt" => Some(Self::Sqrt),
             "reciprocal" => Some(Self::Reciprocal),
+            "sin" => Some(Self::Sin),
+            "cos" => Some(Self::Cos),
+            "tan" => Some(Self::Tan),
+            "floor" => Some(Self::Floor),
+            "ceil" => Some(Self::Ceil),
+            "round" => Some(Self::Round),
+            "log2" => Some(Self::Log2),
+            "log10" => Some(Self::Log10),
+            "log1p" => Some(Self::Log1p),
+            "expm1" => Some(Self::Expm1),
+            "sign" => Some(Self::Sign),
+            "trunc" => Some(Self::Trunc),
+            "frac" => Some(Self::Frac),
+            "asin" => Some(Self::Asin),
+            "acos" => Some(Self::Acos),
+            "atan" => Some(Self::Atan),
+            "sinh" => Some(Self::Sinh),
+            "cosh" => Some(Self::Cosh),
+            "gelu" => Some(Self::Gelu),
+            "silu" => Some(Self::Silu),
+            "leaky_relu" => Some(Self::LeakyRelu),
+            "elu" => Some(Self::Elu),
             _ => None,
         }
     }
@@ -82,6 +140,9 @@ impl UnaryOp {
 pub enum ReductionOp {
     Sum,
     Mean,
+    Prod,
+    Var,
+    Std,
 }
 
 impl ReductionOp {
@@ -90,6 +151,26 @@ impl ReductionOp {
         match base {
             "sum" => Some(Self::Sum),
             "mean" => Some(Self::Mean),
+            "prod" => Some(Self::Prod),
+            "var" => Some(Self::Var),
+            "std" => Some(Self::Std),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizeOp {
+    Softmax,
+    LogSoftmax,
+}
+
+impl NormalizeOp {
+    #[must_use]
+    pub fn from_schema_base(base: &str) -> Option<Self> {
+        match base {
+            "softmax" => Some(Self::Softmax),
+            "log_softmax" => Some(Self::LogSoftmax),
             _ => None,
         }
     }
@@ -1087,6 +1168,72 @@ pub fn dispatch_scalar_unary(
         (DispatchKey::AutogradCPU, UnaryOp::Reciprocal) => {
             (reciprocal_scalar(input), "autograd_cpu::reciprocal_scalar")
         }
+        (DispatchKey::AutogradCPU, UnaryOp::Sin) => {
+            (sin_scalar(input), "autograd_cpu::sin_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Cos) => {
+            (cos_scalar(input), "autograd_cpu::cos_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Tan) => {
+            (tan_scalar(input), "autograd_cpu::tan_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Floor) => {
+            (floor_scalar(input), "autograd_cpu::floor_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Ceil) => {
+            (ceil_scalar(input), "autograd_cpu::ceil_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Round) => {
+            (round_scalar(input), "autograd_cpu::round_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Log2) => {
+            (log2_scalar(input), "autograd_cpu::log2_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Log10) => {
+            (log10_scalar(input), "autograd_cpu::log10_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Log1p) => {
+            (log1p_scalar(input), "autograd_cpu::log1p_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Expm1) => {
+            (expm1_scalar(input), "autograd_cpu::expm1_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Sign) => {
+            (sign_scalar(input), "autograd_cpu::sign_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Trunc) => {
+            (trunc_scalar(input), "autograd_cpu::trunc_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Frac) => {
+            (frac_scalar(input), "autograd_cpu::frac_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Asin) => {
+            (asin_scalar(input), "autograd_cpu::asin_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Acos) => {
+            (acos_scalar(input), "autograd_cpu::acos_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Atan) => {
+            (atan_scalar(input), "autograd_cpu::atan_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Sinh) => {
+            (sinh_scalar(input), "autograd_cpu::sinh_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Cosh) => {
+            (cosh_scalar(input), "autograd_cpu::cosh_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Gelu) => {
+            (gelu_scalar(input), "autograd_cpu::gelu_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Silu) => {
+            (silu_scalar(input), "autograd_cpu::silu_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::LeakyRelu) => {
+            (leaky_relu_scalar(input), "autograd_cpu::leaky_relu_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Elu) => {
+            (elu_scalar(input), "autograd_cpu::elu_scalar")
+        }
         (DispatchKey::CPU, UnaryOp::Neg) => (neg_scalar(input), "cpu::neg_scalar"),
         (DispatchKey::CPU, UnaryOp::Abs) => (abs_scalar(input), "cpu::abs_scalar"),
         (DispatchKey::CPU, UnaryOp::Exp) => (exp_scalar(input), "cpu::exp_scalar"),
@@ -1098,6 +1245,30 @@ pub fn dispatch_scalar_unary(
         (DispatchKey::CPU, UnaryOp::Reciprocal) => {
             (reciprocal_scalar(input), "cpu::reciprocal_scalar")
         }
+        (DispatchKey::CPU, UnaryOp::Sin) => (sin_scalar(input), "cpu::sin_scalar"),
+        (DispatchKey::CPU, UnaryOp::Cos) => (cos_scalar(input), "cpu::cos_scalar"),
+        (DispatchKey::CPU, UnaryOp::Tan) => (tan_scalar(input), "cpu::tan_scalar"),
+        (DispatchKey::CPU, UnaryOp::Floor) => (floor_scalar(input), "cpu::floor_scalar"),
+        (DispatchKey::CPU, UnaryOp::Ceil) => (ceil_scalar(input), "cpu::ceil_scalar"),
+        (DispatchKey::CPU, UnaryOp::Round) => (round_scalar(input), "cpu::round_scalar"),
+        (DispatchKey::CPU, UnaryOp::Log2) => (log2_scalar(input), "cpu::log2_scalar"),
+        (DispatchKey::CPU, UnaryOp::Log10) => (log10_scalar(input), "cpu::log10_scalar"),
+        (DispatchKey::CPU, UnaryOp::Log1p) => (log1p_scalar(input), "cpu::log1p_scalar"),
+        (DispatchKey::CPU, UnaryOp::Expm1) => (expm1_scalar(input), "cpu::expm1_scalar"),
+        (DispatchKey::CPU, UnaryOp::Sign) => (sign_scalar(input), "cpu::sign_scalar"),
+        (DispatchKey::CPU, UnaryOp::Trunc) => (trunc_scalar(input), "cpu::trunc_scalar"),
+        (DispatchKey::CPU, UnaryOp::Frac) => (frac_scalar(input), "cpu::frac_scalar"),
+        (DispatchKey::CPU, UnaryOp::Asin) => (asin_scalar(input), "cpu::asin_scalar"),
+        (DispatchKey::CPU, UnaryOp::Acos) => (acos_scalar(input), "cpu::acos_scalar"),
+        (DispatchKey::CPU, UnaryOp::Atan) => (atan_scalar(input), "cpu::atan_scalar"),
+        (DispatchKey::CPU, UnaryOp::Sinh) => (sinh_scalar(input), "cpu::sinh_scalar"),
+        (DispatchKey::CPU, UnaryOp::Cosh) => (cosh_scalar(input), "cpu::cosh_scalar"),
+        (DispatchKey::CPU, UnaryOp::Gelu) => (gelu_scalar(input), "cpu::gelu_scalar"),
+        (DispatchKey::CPU, UnaryOp::Silu) => (silu_scalar(input), "cpu::silu_scalar"),
+        (DispatchKey::CPU, UnaryOp::LeakyRelu) => {
+            (leaky_relu_scalar(input), "cpu::leaky_relu_scalar")
+        }
+        (DispatchKey::CPU, UnaryOp::Elu) => (elu_scalar(input), "cpu::elu_scalar"),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
                 reason: "resolved dispatch key is unsupported for scalar unary ops",
@@ -1168,6 +1339,94 @@ pub fn dispatch_tensor_unary_contiguous_f64(
             reciprocal_tensor_contiguous_f64(input, meta)?,
             "autograd_cpu::reciprocal_tensor_contiguous_f64",
         ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sin) => (
+            sin_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::sin_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Cos) => (
+            cos_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::cos_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Tan) => (
+            tan_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::tan_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Floor) => (
+            floor_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::floor_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Ceil) => (
+            ceil_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::ceil_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Round) => (
+            round_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::round_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Log2) => (
+            log2_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::log2_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Log10) => (
+            log10_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::log10_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Log1p) => (
+            log1p_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::log1p_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Expm1) => (
+            expm1_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::expm1_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sign) => (
+            sign_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::sign_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Trunc) => (
+            trunc_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::trunc_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Frac) => (
+            frac_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::frac_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Asin) => (
+            asin_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::asin_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Acos) => (
+            acos_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::acos_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Atan) => (
+            atan_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::atan_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sinh) => (
+            sinh_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::sinh_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Cosh) => (
+            cosh_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::cosh_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Gelu) => (
+            gelu_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::gelu_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Silu) => (
+            silu_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::silu_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::LeakyRelu) => (
+            leaky_relu_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::leaky_relu_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Elu) => (
+            elu_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::elu_tensor_contiguous_f64",
+        ),
         (DispatchKey::CPU, UnaryOp::Neg) => (
             neg_tensor_contiguous_f64(input, meta)?,
             "cpu::neg_tensor_contiguous_f64",
@@ -1203,6 +1462,94 @@ pub fn dispatch_tensor_unary_contiguous_f64(
         (DispatchKey::CPU, UnaryOp::Reciprocal) => (
             reciprocal_tensor_contiguous_f64(input, meta)?,
             "cpu::reciprocal_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sin) => (
+            sin_tensor_contiguous_f64(input, meta)?,
+            "cpu::sin_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Cos) => (
+            cos_tensor_contiguous_f64(input, meta)?,
+            "cpu::cos_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Tan) => (
+            tan_tensor_contiguous_f64(input, meta)?,
+            "cpu::tan_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Floor) => (
+            floor_tensor_contiguous_f64(input, meta)?,
+            "cpu::floor_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Ceil) => (
+            ceil_tensor_contiguous_f64(input, meta)?,
+            "cpu::ceil_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Round) => (
+            round_tensor_contiguous_f64(input, meta)?,
+            "cpu::round_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Log2) => (
+            log2_tensor_contiguous_f64(input, meta)?,
+            "cpu::log2_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Log10) => (
+            log10_tensor_contiguous_f64(input, meta)?,
+            "cpu::log10_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Log1p) => (
+            log1p_tensor_contiguous_f64(input, meta)?,
+            "cpu::log1p_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Expm1) => (
+            expm1_tensor_contiguous_f64(input, meta)?,
+            "cpu::expm1_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sign) => (
+            sign_tensor_contiguous_f64(input, meta)?,
+            "cpu::sign_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Trunc) => (
+            trunc_tensor_contiguous_f64(input, meta)?,
+            "cpu::trunc_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Frac) => (
+            frac_tensor_contiguous_f64(input, meta)?,
+            "cpu::frac_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Asin) => (
+            asin_tensor_contiguous_f64(input, meta)?,
+            "cpu::asin_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Acos) => (
+            acos_tensor_contiguous_f64(input, meta)?,
+            "cpu::acos_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Atan) => (
+            atan_tensor_contiguous_f64(input, meta)?,
+            "cpu::atan_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sinh) => (
+            sinh_tensor_contiguous_f64(input, meta)?,
+            "cpu::sinh_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Cosh) => (
+            cosh_tensor_contiguous_f64(input, meta)?,
+            "cpu::cosh_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Gelu) => (
+            gelu_tensor_contiguous_f64(input, meta)?,
+            "cpu::gelu_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Silu) => (
+            silu_tensor_contiguous_f64(input, meta)?,
+            "cpu::silu_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::LeakyRelu) => (
+            leaky_relu_tensor_contiguous_f64(input, meta)?,
+            "cpu::leaky_relu_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Elu) => (
+            elu_tensor_contiguous_f64(input, meta)?,
+            "cpu::elu_tensor_contiguous_f64",
         ),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
@@ -1323,6 +1670,30 @@ pub fn dispatch_tensor_reduction_dim_contiguous_f64(
             mean_dim_tensor_contiguous_f64(input, meta, dim)?,
             "cpu::mean_dim_tensor_contiguous_f64",
         ),
+        (DispatchKey::AutogradCPU, ReductionOp::Prod) => (
+            prod_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "autograd_cpu::prod_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, ReductionOp::Prod) => (
+            prod_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "cpu::prod_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, ReductionOp::Var) => (
+            var_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "autograd_cpu::var_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, ReductionOp::Var) => (
+            var_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "cpu::var_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, ReductionOp::Std) => (
+            std_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "autograd_cpu::std_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, ReductionOp::Std) => (
+            std_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "cpu::std_dim_tensor_contiguous_f64",
+        ),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
                 reason:
@@ -1335,6 +1706,77 @@ pub fn dispatch_tensor_reduction_dim_contiguous_f64(
     Ok(TensorReductionDimDispatchOutcome {
         values,
         decision: ReductionDimDispatchDecision {
+            op,
+            dim,
+            mode,
+            kernel,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalizeDimDispatchDecision {
+    pub op: NormalizeOp,
+    pub dim: usize,
+    pub mode: ExecutionMode,
+    pub kernel: &'static str,
+    pub selected_key: DispatchKey,
+    pub backend_key: DispatchKey,
+    pub keyset_bits: u64,
+    pub fallback_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorNormalizeDimDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: NormalizeDimDispatchDecision,
+}
+
+pub fn dispatch_tensor_normalize_dim_contiguous_f64(
+    op: NormalizeOp,
+    mode: ExecutionMode,
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+    requires_grad: bool,
+) -> Result<TensorNormalizeDimDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match (effective_key, op) {
+        (DispatchKey::AutogradCPU, NormalizeOp::Softmax) => (
+            softmax_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "autograd_cpu::softmax_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, NormalizeOp::LogSoftmax) => (
+            log_softmax_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "autograd_cpu::log_softmax_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, NormalizeOp::Softmax) => (
+            softmax_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "cpu::softmax_dim_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, NormalizeOp::LogSoftmax) => (
+            log_softmax_dim_tensor_contiguous_f64(input, meta, dim)?,
+            "cpu::log_softmax_dim_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason:
+                    "resolved dispatch key is unsupported for contiguous tensor normalize dim ops",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorNormalizeDimDispatchOutcome {
+        values,
+        decision: NormalizeDimDispatchDecision {
             op,
             dim,
             mode,

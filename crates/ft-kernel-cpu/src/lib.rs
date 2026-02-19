@@ -112,6 +112,113 @@ pub fn reciprocal_scalar(input: &ScalarTensor) -> ScalarTensor {
     input.with_value(1.0 / input.value())
 }
 
+pub fn sin_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().sin())
+}
+
+pub fn cos_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().cos())
+}
+
+pub fn tan_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().tan())
+}
+
+pub fn floor_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().floor())
+}
+
+pub fn ceil_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().ceil())
+}
+
+pub fn round_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().round())
+}
+
+pub fn log2_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().log2())
+}
+
+pub fn log10_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().log10())
+}
+
+pub fn log1p_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().ln_1p())
+}
+
+pub fn expm1_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().exp_m1())
+}
+
+pub fn sign_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().signum())
+}
+
+pub fn trunc_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().trunc())
+}
+
+pub fn frac_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().fract())
+}
+
+pub fn asin_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().asin())
+}
+
+pub fn acos_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().acos())
+}
+
+pub fn atan_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().atan())
+}
+
+pub fn sinh_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().sinh())
+}
+
+pub fn cosh_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(input.value().cosh())
+}
+
+fn gelu_value(x: f64) -> f64 {
+    // GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2; // sqrt(2/pi)
+    let k = c * (x + 0.044715 * x * x * x);
+    0.5 * x * (1.0 + k.tanh())
+}
+
+pub fn gelu_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(gelu_value(input.value()))
+}
+
+fn silu_value(x: f64) -> f64 {
+    x / (1.0 + (-x).exp())
+}
+
+pub fn silu_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(silu_value(input.value()))
+}
+
+fn leaky_relu_value(x: f64) -> f64 {
+    if x >= 0.0 { x } else { 0.01 * x }
+}
+
+pub fn leaky_relu_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(leaky_relu_value(input.value()))
+}
+
+fn elu_value(x: f64) -> f64 {
+    if x > 0.0 { x } else { x.exp() - 1.0 }
+}
+
+pub fn elu_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(elu_value(input.value()))
+}
+
 pub fn pow_scalar(input: &ScalarTensor, exponent: f64) -> ScalarTensor {
     input.with_value(input.value().powf(exponent))
 }
@@ -404,6 +511,160 @@ pub fn reciprocal_tensor_contiguous_f64(
     unary_contiguous_f64(input, meta, |value| 1.0 / value)
 }
 
+pub fn sin_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.sin())
+}
+
+pub fn cos_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.cos())
+}
+
+pub fn tan_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.tan())
+}
+
+pub fn floor_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.floor())
+}
+
+pub fn ceil_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.ceil())
+}
+
+pub fn round_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.round())
+}
+
+pub fn log2_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.log2())
+}
+
+pub fn log10_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.log10())
+}
+
+pub fn log1p_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.ln_1p())
+}
+
+pub fn expm1_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.exp_m1())
+}
+
+pub fn sign_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.signum())
+}
+
+pub fn trunc_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.trunc())
+}
+
+pub fn frac_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.fract())
+}
+
+pub fn asin_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.asin())
+}
+
+pub fn acos_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.acos())
+}
+
+pub fn atan_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.atan())
+}
+
+pub fn sinh_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.sinh())
+}
+
+pub fn cosh_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |value| value.cosh())
+}
+
+pub fn gelu_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, gelu_value)
+}
+
+pub fn silu_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, silu_value)
+}
+
+pub fn leaky_relu_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, leaky_relu_value)
+}
+
+pub fn elu_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, elu_value)
+}
+
 pub fn pow_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
@@ -675,6 +936,191 @@ pub fn matmul_tensor_contiguous_f64(
     Ok(out)
 }
 
+pub fn prod_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let outer_size: usize = shape[..dim].iter().product();
+    let inner_size: usize = shape[dim + 1..].iter().product();
+    let out_numel = outer_size * inner_size;
+    let mut output = vec![1.0; out_numel];
+    let data = &input[offset..];
+
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut prod = 1.0;
+            for r in 0..reduce_size {
+                prod *= data[outer * reduce_size * inner_size + r * inner_size + inner];
+            }
+            output[outer * inner_size + inner] = prod;
+        }
+    }
+
+    Ok(output)
+}
+
+pub fn var_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let outer_size: usize = shape[..dim].iter().product();
+    let inner_size: usize = shape[dim + 1..].iter().product();
+    let out_numel = outer_size * inner_size;
+    let data = &input[offset..];
+
+    if reduce_size < 2 {
+        return Ok(vec![f64::NAN; out_numel]);
+    }
+
+    let mut output = vec![0.0; out_numel];
+    let correction = (reduce_size - 1) as f64; // Bessel's correction
+
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            // Compute mean
+            let mut sum = 0.0;
+            for r in 0..reduce_size {
+                sum += data[outer * reduce_size * inner_size + r * inner_size + inner];
+            }
+            let mean = sum / reduce_size as f64;
+            // Compute variance
+            let mut var_sum = 0.0;
+            for r in 0..reduce_size {
+                let diff = data[outer * reduce_size * inner_size + r * inner_size + inner] - mean;
+                var_sum += diff * diff;
+            }
+            output[outer * inner_size + inner] = var_sum / correction;
+        }
+    }
+
+    Ok(output)
+}
+
+pub fn std_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    let mut output = var_dim_tensor_contiguous_f64(input, meta, dim)?;
+    for v in &mut output {
+        *v = v.sqrt();
+    }
+    Ok(output)
+}
+
+pub fn softmax_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let outer_size: usize = shape[..dim].iter().product();
+    let inner_size: usize = shape[dim + 1..].iter().product();
+    let numel: usize = shape.iter().product();
+    let mut output = vec![0.0; numel];
+    let data = &input[offset..];
+
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            // Find max for numerical stability
+            let mut max_val = f64::NEG_INFINITY;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                if data[idx] > max_val {
+                    max_val = data[idx];
+                }
+            }
+            // Compute exp(x - max) and sum
+            let mut sum = 0.0;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                let e = (data[idx] - max_val).exp();
+                output[idx] = e;
+                sum += e;
+            }
+            // Normalize
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                output[idx] /= sum;
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+pub fn log_softmax_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let outer_size: usize = shape[..dim].iter().product();
+    let inner_size: usize = shape[dim + 1..].iter().product();
+    let numel: usize = shape.iter().product();
+    let mut output = vec![0.0; numel];
+    let data = &input[offset..];
+
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            // Find max for numerical stability
+            let mut max_val = f64::NEG_INFINITY;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                if data[idx] > max_val {
+                    max_val = data[idx];
+                }
+            }
+            // Compute log(sum(exp(x - max)))
+            let mut sum_exp = 0.0;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                sum_exp += (data[idx] - max_val).exp();
+            }
+            let log_sum_exp = max_val + sum_exp.ln();
+            // output = x - log_sum_exp
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                output[idx] = data[idx] - log_sum_exp;
+            }
+        }
+    }
+
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use ft_core::{DType, Device, ScalarTensor, TensorCompatError, TensorMeta};
@@ -692,8 +1138,10 @@ mod tests {
         pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
         relu_scalar, relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64,
         sqrt_scalar, sqrt_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
+        log_softmax_dim_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64,
+        softmax_dim_tensor_contiguous_f64, std_dim_tensor_contiguous_f64,
         sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
-        tanh_tensor_contiguous_f64,
+        tanh_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
     };
 
     #[test]
@@ -1607,5 +2055,106 @@ mod tests {
         let out = sum_dim_tensor_contiguous_f64(&input, &meta, 0).expect("sum_dim on 1d");
         // Reduces [4] along dim 0 -> scalar-like vec of len 1? No, outer=1, inner=1 -> output len 1
         assert_eq!(out, vec![10.0]);
+    }
+
+    #[test]
+    fn prod_dim_reduces_along_dim0() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = prod_dim_tensor_contiguous_f64(&input, &meta, 0).expect("prod_dim 0");
+        // [1*4, 2*5, 3*6] = [4, 10, 18]
+        assert_eq!(out, vec![4.0, 10.0, 18.0]);
+    }
+
+    #[test]
+    fn prod_dim_reduces_along_dim1() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = prod_dim_tensor_contiguous_f64(&input, &meta, 1).expect("prod_dim 1");
+        // [1*2*3, 4*5*6] = [6, 120]
+        assert_eq!(out, vec![6.0, 120.0]);
+    }
+
+    #[test]
+    fn prod_dim_invalid_dim_returns_error() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let err = prod_dim_tensor_contiguous_f64(&input, &meta, 2).unwrap_err();
+        assert!(matches!(err, KernelError::InvalidDimension { dim: 2, ndim: 2 }));
+    }
+
+    #[test]
+    fn var_dim_reduces_along_dim0() {
+        let meta = TensorMeta::from_shape(vec![3, 2], DType::F64, Device::Cpu);
+        // col0: [1,3,5] mean=3, var=((1-3)^2+(3-3)^2+(5-3)^2)/2 = (4+0+4)/2 = 4
+        // col1: [2,4,6] mean=4, var=((2-4)^2+(4-4)^2+(6-4)^2)/2 = (4+0+4)/2 = 4
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = var_dim_tensor_contiguous_f64(&input, &meta, 0).expect("var_dim 0");
+        assert!((out[0] - 4.0).abs() < 1e-12);
+        assert!((out[1] - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn var_dim_reduces_along_dim1() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        // row0: [1,2,3] mean=2, var=((1-2)^2+(2-2)^2+(3-2)^2)/2 = (1+0+1)/2 = 1
+        // row1: [4,5,6] mean=5, var=((4-5)^2+(5-5)^2+(6-5)^2)/2 = (1+0+1)/2 = 1
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = var_dim_tensor_contiguous_f64(&input, &meta, 1).expect("var_dim 1");
+        assert!((out[0] - 1.0).abs() < 1e-12);
+        assert!((out[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn std_dim_reduces_along_dim0() {
+        let meta = TensorMeta::from_shape(vec![3, 2], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = std_dim_tensor_contiguous_f64(&input, &meta, 0).expect("std_dim 0");
+        assert!((out[0] - 2.0).abs() < 1e-12); // sqrt(4) = 2
+        assert!((out[1] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn softmax_dim_sums_to_one() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = softmax_dim_tensor_contiguous_f64(&input, &meta, 1).expect("softmax");
+        // Each row should sum to 1
+        let row0_sum: f64 = out[0..3].iter().sum();
+        let row1_sum: f64 = out[3..6].iter().sum();
+        assert!((row0_sum - 1.0).abs() < 1e-12);
+        assert!((row1_sum - 1.0).abs() < 1e-12);
+        // All values should be positive
+        assert!(out.iter().all(|&v| v > 0.0));
+    }
+
+    #[test]
+    fn softmax_dim_preserves_relative_order() {
+        let meta = TensorMeta::from_shape(vec![1, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 3.0, 2.0];
+        let out = softmax_dim_tensor_contiguous_f64(&input, &meta, 1).expect("softmax");
+        // input[1] > input[2] > input[0], so output should preserve order
+        assert!(out[1] > out[2]);
+        assert!(out[2] > out[0]);
+    }
+
+    #[test]
+    fn log_softmax_dim_values() {
+        let meta = TensorMeta::from_shape(vec![1, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0];
+        let out = log_softmax_dim_tensor_contiguous_f64(&input, &meta, 1).expect("log_softmax");
+        let sm = softmax_dim_tensor_contiguous_f64(&input, &meta, 1).expect("softmax");
+        // log_softmax should equal log(softmax)
+        for i in 0..3 {
+            assert!((out[i] - sm[i].ln()).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn softmax_dim_invalid_dim() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let err = softmax_dim_tensor_contiguous_f64(&input, &meta, 2).unwrap_err();
+        assert!(matches!(err, KernelError::InvalidDimension { dim: 2, ndim: 2 }));
     }
 }

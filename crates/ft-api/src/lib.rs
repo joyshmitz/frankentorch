@@ -110,6 +110,138 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    pub fn sin(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.sin(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn cos(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.cos(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tan(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.tan(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn floor(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.floor(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn ceil(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.ceil(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn round(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.round(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn log2(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.log2(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn log10(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.log10(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn log1p(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.log1p(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn expm1(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.expm1(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn sign(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.sign(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn trunc(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.trunc(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn frac(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.frac(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn asin(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.asin(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn acos(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.acos(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn atan(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.atan(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn sinh(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.sinh(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn cosh(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.cosh(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn gelu(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.gelu(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn silu(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.silu(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn leaky_relu(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.leaky_relu(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn elu(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
+        let (out, event) = self.tape.elu(input, self.mode())?;
+        self.record_unary_operation(&event);
+        Ok(out)
+    }
+
     pub fn sqrt(&mut self, input: NodeId) -> Result<NodeId, AutogradError> {
         let (out, event) = self.tape.sqrt(input, self.mode())?;
         self.record_unary_operation(&event);
@@ -339,6 +471,204 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    pub fn tensor_sin(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.sin(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_cos(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.cos(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_tan(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.tan(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_floor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.floor(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_ceil(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.ceil(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_round(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.round(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_log2(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.log2(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_log10(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.log10(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_log1p(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.log1p(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_expm1(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.expm1(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_sign(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.sign(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_trunc(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.trunc(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_frac(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.frac(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_asin(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.asin(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_acos(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.acos(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_atan(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.atan(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_sinh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.sinh(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_cosh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.cosh(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_gelu(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.gelu(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_silu(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.silu(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_leaky_relu(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.leaky_relu(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_elu(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.elu(input, self.mode())?;
+        self.record_tensor_unary_operation(&event);
+        Ok(out)
+    }
+
     pub fn tensor_sqrt(
         &mut self,
         input: TensorNodeId,
@@ -508,6 +838,53 @@ impl FrankenTorchSession {
         let (out, event) = self.tensor_tape.mean_dim(input, dim, self.mode())?;
         self.record_tensor_reduction_dim_operation(&event);
         Ok(out)
+    }
+
+    pub fn tensor_prod_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.prod_dim(input, dim, self.mode())?;
+        self.record_tensor_reduction_dim_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_var_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.var_dim(input, dim, self.mode())?;
+        self.record_tensor_reduction_dim_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_std_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.std_dim(input, dim, self.mode())?;
+        self.record_tensor_reduction_dim_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_transpose(
+        &mut self,
+        input: TensorNodeId,
+        dim0: usize,
+        dim1: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.transpose(input, dim0, dim1)
+    }
+
+    pub fn tensor_permute(
+        &mut self,
+        input: TensorNodeId,
+        dims: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.permute(input, dims)
     }
 
     pub fn tensor_values(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
@@ -2548,5 +2925,571 @@ mod tests {
         let vals = session.tensor_values(r).expect("vals");
         // Output shape [2, 2]: [9, 12, 27, 30]
         assert_eq!(vals, vec![9.0, 12.0, 27.0, 30.0]);
+    }
+
+    // ── sin/cos/tan API tests ────────────────────────────────────────
+
+    #[test]
+    fn session_scalar_sin() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(std::f64::consts::FRAC_PI_2, true);
+        let y = session.sin(x).expect("sin");
+        let val = session.value(y).expect("value");
+        assert!((val - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_cos() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(0.0, true);
+        let y = session.cos(x).expect("cos");
+        let val = session.value(y).expect("value");
+        assert!((val - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_tan() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(std::f64::consts::FRAC_PI_4, true);
+        let y = session.tan(x).expect("tan");
+        let val = session.value(y).expect("value");
+        assert!((val - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_sin() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.0, std::f64::consts::FRAC_PI_2], vec![2], true)
+            .expect("leaf");
+        let y = session.tensor_sin(x).expect("tensor_sin");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-12);
+        assert!((vals[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_cos() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.0, std::f64::consts::PI], vec![2], true)
+            .expect("leaf");
+        let y = session.tensor_cos(x).expect("tensor_cos");
+        let vals = session.tensor_values(y).expect("values");
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+        assert!((vals[1] - (-1.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_tan() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.0, std::f64::consts::FRAC_PI_4], vec![2], true)
+            .expect("leaf");
+        let y = session.tensor_tan(x).expect("tensor_tan");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-12);
+        assert!((vals[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_sin_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, true);
+        let y = session.sin(x).expect("sin");
+        let report = session.backward(y).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        assert!((grad - 1.0_f64.cos()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_sin_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.5, 1.0], vec![2], true)
+            .expect("leaf");
+        let y = session.tensor_sin(x).expect("tensor_sin");
+        let report = session.tensor_backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        assert!((grads[0] - 0.5_f64.cos()).abs() < 1e-12);
+        assert!((grads[1] - 1.0_f64.cos()).abs() < 1e-12);
+    }
+
+    // ── floor/ceil/round API tests ───────────────────────────────────
+
+    #[test]
+    fn session_scalar_floor() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.7, true);
+        let y = session.floor(x).expect("floor");
+        assert_eq!(session.value(y).expect("value"), 2.0);
+    }
+
+    #[test]
+    fn session_scalar_ceil() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.3, true);
+        let y = session.ceil(x).expect("ceil");
+        assert_eq!(session.value(y).expect("value"), 3.0);
+    }
+
+    #[test]
+    fn session_scalar_round() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.7, true);
+        let y = session.round(x).expect("round");
+        assert_eq!(session.value(y).expect("value"), 3.0);
+    }
+
+    #[test]
+    fn session_tensor_floor() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.5, -0.3], vec![2], false)
+            .expect("leaf");
+        let y = session.tensor_floor(x).expect("tensor_floor");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, vec![1.0, -1.0]);
+    }
+
+    #[test]
+    fn session_tensor_ceil() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.5, -0.3], vec![2], false)
+            .expect("leaf");
+        let y = session.tensor_ceil(x).expect("tensor_ceil");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, vec![2.0, 0.0]);
+    }
+
+    #[test]
+    fn session_tensor_round() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.4, 2.6], vec![2], false)
+            .expect("leaf");
+        let y = session.tensor_round(x).expect("tensor_round");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, vec![1.0, 3.0]);
+    }
+
+    #[test]
+    fn session_scalar_floor_backward_zero() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.7, true);
+        let y = session.floor(x).expect("floor");
+        let report = session.backward(y).expect("backward");
+        assert_eq!(report.gradient(x), Some(0.0));
+    }
+
+    // ── log2/log10/log1p/expm1 API tests ─────────────────────────────
+
+    #[test]
+    fn session_scalar_log2() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(8.0, true);
+        let y = session.log2(x).expect("log2");
+        assert!((session.value(y).expect("value") - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_log10() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(100.0, true);
+        let y = session.log10(x).expect("log10");
+        assert!((session.value(y).expect("value") - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_log1p() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(0.0, true);
+        let y = session.log1p(x).expect("log1p");
+        assert!((session.value(y).expect("value")).abs() < 1e-15);
+    }
+
+    #[test]
+    fn session_scalar_expm1() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(0.0, true);
+        let y = session.expm1(x).expect("expm1");
+        assert!((session.value(y).expect("value")).abs() < 1e-15);
+    }
+
+    #[test]
+    fn session_tensor_log2() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 4.0], vec![2], false).expect("leaf");
+        let y = session.tensor_log2(x).expect("tensor_log2");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-12);
+        assert!((vals[1] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_expm1() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let y = session.tensor_expm1(x).expect("tensor_expm1");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-15);
+        assert!((vals[1] - (std::f64::consts::E - 1.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_log2_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(4.0, true);
+        let y = session.log2(x).expect("log2");
+        let report = session.backward(y).expect("backward");
+        let expected = 1.0 / (4.0 * std::f64::consts::LN_2);
+        assert!((report.gradient(x).expect("grad") - expected).abs() < 1e-12);
+    }
+
+    // ── sign/trunc/frac API tests ─────────────────────────────
+
+    #[test]
+    fn session_scalar_sign() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(-5.0, false);
+        let y = session.sign(x).expect("sign");
+        assert_eq!(session.value(y).expect("value"), -1.0);
+    }
+
+    #[test]
+    fn session_scalar_trunc() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(3.7, false);
+        let y = session.trunc(x).expect("trunc");
+        assert_eq!(session.value(y).expect("value"), 3.0);
+    }
+
+    #[test]
+    fn session_scalar_frac() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(3.7, false);
+        let y = session.frac(x).expect("frac");
+        let val = session.value(y).expect("value");
+        assert!((val - 0.7).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_sign() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![-3.0, 2.0, 5.0], vec![3], false).expect("leaf");
+        let y = session.tensor_sign(x).expect("tensor_sign");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[-1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn session_tensor_trunc() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![3.7, -2.3], vec![2], false).expect("leaf");
+        let y = session.tensor_trunc(x).expect("tensor_trunc");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[3.0, -2.0]);
+    }
+
+    #[test]
+    fn session_tensor_frac() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![3.7, -2.3], vec![2], false).expect("leaf");
+        let y = session.tensor_frac(x).expect("tensor_frac");
+        let vals = session.tensor_values(y).expect("values");
+        assert!((vals[0] - 0.7).abs() < 1e-12);
+        assert!((vals[1] - (-0.3)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_frac_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(3.7, true);
+        let y = session.frac(x).expect("frac");
+        let report = session.backward(y).expect("backward");
+        assert_eq!(report.gradient(x).expect("grad"), 1.0);
+    }
+
+    // ── asin/acos/atan API tests ─────────────────────────────
+
+    #[test]
+    fn session_scalar_asin() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(0.5, false);
+        let y = session.asin(x).expect("asin");
+        let val = session.value(y).expect("value");
+        assert!((val - 0.5_f64.asin()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_acos() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(0.5, false);
+        let y = session.acos(x).expect("acos");
+        let val = session.value(y).expect("value");
+        assert!((val - 0.5_f64.acos()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_atan() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, false);
+        let y = session.atan(x).expect("atan");
+        let val = session.value(y).expect("value");
+        assert!((val - std::f64::consts::FRAC_PI_4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_asin() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![0.0, 0.5], vec![2], false).expect("leaf");
+        let y = session.tensor_asin(x).expect("tensor_asin");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-12);
+        assert!((vals[1] - 0.5_f64.asin()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_atan() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let y = session.tensor_atan(x).expect("tensor_atan");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-12);
+        assert!((vals[1] - std::f64::consts::FRAC_PI_4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_atan_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, true);
+        let y = session.atan(x).expect("atan");
+        let report = session.backward(y).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        assert!((grad - 0.5).abs() < 1e-12);
+    }
+
+    // ── sinh/cosh API tests ─────────────────────────────
+
+    #[test]
+    fn session_scalar_sinh() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, false);
+        let y = session.sinh(x).expect("sinh");
+        let val = session.value(y).expect("value");
+        assert!((val - 1.0_f64.sinh()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_cosh() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, false);
+        let y = session.cosh(x).expect("cosh");
+        let val = session.value(y).expect("value");
+        assert!((val - 1.0_f64.cosh()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_sinh() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let y = session.tensor_sinh(x).expect("tensor_sinh");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-12);
+        assert!((vals[1] - 1.0_f64.sinh()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_cosh() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let y = session.tensor_cosh(x).expect("tensor_cosh");
+        let vals = session.tensor_values(y).expect("values");
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+        assert!((vals[1] - 1.0_f64.cosh()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_sinh_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, true);
+        let y = session.sinh(x).expect("sinh");
+        let report = session.backward(y).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        assert!((grad - 1.0_f64.cosh()).abs() < 1e-12);
+    }
+
+    // ── gelu/silu/leaky_relu/elu API tests ─────────────────────────────
+
+    fn gelu_val(x: f64) -> f64 {
+        let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2;
+        let k = c * (x + 0.044715 * x * x * x);
+        0.5 * x * (1.0 + k.tanh())
+    }
+
+    #[test]
+    fn session_scalar_gelu() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, false);
+        let y = session.gelu(x).expect("gelu");
+        let val = session.value(y).expect("value");
+        assert!((val - gelu_val(1.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_silu() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, false);
+        let y = session.silu(x).expect("silu");
+        let val = session.value(y).expect("value");
+        let expected = 1.0 / (1.0 + (-1.0_f64).exp());
+        assert!((val - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_leaky_relu() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(-3.0, false);
+        let y = session.leaky_relu(x).expect("leaky_relu");
+        let val = session.value(y).expect("value");
+        assert!((val - (-0.03)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_elu() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(-1.0, false);
+        let y = session.elu(x).expect("elu");
+        let val = session.value(y).expect("value");
+        assert!((val - ((-1.0_f64).exp() - 1.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_gelu() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let y = session.tensor_gelu(x).expect("tensor_gelu");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-12);
+        assert!((vals[1] - gelu_val(1.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_silu() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let y = session.tensor_silu(x).expect("tensor_silu");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals[0].abs() < 1e-12);
+        let expected = 1.0 / (1.0 + (-1.0_f64).exp());
+        assert!((vals[1] - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_leaky_relu() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![2.0, -3.0], vec![2], false).expect("leaf");
+        let y = session.tensor_leaky_relu(x).expect("tensor_leaky_relu");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals[0], 2.0);
+        assert!((vals[1] - (-0.03)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_elu() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![2.0, -1.0], vec![2], false).expect("leaf");
+        let y = session.tensor_elu(x).expect("tensor_elu");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals[0], 2.0);
+        assert!((vals[1] - ((-1.0_f64).exp() - 1.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_scalar_gelu_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(1.0, true);
+        let y = session.gelu(x).expect("gelu");
+        let report = session.backward(y).expect("backward");
+        let grad = report.gradient(x).expect("grad");
+        let eps = 1e-6;
+        let numerical = (gelu_val(1.0 + eps) - gelu_val(1.0 - eps)) / (2.0 * eps);
+        assert!((grad - numerical).abs() < 1e-5);
+    }
+
+    // ── prod_dim/var_dim/std_dim API tests ─────────────────────────────
+
+    #[test]
+    fn session_tensor_prod_dim0() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("leaf");
+        let y = session.tensor_prod_dim(x, 0).expect("prod_dim 0");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[4.0, 10.0, 18.0]);
+    }
+
+    #[test]
+    fn session_tensor_prod_dim1() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("leaf");
+        let y = session.tensor_prod_dim(x, 1).expect("prod_dim 1");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[6.0, 120.0]);
+    }
+
+    #[test]
+    fn session_tensor_var_dim0() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false).expect("leaf");
+        let y = session.tensor_var_dim(x, 0).expect("var_dim 0");
+        let vals = session.tensor_values(y).expect("values");
+        assert!((vals[0] - 4.0).abs() < 1e-12);
+        assert!((vals[1] - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_var_dim1() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("leaf");
+        let y = session.tensor_var_dim(x, 1).expect("var_dim 1");
+        let vals = session.tensor_values(y).expect("values");
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+        assert!((vals[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_std_dim0() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false).expect("leaf");
+        let y = session.tensor_std_dim(x, 0).expect("std_dim 0");
+        let vals = session.tensor_values(y).expect("values");
+        assert!((vals[0] - 2.0).abs() < 1e-12);
+        assert!((vals[1] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_prod_dim_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![2.0, 3.0, 4.0], vec![1, 3], true).expect("leaf");
+        let y = session.tensor_prod_dim(x, 1).expect("prod_dim 1");
+        let report = session.tensor_backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        // prod=24, grads: 24/2=12, 24/3=8, 24/4=6
+        assert!((grads[0] - 12.0).abs() < 1e-10);
+        assert!((grads[1] - 8.0).abs() < 1e-10);
+        assert!((grads[2] - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn session_tensor_var_dim_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
+        let y = session.tensor_var_dim(x, 1).expect("var_dim 1");
+        let report = session.tensor_backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        assert!((grads[0] - (-1.0)).abs() < 1e-12);
+        assert!(grads[1].abs() < 1e-12);
+        assert!((grads[2] - 1.0).abs() < 1e-12);
     }
 }
