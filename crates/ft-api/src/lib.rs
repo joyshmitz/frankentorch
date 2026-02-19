@@ -373,6 +373,77 @@ mod tests {
     }
 
     #[test]
+    fn session_tensor_mul_backward_records_expected_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![2.0, 4.0], vec![2], true)
+            .expect("lhs tensor variable should succeed");
+        let y = session
+            .tensor_variable(vec![3.0, 2.0], vec![2], true)
+            .expect("rhs tensor variable should succeed");
+        let z = session.tensor_mul(x, y).expect("tensor mul should succeed");
+
+        assert_eq!(
+            session
+                .tensor_values(z)
+                .expect("tensor values should resolve"),
+            vec![6.0, 8.0]
+        );
+
+        let report = session
+            .tensor_backward(z)
+            .expect("tensor backward should succeed");
+        assert_eq!(
+            session
+                .tensor_gradient(&report, x)
+                .expect("x grad should exist"),
+            &[3.0, 2.0]
+        );
+        assert_eq!(
+            session
+                .tensor_gradient(&report, y)
+                .expect("y grad should exist"),
+            &[2.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn session_tensor_div_backward_records_expected_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![2.0, 4.0], vec![2], true)
+            .expect("lhs tensor variable should succeed");
+        let y = session
+            .tensor_variable(vec![3.0, 2.0], vec![2], true)
+            .expect("rhs tensor variable should succeed");
+        let z = session.tensor_div(x, y).expect("tensor div should succeed");
+
+        let values = session
+            .tensor_values(z)
+            .expect("tensor values should resolve");
+        assert!((values[0] - (2.0 / 3.0)).abs() <= 1e-12);
+        assert!((values[1] - 2.0).abs() <= 1e-12);
+
+        let report = session
+            .tensor_backward(z)
+            .expect("tensor backward should succeed");
+        let x_grad = session
+            .tensor_gradient(&report, x)
+            .expect("x grad should exist");
+        let y_grad = session
+            .tensor_gradient(&report, y)
+            .expect("y grad should exist");
+        let expected_x_grad = [1.0 / 3.0, 0.5];
+        let expected_y_grad = [-2.0 / 9.0, -1.0];
+        for (actual, expected) in x_grad.iter().zip(expected_x_grad) {
+            assert!((actual - expected).abs() <= 1e-12);
+        }
+        for (actual, expected) in y_grad.iter().zip(expected_y_grad) {
+            assert!((actual - expected).abs() <= 1e-12);
+        }
+    }
+
+    #[test]
     fn session_tensor_add_fails_closed_on_non_contiguous_input() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let lhs_meta =
