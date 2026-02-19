@@ -1121,15 +1121,126 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
     Ok(output)
 }
 
+pub fn cat_tensor_contiguous_f64(
+    inputs: &[(&[f64], &TensorMeta)],
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    if inputs.is_empty() {
+        return Err(KernelError::ShapeMismatch {
+            op: "cat",
+            expected: "at least one input",
+            got: "zero inputs",
+        });
+    }
+    let first_shape = inputs[0].1.shape();
+    let ndim = first_shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    // Validate shapes match except along cat dim
+    for (i, (data, meta)) in inputs.iter().enumerate() {
+        ensure_unary_layout_and_storage(data, meta)?;
+        let shape = meta.shape();
+        if shape.len() != ndim {
+            return Err(KernelError::ShapeMismatch {
+                op: "cat",
+                expected: "same number of dimensions",
+                got: "mismatched ndim",
+            });
+        }
+        for d in 0..ndim {
+            if d != dim && shape[d] != first_shape[d] {
+                return Err(KernelError::ShapeMismatch {
+                    op: "cat",
+                    expected: "matching dimensions except cat dim",
+                    got: "mismatched shape",
+                });
+            }
+        }
+        let _ = i; // suppress unused
+    }
+
+    let outer_size: usize = first_shape[..dim].iter().product();
+    let inner_size: usize = first_shape[dim + 1..].iter().product();
+    let total_cat_size: usize = inputs.iter().map(|(_, m)| m.shape()[dim]).sum();
+    let out_numel = outer_size * total_cat_size * inner_size;
+    let mut output = Vec::with_capacity(out_numel);
+
+    for outer in 0..outer_size {
+        for (data, meta) in inputs {
+            let shape = meta.shape();
+            let cat_size = shape[dim];
+            let offset = meta.storage_offset();
+            let d = &data[offset..];
+            for r in 0..cat_size {
+                for inner in 0..inner_size {
+                    output.push(d[outer * cat_size * inner_size + r * inner_size + inner]);
+                }
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+pub fn stack_tensor_contiguous_f64(
+    inputs: &[(&[f64], &TensorMeta)],
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    if inputs.is_empty() {
+        return Err(KernelError::ShapeMismatch {
+            op: "stack",
+            expected: "at least one input",
+            got: "zero inputs",
+        });
+    }
+    let first_shape = inputs[0].1.shape();
+    let ndim = first_shape.len();
+    // dim can be 0..=ndim (inserting a new dimension)
+    if dim > ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim: ndim + 1 });
+    }
+    // Validate all shapes are identical
+    for (data, meta) in inputs {
+        ensure_unary_layout_and_storage(data, meta)?;
+        if meta.shape() != first_shape {
+            return Err(KernelError::ShapeMismatch {
+                op: "stack",
+                expected: "identical shapes",
+                got: "mismatched shape",
+            });
+        }
+    }
+
+    let num_inputs = inputs.len();
+    let outer_size: usize = first_shape[..dim].iter().product();
+    let inner_size: usize = first_shape[dim..].iter().product();
+    let out_numel = outer_size * num_inputs * inner_size;
+    let mut output = Vec::with_capacity(out_numel);
+
+    for outer in 0..outer_size {
+        for (data, meta) in inputs {
+            let offset = meta.storage_offset();
+            let d = &data[offset..];
+            for inner in 0..inner_size {
+                output.push(d[outer * inner_size + inner]);
+            }
+        }
+    }
+
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use ft_core::{DType, Device, ScalarTensor, TensorCompatError, TensorMeta};
 
     use super::{
         KernelError, abs_scalar, abs_tensor_contiguous_f64, add_scalar, add_tensor_contiguous_f64,
-        clamp_scalar, clamp_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64,
-        eq_scalar, eq_tensor_contiguous_f64, exp_scalar, exp_tensor_contiguous_f64, ge_scalar,
-        ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
+        cat_tensor_contiguous_f64, clamp_scalar, clamp_tensor_contiguous_f64, div_scalar,
+        div_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, exp_scalar,
+        exp_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gt_scalar,
+        gt_tensor_contiguous_f64, le_scalar,
         le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
         lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
         max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64,
@@ -1139,7 +1250,8 @@ mod tests {
         relu_scalar, relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64,
         sqrt_scalar, sqrt_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
         log_softmax_dim_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64,
-        softmax_dim_tensor_contiguous_f64, std_dim_tensor_contiguous_f64,
+        softmax_dim_tensor_contiguous_f64, stack_tensor_contiguous_f64,
+        std_dim_tensor_contiguous_f64,
         sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
         tanh_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
     };
@@ -2156,5 +2268,48 @@ mod tests {
         let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let err = softmax_dim_tensor_contiguous_f64(&input, &meta, 2).unwrap_err();
         assert!(matches!(err, KernelError::InvalidDimension { dim: 2, ndim: 2 }));
+    }
+
+    #[test]
+    fn cat_along_dim0() {
+        let m0 = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let d0 = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let m1 = TensorMeta::from_shape(vec![1, 3], DType::F64, Device::Cpu);
+        let d1 = vec![7.0, 8.0, 9.0];
+        let out = cat_tensor_contiguous_f64(&[(&d0, &m0), (&d1, &m1)], 0).expect("cat dim 0");
+        assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn cat_along_dim1() {
+        let m0 = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let d0 = vec![1.0, 2.0, 3.0, 4.0];
+        let m1 = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let d1 = vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let out = cat_tensor_contiguous_f64(&[(&d0, &m0), (&d1, &m1)], 1).expect("cat dim 1");
+        // row0: [1,2,5,6,7], row1: [3,4,8,9,10]
+        assert_eq!(out, vec![1.0, 2.0, 5.0, 6.0, 7.0, 3.0, 4.0, 8.0, 9.0, 10.0]);
+    }
+
+    #[test]
+    fn stack_along_dim0() {
+        let m0 = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let d0 = vec![1.0, 2.0, 3.0];
+        let m1 = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let d1 = vec![4.0, 5.0, 6.0];
+        let out = stack_tensor_contiguous_f64(&[(&d0, &m0), (&d1, &m1)], 0).expect("stack dim 0");
+        // shape [2,3]: [[1,2,3],[4,5,6]]
+        assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn stack_along_dim1() {
+        let m0 = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let d0 = vec![1.0, 2.0, 3.0, 4.0];
+        let m1 = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let d1 = vec![5.0, 6.0, 7.0, 8.0];
+        let out = stack_tensor_contiguous_f64(&[(&d0, &m0), (&d1, &m1)], 1).expect("stack dim 1");
+        // shape [2,2,2]: [[[1,2],[5,6]],[[3,4],[7,8]]]
+        assert_eq!(out, vec![1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
     }
 }
