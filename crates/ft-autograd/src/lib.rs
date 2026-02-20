@@ -26,45 +26,132 @@ pub struct TensorNodeId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum NodeOp {
     Leaf,
-    Add { lhs: NodeId, rhs: NodeId },
-    Sub { lhs: NodeId, rhs: NodeId },
-    Div { lhs: NodeId, rhs: NodeId },
-    Mul { lhs: NodeId, rhs: NodeId },
-    Neg { input: NodeId },
-    Abs { input: NodeId },
-    Exp { input: NodeId },
-    Log { input: NodeId },
-    Relu { input: NodeId },
-    Sigmoid { input: NodeId },
-    Tanh { input: NodeId },
-    Sin { input: NodeId },
-    Cos { input: NodeId },
-    Tan { input: NodeId },
-    Floor { input: NodeId },
-    Ceil { input: NodeId },
-    Round { input: NodeId },
-    Log2 { input: NodeId },
-    Log10 { input: NodeId },
-    Log1p { input: NodeId },
-    Expm1 { input: NodeId },
-    Sign { input: NodeId },
-    Trunc { input: NodeId },
-    Frac { input: NodeId },
-    Asin { input: NodeId },
-    Acos { input: NodeId },
-    Atan { input: NodeId },
-    Sinh { input: NodeId },
-    Cosh { input: NodeId },
-    Gelu { input: NodeId },
-    Silu { input: NodeId },
-    LeakyRelu { input: NodeId },
-    Elu { input: NodeId },
-    Sqrt { input: NodeId },
-    Reciprocal { input: NodeId },
-    Pow { input: NodeId, exponent: f64 },
-    Min { lhs: NodeId, rhs: NodeId },
-    Max { lhs: NodeId, rhs: NodeId },
-    Clamp { input: NodeId, min_val: f64, max_val: f64 },
+    Add {
+        lhs: NodeId,
+        rhs: NodeId,
+    },
+    Sub {
+        lhs: NodeId,
+        rhs: NodeId,
+    },
+    Div {
+        lhs: NodeId,
+        rhs: NodeId,
+    },
+    Mul {
+        lhs: NodeId,
+        rhs: NodeId,
+    },
+    Neg {
+        input: NodeId,
+    },
+    Abs {
+        input: NodeId,
+    },
+    Exp {
+        input: NodeId,
+    },
+    Log {
+        input: NodeId,
+    },
+    Relu {
+        input: NodeId,
+    },
+    Sigmoid {
+        input: NodeId,
+    },
+    Tanh {
+        input: NodeId,
+    },
+    Sin {
+        input: NodeId,
+    },
+    Cos {
+        input: NodeId,
+    },
+    Tan {
+        input: NodeId,
+    },
+    Floor {
+        input: NodeId,
+    },
+    Ceil {
+        input: NodeId,
+    },
+    Round {
+        input: NodeId,
+    },
+    Log2 {
+        input: NodeId,
+    },
+    Log10 {
+        input: NodeId,
+    },
+    Log1p {
+        input: NodeId,
+    },
+    Expm1 {
+        input: NodeId,
+    },
+    Sign {
+        input: NodeId,
+    },
+    Trunc {
+        input: NodeId,
+    },
+    Frac {
+        input: NodeId,
+    },
+    Asin {
+        input: NodeId,
+    },
+    Acos {
+        input: NodeId,
+    },
+    Atan {
+        input: NodeId,
+    },
+    Sinh {
+        input: NodeId,
+    },
+    Cosh {
+        input: NodeId,
+    },
+    Gelu {
+        input: NodeId,
+    },
+    Silu {
+        input: NodeId,
+    },
+    LeakyRelu {
+        input: NodeId,
+    },
+    Elu {
+        input: NodeId,
+    },
+    Sqrt {
+        input: NodeId,
+    },
+    Reciprocal {
+        input: NodeId,
+    },
+    Pow {
+        input: NodeId,
+        exponent: f64,
+    },
+    Min {
+        lhs: NodeId,
+        rhs: NodeId,
+    },
+    Max {
+        lhs: NodeId,
+        rhs: NodeId,
+    },
+    Clamp {
+        input: NodeId,
+        min_val: f64,
+        max_val: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1579,8 +1666,20 @@ impl Tape {
             (requires_grad, outcome)
         };
         let out = NodeId(self.nodes.len());
-        self.nodes.push(Node { tensor: outcome.tensor, requires_grad, op: NodeOp::Gelu { input } });
-        Ok((out, UnaryOperationEvent { op: UnaryOp::Gelu, input, out, decision: outcome.decision }))
+        self.nodes.push(Node {
+            tensor: outcome.tensor,
+            requires_grad,
+            op: NodeOp::Gelu { input },
+        });
+        Ok((
+            out,
+            UnaryOperationEvent {
+                op: UnaryOp::Gelu,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn silu(
@@ -1597,8 +1696,20 @@ impl Tape {
             (requires_grad, outcome)
         };
         let out = NodeId(self.nodes.len());
-        self.nodes.push(Node { tensor: outcome.tensor, requires_grad, op: NodeOp::Silu { input } });
-        Ok((out, UnaryOperationEvent { op: UnaryOp::Silu, input, out, decision: outcome.decision }))
+        self.nodes.push(Node {
+            tensor: outcome.tensor,
+            requires_grad,
+            op: NodeOp::Silu { input },
+        });
+        Ok((
+            out,
+            UnaryOperationEvent {
+                op: UnaryOp::Silu,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn leaky_relu(
@@ -1615,8 +1726,20 @@ impl Tape {
             (requires_grad, outcome)
         };
         let out = NodeId(self.nodes.len());
-        self.nodes.push(Node { tensor: outcome.tensor, requires_grad, op: NodeOp::LeakyRelu { input } });
-        Ok((out, UnaryOperationEvent { op: UnaryOp::LeakyRelu, input, out, decision: outcome.decision }))
+        self.nodes.push(Node {
+            tensor: outcome.tensor,
+            requires_grad,
+            op: NodeOp::LeakyRelu { input },
+        });
+        Ok((
+            out,
+            UnaryOperationEvent {
+                op: UnaryOp::LeakyRelu,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn elu(
@@ -1633,8 +1756,20 @@ impl Tape {
             (requires_grad, outcome)
         };
         let out = NodeId(self.nodes.len());
-        self.nodes.push(Node { tensor: outcome.tensor, requires_grad, op: NodeOp::Elu { input } });
-        Ok((out, UnaryOperationEvent { op: UnaryOp::Elu, input, out, decision: outcome.decision }))
+        self.nodes.push(Node {
+            tensor: outcome.tensor,
+            requires_grad,
+            op: NodeOp::Elu { input },
+        });
+        Ok((
+            out,
+            UnaryOperationEvent {
+                op: UnaryOp::Elu,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn sqrt(
@@ -1678,13 +1813,8 @@ impl Tape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
             let outcome =
-                dispatch_scalar_unary(
-                    UnaryOp::Reciprocal,
-                    mode,
-                    &input_node.tensor,
-                    requires_grad,
-                )
-                .map_err(AutogradError::Dispatch)?;
+                dispatch_scalar_unary(UnaryOp::Reciprocal, mode, &input_node.tensor, requires_grad)
+                    .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
 
@@ -1715,9 +1845,8 @@ impl Tape {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
-            let outcome =
-                dispatch_scalar_pow(mode, &input_node.tensor, exponent, requires_grad)
-                    .map_err(AutogradError::Dispatch)?;
+            let outcome = dispatch_scalar_pow(mode, &input_node.tensor, exponent, requires_grad)
+                .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
 
@@ -2157,9 +2286,7 @@ impl Tape {
                         rule: "d(tan(x))/dx=1+tan(x)^2",
                     });
                 }
-                NodeOp::Floor { input }
-                | NodeOp::Ceil { input }
-                | NodeOp::Round { input } => {
+                NodeOp::Floor { input } | NodeOp::Ceil { input } | NodeOp::Round { input } => {
                     // Gradient is zero almost everywhere (step functions)
                     grads[input.0] += 0.0;
 
@@ -2331,7 +2458,11 @@ impl Tape {
                     grads[input.0] += incoming * (0.5 * (1.0 + t) + 0.5 * x * (1.0 - t * t) * dk);
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(BackwardStep { node: node_id, incoming_grad: incoming, rule: "d(gelu(x))/dx" });
+                    steps.push(BackwardStep {
+                        node: node_id,
+                        incoming_grad: incoming,
+                        rule: "d(gelu(x))/dx",
+                    });
                 }
                 NodeOp::Silu { input } => {
                     let x = self.nodes[input.0].tensor.value();
@@ -2340,14 +2471,22 @@ impl Tape {
                     grads[input.0] += incoming * s * (1.0 + x * (1.0 - s));
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(BackwardStep { node: node_id, incoming_grad: incoming, rule: "d(silu(x))/dx=sigmoid(x)*(1+x*(1-sigmoid(x)))" });
+                    steps.push(BackwardStep {
+                        node: node_id,
+                        incoming_grad: incoming,
+                        rule: "d(silu(x))/dx=sigmoid(x)*(1+x*(1-sigmoid(x)))",
+                    });
                 }
                 NodeOp::LeakyRelu { input } => {
                     let x = self.nodes[input.0].tensor.value();
                     grads[input.0] += incoming * if x >= 0.0 { 1.0 } else { 0.01 };
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(BackwardStep { node: node_id, incoming_grad: incoming, rule: "d(leaky_relu(x))/dx=1|0.01" });
+                    steps.push(BackwardStep {
+                        node: node_id,
+                        incoming_grad: incoming,
+                        rule: "d(leaky_relu(x))/dx=1|0.01",
+                    });
                 }
                 NodeOp::Elu { input } => {
                     let x = self.nodes[input.0].tensor.value();
@@ -2356,7 +2495,11 @@ impl Tape {
                     grads[input.0] += incoming * if x > 0.0 { 1.0 } else { output_value + 1.0 };
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(BackwardStep { node: node_id, incoming_grad: incoming, rule: "d(elu(x))/dx=1|output+alpha" });
+                    steps.push(BackwardStep {
+                        node: node_id,
+                        incoming_grad: incoming,
+                        rule: "d(elu(x))/dx=1|output+alpha",
+                    });
                 }
                 NodeOp::Sqrt { input } => {
                     let output_value = self.nodes[node_id.0].tensor.value();
@@ -3293,8 +3436,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Log2, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Log2,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3304,7 +3452,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Log2 { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Log2, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Log2,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn log10(
@@ -3317,8 +3473,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Log10, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Log10,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3328,7 +3489,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Log10 { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Log10, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Log10,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn log1p(
@@ -3341,8 +3510,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Log1p, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Log1p,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3352,7 +3526,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Log1p { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Log1p, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Log1p,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn expm1(
@@ -3365,8 +3547,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Expm1, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Expm1,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3376,7 +3563,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Expm1 { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Expm1, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Expm1,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn sign(
@@ -3389,8 +3584,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Sign, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Sign,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3400,7 +3600,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Sign { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Sign, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Sign,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn trunc(
@@ -3413,8 +3621,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Trunc, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Trunc,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3424,7 +3637,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Trunc { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Trunc, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Trunc,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn frac(
@@ -3437,8 +3658,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Frac, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Frac,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3448,7 +3674,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Frac { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Frac, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Frac,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn asin(
@@ -3461,8 +3695,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Asin, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Asin,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3472,7 +3711,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Asin { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Asin, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Asin,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn acos(
@@ -3485,8 +3732,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Acos, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Acos,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3496,7 +3748,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Acos { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Acos, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Acos,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn atan(
@@ -3509,8 +3769,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Atan, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Atan,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3520,7 +3785,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Atan { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Atan, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Atan,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn sinh(
@@ -3533,8 +3806,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Sinh, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Sinh,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3544,7 +3822,15 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Sinh { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Sinh, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Sinh,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn cosh(
@@ -3557,8 +3843,13 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Cosh, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Cosh,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
@@ -3568,79 +3859,163 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Cosh { input },
         });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Cosh, input, out, decision: outcome.decision }))
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Cosh,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn gelu(
-        &mut self, input: TensorNodeId, mode: ExecutionMode,
+        &mut self,
+        input: TensorNodeId,
+        mode: ExecutionMode,
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Gelu, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Gelu,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
-        self.nodes.push(TensorNode { tensor: DenseTensor::from_storage(input_meta, outcome.values)?, requires_grad, op: TensorNodeOp::Gelu { input } });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Gelu, input, out, decision: outcome.decision }))
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            requires_grad,
+            op: TensorNodeOp::Gelu { input },
+        });
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Gelu,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn silu(
-        &mut self, input: TensorNodeId, mode: ExecutionMode,
+        &mut self,
+        input: TensorNodeId,
+        mode: ExecutionMode,
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Silu, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Silu,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
-        self.nodes.push(TensorNode { tensor: DenseTensor::from_storage(input_meta, outcome.values)?, requires_grad, op: TensorNodeOp::Silu { input } });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Silu, input, out, decision: outcome.decision }))
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            requires_grad,
+            op: TensorNodeOp::Silu { input },
+        });
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Silu,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn leaky_relu(
-        &mut self, input: TensorNodeId, mode: ExecutionMode,
+        &mut self,
+        input: TensorNodeId,
+        mode: ExecutionMode,
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::LeakyRelu, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::LeakyRelu,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
-        self.nodes.push(TensorNode { tensor: DenseTensor::from_storage(input_meta, outcome.values)?, requires_grad, op: TensorNodeOp::LeakyRelu { input } });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::LeakyRelu, input, out, decision: outcome.decision }))
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            requires_grad,
+            op: TensorNodeOp::LeakyRelu { input },
+        });
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::LeakyRelu,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn elu(
-        &mut self, input: TensorNodeId, mode: ExecutionMode,
+        &mut self,
+        input: TensorNodeId,
+        mode: ExecutionMode,
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
-                UnaryOp::Elu, mode, input_node.tensor.storage(), &meta, requires_grad,
-            ).map_err(AutogradError::Dispatch)?;
+                UnaryOp::Elu,
+                mode,
+                input_node.tensor.storage(),
+                &meta,
+                requires_grad,
+            )
+            .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
         };
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
-        self.nodes.push(TensorNode { tensor: DenseTensor::from_storage(input_meta, outcome.values)?, requires_grad, op: TensorNodeOp::Elu { input } });
-        Ok((out, TensorUnaryOperationEvent { op: UnaryOp::Elu, input, out, decision: outcome.decision }))
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            requires_grad,
+            op: TensorNodeOp::Elu { input },
+        });
+        Ok((
+            out,
+            TensorUnaryOperationEvent {
+                op: UnaryOp::Elu,
+                input,
+                out,
+                decision: outcome.decision,
+            },
+        ))
     }
 
     pub fn sqrt(
@@ -3979,10 +4354,7 @@ impl TensorTape {
                 vec![outcome.value],
             )?,
             requires_grad,
-            op: TensorNodeOp::Sum {
-                input,
-                input_numel,
-            },
+            op: TensorNodeOp::Sum { input, input_numel },
         });
 
         Ok((
@@ -4029,10 +4401,7 @@ impl TensorTape {
                 vec![outcome.value],
             )?,
             requires_grad,
-            op: TensorNodeOp::Mean {
-                input,
-                input_numel,
-            },
+            op: TensorNodeOp::Mean { input, input_numel },
         });
 
         Ok((
@@ -4472,14 +4841,9 @@ impl TensorTape {
             .map(|(d, m)| (d.as_slice(), m))
             .collect();
 
-        let outcome = dispatch_tensor_join_contiguous_f64(
-            JoinOp::Cat,
-            mode,
-            &refs,
-            dim,
-            requires_grad,
-        )
-        .map_err(AutogradError::Dispatch)?;
+        let outcome =
+            dispatch_tensor_join_contiguous_f64(JoinOp::Cat, mode, &refs, dim, requires_grad)
+                .map_err(AutogradError::Dispatch)?;
 
         // Compute output shape
         let first_shape = dispatch_inputs[0].1.shape().to_vec();
@@ -4543,14 +4907,9 @@ impl TensorTape {
             .map(|(d, m)| (d.as_slice(), m))
             .collect();
 
-        let outcome = dispatch_tensor_join_contiguous_f64(
-            JoinOp::Stack,
-            mode,
-            &refs,
-            dim,
-            requires_grad,
-        )
-        .map_err(AutogradError::Dispatch)?;
+        let outcome =
+            dispatch_tensor_join_contiguous_f64(JoinOp::Stack, mode, &refs, dim, requires_grad)
+                .map_err(AutogradError::Dispatch)?;
 
         // Compute output shape: insert new dim at position
         let first_shape = dispatch_inputs[0].1.shape().to_vec();
@@ -4595,12 +4954,12 @@ impl TensorTape {
             let input_numel = meta.numel();
             let new_numel: usize = new_shape.iter().product();
             if input_numel != new_numel {
-                return Err(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Kernel(ft_kernel_cpu::KernelError::ShapeMismatch {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
                         lhs: meta.shape().to_vec(),
                         rhs: new_shape,
-                    }),
-                ));
+                    },
+                )));
             }
             (
                 input_node.requires_grad,
@@ -4634,14 +4993,12 @@ impl TensorTape {
             let meta = input_node.tensor.meta();
             let shape = meta.shape();
             if dim >= shape.len() {
-                return Err(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Kernel(
-                        ft_kernel_cpu::KernelError::InvalidDimension {
-                            dim,
-                            ndim: shape.len(),
-                        },
-                    ),
-                ));
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::InvalidDimension {
+                        dim,
+                        ndim: shape.len(),
+                    },
+                )));
             }
             let mut new_shape = shape.to_vec();
             if new_shape[dim] == 1 {
@@ -4679,14 +5036,12 @@ impl TensorTape {
             let meta = input_node.tensor.meta();
             let shape = meta.shape();
             if dim > shape.len() {
-                return Err(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Kernel(
-                        ft_kernel_cpu::KernelError::InvalidDimension {
-                            dim,
-                            ndim: shape.len() + 1,
-                        },
-                    ),
-                ));
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::InvalidDimension {
+                        dim,
+                        ndim: shape.len() + 1,
+                    },
+                )));
             }
             let mut new_shape = shape.to_vec();
             new_shape.insert(dim, 1);
@@ -4729,14 +5084,12 @@ impl TensorTape {
             let shape = meta.shape();
             let ndim = shape.len();
             if dim0 >= ndim || dim1 >= ndim {
-                return Err(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Kernel(
-                        ft_kernel_cpu::KernelError::InvalidDimension {
-                            dim: if dim0 >= ndim { dim0 } else { dim1 },
-                            ndim,
-                        },
-                    ),
-                ));
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::InvalidDimension {
+                        dim: if dim0 >= ndim { dim0 } else { dim1 },
+                        ndim,
+                    },
+                )));
             }
             if dim0 == dim1 {
                 // Identity transpose: same shape, same data
@@ -4787,30 +5140,26 @@ impl TensorTape {
             let ndim = shape.len();
 
             if dims.len() != ndim {
-                return Err(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Kernel(ft_kernel_cpu::KernelError::ShapeMismatch {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
                         lhs: shape.to_vec(),
                         rhs: dims.clone(),
-                    }),
-                ));
+                    },
+                )));
             }
 
             // Validate permutation: each dimension must appear exactly once
             let mut seen = vec![false; ndim];
             for &d in &dims {
                 if d >= ndim {
-                    return Err(AutogradError::Dispatch(
-                        ft_dispatch::DispatchError::Kernel(
-                            ft_kernel_cpu::KernelError::InvalidDimension { dim: d, ndim },
-                        ),
-                    ));
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                        ft_kernel_cpu::KernelError::InvalidDimension { dim: d, ndim },
+                    )));
                 }
                 if seen[d] {
-                    return Err(AutogradError::Dispatch(
-                        ft_dispatch::DispatchError::Kernel(
-                            ft_kernel_cpu::KernelError::InvalidDimension { dim: d, ndim },
-                        ),
-                    ));
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                        ft_kernel_cpu::KernelError::InvalidDimension { dim: d, ndim },
+                    )));
                 }
                 seen[d] = true;
             }
@@ -5152,13 +5501,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Neg { input } => {
-                    let neg_contrib =
-                        incoming.iter().map(|value| -*value).collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &neg_contrib,
-                    )?;
+                    let neg_contrib = incoming.iter().map(|value| -*value).collect::<Vec<_>>();
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &neg_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5186,11 +5530,7 @@ impl TensorTape {
                             grad * sign
                         })
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &abs_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &abs_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5209,11 +5549,7 @@ impl TensorTape {
                         .zip(output_values.iter())
                         .map(|(grad, out_val)| grad * out_val)
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &exp_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &exp_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5232,11 +5568,7 @@ impl TensorTape {
                         .zip(input_values.iter())
                         .map(|(grad, val)| grad / val)
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &log_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &log_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5255,11 +5587,7 @@ impl TensorTape {
                         .zip(input_values.iter())
                         .map(|(grad, val)| if *val > 0.0 { *grad } else { 0.0 })
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &relu_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &relu_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5278,11 +5606,7 @@ impl TensorTape {
                         .zip(output_values.iter())
                         .map(|(grad, s)| grad * s * (1.0 - s))
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &sigmoid_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &sigmoid_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5301,11 +5625,7 @@ impl TensorTape {
                         .zip(output_values.iter())
                         .map(|(grad, t)| grad * (1.0 - t * t))
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &tanh_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &tanh_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5324,11 +5644,7 @@ impl TensorTape {
                         .zip(input_values.iter())
                         .map(|(grad, x)| grad * x.cos())
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &sin_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &sin_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5347,11 +5663,7 @@ impl TensorTape {
                         .zip(input_values.iter())
                         .map(|(grad, x)| grad * (-x.sin()))
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &cos_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &cos_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5370,11 +5682,7 @@ impl TensorTape {
                         .zip(output_values.iter())
                         .map(|(grad, t)| grad * (1.0 + t * t))
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &tan_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &tan_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5389,11 +5697,7 @@ impl TensorTape {
                 | TensorNodeOp::Round { input } => {
                     // Gradient is zero almost everywhere (step functions)
                     let zero_contrib = vec![0.0; incoming.len()];
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &zero_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &zero_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5406,125 +5710,193 @@ impl TensorTape {
                 TensorNodeOp::Log2 { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| g / (x * std::f64::consts::LN_2))
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(log2(x))/dx=1/(x*ln(2))" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(log2(x))/dx=1/(x*ln(2))",
+                    });
                 }
                 TensorNodeOp::Log10 { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| g / (x * std::f64::consts::LN_10))
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(log10(x))/dx=1/(x*ln(10))" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(log10(x))/dx=1/(x*ln(10))",
+                    });
                 }
                 TensorNodeOp::Log1p { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| g / (1.0 + x))
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(log1p(x))/dx=1/(1+x)" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(log1p(x))/dx=1/(1+x)",
+                    });
                 }
                 TensorNodeOp::Expm1 { input } => {
                     let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
                     // d/dx expm1(x) = exp(x) = expm1(x) + 1
-                    let contrib: Vec<f64> = incoming.iter().zip(output_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(output_values.iter())
                         .map(|(g, y)| g * (y + 1.0))
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(expm1(x))/dx=exp(x)=expm1(x)+1" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(expm1(x))/dx=exp(x)=expm1(x)+1",
+                    });
                 }
                 TensorNodeOp::Sign { input } => {
                     // sign is a step function, gradient is 0
                     let contrib = vec![0.0; incoming.len()];
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(sign(x))/dx=0" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(sign(x))/dx=0",
+                    });
                 }
                 TensorNodeOp::Trunc { input } => {
                     // trunc is a step function, gradient is 0
                     let contrib = vec![0.0; incoming.len()];
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(trunc(x))/dx=0" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(trunc(x))/dx=0",
+                    });
                 }
                 TensorNodeOp::Frac { input } => {
                     // frac(x) = x - floor(x), d/dx = 1
                     let contrib: Vec<f64> = incoming.to_vec();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(frac(x))/dx=1" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(frac(x))/dx=1",
+                    });
                 }
                 TensorNodeOp::Asin { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
                     // d/dx asin(x) = 1/sqrt(1-x^2)
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| g / (1.0 - x * x).sqrt())
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(asin(x))/dx=1/sqrt(1-x^2)" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(asin(x))/dx=1/sqrt(1-x^2)",
+                    });
                 }
                 TensorNodeOp::Acos { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
                     // d/dx acos(x) = -1/sqrt(1-x^2)
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| -g / (1.0 - x * x).sqrt())
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(acos(x))/dx=-1/sqrt(1-x^2)" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(acos(x))/dx=-1/sqrt(1-x^2)",
+                    });
                 }
                 TensorNodeOp::Atan { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
                     // d/dx atan(x) = 1/(1+x^2)
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| g / (1.0 + x * x))
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(atan(x))/dx=1/(1+x^2)" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(atan(x))/dx=1/(1+x^2)",
+                    });
                 }
                 TensorNodeOp::Sinh { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
                     // d/dx sinh(x) = cosh(x)
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| g * x.cosh())
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(sinh(x))/dx=cosh(x)" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(sinh(x))/dx=cosh(x)",
+                    });
                 }
                 TensorNodeOp::Cosh { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
                     // d/dx cosh(x) = sinh(x)
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| g * x.sinh())
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(cosh(x))/dx=sinh(x)" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(cosh(x))/dx=sinh(x)",
+                    });
                 }
                 TensorNodeOp::Gelu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
                     let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2;
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, &x)| {
                             let k = c * (x + 0.044715 * x * x * x);
                             let t = k.tanh();
@@ -5534,12 +5906,18 @@ impl TensorTape {
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(gelu(x))/dx" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(gelu(x))/dx",
+                    });
                 }
                 TensorNodeOp::Silu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, &x)| {
                             let s = 1.0 / (1.0 + (-x).exp());
                             g * s * (1.0 + x * (1.0 - s))
@@ -5547,28 +5925,45 @@ impl TensorTape {
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(silu(x))/dx=sigmoid(x)*(1+x*(1-sigmoid(x)))" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(silu(x))/dx=sigmoid(x)*(1+x*(1-sigmoid(x)))",
+                    });
                 }
                 TensorNodeOp::LeakyRelu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
                         .map(|(g, x)| g * if *x >= 0.0 { 1.0 } else { 0.01 })
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(leaky_relu(x))/dx=1|0.01" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(leaky_relu(x))/dx=1|0.01",
+                    });
                 }
                 TensorNodeOp::Elu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
                     Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
-                    let contrib: Vec<f64> = incoming.iter().zip(input_values.iter()).zip(output_values.iter())
+                    let contrib: Vec<f64> = incoming
+                        .iter()
+                        .zip(input_values.iter())
+                        .zip(output_values.iter())
                         .map(|((g, x), y)| g * if *x > 0.0 { 1.0 } else { y + 1.0 })
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
-                    steps.push(TensorBackwardStep { node: node_id, incoming_grad_len: incoming.len(), rule: "d(elu(x))/dx=1|output+alpha" });
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(elu(x))/dx=1|output+alpha",
+                    });
                 }
                 TensorNodeOp::Sqrt { input } => {
                     let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
@@ -5579,11 +5974,7 @@ impl TensorTape {
                         .zip(output_values.iter())
                         .map(|(grad, s)| grad * 0.5 / s)
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &sqrt_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &sqrt_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5602,11 +5993,7 @@ impl TensorTape {
                         .zip(output_values.iter())
                         .map(|(grad, r)| grad * (-r * r))
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &recip_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &recip_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5625,11 +6012,7 @@ impl TensorTape {
                         .zip(input_values.iter())
                         .map(|(grad, x)| grad * exponent * x.powf(exponent - 1.0))
                         .collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &pow_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &pow_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5712,11 +6095,7 @@ impl TensorTape {
                             }
                         })
                         .collect();
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &clamp_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &clamp_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5726,17 +6105,10 @@ impl TensorTape {
                         rule: "d(clamp(x,min,max))/dx=1 if min<=x<=max else 0",
                     });
                 }
-                TensorNodeOp::Sum {
-                    input,
-                    input_numel,
-                } => {
+                TensorNodeOp::Sum { input, input_numel } => {
                     let grad_scalar = incoming[0];
                     let sum_contrib = vec![grad_scalar; input_numel];
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &sum_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &sum_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5746,10 +6118,7 @@ impl TensorTape {
                         rule: "d(sum(x))/dx_i=1",
                     });
                 }
-                TensorNodeOp::Mean {
-                    input,
-                    input_numel,
-                } => {
+                TensorNodeOp::Mean { input, input_numel } => {
                     let grad_scalar = incoming[0];
                     let scale = if input_numel > 0 {
                         1.0 / input_numel as f64
@@ -5757,11 +6126,7 @@ impl TensorTape {
                         0.0
                     };
                     let mean_contrib = vec![grad_scalar * scale; input_numel];
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &mean_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &mean_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5792,11 +6157,7 @@ impl TensorTape {
                             }
                         }
                     }
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &sum_dim_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &sum_dim_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5868,8 +6229,7 @@ impl TensorTape {
                             let mut zero_count = 0;
                             let mut prod_no_zero = 1.0;
                             for r in 0..reduce_size {
-                                let idx =
-                                    outer * reduce_size * inner_size + r * inner_size + inner;
+                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
                                 let v = input_values[idx];
                                 if v == 0.0 {
                                     zero_count += 1;
@@ -5878,8 +6238,7 @@ impl TensorTape {
                                 }
                             }
                             for r in 0..reduce_size {
-                                let idx =
-                                    outer * reduce_size * inner_size + r * inner_size + inner;
+                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
                                 let v = input_values[idx];
                                 prod_dim_contrib[idx] = if zero_count == 0 {
                                     grad_val * prod_val / v
@@ -5933,18 +6292,13 @@ impl TensorTape {
                             }
                             let mean = sum / reduce_size as f64;
                             for r in 0..reduce_size {
-                                let idx =
-                                    outer * reduce_size * inner_size + r * inner_size + inner;
+                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
                                 let diff = input_values[idx] - mean;
                                 var_dim_contrib[idx] = grad_val * 2.0 * diff / correction;
                             }
                         }
                     }
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &var_dim_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &var_dim_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -5985,8 +6339,7 @@ impl TensorTape {
                             }
                             let mean = sum / reduce_size as f64;
                             for r in 0..reduce_size {
-                                let idx =
-                                    outer * reduce_size * inner_size + r * inner_size + inner;
+                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
                                 let diff = input_values[idx] - mean;
                                 std_dim_contrib[idx] = if std_val != 0.0 {
                                     grad_val * diff / (correction * std_val)
@@ -5996,11 +6349,7 @@ impl TensorTape {
                             }
                         }
                     }
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &std_dim_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &std_dim_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -6024,23 +6373,16 @@ impl TensorTape {
                         for inner in 0..inner_size {
                             let mut dot = 0.0;
                             for r in 0..reduce_size {
-                                let idx =
-                                    outer * reduce_size * inner_size + r * inner_size + inner;
+                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
                                 dot += incoming[idx] * output_values[idx];
                             }
                             for r in 0..reduce_size {
-                                let idx =
-                                    outer * reduce_size * inner_size + r * inner_size + inner;
-                                softmax_contrib[idx] =
-                                    output_values[idx] * (incoming[idx] - dot);
+                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                                softmax_contrib[idx] = output_values[idx] * (incoming[idx] - dot);
                             }
                         }
                     }
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &softmax_contrib,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &softmax_contrib)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -6065,16 +6407,13 @@ impl TensorTape {
                         for inner in 0..inner_size {
                             let mut grad_sum = 0.0;
                             for r in 0..reduce_size {
-                                let idx =
-                                    outer * reduce_size * inner_size + r * inner_size + inner;
+                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
                                 grad_sum += incoming[idx];
                             }
                             for r in 0..reduce_size {
-                                let idx =
-                                    outer * reduce_size * inner_size + r * inner_size + inner;
+                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
                                 let softmax_i = output_values[idx].exp();
-                                logsoftmax_contrib[idx] =
-                                    incoming[idx] - softmax_i * grad_sum;
+                                logsoftmax_contrib[idx] = incoming[idx] - softmax_i * grad_sum;
                             }
                         }
                     }
@@ -6134,10 +6473,7 @@ impl TensorTape {
                         rule: "d(cat(x...))/dx_i=split_grad_along_dim",
                     });
                 }
-                TensorNodeOp::Stack {
-                    ref inputs,
-                    dim,
-                } => {
+                TensorNodeOp::Stack { ref inputs, dim } => {
                     // Slice gradient along the stacked dimension
                     let shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
                     let outer_size: usize = shape[..dim].iter().product();
@@ -6149,9 +6485,8 @@ impl TensorTape {
                         let mut contrib = vec![0.0; input_numel];
                         for outer in 0..outer_size {
                             for inner in 0..inner_size {
-                                let grad_idx = outer * num_inputs * inner_size
-                                    + i * inner_size
-                                    + inner;
+                                let grad_idx =
+                                    outer * num_inputs * inner_size + i * inner_size + inner;
                                 let input_idx = outer * inner_size + inner;
                                 contrib[input_idx] = incoming[grad_idx];
                             }
@@ -6173,11 +6508,7 @@ impl TensorTape {
                 TensorNodeOp::Reshape { input, .. }
                 | TensorNodeOp::Squeeze { input, .. }
                 | TensorNodeOp::Unsqueeze { input, .. } => {
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &incoming,
-                    )?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &incoming)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -6187,20 +6518,13 @@ impl TensorTape {
                         rule: "d(shape_op(x))/dx=identity",
                     });
                 }
-                TensorNodeOp::Transpose {
-                    input, dim0, dim1,
-                } => {
+                TensorNodeOp::Transpose { input, dim0, dim1 } => {
                     let output_shape = self.nodes[node_id.0].tensor.meta().shape();
                     let ndim = output_shape.len();
                     let mut inv_perm: Vec<usize> = (0..ndim).collect();
                     inv_perm.swap(dim0, dim1);
-                    let permuted_grad =
-                        Self::permute_data(&incoming, output_shape, &inv_perm);
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &permuted_grad,
-                    )?;
+                    let permuted_grad = Self::permute_data(&incoming, output_shape, &inv_perm);
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &permuted_grad)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -6210,22 +6534,15 @@ impl TensorTape {
                         rule: "d(transpose(x))/dx=transpose_inverse(grad)",
                     });
                 }
-                TensorNodeOp::Permute {
-                    input, ref dims,
-                } => {
+                TensorNodeOp::Permute { input, ref dims } => {
                     let output_shape = self.nodes[node_id.0].tensor.meta().shape();
                     let ndim = dims.len();
                     let mut inv_perm = vec![0usize; ndim];
                     for (i, &d) in dims.iter().enumerate() {
                         inv_perm[d] = i;
                     }
-                    let permuted_grad =
-                        Self::permute_data(&incoming, output_shape, &inv_perm);
-                    Self::accumulate_tensor_gradient(
-                        input,
-                        &mut grads[input.0],
-                        &permuted_grad,
-                    )?;
+                    let permuted_grad = Self::permute_data(&incoming, output_shape, &inv_perm);
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &permuted_grad)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
@@ -6342,8 +6659,7 @@ impl TensorTape {
                 | TensorNodeOp::Permute { input, .. } => {
                     stack.push(input);
                 }
-                TensorNodeOp::Cat { ref inputs, .. }
-                | TensorNodeOp::Stack { ref inputs, .. } => {
+                TensorNodeOp::Cat { ref inputs, .. } | TensorNodeOp::Stack { ref inputs, .. } => {
                     for &id in inputs {
                         stack.push(id);
                     }
@@ -6428,8 +6744,7 @@ impl TensorTape {
                 | TensorNodeOp::Permute { input, .. } => {
                     pending[input.0] = pending[input.0].saturating_add(1);
                 }
-                TensorNodeOp::Cat { ref inputs, .. }
-                | TensorNodeOp::Stack { ref inputs, .. } => {
+                TensorNodeOp::Cat { ref inputs, .. } | TensorNodeOp::Stack { ref inputs, .. } => {
                     for &id in inputs {
                         pending[id.0] = pending[id.0].saturating_add(1);
                     }
@@ -7448,9 +7763,7 @@ mod tests {
         let x = tape
             .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
             .expect("leaf should succeed");
-        let y = tape
-            .transpose(x, 0, 1)
-            .expect("transpose should succeed");
+        let y = tape.transpose(x, 0, 1).expect("transpose should succeed");
 
         let values = tape.values(y).expect("values should resolve");
         // Transposed: [[1, 4], [2, 5], [3, 6]] shape [3, 2]
@@ -7481,9 +7794,7 @@ mod tests {
         let x = tape
             .leaf(data, vec![2, 3, 4], true)
             .expect("leaf should succeed");
-        let y = tape
-            .transpose(x, 0, 2)
-            .expect("transpose should succeed");
+        let y = tape.transpose(x, 0, 2).expect("transpose should succeed");
 
         assert_eq!(tape.nodes[y.0].tensor.meta().shape(), &[4, 3, 2]);
         let values = tape.values(y).expect("values should resolve");
@@ -7517,9 +7828,7 @@ mod tests {
         let x = tape
             .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
             .expect("leaf should succeed");
-        let y = tape
-            .transpose(x, 0, 1)
-            .expect("transpose should succeed");
+        let y = tape.transpose(x, 0, 1).expect("transpose should succeed");
         // Sum the transposed tensor to get a scalar for backward
         let (z, _) = tape
             .sum(y, ExecutionMode::Strict)
@@ -7538,9 +7847,7 @@ mod tests {
         let x = tape
             .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
             .expect("leaf should succeed");
-        let y = tape
-            .transpose(x, 0, 1)
-            .expect("transpose should succeed");
+        let y = tape.transpose(x, 0, 1).expect("transpose should succeed");
         // y = [[1, 3], [2, 4]] — multiply by a known tensor
         let w = tape
             .leaf(vec![10.0, 20.0, 30.0, 40.0], vec![2, 2], false)
@@ -7639,9 +7946,7 @@ mod tests {
         let x = tape
             .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
             .expect("leaf should succeed");
-        let y = tape
-            .permute(x, vec![1, 0])
-            .expect("permute should succeed");
+        let y = tape.permute(x, vec![1, 0]).expect("permute should succeed");
         let (z, _) = tape
             .sum(y, ExecutionMode::Strict)
             .expect("sum should succeed");
@@ -7659,9 +7964,7 @@ mod tests {
             .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
             .expect("leaf should succeed");
         // permute to [3, 2]
-        let y = tape
-            .permute(x, vec![1, 0])
-            .expect("permute should succeed");
+        let y = tape.permute(x, vec![1, 0]).expect("permute should succeed");
         // multiply by weights
         let w = tape
             .leaf(vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0], vec![3, 2], false)
@@ -7710,9 +8013,7 @@ mod tests {
         let y1 = tape.transpose(x1, 0, 2).expect("transpose(0,2)");
 
         let mut tape2 = TensorTape::new();
-        let x2 = tape2
-            .leaf(data, vec![2, 3, 4], true)
-            .expect("x2 leaf");
+        let x2 = tape2.leaf(data, vec![2, 3, 4], true).expect("x2 leaf");
         let y2 = tape2.permute(x2, vec![2, 1, 0]).expect("permute [2,1,0]");
 
         assert_eq!(
@@ -7727,28 +8028,40 @@ mod tests {
     fn scalar_sin_forward() {
         let mut tape = Tape::new();
         let x = tape.leaf(std::f64::consts::FRAC_PI_2, true);
-        let (y, _) = tape.sin(x, ExecutionMode::Strict).expect("sin should succeed");
+        let (y, _) = tape
+            .sin(x, ExecutionMode::Strict)
+            .expect("sin should succeed");
         let val = tape.value(y).expect("value");
-        assert!((val - 1.0).abs() < 1e-12, "sin(pi/2) should be 1.0, got {val}");
+        assert!(
+            (val - 1.0).abs() < 1e-12,
+            "sin(pi/2) should be 1.0, got {val}"
+        );
     }
 
     #[test]
     fn scalar_sin_backward() {
         let mut tape = Tape::new();
         let x = tape.leaf(std::f64::consts::FRAC_PI_4, true);
-        let (y, _) = tape.sin(x, ExecutionMode::Strict).expect("sin should succeed");
+        let (y, _) = tape
+            .sin(x, ExecutionMode::Strict)
+            .expect("sin should succeed");
         let report = tape.backward(y).expect("backward should succeed");
         // d/dx sin(x) = cos(x)
         let expected = std::f64::consts::FRAC_PI_4.cos();
         let grad = report.gradient(x).expect("gradient should exist");
-        assert!((grad - expected).abs() < 1e-12, "sin grad should be cos(pi/4)={expected}, got {grad}");
+        assert!(
+            (grad - expected).abs() < 1e-12,
+            "sin grad should be cos(pi/4)={expected}, got {grad}"
+        );
     }
 
     #[test]
     fn scalar_cos_forward() {
         let mut tape = Tape::new();
         let x = tape.leaf(0.0, true);
-        let (y, _) = tape.cos(x, ExecutionMode::Strict).expect("cos should succeed");
+        let (y, _) = tape
+            .cos(x, ExecutionMode::Strict)
+            .expect("cos should succeed");
         let val = tape.value(y).expect("value");
         assert!((val - 1.0).abs() < 1e-12, "cos(0) should be 1.0, got {val}");
     }
@@ -7757,34 +8070,49 @@ mod tests {
     fn scalar_cos_backward() {
         let mut tape = Tape::new();
         let x = tape.leaf(std::f64::consts::FRAC_PI_4, true);
-        let (y, _) = tape.cos(x, ExecutionMode::Strict).expect("cos should succeed");
+        let (y, _) = tape
+            .cos(x, ExecutionMode::Strict)
+            .expect("cos should succeed");
         let report = tape.backward(y).expect("backward should succeed");
         // d/dx cos(x) = -sin(x)
         let expected = -std::f64::consts::FRAC_PI_4.sin();
         let grad = report.gradient(x).expect("gradient should exist");
-        assert!((grad - expected).abs() < 1e-12, "cos grad should be -sin(pi/4)={expected}, got {grad}");
+        assert!(
+            (grad - expected).abs() < 1e-12,
+            "cos grad should be -sin(pi/4)={expected}, got {grad}"
+        );
     }
 
     #[test]
     fn scalar_tan_forward() {
         let mut tape = Tape::new();
         let x = tape.leaf(std::f64::consts::FRAC_PI_4, true);
-        let (y, _) = tape.tan(x, ExecutionMode::Strict).expect("tan should succeed");
+        let (y, _) = tape
+            .tan(x, ExecutionMode::Strict)
+            .expect("tan should succeed");
         let val = tape.value(y).expect("value");
-        assert!((val - 1.0).abs() < 1e-12, "tan(pi/4) should be 1.0, got {val}");
+        assert!(
+            (val - 1.0).abs() < 1e-12,
+            "tan(pi/4) should be 1.0, got {val}"
+        );
     }
 
     #[test]
     fn scalar_tan_backward() {
         let mut tape = Tape::new();
         let x = tape.leaf(std::f64::consts::FRAC_PI_4, true);
-        let (y, _) = tape.tan(x, ExecutionMode::Strict).expect("tan should succeed");
+        let (y, _) = tape
+            .tan(x, ExecutionMode::Strict)
+            .expect("tan should succeed");
         let report = tape.backward(y).expect("backward should succeed");
         // d/dx tan(x) = 1 + tan(x)^2 = sec(x)^2
         let tan_val = std::f64::consts::FRAC_PI_4.tan();
         let expected = 1.0 + tan_val * tan_val;
         let grad = report.gradient(x).expect("gradient should exist");
-        assert!((grad - expected).abs() < 1e-12, "tan grad should be 1+tan^2={expected}, got {grad}");
+        assert!(
+            (grad - expected).abs() < 1e-12,
+            "tan grad should be 1+tan^2={expected}, got {grad}"
+        );
     }
 
     // ── sin/cos/tan tensor tests ─────────────────────────────────────
@@ -7793,9 +8121,15 @@ mod tests {
     fn tensor_sin_forward() {
         let mut tape = TensorTape::new();
         let x = tape
-            .leaf(vec![0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI], vec![3], true)
+            .leaf(
+                vec![0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI],
+                vec![3],
+                true,
+            )
             .expect("leaf");
-        let (y, _) = tape.sin(x, ExecutionMode::Strict).expect("sin should succeed");
+        let (y, _) = tape
+            .sin(x, ExecutionMode::Strict)
+            .expect("sin should succeed");
         let vals = tape.values(y).expect("values");
         assert!((vals[0] - 0.0).abs() < 1e-12, "sin(0) should be 0");
         assert!((vals[1] - 1.0).abs() < 1e-12, "sin(pi/2) should be 1");
@@ -7813,7 +8147,11 @@ mod tests {
         // d/dx sin(x) = cos(x)
         for (i, &v) in vals.iter().enumerate() {
             let expected = v.cos();
-            assert!((grads[i] - expected).abs() < 1e-12, "sin grad[{i}] should be {expected}, got {}", grads[i]);
+            assert!(
+                (grads[i] - expected).abs() < 1e-12,
+                "sin grad[{i}] should be {expected}, got {}",
+                grads[i]
+            );
         }
     }
 
@@ -7821,9 +8159,15 @@ mod tests {
     fn tensor_cos_forward() {
         let mut tape = TensorTape::new();
         let x = tape
-            .leaf(vec![0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI], vec![3], true)
+            .leaf(
+                vec![0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI],
+                vec![3],
+                true,
+            )
             .expect("leaf");
-        let (y, _) = tape.cos(x, ExecutionMode::Strict).expect("cos should succeed");
+        let (y, _) = tape
+            .cos(x, ExecutionMode::Strict)
+            .expect("cos should succeed");
         let vals = tape.values(y).expect("values");
         assert!((vals[0] - 1.0).abs() < 1e-12, "cos(0) should be 1");
         assert!(vals[1].abs() < 1e-12, "cos(pi/2) should be ~0");
@@ -7841,7 +8185,11 @@ mod tests {
         // d/dx cos(x) = -sin(x)
         for (i, &v) in vals.iter().enumerate() {
             let expected = -v.sin();
-            assert!((grads[i] - expected).abs() < 1e-12, "cos grad[{i}] should be {expected}, got {}", grads[i]);
+            assert!(
+                (grads[i] - expected).abs() < 1e-12,
+                "cos grad[{i}] should be {expected}, got {}",
+                grads[i]
+            );
         }
     }
 
@@ -7851,7 +8199,9 @@ mod tests {
         let x = tape
             .leaf(vec![0.0, std::f64::consts::FRAC_PI_4], vec![2], true)
             .expect("leaf");
-        let (y, _) = tape.tan(x, ExecutionMode::Strict).expect("tan should succeed");
+        let (y, _) = tape
+            .tan(x, ExecutionMode::Strict)
+            .expect("tan should succeed");
         let vals = tape.values(y).expect("values");
         assert!(vals[0].abs() < 1e-12, "tan(0) should be 0");
         assert!((vals[1] - 1.0).abs() < 1e-12, "tan(pi/4) should be 1");
@@ -7869,7 +8219,11 @@ mod tests {
         for (i, &v) in vals.iter().enumerate() {
             let tan_v = v.tan();
             let expected = 1.0 + tan_v * tan_v;
-            assert!((grads[i] - expected).abs() < 1e-12, "tan grad[{i}] should be {expected}, got {}", grads[i]);
+            assert!(
+                (grads[i] - expected).abs() < 1e-12,
+                "tan grad[{i}] should be {expected}, got {}",
+                grads[i]
+            );
         }
     }
 
@@ -7884,7 +8238,10 @@ mod tests {
         let (c2, _) = tape.mul(c, c, ExecutionMode::Strict).expect("c*c");
         let (sum, _) = tape.add(s2, c2, ExecutionMode::Strict).expect("s2+c2");
         let val = tape.value(sum).expect("value");
-        assert!((val - 1.0).abs() < 1e-12, "sin^2+cos^2 should be 1, got {val}");
+        assert!(
+            (val - 1.0).abs() < 1e-12,
+            "sin^2+cos^2 should be 1, got {val}"
+        );
     }
 
     #[test]
@@ -7892,7 +8249,10 @@ mod tests {
         let mut tape = Tape::new();
         let x = tape.leaf(0.0, true);
         let (y, _) = tape.sin(x, ExecutionMode::Strict).expect("sin");
-        assert!((tape.value(y).expect("value")).abs() < 1e-15, "sin(0) should be 0");
+        assert!(
+            (tape.value(y).expect("value")).abs() < 1e-15,
+            "sin(0) should be 0"
+        );
     }
 
     // ── floor/ceil/round scalar tests ────────────────────────────────
@@ -7978,7 +8338,9 @@ mod tests {
     #[test]
     fn tensor_floor_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.1, 2.7, -0.3, -1.9], vec![4], true).expect("leaf");
+        let x = tape
+            .leaf(vec![1.1, 2.7, -0.3, -1.9], vec![4], true)
+            .expect("leaf");
         let (y, _) = tape.floor(x, ExecutionMode::Strict).expect("floor");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, vec![1.0, 2.0, -1.0, -2.0]);
@@ -7987,7 +8349,9 @@ mod tests {
     #[test]
     fn tensor_ceil_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.1, 2.7, -0.3, -1.9], vec![4], true).expect("leaf");
+        let x = tape
+            .leaf(vec![1.1, 2.7, -0.3, -1.9], vec![4], true)
+            .expect("leaf");
         let (y, _) = tape.ceil(x, ExecutionMode::Strict).expect("ceil");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, vec![2.0, 3.0, 0.0, -1.0]);
@@ -7996,7 +8360,9 @@ mod tests {
     #[test]
     fn tensor_round_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.1, 2.7, -0.3, -1.9], vec![4], true).expect("leaf");
+        let x = tape
+            .leaf(vec![1.1, 2.7, -0.3, -1.9], vec![4], true)
+            .expect("leaf");
         let (y, _) = tape.round(x, ExecutionMode::Strict).expect("round");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, vec![1.0, 3.0, 0.0, -2.0]);
@@ -8078,7 +8444,10 @@ mod tests {
         let mut tape = Tape::new();
         let x = tape.leaf(0.0, true);
         let (y, _) = tape.log1p(x, ExecutionMode::Strict).expect("log1p");
-        assert!((tape.value(y).expect("value")).abs() < 1e-15, "log1p(0) = 0");
+        assert!(
+            (tape.value(y).expect("value")).abs() < 1e-15,
+            "log1p(0) = 0"
+        );
     }
 
     #[test]
@@ -8097,7 +8466,10 @@ mod tests {
         let mut tape = Tape::new();
         let x = tape.leaf(0.0, true);
         let (y, _) = tape.expm1(x, ExecutionMode::Strict).expect("expm1");
-        assert!((tape.value(y).expect("value")).abs() < 1e-15, "expm1(0) = 0");
+        assert!(
+            (tape.value(y).expect("value")).abs() < 1e-15,
+            "expm1(0) = 0"
+        );
     }
 
     #[test]
@@ -8117,7 +8489,9 @@ mod tests {
     #[test]
     fn tensor_log2_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 4.0, 8.0], vec![4], true).expect("leaf");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 4.0, 8.0], vec![4], true)
+            .expect("leaf");
         let (y, _) = tape.log2(x, ExecutionMode::Strict).expect("log2");
         let vals = tape.values(y).expect("values");
         assert!((vals[0]).abs() < 1e-12);
@@ -8177,7 +8551,10 @@ mod tests {
         let (em, _) = tape.expm1(x, ExecutionMode::Strict).expect("expm1");
         let (y, _) = tape.log1p(em, ExecutionMode::Strict).expect("log1p");
         let val = tape.value(y).expect("value");
-        assert!((val - 0.5).abs() < 1e-12, "log1p(expm1(x)) should be x, got {val}");
+        assert!(
+            (val - 0.5).abs() < 1e-12,
+            "log1p(expm1(x)) should be x, got {val}"
+        );
     }
 
     // ── sign/trunc/frac scalar tests ──────────────────────────
@@ -8281,7 +8658,10 @@ mod tests {
         let (f, _) = tape.frac(x, ExecutionMode::Strict).expect("frac");
         let (y, _) = tape.add(t, f, ExecutionMode::Strict).expect("add");
         let val = tape.value(y).expect("value");
-        assert!((val - 3.7).abs() < 1e-12, "trunc(x)+frac(x) should be x, got {val}");
+        assert!(
+            (val - 3.7).abs() < 1e-12,
+            "trunc(x)+frac(x) should be x, got {val}"
+        );
     }
 
     // ── sign/trunc/frac tensor tests ──────────────────────────
@@ -8290,7 +8670,9 @@ mod tests {
     fn tensor_sign_forward() {
         let mut tape = TensorTape::new();
         // Rust signum(+0.0) = 1.0
-        let x = tape.leaf(vec![-3.0, 0.0, 5.0, -1.0], vec![4], true).expect("leaf");
+        let x = tape
+            .leaf(vec![-3.0, 0.0, 5.0, -1.0], vec![4], true)
+            .expect("leaf");
         let (y, _) = tape.sign(x, ExecutionMode::Strict).expect("sign");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, &[-1.0, 1.0, 1.0, -1.0]);
@@ -8309,7 +8691,9 @@ mod tests {
     #[test]
     fn tensor_trunc_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![3.7, -2.3, 0.9], vec![3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![3.7, -2.3, 0.9], vec![3], true)
+            .expect("leaf");
         let (y, _) = tape.trunc(x, ExecutionMode::Strict).expect("trunc");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, &[3.0, -2.0, 0.0]);
@@ -8328,7 +8712,9 @@ mod tests {
     #[test]
     fn tensor_frac_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![3.7, -2.3, 5.0], vec![3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![3.7, -2.3, 5.0], vec![3], true)
+            .expect("leaf");
         let (y, _) = tape.frac(x, ExecutionMode::Strict).expect("frac");
         let vals = tape.values(y).expect("values");
         assert!((vals[0] - 0.7).abs() < 1e-12);
@@ -8443,7 +8829,9 @@ mod tests {
     #[test]
     fn tensor_asin_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![0.0, 0.5, -0.5], vec![3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![0.0, 0.5, -0.5], vec![3], true)
+            .expect("leaf");
         let (y, _) = tape.asin(x, ExecutionMode::Strict).expect("asin");
         let vals = tape.values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -8475,7 +8863,9 @@ mod tests {
     #[test]
     fn tensor_atan_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![0.0, 1.0, -1.0], vec![3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![0.0, 1.0, -1.0], vec![3], true)
+            .expect("leaf");
         let (y, _) = tape.atan(x, ExecutionMode::Strict).expect("atan");
         let vals = tape.values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -8563,7 +8953,10 @@ mod tests {
         let (c2, _) = tape.mul(c, c, ExecutionMode::Strict).expect("c*c");
         let (y, _) = tape.sub(c2, s2, ExecutionMode::Strict).expect("c2-s2");
         let val = tape.value(y).expect("value");
-        assert!((val - 1.0).abs() < 1e-10, "cosh^2-sinh^2 should be 1, got {val}");
+        assert!(
+            (val - 1.0).abs() < 1e-10,
+            "cosh^2-sinh^2 should be 1, got {val}"
+        );
     }
 
     // ── sinh/cosh tensor tests ──────────────────────────
@@ -8571,7 +8964,9 @@ mod tests {
     #[test]
     fn tensor_sinh_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![0.0, 1.0, -1.0], vec![3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![0.0, 1.0, -1.0], vec![3], true)
+            .expect("leaf");
         let (y, _) = tape.sinh(x, ExecutionMode::Strict).expect("sinh");
         let vals = tape.values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -8659,7 +9054,10 @@ mod tests {
         // Numerical gradient check
         let eps = 1e-6;
         let numerical = (gelu_expected(1.0 + eps) - gelu_expected(1.0 - eps)) / (2.0 * eps);
-        assert!((grad - numerical).abs() < 1e-5, "gelu grad {grad} vs numerical {numerical}");
+        assert!(
+            (grad - numerical).abs() < 1e-5,
+            "gelu grad {grad} vs numerical {numerical}"
+        );
     }
 
     #[test]
@@ -8689,14 +9087,19 @@ mod tests {
         // Numerical gradient check
         let eps = 1e-6;
         let numerical = (silu_expected(1.0 + eps) - silu_expected(1.0 - eps)) / (2.0 * eps);
-        assert!((grad - numerical).abs() < 1e-5, "silu grad {grad} vs numerical {numerical}");
+        assert!(
+            (grad - numerical).abs() < 1e-5,
+            "silu grad {grad} vs numerical {numerical}"
+        );
     }
 
     #[test]
     fn scalar_leaky_relu_forward_positive() {
         let mut tape = Tape::new();
         let x = tape.leaf(2.0, true);
-        let (y, _) = tape.leaky_relu(x, ExecutionMode::Strict).expect("leaky_relu");
+        let (y, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
         assert_eq!(tape.value(y).expect("value"), 2.0);
     }
 
@@ -8704,7 +9107,9 @@ mod tests {
     fn scalar_leaky_relu_forward_negative() {
         let mut tape = Tape::new();
         let x = tape.leaf(-3.0, true);
-        let (y, _) = tape.leaky_relu(x, ExecutionMode::Strict).expect("leaky_relu");
+        let (y, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
         let val = tape.value(y).expect("value");
         assert!((val - (-0.03)).abs() < 1e-12);
     }
@@ -8713,7 +9118,9 @@ mod tests {
     fn scalar_leaky_relu_backward_positive() {
         let mut tape = Tape::new();
         let x = tape.leaf(2.0, true);
-        let (y, _) = tape.leaky_relu(x, ExecutionMode::Strict).expect("leaky_relu");
+        let (y, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
         let report = tape.backward(y).expect("backward");
         assert_eq!(report.gradient(x).expect("grad"), 1.0);
     }
@@ -8722,7 +9129,9 @@ mod tests {
     fn scalar_leaky_relu_backward_negative() {
         let mut tape = Tape::new();
         let x = tape.leaf(-3.0, true);
-        let (y, _) = tape.leaky_relu(x, ExecutionMode::Strict).expect("leaky_relu");
+        let (y, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
         let report = tape.backward(y).expect("backward");
         assert_eq!(report.gradient(x).expect("grad"), 0.01);
     }
@@ -8770,7 +9179,9 @@ mod tests {
     #[test]
     fn tensor_gelu_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![0.0, 1.0, -1.0], vec![3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![0.0, 1.0, -1.0], vec![3], true)
+            .expect("leaf");
         let (y, _) = tape.gelu(x, ExecutionMode::Strict).expect("gelu");
         let vals = tape.values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -8795,7 +9206,9 @@ mod tests {
     #[test]
     fn tensor_silu_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![0.0, 1.0, -1.0], vec![3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![0.0, 1.0, -1.0], vec![3], true)
+            .expect("leaf");
         let (y, _) = tape.silu(x, ExecutionMode::Strict).expect("silu");
         let vals = tape.values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -8820,8 +9233,12 @@ mod tests {
     #[test]
     fn tensor_leaky_relu_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![2.0, -3.0, 0.0], vec![3], true).expect("leaf");
-        let (y, _) = tape.leaky_relu(x, ExecutionMode::Strict).expect("leaky_relu");
+        let x = tape
+            .leaf(vec![2.0, -3.0, 0.0], vec![3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals[0], 2.0);
         assert!((vals[1] - (-0.03)).abs() < 1e-12);
@@ -8832,7 +9249,9 @@ mod tests {
     fn tensor_leaky_relu_backward() {
         let mut tape = TensorTape::new();
         let x = tape.leaf(vec![2.0, -3.0], vec![2], true).expect("leaf");
-        let (y, _) = tape.leaky_relu(x, ExecutionMode::Strict).expect("leaky_relu");
+        let (y, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         assert_eq!(grads[0], 1.0);
@@ -8842,7 +9261,9 @@ mod tests {
     #[test]
     fn tensor_elu_forward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![2.0, -1.0, 0.0], vec![3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![2.0, -1.0, 0.0], vec![3], true)
+            .expect("leaf");
         let (y, _) = tape.elu(x, ExecutionMode::Strict).expect("elu");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals[0], 2.0);
@@ -8867,8 +9288,12 @@ mod tests {
     fn tensor_prod_dim_forward_dim0() {
         let mut tape = TensorTape::new();
         // shape [2,3]: [[1,2,3],[4,5,6]]
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("leaf");
-        let (y, _) = tape.prod_dim(x, 0, ExecutionMode::Strict).expect("prod_dim 0");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .prod_dim(x, 0, ExecutionMode::Strict)
+            .expect("prod_dim 0");
         let vals = tape.values(y).expect("values");
         // [1*4, 2*5, 3*6] = [4, 10, 18]
         assert_eq!(vals, &[4.0, 10.0, 18.0]);
@@ -8877,8 +9302,12 @@ mod tests {
     #[test]
     fn tensor_prod_dim_forward_dim1() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("leaf");
-        let (y, _) = tape.prod_dim(x, 1, ExecutionMode::Strict).expect("prod_dim 1");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .prod_dim(x, 1, ExecutionMode::Strict)
+            .expect("prod_dim 1");
         let vals = tape.values(y).expect("values");
         // [1*2*3, 4*5*6] = [6, 120]
         assert_eq!(vals, &[6.0, 120.0]);
@@ -8888,8 +9317,12 @@ mod tests {
     fn tensor_prod_dim_backward() {
         let mut tape = TensorTape::new();
         // shape [2,3]: [[2,3,4],[5,6,7]]
-        let x = tape.leaf(vec![2.0, 3.0, 4.0, 5.0, 6.0, 7.0], vec![2, 3], true).expect("leaf");
-        let (y, _) = tape.prod_dim(x, 1, ExecutionMode::Strict).expect("prod_dim 1");
+        let x = tape
+            .leaf(vec![2.0, 3.0, 4.0, 5.0, 6.0, 7.0], vec![2, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .prod_dim(x, 1, ExecutionMode::Strict)
+            .expect("prod_dim 1");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         // prod([2,3,4])=24, grad_i = 24/x_i -> [12, 8, 6]
@@ -8906,8 +9339,12 @@ mod tests {
     fn tensor_prod_dim_backward_with_zero() {
         let mut tape = TensorTape::new();
         // shape [1,3]: [[2, 0, 4]]
-        let x = tape.leaf(vec![2.0, 0.0, 4.0], vec![1, 3], true).expect("leaf");
-        let (y, _) = tape.prod_dim(x, 1, ExecutionMode::Strict).expect("prod_dim 1");
+        let x = tape
+            .leaf(vec![2.0, 0.0, 4.0], vec![1, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .prod_dim(x, 1, ExecutionMode::Strict)
+            .expect("prod_dim 1");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         // prod=0, zero_count=1, prod_no_zero=8
@@ -8923,8 +9360,12 @@ mod tests {
     fn tensor_var_dim_forward_dim0() {
         let mut tape = TensorTape::new();
         // shape [3,2]: [[1,2],[3,4],[5,6]]
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], true).expect("leaf");
-        let (y, _) = tape.var_dim(x, 0, ExecutionMode::Strict).expect("var_dim 0");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .var_dim(x, 0, ExecutionMode::Strict)
+            .expect("var_dim 0");
         let vals = tape.values(y).expect("values");
         // col0: [1,3,5] mean=3, var=(4+0+4)/2=4
         // col1: [2,4,6] mean=4, var=(4+0+4)/2=4
@@ -8936,8 +9377,12 @@ mod tests {
     fn tensor_var_dim_forward_dim1() {
         let mut tape = TensorTape::new();
         // shape [2,3]: [[1,2,3],[4,5,6]]
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("leaf");
-        let (y, _) = tape.var_dim(x, 1, ExecutionMode::Strict).expect("var_dim 1");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .var_dim(x, 1, ExecutionMode::Strict)
+            .expect("var_dim 1");
         let vals = tape.values(y).expect("values");
         // row0: [1,2,3] mean=2, var=(1+0+1)/2=1
         // row1: [4,5,6] mean=5, var=(1+0+1)/2=1
@@ -8949,8 +9394,12 @@ mod tests {
     fn tensor_var_dim_backward() {
         let mut tape = TensorTape::new();
         // shape [1,3]: [[1,2,3]] mean=2, correction=2
-        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
-        let (y, _) = tape.var_dim(x, 1, ExecutionMode::Strict).expect("var_dim 1");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .var_dim(x, 1, ExecutionMode::Strict)
+            .expect("var_dim 1");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         // d(var)/dx_i = 2*(x_i - mean)/(n-1) = 2*(x_i - 2)/2 = x_i - 2
@@ -8964,8 +9413,12 @@ mod tests {
     fn tensor_std_dim_forward_dim0() {
         let mut tape = TensorTape::new();
         // shape [3,2]: [[1,2],[3,4],[5,6]]
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], true).expect("leaf");
-        let (y, _) = tape.std_dim(x, 0, ExecutionMode::Strict).expect("std_dim 0");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .std_dim(x, 0, ExecutionMode::Strict)
+            .expect("std_dim 0");
         let vals = tape.values(y).expect("values");
         // sqrt(4) = 2
         assert!((vals[0] - 2.0).abs() < 1e-12);
@@ -8976,8 +9429,12 @@ mod tests {
     fn tensor_std_dim_backward() {
         let mut tape = TensorTape::new();
         // shape [1,3]: [[1,2,3]] mean=2, std=1, correction=2
-        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
-        let (y, _) = tape.std_dim(x, 1, ExecutionMode::Strict).expect("std_dim 1");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .std_dim(x, 1, ExecutionMode::Strict)
+            .expect("std_dim 1");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         // d(std)/dx_i = (x_i - mean) / ((n-1) * std) = (x_i - 2) / (2 * 1)
@@ -8992,7 +9449,9 @@ mod tests {
     #[test]
     fn tensor_softmax_forward_sums_to_one() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("leaf");
         let (y, _) = tape.softmax(x, 1, ExecutionMode::Strict).expect("softmax");
         let vals = tape.values(y).expect("values");
         let row0_sum: f64 = vals[0..3].iter().sum();
@@ -9005,7 +9464,9 @@ mod tests {
     #[test]
     fn tensor_softmax_forward_preserves_order() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 3.0, 2.0], vec![1, 3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![1.0, 3.0, 2.0], vec![1, 3], true)
+            .expect("leaf");
         let (y, _) = tape.softmax(x, 1, ExecutionMode::Strict).expect("softmax");
         let vals = tape.values(y).expect("values");
         assert!(vals[1] > vals[2]);
@@ -9015,20 +9476,27 @@ mod tests {
     #[test]
     fn tensor_softmax_backward_grad_sum_is_zero() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
         let (y, _) = tape.softmax(x, 1, ExecutionMode::Strict).expect("softmax");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         // softmax is shift-invariant, so grad sum should be 0
         let grad_sum: f64 = grads.iter().sum();
-        assert!(grad_sum.abs() < 1e-12, "softmax grad sum should be 0, got {grad_sum}");
+        assert!(
+            grad_sum.abs() < 1e-12,
+            "softmax grad sum should be 0, got {grad_sum}"
+        );
     }
 
     #[test]
     fn tensor_softmax_backward_dim0() {
         let mut tape = TensorTape::new();
         // shape [3,1]: softmax along dim 0
-        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3, 1], true).expect("leaf");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0], vec![3, 1], true)
+            .expect("leaf");
         let (y, _) = tape.softmax(x, 0, ExecutionMode::Strict).expect("softmax");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
@@ -9039,8 +9507,12 @@ mod tests {
     #[test]
     fn tensor_log_softmax_forward_consistent() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
-        let (y, _) = tape.log_softmax(x, 1, ExecutionMode::Strict).expect("log_softmax");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .log_softmax(x, 1, ExecutionMode::Strict)
+            .expect("log_softmax");
         let vals = tape.values(y).expect("values");
         // exp of log_softmax should sum to 1
         let sum: f64 = vals.iter().map(|v| v.exp()).sum();
@@ -9052,24 +9524,39 @@ mod tests {
     #[test]
     fn tensor_log_softmax_backward_grad_sum_is_zero() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
-        let (y, _) = tape.log_softmax(x, 1, ExecutionMode::Strict).expect("log_softmax");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .log_softmax(x, 1, ExecutionMode::Strict)
+            .expect("log_softmax");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         let grad_sum: f64 = grads.iter().sum();
-        assert!(grad_sum.abs() < 1e-12, "log_softmax grad sum should be 0, got {grad_sum}");
+        assert!(
+            grad_sum.abs() < 1e-12,
+            "log_softmax grad sum should be 0, got {grad_sum}"
+        );
     }
 
     #[test]
     fn tensor_log_softmax_equals_log_of_softmax() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
-        let (ls, _) = tape.log_softmax(x, 1, ExecutionMode::Strict).expect("log_softmax");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
+        let (ls, _) = tape
+            .log_softmax(x, 1, ExecutionMode::Strict)
+            .expect("log_softmax");
         let ls_vals = tape.values(ls).expect("values");
 
         let mut tape2 = TensorTape::new();
-        let x2 = tape2.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
-        let (sm, _) = tape2.softmax(x2, 1, ExecutionMode::Strict).expect("softmax");
+        let x2 = tape2
+            .leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
+        let (sm, _) = tape2
+            .softmax(x2, 1, ExecutionMode::Strict)
+            .expect("softmax");
         let sm_vals = tape2.values(sm).expect("values");
 
         for i in 0..3 {
@@ -9082,7 +9569,9 @@ mod tests {
     #[test]
     fn tensor_cat_dim0_forward() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("a");
+        let a = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("a");
         let b = tape.leaf(vec![7.0, 8.0, 9.0], vec![1, 3], true).expect("b");
         let (y, _) = tape.cat(&[a, b], 0, ExecutionMode::Strict).expect("cat 0");
         let vals = tape.values(y).expect("values");
@@ -9094,8 +9583,12 @@ mod tests {
     #[test]
     fn tensor_cat_dim1_forward() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true).expect("a");
-        let b = tape.leaf(vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0], vec![2, 3], true).expect("b");
+        let a = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+            .expect("a");
+        let b = tape
+            .leaf(vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0], vec![2, 3], true)
+            .expect("b");
         let (y, _) = tape.cat(&[a, b], 1, ExecutionMode::Strict).expect("cat 1");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 5.0, 6.0, 7.0, 3.0, 4.0, 8.0, 9.0, 10.0]);
@@ -9122,7 +9615,9 @@ mod tests {
         let mut tape = TensorTape::new();
         let a = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("a");
         let b = tape.leaf(vec![4.0, 5.0, 6.0], vec![3], true).expect("b");
-        let (y, _) = tape.stack(&[a, b], 0, ExecutionMode::Strict).expect("stack 0");
+        let (y, _) = tape
+            .stack(&[a, b], 0, ExecutionMode::Strict)
+            .expect("stack 0");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let shape = tape.node(y).unwrap().tensor.meta().shape();
@@ -9132,9 +9627,15 @@ mod tests {
     #[test]
     fn tensor_stack_dim1_forward() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true).expect("a");
-        let b = tape.leaf(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], true).expect("b");
-        let (y, _) = tape.stack(&[a, b], 1, ExecutionMode::Strict).expect("stack 1");
+        let a = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+            .expect("a");
+        let b = tape
+            .leaf(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], true)
+            .expect("b");
+        let (y, _) = tape
+            .stack(&[a, b], 1, ExecutionMode::Strict)
+            .expect("stack 1");
         let vals = tape.values(y).expect("values");
         // shape [2,2,2]: [[[1,2],[5,6]],[[3,4],[7,8]]]
         assert_eq!(vals, &[1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
@@ -9147,7 +9648,9 @@ mod tests {
         let mut tape = TensorTape::new();
         let a = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("a");
         let b = tape.leaf(vec![4.0, 5.0, 6.0], vec![3], true).expect("b");
-        let (y, _) = tape.stack(&[a, b], 0, ExecutionMode::Strict).expect("stack 0");
+        let (y, _) = tape
+            .stack(&[a, b], 0, ExecutionMode::Strict)
+            .expect("stack 0");
         let report = tape.backward(y).expect("backward");
         let grads_a = report.gradient(a).expect("grad a");
         let grads_b = report.gradient(b).expect("grad b");
@@ -9174,7 +9677,9 @@ mod tests {
     #[test]
     fn tensor_reshape_2d_to_1d() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
         let y = tape.reshape(x, vec![6]).expect("reshape");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -9185,7 +9690,9 @@ mod tests {
     #[test]
     fn tensor_reshape_1d_to_2d() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], true).expect("x");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], true)
+            .expect("x");
         let y = tape.reshape(x, vec![2, 3]).expect("reshape");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -9215,7 +9722,9 @@ mod tests {
     #[test]
     fn tensor_reshape_backward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
         let y = tape.reshape(x, vec![6]).expect("reshape");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad x");
@@ -9227,7 +9736,9 @@ mod tests {
     #[test]
     fn tensor_view_same_as_reshape() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true).expect("x");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+            .expect("x");
         let y = tape.view(x, vec![4]).expect("view");
         let vals = tape.values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0]);
@@ -9238,7 +9749,9 @@ mod tests {
     #[test]
     fn tensor_view_backward() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("x");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .expect("x");
         let y = tape.view(x, vec![2, 2]).expect("view");
         let report = tape.backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad x");
@@ -9277,7 +9790,9 @@ mod tests {
     #[test]
     fn tensor_squeeze_middle_dim() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 1, 3], true).expect("x");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 1, 3], true)
+            .expect("x");
         let y = tape.squeeze(x, 1).expect("squeeze");
         let shape = tape.node(y).unwrap().tensor.meta().shape();
         assert_eq!(shape, &[2, 3]);
@@ -9329,7 +9844,9 @@ mod tests {
     #[test]
     fn tensor_unsqueeze_middle_dim() {
         let mut tape = TensorTape::new();
-        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
         let y = tape.unsqueeze(x, 1).expect("unsqueeze");
         let shape = tape.node(y).unwrap().tensor.meta().shape();
         assert_eq!(shape, &[2, 1, 3]);

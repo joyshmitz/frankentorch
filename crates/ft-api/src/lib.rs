@@ -3,15 +3,15 @@
 use ft_autograd::{
     AutogradError, BackwardOptions, BackwardReport, ClampOperationEvent, NodeId, OperationEvent,
     PowOperationEvent, Tape, TensorBackwardReport, TensorClampOperationEvent,
-    TensorJoinOperationEvent, TensorNormalizeDimOperationEvent, TensorNodeId,
-    TensorOperationEvent, TensorPowOperationEvent, TensorReductionDimOperationEvent,
-    TensorReductionOperationEvent, TensorTape, TensorUnaryOperationEvent, UnaryOperationEvent,
+    TensorJoinOperationEvent, TensorNodeId, TensorNormalizeDimOperationEvent, TensorOperationEvent,
+    TensorPowOperationEvent, TensorReductionDimOperationEvent, TensorReductionOperationEvent,
+    TensorTape, TensorUnaryOperationEvent, UnaryOperationEvent,
 };
+use ft_core::{DenseTensor, ExecutionMode};
 use ft_dispatch::{
     ComparisonDispatchDecision, ComparisonOp, dispatch_scalar_comparison,
     dispatch_tensor_comparison_contiguous_f64,
 };
-use ft_core::{DenseTensor, ExecutionMode};
 use ft_runtime::{EvidenceEntry, EvidenceKind, RuntimeContext};
 
 #[derive(Debug, Clone)]
@@ -312,7 +312,8 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         let numel = shape.iter().product::<usize>();
-        self.tensor_tape.leaf(vec![0.0; numel], shape, requires_grad)
+        self.tensor_tape
+            .leaf(vec![0.0; numel], shape, requires_grad)
     }
 
     pub fn ones(
@@ -321,7 +322,8 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         let numel = shape.iter().product::<usize>();
-        self.tensor_tape.leaf(vec![1.0; numel], shape, requires_grad)
+        self.tensor_tape
+            .leaf(vec![1.0; numel], shape, requires_grad)
     }
 
     pub fn full(
@@ -409,244 +411,163 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
-    pub fn tensor_neg(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_neg(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.neg(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_abs(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_abs(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.abs(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_exp(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_exp(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.exp(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_log(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_log(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.log(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_relu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_relu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.relu(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_sigmoid(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_sigmoid(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sigmoid(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_tanh(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_tanh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.tanh(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_sin(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_sin(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sin(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_cos(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_cos(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.cos(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_tan(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_tan(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.tan(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_floor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_floor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.floor(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_ceil(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_ceil(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.ceil(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_round(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_round(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.round(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_log2(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_log2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.log2(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_log10(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_log10(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.log10(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_log1p(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_log1p(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.log1p(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_expm1(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_expm1(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.expm1(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_sign(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_sign(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sign(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_trunc(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_trunc(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.trunc(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_frac(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_frac(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.frac(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_asin(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_asin(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.asin(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_acos(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_acos(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.acos(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_atan(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_atan(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.atan(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_sinh(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_sinh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sinh(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_cosh(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_cosh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.cosh(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_gelu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_gelu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.gelu(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_silu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_silu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.silu(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
@@ -661,19 +582,13 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
-    pub fn tensor_elu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_elu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.elu(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_sqrt(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_sqrt(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sqrt(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
         Ok(out)
@@ -724,9 +639,9 @@ impl FrankenTorchSession {
         min_val: f64,
         max_val: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (out, event) =
-            self.tensor_tape
-                .tensor_clamp(input, min_val, max_val, self.mode())?;
+        let (out, event) = self
+            .tensor_tape
+            .tensor_clamp(input, min_val, max_val, self.mode())?;
         self.record_tensor_clamp_operation(&event);
         Ok(out)
     }
@@ -803,19 +718,13 @@ impl FrankenTorchSession {
         self.tensor_comparison(ComparisonOp::Ge, lhs, rhs)
     }
 
-    pub fn tensor_sum(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_sum(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sum(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
         Ok(out)
     }
 
-    pub fn tensor_mean(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_mean(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.mean(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
         Ok(out)
@@ -1117,10 +1026,7 @@ impl FrankenTorchSession {
         );
     }
 
-    fn record_tensor_reduction_dim_operation(
-        &mut self,
-        event: &TensorReductionDimOperationEvent,
-    ) {
+    fn record_tensor_reduction_dim_operation(&mut self, event: &TensorReductionDimOperationEvent) {
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!(
@@ -1158,10 +1064,7 @@ impl FrankenTorchSession {
         );
     }
 
-    fn record_tensor_normalize_dim_operation(
-        &mut self,
-        event: &TensorNormalizeDimOperationEvent,
-    ) {
+    fn record_tensor_normalize_dim_operation(&mut self, event: &TensorNormalizeDimOperationEvent) {
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!(
@@ -1206,8 +1109,10 @@ impl FrankenTorchSession {
     ) -> Result<NodeId, AutogradError> {
         let lhs_value = self.tape.value(lhs)?;
         let rhs_value = self.tape.value(rhs)?;
-        let lhs_scalar = ft_core::ScalarTensor::new(lhs_value, ft_core::DType::F64, ft_core::Device::Cpu);
-        let rhs_scalar = ft_core::ScalarTensor::new(rhs_value, ft_core::DType::F64, ft_core::Device::Cpu);
+        let lhs_scalar =
+            ft_core::ScalarTensor::new(lhs_value, ft_core::DType::F64, ft_core::Device::Cpu);
+        let rhs_scalar =
+            ft_core::ScalarTensor::new(rhs_value, ft_core::DType::F64, ft_core::Device::Cpu);
 
         let outcome = dispatch_scalar_comparison(op, self.mode(), &lhs_scalar, &rhs_scalar, false)
             .map_err(AutogradError::Dispatch)?;
@@ -1245,11 +1150,9 @@ impl FrankenTorchSession {
         )
         .map_err(AutogradError::Dispatch)?;
 
-        let out = self.tensor_tape.leaf(
-            outcome.values,
-            lhs_meta.shape().to_vec(),
-            false,
-        )?;
+        let out = self
+            .tensor_tape
+            .leaf(outcome.values, lhs_meta.shape().to_vec(), false)?;
         self.record_comparison_operation(op, &outcome.decision);
         Ok(out)
     }
@@ -1751,10 +1654,7 @@ mod tests {
         let report = session
             .tensor_backward(neg_t)
             .expect("backward should succeed");
-        assert_eq!(
-            report.gradient(t),
-            Some(vec![-1.0, -1.0, -1.0].as_slice())
-        );
+        assert_eq!(report.gradient(t), Some(vec![-1.0, -1.0, -1.0].as_slice()));
     }
 
     #[test]
@@ -1841,10 +1741,7 @@ mod tests {
         let report = session
             .tensor_backward(abs_t)
             .expect("backward should succeed");
-        assert_eq!(
-            report.gradient(t),
-            Some(vec![-1.0, 1.0, 0.0].as_slice())
-        );
+        assert_eq!(report.gradient(t), Some(vec![-1.0, 1.0, 0.0].as_slice()));
     }
 
     #[test]
@@ -1908,10 +1805,7 @@ mod tests {
         let has_exp_evidence = session.evidence().iter().any(|entry| {
             entry.kind == EvidenceKind::Dispatch && entry.summary.contains("unary_op=Exp")
         });
-        assert!(
-            has_exp_evidence,
-            "exp should emit unary dispatch evidence"
-        );
+        assert!(has_exp_evidence, "exp should emit unary dispatch evidence");
     }
 
     #[test]
@@ -1922,10 +1816,7 @@ mod tests {
         let has_log_evidence = session.evidence().iter().any(|entry| {
             entry.kind == EvidenceKind::Dispatch && entry.summary.contains("unary_op=Log")
         });
-        assert!(
-            has_log_evidence,
-            "log should emit unary dispatch evidence"
-        );
+        assert!(has_log_evidence, "log should emit unary dispatch evidence");
     }
 
     #[test]
@@ -1934,9 +1825,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![0.0, 1.0, 2.0], vec![3], false)
             .expect("tensor creation should succeed");
-        let exp_t = session
-            .tensor_exp(t)
-            .expect("tensor exp should succeed");
+        let exp_t = session.tensor_exp(t).expect("tensor exp should succeed");
         let values = session.tensor_values(exp_t).expect("values should succeed");
         assert!((values[0] - 1.0).abs() <= 1e-12);
         assert!((values[1] - std::f64::consts::E).abs() <= 1e-12);
@@ -1949,9 +1838,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, 2.0], vec![2], true)
             .expect("tensor creation should succeed");
-        let exp_t = session
-            .tensor_exp(t)
-            .expect("tensor exp should succeed");
+        let exp_t = session.tensor_exp(t).expect("tensor exp should succeed");
         let report = session
             .tensor_backward(exp_t)
             .expect("backward should succeed");
@@ -1966,9 +1853,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, std::f64::consts::E, 10.0], vec![3], false)
             .expect("tensor creation should succeed");
-        let log_t = session
-            .tensor_log(t)
-            .expect("tensor log should succeed");
+        let log_t = session.tensor_log(t).expect("tensor log should succeed");
         let values = session.tensor_values(log_t).expect("values should succeed");
         assert!((values[0] - 0.0).abs() <= 1e-12);
         assert!((values[1] - 1.0).abs() <= 1e-12);
@@ -1981,9 +1866,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![2.0, 4.0], vec![2], true)
             .expect("tensor creation should succeed");
-        let log_t = session
-            .tensor_log(t)
-            .expect("tensor log should succeed");
+        let log_t = session.tensor_log(t).expect("tensor log should succeed");
         let report = session
             .tensor_backward(log_t)
             .expect("backward should succeed");
@@ -1998,9 +1881,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
             .expect("tensor creation should succeed");
-        let exp_t = session
-            .tensor_exp(t)
-            .expect("tensor exp should succeed");
+        let exp_t = session.tensor_exp(t).expect("tensor exp should succeed");
         let log_exp_t = session
             .tensor_log(exp_t)
             .expect("tensor log should succeed");
@@ -2025,9 +1906,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
             .expect("tensor creation should succeed");
-        let sum_t = session
-            .tensor_sum(t)
-            .expect("tensor sum should succeed");
+        let sum_t = session.tensor_sum(t).expect("tensor sum should succeed");
         let values = session.tensor_values(sum_t).expect("values should succeed");
         assert_eq!(values, vec![10.0]);
     }
@@ -2038,9 +1917,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
             .expect("tensor creation should succeed");
-        let sum_t = session
-            .tensor_sum(t)
-            .expect("tensor sum should succeed");
+        let sum_t = session.tensor_sum(t).expect("tensor sum should succeed");
         let report = session
             .tensor_backward(sum_t)
             .expect("backward should succeed");
@@ -2068,9 +1945,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
             .expect("tensor creation should succeed");
-        let mean_t = session
-            .tensor_mean(t)
-            .expect("tensor mean should succeed");
+        let mean_t = session.tensor_mean(t).expect("tensor mean should succeed");
         let values = session
             .tensor_values(mean_t)
             .expect("values should succeed");
@@ -2083,9 +1958,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
             .expect("tensor creation should succeed");
-        let mean_t = session
-            .tensor_mean(t)
-            .expect("tensor mean should succeed");
+        let mean_t = session.tensor_mean(t).expect("tensor mean should succeed");
         let report = session
             .tensor_backward(mean_t)
             .expect("backward should succeed");
@@ -2099,17 +1972,12 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, 2.0], vec![2], true)
             .expect("tensor creation should succeed");
-        let _mean_t = session
-            .tensor_mean(t)
-            .expect("tensor mean should succeed");
+        let _mean_t = session.tensor_mean(t).expect("tensor mean should succeed");
         let has_evidence = session.evidence().iter().any(|entry| {
             entry.kind == EvidenceKind::Dispatch
                 && entry.summary.contains("tensor_reduction_op=Mean")
         });
-        assert!(
-            has_evidence,
-            "mean should emit reduction dispatch evidence"
-        );
+        assert!(has_evidence, "mean should emit reduction dispatch evidence");
     }
 
     #[test]
@@ -2121,15 +1989,11 @@ mod tests {
         let y = session
             .tensor_variable(vec![4.0, 5.0], vec![2], true)
             .expect("tensor creation should succeed");
-        let product = session
-            .tensor_mul(x, y)
-            .expect("tensor mul should succeed");
+        let product = session.tensor_mul(x, y).expect("tensor mul should succeed");
         let loss = session
             .tensor_sum(product)
             .expect("tensor sum should succeed");
-        let values = session
-            .tensor_values(loss)
-            .expect("values should succeed");
+        let values = session.tensor_values(loss).expect("values should succeed");
         assert_eq!(values, vec![23.0]);
 
         let report = session
@@ -2339,7 +2203,9 @@ mod tests {
             .tensor_backward(y)
             .expect("tensor backward should succeed");
         assert_eq!(
-            session.tensor_gradient(&report, x).expect("x grad should exist"),
+            session
+                .tensor_gradient(&report, x)
+                .expect("x grad should exist"),
             &[0.0, 0.0, 1.0, 0.0]
         );
     }
@@ -2350,7 +2216,9 @@ mod tests {
         let x = session
             .tensor_variable(vec![0.0, 10.0, -10.0], vec![3], true)
             .expect("tensor variable should succeed");
-        let y = session.tensor_sigmoid(x).expect("tensor sigmoid should succeed");
+        let y = session
+            .tensor_sigmoid(x)
+            .expect("tensor sigmoid should succeed");
         let values = session.tensor_values(y).expect("values should resolve");
         assert!((values[0] - 0.5).abs() < 1e-10);
         assert!((values[1] - 1.0).abs() < 1e-4);
@@ -2363,11 +2231,15 @@ mod tests {
         let x = session
             .tensor_variable(vec![0.0], vec![1], true)
             .expect("tensor variable should succeed");
-        let y = session.tensor_sigmoid(x).expect("tensor sigmoid should succeed");
+        let y = session
+            .tensor_sigmoid(x)
+            .expect("tensor sigmoid should succeed");
         let report = session
             .tensor_backward(y)
             .expect("tensor backward should succeed");
-        let grad = session.tensor_gradient(&report, x).expect("x grad should exist");
+        let grad = session
+            .tensor_gradient(&report, x)
+            .expect("x grad should exist");
         // sigmoid(0)=0.5, grad=0.5*(1-0.5)=0.25
         assert!((grad[0] - 0.25).abs() < 1e-10);
     }
@@ -2395,7 +2267,9 @@ mod tests {
         let report = session
             .tensor_backward(y)
             .expect("tensor backward should succeed");
-        let grad = session.tensor_gradient(&report, x).expect("x grad should exist");
+        let grad = session
+            .tensor_gradient(&report, x)
+            .expect("x grad should exist");
         // tanh(0)=0, grad=1-0^2=1.0
         assert!((grad[0] - 1.0).abs() < 1e-10);
     }
@@ -3234,7 +3108,9 @@ mod tests {
     #[test]
     fn session_tensor_log2() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 4.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 4.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_log2(x).expect("tensor_log2");
         let vals = session.tensor_values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -3244,7 +3120,9 @@ mod tests {
     #[test]
     fn session_tensor_expm1() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_expm1(x).expect("tensor_expm1");
         let vals = session.tensor_values(y).expect("values");
         assert!(vals[0].abs() < 1e-15);
@@ -3291,7 +3169,9 @@ mod tests {
     #[test]
     fn session_tensor_sign() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![-3.0, 2.0, 5.0], vec![3], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![-3.0, 2.0, 5.0], vec![3], false)
+            .expect("leaf");
         let y = session.tensor_sign(x).expect("tensor_sign");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[-1.0, 1.0, 1.0]);
@@ -3300,7 +3180,9 @@ mod tests {
     #[test]
     fn session_tensor_trunc() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![3.7, -2.3], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![3.7, -2.3], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_trunc(x).expect("tensor_trunc");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[3.0, -2.0]);
@@ -3309,7 +3191,9 @@ mod tests {
     #[test]
     fn session_tensor_frac() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![3.7, -2.3], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![3.7, -2.3], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_frac(x).expect("tensor_frac");
         let vals = session.tensor_values(y).expect("values");
         assert!((vals[0] - 0.7).abs() < 1e-12);
@@ -3357,7 +3241,9 @@ mod tests {
     #[test]
     fn session_tensor_asin() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![0.0, 0.5], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![0.0, 0.5], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_asin(x).expect("tensor_asin");
         let vals = session.tensor_values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -3367,7 +3253,9 @@ mod tests {
     #[test]
     fn session_tensor_atan() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_atan(x).expect("tensor_atan");
         let vals = session.tensor_values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -3407,7 +3295,9 @@ mod tests {
     #[test]
     fn session_tensor_sinh() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_sinh(x).expect("tensor_sinh");
         let vals = session.tensor_values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -3417,7 +3307,9 @@ mod tests {
     #[test]
     fn session_tensor_cosh() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_cosh(x).expect("tensor_cosh");
         let vals = session.tensor_values(y).expect("values");
         assert!((vals[0] - 1.0).abs() < 1e-12);
@@ -3482,7 +3374,9 @@ mod tests {
     #[test]
     fn session_tensor_gelu() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_gelu(x).expect("tensor_gelu");
         let vals = session.tensor_values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -3492,7 +3386,9 @@ mod tests {
     #[test]
     fn session_tensor_silu() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![0.0, 1.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_silu(x).expect("tensor_silu");
         let vals = session.tensor_values(y).expect("values");
         assert!(vals[0].abs() < 1e-12);
@@ -3503,7 +3399,9 @@ mod tests {
     #[test]
     fn session_tensor_leaky_relu() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![2.0, -3.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![2.0, -3.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_leaky_relu(x).expect("tensor_leaky_relu");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals[0], 2.0);
@@ -3513,7 +3411,9 @@ mod tests {
     #[test]
     fn session_tensor_elu() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![2.0, -1.0], vec![2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![2.0, -1.0], vec![2], false)
+            .expect("leaf");
         let y = session.tensor_elu(x).expect("tensor_elu");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals[0], 2.0);
@@ -3537,7 +3437,9 @@ mod tests {
     #[test]
     fn session_tensor_prod_dim0() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("leaf");
         let y = session.tensor_prod_dim(x, 0).expect("prod_dim 0");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[4.0, 10.0, 18.0]);
@@ -3546,7 +3448,9 @@ mod tests {
     #[test]
     fn session_tensor_prod_dim1() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("leaf");
         let y = session.tensor_prod_dim(x, 1).expect("prod_dim 1");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[6.0, 120.0]);
@@ -3555,7 +3459,9 @@ mod tests {
     #[test]
     fn session_tensor_var_dim0() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false)
+            .expect("leaf");
         let y = session.tensor_var_dim(x, 0).expect("var_dim 0");
         let vals = session.tensor_values(y).expect("values");
         assert!((vals[0] - 4.0).abs() < 1e-12);
@@ -3565,7 +3471,9 @@ mod tests {
     #[test]
     fn session_tensor_var_dim1() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("leaf");
         let y = session.tensor_var_dim(x, 1).expect("var_dim 1");
         let vals = session.tensor_values(y).expect("values");
         assert!((vals[0] - 1.0).abs() < 1e-12);
@@ -3575,7 +3483,9 @@ mod tests {
     #[test]
     fn session_tensor_std_dim0() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false)
+            .expect("leaf");
         let y = session.tensor_std_dim(x, 0).expect("std_dim 0");
         let vals = session.tensor_values(y).expect("values");
         assert!((vals[0] - 2.0).abs() < 1e-12);
@@ -3585,7 +3495,9 @@ mod tests {
     #[test]
     fn session_tensor_prod_dim_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![2.0, 3.0, 4.0], vec![1, 3], true).expect("leaf");
+        let x = session
+            .tensor_variable(vec![2.0, 3.0, 4.0], vec![1, 3], true)
+            .expect("leaf");
         let y = session.tensor_prod_dim(x, 1).expect("prod_dim 1");
         let report = session.tensor_backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
@@ -3598,7 +3510,9 @@ mod tests {
     #[test]
     fn session_tensor_var_dim_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
         let y = session.tensor_var_dim(x, 1).expect("var_dim 1");
         let report = session.tensor_backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
@@ -3612,7 +3526,9 @@ mod tests {
     #[test]
     fn session_tensor_softmax_sums_to_one() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("leaf");
         let y = session.tensor_softmax(x, 1).expect("softmax");
         let vals = session.tensor_values(y).expect("values");
         let row0_sum: f64 = vals[0..3].iter().sum();
@@ -3624,7 +3540,9 @@ mod tests {
     #[test]
     fn session_tensor_log_softmax_consistent() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .expect("leaf");
         let y = session.tensor_log_softmax(x, 1).expect("log_softmax");
         let vals = session.tensor_values(y).expect("values");
         // exp of log_softmax should sum to 1
@@ -3635,26 +3553,36 @@ mod tests {
     #[test]
     fn session_tensor_softmax_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
         let y = session.tensor_softmax(x, 1).expect("softmax");
         let report = session.tensor_backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         // Sum of softmax backward gradients (with all-ones incoming) should be 0
         // because softmax is invariant to constant shift
         let grad_sum: f64 = grads.iter().sum();
-        assert!(grad_sum.abs() < 1e-12, "softmax grad sum should be 0, got {grad_sum}");
+        assert!(
+            grad_sum.abs() < 1e-12,
+            "softmax grad sum should be 0, got {grad_sum}"
+        );
     }
 
     #[test]
     fn session_tensor_log_softmax_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("leaf");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
         let y = session.tensor_log_softmax(x, 1).expect("log_softmax");
         let report = session.tensor_backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         // Sum of log_softmax backward gradients should be 0
         let grad_sum: f64 = grads.iter().sum();
-        assert!(grad_sum.abs() < 1e-12, "log_softmax grad sum should be 0, got {grad_sum}");
+        assert!(
+            grad_sum.abs() < 1e-12,
+            "log_softmax grad sum should be 0, got {grad_sum}"
+        );
     }
 
     // ── cat/stack API tests ─────────────────────────────
@@ -3662,8 +3590,12 @@ mod tests {
     #[test]
     fn session_tensor_cat_dim0() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("a");
-        let b = session.tensor_variable(vec![7.0, 8.0, 9.0], vec![1, 3], false).expect("b");
+        let a = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![7.0, 8.0, 9.0], vec![1, 3], false)
+            .expect("b");
         let y = session.tensor_cat(&[a, b], 0).expect("cat 0");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
@@ -3672,8 +3604,12 @@ mod tests {
     #[test]
     fn session_tensor_cat_dim1() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).expect("a");
-        let b = session.tensor_variable(vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0], vec![2, 3], false).expect("b");
+        let a = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0], vec![2, 3], false)
+            .expect("b");
         let y = session.tensor_cat(&[a, b], 1).expect("cat 1");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 5.0, 6.0, 7.0, 3.0, 4.0, 8.0, 9.0, 10.0]);
@@ -3682,8 +3618,12 @@ mod tests {
     #[test]
     fn session_tensor_stack_dim0() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).expect("a");
-        let b = session.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false).expect("b");
+        let a = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false)
+            .expect("b");
         let y = session.tensor_stack(&[a, b], 0).expect("stack 0");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -3692,8 +3632,12 @@ mod tests {
     #[test]
     fn session_tensor_cat_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable(vec![1.0, 2.0], vec![1, 2], true).expect("a");
-        let b = session.tensor_variable(vec![3.0, 4.0, 5.0], vec![1, 3], true).expect("b");
+        let a = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], true)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![3.0, 4.0, 5.0], vec![1, 3], true)
+            .expect("b");
         let y = session.tensor_cat(&[a, b], 1).expect("cat 1");
         let report = session.tensor_backward(y).expect("backward");
         let grads_a = report.gradient(a).expect("grad a");
@@ -3705,8 +3649,12 @@ mod tests {
     #[test]
     fn session_tensor_stack_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).expect("a");
-        let b = session.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], true).expect("b");
+        let a = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .expect("a");
+        let b = session
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], true)
+            .expect("b");
         let y = session.tensor_stack(&[a, b], 0).expect("stack 0");
         let report = session.tensor_backward(y).expect("backward");
         let grads_a = report.gradient(a).expect("grad a");
@@ -3720,7 +3668,9 @@ mod tests {
     #[test]
     fn session_tensor_reshape_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
         let y = session.tensor_reshape(x, vec![3, 2]).expect("reshape");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -3729,7 +3679,9 @@ mod tests {
     #[test]
     fn session_tensor_reshape_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("x");
         let y = session.tensor_reshape(x, vec![6]).expect("reshape");
         let report = session.tensor_backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad x");
@@ -3739,7 +3691,9 @@ mod tests {
     #[test]
     fn session_tensor_view_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .expect("x");
         let y = session.tensor_view(x, vec![2, 2]).expect("view");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0]);
@@ -3748,7 +3702,9 @@ mod tests {
     #[test]
     fn session_tensor_squeeze_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("x");
         let y = session.tensor_squeeze(x, 0).expect("squeeze");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0]);
@@ -3757,7 +3713,9 @@ mod tests {
     #[test]
     fn session_tensor_squeeze_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("x");
         let y = session.tensor_squeeze(x, 0).expect("squeeze");
         let report = session.tensor_backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad x");
@@ -3767,7 +3725,9 @@ mod tests {
     #[test]
     fn session_tensor_unsqueeze_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .expect("x");
         let y = session.tensor_unsqueeze(x, 0).expect("unsqueeze");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0]);
@@ -3776,7 +3736,9 @@ mod tests {
     #[test]
     fn session_tensor_unsqueeze_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .expect("x");
         let y = session.tensor_unsqueeze(x, 1).expect("unsqueeze");
         let report = session.tensor_backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad x");
@@ -3786,7 +3748,9 @@ mod tests {
     #[test]
     fn session_tensor_reshape_mismatched_numel_fails() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .expect("x");
         assert!(session.tensor_reshape(x, vec![2]).is_err());
     }
 }

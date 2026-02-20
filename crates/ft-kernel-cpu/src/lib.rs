@@ -239,12 +239,20 @@ pub fn max_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor
 
 pub fn eq_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
     ensure_compatible(lhs, rhs)?;
-    Ok(lhs.with_value(if (lhs.value() - rhs.value()).abs() == 0.0 { 1.0 } else { 0.0 }))
+    Ok(lhs.with_value(if (lhs.value() - rhs.value()).abs() == 0.0 {
+        1.0
+    } else {
+        0.0
+    }))
 }
 
 pub fn ne_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
     ensure_compatible(lhs, rhs)?;
-    Ok(lhs.with_value(if (lhs.value() - rhs.value()).abs() != 0.0 { 1.0 } else { 0.0 }))
+    Ok(lhs.with_value(if (lhs.value() - rhs.value()).abs() != 0.0 {
+        1.0
+    } else {
+        0.0
+    }))
 }
 
 pub fn lt_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
@@ -417,21 +425,14 @@ where
         .collect())
 }
 
-fn ensure_unary_layout_and_storage(
-    buffer: &[f64],
-    meta: &TensorMeta,
-) -> Result<(), KernelError> {
+fn ensure_unary_layout_and_storage(buffer: &[f64], meta: &TensorMeta) -> Result<(), KernelError> {
     if !meta.is_contiguous() {
         return Err(KernelError::UnsupportedLayout { side: "input" });
     }
     ensure_storage_len(buffer, meta, "input")
 }
 
-fn unary_contiguous_f64<F>(
-    input: &[f64],
-    meta: &TensorMeta,
-    op: F,
-) -> Result<Vec<f64>, KernelError>
+fn unary_contiguous_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, KernelError>
 where
     F: Fn(f64) -> f64,
 {
@@ -699,7 +700,10 @@ pub fn clamp_tensor_contiguous_f64(
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    Ok(window.iter().map(|value| value.clamp(min_val, max_val)).collect())
+    Ok(window
+        .iter()
+        .map(|value| value.clamp(min_val, max_val))
+        .collect())
 }
 
 pub fn min_tensor_contiguous_f64(
@@ -748,9 +752,15 @@ pub fn lt_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
-        if l < r { 1.0 } else { 0.0 }
-    })
+    elementwise_contiguous_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| {
+            if l < r { 1.0 } else { 0.0 }
+        },
+    )
 }
 
 pub fn gt_tensor_contiguous_f64(
@@ -759,9 +769,15 @@ pub fn gt_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
-        if l > r { 1.0 } else { 0.0 }
-    })
+    elementwise_contiguous_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| {
+            if l > r { 1.0 } else { 0.0 }
+        },
+    )
 }
 
 pub fn le_tensor_contiguous_f64(
@@ -770,9 +786,15 @@ pub fn le_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
-        if l <= r { 1.0 } else { 0.0 }
-    })
+    elementwise_contiguous_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| {
+            if l <= r { 1.0 } else { 0.0 }
+        },
+    )
 }
 
 pub fn ge_tensor_contiguous_f64(
@@ -781,25 +803,25 @@ pub fn ge_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
-        if l >= r { 1.0 } else { 0.0 }
-    })
+    elementwise_contiguous_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| {
+            if l >= r { 1.0 } else { 0.0 }
+        },
+    )
 }
 
-pub fn sum_tensor_contiguous_f64(
-    input: &[f64],
-    meta: &TensorMeta,
-) -> Result<f64, KernelError> {
+pub fn sum_tensor_contiguous_f64(input: &[f64], meta: &TensorMeta) -> Result<f64, KernelError> {
     ensure_unary_layout_and_storage(input, meta)?;
     let offset = meta.storage_offset();
     let numel = meta.numel();
     Ok(input[offset..offset + numel].iter().sum())
 }
 
-pub fn mean_tensor_contiguous_f64(
-    input: &[f64],
-    meta: &TensorMeta,
-) -> Result<f64, KernelError> {
+pub fn mean_tensor_contiguous_f64(input: &[f64], meta: &TensorMeta) -> Result<f64, KernelError> {
     ensure_unary_layout_and_storage(input, meta)?;
     let offset = meta.storage_offset();
     let numel = meta.numel();
@@ -1193,7 +1215,10 @@ pub fn stack_tensor_contiguous_f64(
     let ndim = first_shape.len();
     // dim can be 0..=ndim (inserting a new dimension)
     if dim > ndim {
-        return Err(KernelError::InvalidDimension { dim, ndim: ndim + 1 });
+        return Err(KernelError::InvalidDimension {
+            dim,
+            ndim: ndim + 1,
+        });
     }
     // Validate all shapes are identical
     for (data, meta) in inputs {
@@ -1234,20 +1259,19 @@ mod tests {
         cat_tensor_contiguous_f64, clamp_scalar, clamp_tensor_contiguous_f64, div_scalar,
         div_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, exp_scalar,
         exp_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gt_scalar,
-        gt_tensor_contiguous_f64, le_scalar,
-        le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
+        gt_tensor_contiguous_f64, le_scalar, le_tensor_contiguous_f64, log_scalar,
+        log_softmax_dim_tensor_contiguous_f64, log_tensor_contiguous_f64, lt_scalar,
         lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
         max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64,
         min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
         ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64, pow_scalar,
-        pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
-        relu_scalar, relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64,
-        sqrt_scalar, sqrt_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
-        log_softmax_dim_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64,
-        softmax_dim_tensor_contiguous_f64, stack_tensor_contiguous_f64,
-        std_dim_tensor_contiguous_f64,
-        sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
-        tanh_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
+        pow_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64, reciprocal_scalar,
+        reciprocal_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64, sigmoid_scalar,
+        sigmoid_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64, sqrt_scalar,
+        sqrt_tensor_contiguous_f64, stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64,
+        sub_scalar, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64,
+        sum_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64,
+        var_dim_tensor_contiguous_f64,
     };
 
     #[test]
@@ -1276,19 +1300,16 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
         let input = vec![1.0, -2.0, 3.0, -4.0];
 
-        let out = neg_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous neg should succeed");
+        let out = neg_tensor_contiguous_f64(&input, &meta).expect("contiguous neg should succeed");
         assert_eq!(out, vec![-1.0, 2.0, -3.0, 4.0]);
     }
 
     #[test]
     fn neg_tensor_contiguous_respects_storage_offset() {
-        let meta =
-            TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu).with_storage_offset(1);
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu).with_storage_offset(1);
         let input = vec![99.0, 5.0, -7.0, 9.0];
 
-        let out = neg_tensor_contiguous_f64(&input, &meta)
-            .expect("offset neg should succeed");
+        let out = neg_tensor_contiguous_f64(&input, &meta).expect("offset neg should succeed");
         assert_eq!(out, vec![-5.0, 7.0, -9.0]);
     }
 
@@ -1298,8 +1319,8 @@ mod tests {
             TensorMeta::from_shape(vec![0, 3], DType::F64, Device::Cpu).with_storage_offset(8);
         let input = Vec::new();
 
-        let out = neg_tensor_contiguous_f64(&input, &meta)
-            .expect("empty tensor neg should succeed");
+        let out =
+            neg_tensor_contiguous_f64(&input, &meta).expect("empty tensor neg should succeed");
         assert!(out.is_empty());
     }
 
@@ -1320,8 +1341,7 @@ mod tests {
 
     #[test]
     fn neg_tensor_contiguous_rejects_insufficient_storage() {
-        let meta =
-            TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu).with_storage_offset(1);
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu).with_storage_offset(1);
         let input = vec![10.0, 11.0, 12.0];
 
         let err = neg_tensor_contiguous_f64(&input, &meta)
@@ -1362,8 +1382,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
         let input = vec![-1.0, 2.0, -3.0, 4.0];
 
-        let out = abs_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous abs should succeed");
+        let out = abs_tensor_contiguous_f64(&input, &meta).expect("contiguous abs should succeed");
         assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0]);
     }
 
@@ -1372,8 +1391,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![0], DType::F64, Device::Cpu);
         let input = Vec::new();
 
-        let out = abs_tensor_contiguous_f64(&input, &meta)
-            .expect("empty abs should succeed");
+        let out = abs_tensor_contiguous_f64(&input, &meta).expect("empty abs should succeed");
         assert!(out.is_empty());
     }
 
@@ -1418,8 +1436,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let input = vec![0.0, 1.0, 2.0];
 
-        let out = exp_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous exp should succeed");
+        let out = exp_tensor_contiguous_f64(&input, &meta).expect("contiguous exp should succeed");
         assert_eq!(out.len(), 3);
         assert!((out[0] - 1.0).abs() < 1e-10);
         assert!((out[1] - std::f64::consts::E).abs() < 1e-10);
@@ -1430,8 +1447,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
         let input = vec![1.0, std::f64::consts::E];
 
-        let out = log_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous log should succeed");
+        let out = log_tensor_contiguous_f64(&input, &meta).expect("contiguous log should succeed");
         assert!((out[0] - 0.0).abs() < 1e-10);
         assert!((out[1] - 1.0).abs() < 1e-10);
     }
@@ -1462,8 +1478,8 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
         let input = vec![-1.0, 0.0, 2.0, -3.0];
 
-        let out = relu_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous relu should succeed");
+        let out =
+            relu_tensor_contiguous_f64(&input, &meta).expect("contiguous relu should succeed");
         assert_eq!(out, vec![0.0, 0.0, 2.0, 0.0]);
     }
 
@@ -1528,8 +1544,8 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let input = vec![0.0, 10.0, -10.0];
 
-        let out = tanh_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous tanh should succeed");
+        let out =
+            tanh_tensor_contiguous_f64(&input, &meta).expect("contiguous tanh should succeed");
         assert!((out[0]).abs() < 1e-10);
         assert!((out[1] - 1.0).abs() < 1e-6);
         assert!((out[2] + 1.0).abs() < 1e-6);
@@ -1539,8 +1555,7 @@ mod tests {
     fn sum_tensor_contiguous_returns_expected_value() {
         let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        let out = sum_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous sum should succeed");
+        let out = sum_tensor_contiguous_f64(&input, &meta).expect("contiguous sum should succeed");
         assert_eq!(out, 10.0);
     }
 
@@ -1548,19 +1563,16 @@ mod tests {
     fn sum_tensor_contiguous_empty_returns_zero() {
         let meta = TensorMeta::from_shape(vec![0], DType::F64, Device::Cpu);
         let input: Vec<f64> = vec![];
-        let out = sum_tensor_contiguous_f64(&input, &meta)
-            .expect("empty sum should succeed");
+        let out = sum_tensor_contiguous_f64(&input, &meta).expect("empty sum should succeed");
         assert_eq!(out, 0.0);
     }
 
     #[test]
     fn sum_tensor_contiguous_respects_storage_offset() {
-        let meta =
-            TensorMeta::from_shape_and_strides(vec![2], vec![1], 2, DType::F64, Device::Cpu)
-                .expect("offset meta should validate");
+        let meta = TensorMeta::from_shape_and_strides(vec![2], vec![1], 2, DType::F64, Device::Cpu)
+            .expect("offset meta should validate");
         let storage = vec![100.0, 200.0, 3.0, 7.0];
-        let out = sum_tensor_contiguous_f64(&storage, &meta)
-            .expect("offset sum should succeed");
+        let out = sum_tensor_contiguous_f64(&storage, &meta).expect("offset sum should succeed");
         assert_eq!(out, 10.0);
     }
 
@@ -1568,8 +1580,8 @@ mod tests {
     fn mean_tensor_contiguous_returns_expected_value() {
         let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        let out = mean_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous mean should succeed");
+        let out =
+            mean_tensor_contiguous_f64(&input, &meta).expect("contiguous mean should succeed");
         assert_eq!(out, 2.5);
     }
 
@@ -1577,8 +1589,7 @@ mod tests {
     fn mean_tensor_contiguous_empty_returns_nan() {
         let meta = TensorMeta::from_shape(vec![0], DType::F64, Device::Cpu);
         let input: Vec<f64> = vec![];
-        let out = mean_tensor_contiguous_f64(&input, &meta)
-            .expect("empty mean should succeed");
+        let out = mean_tensor_contiguous_f64(&input, &meta).expect("empty mean should succeed");
         assert!(out.is_nan());
     }
 
@@ -1586,8 +1597,7 @@ mod tests {
     fn mean_tensor_contiguous_single_element() {
         let meta = TensorMeta::from_shape(vec![1], DType::F64, Device::Cpu);
         let input = vec![42.0];
-        let out = mean_tensor_contiguous_f64(&input, &meta)
-            .expect("single mean should succeed");
+        let out = mean_tensor_contiguous_f64(&input, &meta).expect("single mean should succeed");
         assert_eq!(out, 42.0);
     }
 
@@ -1874,8 +1884,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 2.0, 3.0, 4.0];
         let rhs = vec![1.0, 5.0, 3.0, 0.0];
-        let out = eq_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
-            .expect("eq should succeed");
+        let out = eq_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("eq should succeed");
         assert_eq!(out, vec![1.0, 0.0, 1.0, 0.0]);
     }
 
@@ -1884,8 +1893,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 2.0, 3.0, 4.0];
         let rhs = vec![1.0, 5.0, 3.0, 0.0];
-        let out = ne_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
-            .expect("ne should succeed");
+        let out = ne_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("ne should succeed");
         assert_eq!(out, vec![0.0, 1.0, 0.0, 1.0]);
     }
 
@@ -1894,8 +1902,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 3.0, 2.0];
         let rhs = vec![2.0, 3.0, 1.0];
-        let out = lt_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
-            .expect("lt should succeed");
+        let out = lt_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("lt should succeed");
         assert_eq!(out, vec![1.0, 0.0, 0.0]);
     }
 
@@ -1904,8 +1911,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 3.0, 2.0];
         let rhs = vec![2.0, 3.0, 1.0];
-        let out = gt_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
-            .expect("gt should succeed");
+        let out = gt_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("gt should succeed");
         assert_eq!(out, vec![0.0, 0.0, 1.0]);
     }
 
@@ -1914,8 +1920,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 3.0, 2.0];
         let rhs = vec![2.0, 3.0, 1.0];
-        let out = le_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
-            .expect("le should succeed");
+        let out = le_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("le should succeed");
         assert_eq!(out, vec![1.0, 1.0, 0.0]);
     }
 
@@ -1924,8 +1929,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 3.0, 2.0];
         let rhs = vec![2.0, 3.0, 1.0];
-        let out = ge_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
-            .expect("ge should succeed");
+        let out = ge_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("ge should succeed");
         assert_eq!(out, vec![0.0, 1.0, 1.0]);
     }
 
@@ -1954,8 +1958,8 @@ mod tests {
     fn sqrt_tensor_contiguous_returns_expected_values() {
         let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
         let input = vec![0.0, 1.0, 4.0, 9.0];
-        let out = sqrt_tensor_contiguous_f64(&input, &meta)
-            .expect("contiguous sqrt should succeed");
+        let out =
+            sqrt_tensor_contiguous_f64(&input, &meta).expect("contiguous sqrt should succeed");
         assert_eq!(out, vec![0.0, 1.0, 2.0, 3.0]);
     }
 
@@ -2014,8 +2018,8 @@ mod tests {
     fn pow_tensor_contiguous_returns_expected_values() {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0];
-        let out = pow_tensor_contiguous_f64(&input, &meta, 2.0)
-            .expect("contiguous pow should succeed");
+        let out =
+            pow_tensor_contiguous_f64(&input, &meta, 2.0).expect("contiguous pow should succeed");
         assert_eq!(out, vec![1.0, 4.0, 9.0]);
     }
 
@@ -2079,8 +2083,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 5.0, 3.0];
         let rhs = vec![2.0, 4.0, 3.0];
-        let out = min_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
-            .expect("min should succeed");
+        let out = min_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("min should succeed");
         assert_eq!(out, vec![1.0, 4.0, 3.0]);
     }
 
@@ -2089,8 +2092,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 5.0, 3.0];
         let rhs = vec![2.0, 4.0, 3.0];
-        let out = max_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
-            .expect("max should succeed");
+        let out = max_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("max should succeed");
         assert_eq!(out, vec![2.0, 5.0, 3.0]);
     }
 
@@ -2133,7 +2135,10 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let err = sum_dim_tensor_contiguous_f64(&input, &meta, 2).unwrap_err();
-        assert!(matches!(err, KernelError::InvalidDimension { dim: 2, ndim: 2 }));
+        assert!(matches!(
+            err,
+            KernelError::InvalidDimension { dim: 2, ndim: 2 }
+        ));
     }
 
     #[test]
@@ -2186,7 +2191,10 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let err = prod_dim_tensor_contiguous_f64(&input, &meta, 2).unwrap_err();
-        assert!(matches!(err, KernelError::InvalidDimension { dim: 2, ndim: 2 }));
+        assert!(matches!(
+            err,
+            KernelError::InvalidDimension { dim: 2, ndim: 2 }
+        ));
     }
 
     #[test]
@@ -2261,7 +2269,10 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let err = softmax_dim_tensor_contiguous_f64(&input, &meta, 2).unwrap_err();
-        assert!(matches!(err, KernelError::InvalidDimension { dim: 2, ndim: 2 }));
+        assert!(matches!(
+            err,
+            KernelError::InvalidDimension { dim: 2, ndim: 2 }
+        ));
     }
 
     #[test]

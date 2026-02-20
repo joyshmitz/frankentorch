@@ -4,34 +4,33 @@ use std::{collections::BTreeMap, fmt};
 
 use ft_core::{Device, ExecutionMode, ScalarTensor, TensorMeta};
 use ft_kernel_cpu::{
-    KernelError, abs_scalar, abs_tensor_contiguous_f64, add_scalar, add_tensor_contiguous_f64,
-    clamp_scalar, clamp_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64, eq_scalar,
-    eq_tensor_contiguous_f64, exp_scalar, exp_tensor_contiguous_f64, ge_scalar,
-    ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
-    le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
-    lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
-    cat_tensor_contiguous_f64, log_softmax_dim_tensor_contiguous_f64, max_tensor_contiguous_f64,
-    mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64,
-    softmax_dim_tensor_contiguous_f64,
-    min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
+    KernelError, abs_scalar, abs_tensor_contiguous_f64, acos_scalar, acos_tensor_contiguous_f64,
+    add_scalar, add_tensor_contiguous_f64, asin_scalar, asin_tensor_contiguous_f64, atan_scalar,
+    atan_tensor_contiguous_f64, cat_tensor_contiguous_f64, ceil_scalar, ceil_tensor_contiguous_f64,
+    clamp_scalar, clamp_tensor_contiguous_f64, cos_scalar, cos_tensor_contiguous_f64, cosh_scalar,
+    cosh_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64, elu_scalar,
+    elu_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, exp_scalar,
+    exp_tensor_contiguous_f64, expm1_scalar, expm1_tensor_contiguous_f64, floor_scalar,
+    floor_tensor_contiguous_f64, frac_scalar, frac_tensor_contiguous_f64, ge_scalar,
+    ge_tensor_contiguous_f64, gelu_scalar, gelu_tensor_contiguous_f64, gt_scalar,
+    gt_tensor_contiguous_f64, le_scalar, le_tensor_contiguous_f64, leaky_relu_scalar,
+    leaky_relu_tensor_contiguous_f64, log_scalar, log_softmax_dim_tensor_contiguous_f64,
+    log_tensor_contiguous_f64, log1p_scalar, log1p_tensor_contiguous_f64, log2_scalar,
+    log2_tensor_contiguous_f64, log10_scalar, log10_tensor_contiguous_f64, lt_scalar,
+    lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar, max_tensor_contiguous_f64,
+    mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_scalar,
+    min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
     ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64, pow_scalar,
-    pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64, relu_scalar,
-    relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sqrt_scalar,
-    sin_scalar, sin_tensor_contiguous_f64, sqrt_tensor_contiguous_f64, sub_scalar,
-    stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64, sub_tensor_contiguous_f64,
-    sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
-    tanh_scalar, tanh_tensor_contiguous_f64, tan_scalar, tan_tensor_contiguous_f64, cos_scalar,
-    cos_tensor_contiguous_f64, floor_scalar, floor_tensor_contiguous_f64, ceil_scalar,
-    ceil_tensor_contiguous_f64, round_scalar, round_tensor_contiguous_f64, log2_scalar,
-    log2_tensor_contiguous_f64, log10_scalar, log10_tensor_contiguous_f64, log1p_scalar,
-    log1p_tensor_contiguous_f64, expm1_scalar, expm1_tensor_contiguous_f64,
-    sign_scalar, sign_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
-    frac_scalar, frac_tensor_contiguous_f64,
-    asin_scalar, asin_tensor_contiguous_f64, acos_scalar, acos_tensor_contiguous_f64,
-    atan_scalar, atan_tensor_contiguous_f64,
-    sinh_scalar, sinh_tensor_contiguous_f64, cosh_scalar, cosh_tensor_contiguous_f64,
-    gelu_scalar, gelu_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64,
-    leaky_relu_scalar, leaky_relu_tensor_contiguous_f64, elu_scalar, elu_tensor_contiguous_f64,
+    pow_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64, reciprocal_scalar,
+    reciprocal_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64, round_scalar,
+    round_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sign_scalar,
+    sign_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64, sin_scalar,
+    sin_tensor_contiguous_f64, sinh_scalar, sinh_tensor_contiguous_f64,
+    softmax_dim_tensor_contiguous_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
+    stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64, sub_scalar,
+    sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64,
+    tan_scalar, tan_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64, trunc_scalar,
+    trunc_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1158,18 +1157,10 @@ pub fn dispatch_scalar_unary(
         resolve_dispatch_keys(mode, keyset)?;
 
     let (tensor, kernel) = match (effective_key, op) {
-        (DispatchKey::AutogradCPU, UnaryOp::Neg) => {
-            (neg_scalar(input), "autograd_cpu::neg_scalar")
-        }
-        (DispatchKey::AutogradCPU, UnaryOp::Abs) => {
-            (abs_scalar(input), "autograd_cpu::abs_scalar")
-        }
-        (DispatchKey::AutogradCPU, UnaryOp::Exp) => {
-            (exp_scalar(input), "autograd_cpu::exp_scalar")
-        }
-        (DispatchKey::AutogradCPU, UnaryOp::Log) => {
-            (log_scalar(input), "autograd_cpu::log_scalar")
-        }
+        (DispatchKey::AutogradCPU, UnaryOp::Neg) => (neg_scalar(input), "autograd_cpu::neg_scalar"),
+        (DispatchKey::AutogradCPU, UnaryOp::Abs) => (abs_scalar(input), "autograd_cpu::abs_scalar"),
+        (DispatchKey::AutogradCPU, UnaryOp::Exp) => (exp_scalar(input), "autograd_cpu::exp_scalar"),
+        (DispatchKey::AutogradCPU, UnaryOp::Log) => (log_scalar(input), "autograd_cpu::log_scalar"),
         (DispatchKey::AutogradCPU, UnaryOp::Relu) => {
             (relu_scalar(input), "autograd_cpu::relu_scalar")
         }
@@ -1185,15 +1176,9 @@ pub fn dispatch_scalar_unary(
         (DispatchKey::AutogradCPU, UnaryOp::Reciprocal) => {
             (reciprocal_scalar(input), "autograd_cpu::reciprocal_scalar")
         }
-        (DispatchKey::AutogradCPU, UnaryOp::Sin) => {
-            (sin_scalar(input), "autograd_cpu::sin_scalar")
-        }
-        (DispatchKey::AutogradCPU, UnaryOp::Cos) => {
-            (cos_scalar(input), "autograd_cpu::cos_scalar")
-        }
-        (DispatchKey::AutogradCPU, UnaryOp::Tan) => {
-            (tan_scalar(input), "autograd_cpu::tan_scalar")
-        }
+        (DispatchKey::AutogradCPU, UnaryOp::Sin) => (sin_scalar(input), "autograd_cpu::sin_scalar"),
+        (DispatchKey::AutogradCPU, UnaryOp::Cos) => (cos_scalar(input), "autograd_cpu::cos_scalar"),
+        (DispatchKey::AutogradCPU, UnaryOp::Tan) => (tan_scalar(input), "autograd_cpu::tan_scalar"),
         (DispatchKey::AutogradCPU, UnaryOp::Floor) => {
             (floor_scalar(input), "autograd_cpu::floor_scalar")
         }
@@ -1248,9 +1233,7 @@ pub fn dispatch_scalar_unary(
         (DispatchKey::AutogradCPU, UnaryOp::LeakyRelu) => {
             (leaky_relu_scalar(input), "autograd_cpu::leaky_relu_scalar")
         }
-        (DispatchKey::AutogradCPU, UnaryOp::Elu) => {
-            (elu_scalar(input), "autograd_cpu::elu_scalar")
-        }
+        (DispatchKey::AutogradCPU, UnaryOp::Elu) => (elu_scalar(input), "autograd_cpu::elu_scalar"),
         (DispatchKey::CPU, UnaryOp::Neg) => (neg_scalar(input), "cpu::neg_scalar"),
         (DispatchKey::CPU, UnaryOp::Abs) => (abs_scalar(input), "cpu::abs_scalar"),
         (DispatchKey::CPU, UnaryOp::Exp) => (exp_scalar(input), "cpu::exp_scalar"),
@@ -1975,8 +1958,7 @@ pub fn dispatch_tensor_comparison_contiguous_f64(
         ),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
-                reason:
-                    "resolved dispatch key is unsupported for contiguous tensor comparison ops",
+                reason: "resolved dispatch key is unsupported for contiguous tensor comparison ops",
             }
             .into());
         }
@@ -3553,9 +3535,8 @@ mod tests {
     #[test]
     fn dispatch_scalar_unary_neg_strict_returns_negated_value() {
         let input = ScalarTensor::new(3.5, DType::F64, Device::Cpu);
-        let outcome =
-            dispatch_scalar_unary(UnaryOp::Neg, ExecutionMode::Strict, &input, false)
-                .expect("neg dispatch should succeed");
+        let outcome = dispatch_scalar_unary(UnaryOp::Neg, ExecutionMode::Strict, &input, false)
+            .expect("neg dispatch should succeed");
         assert_eq!(outcome.tensor.value(), -3.5);
         assert_eq!(outcome.decision.op, UnaryOp::Neg);
         assert!(!outcome.decision.fallback_used);
@@ -3564,9 +3545,8 @@ mod tests {
     #[test]
     fn dispatch_scalar_unary_neg_with_grad_uses_autograd_cpu() {
         let input = ScalarTensor::new(2.0, DType::F64, Device::Cpu);
-        let outcome =
-            dispatch_scalar_unary(UnaryOp::Neg, ExecutionMode::Strict, &input, true)
-                .expect("neg dispatch with grad should succeed");
+        let outcome = dispatch_scalar_unary(UnaryOp::Neg, ExecutionMode::Strict, &input, true)
+            .expect("neg dispatch with grad should succeed");
         assert_eq!(outcome.tensor.value(), -2.0);
         assert_eq!(outcome.decision.selected_key, DispatchKey::AutogradCPU);
     }
