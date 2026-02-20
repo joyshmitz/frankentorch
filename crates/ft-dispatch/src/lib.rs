@@ -2195,14 +2195,14 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        BinaryOp, DispatchError, DispatchKey, DispatchKeyError, DispatchKeySet, OpSchemaError,
-        ParsedSchemaInput, SchemaDispatchError, SchemaRegistry, SchemaRegistryError, TYPE_PRIORITY,
-        UnaryOp, dispatch_keyset_for_tensor_meta, dispatch_keyset_for_tensors,
+        BinaryOp, ComparisonOp, DispatchError, DispatchKey, DispatchKeyError, DispatchKeySet,
+        OpSchemaError, ParsedSchemaInput, SchemaDispatchError, SchemaRegistry, SchemaRegistryError,
+        TYPE_PRIORITY, UnaryOp, dispatch_keyset_for_tensor_meta, dispatch_keyset_for_tensors,
         dispatch_scalar_binary, dispatch_scalar_binary_registered,
-        dispatch_scalar_binary_with_keyset, dispatch_scalar_unary,
+        dispatch_scalar_binary_with_keyset, dispatch_scalar_comparison, dispatch_scalar_unary,
         dispatch_tensor_binary_contiguous_f64, dispatch_tensor_binary_contiguous_f64_with_keyset,
-        dispatch_tensor_unary_contiguous_f64, parse_schema_name, parse_schema_or_name,
-        schema_dispatch_keyset_from_tags,
+        dispatch_tensor_comparison_contiguous_f64, dispatch_tensor_unary_contiguous_f64,
+        parse_schema_name, parse_schema_or_name, schema_dispatch_keyset_from_tags,
     };
 
     fn det_seed(parts: &[u64]) -> u64 {
@@ -3583,5 +3583,77 @@ mod tests {
         .expect("tensor neg dispatch with grad should succeed");
         assert_eq!(outcome.values, vec![-1.0, -2.0, -3.0]);
         assert_eq!(outcome.decision.selected_key, DispatchKey::AutogradCPU);
+    }
+
+    #[test]
+    fn dispatch_scalar_comparison_eq_ne_respect_ieee_special_values() {
+        let pos_inf = ScalarTensor::new(f64::INFINITY, DType::F64, Device::Cpu);
+        let neg_inf = ScalarTensor::new(f64::NEG_INFINITY, DType::F64, Device::Cpu);
+        let nan = ScalarTensor::new(f64::NAN, DType::F64, Device::Cpu);
+
+        let eq_inf = dispatch_scalar_comparison(
+            ComparisonOp::Eq,
+            ExecutionMode::Strict,
+            &pos_inf,
+            &pos_inf,
+            false,
+        )
+        .expect("eq(+inf,+inf) dispatch should succeed");
+        assert_eq!(eq_inf.tensor.value(), 1.0);
+        assert_eq!(eq_inf.decision.kernel, "cpu::eq_scalar");
+
+        let ne_inf = dispatch_scalar_comparison(
+            ComparisonOp::Ne,
+            ExecutionMode::Strict,
+            &neg_inf,
+            &neg_inf,
+            false,
+        )
+        .expect("ne(-inf,-inf) dispatch should succeed");
+        assert_eq!(ne_inf.tensor.value(), 0.0);
+        assert_eq!(ne_inf.decision.kernel, "cpu::ne_scalar");
+
+        let eq_nan =
+            dispatch_scalar_comparison(ComparisonOp::Eq, ExecutionMode::Strict, &nan, &nan, false)
+                .expect("eq(nan,nan) dispatch should succeed");
+        assert_eq!(eq_nan.tensor.value(), 0.0);
+
+        let ne_nan =
+            dispatch_scalar_comparison(ComparisonOp::Ne, ExecutionMode::Strict, &nan, &nan, false)
+                .expect("ne(nan,nan) dispatch should succeed");
+        assert_eq!(ne_nan.tensor.value(), 1.0);
+    }
+
+    #[test]
+    fn dispatch_tensor_comparison_eq_ne_respect_ieee_special_values() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let lhs = vec![f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 1.0];
+        let rhs = vec![f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 2.0];
+
+        let eq_outcome = dispatch_tensor_comparison_contiguous_f64(
+            ComparisonOp::Eq,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &meta,
+            &meta,
+            false,
+        )
+        .expect("tensor eq dispatch should succeed");
+        assert_eq!(eq_outcome.values, vec![1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(eq_outcome.decision.kernel, "cpu::eq_tensor_contiguous_f64");
+
+        let ne_outcome = dispatch_tensor_comparison_contiguous_f64(
+            ComparisonOp::Ne,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &meta,
+            &meta,
+            false,
+        )
+        .expect("tensor ne dispatch should succeed");
+        assert_eq!(ne_outcome.values, vec![0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(ne_outcome.decision.kernel, "cpu::ne_tensor_contiguous_f64");
     }
 }
