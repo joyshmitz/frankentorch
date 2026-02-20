@@ -2376,6 +2376,32 @@ mod tests {
     }
 
     #[test]
+    fn session_scalar_lt_gt_le_ge_respect_ieee_special_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pos_inf = session.variable(f64::INFINITY, false);
+        let neg_inf = session.variable(f64::NEG_INFINITY, false);
+        let nan = session.variable(f64::NAN, false);
+
+        let lt_nan = session.lt(nan, nan).expect("lt nan");
+        assert_eq!(session.value(lt_nan).expect("lt nan value"), 0.0);
+        let gt_nan = session.gt(nan, nan).expect("gt nan");
+        assert_eq!(session.value(gt_nan).expect("gt nan value"), 0.0);
+        let le_nan = session.le(nan, nan).expect("le nan");
+        assert_eq!(session.value(le_nan).expect("le nan value"), 0.0);
+        let ge_nan = session.ge(nan, nan).expect("ge nan");
+        assert_eq!(session.value(ge_nan).expect("ge nan value"), 0.0);
+
+        let lt_inf = session.lt(neg_inf, pos_inf).expect("lt inf");
+        assert_eq!(session.value(lt_inf).expect("lt inf value"), 1.0);
+        let gt_inf = session.gt(pos_inf, neg_inf).expect("gt inf");
+        assert_eq!(session.value(gt_inf).expect("gt inf value"), 1.0);
+        let le_inf = session.le(pos_inf, pos_inf).expect("le inf");
+        assert_eq!(session.value(le_inf).expect("le inf value"), 1.0);
+        let ge_inf = session.ge(neg_inf, neg_inf).expect("ge inf");
+        assert_eq!(session.value(ge_inf).expect("ge inf value"), 1.0);
+    }
+
+    #[test]
     fn session_tensor_eq_returns_expected_values() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
@@ -2439,6 +2465,57 @@ mod tests {
         assert_eq!(
             session.tensor_values(ne).expect("ne values should resolve"),
             vec![0.0, 0.0, 1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn session_tensor_lt_gt_le_ge_respect_ieee_special_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lhs = session
+            .tensor_variable(
+                vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.0, 2.0],
+                vec![5],
+                false,
+            )
+            .expect("lhs tensor variable should succeed");
+        let rhs = session
+            .tensor_variable(
+                vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 1.0, 3.0],
+                vec![5],
+                false,
+            )
+            .expect("rhs tensor variable should succeed");
+
+        let lt = session
+            .tensor_lt(lhs, rhs)
+            .expect("tensor lt should succeed");
+        assert_eq!(
+            session.tensor_values(lt).expect("lt values should resolve"),
+            vec![0.0, 0.0, 1.0, 0.0, 1.0]
+        );
+
+        let gt = session
+            .tensor_gt(lhs, rhs)
+            .expect("tensor gt should succeed");
+        assert_eq!(
+            session.tensor_values(gt).expect("gt values should resolve"),
+            vec![0.0, 1.0, 0.0, 0.0, 0.0]
+        );
+
+        let le = session
+            .tensor_le(lhs, rhs)
+            .expect("tensor le should succeed");
+        assert_eq!(
+            session.tensor_values(le).expect("le values should resolve"),
+            vec![0.0, 0.0, 1.0, 1.0, 1.0]
+        );
+
+        let ge = session
+            .tensor_ge(lhs, rhs)
+            .expect("tensor ge should succeed");
+        assert_eq!(
+            session.tensor_values(ge).expect("ge values should resolve"),
+            vec![0.0, 1.0, 0.0, 1.0, 0.0]
         );
     }
 

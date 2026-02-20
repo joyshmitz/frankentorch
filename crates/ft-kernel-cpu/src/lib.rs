@@ -1940,6 +1940,62 @@ mod tests {
     }
 
     #[test]
+    fn lt_gt_le_ge_scalar_respect_ieee_special_values() {
+        let pos_inf = ScalarTensor::new(f64::INFINITY, DType::F64, Device::Cpu);
+        let neg_inf = ScalarTensor::new(f64::NEG_INFINITY, DType::F64, Device::Cpu);
+        let nan = ScalarTensor::new(f64::NAN, DType::F64, Device::Cpu);
+
+        assert_eq!(
+            lt_scalar(&nan, &nan)
+                .expect("lt(nan,nan) should succeed")
+                .value(),
+            0.0
+        );
+        assert_eq!(
+            gt_scalar(&nan, &nan)
+                .expect("gt(nan,nan) should succeed")
+                .value(),
+            0.0
+        );
+        assert_eq!(
+            le_scalar(&nan, &nan)
+                .expect("le(nan,nan) should succeed")
+                .value(),
+            0.0
+        );
+        assert_eq!(
+            ge_scalar(&nan, &nan)
+                .expect("ge(nan,nan) should succeed")
+                .value(),
+            0.0
+        );
+        assert_eq!(
+            lt_scalar(&neg_inf, &pos_inf)
+                .expect("lt(-inf,+inf) should succeed")
+                .value(),
+            1.0
+        );
+        assert_eq!(
+            gt_scalar(&pos_inf, &neg_inf)
+                .expect("gt(+inf,-inf) should succeed")
+                .value(),
+            1.0
+        );
+        assert_eq!(
+            le_scalar(&pos_inf, &pos_inf)
+                .expect("le(+inf,+inf) should succeed")
+                .value(),
+            1.0
+        );
+        assert_eq!(
+            ge_scalar(&neg_inf, &neg_inf)
+                .expect("ge(-inf,-inf) should succeed")
+                .value(),
+            1.0
+        );
+    }
+
+    #[test]
     fn eq_tensor_contiguous_returns_expected_values() {
         let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
         let lhs = vec![1.0, 2.0, 3.0, 4.0];
@@ -2006,6 +2062,23 @@ mod tests {
         let rhs = vec![2.0, 3.0, 1.0];
         let out = ge_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("ge should succeed");
         assert_eq!(out, vec![0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn lt_gt_le_ge_tensor_contiguous_respect_ieee_special_values() {
+        let meta = TensorMeta::from_shape(vec![5], DType::F64, Device::Cpu);
+        let lhs = vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.0, 2.0];
+        let rhs = vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 1.0, 3.0];
+
+        let lt_out = lt_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("lt should succeed");
+        let gt_out = gt_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("gt should succeed");
+        let le_out = le_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("le should succeed");
+        let ge_out = ge_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("ge should succeed");
+
+        assert_eq!(lt_out, vec![0.0, 0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(gt_out, vec![0.0, 1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(le_out, vec![0.0, 0.0, 1.0, 1.0, 1.0]);
+        assert_eq!(ge_out, vec![0.0, 1.0, 0.0, 1.0, 0.0]);
     }
 
     #[test]

@@ -3645,6 +3645,53 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_scalar_comparison_lt_gt_le_ge_respect_ieee_special_values() {
+        let pos_inf = ScalarTensor::new(f64::INFINITY, DType::F64, Device::Cpu);
+        let neg_inf = ScalarTensor::new(f64::NEG_INFINITY, DType::F64, Device::Cpu);
+        let nan = ScalarTensor::new(f64::NAN, DType::F64, Device::Cpu);
+
+        let lt_nan =
+            dispatch_scalar_comparison(ComparisonOp::Lt, ExecutionMode::Strict, &nan, &nan, false)
+                .expect("lt(nan,nan) dispatch should succeed");
+        assert_eq!(lt_nan.tensor.value(), 0.0);
+
+        let gt_nan =
+            dispatch_scalar_comparison(ComparisonOp::Gt, ExecutionMode::Strict, &nan, &nan, false)
+                .expect("gt(nan,nan) dispatch should succeed");
+        assert_eq!(gt_nan.tensor.value(), 0.0);
+
+        let le_nan =
+            dispatch_scalar_comparison(ComparisonOp::Le, ExecutionMode::Strict, &nan, &nan, false)
+                .expect("le(nan,nan) dispatch should succeed");
+        assert_eq!(le_nan.tensor.value(), 0.0);
+
+        let ge_nan =
+            dispatch_scalar_comparison(ComparisonOp::Ge, ExecutionMode::Strict, &nan, &nan, false)
+                .expect("ge(nan,nan) dispatch should succeed");
+        assert_eq!(ge_nan.tensor.value(), 0.0);
+
+        let lt_inf = dispatch_scalar_comparison(
+            ComparisonOp::Lt,
+            ExecutionMode::Strict,
+            &neg_inf,
+            &pos_inf,
+            false,
+        )
+        .expect("lt(-inf,+inf) dispatch should succeed");
+        assert_eq!(lt_inf.tensor.value(), 1.0);
+
+        let gt_inf = dispatch_scalar_comparison(
+            ComparisonOp::Gt,
+            ExecutionMode::Strict,
+            &pos_inf,
+            &neg_inf,
+            false,
+        )
+        .expect("gt(+inf,-inf) dispatch should succeed");
+        assert_eq!(gt_inf.tensor.value(), 1.0);
+    }
+
+    #[test]
     fn dispatch_scalar_comparison_with_grad_uses_autograd_kernel_labels() {
         let lhs = ScalarTensor::new(2.0, DType::F64, Device::Cpu);
         let rhs = ScalarTensor::new(2.0, DType::F64, Device::Cpu);
@@ -3695,6 +3742,59 @@ mod tests {
         .expect("tensor ne dispatch should succeed");
         assert_eq!(ne_outcome.values, vec![0.0, 0.0, 1.0, 1.0]);
         assert_eq!(ne_outcome.decision.kernel, "cpu::ne_tensor_contiguous_f64");
+    }
+
+    #[test]
+    fn dispatch_tensor_comparison_lt_gt_le_ge_respect_ieee_special_values() {
+        let meta = TensorMeta::from_shape(vec![5], DType::F64, Device::Cpu);
+        let lhs = vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.0, 2.0];
+        let rhs = vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 1.0, 3.0];
+
+        let lt_outcome = dispatch_tensor_comparison_contiguous_f64(
+            ComparisonOp::Lt,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &meta,
+            &meta,
+            false,
+        )
+        .expect("tensor lt dispatch should succeed");
+        let gt_outcome = dispatch_tensor_comparison_contiguous_f64(
+            ComparisonOp::Gt,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &meta,
+            &meta,
+            false,
+        )
+        .expect("tensor gt dispatch should succeed");
+        let le_outcome = dispatch_tensor_comparison_contiguous_f64(
+            ComparisonOp::Le,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &meta,
+            &meta,
+            false,
+        )
+        .expect("tensor le dispatch should succeed");
+        let ge_outcome = dispatch_tensor_comparison_contiguous_f64(
+            ComparisonOp::Ge,
+            ExecutionMode::Strict,
+            &lhs,
+            &rhs,
+            &meta,
+            &meta,
+            false,
+        )
+        .expect("tensor ge dispatch should succeed");
+
+        assert_eq!(lt_outcome.values, vec![0.0, 0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(gt_outcome.values, vec![0.0, 1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(le_outcome.values, vec![0.0, 0.0, 1.0, 1.0, 1.0]);
+        assert_eq!(ge_outcome.values, vec![0.0, 1.0, 0.0, 1.0, 0.0]);
     }
 
     #[test]
