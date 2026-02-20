@@ -7,10 +7,11 @@ use std::fmt;
 use ft_core::{DType, DenseTensor, DenseTensorError, Device, ExecutionMode, ScalarTensor};
 use ft_dispatch::{
     BinaryOp, ClampDispatchDecision, DispatchDecision, DispatchError, DispatchKeyError,
-    NormalizeDimDispatchDecision, NormalizeOp, PowDispatchDecision, ReductionDimDispatchDecision,
-    ReductionDispatchDecision, ReductionOp, UnaryDispatchDecision, UnaryOp,
-    dispatch_scalar_binary, dispatch_scalar_clamp, dispatch_scalar_pow, dispatch_scalar_unary,
-    dispatch_tensor_binary_contiguous_f64, dispatch_tensor_clamp_contiguous_f64,
+    JoinDispatchDecision, JoinOp, NormalizeDimDispatchDecision, NormalizeOp, PowDispatchDecision,
+    ReductionDimDispatchDecision, ReductionDispatchDecision, ReductionOp, UnaryDispatchDecision,
+    UnaryOp, dispatch_scalar_binary, dispatch_scalar_clamp, dispatch_scalar_pow,
+    dispatch_scalar_unary, dispatch_tensor_binary_contiguous_f64,
+    dispatch_tensor_clamp_contiguous_f64, dispatch_tensor_join_contiguous_f64,
     dispatch_tensor_normalize_dim_contiguous_f64, dispatch_tensor_pow_contiguous_f64,
     dispatch_tensor_reduction_contiguous_f64, dispatch_tensor_reduction_dim_contiguous_f64,
     dispatch_tensor_unary_contiguous_f64,
@@ -245,6 +246,15 @@ enum TensorNodeOp {
     },
     LogSoftmax {
         input: TensorNodeId,
+        dim: usize,
+    },
+    Cat {
+        inputs: Vec<TensorNodeId>,
+        dim: usize,
+        input_dim_sizes: Vec<usize>,
+    },
+    Stack {
+        inputs: Vec<TensorNodeId>,
         dim: usize,
     },
     Reshape {
@@ -488,6 +498,15 @@ pub struct TensorNormalizeDimOperationEvent {
     pub out: TensorNodeId,
     pub dim: usize,
     pub decision: NormalizeDimDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorJoinOperationEvent {
+    pub op: JoinOp,
+    pub inputs: Vec<TensorNodeId>,
+    pub out: TensorNodeId,
+    pub dim: usize,
+    pub decision: JoinDispatchDecision,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4422,6 +4441,149 @@ impl TensorTape {
         ))
     }
 
+    pub fn cat(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+        mode: ExecutionMode,
+    ) -> Result<(TensorNodeId, TensorJoinOperationEvent), AutogradError> {
+        if inputs.is_empty() {
+            return Err(AutogradError::Dispatch(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "cat requires at least one input",
+                }
+                .into(),
+            ));
+        }
+        // Collect input data and metadata
+        let mut dispatch_inputs: Vec<(Vec<f64>, ft_core::TensorMeta)> = Vec::new();
+        let mut requires_grad = false;
+        let mut input_dim_sizes: Vec<usize> = Vec::new();
+        for &id in inputs {
+            let node = self.node(id)?;
+            requires_grad |= node.requires_grad;
+            let meta = node.tensor.meta().clone();
+            input_dim_sizes.push(meta.shape()[dim]);
+            dispatch_inputs.push((node.tensor.contiguous_values()?.to_vec(), meta));
+        }
+
+        let refs: Vec<(&[f64], &ft_core::TensorMeta)> = dispatch_inputs
+            .iter()
+            .map(|(d, m)| (d.as_slice(), m))
+            .collect();
+
+        let outcome = dispatch_tensor_join_contiguous_f64(
+            JoinOp::Cat,
+            mode,
+            &refs,
+            dim,
+            requires_grad,
+        )
+        .map_err(AutogradError::Dispatch)?;
+
+        // Compute output shape
+        let first_shape = dispatch_inputs[0].1.shape().to_vec();
+        let mut out_shape = first_shape.clone();
+        out_shape[dim] = input_dim_sizes.iter().sum();
+        let output_dtype = dispatch_inputs[0].1.dtype();
+        let output_device = dispatch_inputs[0].1.device();
+
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(
+                ft_core::TensorMeta::from_shape(out_shape, output_dtype, output_device),
+                outcome.values,
+            )?,
+            requires_grad,
+            op: TensorNodeOp::Cat {
+                inputs: inputs.to_vec(),
+                dim,
+                input_dim_sizes,
+            },
+        });
+
+        Ok((
+            out,
+            TensorJoinOperationEvent {
+                op: JoinOp::Cat,
+                inputs: inputs.to_vec(),
+                out,
+                dim,
+                decision: outcome.decision,
+            },
+        ))
+    }
+
+    pub fn stack(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+        mode: ExecutionMode,
+    ) -> Result<(TensorNodeId, TensorJoinOperationEvent), AutogradError> {
+        if inputs.is_empty() {
+            return Err(AutogradError::Dispatch(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "stack requires at least one input",
+                }
+                .into(),
+            ));
+        }
+        // Collect input data and metadata
+        let mut dispatch_inputs: Vec<(Vec<f64>, ft_core::TensorMeta)> = Vec::new();
+        let mut requires_grad = false;
+        for &id in inputs {
+            let node = self.node(id)?;
+            requires_grad |= node.requires_grad;
+            let meta = node.tensor.meta().clone();
+            dispatch_inputs.push((node.tensor.contiguous_values()?.to_vec(), meta));
+        }
+
+        let refs: Vec<(&[f64], &ft_core::TensorMeta)> = dispatch_inputs
+            .iter()
+            .map(|(d, m)| (d.as_slice(), m))
+            .collect();
+
+        let outcome = dispatch_tensor_join_contiguous_f64(
+            JoinOp::Stack,
+            mode,
+            &refs,
+            dim,
+            requires_grad,
+        )
+        .map_err(AutogradError::Dispatch)?;
+
+        // Compute output shape: insert new dim at position
+        let first_shape = dispatch_inputs[0].1.shape().to_vec();
+        let mut out_shape = first_shape;
+        out_shape.insert(dim, inputs.len());
+        let output_dtype = dispatch_inputs[0].1.dtype();
+        let output_device = dispatch_inputs[0].1.device();
+
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(
+                ft_core::TensorMeta::from_shape(out_shape, output_dtype, output_device),
+                outcome.values,
+            )?,
+            requires_grad,
+            op: TensorNodeOp::Stack {
+                inputs: inputs.to_vec(),
+                dim,
+            },
+        });
+
+        Ok((
+            out,
+            TensorJoinOperationEvent {
+                op: JoinOp::Stack,
+                inputs: inputs.to_vec(),
+                out,
+                dim,
+                decision: outcome.decision,
+            },
+        ))
+    }
+
     pub fn reshape(
         &mut self,
         input: TensorNodeId,
@@ -4545,6 +4707,14 @@ impl TensorTape {
             op: TensorNodeOp::Unsqueeze { input, dim },
         });
         Ok(out)
+    }
+
+    pub fn view(
+        &mut self,
+        input: TensorNodeId,
+        new_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.reshape(input, new_shape)
     }
 
     pub fn transpose(
@@ -5922,6 +6092,84 @@ impl TensorTape {
                         rule: "d(log_softmax(x))/dx_i=grad_i-softmax_i*sum(grad)",
                     });
                 }
+                TensorNodeOp::Cat {
+                    ref inputs,
+                    dim,
+                    ref input_dim_sizes,
+                } => {
+                    // Split gradient along the cat dimension
+                    let shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
+                    let outer_size: usize = shape[..dim].iter().product();
+                    let inner_size: usize = shape[dim + 1..].iter().product();
+
+                    let mut offset = 0;
+                    for (i, &input_id) in inputs.iter().enumerate() {
+                        let cat_size = input_dim_sizes[i];
+                        let input_numel = cat_size * outer_size * inner_size;
+                        let mut contrib = vec![0.0; input_numel];
+                        for outer in 0..outer_size {
+                            for r in 0..cat_size {
+                                for inner in 0..inner_size {
+                                    let grad_idx = outer * shape[dim] * inner_size
+                                        + (offset + r) * inner_size
+                                        + inner;
+                                    let input_idx =
+                                        outer * cat_size * inner_size + r * inner_size + inner;
+                                    contrib[input_idx] = incoming[grad_idx];
+                                }
+                            }
+                        }
+                        Self::accumulate_tensor_gradient(
+                            input_id,
+                            &mut grads[input_id.0],
+                            &contrib,
+                        )?;
+                        Self::complete_dependency(&mut pending, input_id, &mut queue)?;
+                        offset += cat_size;
+                    }
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(cat(x...))/dx_i=split_grad_along_dim",
+                    });
+                }
+                TensorNodeOp::Stack {
+                    ref inputs,
+                    dim,
+                } => {
+                    // Slice gradient along the stacked dimension
+                    let shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
+                    let outer_size: usize = shape[..dim].iter().product();
+                    let inner_size: usize = shape[dim + 1..].iter().product();
+                    let num_inputs = inputs.len();
+
+                    for (i, &input_id) in inputs.iter().enumerate() {
+                        let input_numel = outer_size * inner_size;
+                        let mut contrib = vec![0.0; input_numel];
+                        for outer in 0..outer_size {
+                            for inner in 0..inner_size {
+                                let grad_idx = outer * num_inputs * inner_size
+                                    + i * inner_size
+                                    + inner;
+                                let input_idx = outer * inner_size + inner;
+                                contrib[input_idx] = incoming[grad_idx];
+                            }
+                        }
+                        Self::accumulate_tensor_gradient(
+                            input_id,
+                            &mut grads[input_id.0],
+                            &contrib,
+                        )?;
+                        Self::complete_dependency(&mut pending, input_id, &mut queue)?;
+                    }
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(stack(x...))/dx_i=slice_grad_along_dim",
+                    });
+                }
                 TensorNodeOp::Reshape { input, .. }
                 | TensorNodeOp::Squeeze { input, .. }
                 | TensorNodeOp::Unsqueeze { input, .. } => {
@@ -6094,6 +6342,12 @@ impl TensorTape {
                 | TensorNodeOp::Permute { input, .. } => {
                     stack.push(input);
                 }
+                TensorNodeOp::Cat { ref inputs, .. }
+                | TensorNodeOp::Stack { ref inputs, .. } => {
+                    for &id in inputs {
+                        stack.push(id);
+                    }
+                }
             }
         }
 
@@ -6173,6 +6427,12 @@ impl TensorTape {
                 | TensorNodeOp::Transpose { input, .. }
                 | TensorNodeOp::Permute { input, .. } => {
                     pending[input.0] = pending[input.0].saturating_add(1);
+                }
+                TensorNodeOp::Cat { ref inputs, .. }
+                | TensorNodeOp::Stack { ref inputs, .. } => {
+                    for &id in inputs {
+                        pending[id.0] = pending[id.0].saturating_add(1);
+                    }
                 }
             }
         }
@@ -8815,5 +9075,290 @@ mod tests {
         for i in 0..3 {
             assert!((ls_vals[i] - sm_vals[i].ln()).abs() < 1e-12);
         }
+    }
+
+    // ── cat/stack tensor tests ──────────────────────────
+
+    #[test]
+    fn tensor_cat_dim0_forward() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("a");
+        let b = tape.leaf(vec![7.0, 8.0, 9.0], vec![1, 3], true).expect("b");
+        let (y, _) = tape.cat(&[a, b], 0, ExecutionMode::Strict).expect("cat 0");
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[3, 3]);
+    }
+
+    #[test]
+    fn tensor_cat_dim1_forward() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true).expect("a");
+        let b = tape.leaf(vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0], vec![2, 3], true).expect("b");
+        let (y, _) = tape.cat(&[a, b], 1, ExecutionMode::Strict).expect("cat 1");
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 5.0, 6.0, 7.0, 3.0, 4.0, 8.0, 9.0, 10.0]);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[2, 5]);
+    }
+
+    #[test]
+    fn tensor_cat_backward() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0], vec![1, 2], true).expect("a");
+        let b = tape.leaf(vec![3.0, 4.0, 5.0], vec![1, 3], true).expect("b");
+        let (y, _) = tape.cat(&[a, b], 1, ExecutionMode::Strict).expect("cat 1");
+        let report = tape.backward(y).expect("backward");
+        let grads_a = report.gradient(a).expect("grad a");
+        let grads_b = report.gradient(b).expect("grad b");
+        // Backward of cat splits the gradient: all ones incoming
+        assert_eq!(grads_a, &[1.0, 1.0]);
+        assert_eq!(grads_b, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn tensor_stack_dim0_forward() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("a");
+        let b = tape.leaf(vec![4.0, 5.0, 6.0], vec![3], true).expect("b");
+        let (y, _) = tape.stack(&[a, b], 0, ExecutionMode::Strict).expect("stack 0");
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[2, 3]);
+    }
+
+    #[test]
+    fn tensor_stack_dim1_forward() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true).expect("a");
+        let b = tape.leaf(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], true).expect("b");
+        let (y, _) = tape.stack(&[a, b], 1, ExecutionMode::Strict).expect("stack 1");
+        let vals = tape.values(y).expect("values");
+        // shape [2,2,2]: [[[1,2],[5,6]],[[3,4],[7,8]]]
+        assert_eq!(vals, &[1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[2, 2, 2]);
+    }
+
+    #[test]
+    fn tensor_stack_backward() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("a");
+        let b = tape.leaf(vec![4.0, 5.0, 6.0], vec![3], true).expect("b");
+        let (y, _) = tape.stack(&[a, b], 0, ExecutionMode::Strict).expect("stack 0");
+        let report = tape.backward(y).expect("backward");
+        let grads_a = report.gradient(a).expect("grad a");
+        let grads_b = report.gradient(b).expect("grad b");
+        // Backward of stack slices the gradient: all ones incoming
+        assert_eq!(grads_a, &[1.0, 1.0, 1.0]);
+        assert_eq!(grads_b, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn tensor_cat_three_inputs() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0], vec![1, 1], true).expect("a");
+        let b = tape.leaf(vec![2.0], vec![1, 1], true).expect("b");
+        let c = tape.leaf(vec![3.0], vec![1, 1], true).expect("c");
+        let (y, _) = tape.cat(&[a, b, c], 1, ExecutionMode::Strict).expect("cat");
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0]);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[1, 3]);
+    }
+
+    // ---- reshape tests ----
+
+    #[test]
+    fn tensor_reshape_2d_to_1d() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let y = tape.reshape(x, vec![6]).expect("reshape");
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[6]);
+    }
+
+    #[test]
+    fn tensor_reshape_1d_to_2d() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], true).expect("x");
+        let y = tape.reshape(x, vec![2, 3]).expect("reshape");
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[2, 3]);
+    }
+
+    #[test]
+    fn tensor_reshape_preserves_data_3d() {
+        let mut tape = TensorTape::new();
+        let data: Vec<f64> = (1..=24).map(|x| x as f64).collect();
+        let x = tape.leaf(data.clone(), vec![2, 3, 4], true).expect("x");
+        let y = tape.reshape(x, vec![4, 6]).expect("reshape");
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, data);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[4, 6]);
+    }
+
+    #[test]
+    fn tensor_reshape_mismatched_numel_fails() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        assert!(tape.reshape(x, vec![2]).is_err());
+    }
+
+    #[test]
+    fn tensor_reshape_backward() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let y = tape.reshape(x, vec![6]).expect("reshape");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    // ---- view tests ----
+
+    #[test]
+    fn tensor_view_same_as_reshape() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true).expect("x");
+        let y = tape.view(x, vec![4]).expect("view");
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0]);
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[4]);
+    }
+
+    #[test]
+    fn tensor_view_backward() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("x");
+        let y = tape.view(x, vec![2, 2]).expect("view");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[1.0, 1.0, 1.0, 1.0]);
+    }
+
+    // ---- squeeze tests ----
+
+    #[test]
+    fn tensor_squeeze_removes_dim_of_size_1() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("x");
+        let y = tape.squeeze(x, 0).expect("squeeze");
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[3]);
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn tensor_squeeze_noop_when_dim_not_1() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("x");
+        let y = tape.squeeze(x, 1).expect("squeeze");
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[1, 3]);
+    }
+
+    #[test]
+    fn tensor_squeeze_invalid_dim_fails() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        assert!(tape.squeeze(x, 5).is_err());
+    }
+
+    #[test]
+    fn tensor_squeeze_middle_dim() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 1, 3], true).expect("x");
+        let y = tape.squeeze(x, 1).expect("squeeze");
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[2, 3]);
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn tensor_squeeze_backward() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("x");
+        let y = tape.squeeze(x, 0).expect("squeeze");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[1.0, 1.0, 1.0]);
+    }
+
+    // ---- unsqueeze tests ----
+
+    #[test]
+    fn tensor_unsqueeze_adds_dim_at_start() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let y = tape.unsqueeze(x, 0).expect("unsqueeze");
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[1, 3]);
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn tensor_unsqueeze_adds_dim_at_end() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let y = tape.unsqueeze(x, 1).expect("unsqueeze");
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[3, 1]);
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn tensor_unsqueeze_invalid_dim_fails() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        assert!(tape.unsqueeze(x, 3).is_err());
+    }
+
+    #[test]
+    fn tensor_unsqueeze_middle_dim() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let y = tape.unsqueeze(x, 1).expect("unsqueeze");
+        let shape = tape.node(y).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[2, 1, 3]);
+        let vals = tape.values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn tensor_unsqueeze_backward() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let y = tape.unsqueeze(x, 0).expect("unsqueeze");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn tensor_reshape_then_squeeze_roundtrip() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let y = tape.unsqueeze(x, 0).expect("unsqueeze");
+        let z = tape.squeeze(y, 0).expect("squeeze");
+        let shape = tape.node(z).unwrap().tensor.meta().shape();
+        assert_eq!(shape, &[3]);
+        let vals = tape.values(z).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0]);
+        let report = tape.backward(z).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[1.0, 1.0, 1.0]);
     }
 }

@@ -3,9 +3,9 @@
 use ft_autograd::{
     AutogradError, BackwardOptions, BackwardReport, ClampOperationEvent, NodeId, OperationEvent,
     PowOperationEvent, Tape, TensorBackwardReport, TensorClampOperationEvent,
-    TensorNormalizeDimOperationEvent, TensorNodeId, TensorOperationEvent,
-    TensorPowOperationEvent, TensorReductionDimOperationEvent, TensorReductionOperationEvent,
-    TensorTape, TensorUnaryOperationEvent, UnaryOperationEvent,
+    TensorJoinOperationEvent, TensorNormalizeDimOperationEvent, TensorNodeId,
+    TensorOperationEvent, TensorPowOperationEvent, TensorReductionDimOperationEvent,
+    TensorReductionOperationEvent, TensorTape, TensorUnaryOperationEvent, UnaryOperationEvent,
 };
 use ft_dispatch::{
     ComparisonDispatchDecision, ComparisonOp, dispatch_scalar_comparison,
@@ -891,6 +891,58 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    pub fn tensor_cat(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.cat(inputs, dim, self.mode())?;
+        self.record_tensor_join_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_stack(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.stack(inputs, dim, self.mode())?;
+        self.record_tensor_join_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_reshape(
+        &mut self,
+        input: TensorNodeId,
+        new_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.reshape(input, new_shape)
+    }
+
+    pub fn tensor_view(
+        &mut self,
+        input: TensorNodeId,
+        new_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.view(input, new_shape)
+    }
+
+    pub fn tensor_squeeze(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.squeeze(input, dim)
+    }
+
+    pub fn tensor_unsqueeze(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.unsqueeze(input, dim)
+    }
+
     pub fn tensor_transpose(
         &mut self,
         input: TensorNodeId,
@@ -1075,6 +1127,25 @@ impl FrankenTorchSession {
                 "tensor_reduction_dim_op={:?} input={} out={} dim={} mode={:?} kernel={} key={:?} backend={:?} keyset=0x{:016x} fallback={}",
                 event.op,
                 event.input.0,
+                event.out.0,
+                event.dim,
+                event.decision.mode,
+                event.decision.kernel,
+                event.decision.selected_key,
+                event.decision.backend_key,
+                event.decision.keyset_bits,
+                event.decision.fallback_used
+            ),
+        );
+    }
+
+    fn record_tensor_join_operation(&mut self, event: &TensorJoinOperationEvent) {
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "tensor_join_op={:?} inputs={:?} out={} dim={} mode={:?} kernel={} key={:?} backend={:?} keyset=0x{:016x} fallback={}",
+                event.op,
+                event.inputs.iter().map(|id| id.0).collect::<Vec<_>>(),
                 event.out.0,
                 event.dim,
                 event.decision.mode,
@@ -3584,5 +3655,138 @@ mod tests {
         // Sum of log_softmax backward gradients should be 0
         let grad_sum: f64 = grads.iter().sum();
         assert!(grad_sum.abs() < 1e-12, "log_softmax grad sum should be 0, got {grad_sum}");
+    }
+
+    // ── cat/stack API tests ─────────────────────────────
+
+    #[test]
+    fn session_tensor_cat_dim0() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("a");
+        let b = session.tensor_variable(vec![7.0, 8.0, 9.0], vec![1, 3], false).expect("b");
+        let y = session.tensor_cat(&[a, b], 0).expect("cat 0");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn session_tensor_cat_dim1() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).expect("a");
+        let b = session.tensor_variable(vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0], vec![2, 3], false).expect("b");
+        let y = session.tensor_cat(&[a, b], 1).expect("cat 1");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 5.0, 6.0, 7.0, 3.0, 4.0, 8.0, 9.0, 10.0]);
+    }
+
+    #[test]
+    fn session_tensor_stack_dim0() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).expect("a");
+        let b = session.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false).expect("b");
+        let y = session.tensor_stack(&[a, b], 0).expect("stack 0");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn session_tensor_cat_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable(vec![1.0, 2.0], vec![1, 2], true).expect("a");
+        let b = session.tensor_variable(vec![3.0, 4.0, 5.0], vec![1, 3], true).expect("b");
+        let y = session.tensor_cat(&[a, b], 1).expect("cat 1");
+        let report = session.tensor_backward(y).expect("backward");
+        let grads_a = report.gradient(a).expect("grad a");
+        let grads_b = report.gradient(b).expect("grad b");
+        assert_eq!(grads_a, &[1.0, 1.0]);
+        assert_eq!(grads_b, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn session_tensor_stack_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).expect("a");
+        let b = session.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], true).expect("b");
+        let y = session.tensor_stack(&[a, b], 0).expect("stack 0");
+        let report = session.tensor_backward(y).expect("backward");
+        let grads_a = report.gradient(a).expect("grad a");
+        let grads_b = report.gradient(b).expect("grad b");
+        assert_eq!(grads_a, &[1.0, 1.0, 1.0]);
+        assert_eq!(grads_b, &[1.0, 1.0, 1.0]);
+    }
+
+    // ---- reshape/view/squeeze/unsqueeze API tests ----
+
+    #[test]
+    fn session_tensor_reshape_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let y = session.tensor_reshape(x, vec![3, 2]).expect("reshape");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn session_tensor_reshape_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true).expect("x");
+        let y = session.tensor_reshape(x, vec![6]).expect("reshape");
+        let report = session.tensor_backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn session_tensor_view_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("x");
+        let y = session.tensor_view(x, vec![2, 2]).expect("view");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn session_tensor_squeeze_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("x");
+        let y = session.tensor_squeeze(x, 0).expect("squeeze");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn session_tensor_squeeze_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).expect("x");
+        let y = session.tensor_squeeze(x, 0).expect("squeeze");
+        let report = session.tensor_backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn session_tensor_unsqueeze_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let y = session.tensor_unsqueeze(x, 0).expect("unsqueeze");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn session_tensor_unsqueeze_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let y = session.tensor_unsqueeze(x, 1).expect("unsqueeze");
+        let report = session.tensor_backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn session_tensor_reshape_mismatched_numel_fails() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        assert!(session.tensor_reshape(x, vec![2]).is_err());
     }
 }
