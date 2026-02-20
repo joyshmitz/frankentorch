@@ -1127,9 +1127,8 @@ pub fn cat_tensor_contiguous_f64(
 ) -> Result<Vec<f64>, KernelError> {
     if inputs.is_empty() {
         return Err(KernelError::ShapeMismatch {
-            op: "cat",
-            expected: "at least one input",
-            got: "zero inputs",
+            lhs: vec![],
+            rhs: vec![],
         });
     }
     let first_shape = inputs[0].1.shape();
@@ -1138,26 +1137,23 @@ pub fn cat_tensor_contiguous_f64(
         return Err(KernelError::InvalidDimension { dim, ndim });
     }
     // Validate shapes match except along cat dim
-    for (i, (data, meta)) in inputs.iter().enumerate() {
+    for (data, meta) in inputs {
         ensure_unary_layout_and_storage(data, meta)?;
         let shape = meta.shape();
         if shape.len() != ndim {
             return Err(KernelError::ShapeMismatch {
-                op: "cat",
-                expected: "same number of dimensions",
-                got: "mismatched ndim",
+                lhs: first_shape.to_vec(),
+                rhs: shape.to_vec(),
             });
         }
         for d in 0..ndim {
             if d != dim && shape[d] != first_shape[d] {
                 return Err(KernelError::ShapeMismatch {
-                    op: "cat",
-                    expected: "matching dimensions except cat dim",
-                    got: "mismatched shape",
+                    lhs: first_shape.to_vec(),
+                    rhs: shape.to_vec(),
                 });
             }
         }
-        let _ = i; // suppress unused
     }
 
     let outer_size: usize = first_shape[..dim].iter().product();
@@ -1189,9 +1185,8 @@ pub fn stack_tensor_contiguous_f64(
 ) -> Result<Vec<f64>, KernelError> {
     if inputs.is_empty() {
         return Err(KernelError::ShapeMismatch {
-            op: "stack",
-            expected: "at least one input",
-            got: "zero inputs",
+            lhs: vec![],
+            rhs: vec![],
         });
     }
     let first_shape = inputs[0].1.shape();
@@ -1205,9 +1200,8 @@ pub fn stack_tensor_contiguous_f64(
         ensure_unary_layout_and_storage(data, meta)?;
         if meta.shape() != first_shape {
             return Err(KernelError::ShapeMismatch {
-                op: "stack",
-                expected: "identical shapes",
-                got: "mismatched shape",
+                lhs: first_shape.to_vec(),
+                rhs: meta.shape().to_vec(),
             });
         }
     }

@@ -10,7 +10,7 @@ use ft_kernel_cpu::{
     ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
     le_tensor_contiguous_f64, log_scalar, log_tensor_contiguous_f64, lt_scalar,
     lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64, max_scalar,
-    log_softmax_dim_tensor_contiguous_f64, max_tensor_contiguous_f64,
+    cat_tensor_contiguous_f64, log_softmax_dim_tensor_contiguous_f64, max_tensor_contiguous_f64,
     mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64,
     softmax_dim_tensor_contiguous_f64,
     min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
@@ -18,8 +18,8 @@ use ft_kernel_cpu::{
     pow_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64, relu_scalar,
     relu_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sqrt_scalar,
     sin_scalar, sin_tensor_contiguous_f64, sqrt_tensor_contiguous_f64, sub_scalar,
-    std_dim_tensor_contiguous_f64, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64,
-    sum_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
+    stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64, sub_tensor_contiguous_f64,
+    sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
     tanh_scalar, tanh_tensor_contiguous_f64, tan_scalar, tan_tensor_contiguous_f64, cos_scalar,
     cos_tensor_contiguous_f64, floor_scalar, floor_tensor_contiguous_f64, ceil_scalar,
     ceil_tensor_contiguous_f64, round_scalar, round_tensor_contiguous_f64, log2_scalar,
@@ -171,6 +171,23 @@ impl NormalizeOp {
         match base {
             "softmax" => Some(Self::Softmax),
             "log_softmax" => Some(Self::LogSoftmax),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinOp {
+    Cat,
+    Stack,
+}
+
+impl JoinOp {
+    #[must_use]
+    pub fn from_schema_base(base: &str) -> Option<Self> {
+        match base {
+            "cat" => Some(Self::Cat),
+            "stack" => Some(Self::Stack),
             _ => None,
         }
     }
@@ -1779,6 +1796,83 @@ pub fn dispatch_tensor_normalize_dim_contiguous_f64(
         decision: NormalizeDimDispatchDecision {
             op,
             dim,
+            mode,
+            kernel,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinDispatchDecision {
+    pub op: JoinOp,
+    pub dim: usize,
+    pub num_inputs: usize,
+    pub mode: ExecutionMode,
+    pub kernel: &'static str,
+    pub selected_key: DispatchKey,
+    pub backend_key: DispatchKey,
+    pub keyset_bits: u64,
+    pub fallback_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorJoinDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: JoinDispatchDecision,
+}
+
+pub fn dispatch_tensor_join_contiguous_f64(
+    op: JoinOp,
+    mode: ExecutionMode,
+    inputs: &[(&[f64], &TensorMeta)],
+    dim: usize,
+    requires_grad: bool,
+) -> Result<TensorJoinDispatchOutcome, DispatchError> {
+    if inputs.is_empty() {
+        return Err(DispatchKeyError::IncompatibleSet {
+            reason: "join op requires at least one input",
+        }
+        .into());
+    }
+    let keyset = dispatch_keyset_for_single_tensor_meta(inputs[0].1, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match (effective_key, op) {
+        (DispatchKey::AutogradCPU, JoinOp::Cat) => (
+            cat_tensor_contiguous_f64(inputs, dim)?,
+            "autograd_cpu::cat_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, JoinOp::Stack) => (
+            stack_tensor_contiguous_f64(inputs, dim)?,
+            "autograd_cpu::stack_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, JoinOp::Cat) => (
+            cat_tensor_contiguous_f64(inputs, dim)?,
+            "cpu::cat_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, JoinOp::Stack) => (
+            stack_tensor_contiguous_f64(inputs, dim)?,
+            "cpu::stack_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor join ops",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorJoinDispatchOutcome {
+        values,
+        decision: JoinDispatchDecision {
+            op,
+            dim,
+            num_inputs: inputs.len(),
             mode,
             kernel,
             selected_key,
