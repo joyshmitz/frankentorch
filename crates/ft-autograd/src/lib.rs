@@ -7295,8 +7295,8 @@ impl TensorTape {
                     // we reduce (sum) the gradient back along those dims.
                     let output_shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
                     let ndim = output_shape.len();
-                    let orig_numel: usize = original_shape.iter().product::<usize>().max(1);
-                    let out_numel: usize = output_shape.iter().product::<usize>().max(1);
+                    let orig_numel: usize = original_shape.iter().product::<usize>();
+                    let out_numel: usize = output_shape.iter().product::<usize>();
                     let mut contrib = vec![0.0; orig_numel];
 
                     let grad_strides = ft_core::contiguous_strides(&output_shape);
