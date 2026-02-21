@@ -1783,27 +1783,37 @@ mod tests {
     use ft_core::{DType, Device, ScalarTensor, TensorCompatError, TensorMeta};
 
     use super::{
-        KernelError, abs_scalar, abs_tensor_contiguous_f64, add_scalar, add_tensor_contiguous_f64,
-        argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64,
-        cat_tensor_contiguous_f64, clamp_scalar, clamp_tensor_contiguous_f64, div_scalar,
-        div_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, exp_scalar,
-        exp_tensor_contiguous_f64, expand_tensor_contiguous_f64, gather_tensor_contiguous_f64,
-        ge_scalar, ge_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64,
-        index_select_tensor_contiguous_f64, le_scalar, le_tensor_contiguous_f64, log_scalar,
-        log_softmax_dim_tensor_contiguous_f64, log_tensor_contiguous_f64, lt_scalar,
-        lt_tensor_contiguous_f64, masked_fill_tensor_contiguous_f64,
-        matmul_tensor_contiguous_f64, max_dim_tensor_contiguous_f64, max_scalar,
-        max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64,
-        min_dim_tensor_contiguous_f64, min_scalar, min_tensor_contiguous_f64, mul_scalar,
-        mul_tensor_contiguous_f64, narrow_tensor_contiguous_f64, ne_scalar,
-        ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64, pow_scalar,
-        pow_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64, reciprocal_scalar,
-        reciprocal_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64,
-        scatter_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64,
+        KernelError, abs_scalar, abs_tensor_contiguous_f64, acos_scalar,
+        acos_tensor_contiguous_f64, add_scalar, add_tensor_contiguous_f64,
+        argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64, asin_scalar,
+        asin_tensor_contiguous_f64, atan_scalar, atan_tensor_contiguous_f64,
+        cat_tensor_contiguous_f64, ceil_scalar, ceil_tensor_contiguous_f64, clamp_scalar,
+        clamp_tensor_contiguous_f64, cos_scalar, cos_tensor_contiguous_f64, cosh_scalar,
+        cosh_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64, eq_scalar,
+        eq_tensor_contiguous_f64, exp_scalar, exp_tensor_contiguous_f64,
+        expand_tensor_contiguous_f64, expm1_scalar, expm1_tensor_contiguous_f64, floor_scalar,
+        floor_tensor_contiguous_f64, gather_tensor_contiguous_f64, ge_scalar,
+        ge_tensor_contiguous_f64, gelu_scalar, gelu_tensor_contiguous_f64, gt_scalar,
+        gt_tensor_contiguous_f64, index_select_tensor_contiguous_f64, le_scalar,
+        le_tensor_contiguous_f64, leaky_relu_scalar, leaky_relu_tensor_contiguous_f64, log_scalar,
+        log_softmax_dim_tensor_contiguous_f64, log_tensor_contiguous_f64, log1p_scalar,
+        log1p_tensor_contiguous_f64, log2_scalar, log2_tensor_contiguous_f64, log10_scalar,
+        log10_tensor_contiguous_f64, lt_scalar, lt_tensor_contiguous_f64,
+        masked_fill_tensor_contiguous_f64, matmul_tensor_contiguous_f64,
+        max_dim_tensor_contiguous_f64, max_scalar, max_tensor_contiguous_f64,
+        mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_dim_tensor_contiguous_f64,
+        min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64,
+        narrow_tensor_contiguous_f64, ne_scalar, ne_tensor_contiguous_f64, neg_scalar,
+        neg_tensor_contiguous_f64, pow_scalar, pow_tensor_contiguous_f64,
+        prod_dim_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
+        relu_scalar, relu_tensor_contiguous_f64, scatter_tensor_contiguous_f64, sigmoid_scalar,
+        sigmoid_tensor_contiguous_f64, sign_scalar, sign_tensor_contiguous_f64, silu_scalar,
+        silu_tensor_contiguous_f64, sinh_scalar, sinh_tensor_contiguous_f64,
         softmax_dim_tensor_contiguous_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
         stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64, sub_scalar,
         sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64,
-        tanh_scalar, tanh_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
+        tanh_scalar, tanh_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
+        var_dim_tensor_contiguous_f64,
     };
 
     #[test]
@@ -3427,5 +3437,335 @@ mod tests {
         let mask = vec![1.0, 0.0]; // too short
         let result = masked_fill_tensor_contiguous_f64(&input, &meta, &mask, -1.0);
         assert!(result.is_err());
+    }
+
+    // ---- cos ----
+
+    #[test]
+    fn cos_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = cos_scalar(&input);
+        assert!((out.value() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cos_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![0.0, std::f64::consts::PI, std::f64::consts::FRAC_PI_2];
+        let out = cos_tensor_contiguous_f64(&input, &meta).expect("cos should succeed");
+        assert!((out[0] - 1.0).abs() < 1e-10);
+        assert!((out[1] - (-1.0)).abs() < 1e-10);
+        assert!(out[2].abs() < 1e-10);
+    }
+
+    // ---- floor ----
+
+    #[test]
+    fn floor_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(3.7, DType::F64, Device::Cpu);
+        let out = floor_scalar(&input);
+        assert_eq!(out.value(), 3.0);
+    }
+
+    #[test]
+    fn floor_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let input = vec![1.1, 2.9, -0.5, -2.1];
+        let out = floor_tensor_contiguous_f64(&input, &meta).expect("floor should succeed");
+        assert_eq!(out, vec![1.0, 2.0, -1.0, -3.0]);
+    }
+
+    // ---- ceil ----
+
+    #[test]
+    fn ceil_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(3.2, DType::F64, Device::Cpu);
+        let out = ceil_scalar(&input);
+        assert_eq!(out.value(), 4.0);
+    }
+
+    #[test]
+    fn ceil_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let input = vec![1.1, 2.9, -0.5, -2.1];
+        let out = ceil_tensor_contiguous_f64(&input, &meta).expect("ceil should succeed");
+        assert_eq!(out, vec![2.0, 3.0, 0.0, -2.0]);
+    }
+
+    // ---- log2 ----
+
+    #[test]
+    fn log2_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(8.0, DType::F64, Device::Cpu);
+        let out = log2_scalar(&input);
+        assert!((out.value() - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn log2_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 4.0];
+        let out = log2_tensor_contiguous_f64(&input, &meta).expect("log2 should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!((out[1] - 1.0).abs() < 1e-10);
+        assert!((out[2] - 2.0).abs() < 1e-10);
+    }
+
+    // ---- log10 ----
+
+    #[test]
+    fn log10_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(1000.0, DType::F64, Device::Cpu);
+        let out = log10_scalar(&input);
+        assert!((out.value() - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn log10_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 10.0, 100.0];
+        let out = log10_tensor_contiguous_f64(&input, &meta).expect("log10 should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!((out[1] - 1.0).abs() < 1e-10);
+        assert!((out[2] - 2.0).abs() < 1e-10);
+    }
+
+    // ---- log1p ----
+
+    #[test]
+    fn log1p_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = log1p_scalar(&input);
+        assert!((out.value() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn log1p_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![0.0, 1.0, std::f64::consts::E - 1.0];
+        let out = log1p_tensor_contiguous_f64(&input, &meta).expect("log1p should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!((out[1] - 2.0_f64.ln()).abs() < 1e-10);
+        assert!((out[2] - 1.0).abs() < 1e-10);
+    }
+
+    // ---- expm1 ----
+
+    #[test]
+    fn expm1_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = expm1_scalar(&input);
+        assert!((out.value() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn expm1_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let input = vec![0.0, 1.0];
+        let out = expm1_tensor_contiguous_f64(&input, &meta).expect("expm1 should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!((out[1] - (std::f64::consts::E - 1.0)).abs() < 1e-10);
+    }
+
+    // ---- sign ----
+
+    #[test]
+    fn sign_scalar_returns_expected_value() {
+        let pos = ScalarTensor::new(5.0, DType::F64, Device::Cpu);
+        let neg = ScalarTensor::new(-3.0, DType::F64, Device::Cpu);
+        let neg_zero = ScalarTensor::new(-0.0, DType::F64, Device::Cpu);
+        assert_eq!(sign_scalar(&pos).value(), 1.0);
+        assert_eq!(sign_scalar(&neg).value(), -1.0);
+        // Rust signum: +0.0 → 1.0, -0.0 → -1.0 (IEEE 754 sign bit)
+        assert_eq!(sign_scalar(&neg_zero).value(), -1.0);
+    }
+
+    #[test]
+    fn sign_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let input = vec![3.0, -2.0, -0.0, -0.5];
+        let out = sign_tensor_contiguous_f64(&input, &meta).expect("sign should succeed");
+        // Rust signum: +3.0→1.0, -2.0→-1.0, -0.0→-1.0, -0.5→-1.0
+        assert_eq!(out, vec![1.0, -1.0, -1.0, -1.0]);
+    }
+
+    // ---- trunc ----
+
+    #[test]
+    fn trunc_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(3.7, DType::F64, Device::Cpu);
+        let out = trunc_scalar(&input);
+        assert_eq!(out.value(), 3.0);
+        let neg = ScalarTensor::new(-2.9, DType::F64, Device::Cpu);
+        assert_eq!(trunc_scalar(&neg).value(), -2.0);
+    }
+
+    #[test]
+    fn trunc_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let input = vec![1.9, -2.9, 0.1, -0.1];
+        let out = trunc_tensor_contiguous_f64(&input, &meta).expect("trunc should succeed");
+        assert_eq!(out, vec![1.0, -2.0, 0.0, 0.0]);
+    }
+
+    // ---- asin ----
+
+    #[test]
+    fn asin_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = asin_scalar(&input);
+        assert!((out.value() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn asin_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![0.0, 0.5, 1.0];
+        let out = asin_tensor_contiguous_f64(&input, &meta).expect("asin should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!((out[1] - std::f64::consts::FRAC_PI_6).abs() < 1e-10);
+        assert!((out[2] - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+    }
+
+    // ---- acos ----
+
+    #[test]
+    fn acos_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(1.0, DType::F64, Device::Cpu);
+        let out = acos_scalar(&input);
+        assert!((out.value() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn acos_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![1.0, 0.0, -1.0];
+        let out = acos_tensor_contiguous_f64(&input, &meta).expect("acos should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!((out[1] - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        assert!((out[2] - std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    // ---- atan ----
+
+    #[test]
+    fn atan_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(1.0, DType::F64, Device::Cpu);
+        let out = atan_scalar(&input);
+        assert!((out.value() - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+    }
+
+    #[test]
+    fn atan_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![0.0, 1.0, -1.0];
+        let out = atan_tensor_contiguous_f64(&input, &meta).expect("atan should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!((out[1] - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+        assert!((out[2] - (-std::f64::consts::FRAC_PI_4)).abs() < 1e-10);
+    }
+
+    // ---- sinh ----
+
+    #[test]
+    fn sinh_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = sinh_scalar(&input);
+        assert!((out.value() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn sinh_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let input = vec![0.0, 1.0];
+        let out = sinh_tensor_contiguous_f64(&input, &meta).expect("sinh should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!((out[1] - 1.0_f64.sinh()).abs() < 1e-10);
+    }
+
+    // ---- cosh ----
+
+    #[test]
+    fn cosh_scalar_returns_expected_value() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = cosh_scalar(&input);
+        assert!((out.value() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cosh_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let input = vec![0.0, 1.0];
+        let out = cosh_tensor_contiguous_f64(&input, &meta).expect("cosh should succeed");
+        assert!((out[0] - 1.0).abs() < 1e-10);
+        assert!((out[1] - 1.0_f64.cosh()).abs() < 1e-10);
+    }
+
+    // ---- gelu ----
+
+    #[test]
+    fn gelu_scalar_returns_expected_value() {
+        let zero = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = gelu_scalar(&zero);
+        assert!((out.value() - 0.0).abs() < 1e-10);
+        // GELU(x) for large positive x ≈ x
+        let large = ScalarTensor::new(5.0, DType::F64, Device::Cpu);
+        let out_large = gelu_scalar(&large);
+        assert!((out_large.value() - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn gelu_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![0.0, -5.0, 5.0];
+        let out = gelu_tensor_contiguous_f64(&input, &meta).expect("gelu should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!(out[1].abs() < 0.01); // GELU(-5) ≈ 0
+        assert!((out[2] - 5.0).abs() < 0.01); // GELU(5) ≈ 5
+    }
+
+    // ---- silu ----
+
+    #[test]
+    fn silu_scalar_returns_expected_value() {
+        let zero = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = silu_scalar(&zero);
+        assert!((out.value() - 0.0).abs() < 1e-10);
+        // SiLU(x) = x * sigmoid(x), for large x → x
+        let large = ScalarTensor::new(10.0, DType::F64, Device::Cpu);
+        let out_large = silu_scalar(&large);
+        assert!((out_large.value() - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn silu_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let input = vec![0.0, -10.0, 10.0];
+        let out = silu_tensor_contiguous_f64(&input, &meta).expect("silu should succeed");
+        assert!((out[0] - 0.0).abs() < 1e-10);
+        assert!(out[1].abs() < 0.001); // SiLU(-10) ≈ 0
+        assert!((out[2] - 10.0).abs() < 0.001); // SiLU(10) ≈ 10
+    }
+
+    // ---- leaky_relu ----
+
+    #[test]
+    fn leaky_relu_scalar_returns_expected_value() {
+        let pos = ScalarTensor::new(3.0, DType::F64, Device::Cpu);
+        let neg = ScalarTensor::new(-2.0, DType::F64, Device::Cpu);
+        assert_eq!(leaky_relu_scalar(&pos).value(), 3.0);
+        assert!((leaky_relu_scalar(&neg).value() - (-0.02)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn leaky_relu_tensor_contiguous_returns_expected_values() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let input = vec![1.0, -1.0, 0.0, -5.0];
+        let out =
+            leaky_relu_tensor_contiguous_f64(&input, &meta).expect("leaky_relu should succeed");
+        assert_eq!(out[0], 1.0);
+        assert!((out[1] - (-0.01)).abs() < 1e-10);
+        assert_eq!(out[2], 0.0);
+        assert!((out[3] - (-0.05)).abs() < 1e-10);
     }
 }

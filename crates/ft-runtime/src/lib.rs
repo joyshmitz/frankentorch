@@ -251,4 +251,95 @@ mod tests {
             durability_entry.summary
         );
     }
+
+    // ── bd-3vnu: untested paths and variants ──
+
+    #[test]
+    fn ledger_is_empty_on_fresh_instance() {
+        let ledger = super::EvidenceLedger::new();
+        assert!(ledger.is_empty());
+        assert_eq!(ledger.len(), 0);
+    }
+
+    #[test]
+    fn ledger_not_empty_after_record() {
+        let mut ledger = super::EvidenceLedger::new();
+        ledger.record(EvidenceKind::Dispatch, "test event");
+        assert!(!ledger.is_empty());
+        assert_eq!(ledger.len(), 1);
+    }
+
+    #[test]
+    fn scrub_status_ok_is_default_for_new_envelope() {
+        let envelope = DurabilityEnvelope::new("art-2", "fixture", "blake3:def", 64, 8, 0.125);
+        assert_eq!(envelope.scrub_status, ScrubStatus::Ok);
+        assert!(envelope.decode_proofs.is_empty());
+    }
+
+    #[test]
+    fn scrub_status_failed_variant() {
+        let mut envelope = DurabilityEnvelope::new("art-3", "fixture", "blake3:ghi", 64, 8, 0.125);
+        envelope.mark_scrub_status(ScrubStatus::Failed);
+        assert_eq!(envelope.scrub_status, ScrubStatus::Failed);
+    }
+
+    #[test]
+    fn durability_envelope_multiple_decode_proofs() {
+        let mut envelope =
+            DurabilityEnvelope::new("art-4", "snapshot", "blake3:jkl", 128, 16, 0.125);
+        envelope.add_decode_proof("proof-1", "hash-1");
+        envelope.add_decode_proof("proof-2", "hash-2");
+        envelope.add_decode_proof("proof-3", "hash-3");
+        assert_eq!(envelope.decode_proofs.len(), 3);
+        assert_eq!(envelope.decode_proofs[0].reason, "proof-1");
+        assert_eq!(envelope.decode_proofs[2].proof_hash, "hash-3");
+    }
+
+    #[test]
+    fn runtime_context_hardened_mode() {
+        let ctx = RuntimeContext::new(ExecutionMode::Hardened);
+        assert_eq!(ctx.mode(), ExecutionMode::Hardened);
+        assert_eq!(ctx.ledger().len(), 1);
+        assert_eq!(ctx.ledger().entries()[0].kind, EvidenceKind::Policy);
+        assert!(ctx.ledger().entries()[0].summary.contains("Hardened"));
+    }
+
+    #[test]
+    fn record_checkpoint_decode_failure_hardened_mode() {
+        let mut ctx = RuntimeContext::new(ExecutionMode::Hardened);
+        ctx.record_checkpoint_decode_failure("hardened", &"test decode error");
+
+        let entry = ctx
+            .ledger()
+            .entries()
+            .iter()
+            .rev()
+            .find(|e| e.kind == EvidenceKind::Durability)
+            .expect("durability entry should be present");
+        assert!(entry.summary.contains("hardened"));
+        assert!(entry.summary.contains("test decode error"));
+    }
+
+    #[test]
+    fn evidence_kind_backward_can_be_recorded() {
+        let mut ledger = super::EvidenceLedger::new();
+        ledger.record(EvidenceKind::Backward, "backward pass completed");
+        assert_eq!(ledger.entries()[0].kind, EvidenceKind::Backward);
+        assert!(ledger.entries()[0].summary.contains("backward"));
+    }
+
+    #[test]
+    fn evidence_entry_timestamps_are_monotonic() {
+        let mut ledger = super::EvidenceLedger::new();
+        ledger.record(EvidenceKind::Dispatch, "first");
+        ledger.record(EvidenceKind::Dispatch, "second");
+        ledger.record(EvidenceKind::Dispatch, "third");
+        // Timestamps should be monotonically non-decreasing
+        for i in 1..ledger.len() {
+            assert!(
+                ledger.entries()[i].ts_unix_ms >= ledger.entries()[i - 1].ts_unix_ms,
+                "timestamps should be monotonically non-decreasing"
+            );
+        }
+    }
 }

@@ -250,4 +250,58 @@ mod tests {
         );
         assert_packet_007_log_contract(&log);
     }
+
+    // ── bd-hcvr: DeviceGuard::device accessor and Cuda paths ──
+
+    #[test]
+    fn guard_device_accessor_returns_correct_device() {
+        let cpu_guard = DeviceGuard::new(Device::Cpu);
+        assert_eq!(cpu_guard.device(), Device::Cpu);
+
+        let cuda_guard = DeviceGuard::new(Device::Cuda);
+        assert_eq!(cuda_guard.device(), Device::Cuda);
+    }
+
+    #[test]
+    fn cuda_guard_accepts_cuda_tensor() {
+        let tensor = ScalarTensor::new(42.0, DType::F64, Device::Cuda);
+        let guard = DeviceGuard::new(Device::Cuda);
+        assert!(guard.ensure_tensor_device(&tensor).is_ok());
+    }
+
+    #[test]
+    fn cuda_guard_rejects_cpu_tensor() {
+        let tensor = ScalarTensor::new(1.0, DType::F64, Device::Cpu);
+        let guard = DeviceGuard::new(Device::Cuda);
+        let err = guard
+            .ensure_tensor_device(&tensor)
+            .expect_err("cpu tensor on cuda guard should fail");
+        assert!(matches!(
+            err,
+            DeviceError::Mismatch {
+                expected: Device::Cuda,
+                actual: Device::Cpu
+            }
+        ));
+    }
+
+    #[test]
+    fn same_device_check_cuda_pair() {
+        let lhs = ScalarTensor::new(1.0, DType::F64, Device::Cuda);
+        let rhs = ScalarTensor::new(2.0, DType::F64, Device::Cuda);
+        let device = ensure_same_device(&lhs, &rhs).expect("cuda pair should match");
+        assert_eq!(device, Device::Cuda);
+    }
+
+    #[test]
+    fn device_error_display() {
+        let err = DeviceError::Mismatch {
+            expected: Device::Cpu,
+            actual: Device::Cuda,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Cpu"));
+        assert!(msg.contains("Cuda"));
+        assert!(msg.contains("mismatch"));
+    }
 }

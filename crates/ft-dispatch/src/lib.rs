@@ -3837,4 +3837,703 @@ mod tests {
             "autograd_cpu::ne_tensor_contiguous_f64"
         );
     }
+
+    // ── bd-2rfh: dispatch_tensor_reduction_contiguous_f64 ──
+
+    #[test]
+    fn dispatch_reduction_sum_strict_no_grad() {
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_reduction_contiguous_f64(
+            super::ReductionOp::Sum,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            false,
+        )
+        .expect("sum reduction dispatch");
+        assert!((out.value - 10.0).abs() < 1e-12);
+        assert_eq!(out.decision.op, super::ReductionOp::Sum);
+        assert_eq!(out.decision.selected_key, DispatchKey::CPU);
+        assert_eq!(out.decision.kernel, "cpu::sum_tensor_contiguous_f64");
+        assert!(!out.decision.fallback_used);
+    }
+
+    #[test]
+    fn dispatch_reduction_mean_strict_with_grad() {
+        let data = vec![2.0, 4.0, 6.0];
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_reduction_contiguous_f64(
+            super::ReductionOp::Mean,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            true,
+        )
+        .expect("mean reduction dispatch with grad");
+        assert!((out.value - 4.0).abs() < 1e-12);
+        assert_eq!(out.decision.selected_key, DispatchKey::AutogradCPU);
+        assert_eq!(
+            out.decision.kernel,
+            "autograd_cpu::mean_tensor_contiguous_f64"
+        );
+    }
+
+    #[test]
+    fn dispatch_reduction_prod_rejects_global_reduction() {
+        let data = vec![1.0, 2.0];
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let err = super::dispatch_tensor_reduction_contiguous_f64(
+            super::ReductionOp::Prod,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            false,
+        )
+        .expect_err("prod global reduction should fail");
+        assert!(
+            matches!(
+                err,
+                DispatchError::Key(DispatchKeyError::IncompatibleSet { .. })
+            ),
+            "expected IncompatibleSet, got {err:?}"
+        );
+    }
+
+    // ── bd-2rfh: dispatch_tensor_reduction_dim_contiguous_f64 ──
+
+    #[test]
+    fn dispatch_reduction_dim_sum() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_reduction_dim_contiguous_f64(
+            super::ReductionOp::Sum,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            1,
+            false,
+        )
+        .expect("sum_dim dispatch");
+        assert_eq!(out.values, vec![6.0, 15.0]);
+        assert_eq!(out.decision.dim, 1);
+        assert_eq!(out.decision.kernel, "cpu::sum_dim_tensor_contiguous_f64");
+    }
+
+    #[test]
+    fn dispatch_reduction_dim_mean_with_grad() {
+        let data = vec![2.0, 4.0, 6.0, 8.0];
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_reduction_dim_contiguous_f64(
+            super::ReductionOp::Mean,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            0,
+            true,
+        )
+        .expect("mean_dim dispatch with grad");
+        assert_eq!(out.values, vec![4.0, 6.0]);
+        assert_eq!(
+            out.decision.kernel,
+            "autograd_cpu::mean_dim_tensor_contiguous_f64"
+        );
+    }
+
+    #[test]
+    fn dispatch_reduction_dim_prod() {
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_reduction_dim_contiguous_f64(
+            super::ReductionOp::Prod,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            1,
+            false,
+        )
+        .expect("prod_dim dispatch");
+        assert_eq!(out.values, vec![2.0, 12.0]);
+        assert_eq!(out.decision.kernel, "cpu::prod_dim_tensor_contiguous_f64");
+    }
+
+    #[test]
+    fn dispatch_reduction_dim_var() {
+        let data = vec![1.0, 3.0, 5.0, 7.0];
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_reduction_dim_contiguous_f64(
+            super::ReductionOp::Var,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            1,
+            false,
+        )
+        .expect("var_dim dispatch");
+        // var([1,3]) = 2.0, var([5,7]) = 2.0
+        assert_eq!(out.values.len(), 2);
+        assert_eq!(out.decision.kernel, "cpu::var_dim_tensor_contiguous_f64");
+    }
+
+    #[test]
+    fn dispatch_reduction_dim_std() {
+        let data = vec![1.0, 3.0, 5.0, 7.0];
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_reduction_dim_contiguous_f64(
+            super::ReductionOp::Std,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            1,
+            false,
+        )
+        .expect("std_dim dispatch");
+        assert_eq!(out.values.len(), 2);
+        assert_eq!(out.decision.kernel, "cpu::std_dim_tensor_contiguous_f64");
+    }
+
+    // ── bd-2rfh: dispatch_tensor_normalize_dim_contiguous_f64 ──
+
+    #[test]
+    fn dispatch_normalize_softmax() {
+        let data = vec![1.0, 2.0, 3.0];
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_normalize_dim_contiguous_f64(
+            super::NormalizeOp::Softmax,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            0,
+            false,
+        )
+        .expect("softmax dispatch");
+        let total: f64 = out.values.iter().sum();
+        assert!((total - 1.0).abs() < 1e-10, "softmax should sum to 1");
+        assert_eq!(
+            out.decision.kernel,
+            "cpu::softmax_dim_tensor_contiguous_f64"
+        );
+        assert_eq!(out.decision.op, super::NormalizeOp::Softmax);
+        assert_eq!(out.decision.dim, 0);
+    }
+
+    #[test]
+    fn dispatch_normalize_log_softmax_with_grad() {
+        let data = vec![1.0, 2.0, 3.0];
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_normalize_dim_contiguous_f64(
+            super::NormalizeOp::LogSoftmax,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            0,
+            true,
+        )
+        .expect("log_softmax dispatch with grad");
+        // log_softmax values should be negative
+        assert!(out.values.iter().all(|&v| v < 0.0));
+        assert_eq!(
+            out.decision.kernel,
+            "autograd_cpu::log_softmax_dim_tensor_contiguous_f64"
+        );
+        assert_eq!(out.decision.selected_key, DispatchKey::AutogradCPU);
+    }
+
+    // ── bd-2rfh: dispatch_tensor_join_contiguous_f64 ──
+
+    #[test]
+    fn dispatch_join_cat() {
+        let a = vec![1.0, 2.0];
+        let b = vec![3.0, 4.0, 5.0];
+        let meta_a = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let meta_b = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let inputs: Vec<(&[f64], &TensorMeta)> = vec![(&a, &meta_a), (&b, &meta_b)];
+        let out = super::dispatch_tensor_join_contiguous_f64(
+            super::JoinOp::Cat,
+            ExecutionMode::Strict,
+            &inputs,
+            0,
+            false,
+        )
+        .expect("cat dispatch");
+        assert_eq!(out.values, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(out.decision.kernel, "cpu::cat_tensor_contiguous_f64");
+        assert_eq!(out.decision.op, super::JoinOp::Cat);
+        assert_eq!(out.decision.num_inputs, 2);
+    }
+
+    #[test]
+    fn dispatch_join_stack_with_grad() {
+        let a = vec![1.0, 2.0];
+        let b = vec![3.0, 4.0];
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let inputs: Vec<(&[f64], &TensorMeta)> = vec![(&a, &meta), (&b, &meta)];
+        let out = super::dispatch_tensor_join_contiguous_f64(
+            super::JoinOp::Stack,
+            ExecutionMode::Strict,
+            &inputs,
+            0,
+            true,
+        )
+        .expect("stack dispatch with grad");
+        assert_eq!(out.values, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            out.decision.kernel,
+            "autograd_cpu::stack_tensor_contiguous_f64"
+        );
+        assert_eq!(out.decision.selected_key, DispatchKey::AutogradCPU);
+    }
+
+    #[test]
+    fn dispatch_join_empty_inputs_rejects() {
+        let inputs: Vec<(&[f64], &TensorMeta)> = vec![];
+        let err = super::dispatch_tensor_join_contiguous_f64(
+            super::JoinOp::Cat,
+            ExecutionMode::Strict,
+            &inputs,
+            0,
+            false,
+        )
+        .expect_err("empty inputs should fail");
+        assert!(
+            matches!(
+                err,
+                DispatchError::Key(DispatchKeyError::IncompatibleSet { .. })
+            ),
+            "expected IncompatibleSet, got {err:?}"
+        );
+    }
+
+    // ── bd-2rfh: dispatch_scalar_pow + dispatch_tensor_pow_contiguous_f64 ──
+
+    #[test]
+    fn dispatch_scalar_pow_no_grad() {
+        let input = ScalarTensor::new(3.0, DType::F64, Device::Cpu);
+        let out = super::dispatch_scalar_pow(ExecutionMode::Strict, &input, 2.0, false)
+            .expect("scalar pow dispatch");
+        assert!((out.tensor.value() - 9.0).abs() < 1e-12);
+        assert_eq!(out.decision.kernel, "cpu::pow_scalar");
+        assert!((out.decision.exponent - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_pow_with_grad() {
+        let input = ScalarTensor::new(2.0, DType::F64, Device::Cpu);
+        let out = super::dispatch_scalar_pow(ExecutionMode::Strict, &input, 3.0, true)
+            .expect("scalar pow dispatch with grad");
+        assert!((out.tensor.value() - 8.0).abs() < 1e-12);
+        assert_eq!(out.decision.kernel, "autograd_cpu::pow_scalar");
+        assert_eq!(out.decision.selected_key, DispatchKey::AutogradCPU);
+    }
+
+    #[test]
+    fn dispatch_tensor_pow() {
+        let data = vec![2.0, 3.0, 4.0];
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_pow_contiguous_f64(
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            2.0,
+            false,
+        )
+        .expect("tensor pow dispatch");
+        assert_eq!(out.values, vec![4.0, 9.0, 16.0]);
+        assert_eq!(out.decision.kernel, "cpu::pow_tensor_contiguous_f64");
+    }
+
+    #[test]
+    fn dispatch_tensor_pow_with_grad() {
+        let data = vec![1.0, 2.0];
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_pow_contiguous_f64(
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            0.5,
+            true,
+        )
+        .expect("tensor pow dispatch with grad");
+        assert!((out.values[0] - 1.0).abs() < 1e-12);
+        assert!((out.values[1] - f64::sqrt(2.0)).abs() < 1e-12);
+        assert_eq!(
+            out.decision.kernel,
+            "autograd_cpu::pow_tensor_contiguous_f64"
+        );
+    }
+
+    // ── bd-2rfh: dispatch_scalar_clamp + dispatch_tensor_clamp_contiguous_f64 ──
+
+    #[test]
+    fn dispatch_scalar_clamp_no_grad() {
+        let input = ScalarTensor::new(5.0, DType::F64, Device::Cpu);
+        let out = super::dispatch_scalar_clamp(ExecutionMode::Strict, &input, 0.0, 3.0, false)
+            .expect("scalar clamp dispatch");
+        assert!((out.tensor.value() - 3.0).abs() < 1e-12);
+        assert_eq!(out.decision.kernel, "cpu::clamp_scalar");
+        assert!((out.decision.min_val - 0.0).abs() < 1e-12);
+        assert!((out.decision.max_val - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_clamp_with_grad() {
+        let input = ScalarTensor::new(-5.0, DType::F64, Device::Cpu);
+        let out = super::dispatch_scalar_clamp(ExecutionMode::Strict, &input, -2.0, 10.0, true)
+            .expect("scalar clamp dispatch with grad");
+        assert!((out.tensor.value() - (-2.0)).abs() < 1e-12);
+        assert_eq!(out.decision.kernel, "autograd_cpu::clamp_scalar");
+        assert_eq!(out.decision.selected_key, DispatchKey::AutogradCPU);
+    }
+
+    #[test]
+    fn dispatch_tensor_clamp() {
+        let data = vec![-1.0, 0.5, 2.0, 5.0];
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_clamp_contiguous_f64(
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            0.0,
+            3.0,
+            false,
+        )
+        .expect("tensor clamp dispatch");
+        assert_eq!(out.values, vec![0.0, 0.5, 2.0, 3.0]);
+        assert_eq!(out.decision.kernel, "cpu::clamp_tensor_contiguous_f64");
+    }
+
+    #[test]
+    fn dispatch_tensor_clamp_with_grad() {
+        let data = vec![1.0, 10.0];
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let out = super::dispatch_tensor_clamp_contiguous_f64(
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            2.0,
+            8.0,
+            true,
+        )
+        .expect("tensor clamp dispatch with grad");
+        assert_eq!(out.values, vec![2.0, 8.0]);
+        assert_eq!(
+            out.decision.kernel,
+            "autograd_cpu::clamp_tensor_contiguous_f64"
+        );
+        assert_eq!(out.decision.selected_key, DispatchKey::AutogradCPU);
+    }
+
+    // ── bd-2rfh: dispatch_scalar_unary with multiple ops (not just Neg) ──
+
+    #[test]
+    fn dispatch_scalar_unary_abs() {
+        let input = ScalarTensor::new(-7.0, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Abs, ExecutionMode::Strict, &input, false)
+            .expect("abs scalar dispatch");
+        assert!((out.tensor.value() - 7.0).abs() < 1e-12);
+        assert_eq!(out.decision.kernel, "cpu::abs_scalar");
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_exp_with_grad() {
+        let input = ScalarTensor::new(1.0, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Exp, ExecutionMode::Strict, &input, true)
+            .expect("exp scalar dispatch with grad");
+        assert!((out.tensor.value() - std::f64::consts::E).abs() < 1e-12);
+        assert_eq!(out.decision.kernel, "autograd_cpu::exp_scalar");
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_log() {
+        let input = ScalarTensor::new(std::f64::consts::E, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Log, ExecutionMode::Strict, &input, false)
+            .expect("log scalar dispatch");
+        assert!((out.tensor.value() - 1.0).abs() < 1e-12);
+        assert_eq!(out.decision.kernel, "cpu::log_scalar");
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_relu() {
+        let input = ScalarTensor::new(-3.0, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Relu, ExecutionMode::Strict, &input, false)
+            .expect("relu scalar dispatch");
+        assert!((out.tensor.value() - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_sigmoid() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Sigmoid, ExecutionMode::Strict, &input, false)
+            .expect("sigmoid scalar dispatch");
+        assert!((out.tensor.value() - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_tanh() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Tanh, ExecutionMode::Strict, &input, false)
+            .expect("tanh scalar dispatch");
+        assert!((out.tensor.value() - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_sqrt() {
+        let input = ScalarTensor::new(16.0, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Sqrt, ExecutionMode::Strict, &input, false)
+            .expect("sqrt scalar dispatch");
+        assert!((out.tensor.value() - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_sin() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Sin, ExecutionMode::Strict, &input, false)
+            .expect("sin scalar dispatch");
+        assert!((out.tensor.value() - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_cos() {
+        let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Cos, ExecutionMode::Strict, &input, false)
+            .expect("cos scalar dispatch");
+        assert!((out.tensor.value() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_floor() {
+        let input = ScalarTensor::new(2.7, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Floor, ExecutionMode::Strict, &input, false)
+            .expect("floor scalar dispatch");
+        assert!((out.tensor.value() - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispatch_scalar_unary_ceil() {
+        let input = ScalarTensor::new(2.1, DType::F64, Device::Cpu);
+        let out = dispatch_scalar_unary(UnaryOp::Ceil, ExecutionMode::Strict, &input, false)
+            .expect("ceil scalar dispatch");
+        assert!((out.tensor.value() - 3.0).abs() < 1e-12);
+    }
+
+    // ── bd-2rfh: dispatch_tensor_unary with multiple ops ──
+
+    #[test]
+    fn dispatch_tensor_unary_abs() {
+        let data = vec![-1.0, 2.0, -3.0];
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let out = dispatch_tensor_unary_contiguous_f64(
+            UnaryOp::Abs,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            false,
+        )
+        .expect("abs tensor dispatch");
+        assert_eq!(out.values, vec![1.0, 2.0, 3.0]);
+        assert_eq!(out.decision.kernel, "cpu::abs_tensor_contiguous_f64");
+    }
+
+    #[test]
+    fn dispatch_tensor_unary_relu_with_grad() {
+        let data = vec![-1.0, 0.0, 1.0, 2.0];
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let out = dispatch_tensor_unary_contiguous_f64(
+            UnaryOp::Relu,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            true,
+        )
+        .expect("relu tensor dispatch with grad");
+        assert_eq!(out.values, vec![0.0, 0.0, 1.0, 2.0]);
+        assert_eq!(
+            out.decision.kernel,
+            "autograd_cpu::relu_tensor_contiguous_f64"
+        );
+    }
+
+    #[test]
+    fn dispatch_tensor_unary_exp() {
+        let data = vec![0.0, 1.0];
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let out = dispatch_tensor_unary_contiguous_f64(
+            UnaryOp::Exp,
+            ExecutionMode::Strict,
+            &data,
+            &meta,
+            false,
+        )
+        .expect("exp tensor dispatch");
+        assert!((out.values[0] - 1.0).abs() < 1e-12);
+        assert!((out.values[1] - std::f64::consts::E).abs() < 1e-12);
+    }
+
+    // ── bd-2rfh: from_schema_base coverage for non-BinaryOp enums ──
+
+    #[test]
+    fn unary_op_from_schema_base_covers_all_variants() {
+        let cases = [
+            ("neg", UnaryOp::Neg),
+            ("abs", UnaryOp::Abs),
+            ("exp", UnaryOp::Exp),
+            ("log", UnaryOp::Log),
+            ("relu", UnaryOp::Relu),
+            ("sigmoid", UnaryOp::Sigmoid),
+            ("tanh", UnaryOp::Tanh),
+            ("sqrt", UnaryOp::Sqrt),
+            ("reciprocal", UnaryOp::Reciprocal),
+            ("sin", UnaryOp::Sin),
+            ("cos", UnaryOp::Cos),
+            ("tan", UnaryOp::Tan),
+            ("floor", UnaryOp::Floor),
+            ("ceil", UnaryOp::Ceil),
+            ("round", UnaryOp::Round),
+            ("log2", UnaryOp::Log2),
+            ("log10", UnaryOp::Log10),
+            ("log1p", UnaryOp::Log1p),
+            ("expm1", UnaryOp::Expm1),
+            ("sign", UnaryOp::Sign),
+            ("trunc", UnaryOp::Trunc),
+            ("frac", UnaryOp::Frac),
+            ("asin", UnaryOp::Asin),
+            ("acos", UnaryOp::Acos),
+            ("atan", UnaryOp::Atan),
+            ("sinh", UnaryOp::Sinh),
+            ("cosh", UnaryOp::Cosh),
+            ("gelu", UnaryOp::Gelu),
+            ("silu", UnaryOp::Silu),
+            ("leaky_relu", UnaryOp::LeakyRelu),
+            ("elu", UnaryOp::Elu),
+        ];
+        for (base, expected) in &cases {
+            assert_eq!(
+                UnaryOp::from_schema_base(base),
+                Some(*expected),
+                "from_schema_base(\"{base}\") should map correctly"
+            );
+        }
+        assert_eq!(UnaryOp::from_schema_base("nonexistent"), None);
+    }
+
+    #[test]
+    fn reduction_op_from_schema_base() {
+        assert_eq!(
+            super::ReductionOp::from_schema_base("sum"),
+            Some(super::ReductionOp::Sum)
+        );
+        assert_eq!(
+            super::ReductionOp::from_schema_base("mean"),
+            Some(super::ReductionOp::Mean)
+        );
+        assert_eq!(
+            super::ReductionOp::from_schema_base("prod"),
+            Some(super::ReductionOp::Prod)
+        );
+        assert_eq!(
+            super::ReductionOp::from_schema_base("var"),
+            Some(super::ReductionOp::Var)
+        );
+        assert_eq!(
+            super::ReductionOp::from_schema_base("std"),
+            Some(super::ReductionOp::Std)
+        );
+        assert_eq!(super::ReductionOp::from_schema_base("xyz"), None);
+    }
+
+    #[test]
+    fn normalize_op_from_schema_base() {
+        assert_eq!(
+            super::NormalizeOp::from_schema_base("softmax"),
+            Some(super::NormalizeOp::Softmax)
+        );
+        assert_eq!(
+            super::NormalizeOp::from_schema_base("log_softmax"),
+            Some(super::NormalizeOp::LogSoftmax)
+        );
+        assert_eq!(super::NormalizeOp::from_schema_base("nope"), None);
+    }
+
+    #[test]
+    fn join_op_from_schema_base() {
+        assert_eq!(
+            super::JoinOp::from_schema_base("cat"),
+            Some(super::JoinOp::Cat)
+        );
+        assert_eq!(
+            super::JoinOp::from_schema_base("stack"),
+            Some(super::JoinOp::Stack)
+        );
+        assert_eq!(super::JoinOp::from_schema_base("nope"), None);
+    }
+
+    #[test]
+    fn comparison_op_from_schema_base() {
+        assert_eq!(ComparisonOp::from_schema_base("eq"), Some(ComparisonOp::Eq));
+        assert_eq!(ComparisonOp::from_schema_base("ne"), Some(ComparisonOp::Ne));
+        assert_eq!(ComparisonOp::from_schema_base("lt"), Some(ComparisonOp::Lt));
+        assert_eq!(ComparisonOp::from_schema_base("gt"), Some(ComparisonOp::Gt));
+        assert_eq!(ComparisonOp::from_schema_base("le"), Some(ComparisonOp::Le));
+        assert_eq!(ComparisonOp::from_schema_base("ge"), Some(ComparisonOp::Ge));
+        assert_eq!(ComparisonOp::from_schema_base("xyz"), None);
+    }
+
+    // ── bd-2rfh: SchemaRegistry len/is_empty/iter ──
+
+    #[test]
+    fn schema_registry_len_and_is_empty() {
+        let mut registry = SchemaRegistry::new();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+
+        let keyset =
+            super::DispatchKeySet::from_keys(&[DispatchKey::CPU, DispatchKey::AutogradCPU]);
+        let parsed = parse_schema_or_name("add").unwrap();
+        registry.register(&parsed, keyset).unwrap();
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn schema_registry_iter() {
+        let mut registry = SchemaRegistry::new();
+        let keyset =
+            super::DispatchKeySet::from_keys(&[DispatchKey::CPU, DispatchKey::AutogradCPU]);
+        let parsed_add = parse_schema_or_name("add").unwrap();
+        let parsed_sub = parse_schema_or_name("sub").unwrap();
+        registry.register(&parsed_add, keyset).unwrap();
+        registry.register(&parsed_sub, keyset).unwrap();
+
+        let names: Vec<&str> = registry
+            .iter()
+            .map(|e| e.normalized_name.as_str())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"add"));
+        assert!(names.contains(&"sub"));
+    }
+
+    // ── bd-2rfh: DispatchKeyError::NoTypeKey and NoBackendKey ──
+
+    #[test]
+    fn dispatch_keyset_no_type_key() {
+        // A keyset with only Undefined bit set triggers NoTypeKey
+        // but Undefined is bit 0, which is not in TYPE_PRIORITY
+        let keyset = super::DispatchKeySet::from_keys(&[DispatchKey::Undefined]);
+        let err = keyset
+            .highest_priority_type_id()
+            .expect_err("should fail with NoTypeKey");
+        assert_eq!(err, DispatchKeyError::NoTypeKey);
+    }
+
+    #[test]
+    fn dispatch_keyset_no_backend_key() {
+        // A keyset with AutogradCPU only — has type key but no backend key
+        // But validate_for_scalar_binary rejects this first. Test highest_priority_backend_type_id directly.
+        let keyset = super::DispatchKeySet::from_keys(&[DispatchKey::AutogradCPU]);
+        let err = keyset
+            .highest_priority_backend_type_id()
+            .expect_err("should fail with NoBackendKey");
+        assert_eq!(err, DispatchKeyError::NoBackendKey);
+    }
 }

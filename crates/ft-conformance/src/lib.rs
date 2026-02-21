@@ -19,6 +19,7 @@ use ft_dispatch::{
     dispatch_scalar_binary, dispatch_scalar_binary_registered, dispatch_scalar_binary_with_keyset,
     parse_schema_or_name, schema_dispatch_keyset_from_tags,
 };
+use ft_optim::{Adam, Optimizer, SGD};
 use ft_runtime::{EvidenceEntry, EvidenceKind, RuntimeContext};
 use ft_serialize::{
     CheckpointMode, DecodeMode, DecodeProofArtifact, RaptorQSidecar,
@@ -184,6 +185,21 @@ impl NnStateCaseReport {
     #[must_use]
     pub fn passed(&self) -> bool {
         self.expectation_ok && self.detail_ok
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptimizerCaseReport {
+    pub name: String,
+    pub mode: ExecutionMode,
+    pub params_ok: bool,
+    pub forensic_log: StructuredCaseLog,
+}
+
+impl OptimizerCaseReport {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.params_ok
     }
 }
 
@@ -447,6 +463,38 @@ struct NnStateModeExpectation {
     expect_prefix_normalization_applied: Option<bool>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct OptimizerFixtureFile {
+    cases: Vec<OptimizerCase>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OptimizerCase {
+    name: String,
+    optimizer: String,
+    lr: f64,
+    momentum: Option<f64>,
+    nesterov: Option<bool>,
+    weight_decay: Option<f64>,
+    beta1: Option<f64>,
+    beta2: Option<f64>,
+    eps: Option<f64>,
+    tolerance: Option<f64>,
+    parameters: Vec<OptimizerParameterCase>,
+    #[serde(default)]
+    contract_ids: Vec<String>,
+    #[serde(default)]
+    e2e_scenarios: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OptimizerParameterCase {
+    shape: Vec<usize>,
+    values: Vec<f64>,
+    grads: Vec<f64>,
+    expected_values: Vec<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ScalarObservation {
     output: f64,
@@ -460,6 +508,17 @@ struct LegacyUnaryGradObservation {
     x_grad: f64,
     y_grad: f64,
     reentrant_guard_triggered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LegacyOptimizerObservation {
+    params: Vec<Vec<f64>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct OptimizerObservation {
+    params: Vec<Vec<f64>>,
+    runtime_evidence: Vec<EvidenceEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -583,6 +642,10 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
         .map_or((0, 0), |(_, cases)| {
             summarize_passes(cases.iter().map(NnStateCaseReport::passed))
         });
+    let (optimizer_total, optimizer_passed) = run_optimizer_conformance(config, mode)
+        .map_or((0, 0), |(_, cases)| {
+            summarize_passes(cases.iter().map(OptimizerCaseReport::passed))
+        });
 
     HarnessReport {
         suite: "smoke",
@@ -596,7 +659,8 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
             + op_schema_total
             + scheduler_total
             + serialization_total
-            + nn_state_total,
+            + nn_state_total
+            + optimizer_total,
         cases_passed: scalar_passed
             + tensor_binary_passed
             + tensor_meta_passed
@@ -604,7 +668,8 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
             + op_schema_passed
             + scheduler_passed
             + serialization_passed
-            + nn_state_passed,
+            + nn_state_passed
+            + optimizer_passed,
     }
 }
 
@@ -862,6 +927,33 @@ fn run_nn_state_conformance_with_fixture(
     Ok((report, case_reports))
 }
 
+pub fn run_optimizer_conformance(
+    config: &HarnessConfig,
+    mode: ExecutionMode,
+) -> Result<(HarnessReport, Vec<OptimizerCaseReport>), String> {
+    let fixture_path = config.fixture_root.join("optimizer_cases.json");
+    let fixture: OptimizerFixtureFile = load_fixture(&fixture_path)?;
+
+    let mut case_reports = Vec::with_capacity(fixture.cases.len());
+    for case in &fixture.cases {
+        case_reports.push(run_optimizer_case(case, mode)?);
+    }
+
+    let (cases_total, cases_passed) =
+        summarize_passes(case_reports.iter().map(OptimizerCaseReport::passed));
+
+    let report = HarnessReport {
+        suite: "optimizer_state",
+        oracle_present: config.oracle_root.exists(),
+        fixture_count: 1,
+        strict_mode: mode == ExecutionMode::Strict,
+        cases_total,
+        cases_passed,
+    };
+
+    Ok((report, case_reports))
+}
+
 pub fn emit_e2e_forensics_matrix(
     config: &HarnessConfig,
     output_path: &Path,
@@ -889,6 +981,7 @@ pub fn emit_e2e_forensics_matrix_filtered(
     let include_ft_p2c_006 = packet_in_scope(packet_filter, "FT-P2C-006");
     let include_ft_p2c_007 = packet_in_scope(packet_filter, "FT-P2C-007");
     let include_ft_p2c_008 = packet_in_scope(packet_filter, "FT-P2C-008");
+    let include_ft_p2c_009 = packet_in_scope(packet_filter, "FT-P2C-009");
 
     let scalar_fixture = if include_ft_p2c_001 || include_ft_p2c_005 {
         let fixture_path = config.fixture_root.join("scalar_autograd_cases.json");
@@ -911,6 +1004,12 @@ pub fn emit_e2e_forensics_matrix_filtered(
     let nn_state_fixture = if include_ft_p2c_008 {
         let fixture_path = config.fixture_root.join("nn_state_cases.json");
         Some(load_fixture::<NnStateFixtureFile>(&fixture_path)?)
+    } else {
+        None
+    };
+    let optimizer_fixture = if include_ft_p2c_009 {
+        let fixture_path = config.fixture_root.join("optimizer_cases.json");
+        Some(load_fixture::<OptimizerFixtureFile>(&fixture_path)?)
     } else {
         None
     };
@@ -984,6 +1083,12 @@ pub fn emit_e2e_forensics_matrix_filtered(
             let (_, nn_state_cases) = run_nn_state_conformance_with_fixture(config, mode, fixture)?;
             logs.extend(nn_state_cases.into_iter().map(|case| case.forensic_log));
         }
+
+        if let Some(fixture) = optimizer_fixture.as_ref() {
+            for case in &fixture.cases {
+                logs.push(run_optimizer_case(case, mode)?.forensic_log);
+            }
+        }
     }
 
     if let Some(packet_id) = packet_filter {
@@ -1047,6 +1152,7 @@ fn emit_e2e_forensics_matrix_filtered_legacy(
         let include_ft_p2c_006 = packet_in_scope(packet_filter, "FT-P2C-006");
         let include_ft_p2c_007 = packet_in_scope(packet_filter, "FT-P2C-007");
         let include_ft_p2c_008 = packet_in_scope(packet_filter, "FT-P2C-008");
+        let include_ft_p2c_009 = packet_in_scope(packet_filter, "FT-P2C-009");
 
         if include_ft_p2c_001 {
             let (_, scalar_cases) = run_scalar_conformance(config, mode)?;
@@ -1093,6 +1199,11 @@ fn emit_e2e_forensics_matrix_filtered_legacy(
         if include_ft_p2c_008 {
             let (_, nn_state_cases) = run_nn_state_conformance(config, mode)?;
             logs.extend(nn_state_cases.into_iter().map(|case| case.forensic_log));
+        }
+
+        if include_ft_p2c_009 {
+            let (_, optimizer_cases) = run_optimizer_conformance(config, mode)?;
+            logs.extend(optimizer_cases.into_iter().map(|case| case.forensic_log));
         }
 
         if include_ft_p2c_005 {
@@ -2694,6 +2805,87 @@ pub fn run_differential_conformance(
                 ));
             }
         }
+
+        let optimizer_fixture: OptimizerFixtureFile =
+            load_fixture(&config.fixture_root.join("optimizer_cases.json"))?;
+        for case in optimizer_fixture.cases {
+            let optimizer_evidence_refs = optimizer_differential_evidence_refs();
+            let tolerance = case.tolerance.unwrap_or(1e-10);
+            let local = evaluate_optimizer_with_session(&case, mode)?;
+
+            checks.push(compare_bool(
+                &allowlist,
+                "optimizer_state",
+                "FT-P2C-009",
+                mode,
+                case.name.as_str(),
+                "fixture_expectation",
+                "optimizer.fixture_expectation_mismatch",
+                optimizer_case_matches_expected(
+                    local.params.as_slice(),
+                    case.parameters.as_slice(),
+                    tolerance,
+                ),
+                true,
+                optimizer_evidence_refs.clone(),
+            ));
+
+            let replay = evaluate_optimizer_with_session(&case, mode)?;
+            checks.push(compare_bool(
+                &allowlist,
+                "optimizer_state",
+                "FT-P2C-009",
+                mode,
+                case.name.as_str(),
+                "metamorphic_replay_stable",
+                "optimizer.metamorphic_replay_instability",
+                optimizer_params_within_tolerance(
+                    local.params.as_slice(),
+                    replay.params.as_slice(),
+                    tolerance,
+                ),
+                true,
+                optimizer_evidence_refs.clone(),
+            ));
+
+            match query_legacy_optimizer_oracle(config, &case) {
+                Ok(oracle) => {
+                    checks.push(compare_bool(
+                        &allowlist,
+                        "optimizer_state",
+                        "FT-P2C-009",
+                        mode,
+                        case.name.as_str(),
+                        "abs_tol_vector",
+                        optimizer_drift_id(&case),
+                        optimizer_params_within_tolerance(
+                            local.params.as_slice(),
+                            oracle.params.as_slice(),
+                            tolerance,
+                        ),
+                        true,
+                        optimizer_evidence_refs,
+                    ));
+                }
+                Err(reason) => checks.push(DifferentialCheck {
+                    suite: "optimizer_state",
+                    packet_id: "FT-P2C-009",
+                    scenario_id: scenario_id("optimizer_state", mode, case.name.as_str()),
+                    case_name: case.name.clone(),
+                    mode: mode_str,
+                    comparator: "oracle.optimizer",
+                    status: "oracle_unavailable",
+                    allowlisted: false,
+                    drift_id: None,
+                    reason_code: "legacy_oracle_unavailable".to_string(),
+                    observed: reason,
+                    expected: "legacy_oracle_response".to_string(),
+                    evidence_refs: vec![
+                        "crates/ft-conformance/fixtures/optimizer_cases.json".to_string(),
+                    ],
+                }),
+            }
+        }
     }
 
     checks.sort_by(|left, right| {
@@ -4102,6 +4294,294 @@ fn run_nn_state_case(case: &NnStateCase, mode: ExecutionMode) -> Result<NnStateC
     })
 }
 
+fn run_optimizer_case(
+    case: &OptimizerCase,
+    mode: ExecutionMode,
+) -> Result<OptimizerCaseReport, String> {
+    let observation = evaluate_optimizer_with_session(case, mode)?;
+    let tolerance = case.tolerance.unwrap_or(1e-10);
+    let params_ok = optimizer_case_matches_expected(
+        observation.params.as_slice(),
+        case.parameters.as_slice(),
+        tolerance,
+    );
+    let reason_code = if params_ok {
+        "optimizer_parity_ok"
+    } else {
+        "optimizer_param_mismatch"
+    };
+
+    let mut extra_fields = optimizer_forensic_fields(
+        case,
+        mode,
+        observation.params.as_slice(),
+        tolerance,
+        params_ok,
+    );
+    extra_fields.insert(
+        "runtime_evidence".to_string(),
+        runtime_evidence_field(observation.runtime_evidence.as_slice()),
+    );
+
+    Ok(OptimizerCaseReport {
+        name: case.name.clone(),
+        mode,
+        params_ok,
+        forensic_log: StructuredCaseLog::new(
+            "optimizer_state",
+            "optimizer_cases.json",
+            "FT-P2C-009",
+            case.name.as_str(),
+            mode,
+            optimizer_evidence_refs(),
+            format!(
+                "cargo test -p ft-conformance strict_optimizer_conformance_is_green -- --nocapture # mode={}",
+                mode_label(mode)
+            ),
+            if params_ok { "pass" } else { "fail" },
+            reason_code.to_string(),
+        )
+        .with_extra_fields(extra_fields),
+    })
+}
+
+fn evaluate_optimizer_with_session(
+    case: &OptimizerCase,
+    mode: ExecutionMode,
+) -> Result<OptimizerObservation, String> {
+    if case.parameters.is_empty() {
+        return Err(format!(
+            "optimizer case '{}' has no parameter entries",
+            case.name
+        ));
+    }
+
+    let mut session = FrankenTorchSession::new(mode);
+    let mut parameter_nodes = Vec::with_capacity(case.parameters.len());
+    let mut loss_terms = Vec::with_capacity(case.parameters.len());
+
+    for (index, parameter_case) in case.parameters.iter().enumerate() {
+        let expected_numel =
+            checked_shape_numel(parameter_case.shape.as_slice()).map_err(|error| {
+                format!(
+                    "optimizer case '{}' parameter {} invalid shape {:?}: {error}",
+                    case.name, index, parameter_case.shape
+                )
+            })?;
+
+        if parameter_case.values.len() != expected_numel {
+            return Err(format!(
+                "optimizer case '{}' parameter {} values length mismatch: expected {} got {}",
+                case.name,
+                index,
+                expected_numel,
+                parameter_case.values.len()
+            ));
+        }
+        if parameter_case.grads.len() != expected_numel {
+            return Err(format!(
+                "optimizer case '{}' parameter {} grads length mismatch: expected {} got {}",
+                case.name,
+                index,
+                expected_numel,
+                parameter_case.grads.len()
+            ));
+        }
+        if parameter_case.expected_values.len() != expected_numel {
+            return Err(format!(
+                "optimizer case '{}' parameter {} expected_values length mismatch: expected {} got {}",
+                case.name,
+                index,
+                expected_numel,
+                parameter_case.expected_values.len()
+            ));
+        }
+
+        let parameter_node = session
+            .tensor_variable(
+                parameter_case.values.clone(),
+                parameter_case.shape.clone(),
+                true,
+            )
+            .map_err(|error| {
+                format!(
+                    "optimizer case '{}' parameter {} variable creation failed: {error}",
+                    case.name, index
+                )
+            })?;
+        let gradient_seed = session
+            .tensor_variable(
+                parameter_case.grads.clone(),
+                parameter_case.shape.clone(),
+                false,
+            )
+            .map_err(|error| {
+                format!(
+                    "optimizer case '{}' parameter {} grad seed creation failed: {error}",
+                    case.name, index
+                )
+            })?;
+        let weighted = session
+            .tensor_mul(parameter_node, gradient_seed)
+            .map_err(|error| {
+                format!(
+                    "optimizer case '{}' parameter {} weighted term failed: {error}",
+                    case.name, index
+                )
+            })?;
+        let reduced = session.tensor_sum(weighted).map_err(|error| {
+            format!(
+                "optimizer case '{}' parameter {} reduction failed: {error}",
+                case.name, index
+            )
+        })?;
+        parameter_nodes.push(parameter_node);
+        loss_terms.push(reduced);
+    }
+
+    let mut total_loss = *loss_terms
+        .first()
+        .ok_or_else(|| format!("optimizer case '{}' produced no loss terms", case.name))?;
+    for term in loss_terms.into_iter().skip(1) {
+        total_loss = session.tensor_add(total_loss, term).map_err(|error| {
+            format!(
+                "optimizer case '{}' aggregate loss add failed: {error}",
+                case.name
+            )
+        })?;
+    }
+
+    let backward_report = session.tensor_backward(total_loss).map_err(|error| {
+        format!(
+            "optimizer case '{}' backward graph execution failed: {error}",
+            case.name
+        )
+    })?;
+
+    apply_optimizer_step(
+        case,
+        &mut session,
+        &backward_report,
+        parameter_nodes.as_slice(),
+    )?;
+
+    let mut params = Vec::with_capacity(parameter_nodes.len());
+    for (index, parameter_node) in parameter_nodes.iter().copied().enumerate() {
+        let values = session.tensor_values(parameter_node).map_err(|error| {
+            format!(
+                "optimizer case '{}' parameter {} value read failed: {error}",
+                case.name, index
+            )
+        })?;
+        params.push(values);
+    }
+
+    Ok(OptimizerObservation {
+        params,
+        runtime_evidence: session.evidence().to_vec(),
+    })
+}
+
+fn apply_optimizer_step(
+    case: &OptimizerCase,
+    session: &mut FrankenTorchSession,
+    report: &ft_autograd::TensorBackwardReport,
+    parameters: &[ft_autograd::TensorNodeId],
+) -> Result<(), String> {
+    match case.optimizer.as_str() {
+        "sgd" => {
+            let mut optimizer = SGD::new(parameters.to_vec(), case.lr);
+            if let Some(momentum) = case.momentum {
+                optimizer = optimizer.momentum(momentum);
+            }
+            if let Some(weight_decay) = case.weight_decay {
+                optimizer = optimizer.weight_decay(weight_decay);
+            }
+            if let Some(nesterov) = case.nesterov {
+                optimizer = optimizer.nesterov(nesterov);
+            }
+
+            optimizer
+                .step(session, report)
+                .map_err(|error| format!("optimizer case '{}' sgd step failed: {error}", case.name))
+        }
+        "adam" => {
+            let mut optimizer = Adam::new(parameters.to_vec(), case.lr);
+            if let Some(weight_decay) = case.weight_decay {
+                optimizer = optimizer.weight_decay(weight_decay);
+            }
+            if case.beta1.is_some() || case.beta2.is_some() {
+                optimizer = optimizer.betas(case.beta1.unwrap_or(0.9), case.beta2.unwrap_or(0.999));
+            }
+            if let Some(eps) = case.eps {
+                optimizer = optimizer.eps(eps);
+            }
+
+            optimizer.step(session, report).map_err(|error| {
+                format!("optimizer case '{}' adam step failed: {error}", case.name)
+            })
+        }
+        other => Err(format!(
+            "unsupported optimizer '{}' in case '{}'",
+            other, case.name
+        )),
+    }
+}
+
+fn optimizer_case_matches_expected(
+    actual_params: &[Vec<f64>],
+    expected_params: &[OptimizerParameterCase],
+    tolerance: f64,
+) -> bool {
+    if actual_params.len() != expected_params.len() {
+        return false;
+    }
+
+    actual_params
+        .iter()
+        .zip(expected_params)
+        .all(|(actual, expected)| {
+            actual.len() == expected.expected_values.len()
+                && actual
+                    .iter()
+                    .zip(expected.expected_values.iter())
+                    .all(|(observed, wanted)| within(*observed, *wanted, tolerance))
+        })
+}
+
+fn optimizer_params_within_tolerance(
+    left: &[Vec<f64>],
+    right: &[Vec<f64>],
+    tolerance: f64,
+) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    left.iter().zip(right).all(|(lhs, rhs)| {
+        lhs.len() == rhs.len()
+            && lhs
+                .iter()
+                .zip(rhs.iter())
+                .all(|(lhs_value, rhs_value)| within(*lhs_value, *rhs_value, tolerance))
+    })
+}
+
+fn optimizer_drift_id(case: &OptimizerCase) -> &'static str {
+    match case.optimizer.as_str() {
+        "sgd" => "optimizer.sgd_param_mismatch",
+        "adam" => "optimizer.adam_param_mismatch",
+        _ => "optimizer.param_mismatch",
+    }
+}
+
+fn checked_shape_numel(shape: &[usize]) -> Result<usize, String> {
+    shape.iter().try_fold(1usize, |acc, &dim| {
+        acc.checked_mul(dim)
+            .ok_or_else(|| format!("shape numel overflow for shape {shape:?}"))
+    })
+}
+
 fn nn_state_export_keys(case: &NnStateCase) -> Vec<String> {
     let mut keys = case.parameter_keys.clone();
     keys.extend(case.persistent_buffer_keys.iter().cloned());
@@ -4548,6 +5028,54 @@ fn query_legacy_scheduler_oracle(
     })
 }
 
+fn query_legacy_optimizer_oracle(
+    config: &HarnessConfig,
+    case: &OptimizerCase,
+) -> Result<LegacyOptimizerObservation, String> {
+    let payload = json!({
+        "optimizer": case.optimizer,
+        "lr": case.lr,
+        "momentum": case.momentum,
+        "nesterov": case.nesterov,
+        "weight_decay": case.weight_decay,
+        "beta1": case.beta1,
+        "beta2": case.beta2,
+        "eps": case.eps,
+        "parameters": case.parameters,
+    });
+    let value = run_legacy_oracle_script(config, LEGACY_OPTIMIZER_ORACLE_SCRIPT, &payload)?;
+    let params = value
+        .get("params")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "legacy optimizer oracle response missing params".to_string())?
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| {
+            parameter
+                .as_array()
+                .ok_or_else(|| {
+                    format!(
+                        "legacy optimizer oracle parameter {} must be an array",
+                        index
+                    )
+                })?
+                .iter()
+                .enumerate()
+                .map(|(value_index, value)| {
+                    value.as_f64().ok_or_else(|| {
+                        format!(
+                            "legacy optimizer oracle parameter {} index {} must be numeric",
+                            index, value_index
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(LegacyOptimizerObservation { params })
+}
+
 fn run_legacy_oracle_script(
     config: &HarnessConfig,
     script: &str,
@@ -4981,6 +5509,57 @@ print(json.dumps({
 }, sort_keys=True))
 "#;
 
+const LEGACY_OPTIMIZER_ORACLE_SCRIPT: &str = r#"
+import json
+import sys
+import torch
+
+payload = json.loads(sys.stdin.read())
+dtype = torch.float64
+
+params = []
+for spec in payload["parameters"]:
+    shape = tuple(int(v) for v in spec["shape"])
+    values = torch.tensor(spec["values"], dtype=dtype).reshape(shape)
+    grad = torch.tensor(spec["grads"], dtype=dtype).reshape(shape)
+    parameter = values.clone().detach().requires_grad_(True)
+    parameter.grad = grad.clone()
+    params.append(parameter)
+
+optimizer_name = payload["optimizer"]
+lr = float(payload["lr"])
+weight_decay = float(payload.get("weight_decay") or 0.0)
+
+if optimizer_name == "sgd":
+    momentum = float(payload.get("momentum") or 0.0)
+    nesterov = bool(payload.get("nesterov") or False)
+    optimizer = torch.optim.SGD(
+        params,
+        lr=lr,
+        momentum=momentum,
+        weight_decay=weight_decay,
+        nesterov=nesterov,
+    )
+elif optimizer_name == "adam":
+    beta1 = float(payload.get("beta1") or 0.9)
+    beta2 = float(payload.get("beta2") or 0.999)
+    eps = float(payload.get("eps") or 1e-8)
+    optimizer = torch.optim.Adam(
+        params,
+        lr=lr,
+        betas=(beta1, beta2),
+        eps=eps,
+        weight_decay=weight_decay,
+    )
+else:
+    raise RuntimeError(f"unsupported optimizer {optimizer_name}")
+
+optimizer.step()
+print(json.dumps({
+    "params": [parameter.detach().reshape(-1).tolist() for parameter in params]
+}, sort_keys=True))
+"#;
+
 fn scalar_forensic_fields(
     case: &ScalarCase,
     _mode: ExecutionMode,
@@ -5287,6 +5866,76 @@ fn nn_state_forensic_fields(
     fields
 }
 
+fn optimizer_forensic_fields(
+    case: &OptimizerCase,
+    mode: ExecutionMode,
+    actual_params: &[Vec<f64>],
+    tolerance: f64,
+    passed: bool,
+) -> BTreeMap<String, Value> {
+    let mut fields = BTreeMap::new();
+    fields.insert("contract_ids".to_string(), json!(case.contract_ids));
+    fields.insert(
+        "downstream_e2e_scenarios".to_string(),
+        json!(case.e2e_scenarios),
+    );
+    fields.insert("optimizer".to_string(), json!(case.optimizer));
+    fields.insert("lr".to_string(), json!(case.lr));
+    fields.insert("momentum".to_string(), json!(case.momentum));
+    fields.insert(
+        "nesterov".to_string(),
+        json!(case.nesterov.unwrap_or(false)),
+    );
+    fields.insert("weight_decay".to_string(), json!(case.weight_decay));
+    fields.insert("beta1".to_string(), json!(case.beta1));
+    fields.insert("beta2".to_string(), json!(case.beta2));
+    fields.insert("eps".to_string(), json!(case.eps));
+    fields.insert(
+        "strict_flag".to_string(),
+        json!(mode == ExecutionMode::Strict),
+    );
+    fields.insert("tolerance".to_string(), json!(tolerance));
+    fields.insert(
+        "parameter_shapes".to_string(),
+        json!(
+            case.parameters
+                .iter()
+                .map(|parameter| parameter.shape.clone())
+                .collect::<Vec<_>>()
+        ),
+    );
+    fields.insert(
+        "parameter_initial_values".to_string(),
+        json!(
+            case.parameters
+                .iter()
+                .map(|parameter| parameter.values.clone())
+                .collect::<Vec<_>>()
+        ),
+    );
+    fields.insert(
+        "parameter_grads".to_string(),
+        json!(
+            case.parameters
+                .iter()
+                .map(|parameter| parameter.grads.clone())
+                .collect::<Vec<_>>()
+        ),
+    );
+    fields.insert(
+        "parameter_expected_values".to_string(),
+        json!(
+            case.parameters
+                .iter()
+                .map(|parameter| parameter.expected_values.clone())
+                .collect::<Vec<_>>()
+        ),
+    );
+    fields.insert("parameter_actual_values".to_string(), json!(actual_params));
+    fields.insert("pass".to_string(), json!(passed));
+    fields
+}
+
 fn parse_binary_op(op: &str) -> Result<BinaryOp, String> {
     match op {
         "add" => Ok(BinaryOp::Add),
@@ -5383,6 +6032,26 @@ fn nn_state_differential_evidence_refs() -> Vec<String> {
         "artifacts/phase2c/FT-P2C-008/unit_property_quality_report_v1.json".to_string(),
         "artifacts/phase2c/FT-P2C-008/differential_packet_report_v1.json".to_string(),
         "artifacts/phase2c/FT-P2C-008/differential_reconciliation_v1.md".to_string(),
+    ]
+}
+
+fn optimizer_evidence_refs() -> Vec<String> {
+    vec![
+        "crates/ft-conformance/fixtures/optimizer_cases.json".to_string(),
+        "artifacts/phase2c/FT-P2C-009/contract_table.md".to_string(),
+        "artifacts/phase2c/FT-P2C-009/threat_model.md".to_string(),
+        "artifacts/phase2c/FT-P2C-009/unit_property_quality_report_v1.json".to_string(),
+    ]
+}
+
+fn optimizer_differential_evidence_refs() -> Vec<String> {
+    vec![
+        "crates/ft-conformance/fixtures/optimizer_cases.json".to_string(),
+        "artifacts/phase2c/FT-P2C-009/contract_table.md".to_string(),
+        "artifacts/phase2c/FT-P2C-009/threat_model.md".to_string(),
+        "artifacts/phase2c/FT-P2C-009/unit_property_quality_report_v1.json".to_string(),
+        "artifacts/phase2c/FT-P2C-009/differential_packet_report_v1.json".to_string(),
+        "artifacts/phase2c/FT-P2C-009/differential_reconciliation_v1.md".to_string(),
     ]
 }
 
@@ -5640,13 +6309,14 @@ mod tests {
 
     use super::{
         DispatchFixtureFile, ExecutionMode, HarnessConfig, NnStateCase, NnStateCaseReport,
-        NnStateFixtureFile, NnStateModeExpectation, OpSchemaFixtureFile, ScalarFixtureFile,
-        SchedulerFixtureFile, SerializationFixtureFile, StructuredCaseLog, TensorMetaFixtureFile,
-        emit_differential_report, emit_differential_report_filtered, emit_e2e_forensics_matrix,
-        emit_e2e_forensics_matrix_filtered, load_allowlist, load_fixture, nn_state_export_keys,
-        nn_state_is_valid_key, project_log_to_ft_p2c_005, project_log_to_ft_p2c_007,
-        run_autograd_scheduler_conformance, run_differential_conformance, run_dispatch_conformance,
-        run_nn_state_conformance, run_op_schema_conformance, run_packet_e2e_microbench,
+        NnStateFixtureFile, NnStateModeExpectation, OpSchemaFixtureFile, OptimizerFixtureFile,
+        ScalarFixtureFile, SchedulerFixtureFile, SerializationFixtureFile, StructuredCaseLog,
+        TensorMetaFixtureFile, emit_differential_report, emit_differential_report_filtered,
+        emit_e2e_forensics_matrix, emit_e2e_forensics_matrix_filtered, load_allowlist,
+        load_fixture, nn_state_export_keys, nn_state_is_valid_key, project_log_to_ft_p2c_005,
+        project_log_to_ft_p2c_007, run_autograd_scheduler_conformance,
+        run_differential_conformance, run_dispatch_conformance, run_nn_state_conformance,
+        run_op_schema_conformance, run_optimizer_conformance, run_packet_e2e_microbench,
         run_packet_e2e_microbench_legacy, run_scalar_conformance, run_scalar_microbench,
         run_serialization_conformance, run_smoke, run_tensor_binary_conformance,
         run_tensor_meta_conformance,
@@ -5906,6 +6576,30 @@ mod tests {
     }
 
     #[test]
+    fn strict_optimizer_conformance_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let (report, cases) = run_optimizer_conformance(&cfg, ExecutionMode::Strict)
+            .expect("optimizer_state should run");
+
+        assert_eq!(report.suite, "optimizer_state");
+        assert_eq!(report.cases_total, cases.len());
+        assert_eq!(report.cases_total, report.cases_passed);
+        assert!(cases.iter().all(|case| case.passed()));
+    }
+
+    #[test]
+    fn hardened_optimizer_conformance_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let (report, cases) = run_optimizer_conformance(&cfg, ExecutionMode::Hardened)
+            .expect("optimizer_state should run");
+
+        assert_eq!(report.suite, "optimizer_state");
+        assert_eq!(report.cases_total, cases.len());
+        assert_eq!(report.cases_total, report.cases_passed);
+        assert!(cases.iter().all(|case| case.passed()));
+    }
+
+    #[test]
     fn nn_state_logs_include_packet_008_contract_fields() {
         let cfg = HarnessConfig::default_paths();
         let (_, cases) =
@@ -6138,6 +6832,7 @@ mod tests {
         let mut saw_ft_p2c_002 = false;
         let mut saw_ft_p2c_007 = false;
         let mut saw_ft_p2c_008 = false;
+        let mut saw_ft_p2c_009 = false;
         let mut ft_p2c_005_suites = BTreeSet::new();
         for line in lines {
             let value: serde_json::Value =
@@ -6174,6 +6869,9 @@ mod tests {
                 "FT-P2C-008" if suite_id == "nn_state" => {
                     saw_ft_p2c_008 = true;
                 }
+                "FT-P2C-009" if suite_id == "optimizer_state" => {
+                    saw_ft_p2c_009 = true;
+                }
                 _ => {}
             }
         }
@@ -6185,6 +6883,10 @@ mod tests {
             "expected FT-P2C-007 projected dispatch entries"
         );
         assert!(saw_ft_p2c_008, "expected FT-P2C-008 nn_state entries");
+        assert!(
+            saw_ft_p2c_009,
+            "expected FT-P2C-009 optimizer_state entries"
+        );
         assert!(
             ft_p2c_005_suites.contains("scalar_dac")
                 && ft_p2c_005_suites.contains("tensor_meta")
@@ -6622,6 +7324,56 @@ mod tests {
     }
 
     #[test]
+    fn e2e_matrix_packet_filter_includes_optimizer_packet_entries() {
+        let cfg = HarnessConfig::default_paths();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let output_path = std::env::temp_dir().join(format!(
+            "ft_conformance_e2e_packet_filter_optimizer_{}_{}.jsonl",
+            std::process::id(),
+            now
+        ));
+
+        let summary = emit_e2e_forensics_matrix_filtered(
+            &cfg,
+            output_path.as_path(),
+            &[ExecutionMode::Strict, ExecutionMode::Hardened],
+            Some("FT-P2C-009"),
+        )
+        .expect("packet-filtered e2e matrix should emit logs");
+
+        let optimizer_fixture: OptimizerFixtureFile =
+            load_fixture(&cfg.fixture_root.join("optimizer_cases.json"))
+                .expect("optimizer fixture should load");
+        let expected_log_entries = optimizer_fixture.cases.len() * 2;
+        assert_eq!(summary.log_entries, expected_log_entries);
+        let raw = fs::read_to_string(&output_path).expect("jsonl output should be readable");
+        for line in raw.lines() {
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("jsonl line should be valid json");
+            assert_eq!(
+                value.get("packet_id").and_then(serde_json::Value::as_str),
+                Some("FT-P2C-009")
+            );
+            assert_eq!(
+                value.get("suite_id").and_then(serde_json::Value::as_str),
+                Some("optimizer_state")
+            );
+            let scenario = value
+                .get("scenario_id")
+                .and_then(serde_json::Value::as_str)
+                .expect("scenario_id must be present");
+            assert!(
+                scenario.starts_with("optimizer_state/"),
+                "FT-P2C-009 logs must remain under optimizer_state scenario namespace"
+            );
+        }
+
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
     fn microbench_produces_percentiles() {
         let report = run_scalar_microbench(10, ExecutionMode::Strict);
         eprintln!(
@@ -6710,6 +7462,20 @@ mod tests {
             .expect("packet e2e microbench should run");
         eprintln!(
             "packet_e2e_microbench_ns packet=FT-P2C-008 p50={} p95={} p99={} mean={}",
+            report.p50_ns, report.p95_ns, report.p99_ns, report.mean_ns
+        );
+        assert_eq!(report.iterations, 10);
+        assert!(report.p50_ns > 0);
+        assert!(report.p95_ns >= report.p50_ns);
+        assert!(report.p99_ns >= report.p95_ns);
+    }
+
+    #[test]
+    fn packet_e2e_microbench_optimizer_produces_percentiles() {
+        let report = run_packet_e2e_microbench(&HarnessConfig::default_paths(), 10, "FT-P2C-009")
+            .expect("packet e2e microbench should run");
+        eprintln!(
+            "packet_e2e_microbench_ns packet=FT-P2C-009 p50={} p95={} p99={} mean={}",
             report.p50_ns, report.p95_ns, report.p99_ns, report.mean_ns
         );
         assert_eq!(report.iterations, 10);
@@ -6988,6 +7754,34 @@ mod tests {
                 && check.comparator == "metamorphic_prefix_normalization_idempotent"
                 && check.status == "pass"
         }));
+    }
+
+    #[test]
+    fn differential_optimizer_adds_oracle_and_metamorphic_checks() {
+        let cfg = HarnessConfig::default_paths();
+        let report =
+            run_differential_conformance(&cfg, &[ExecutionMode::Strict, ExecutionMode::Hardened])
+                .expect("differential report should run");
+
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "optimizer_state" && check.comparator == "fixture_expectation"
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.suite == "optimizer_state" && check.comparator == "metamorphic_replay_stable"
+        }));
+        if report.oracle.available {
+            assert!(report.checks.iter().any(|check| {
+                check.suite == "optimizer_state"
+                    && check.comparator == "abs_tol_vector"
+                    && check.status == "pass"
+            }));
+        } else {
+            assert!(report.checks.iter().any(|check| {
+                check.suite == "optimizer_state"
+                    && check.comparator == "oracle.optimizer"
+                    && check.status == "oracle_unavailable"
+            }));
+        }
     }
 
     #[test]

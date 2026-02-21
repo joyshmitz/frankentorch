@@ -3,7 +3,8 @@ use std::path::Path;
 use ft_api::FrankenTorchSession;
 use ft_conformance::{
     HarnessConfig, run_autograd_scheduler_conformance, run_dispatch_conformance,
-    run_scalar_conformance, run_serialization_conformance, run_smoke, run_tensor_meta_conformance,
+    run_optimizer_conformance, run_scalar_conformance, run_serialization_conformance, run_smoke,
+    run_tensor_meta_conformance,
 };
 use ft_core::{DType, DenseTensor, Device, ExecutionMode, TensorMeta};
 use ft_runtime::{EvidenceKind, RuntimeContext};
@@ -74,6 +75,18 @@ fn serialization_fixture_executes_in_both_modes() {
         .expect("strict serialization should run");
     let (hardened_report, _) = run_serialization_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened serialization should run");
+
+    assert_eq!(strict_report.cases_total, strict_report.cases_passed);
+    assert_eq!(hardened_report.cases_total, hardened_report.cases_passed);
+}
+
+#[test]
+fn optimizer_fixture_executes_in_both_modes() {
+    let cfg = HarnessConfig::default_paths();
+    let (strict_report, _) = run_optimizer_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict optimizer_state should run");
+    let (hardened_report, _) = run_optimizer_conformance(&cfg, ExecutionMode::Hardened)
+        .expect("hardened optimizer_state should run");
 
     assert_eq!(strict_report.cases_total, strict_report.cases_passed);
     assert_eq!(hardened_report.cases_total, hardened_report.cases_passed);

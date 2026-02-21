@@ -4,12 +4,8 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fmt;
 
-use ft_core::{DType, DenseTensor, DenseTensorError, Device, ExecutionMode, ScalarTensor, TensorMeta};
-use ft_kernel_cpu::{
-    argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64,
-    gather_tensor_contiguous_f64, index_select_tensor_contiguous_f64,
-    masked_fill_tensor_contiguous_f64, max_dim_tensor_contiguous_f64,
-    min_dim_tensor_contiguous_f64, scatter_tensor_contiguous_f64,
+use ft_core::{
+    DType, DenseTensor, DenseTensorError, Device, ExecutionMode, ScalarTensor, TensorMeta,
 };
 use ft_dispatch::{
     BinaryOp, ClampDispatchDecision, DispatchDecision, DispatchError, DispatchKeyError,
@@ -21,6 +17,12 @@ use ft_dispatch::{
     dispatch_tensor_normalize_dim_contiguous_f64, dispatch_tensor_pow_contiguous_f64,
     dispatch_tensor_reduction_contiguous_f64, dispatch_tensor_reduction_dim_contiguous_f64,
     dispatch_tensor_unary_contiguous_f64,
+};
+use ft_kernel_cpu::{
+    argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64,
+    gather_tensor_contiguous_f64, index_select_tensor_contiguous_f64,
+    masked_fill_tensor_contiguous_f64, max_dim_tensor_contiguous_f64,
+    min_dim_tensor_contiguous_f64, scatter_tensor_contiguous_f64,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -4866,12 +4868,8 @@ impl TensorTape {
         let (values, output_shape, output_dtype, output_device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta().clone();
-            let values = argmax_dim_tensor_contiguous_f64(
-                input_node.tensor.storage(),
-                &meta,
-                dim,
-            )
-            .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let values = argmax_dim_tensor_contiguous_f64(input_node.tensor.storage(), &meta, dim)
+                .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let mut out_shape = meta.shape().to_vec();
             out_shape.remove(dim);
             if out_shape.is_empty() {
@@ -4900,12 +4898,8 @@ impl TensorTape {
         let (values, output_shape, output_dtype, output_device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta().clone();
-            let values = argmin_dim_tensor_contiguous_f64(
-                input_node.tensor.storage(),
-                &meta,
-                dim,
-            )
-            .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let values = argmin_dim_tensor_contiguous_f64(input_node.tensor.storage(), &meta, dim)
+                .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let mut out_shape = meta.shape().to_vec();
             out_shape.remove(dim);
             if out_shape.is_empty() {
@@ -4931,23 +4925,36 @@ impl TensorTape {
         input: TensorNodeId,
         dim: usize,
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
-        let (values, indices, input_shape, output_shape, output_dtype, output_device, requires_grad) = {
+        let (
+            values,
+            indices,
+            input_shape,
+            output_shape,
+            output_dtype,
+            output_device,
+            requires_grad,
+        ) = {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
-            let (values, indices) = max_dim_tensor_contiguous_f64(
-                input_node.tensor.storage(),
-                &meta,
-                dim,
-            )
-            .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let (values, indices) =
+                max_dim_tensor_contiguous_f64(input_node.tensor.storage(), &meta, dim)
+                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let input_shape = meta.shape().to_vec();
             let mut out_shape = input_shape.clone();
             out_shape.remove(dim);
             if out_shape.is_empty() {
                 out_shape.push(1);
             }
-            (values, indices, input_shape, out_shape, meta.dtype(), meta.device(), requires_grad)
+            (
+                values,
+                indices,
+                input_shape,
+                out_shape,
+                meta.dtype(),
+                meta.device(),
+                requires_grad,
+            )
         };
 
         let indices_clone = indices.clone();
@@ -4984,23 +4991,36 @@ impl TensorTape {
         input: TensorNodeId,
         dim: usize,
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
-        let (values, indices, input_shape, output_shape, output_dtype, output_device, requires_grad) = {
+        let (
+            values,
+            indices,
+            input_shape,
+            output_shape,
+            output_dtype,
+            output_device,
+            requires_grad,
+        ) = {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
-            let (values, indices) = min_dim_tensor_contiguous_f64(
-                input_node.tensor.storage(),
-                &meta,
-                dim,
-            )
-            .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let (values, indices) =
+                min_dim_tensor_contiguous_f64(input_node.tensor.storage(), &meta, dim)
+                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let input_shape = meta.shape().to_vec();
             let mut out_shape = input_shape.clone();
             out_shape.remove(dim);
             if out_shape.is_empty() {
                 out_shape.push(1);
             }
-            (values, indices, input_shape, out_shape, meta.dtype(), meta.device(), requires_grad)
+            (
+                values,
+                indices,
+                input_shape,
+                out_shape,
+                meta.dtype(),
+                meta.device(),
+                requires_grad,
+            )
         };
 
         let indices_clone = indices.clone();
@@ -5052,7 +5072,14 @@ impl TensorTape {
             let input_shape = meta.shape().to_vec();
             let mut out_shape = input_shape.clone();
             out_shape[dim] = indices.len();
-            (values, input_shape, out_shape, meta.dtype(), meta.device(), requires_grad)
+            (
+                values,
+                input_shape,
+                out_shape,
+                meta.dtype(),
+                meta.device(),
+                requires_grad,
+            )
         };
 
         let indices_owned = indices.to_vec();
@@ -5084,11 +5111,8 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
-            let idx_meta = ft_core::TensorMeta::from_shape(
-                index_shape.clone(),
-                meta.dtype(),
-                meta.device(),
-            );
+            let idx_meta =
+                ft_core::TensorMeta::from_shape(index_shape.clone(), meta.dtype(), meta.device());
             let values = gather_tensor_contiguous_f64(
                 input_node.tensor.storage(),
                 &meta,
@@ -5098,7 +5122,13 @@ impl TensorTape {
             )
             .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let input_shape = meta.shape().to_vec();
-            (values, input_shape, meta.dtype(), meta.device(), requires_grad)
+            (
+                values,
+                input_shape,
+                meta.dtype(),
+                meta.device(),
+                requires_grad,
+            )
         };
 
         let index_owned = index.to_vec();
@@ -5131,11 +5161,8 @@ impl TensorTape {
         let (values, output_shape, output_dtype, output_device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta().clone();
-            let idx_meta = ft_core::TensorMeta::from_shape(
-                index_shape.clone(),
-                meta.dtype(),
-                meta.device(),
-            );
+            let idx_meta =
+                ft_core::TensorMeta::from_shape(index_shape.clone(), meta.dtype(), meta.device());
             let values = scatter_tensor_contiguous_f64(
                 input_node.tensor.storage(),
                 &meta,
@@ -5170,13 +5197,9 @@ impl TensorTape {
         let (values, output_shape, output_dtype, output_device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta().clone();
-            let values = masked_fill_tensor_contiguous_f64(
-                input_node.tensor.storage(),
-                &meta,
-                mask,
-                value,
-            )
-            .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let values =
+                masked_fill_tensor_contiguous_f64(input_node.tensor.storage(), &meta, mask, value)
+                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let output_shape = meta.shape().to_vec();
             (values, output_shape, meta.dtype(), meta.device())
         };
@@ -10889,5 +10912,57 @@ mod tests {
         let report = tape.backward(s.0).expect("backward");
         let grads = report.gradient(x).expect("grad x");
         assert_eq!(grads, &[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
+    }
+
+    // ---- Error path tests for unknown TensorNodeId (bd-3rai) ----
+
+    #[test]
+    fn tensor_values_rejects_unknown_node_id() {
+        let tape = TensorTape::new();
+        let bogus = TensorNodeId(9999);
+        let err = tape
+            .values(bogus)
+            .expect_err("values with unknown node id must fail");
+        assert!(matches!(err, AutogradError::UnknownTensorNode(id) if id == bogus));
+    }
+
+    #[test]
+    fn tensor_accessor_rejects_unknown_node_id() {
+        let tape = TensorTape::new();
+        let bogus = TensorNodeId(42);
+        let err = tape
+            .tensor(bogus)
+            .expect_err("tensor with unknown node id must fail");
+        assert!(matches!(err, AutogradError::UnknownTensorNode(id) if id == bogus));
+    }
+
+    #[test]
+    fn tensor_meta_rejects_unknown_node_id() {
+        let tape = TensorTape::new();
+        let bogus = TensorNodeId(100);
+        let err = tape
+            .tensor_meta(bogus)
+            .expect_err("tensor_meta with unknown node id must fail");
+        assert!(matches!(err, AutogradError::UnknownTensorNode(id) if id == bogus));
+    }
+
+    #[test]
+    fn backward_rejects_unknown_root_node_id() {
+        let tape = TensorTape::new();
+        let bogus = TensorNodeId(999);
+        let err = tape
+            .backward(bogus)
+            .expect_err("backward with unknown root must fail");
+        assert!(matches!(err, AutogradError::UnknownTensorNode(id) if id == bogus));
+    }
+
+    #[test]
+    fn update_tensor_values_rejects_unknown_node_id() {
+        let mut tape = TensorTape::new();
+        let bogus = TensorNodeId(50);
+        let err = tape
+            .update_tensor_values(bogus, vec![1.0, 2.0])
+            .expect_err("update_tensor_values with unknown node must fail");
+        assert!(matches!(err, AutogradError::UnknownTensorNode(id) if id == bogus));
     }
 }

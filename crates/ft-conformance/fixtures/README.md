@@ -11,6 +11,7 @@ This folder stores normalized oracle-vs-target fixtures for `ft-conformance`.
 - `autograd_scheduler_cases.json`: deterministic scheduler ordering + reentrant policy contract.
 - `serialization_cases.json`: checkpoint encode/decode + RaptorQ sidecar/proof contract.
 - `nn_state_cases.json`: NN module/state contract first-wave fixture family (registration, state export, mode propagation, load strictness split, prefix normalization, hooks) for packet `FT-P2C-008`.
+- `optimizer_cases.json`: SGD/Adam optimizer update parity fixtures (including momentum/nesterov/weight-decay branches) for packet `FT-P2C-009`.
 
 Related adversarial/fuzz manifest (versioned):
 - `artifacts/phase2c/ADVERSARIAL_FUZZ_CORPUS_MANIFEST_V1.json`

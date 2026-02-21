@@ -1107,4 +1107,106 @@ mod tests {
             assert_log_contract(&log);
         }
     }
+
+    // ── bd-2wwr: DenseTensor accessors and methods ──
+
+    #[test]
+    fn dense_tensor_id_storage_id_version_accessors() {
+        let dt = DenseTensor::from_contiguous_values(vec![1.0, 2.0, 3.0], vec![3], Device::Cpu)
+            .expect("create dense tensor");
+        // id and storage_id should be nonzero (unique)
+        assert!(dt.id() > 0);
+        assert!(dt.storage_id() > 0);
+        assert_eq!(dt.version(), 0);
+    }
+
+    #[test]
+    fn dense_tensor_storage_accessor() {
+        let vals = vec![10.0, 20.0, 30.0, 40.0];
+        let dt = DenseTensor::from_contiguous_values(vals.clone(), vec![4], Device::Cpu)
+            .expect("create dense tensor");
+        assert_eq!(dt.storage(), &[10.0, 20.0, 30.0, 40.0]);
+    }
+
+    #[test]
+    fn dense_tensor_replace_storage_success() {
+        let mut dt = DenseTensor::from_contiguous_values(vec![1.0, 2.0, 3.0], vec![3], Device::Cpu)
+            .expect("create dense tensor");
+        assert_eq!(dt.version(), 0);
+
+        dt.replace_storage(vec![4.0, 5.0, 6.0])
+            .expect("replace with same-length storage should succeed");
+        assert_eq!(dt.version(), 1);
+        assert_eq!(dt.storage(), &[4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn dense_tensor_replace_storage_wrong_length() {
+        let mut dt = DenseTensor::from_contiguous_values(vec![1.0, 2.0, 3.0], vec![3], Device::Cpu)
+            .expect("create dense tensor");
+        let err = dt
+            .replace_storage(vec![1.0, 2.0])
+            .expect_err("replace with different-length storage should fail");
+        assert!(
+            matches!(
+                err,
+                DenseTensorError::InsufficientStorage {
+                    needed: 3,
+                    actual: 2
+                }
+            ),
+            "expected InsufficientStorage, got {err:?}"
+        );
+        // version should NOT have been bumped
+        assert_eq!(dt.version(), 0);
+    }
+
+    #[test]
+    fn dense_tensor_dispatch_values_returns_storage_slice() {
+        let dt = DenseTensor::from_contiguous_values(vec![5.0, 6.0, 7.0], vec![3], Device::Cpu)
+            .expect("create dense tensor");
+        let vals = dt
+            .dispatch_values()
+            .expect("dispatch_values should succeed");
+        assert_eq!(vals, &[5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn dense_tensor_from_storage_rejects_unsupported_dtype() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu);
+        let err = DenseTensor::from_storage(meta, vec![1.0, 2.0])
+            .expect_err("F32 dtype should be rejected");
+        assert!(
+            matches!(err, DenseTensorError::UnsupportedDType(DType::F32)),
+            "expected UnsupportedDType(F32), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dense_tensor_from_storage_rejects_insufficient_storage() {
+        let meta = TensorMeta::from_shape(vec![5], DType::F64, Device::Cpu);
+        let err = DenseTensor::from_storage(meta, vec![1.0, 2.0])
+            .expect_err("too-short storage should be rejected");
+        assert!(
+            matches!(
+                err,
+                DenseTensorError::InsufficientStorage {
+                    needed: 5,
+                    actual: 2
+                }
+            ),
+            "expected InsufficientStorage, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dense_tensor_replace_storage_bumps_version_multiple() {
+        let mut dt = DenseTensor::from_contiguous_values(vec![0.0, 0.0], vec![2], Device::Cpu)
+            .expect("create dense tensor");
+        for i in 1..=5 {
+            dt.replace_storage(vec![i as f64, i as f64 * 2.0])
+                .expect("replace should succeed");
+        }
+        assert_eq!(dt.version(), 5);
+    }
 }

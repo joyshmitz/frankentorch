@@ -1009,4 +1009,101 @@ mod tests {
             assert_log_contract(&log);
         }
     }
+
+    // ── bd-437p: hardened encode/decode and boundary cases ──
+
+    #[test]
+    fn encode_checkpoint_hardened_mode() {
+        let entries = vec![
+            SnapshotEntry {
+                node_id: 0,
+                value: 1.0,
+                grad: Some(0.5),
+            },
+            SnapshotEntry {
+                node_id: 1,
+                value: 2.0,
+                grad: None,
+            },
+        ];
+        let encoded =
+            encode_checkpoint(&entries, CheckpointMode::Hardened).expect("hardened encode");
+        assert!(encoded.contains("\"mode\":\"hardened\""));
+    }
+
+    #[test]
+    fn decode_hardened_encoded_checkpoint_in_hardened_mode() {
+        let entries = vec![SnapshotEntry {
+            node_id: 0,
+            value: 42.0,
+            grad: Some(1.0),
+        }];
+        let encoded =
+            encode_checkpoint(&entries, CheckpointMode::Hardened).expect("hardened encode");
+        let decoded = decode_checkpoint(&encoded, DecodeMode::Hardened).expect("hardened decode");
+        assert_eq!(decoded.mode, CheckpointMode::Hardened);
+        assert_eq!(decoded.entries.len(), 1);
+        assert!((decoded.entries[0].value - 42.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hardened_decode_rejects_non_object_payload() {
+        let err = decode_checkpoint("[1, 2, 3]", DecodeMode::Hardened)
+            .expect_err("JSON array should fail hardened decode");
+        assert!(
+            matches!(err, SerializeError::IncompatiblePayload { .. }),
+            "expected IncompatiblePayload, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn hardened_decode_rejects_unknown_field() {
+        let payload = r#"{"schema_version":1,"mode":"strict","entries":[],"source_hash":"det64:placeholder","extra":1}"#;
+        let err = decode_checkpoint(payload, DecodeMode::Hardened)
+            .expect_err("unknown field should fail hardened decode");
+        assert!(
+            matches!(err, SerializeError::UnknownField { ref field } if field == "extra"),
+            "expected UnknownField 'extra', got {err:?}"
+        );
+    }
+
+    #[test]
+    fn hardened_decode_provides_bounded_diagnostic_for_malformed_json() {
+        let err = decode_checkpoint("{not valid json!!!", DecodeMode::Hardened)
+            .expect_err("malformed JSON should fail");
+        assert!(
+            matches!(err, SerializeError::InvalidJson { .. }),
+            "expected InvalidJson, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn serialize_error_display_coverage() {
+        let cases: Vec<SerializeError> = vec![
+            SerializeError::InvalidJson {
+                diagnostic: "bad input".to_string(),
+            },
+            SerializeError::UnknownField {
+                field: "foo".to_string(),
+            },
+            SerializeError::VersionMismatch {
+                expected: 1,
+                found: 2,
+            },
+            SerializeError::ChecksumMismatch {
+                expected: "abc".to_string(),
+                found: "def".to_string(),
+            },
+            SerializeError::IncompatiblePayload {
+                reason: "test reason".to_string(),
+            },
+            SerializeError::RaptorQFailure {
+                reason: "test failure".to_string(),
+            },
+        ];
+        for err in &cases {
+            let msg = format!("{err}");
+            assert!(!msg.is_empty(), "Display should produce non-empty output");
+        }
+    }
 }

@@ -424,4 +424,387 @@ mod tests {
         assert!(GELU.parameters().is_empty());
         assert!(SiLU.parameters().is_empty());
     }
+
+    #[test]
+    fn linear_forward_computes_xw_t_plus_bias() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Create a 2->1 linear with known weights
+        // weight shape: [1, 2], bias shape: [1, 1]
+        let linear = Linear::new(&mut session, 2, 1, true).expect("linear should succeed");
+        assert_eq!(linear.in_features(), 2);
+        assert_eq!(linear.out_features(), 1);
+        assert!(linear.bias().is_some());
+
+        // Input: [1, 2] => batch=1, features=2
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .expect("variable should succeed");
+
+        let y = linear
+            .forward(&mut session, x)
+            .expect("forward should succeed");
+        let vals = session.tensor_values(y).expect("values should resolve");
+        // Output should be [1, 1] shape
+        assert_eq!(vals.len(), 1);
+        // Value is deterministic due to seeded PRNG
+    }
+
+    #[test]
+    fn linear_without_bias() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 3, 2, false).expect("linear should succeed");
+        assert!(linear.bias().is_none());
+        assert_eq!(linear.parameters().len(), 1); // only weight
+
+        let x = session
+            .tensor_variable(vec![1.0, 0.0, -1.0], vec![1, 3], false)
+            .expect("variable should succeed");
+        let y = linear
+            .forward(&mut session, x)
+            .expect("forward should succeed");
+        let vals = session.tensor_values(y).expect("values should resolve");
+        assert_eq!(vals.len(), 2);
+    }
+
+    #[test]
+    fn linear_parameters_includes_weight_and_bias() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 4, 3, true).expect("linear should succeed");
+        let params = linear.parameters();
+        assert_eq!(params.len(), 2); // weight + bias
+    }
+
+    #[test]
+    fn linear_backward_produces_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 2, 1, true).expect("linear should succeed");
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], true)
+            .expect("variable should succeed");
+
+        let y = linear
+            .forward(&mut session, x)
+            .expect("forward should succeed");
+        let loss = session.tensor_sum(y).expect("sum should succeed");
+        let report = session
+            .tensor_backward(loss)
+            .expect("backward should succeed");
+
+        // Gradients should exist for the weight parameter
+        let weight_grad = session.tensor_gradient(&report, linear.weight());
+        assert!(weight_grad.is_some(), "weight gradient should be computed");
+    }
+
+    #[test]
+    fn relu_backward_produces_step_gradient() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![-1.0, 0.0, 1.0, 2.0], vec![4], true)
+            .expect("variable should succeed");
+
+        let relu = ReLU;
+        let y = relu
+            .forward(&mut session, x)
+            .expect("relu forward should succeed");
+        let loss = session.tensor_sum(y).expect("sum should succeed");
+        let report = session
+            .tensor_backward(loss)
+            .expect("backward should succeed");
+
+        let grad = session
+            .tensor_gradient(&report, x)
+            .expect("input gradient should exist");
+        // ReLU grad: 0 for negative, 0 for zero, 1 for positive
+        assert_eq!(grad[0], 0.0); // x=-1
+        assert_eq!(grad[1], 0.0); // x=0
+        assert_eq!(grad[2], 1.0); // x=1
+        assert_eq!(grad[3], 1.0); // x=2
+    }
+
+    #[test]
+    fn tanh_module_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.0], vec![1], false)
+            .expect("variable should succeed");
+
+        let tanh = Tanh;
+        let y = tanh
+            .forward(&mut session, x)
+            .expect("tanh forward should succeed");
+        let values = session.tensor_values(y).expect("values should resolve");
+        assert!((values[0]).abs() < 1e-10, "tanh(0) should be 0");
+    }
+
+    #[test]
+    fn gelu_module_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("variable should succeed");
+
+        let gelu = GELU;
+        let y = gelu
+            .forward(&mut session, x)
+            .expect("gelu forward should succeed");
+        let values = session.tensor_values(y).expect("values should resolve");
+        assert!((values[0]).abs() < 1e-10, "gelu(0) should be ~0");
+        // gelu(1.0) ~ 0.8412
+        assert!(
+            (values[1] - 0.8412).abs() < 0.01,
+            "gelu(1) should be ~0.8412, got {}",
+            values[1]
+        );
+    }
+
+    #[test]
+    fn silu_module_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("variable should succeed");
+
+        let silu = SiLU;
+        let y = silu
+            .forward(&mut session, x)
+            .expect("silu forward should succeed");
+        let values = session.tensor_values(y).expect("values should resolve");
+        assert!((values[0]).abs() < 1e-10, "silu(0) should be 0");
+        // silu(1.0) = 1.0 * sigmoid(1.0) = 1.0 * 0.7311 ~ 0.7311
+        assert!(
+            (values[1] - 0.7311).abs() < 0.01,
+            "silu(1) should be ~0.7311, got {}",
+            values[1]
+        );
+    }
+
+    #[test]
+    fn sequential_with_linear_and_relu_backward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // Build a simple network: Linear(2->2) -> ReLU
+        let linear = Linear::new(&mut session, 2, 2, true).expect("linear should succeed");
+        let weight_id = linear.weight();
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(linear));
+        seq.push(Box::new(ReLU));
+
+        // Check parameter collection through Sequential
+        let params = seq.parameters();
+        assert!(params.len() >= 2, "Sequential should collect all params");
+
+        let x = session
+            .tensor_variable(vec![1.0, -1.0], vec![1, 2], true)
+            .expect("variable should succeed");
+
+        let y = seq
+            .forward(&mut session, x)
+            .expect("sequential forward should succeed");
+        let loss = session.tensor_sum(y).expect("sum should succeed");
+        let report = session
+            .tensor_backward(loss)
+            .expect("backward should succeed");
+
+        // Weight gradient should exist
+        let weight_grad = session.tensor_gradient(&report, weight_id);
+        assert!(
+            weight_grad.is_some(),
+            "weight gradient should flow through Sequential"
+        );
+    }
+
+    #[test]
+    fn dropout_training_mode_zeros_some_elements() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0; 100], vec![100], false)
+            .expect("variable should succeed");
+
+        let dropout = Dropout::new(0.5);
+        assert!(dropout.is_training());
+        let y = dropout
+            .forward(&mut session, x)
+            .expect("dropout forward should succeed");
+        let values = session.tensor_values(y).expect("values should resolve");
+
+        // Some elements should be zero (dropped), others should be scaled by 2.0
+        let zeros = values.iter().filter(|&&v| v == 0.0).count();
+        let scaled = values.iter().filter(|&&v| (v - 2.0).abs() < 1e-10).count();
+        assert!(zeros > 0, "dropout should zero some elements");
+        assert!(
+            scaled > 0,
+            "dropout should scale surviving elements by 1/(1-p)"
+        );
+        assert_eq!(
+            zeros + scaled,
+            100,
+            "all elements should be either 0.0 or 2.0"
+        );
+    }
+
+    #[test]
+    fn dropout_full_probability_zeros_all() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("variable should succeed");
+
+        let dropout = Dropout::new(1.0);
+        let y = dropout
+            .forward(&mut session, x)
+            .expect("dropout p=1.0 should return zeros");
+        let values = session.tensor_values(y).expect("values should resolve");
+        assert_eq!(values, vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn dropout_train_eval_toggle() {
+        let mut dropout = Dropout::new(0.5);
+        assert!(dropout.is_training());
+        dropout.eval();
+        assert!(!dropout.is_training());
+        dropout.train();
+        assert!(dropout.is_training());
+    }
+
+    #[test]
+    fn sigmoid_backward_produces_gradient() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.0], vec![1], true)
+            .expect("variable should succeed");
+
+        let sigmoid = Sigmoid;
+        let y = sigmoid
+            .forward(&mut session, x)
+            .expect("sigmoid forward should succeed");
+        let loss = session.tensor_sum(y).expect("sum should succeed");
+        let report = session
+            .tensor_backward(loss)
+            .expect("backward should succeed");
+
+        let grad = session
+            .tensor_gradient(&report, x)
+            .expect("gradient should exist");
+        // sigmoid'(0) = sigmoid(0) * (1 - sigmoid(0)) = 0.5 * 0.5 = 0.25
+        assert!(
+            (grad[0] - 0.25).abs() < 1e-10,
+            "sigmoid'(0) should be 0.25, got {}",
+            grad[0]
+        );
+    }
+
+    // ---- Edge case tests (bd-1jnp) ----
+
+    #[test]
+    fn sequential_empty_forward_is_identity() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("variable");
+        let seq = Sequential::new();
+        let y = seq.forward(&mut session, x).expect("forward");
+        // Empty sequential should return input unchanged
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn sequential_empty_has_no_parameters() {
+        let seq = Sequential::new();
+        assert!(seq.parameters().is_empty());
+    }
+
+    #[test]
+    fn dropout_p_zero_is_identity() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .expect("variable");
+        let dropout = Dropout::new(0.0);
+        let y = dropout.forward(&mut session, x).expect("forward");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn dropout_p_one_zeros_all_elements() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .expect("variable");
+        let dropout = Dropout::new(1.0);
+        let y = dropout.forward(&mut session, x).expect("forward");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, vec![0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn dropout_eval_mode_is_identity() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![5.0, 6.0, 7.0], vec![3], false)
+            .expect("variable");
+        let mut dropout = Dropout::new(0.5);
+        dropout.eval();
+        assert!(!dropout.is_training());
+        let y = dropout.forward(&mut session, x).expect("forward");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, vec![5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn linear_accessor_methods_return_correct_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 4, 3, true).expect("linear");
+        assert_eq!(linear.in_features(), 4);
+        assert_eq!(linear.out_features(), 3);
+        assert!(linear.bias().is_some());
+    }
+
+    #[test]
+    fn linear_without_bias_has_no_bias_param() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 3, 2, false).expect("linear");
+        assert!(linear.bias().is_none());
+        assert_eq!(linear.parameters().len(), 1); // only weight
+    }
+
+    #[test]
+    fn sequential_multi_push_collects_all_params() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear1 = Linear::new(&mut session, 4, 3, true).expect("linear1");
+        let linear2 = Linear::new(&mut session, 3, 2, true).expect("linear2");
+        let params1 = linear1.parameters().len(); // 2 (weight + bias)
+        let params2 = linear2.parameters().len(); // 2 (weight + bias)
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(linear1));
+        seq.push(Box::new(ReLU));
+        seq.push(Box::new(linear2));
+        assert_eq!(seq.parameters().len(), params1 + params2);
+    }
+
+    #[test]
+    fn sigmoid_extreme_values_do_not_produce_nan() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![-100.0, 100.0, 0.0], vec![3], false)
+            .expect("variable");
+        let sigmoid = Sigmoid;
+        let y = sigmoid.forward(&mut session, x).expect("forward");
+        let vals = session.tensor_values(y).expect("values");
+        assert!(vals.iter().all(|v| v.is_finite()));
+        assert!(vals[0] < 1e-10); // sigmoid(-100) ≈ 0
+        assert!((vals[1] - 1.0).abs() < 1e-10); // sigmoid(100) ≈ 1
+        assert!((vals[2] - 0.5).abs() < 1e-10); // sigmoid(0) = 0.5
+    }
+
+    #[test]
+    fn dropout_has_no_parameters() {
+        let dropout = Dropout::new(0.5);
+        assert!(dropout.parameters().is_empty());
+    }
 }

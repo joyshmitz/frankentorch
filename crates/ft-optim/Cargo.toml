@@ -9,5 +9,8 @@ ft-core = { workspace = true }
 ft-api = { workspace = true }
 ft-autograd = { workspace = true }
 
+[dev-dependencies]
+ft-nn = { workspace = true }
+
 [lints]
 workspace = true

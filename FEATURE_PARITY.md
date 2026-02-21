@@ -74,7 +74,7 @@ index_select, gather, scatter, masked_fill
 - `crates/ft-conformance/fixtures/serialization_cases.json`
 
 Modes tested for all listed families: strict + hardened.
-804 tests passing across workspace.
+1009 tests passing across workspace.
 
 ## Gap Policy
 
