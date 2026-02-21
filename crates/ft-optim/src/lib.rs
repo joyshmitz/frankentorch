@@ -258,6 +258,142 @@ impl Optimizer for Adam {
     }
 }
 
+/// AdamW optimizer with decoupled weight decay (Loshchilov & Hutter, 2019).
+///
+/// Unlike standard Adam which adds weight decay to the gradient (L2 regularization),
+/// AdamW applies weight decay directly to the parameters after the Adam update step.
+/// This decoupling improves regularization behavior and is the default optimizer
+/// for most modern transformer training.
+pub struct AdamW {
+    params: Vec<TensorNodeId>,
+    lr: f64,
+    beta1: f64,
+    beta2: f64,
+    eps: f64,
+    weight_decay: f64,
+    step_count: u64,
+    m: Vec<Option<Vec<f64>>>,
+    v: Vec<Option<Vec<f64>>>,
+}
+
+impl AdamW {
+    /// Create a new AdamW optimizer.
+    ///
+    /// Defaults: lr as given, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01
+    pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
+        let n = params.len();
+        Self {
+            params,
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.01,
+            step_count: 0,
+            m: vec![None; n],
+            v: vec![None; n],
+        }
+    }
+
+    /// Set beta coefficients for computing running averages.
+    #[must_use]
+    pub fn betas(mut self, beta1: f64, beta2: f64) -> Self {
+        self.beta1 = beta1;
+        self.beta2 = beta2;
+        self
+    }
+
+    /// Set epsilon for numerical stability (default: 1e-8).
+    #[must_use]
+    pub fn eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    /// Set weight decay (default: 0.01).
+    #[must_use]
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+}
+
+impl Optimizer for AdamW {
+    fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        report: &TensorBackwardReport,
+    ) -> Result<(), AutogradError> {
+        self.step_count += 1;
+        let t = self.step_count;
+
+        for (i, &param) in self.params.iter().enumerate() {
+            let grad = match session.tensor_gradient(report, param) {
+                Some(g) => g.to_vec(),
+                None => continue,
+            };
+
+            // Decoupled weight decay: apply directly to parameters BEFORE Adam update
+            if self.weight_decay != 0.0 {
+                let param_values = session.tensor_values(param)?;
+                let decayed: Vec<f64> = param_values
+                    .iter()
+                    .map(|p| p * (1.0 - self.lr * self.weight_decay))
+                    .collect();
+                let shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+                let decayed_node = session.tensor_variable(decayed, shape, false)?;
+                // Overwrite parameter with decayed values using in-place sub then add pattern
+                // Equivalent to: param = param * (1 - lr * wd)
+                let current = session.tensor_values(param)?;
+                let delta: Vec<f64> = current
+                    .iter()
+                    .zip(session.tensor_values(decayed_node)?.iter())
+                    .map(|(c, d)| c - d)
+                    .collect();
+                let shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+                let delta_node = session.tensor_variable(delta, shape, false)?;
+                session.tensor_sub_(param, delta_node)?;
+            }
+
+            // Update biased first moment estimate: m = beta1 * m + (1 - beta1) * grad
+            let m = self.m[i].get_or_insert_with(|| vec![0.0; grad.len()]);
+            for (m_val, g) in m.iter_mut().zip(grad.iter()) {
+                *m_val = self.beta1 * *m_val + (1.0 - self.beta1) * g;
+            }
+
+            // Update biased second raw moment estimate: v = beta2 * v + (1 - beta2) * grad^2
+            let v = self.v[i].get_or_insert_with(|| vec![0.0; grad.len()]);
+            for (v_val, g) in v.iter_mut().zip(grad.iter()) {
+                *v_val = self.beta2 * *v_val + (1.0 - self.beta2) * g * g;
+            }
+
+            // Bias-corrected estimates
+            let bias_correction1 = 1.0 - self.beta1.powi(t as i32);
+            let bias_correction2 = 1.0 - self.beta2.powi(t as i32);
+
+            // Compute Adam update: lr * m_hat / (sqrt(v_hat) + eps)
+            let update: Vec<f64> = m
+                .iter()
+                .zip(v.iter())
+                .map(|(m_val, v_val)| {
+                    let m_hat = m_val / bias_correction1;
+                    let v_hat = v_val / bias_correction2;
+                    self.lr * m_hat / (v_hat.sqrt() + self.eps)
+                })
+                .collect();
+
+            let shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+            let update_node = session.tensor_variable(update, shape, false)?;
+            session.tensor_sub_(param, update_node)?;
+        }
+        Ok(())
+    }
+
+    fn zero_grad(&mut self, _session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ft_api::FrankenTorchSession;
@@ -980,6 +1116,268 @@ mod tests {
         assert!(
             vals_m[0].is_finite(),
             "momentum prediction should be finite"
+        );
+    }
+
+    // --- AdamW tests ---
+
+    #[test]
+    fn adamw_basic_step_reduces_loss() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+
+        let mut optimizer = AdamW::new(vec![x], 0.1);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+
+        let x_before = session.tensor_values(x).expect("values")[0];
+        optimizer.step(&mut session, &report).expect("step");
+        let x_after = session.tensor_values(x).expect("values")[0];
+
+        assert!(
+            x_after < x_before,
+            "AdamW should decrease x: before={}, after={}",
+            x_before,
+            x_after
+        );
+    }
+
+    #[test]
+    fn adamw_decoupled_weight_decay_differs_from_adam_l2() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // Adam with L2 weight decay
+        let x1 = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+        let mut opt_adam = Adam::new(vec![x1], 0.1).weight_decay(0.1);
+
+        let loss1 = session.tensor_mul(x1, x1).expect("mul");
+        let loss1_sum = session.tensor_sum(loss1).expect("sum");
+        let report1 = session.tensor_backward(loss1_sum).expect("backward");
+        opt_adam.step(&mut session, &report1).expect("step");
+        let x1_val = session.tensor_values(x1).expect("values")[0];
+
+        // AdamW with decoupled weight decay
+        let x2 = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+        let mut opt_adamw = AdamW::new(vec![x2], 0.1).weight_decay(0.1);
+
+        let loss2 = session.tensor_mul(x2, x2).expect("mul");
+        let loss2_sum = session.tensor_sum(loss2).expect("sum");
+        let report2 = session.tensor_backward(loss2_sum).expect("backward");
+        opt_adamw.step(&mut session, &report2).expect("step");
+        let x2_val = session.tensor_values(x2).expect("values")[0];
+
+        // Both should decrease but by different amounts due to decoupled vs L2 weight decay
+        assert!(x1_val < 4.0, "Adam should decrease x");
+        assert!(x2_val < 4.0, "AdamW should decrease x");
+        assert!(
+            (x1_val - x2_val).abs() > 1e-12,
+            "Adam and AdamW should produce different values with same weight_decay: adam={}, adamw={}",
+            x1_val,
+            x2_val
+        );
+    }
+
+    #[test]
+    fn adamw_zero_weight_decay_matches_adam() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // Adam with no weight decay
+        let x1 = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+        let mut opt_adam = Adam::new(vec![x1], 0.1);
+
+        let loss1 = session.tensor_mul(x1, x1).expect("mul");
+        let loss1_sum = session.tensor_sum(loss1).expect("sum");
+        let report1 = session.tensor_backward(loss1_sum).expect("backward");
+        opt_adam.step(&mut session, &report1).expect("step");
+        let x1_val = session.tensor_values(x1).expect("values")[0];
+
+        // AdamW with zero weight decay
+        let x2 = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+        let mut opt_adamw = AdamW::new(vec![x2], 0.1).weight_decay(0.0);
+
+        let loss2 = session.tensor_mul(x2, x2).expect("mul");
+        let loss2_sum = session.tensor_sum(loss2).expect("sum");
+        let report2 = session.tensor_backward(loss2_sum).expect("backward");
+        opt_adamw.step(&mut session, &report2).expect("step");
+        let x2_val = session.tensor_values(x2).expect("values")[0];
+
+        // With zero weight decay, Adam and AdamW should produce identical results
+        assert!(
+            (x1_val - x2_val).abs() < 1e-12,
+            "with wd=0, Adam and AdamW should match: adam={}, adamw={}",
+            x1_val,
+            x2_val
+        );
+    }
+
+    #[test]
+    fn adamw_multiple_steps_converge() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let x = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("var");
+
+        let mut optimizer = AdamW::new(vec![x], 0.5).weight_decay(0.01);
+
+        for _ in 0..100 {
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            optimizer.step(&mut session, &report).expect("step");
+        }
+
+        let x_val = session.tensor_values(x).expect("values")[0];
+        assert!(
+            x_val.abs() < 1.0,
+            "after 100 AdamW steps with lr=0.5, x should be near 0, got {}",
+            x_val
+        );
+    }
+
+    #[test]
+    fn adamw_with_custom_betas() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+
+        let mut optimizer = AdamW::new(vec![x], 0.1).betas(0.5, 0.99);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        optimizer.step(&mut session, &report).expect("step");
+
+        let x_val = session.tensor_values(x).expect("values")[0];
+        assert!(
+            x_val < 4.0,
+            "AdamW with custom betas should decrease x, got {}",
+            x_val
+        );
+    }
+
+    #[test]
+    fn adamw_skips_params_without_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+        let y = session
+            .tensor_variable(vec![2.0], vec![1], true)
+            .expect("var");
+
+        let mut optimizer = AdamW::new(vec![x, y], 0.1);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        optimizer.step(&mut session, &report).expect("step");
+
+        let y_val = session.tensor_values(y).expect("values")[0];
+        assert!(
+            (y_val - 2.0).abs() < 1e-10,
+            "y should be unchanged without gradient: expected 2.0, got {}",
+            y_val
+        );
+    }
+
+    #[test]
+    fn adamw_zero_grad_is_noop() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+
+        let mut optimizer = AdamW::new(vec![x], 0.1);
+        optimizer
+            .zero_grad(&mut session)
+            .expect("adamw zero_grad should succeed");
+    }
+
+    #[test]
+    fn e2e_adamw_trains_linear_to_reduce_mse_loss() {
+        use ft_nn::{Linear, Module};
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let linear = Linear::new(&mut session, 2, 1, true).expect("linear");
+        let params = linear.parameters();
+        let mut optimizer = AdamW::new(params, 0.1).weight_decay(0.01);
+
+        let input = session
+            .tensor_variable(vec![1.0, 1.0], vec![1, 2], false)
+            .expect("input");
+        let target = session
+            .tensor_variable(vec![5.0], vec![1, 1], false)
+            .expect("target");
+
+        let initial_pred = linear.forward(&mut session, input).expect("forward");
+        let initial_loss = session.mse_loss(initial_pred, target).expect("mse");
+        let initial_loss_val = session.tensor_values(initial_loss).expect("values")[0];
+
+        for _ in 0..30 {
+            let pred = linear.forward(&mut session, input).expect("forward");
+            let loss = session.mse_loss(pred, target).expect("mse");
+            let report = session.tensor_backward(loss).expect("backward");
+            optimizer.step(&mut session, &report).expect("step");
+        }
+
+        let final_pred = linear.forward(&mut session, input).expect("forward");
+        let final_loss = session.mse_loss(final_pred, target).expect("mse");
+        let final_loss_val = session.tensor_values(final_loss).expect("values")[0];
+
+        assert!(
+            final_loss_val < initial_loss_val,
+            "AdamW should reduce loss: initial={}, final={}",
+            initial_loss_val,
+            final_loss_val
+        );
+    }
+
+    #[test]
+    fn adamw_optimizes_multiple_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let a = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("var");
+        let b = session
+            .tensor_variable(vec![-3.0], vec![1], true)
+            .expect("var");
+
+        let mut optimizer = AdamW::new(vec![a, b], 0.1);
+
+        let a2 = session.tensor_mul(a, a).expect("mul");
+        let b2 = session.tensor_mul(b, b).expect("mul");
+        let loss = session.tensor_add(a2, b2).expect("add");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        optimizer.step(&mut session, &report).expect("step");
+
+        let a_val = session.tensor_values(a).expect("values")[0];
+        let b_val = session.tensor_values(b).expect("values")[0];
+
+        assert!(a_val < 5.0, "AdamW should decrease a, got {}", a_val);
+        assert!(
+            b_val > -3.0,
+            "AdamW should increase b toward 0, got {}",
+            b_val
         );
     }
 }
