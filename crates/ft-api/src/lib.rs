@@ -431,28 +431,35 @@ impl FrankenTorchSession {
     /// If input is 2-D of shape [m, n], returns a 1-D tensor of length min(m, n) with the diagonal.
     pub fn diag(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
-        let values = self.tensor_values(input)?;
 
         match shape.len() {
             1 => {
-                // 1-D -> 2-D diagonal matrix
+                // 1-D -> 2-D diagonal matrix: multiply input (broadcast) with identity mask
                 let n = shape[0];
-                let mut out = vec![0.0; n * n];
+                let mut eye_data = vec![0.0; n * n];
                 for i in 0..n {
-                    out[i * n + i] = values[i];
+                    eye_data[i * n + i] = 1.0;
                 }
-                self.tensor_tape.leaf(out, vec![n, n], false)
+                let eye_tensor = self.tensor_variable(eye_data, vec![n, n], false)?;
+                // Reshape input to [n, 1] for broadcasting then multiply element-wise
+                let reshaped = self.tensor_reshape(input, vec![n, 1])?;
+                let expanded = self.tensor_expand(reshaped, vec![n, n])?;
+                self.tensor_mul(expanded, eye_tensor)
             }
             2 => {
-                // 2-D -> 1-D diagonal extraction
+                // 2-D -> 1-D diagonal extraction: use gather with diagonal indices
                 let m = shape[0];
                 let n = shape[1];
                 let diag_len = m.min(n);
-                let mut out = Vec::with_capacity(diag_len);
-                for i in 0..diag_len {
-                    out.push(values[i * n + i]);
-                }
-                self.tensor_tape.leaf(out, vec![diag_len], false)
+                let indices: Vec<f64> = (0..diag_len).map(|i| i as f64).collect();
+                let index = self.tensor_variable(indices, vec![diag_len, 1], false)?;
+                let narrow = if m > diag_len {
+                    self.tensor_narrow(input, 0, 0, diag_len)?
+                } else {
+                    input
+                };
+                let gathered = self.tensor_gather(narrow, 1, index)?;
+                self.tensor_reshape(gathered, vec![diag_len])
             }
             _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -471,16 +478,16 @@ impl FrankenTorchSession {
         assert!(shape.len() == 2, "triu expects 2-D input, got {:?}", shape);
         let m = shape[0];
         let n = shape[1];
-        let values = self.tensor_values(input)?;
-        let mut out = vec![0.0; m * n];
+        let mut mask = vec![0.0; m * n];
         for i in 0..m {
             for j in 0..n {
                 if j as i64 >= i as i64 + k {
-                    out[i * n + j] = values[i * n + j];
+                    mask[i * n + j] = 1.0;
                 }
             }
         }
-        self.tensor_tape.leaf(out, vec![m, n], false)
+        let mask_tensor = self.tensor_variable(mask, vec![m, n], false)?;
+        self.tensor_mul(input, mask_tensor)
     }
 
     /// Return the lower triangular part of a 2-D tensor.
@@ -491,16 +498,16 @@ impl FrankenTorchSession {
         assert!(shape.len() == 2, "tril expects 2-D input, got {:?}", shape);
         let m = shape[0];
         let n = shape[1];
-        let values = self.tensor_values(input)?;
-        let mut out = vec![0.0; m * n];
+        let mut mask = vec![0.0; m * n];
         for i in 0..m {
             for j in 0..n {
                 if j as i64 <= i as i64 + k {
-                    out[i * n + j] = values[i * n + j];
+                    mask[i * n + j] = 1.0;
                 }
             }
         }
-        self.tensor_tape.leaf(out, vec![m, n], false)
+        let mask_tensor = self.tensor_variable(mask, vec![m, n], false)?;
+        self.tensor_mul(input, mask_tensor)
     }
 
     /// Create a tensor filled with uniform random values in [0, 1).
@@ -1219,8 +1226,9 @@ impl FrankenTorchSession {
         mask: TensorNodeId,
         value: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let mask_data = self.tensor_tape.values(mask)?;
-        self.tensor_tape.masked_fill(input, &mask_data, value)
+        let shape = self.tensor_shape(input)?;
+        let fill_tensor = self.full(shape, value, false)?;
+        self.tensor_where(mask, fill_tensor, input)
     }
 
     pub fn tensor_cat(
@@ -4894,23 +4902,29 @@ mod tests {
     #[test]
     fn session_tensor_argmax_returns_correct_indices() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape [2, 3]: argmax along dim 0
         let x = session
             .tensor_variable(vec![1.0, 5.0, 3.0, 4.0, 2.0, 6.0], vec![2, 3], false)
             .expect("x");
-        let out = session.tensor_argmax(x, 1).expect("argmax");
+        let out = session.tensor_argmax(x, 0).expect("argmax");
         let vals = session.tensor_values(out).expect("values");
-        assert_eq!(vals, &[1.0, 2.0]);
+        // Row 0: [1,5,3], Row 1: [4,2,6]
+        // Along dim 0: max(1,4)=4@1, max(5,2)=5@0, max(3,6)=6@1
+        assert_eq!(vals, &[1.0, 0.0, 1.0]);
     }
 
     #[test]
     fn session_tensor_argmin_returns_correct_indices() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape [2, 3]: argmin along dim 0
         let x = session
             .tensor_variable(vec![1.0, 5.0, 3.0, 4.0, 2.0, 6.0], vec![2, 3], false)
             .expect("x");
-        let out = session.tensor_argmin(x, 1).expect("argmin");
+        let out = session.tensor_argmin(x, 0).expect("argmin");
         let vals = session.tensor_values(out).expect("values");
-        assert_eq!(vals, &[0.0, 1.0]);
+        // Row 0: [1,5,3], Row 1: [4,2,6]
+        // Along dim 0: min(1,4)=1@0, min(5,2)=2@1, min(3,6)=3@0
+        assert_eq!(vals, &[0.0, 1.0, 0.0]);
     }
 
     #[test]
@@ -5549,11 +5563,11 @@ mod tests {
             .tensor_gradient(&report, pred)
             .expect("pred grad should exist");
         assert_eq!(grad.len(), 2);
-        // Just verify gradients are finite and non-zero
-        for &g in grad {
-            assert!(g.is_finite(), "BCE gradient should be finite, got {g}");
-            assert!(g.abs() > 1e-12, "BCE gradient should be non-zero");
-        }
+        // d/dp BCE = -(t/p - (1-t)/(1-p)) / n
+        // grad[0]: -(1/0.5 - 0) / 2 = -1.0
+        // grad[1]: -(0 - 1/0.2) / 2 = 2.5
+        assert!((grad[0] - (-1.0)).abs() < 1e-6, "expected grad[0]=-1.0, got {}", grad[0]);
+        assert!((grad[1] - 2.5).abs() < 1e-6, "expected grad[1]=2.5, got {}", grad[1]);
     }
 
     #[test]
@@ -5654,12 +5668,10 @@ mod tests {
             .tensor_gradient(&report, pred)
             .expect("pred grad should exist");
         assert_eq!(grad.len(), 2);
-        for &g in grad {
-            assert!(
-                g.is_finite(),
-                "smooth_l1 gradient should be finite, got {g}"
-            );
-        }
+        // Element 0: |diff|=0.3 < beta=1.0 (quadratic): grad = diff/beta/n = -0.3/1.0/2 = -0.15
+        // Element 1: |diff|=5.0 >= beta=1.0 (linear): grad = sign(diff)/n = -1.0/2 = -0.5
+        assert!((grad[0] - (-0.15)).abs() < 1e-6, "expected grad[0]=-0.15, got {}", grad[0]);
+        assert!((grad[1] - (-0.5)).abs() < 1e-6, "expected grad[1]=-0.5, got {}", grad[1]);
     }
 
     #[test]
@@ -5963,6 +5975,12 @@ mod tests {
     fn session_tensor_permute_3d_reorders_dims() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // 2x2x2 tensor, permute [2, 0, 1]
+        // Input [[[1,2],[3,4]],[[5,6],[7,8]]] shape [2,2,2]
+        // After permute [2,0,1]: new[k][i][j] = old[i][j][k]
+        // new[0][0][0]=old[0][0][0]=1, new[0][0][1]=old[0][1][0]=3
+        // new[0][1][0]=old[1][0][0]=5, new[0][1][1]=old[1][1][0]=7
+        // new[1][0][0]=old[0][0][1]=2, new[1][0][1]=old[0][1][1]=4
+        // new[1][1][0]=old[1][0][1]=6, new[1][1][1]=old[1][1][1]=8
         let t = session
             .tensor_variable(
                 vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
@@ -5974,10 +5992,7 @@ mod tests {
             .tensor_permute(t, vec![2, 0, 1])
             .expect("permute should succeed");
         let vals = session.tensor_values(permuted).expect("values");
-        // shape becomes [2, 2, 2] with reordered axes
-        assert_eq!(vals.len(), 8);
-        // Verify output shape via a sum along new axis behavior
-        assert!(vals.iter().all(|v| v.is_finite()));
+        assert_eq!(vals, vec![1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 6.0, 8.0]);
     }
 
     // ---- Edge case tests (bd-3du0) ----
@@ -6710,6 +6725,13 @@ mod tests {
         let d = session.tensor_detach(t).expect("detach");
         let vals = session.tensor_values(d).expect("vals");
         assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+        // Detached tensor should not propagate gradients
+        let sum = session.tensor_sum(d).expect("sum");
+        let report = session.tensor_backward(sum).expect("backward");
+        assert!(
+            report.gradient(d).is_none(),
+            "detached tensor should not have gradient"
+        );
     }
 
     // ---- tensor creation ----
