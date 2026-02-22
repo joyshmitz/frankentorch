@@ -7185,7 +7185,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Log2 { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
@@ -7201,7 +7201,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Log10 { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
@@ -7217,7 +7217,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Log1p { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
@@ -7283,7 +7283,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Asin { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx asin(x) = 1/sqrt(1-x^2)
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -7300,7 +7300,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Acos { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx acos(x) = -1/sqrt(1-x^2)
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -7317,7 +7317,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Atan { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx atan(x) = 1/(1+x^2)
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -7334,7 +7334,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Sinh { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx sinh(x) = cosh(x)
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -7351,7 +7351,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Cosh { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx cosh(x) = sinh(x)
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -7368,7 +7368,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Gelu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -7390,7 +7390,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Silu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
@@ -7409,7 +7409,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::LeakyRelu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
@@ -7434,7 +7434,7 @@ impl TensorTape {
                 TensorNodeOp::Elu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values()?;
                     let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
-                    Self::ensure_tensor_len(node_id, input_values.len(), incoming.len())?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
