@@ -6099,14 +6099,12 @@ mod tests {
         let t = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
             .expect("t");
-        // squeeze dim 0 (size 2, not singleton) should be a no-op or error
-        let result = session.tensor_squeeze(t, 0);
-        if let Ok(squeezed) = result {
-            let vals = session.tensor_values(squeezed).expect("vals");
-            // Should still have same data
-            assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        }
-        // If it returns Err, that's also acceptable behavior
+        // squeeze dim 0 (size 2, not singleton) should be a no-op
+        let squeezed = session.tensor_squeeze(t, 0).expect("squeeze non-singleton");
+        let shape = session.tensor_shape(squeezed).expect("shape");
+        assert_eq!(shape, vec![2, 3], "shape should be unchanged for non-singleton squeeze");
+        let vals = session.tensor_values(squeezed).expect("vals");
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]

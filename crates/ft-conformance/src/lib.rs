@@ -184,7 +184,7 @@ pub struct NnStateCaseReport {
 impl NnStateCaseReport {
     #[must_use]
     pub fn passed(&self) -> bool {
-        self.expectation_ok && self.detail_ok
+        self.contract_ok && self.expectation_ok && self.detail_ok
     }
 }
 
@@ -1154,12 +1154,38 @@ fn emit_e2e_forensics_matrix_filtered_legacy(
         let include_ft_p2c_008 = packet_in_scope(packet_filter, "FT-P2C-008");
         let include_ft_p2c_009 = packet_in_scope(packet_filter, "FT-P2C-009");
 
-        if include_ft_p2c_001 {
+        if include_ft_p2c_001 || include_ft_p2c_005 {
             let (_, scalar_cases) = run_scalar_conformance(config, mode)?;
-            logs.extend(scalar_cases.into_iter().map(|case| case.forensic_log));
+            let scalar_logs: Vec<_> = scalar_cases
+                .into_iter()
+                .map(|case| case.forensic_log)
+                .collect();
+            if include_ft_p2c_001 {
+                logs.extend(scalar_logs.iter().cloned());
+            }
+            if include_ft_p2c_005 {
+                logs.extend(
+                    scalar_logs
+                        .into_iter()
+                        .map(project_log_to_ft_p2c_005),
+                );
+            }
 
             let (_, tensor_meta_cases) = run_tensor_meta_conformance(config, mode)?;
-            logs.extend(tensor_meta_cases.into_iter().map(|case| case.forensic_log));
+            let tensor_meta_logs: Vec<_> = tensor_meta_cases
+                .into_iter()
+                .map(|case| case.forensic_log)
+                .collect();
+            if include_ft_p2c_001 {
+                logs.extend(tensor_meta_logs.iter().cloned());
+            }
+            if include_ft_p2c_005 {
+                logs.extend(
+                    tensor_meta_logs
+                        .into_iter()
+                        .map(project_log_to_ft_p2c_005),
+                );
+            }
         }
 
         if include_ft_p2c_002 || include_ft_p2c_005 || include_ft_p2c_007 {
@@ -1204,22 +1230,6 @@ fn emit_e2e_forensics_matrix_filtered_legacy(
         if include_ft_p2c_009 {
             let (_, optimizer_cases) = run_optimizer_conformance(config, mode)?;
             logs.extend(optimizer_cases.into_iter().map(|case| case.forensic_log));
-        }
-
-        if include_ft_p2c_005 {
-            let (_, scalar_cases) = run_scalar_conformance(config, mode)?;
-            logs.extend(
-                scalar_cases
-                    .into_iter()
-                    .map(|case| project_log_to_ft_p2c_005(case.forensic_log)),
-            );
-
-            let (_, tensor_meta_cases) = run_tensor_meta_conformance(config, mode)?;
-            logs.extend(
-                tensor_meta_cases
-                    .into_iter()
-                    .map(|case| project_log_to_ft_p2c_005(case.forensic_log)),
-            );
         }
     }
 
@@ -4780,8 +4790,32 @@ fn evaluate_scalar_with_session(
 
 fn evaluate_dispatch_output(case: &DispatchCase, mode: ExecutionMode) -> Result<f64, String> {
     let op = parse_binary_op(&case.op)?;
-    let lhs = ScalarTensor::new(case.lhs, DType::F64, Device::Cpu);
-    let rhs = ScalarTensor::new(case.rhs, DType::F64, Device::Cpu);
+    let lhs_dtype = case
+        .lhs_dtype
+        .as_deref()
+        .map(parse_dtype)
+        .transpose()?
+        .unwrap_or(DType::F64);
+    let rhs_dtype = case
+        .rhs_dtype
+        .as_deref()
+        .map(parse_dtype)
+        .transpose()?
+        .unwrap_or(DType::F64);
+    let lhs_device = case
+        .lhs_device
+        .as_deref()
+        .map(parse_device)
+        .transpose()?
+        .unwrap_or(Device::Cpu);
+    let rhs_device = case
+        .rhs_device
+        .as_deref()
+        .map(parse_device)
+        .transpose()?
+        .unwrap_or(Device::Cpu);
+    let lhs = ScalarTensor::new(case.lhs, lhs_dtype, lhs_device);
+    let rhs = ScalarTensor::new(case.rhs, rhs_dtype, rhs_device);
 
     let outcome = if let Some(keys) = &case.keyset {
         let keyset = parse_keyset(keys)?;
