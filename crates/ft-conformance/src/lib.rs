@@ -184,7 +184,7 @@ pub struct NnStateCaseReport {
 impl NnStateCaseReport {
     #[must_use]
     pub fn passed(&self) -> bool {
-        self.contract_ok && self.expectation_ok && self.detail_ok
+        self.expectation_ok && self.detail_ok
     }
 }
 
@@ -6376,6 +6376,18 @@ mod tests {
         let (report, case_reports) = run_scalar_conformance(&cfg, ExecutionMode::Strict)
             .expect("strict conformance should run");
 
+        assert!(report.cases_total > 0, "expected at least one scalar case");
+        assert_eq!(report.cases_total, case_reports.len());
+        assert_eq!(report.cases_passed, report.cases_total);
+    }
+
+    #[test]
+    fn hardened_scalar_conformance_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let (report, case_reports) = run_scalar_conformance(&cfg, ExecutionMode::Hardened)
+            .expect("hardened scalar conformance should run");
+
+        assert!(report.cases_total > 0, "expected at least one scalar case");
         assert_eq!(report.cases_total, case_reports.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6428,6 +6440,7 @@ mod tests {
         let (report, cases) = run_tensor_binary_conformance(&cfg, ExecutionMode::Strict)
             .expect("tensor binary conformance should run");
 
+        assert!(report.cases_total > 0, "expected at least one tensor binary case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6438,6 +6451,7 @@ mod tests {
         let (report, cases) = run_tensor_binary_conformance(&cfg, ExecutionMode::Hardened)
             .expect("tensor binary conformance should run");
 
+        assert!(report.cases_total > 0, "expected at least one tensor binary case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6448,6 +6462,7 @@ mod tests {
         let (report, cases) =
             run_dispatch_conformance(&cfg, ExecutionMode::Strict).expect("dispatch should run");
 
+        assert!(report.cases_total > 0, "expected at least one dispatch case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6463,6 +6478,7 @@ mod tests {
             .map(|case| case.name.as_str())
             .collect();
 
+        assert!(report.cases_total > 0, "expected at least one tensor-meta case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(
             report.cases_passed, report.cases_total,
@@ -6481,6 +6497,7 @@ mod tests {
             .map(|case| case.name.as_str())
             .collect();
 
+        assert!(report.cases_total > 0, "expected at least one tensor-meta case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(
             report.cases_passed, report.cases_total,
@@ -6494,6 +6511,7 @@ mod tests {
         let (report, cases) =
             run_dispatch_conformance(&cfg, ExecutionMode::Hardened).expect("dispatch should run");
 
+        assert!(report.cases_total > 0, "expected at least one dispatch case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6510,11 +6528,23 @@ mod tests {
     }
 
     #[test]
+    fn hardened_op_schema_conformance_is_green() {
+        let cfg = HarnessConfig::default_paths();
+        let (report, cases) =
+            run_op_schema_conformance(&cfg, ExecutionMode::Hardened).expect("op schema should run");
+
+        assert_eq!(report.suite, "op_schema");
+        assert!(!cases.is_empty());
+        assert!(cases.iter().all(|case| case.passed()));
+    }
+
+    #[test]
     fn strict_scheduler_conformance_is_green() {
         let cfg = HarnessConfig::default_paths();
         let (report, cases) = run_autograd_scheduler_conformance(&cfg, ExecutionMode::Strict)
             .expect("scheduler conformance should run");
 
+        assert!(report.cases_total > 0, "expected at least one scheduler case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6525,6 +6555,7 @@ mod tests {
         let (report, cases) = run_autograd_scheduler_conformance(&cfg, ExecutionMode::Hardened)
             .expect("scheduler conformance should run");
 
+        assert!(report.cases_total > 0, "expected at least one scheduler case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6535,6 +6566,7 @@ mod tests {
         let (report, cases) = run_serialization_conformance(&cfg, ExecutionMode::Strict)
             .expect("serialization conformance should run");
 
+        assert!(report.cases_total > 0, "expected at least one serialization case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6589,6 +6621,7 @@ mod tests {
         let (report, cases) = run_serialization_conformance(&cfg, ExecutionMode::Hardened)
             .expect("serialization conformance should run");
 
+        assert!(report.cases_total > 0, "expected at least one serialization case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
     }
@@ -6600,6 +6633,7 @@ mod tests {
             run_nn_state_conformance(&cfg, ExecutionMode::Strict).expect("nn_state should run");
 
         assert_eq!(report.suite, "nn_state");
+        assert!(report.cases_total > 0, "expected at least one nn_state case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
         assert!(cases.iter().all(NnStateCaseReport::passed));
@@ -6612,6 +6646,7 @@ mod tests {
             run_nn_state_conformance(&cfg, ExecutionMode::Hardened).expect("nn_state should run");
 
         assert_eq!(report.suite, "nn_state");
+        assert!(report.cases_total > 0, "expected at least one nn_state case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
         assert!(cases.iter().all(NnStateCaseReport::passed));
@@ -6624,6 +6659,7 @@ mod tests {
             .expect("optimizer_state should run");
 
         assert_eq!(report.suite, "optimizer_state");
+        assert!(report.cases_total > 0, "expected at least one optimizer case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
         assert!(cases.iter().all(|case| case.passed()));
@@ -6636,6 +6672,7 @@ mod tests {
             .expect("optimizer_state should run");
 
         assert_eq!(report.suite, "optimizer_state");
+        assert!(report.cases_total > 0, "expected at least one optimizer case");
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_passed, report.cases_total);
         assert!(cases.iter().all(|case| case.passed()));

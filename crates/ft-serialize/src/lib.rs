@@ -660,7 +660,11 @@ mod tests {
         let decoded = decode_checkpoint(&encoded, DecodeMode::Strict).expect("strict decode");
 
         assert_eq!(decoded.entries[0].node_id, 0);
+        assert_eq!(decoded.entries[0].value, 2.0);
+        assert_eq!(decoded.entries[0].grad, None);
         assert_eq!(decoded.entries[1].node_id, 1);
+        assert_eq!(decoded.entries[1].value, 3.0);
+        assert_eq!(decoded.entries[1].grad, Some(2.0));
     }
 
     #[test]

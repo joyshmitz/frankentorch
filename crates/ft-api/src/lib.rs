@@ -399,6 +399,13 @@ impl FrankenTorchSession {
         step: f64,
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
+        if step == 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "arange: step must not be zero",
+                },
+            )));
+        }
         let mut values = Vec::new();
         let mut current = start;
         if step > 0.0 {
@@ -406,7 +413,7 @@ impl FrankenTorchSession {
                 values.push(current);
                 current += step;
             }
-        } else if step < 0.0 {
+        } else {
             while current > end {
                 values.push(current);
                 current += step;
@@ -475,7 +482,13 @@ impl FrankenTorchSession {
     /// k>0 is above, k<0 is below.
     pub fn triu(&mut self, input: TensorNodeId, k: i64) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
-        assert!(shape.len() == 2, "triu expects 2-D input, got {:?}", shape);
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "triu expects 2-D input",
+                },
+            )));
+        }
         let m = shape[0];
         let n = shape[1];
         let mut mask = vec![0.0; m * n];
@@ -495,7 +508,13 @@ impl FrankenTorchSession {
     /// Elements above the k-th diagonal are set to 0. k=0 is the main diagonal.
     pub fn tril(&mut self, input: TensorNodeId, k: i64) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
-        assert!(shape.len() == 2, "tril expects 2-D input, got {:?}", shape);
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tril expects 2-D input",
+                },
+            )));
+        }
         let m = shape[0];
         let n = shape[1];
         let mut mask = vec![0.0; m * n];
@@ -1184,13 +1203,49 @@ impl FrankenTorchSession {
         self.tensor_tape.min_dim(input, dim)
     }
 
+    fn validate_index_tensor_values(
+        input_shape: &[usize],
+        dim: usize,
+        index_values: &[f64],
+    ) -> Result<(), AutogradError> {
+        let Some(&dim_size) = input_shape.get(dim) else {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index operation dimension out of bounds",
+                },
+            )));
+        };
+
+        let dim_size_f = dim_size as f64;
+        for &idx in index_values {
+            if !idx.is_finite() || idx.fract().abs() > f64::EPSILON {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index tensors must contain finite integer values",
+                    },
+                )));
+            }
+            if idx < -dim_size_f || idx >= dim_size_f {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index tensor value out of bounds for input dimension",
+                    },
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn tensor_index_select(
         &mut self,
         input: TensorNodeId,
         dim: usize,
         indices: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
         let indices_data = self.tensor_tape.values(indices)?;
+        Self::validate_index_tensor_values(&input_shape, dim, &indices_data)?;
         self.tensor_tape.index_select(input, dim, &indices_data)
     }
 
@@ -1200,7 +1255,9 @@ impl FrankenTorchSession {
         dim: usize,
         index: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
         let index_data = self.tensor_tape.values(index)?;
+        Self::validate_index_tensor_values(&input_shape, dim, &index_data)?;
         let index_shape = self.tensor_tape.tensor(index)?.meta().shape().to_vec();
         self.tensor_tape
             .gather(input, dim, &index_data, index_shape)
@@ -1213,7 +1270,9 @@ impl FrankenTorchSession {
         index: TensorNodeId,
         src: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
         let index_data = self.tensor_tape.values(index)?;
+        Self::validate_index_tensor_values(&input_shape, dim, &index_data)?;
         let index_shape = self.tensor_tape.tensor(index)?.meta().shape().to_vec();
         let src_data = self.tensor_tape.values(src)?;
         self.tensor_tape
@@ -1980,17 +2039,28 @@ impl FrankenTorchSession {
         Ok(values[0])
     }
 
-    /// Create a deep copy of a tensor node (detached from the computation graph).
+    /// Create a deep copy of a tensor node.
+    ///
+    /// When `requires_grad` is true, the clone participates in autograd and
+    /// gradients flow back to the original tensor. When false, the clone is
+    /// detached from the computation graph (equivalent to `tensor_detach`).
     pub fn tensor_clone(
         &mut self,
         node: TensorNodeId,
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let values = self.tensor_tape.values(node)?;
-        let meta = self.tensor_tape.tensor_meta(node)?.clone();
-        let shape = meta.shape().to_vec();
-        let tensor = DenseTensor::from_contiguous_values(values, shape, meta.device())?;
-        Ok(self.tensor_tape.leaf_tensor(tensor, requires_grad))
+        if requires_grad {
+            // Autograd-tracked clone: multiply by ones tensor to maintain gradient flow
+            let shape = self.tensor_shape(node)?;
+            let ones = self.full(shape, 1.0, false)?;
+            self.tensor_mul(node, ones)
+        } else {
+            let values = self.tensor_tape.values(node)?;
+            let meta = self.tensor_tape.tensor_meta(node)?.clone();
+            let shape = meta.shape().to_vec();
+            let tensor = DenseTensor::from_contiguous_values(values, shape, meta.device())?;
+            Ok(self.tensor_tape.leaf_tensor(tensor, requires_grad))
+        }
     }
 
     /// Create a copy of a tensor detached from the computation graph.
@@ -2016,18 +2086,21 @@ impl FrankenTorchSession {
     /// For an even number of elements, returns the lower of the two middle values
     /// (matching PyTorch's behavior for integer-like cases).
     pub fn tensor_median(&mut self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        let values = self.tensor_tape.values(node)?;
-        if values.is_empty() {
+        let shape = self.tensor_shape(node)?;
+        let numel: usize = shape.iter().product();
+        if numel == 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "median requires non-empty tensor",
                 },
             )));
         }
-        let mut sorted = values;
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median_val = sorted[(sorted.len() - 1) / 2];
-        self.tensor_tape.leaf(vec![median_val], vec![1], false)
+        // Flatten to 1-D, sort, then pick the median element via narrow.
+        // This preserves autograd flow through sort and narrow.
+        let flat = self.tensor_reshape(node, vec![numel])?;
+        let (sorted, _indices) = self.tensor_sort(flat, 0, false)?;
+        let median_idx = (numel - 1) / 2;
+        self.tensor_narrow(sorted, 0, median_idx, 1)
     }
 
     // ── Loss Functions ──────────────────────────────────────────────────
@@ -2117,7 +2190,13 @@ impl FrankenTorchSession {
         target: TensorNodeId,
         beta: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        assert!(beta > 0.0, "smooth_l1_loss requires beta > 0");
+        if beta <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "smooth_l1_loss requires beta > 0",
+                },
+            )));
+        }
 
         let shape = self.tensor_shape(pred)?;
 
@@ -2162,26 +2241,47 @@ impl FrankenTorchSession {
         targets: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let log_prob_shape = self.tensor_shape(log_probs)?;
+        let target_shape = self.tensor_shape(targets)?;
         let target_vals = self.tensor_values(targets)?;
 
-        assert!(
-            log_prob_shape.len() == 2,
-            "nll_loss expects 2-D log_probs [batch, classes], got {:?}",
-            log_prob_shape
-        );
+        if log_prob_shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nll_loss expects 2-D log_probs [batch, classes]",
+                },
+            )));
+        }
 
         let batch_size = log_prob_shape[0];
         let num_classes = log_prob_shape[1];
 
+        if target_shape.len() != 1 || target_shape[0] != batch_size || target_vals.len() != batch_size
+        {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nll_loss expects targets shape [batch] matching log_probs batch",
+                },
+            )));
+        }
+
         // Validate target indices
-        for i in 0..batch_size {
-            let cls = target_vals[i] as usize;
-            assert!(
-                cls < num_classes,
-                "target index {} out of bounds for {} classes",
-                cls,
-                num_classes
-            );
+        for &target in &target_vals {
+            if !target.is_finite() || target < 0.0 || target.fract().abs() > f64::EPSILON {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "nll_loss targets must be finite non-negative integer indices",
+                    },
+                )));
+            }
+
+            let cls = target as usize;
+            if cls >= num_classes {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "nll_loss target index out of bounds",
+                    },
+                )));
+            }
         }
 
         // Build index tensor of shape [batch_size, 1] for gather along dim=1
@@ -3231,8 +3331,9 @@ mod tests {
             .expect("tensor sigmoid should succeed");
         let values = session.tensor_values(y).expect("values should resolve");
         assert!((values[0] - 0.5).abs() < 1e-10);
-        assert!((values[1] - 1.0).abs() < 1e-10);
-        assert!(values[2].abs() < 1e-10);
+        // sigmoid(10) ≈ 1 - e^(-10) ≈ 0.99995; sigmoid(-10) ≈ e^(-10) ≈ 4.5e-5
+        assert!((values[1] - 1.0).abs() < 1e-4);
+        assert!(values[2].abs() < 1e-4);
     }
 
     #[test]
@@ -3263,8 +3364,9 @@ mod tests {
         let y = session.tensor_tanh(x).expect("tensor tanh should succeed");
         let values = session.tensor_values(y).expect("values should resolve");
         assert!(values[0].abs() < 1e-10);
-        assert!((values[1] - 1.0).abs() < 1e-10);
-        assert!((values[2] + 1.0).abs() < 1e-10);
+        // tanh(10) ≈ 1 - 2*e^(-20) ≈ 0.99999999; tanh(-10) ≈ -1 + 2*e^(-20)
+        assert!((values[1] - 1.0).abs() < 1e-8);
+        assert!((values[2] + 1.0).abs() < 1e-8);
     }
 
     #[test]
@@ -4840,6 +4942,8 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
             .expect("x");
         let y = session.tensor_view(x, vec![2, 2]).expect("view");
+        let shape = session.tensor_shape(y).expect("shape");
+        assert_eq!(shape, vec![2, 2]);
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0]);
     }
@@ -4851,6 +4955,8 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
             .expect("x");
         let y = session.tensor_squeeze(x, 0).expect("squeeze");
+        let shape = session.tensor_shape(y).expect("shape");
+        assert_eq!(shape, vec![3]);
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0]);
     }
@@ -4874,6 +4980,8 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
             .expect("x");
         let y = session.tensor_unsqueeze(x, 0).expect("unsqueeze");
+        let shape = session.tensor_shape(y).expect("shape");
+        assert_eq!(shape, vec![1, 3]);
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, &[1.0, 2.0, 3.0]);
     }
@@ -5296,6 +5404,19 @@ mod tests {
     }
 
     #[test]
+    fn session_tensor_index_select_rejects_nan_indices() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("x");
+        let indices = session
+            .tensor_variable(vec![f64::NAN], vec![1], false)
+            .expect("indices");
+        let result = session.tensor_index_select(x, 0, indices);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn session_tensor_index_select_backward_scatter_add() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
@@ -5330,6 +5451,19 @@ mod tests {
     }
 
     #[test]
+    fn session_tensor_gather_rejects_fractional_indices() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("x");
+        let index = session
+            .tensor_variable(vec![0.5, 0.0], vec![1, 2], false)
+            .expect("index");
+        let result = session.tensor_gather(x, 1, index);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn session_tensor_gather_backward_scatters_gradient() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
@@ -5361,6 +5495,22 @@ mod tests {
         let y = session.tensor_scatter(x, 1, index, src).expect("scatter");
         let vals = session.tensor_values(y).expect("values");
         assert_eq!(vals, vec![10.0, 0.0, 20.0, 40.0, 30.0, 0.0]);
+    }
+
+    #[test]
+    fn session_tensor_scatter_rejects_non_finite_indices() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![0.0; 4], vec![2, 2], false)
+            .expect("x");
+        let index = session
+            .tensor_variable(vec![f64::INFINITY, 0.0], vec![1, 2], false)
+            .expect("index");
+        let src = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .expect("src");
+        let result = session.tensor_scatter(x, 1, index, src);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -5537,6 +5687,8 @@ mod tests {
     #[test]
     fn bce_loss_perfect_prediction() {
         // target=[1,0], pred=[0.999,0.001] => near-perfect prediction
+        // BCE = -mean(1*log(0.999) + 0*log(0.001) + 0*log(0.001) + 1*log(0.999))
+        //     = -mean(log(0.999) + log(0.999)) = -log(0.999)
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let pred = s
             .tensor_variable(vec![0.999, 0.001], vec![2], true)
@@ -5544,12 +5696,12 @@ mod tests {
         let target = s.tensor_variable(vec![1.0, 0.0], vec![2], false).unwrap();
         let loss = s.bce_loss(pred, target).unwrap();
         let vals = s.tensor_values(loss).unwrap();
+        let expected = -(0.999_f64.ln());
         assert!(
-            vals[0] < 0.01,
-            "near-perfect BCE should be small, got {}",
+            (vals[0] - expected).abs() < 1e-10,
+            "expected BCE~{expected}, got {}",
             vals[0]
         );
-        assert!(vals[0] > 0.0, "BCE should be non-negative, got {}", vals[0]);
     }
 
     #[test]
@@ -5573,6 +5725,7 @@ mod tests {
     #[test]
     fn bce_loss_extreme_pred_does_not_produce_nan() {
         // pred at 0.0 and 1.0 exactly -- clamping should prevent NaN
+        // Both pred and target match perfectly after clamping, so loss should be near zero
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let pred = s.tensor_variable(vec![0.0, 1.0], vec![2], true).unwrap();
         let target = s.tensor_variable(vec![0.0, 1.0], vec![2], false).unwrap();
@@ -5581,6 +5734,12 @@ mod tests {
         assert!(
             vals[0].is_finite(),
             "BCE with extreme preds should be finite, got {}",
+            vals[0]
+        );
+        // Clamped pred matches target, so loss should be very small (near-perfect prediction)
+        assert!(
+            vals[0] < 0.1,
+            "BCE with matched extreme preds should be small, got {}",
             vals[0]
         );
     }
@@ -6316,6 +6475,32 @@ mod tests {
         assert!((val - 0.4).abs() < 1e-10, "expected NLL=0.4, got {}", val);
     }
 
+    #[test]
+    fn session_nll_loss_rejects_fractional_targets() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let log_probs = session
+            .tensor_variable(vec![-2.0, -0.5, -1.5, -0.3, -2.0, -1.0], vec![2, 3], false)
+            .expect("log_probs");
+        let targets = session
+            .tensor_variable(vec![1.5, 0.0], vec![2], false)
+            .expect("targets");
+        let result = session.nll_loss(log_probs, targets);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn session_nll_loss_rejects_mismatched_target_shape() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let log_probs = session
+            .tensor_variable(vec![-2.0, -0.5, -1.5, -0.3, -2.0, -1.0], vec![2, 3], false)
+            .expect("log_probs");
+        let targets = session
+            .tensor_variable(vec![1.0, 0.0], vec![1, 2], false)
+            .expect("targets");
+        let result = session.nll_loss(log_probs, targets);
+        assert!(result.is_err());
+    }
+
     // ---- cross_entropy_loss ----
 
     #[test]
@@ -6723,9 +6908,16 @@ mod tests {
         let d = session.tensor_detach(t).expect("detach");
         let vals = session.tensor_values(d).expect("vals");
         assert_eq!(vals, vec![1.0, 2.0, 3.0]);
-        // Detached tensor should not propagate gradients
-        let sum = session.tensor_sum(d).expect("sum");
+        // Detached tensor should not propagate gradients back to original
+        // Add d to t so the backward root requires grad
+        let added = session.tensor_add(t, d).expect("add");
+        let sum = session.tensor_sum(added).expect("sum");
         let report = session.tensor_backward(sum).expect("backward");
+        // t should receive gradient (from the direct path), but d is detached
+        assert!(
+            report.gradient(t).is_some(),
+            "original tensor should have gradient"
+        );
         assert!(
             report.gradient(d).is_none(),
             "detached tensor should not have gradient"

@@ -1670,9 +1670,15 @@ pub fn narrow_tensor_contiguous_f64(
     if dim >= ndim {
         return Err(KernelError::InvalidDimension { dim, ndim });
     }
-    if start + length > shape[dim] {
+    let end = start
+        .checked_add(length)
+        .ok_or(KernelError::InvalidDimension {
+            dim: start,
+            ndim: shape[dim],
+        })?;
+    if end > shape[dim] {
         return Err(KernelError::InvalidDimension {
-            dim: start + length,
+            dim: end,
             ndim: shape[dim],
         });
     }
@@ -1698,6 +1704,33 @@ pub fn narrow_tensor_contiguous_f64(
     }
 
     Ok(output)
+}
+
+fn normalize_wrapped_index_value(idx_f: f64, dim_size: usize) -> Result<usize, KernelError> {
+    if !idx_f.is_finite() || idx_f.fract().abs() > f64::EPSILON {
+        return Err(KernelError::InvalidDimension {
+            dim: dim_size,
+            ndim: dim_size,
+        });
+    }
+
+    let dim_size_i = isize::try_from(dim_size).map_err(|_| KernelError::InvalidDimension {
+        dim: dim_size,
+        ndim: dim_size,
+    })?;
+
+    let mut idx_i = idx_f as isize;
+    if idx_i < 0 {
+        idx_i += dim_size_i;
+    }
+    if idx_i < 0 || idx_i >= dim_size_i {
+        return Err(KernelError::InvalidDimension {
+            dim: dim_size,
+            ndim: dim_size,
+        });
+    }
+
+    Ok(idx_i as usize)
 }
 
 /// Expands singleton dimensions of a contiguous tensor to a target shape.
@@ -1788,17 +1821,7 @@ pub fn index_select_tensor_contiguous_f64(
 
     for outer in 0..outer_size {
         for &idx_f in indices {
-            let mut idx_i = idx_f as isize;
-            if idx_i < 0 {
-                idx_i += dim_size as isize;
-            }
-            if idx_i < 0 || idx_i >= dim_size as isize {
-                return Err(KernelError::InvalidDimension {
-                    dim: idx_i as usize,
-                    ndim: dim_size,
-                });
-            }
-            let idx = idx_i as usize;
+            let idx = normalize_wrapped_index_value(idx_f, dim_size)?;
             for inner in 0..inner_size {
                 let src = outer * dim_size * inner_size + idx * inner_size + inner;
                 output.push(data[src]);
@@ -1860,17 +1883,7 @@ pub fn gather_tensor_contiguous_f64(
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
                 let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let mut selected_i = index_data[idx_pos] as isize;
-                if selected_i < 0 {
-                    selected_i += dim_size as isize;
-                }
-                if selected_i < 0 || selected_i >= dim_size as isize {
-                    return Err(KernelError::InvalidDimension {
-                        dim: selected_i as usize,
-                        ndim: dim_size,
-                    });
-                }
-                let selected = selected_i as usize;
+                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
                 let src = outer * dim_size * inner_size + selected * inner_size + inner;
                 output.push(data[src]);
             }
@@ -1940,17 +1953,7 @@ pub fn scatter_tensor_contiguous_f64(
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
                 let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let mut selected_i = index_data[idx_pos] as isize;
-                if selected_i < 0 {
-                    selected_i += dim_size as isize;
-                }
-                if selected_i < 0 || selected_i >= dim_size as isize {
-                    return Err(KernelError::InvalidDimension {
-                        dim: selected_i as usize,
-                        ndim: dim_size,
-                    });
-                }
-                let selected = selected_i as usize;
+                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
                 let dst = outer * dim_size * inner_size + selected * inner_size + inner;
                 output[dst] = src[idx_pos];
             }
@@ -3753,6 +3756,14 @@ mod tests {
     }
 
     #[test]
+    fn narrow_start_plus_length_overflow_fails_closed() {
+        let meta = TensorMeta::from_shape(vec![3, 2], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let result = narrow_tensor_contiguous_f64(&input, &meta, 0, usize::MAX, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn narrow_3d_tensor() {
         // shape [2, 3, 4], narrow(dim=1, start=1, length=2) -> shape [2, 2, 4]
         let meta = TensorMeta::from_shape(vec![2, 3, 4], DType::F64, Device::Cpu);
@@ -3874,6 +3885,14 @@ mod tests {
     }
 
     #[test]
+    fn index_select_nan_index_returns_error() {
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let result = index_select_tensor_contiguous_f64(&input, &meta, 0, &[f64::NAN]);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn index_select_single_index() {
         let meta = TensorMeta::from_shape(vec![3, 2], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
@@ -3922,6 +3941,16 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn gather_non_integer_index_returns_error() {
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let index = vec![0.5, 0.0];
+        let idx_meta = TensorMeta::from_shape(vec![1, 2], DType::F64, Device::Cpu);
+        let result = gather_tensor_contiguous_f64(&input, &meta, 1, &index, &idx_meta);
+        assert!(result.is_err());
+    }
+
     // ── scatter tests ──────────────────────────────────────────────────
 
     #[test]
@@ -3955,6 +3984,17 @@ mod tests {
         let idx_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
         let result =
             scatter_tensor_contiguous_f64(&input, &meta, 5, &[0.0; 4], &idx_meta, &[0.0; 4]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn scatter_non_finite_index_returns_error() {
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let input = vec![0.0; 4];
+        let index = vec![f64::INFINITY, 0.0];
+        let idx_meta = TensorMeta::from_shape(vec![1, 2], DType::F64, Device::Cpu);
+        let src = vec![1.0, 2.0];
+        let result = scatter_tensor_contiguous_f64(&input, &meta, 1, &index, &idx_meta, &src);
         assert!(result.is_err());
     }
 

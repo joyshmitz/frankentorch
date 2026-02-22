@@ -459,6 +459,13 @@ enum TensorNodeOp {
         index_shape: Vec<usize>,
         input_shape: Vec<usize>,
     },
+    Scatter {
+        input: TensorNodeId,
+        dim: usize,
+        index: Vec<f64>,
+        index_shape: Vec<usize>,
+        input_shape: Vec<usize>,
+    },
     Flip {
         input: TensorNodeId,
         dims: Vec<usize>,
@@ -5466,8 +5473,9 @@ impl TensorTape {
         index_shape: Vec<usize>,
         src: &[f64],
     ) -> Result<TensorNodeId, AutogradError> {
-        let (values, output_shape, output_dtype, output_device) = {
+        let (values, input_shape, output_dtype, output_device, requires_grad) = {
             let input_node = self.node(input)?;
+            let requires_grad = input_node.requires_grad;
             let meta = input_node.tensor.meta().clone();
             let idx_meta =
                 ft_core::TensorMeta::from_shape(index_shape.clone(), meta.dtype(), meta.device());
@@ -5480,18 +5488,25 @@ impl TensorTape {
                 src,
             )
             .map_err(|e| AutogradError::Dispatch(e.into()))?;
-            let output_shape = meta.shape().to_vec();
-            (values, output_shape, meta.dtype(), meta.device())
+            let input_shape = meta.shape().to_vec();
+            (values, input_shape, meta.dtype(), meta.device(), requires_grad)
         };
 
+        let index_owned = index.to_vec();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
             tensor: DenseTensor::from_storage(
-                ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
+                ft_core::TensorMeta::from_shape(input_shape.clone(), output_dtype, output_device),
                 values,
             )?,
-            requires_grad: false,
-            op: TensorNodeOp::Leaf,
+            requires_grad,
+            op: TensorNodeOp::Scatter {
+                input,
+                dim,
+                index: index_owned,
+                index_shape,
+                input_shape,
+            },
         });
         Ok(out)
     }
@@ -8448,13 +8463,31 @@ impl TensorTape {
                     for outer in 0..outer_size {
                         for inner in 0..inner_size {
                             let out_idx = outer * inner_size + inner;
-                            let selected_r = indices[out_idx] as usize;
-                            if selected_r < reduce_size {
-                                let in_idx = outer * reduce_size * inner_size
-                                    + selected_r * inner_size
-                                    + inner;
-                                contrib[in_idx] = incoming[out_idx];
+                            let selected_f = indices[out_idx];
+                            if !selected_f.is_finite()
+                                || selected_f < 0.0
+                                || selected_f.fract().abs() > f64::EPSILON
+                            {
+                                return Err(AutogradError::Dispatch(
+                                    DispatchKeyError::IncompatibleSet {
+                                        reason: "max/min backward received invalid index value",
+                                    }
+                                    .into(),
+                                ));
                             }
+                            let selected_r = selected_f as usize;
+                            if selected_r >= reduce_size {
+                                return Err(AutogradError::Dispatch(
+                                    DispatchKeyError::IncompatibleSet {
+                                        reason:
+                                            "max/min backward received out-of-bounds index value",
+                                    }
+                                    .into(),
+                                ));
+                            }
+                            let in_idx =
+                                outer * reduce_size * inner_size + selected_r * inner_size + inner;
+                            contrib[in_idx] = incoming[out_idx];
                         }
                     }
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
@@ -8482,19 +8515,34 @@ impl TensorTape {
 
                     for outer in 0..outer_size {
                         for (r, &idx_f) in indices.iter().enumerate() {
+                            if !idx_f.is_finite() || idx_f.fract().abs() > f64::EPSILON {
+                                return Err(AutogradError::Dispatch(
+                                    DispatchKeyError::IncompatibleSet {
+                                        reason: "index_select backward received invalid index value",
+                                    }
+                                    .into(),
+                                ));
+                            }
                             let mut idx_i = idx_f as isize;
                             if idx_i < 0 {
                                 idx_i += dim_size as isize;
                             }
-                            if idx_i >= 0 && idx_i < dim_size as isize {
-                                let idx = idx_i as usize;
-                                for inner in 0..inner_size {
-                                    let grad_pos =
-                                        outer * num_indices * inner_size + r * inner_size + inner;
-                                    let orig_pos =
-                                        outer * dim_size * inner_size + idx * inner_size + inner;
-                                    contrib[orig_pos] += incoming[grad_pos];
-                                }
+                            if idx_i < 0 || idx_i >= dim_size as isize {
+                                return Err(AutogradError::Dispatch(
+                                    DispatchKeyError::IncompatibleSet {
+                                        reason:
+                                            "index_select backward received out-of-bounds index value",
+                                    }
+                                    .into(),
+                                ));
+                            }
+                            let idx = idx_i as usize;
+                            for inner in 0..inner_size {
+                                let grad_pos =
+                                    outer * num_indices * inner_size + r * inner_size + inner;
+                                let orig_pos =
+                                    outer * dim_size * inner_size + idx * inner_size + inner;
+                                contrib[orig_pos] += incoming[grad_pos];
                             }
                         }
                     }
@@ -8527,17 +8575,34 @@ impl TensorTape {
                             for inner in 0..inner_size {
                                 let idx_pos =
                                     outer * idx_dim_size * inner_size + r * inner_size + inner;
-                                let mut selected_i = index[idx_pos] as isize;
+                                let selected_f = index[idx_pos];
+                                if !selected_f.is_finite()
+                                    || selected_f.fract().abs() > f64::EPSILON
+                                {
+                                    return Err(AutogradError::Dispatch(
+                                        DispatchKeyError::IncompatibleSet {
+                                            reason: "gather backward received invalid index value",
+                                        }
+                                        .into(),
+                                    ));
+                                }
+                                let mut selected_i = selected_f as isize;
                                 if selected_i < 0 {
                                     selected_i += dim_size as isize;
                                 }
-                                if selected_i >= 0 && selected_i < dim_size as isize {
-                                    let selected = selected_i as usize;
-                                    let orig_pos = outer * dim_size * inner_size
-                                        + selected * inner_size
-                                        + inner;
-                                    contrib[orig_pos] += incoming[idx_pos];
+                                if selected_i < 0 || selected_i >= dim_size as isize {
+                                    return Err(AutogradError::Dispatch(
+                                        DispatchKeyError::IncompatibleSet {
+                                            reason:
+                                                "gather backward received out-of-bounds index value",
+                                        }
+                                        .into(),
+                                    ));
                                 }
+                                let selected = selected_i as usize;
+                                let orig_pos =
+                                    outer * dim_size * inner_size + selected * inner_size + inner;
+                                contrib[orig_pos] += incoming[idx_pos];
                             }
                         }
                     }
@@ -8548,6 +8613,66 @@ impl TensorTape {
                         node: node_id,
                         incoming_grad_len: incoming.len(),
                         rule: "d(gather(x))/dx=scatter_add_grad",
+                    });
+                }
+                TensorNodeOp::Scatter {
+                    input,
+                    dim,
+                    ref index,
+                    ref index_shape,
+                    ref input_shape,
+                } => {
+                    // Backward: gradient passes through for non-overwritten positions;
+                    // overwritten positions get zero gradient w.r.t. input.
+                    let mut contrib = incoming.to_vec();
+                    let dim_size = input_shape[dim];
+                    let idx_dim_size = index_shape[dim];
+                    let outer_size: usize = index_shape[..dim].iter().product();
+                    let inner_size: usize = index_shape[dim + 1..].iter().product();
+
+                    for outer in 0..outer_size {
+                        for r in 0..idx_dim_size {
+                            for inner in 0..inner_size {
+                                let idx_pos =
+                                    outer * idx_dim_size * inner_size + r * inner_size + inner;
+                                let selected_f = index[idx_pos];
+                                if !selected_f.is_finite()
+                                    || selected_f.fract().abs() > f64::EPSILON
+                                {
+                                    return Err(AutogradError::Dispatch(
+                                        DispatchKeyError::IncompatibleSet {
+                                            reason: "scatter backward received invalid index value",
+                                        }
+                                        .into(),
+                                    ));
+                                }
+                                let mut selected_i = selected_f as isize;
+                                if selected_i < 0 {
+                                    selected_i += dim_size as isize;
+                                }
+                                if selected_i < 0 || selected_i >= dim_size as isize {
+                                    return Err(AutogradError::Dispatch(
+                                        DispatchKeyError::IncompatibleSet {
+                                            reason:
+                                                "scatter backward received out-of-bounds index value",
+                                        }
+                                        .into(),
+                                    ));
+                                }
+                                let selected = selected_i as usize;
+                                let orig_pos =
+                                    outer * dim_size * inner_size + selected * inner_size + inner;
+                                contrib[orig_pos] = 0.0;
+                            }
+                        }
+                    }
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(scatter(x))/dx=mask_overwritten_to_zero",
                     });
                 }
                 TensorNodeOp::Flip { input, ref dims } => {
@@ -8783,6 +8908,7 @@ impl TensorTape {
                 | TensorNodeOp::MinDim { input, .. }
                 | TensorNodeOp::IndexSelect { input, .. }
                 | TensorNodeOp::Gather { input, .. }
+                | TensorNodeOp::Scatter { input, .. }
                 | TensorNodeOp::Sort { input, .. }
                 | TensorNodeOp::TopK { input, .. }
                 | TensorNodeOp::Flip { input, .. }
@@ -8891,6 +9017,7 @@ impl TensorTape {
                 | TensorNodeOp::MinDim { input, .. }
                 | TensorNodeOp::IndexSelect { input, .. }
                 | TensorNodeOp::Gather { input, .. }
+                | TensorNodeOp::Scatter { input, .. }
                 | TensorNodeOp::Sort { input, .. }
                 | TensorNodeOp::TopK { input, .. }
                 | TensorNodeOp::Flip { input, .. }
@@ -10704,6 +10831,18 @@ mod tests {
     }
 
     #[test]
+    fn tensor_log1p_backward() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![0.0, 1.0], vec![2], true).expect("leaf");
+        let (y, _) = tape.log1p(x, ExecutionMode::Strict).expect("log1p");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        // d/dx log1p(x) = 1/(1+x)
+        assert!((grads[0] - 1.0).abs() < 1e-12); // 1/(1+0) = 1
+        assert!((grads[1] - 0.5).abs() < 1e-12); // 1/(1+1) = 0.5
+    }
+
+    #[test]
     fn tensor_expm1_forward() {
         let mut tape = TensorTape::new();
         let x = tape.leaf(vec![0.0, 1.0], vec![2], true).expect("leaf");
@@ -11040,6 +11179,18 @@ mod tests {
         let vals = tape.values(y).expect("values");
         assert!((vals[0] - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
         assert!(vals[1].abs() < 1e-12);
+    }
+
+    #[test]
+    fn tensor_acos_backward() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![0.0, 0.5], vec![2], true).expect("leaf");
+        let (y, _) = tape.acos(x, ExecutionMode::Strict).expect("acos");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        // d/dx acos(x) = -1/sqrt(1-x^2)
+        assert!((grads[0] - (-1.0)).abs() < 1e-12); // -1/sqrt(1-0) = -1
+        assert!((grads[1] - (-1.0 / (0.75_f64).sqrt())).abs() < 1e-12);
     }
 
     #[test]
