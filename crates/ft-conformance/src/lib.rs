@@ -6445,6 +6445,7 @@ mod tests {
             .map(|case| case.name.as_str())
             .collect();
 
+        assert_eq!(report.cases_total, cases.len());
         assert_eq!(
             report.cases_total, report.cases_passed,
             "hardened tensor-meta failing cases: {failed_cases:?}"
@@ -6454,9 +6455,10 @@ mod tests {
     #[test]
     fn hardened_dispatch_conformance_is_green() {
         let cfg = HarnessConfig::default_paths();
-        let (report, _) =
+        let (report, cases) =
             run_dispatch_conformance(&cfg, ExecutionMode::Hardened).expect("dispatch should run");
 
+        assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_total, report.cases_passed);
     }
 
@@ -6474,27 +6476,30 @@ mod tests {
     #[test]
     fn strict_scheduler_conformance_is_green() {
         let cfg = HarnessConfig::default_paths();
-        let (report, _) = run_autograd_scheduler_conformance(&cfg, ExecutionMode::Strict)
+        let (report, cases) = run_autograd_scheduler_conformance(&cfg, ExecutionMode::Strict)
             .expect("scheduler conformance should run");
 
+        assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_total, report.cases_passed);
     }
 
     #[test]
     fn hardened_scheduler_conformance_is_green() {
         let cfg = HarnessConfig::default_paths();
-        let (report, _) = run_autograd_scheduler_conformance(&cfg, ExecutionMode::Hardened)
+        let (report, cases) = run_autograd_scheduler_conformance(&cfg, ExecutionMode::Hardened)
             .expect("scheduler conformance should run");
 
+        assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_total, report.cases_passed);
     }
 
     #[test]
     fn strict_serialization_conformance_is_green() {
         let cfg = HarnessConfig::default_paths();
-        let (report, _) = run_serialization_conformance(&cfg, ExecutionMode::Strict)
+        let (report, cases) = run_serialization_conformance(&cfg, ExecutionMode::Strict)
             .expect("serialization conformance should run");
 
+        assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_total, report.cases_passed);
     }
 
@@ -6545,9 +6550,10 @@ mod tests {
     #[test]
     fn hardened_serialization_conformance_is_green() {
         let cfg = HarnessConfig::default_paths();
-        let (report, _) = run_serialization_conformance(&cfg, ExecutionMode::Hardened)
+        let (report, cases) = run_serialization_conformance(&cfg, ExecutionMode::Hardened)
             .expect("serialization conformance should run");
 
+        assert_eq!(report.cases_total, cases.len());
         assert_eq!(report.cases_total, report.cases_passed);
     }
 

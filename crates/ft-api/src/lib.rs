@@ -561,7 +561,9 @@ impl FrankenTorchSession {
         steps: usize,
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let values = if steps <= 1 {
+        let values = if steps == 0 {
+            vec![]
+        } else if steps == 1 {
             vec![start]
         } else {
             (0..steps)
@@ -2163,10 +2165,7 @@ impl FrankenTorchSession {
         let batch_size = log_prob_shape[0];
         let num_classes = log_prob_shape[1];
 
-        // Gather the log-probabilities at the target indices
-        // Build index tensor: for each batch element, select the target class
-        let log_prob_vals = self.tensor_values(log_probs)?;
-        let mut selected = Vec::with_capacity(batch_size);
+        // Validate target indices
         for i in 0..batch_size {
             let cls = target_vals[i] as usize;
             assert!(
@@ -2175,12 +2174,17 @@ impl FrankenTorchSession {
                 cls,
                 num_classes
             );
-            selected.push(-log_prob_vals[i * num_classes + cls]);
         }
 
-        // Create the per-sample losses and take the mean
-        let losses = self.tensor_variable(selected, vec![batch_size], false)?;
-        self.tensor_mean(losses)
+        // Build index tensor of shape [batch_size, 1] for gather along dim=1
+        let index = self.tensor_variable(target_vals, vec![batch_size, 1], false)?;
+
+        // Gather log-probabilities at target indices (autograd-tracked)
+        let gathered = self.tensor_gather(log_probs, 1, index)?;
+
+        // NLL = -mean(gathered log-probabilities)
+        let neg_gathered = self.tensor_neg(gathered)?;
+        self.tensor_mean(neg_gathered)
     }
 
     /// Conditional selection: `torch.where(condition, x, y)`.
@@ -5367,14 +5371,16 @@ mod tests {
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
             .expect("x");
-        let mask = session
-            .tensor_variable(vec![1.0, 0.0, 1.0, 0.0, 1.0, 0.0], vec![2, 3], false)
-            .expect("mask");
+        let threshold = session
+            .tensor_variable(vec![3.0, 3.0, 3.0, 3.0, 3.0, 3.0], vec![2, 3], false)
+            .expect("threshold");
+        let mask = session.tensor_gt(x, threshold).expect("comparison mask");
         let y = session
             .tensor_masked_fill(x, mask, -1.0)
             .expect("masked_fill");
         let vals = session.tensor_values(y).expect("values");
-        assert_eq!(vals, vec![-1.0, 2.0, -1.0, 4.0, -1.0, 6.0]);
+        // mask is 1 where x > 3: [0,0,0,1,1,1], so positions 3,4,5 are filled with -1.0
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, -1.0, -1.0, -1.0]);
     }
 
     // ── Loss Function Tests ─────────────────────────────────────────────
