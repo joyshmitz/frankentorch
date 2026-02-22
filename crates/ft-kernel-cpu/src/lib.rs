@@ -483,25 +483,44 @@ pub fn reduce_sum_for_broadcast(
     expanded_grad: &[f64],
     expanded_shape: &[usize],
     original_shape: &[usize],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, KernelError> {
     let ndim = expanded_shape.len();
-    debug_assert_eq!(ndim, original_shape.len());
+    if ndim != original_shape.len() {
+        return Err(KernelError::ShapeMismatch {
+            lhs: expanded_shape.to_vec(),
+            rhs: original_shape.to_vec(),
+        });
+    }
 
-    let original_numel: usize = original_shape.iter().product();
-    if original_numel == 0 {
-        return Vec::new();
+    for d in 0..ndim {
+        let expanded = expanded_shape[d];
+        let original = original_shape[d];
+        if original != expanded && original != 1 {
+            return Err(KernelError::ShapeMismatch {
+                lhs: expanded_shape.to_vec(),
+                rhs: original_shape.to_vec(),
+            });
+        }
     }
 
     let expanded_numel: usize = expanded_shape.iter().product();
-    if expanded_numel == 0 {
-        return vec![0.0; original_numel];
+    if expanded_grad.len() != expanded_numel {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![expanded_grad.len()],
+            rhs: vec![expanded_numel],
+        });
+    }
+
+    let original_numel: usize = original_shape.iter().product();
+    if original_numel == 0 {
+        return Ok(Vec::new());
     }
 
     let original_strides = broadcast_strides(original_shape, expanded_shape);
     let mut reduced = vec![0.0; original_numel];
     let mut coords = vec![0usize; ndim];
 
-    for grad in expanded_grad.iter().take(expanded_numel) {
+    for grad in expanded_grad {
         let mut original_idx = 0usize;
         for d in 0..ndim {
             original_idx += coords[d] * original_strides[d];
@@ -517,7 +536,7 @@ pub fn reduce_sum_for_broadcast(
         }
     }
 
-    reduced
+    Ok(reduced)
 }
 
 pub fn neg_tensor_contiguous_f64(
@@ -3837,15 +3856,47 @@ mod tests {
     #[test]
     fn reduce_sum_for_broadcast_singleton_leading_dim() {
         let expanded = vec![1.0; 12];
-        let reduced = super::reduce_sum_for_broadcast(&expanded, &[4, 3], &[1, 3]);
+        let reduced =
+            super::reduce_sum_for_broadcast(&expanded, &[4, 3], &[1, 3]).expect("valid reduce");
         assert_eq!(reduced, vec![4.0, 4.0, 4.0]);
     }
 
     #[test]
     fn reduce_sum_for_broadcast_multiple_singletons() {
         let expanded: Vec<f64> = vec![1.0; 24];
-        let reduced = super::reduce_sum_for_broadcast(&expanded, &[2, 3, 4], &[1, 3, 1]);
+        let reduced = super::reduce_sum_for_broadcast(&expanded, &[2, 3, 4], &[1, 3, 1])
+            .expect("valid reduce");
         assert_eq!(reduced, vec![8.0, 8.0, 8.0]);
+    }
+
+    #[test]
+    fn reduce_sum_for_broadcast_rejects_rank_mismatch() {
+        let err = super::reduce_sum_for_broadcast(&[1.0, 2.0], &[2], &[1, 2])
+            .expect_err("rank mismatch should fail");
+        assert!(matches!(
+            err,
+            super::KernelError::ShapeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn reduce_sum_for_broadcast_rejects_invalid_broadcast_contract() {
+        let err = super::reduce_sum_for_broadcast(&[1.0, 2.0, 3.0, 4.0], &[2, 2], &[2, 3])
+            .expect_err("incompatible broadcast should fail");
+        assert!(matches!(
+            err,
+            super::KernelError::ShapeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn reduce_sum_for_broadcast_rejects_gradient_len_mismatch() {
+        let err = super::reduce_sum_for_broadcast(&[1.0, 2.0, 3.0], &[2, 2], &[1, 2])
+            .expect_err("gradient shape mismatch should fail");
+        assert!(matches!(
+            err,
+            super::KernelError::ShapeMismatch { .. }
+        ));
     }
 
     // ── index_select tests ─────────────────────────────────────────────

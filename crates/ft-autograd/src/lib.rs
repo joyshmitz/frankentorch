@@ -8060,8 +8060,16 @@ impl TensorTape {
                     ref indices,
                     ref input_shape,
                 } => {
+                    let ndim = input_shape.len();
+                    if dim >= ndim {
+                        return Err(AutogradError::Dispatch(DispatchError::Kernel(
+                            ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
+                        )));
+                    }
                     // Scatter incoming gradient back to original positions
                     let input_numel: usize = input_shape.iter().product();
+                    Self::ensure_tensor_len(node_id, input_numel, incoming.len())?;
+                    Self::ensure_tensor_len(node_id, input_numel, indices.len())?;
                     let dim_size = input_shape[dim];
                     let outer_size: usize = input_shape[..dim].iter().product();
                     let inner_size: usize = input_shape[dim + 1..].iter().product();
@@ -8073,6 +8081,14 @@ impl TensorTape {
                                 let out_idx =
                                     outer * dim_size * inner_size + d * inner_size + inner;
                                 let orig_d = indices[out_idx];
+                                if orig_d >= dim_size {
+                                    return Err(AutogradError::Dispatch(DispatchError::Kernel(
+                                        ft_kernel_cpu::KernelError::InvalidDimension {
+                                            dim: orig_d,
+                                            ndim: dim_size,
+                                        },
+                                    )));
+                                }
                                 let in_idx =
                                     outer * dim_size * inner_size + orig_d * inner_size + inner;
                                 grad_input[in_idx] += incoming[out_idx];
@@ -8096,11 +8112,28 @@ impl TensorTape {
                     ref indices,
                     ref input_shape,
                 } => {
+                    let ndim = input_shape.len();
+                    if dim >= ndim {
+                        return Err(AutogradError::Dispatch(DispatchError::Kernel(
+                            ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
+                        )));
+                    }
                     // Scatter incoming gradient back to original positions
                     let input_numel: usize = input_shape.iter().product();
                     let outer_size: usize = input_shape[..dim].iter().product();
                     let inner_size: usize = input_shape[dim + 1..].iter().product();
                     let input_dim_size = input_shape[dim];
+                    if k > input_dim_size {
+                        return Err(AutogradError::Dispatch(DispatchError::Kernel(
+                            ft_kernel_cpu::KernelError::ShapeMismatch {
+                                lhs: vec![k],
+                                rhs: vec![input_dim_size],
+                            },
+                        )));
+                    }
+                    let expected_out_numel = outer_size * k * inner_size;
+                    Self::ensure_tensor_len(node_id, expected_out_numel, incoming.len())?;
+                    Self::ensure_tensor_len(node_id, expected_out_numel, indices.len())?;
                     let mut grad_input = vec![0.0; input_numel];
 
                     for outer in 0..outer_size {
@@ -8108,6 +8141,14 @@ impl TensorTape {
                             for d in 0..k {
                                 let out_idx = outer * k * inner_size + d * inner_size + inner;
                                 let orig_d = indices[out_idx];
+                                if orig_d >= input_dim_size {
+                                    return Err(AutogradError::Dispatch(DispatchError::Kernel(
+                                        ft_kernel_cpu::KernelError::InvalidDimension {
+                                            dim: orig_d,
+                                            ndim: input_dim_size,
+                                        },
+                                    )));
+                                }
                                 let in_idx = outer * input_dim_size * inner_size
                                     + orig_d * inner_size
                                     + inner;
@@ -9572,6 +9613,84 @@ mod tests {
         assert!(matches!(
             err,
             AutogradError::DenseTensor(DenseTensorError::UnsupportedLayout)
+        ));
+    }
+
+    #[test]
+    fn tensor_backward_sort_rejects_out_of_bounds_scatter_index() {
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf(vec![3.0, 1.0, 2.0], vec![3], true)
+            .expect("input leaf should build");
+        let (sorted, _, _) = tape
+            .sort(input, 0, false, ExecutionMode::Strict)
+            .expect("sort should succeed");
+        match &mut tape.nodes[sorted.0].op {
+            TensorNodeOp::Sort { indices, .. } => {
+                indices[0] = 3;
+            }
+            other => panic!("expected sort node, got {other:?}"),
+        }
+
+        let err = tape
+            .backward(sorted)
+            .expect_err("out-of-bounds sort index should fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim: 3, ndim: 3 }
+            ))
+        ));
+    }
+
+    #[test]
+    fn tensor_backward_sort_rejects_incoming_gradient_len_mismatch() {
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf(vec![3.0, 1.0, 2.0], vec![3], true)
+            .expect("input leaf should build");
+        let (sorted, _, _) = tape
+            .sort(input, 0, false, ExecutionMode::Strict)
+            .expect("sort should succeed");
+        tape.nodes[sorted.0].tensor = DenseTensor::from_storage(
+            TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu),
+            vec![1.0, 2.0],
+        )
+        .expect("replacement tensor should build");
+
+        let err = tape
+            .backward(sorted)
+            .expect_err("incoming gradient shape mismatch should fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::TensorGradientShapeMismatch { node, expected: 3, actual: 2 }
+            if node == sorted
+        ));
+    }
+
+    #[test]
+    fn tensor_backward_topk_rejects_malformed_indices_len() {
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf(vec![1.0, 5.0, 2.0, 4.0], vec![4], true)
+            .expect("input leaf should build");
+        let (topk, _, _) = tape
+            .topk(input, 2, 0, true, true, ExecutionMode::Strict)
+            .expect("topk should succeed");
+        match &mut tape.nodes[topk.0].op {
+            TensorNodeOp::TopK { indices, .. } => {
+                indices.pop();
+            }
+            other => panic!("expected topk node, got {other:?}"),
+        }
+
+        let err = tape
+            .backward(topk)
+            .expect_err("malformed topk indices should fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::TensorGradientShapeMismatch { node, expected: 2, actual: 1 }
+            if node == topk
         ));
     }
 

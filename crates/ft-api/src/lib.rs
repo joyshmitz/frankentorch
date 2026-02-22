@@ -2356,6 +2356,11 @@ impl FrankenTorchSession {
         targets: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(logits)?;
+        if shape.is_empty() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim: 0, ndim: 0 },
+            )));
+        }
         let last_dim = shape.len() - 1;
         let log_probs = self.tensor_log_softmax(logits, last_dim)?;
         self.nll_loss(log_probs, targets)
@@ -2370,7 +2375,7 @@ pub use ft_autograd::{
 
 #[cfg(test)]
 mod tests {
-    use ft_autograd::{BackwardOptions, ReentrantPolicy};
+    use ft_autograd::{AutogradError, BackwardOptions, ReentrantPolicy};
     use ft_core::{DType, DenseTensor, Device, ExecutionMode, TensorMeta};
     use ft_runtime::EvidenceKind;
 
@@ -6562,6 +6567,26 @@ mod tests {
             val_wrong,
             val_correct
         );
+    }
+
+    #[test]
+    fn session_cross_entropy_loss_rejects_rank0_logits() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits = session
+            .tensor_variable(vec![2.0], vec![], false)
+            .expect("rank-0 logits");
+        let targets = session
+            .tensor_variable(vec![0.0], vec![1], false)
+            .expect("targets");
+        let err = session
+            .cross_entropy_loss(logits, targets)
+            .expect_err("rank-0 logits should fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim: 0, ndim: 0 }
+            ))
+        ));
     }
 
     // ---- kernel where tests ----
