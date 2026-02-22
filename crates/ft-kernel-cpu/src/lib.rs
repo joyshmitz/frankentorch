@@ -1982,7 +1982,7 @@ pub fn masked_fill_tensor_contiguous_f64(
     let data = &input[offset..offset + numel];
     let output = data
         .iter()
-        .zip(mask.iter())
+        .zip(mask[..numel].iter())
         .map(|(&d, &m)| if m != 0.0 { value } else { d })
         .collect();
 
@@ -2166,8 +2166,8 @@ pub fn cumprod_backward_tensor_contiguous_f64(
     let numel = outer_size * dim_size * inner_size;
     let mut grad_input = vec![0.0; numel];
     let in_data = &input[offset..];
-    let out_data = &output[..numel];
-    let go_data = &grad_output[..numel];
+    let out_data = &output[offset..];
+    let go_data = &grad_output[offset..];
 
     for outer in 0..outer_size {
         for inner in 0..inner_size {
@@ -2538,6 +2538,7 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert!((out[0] - 1.0).abs() < 1e-10);
         assert!((out[1] - std::f64::consts::E).abs() < 1e-10);
+        assert!((out[2] - 2.0_f64.exp()).abs() < 1e-10);
     }
 
     #[test]
