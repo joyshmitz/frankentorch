@@ -6377,7 +6377,7 @@ mod tests {
             .expect("strict conformance should run");
 
         assert_eq!(report.cases_total, case_reports.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6429,7 +6429,7 @@ mod tests {
             .expect("tensor binary conformance should run");
 
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6439,7 +6439,7 @@ mod tests {
             .expect("tensor binary conformance should run");
 
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6449,7 +6449,7 @@ mod tests {
             run_dispatch_conformance(&cfg, ExecutionMode::Strict).expect("dispatch should run");
 
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6465,7 +6465,7 @@ mod tests {
 
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(
-            report.cases_total, report.cases_passed,
+            report.cases_passed, report.cases_total,
             "strict tensor-meta failing cases: {failed_cases:?}"
         );
     }
@@ -6483,7 +6483,7 @@ mod tests {
 
         assert_eq!(report.cases_total, cases.len());
         assert_eq!(
-            report.cases_total, report.cases_passed,
+            report.cases_passed, report.cases_total,
             "hardened tensor-meta failing cases: {failed_cases:?}"
         );
     }
@@ -6495,7 +6495,7 @@ mod tests {
             run_dispatch_conformance(&cfg, ExecutionMode::Hardened).expect("dispatch should run");
 
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6516,7 +6516,7 @@ mod tests {
             .expect("scheduler conformance should run");
 
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6526,7 +6526,7 @@ mod tests {
             .expect("scheduler conformance should run");
 
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6536,7 +6536,7 @@ mod tests {
             .expect("serialization conformance should run");
 
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6590,7 +6590,7 @@ mod tests {
             .expect("serialization conformance should run");
 
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
     }
 
     #[test]
@@ -6601,7 +6601,7 @@ mod tests {
 
         assert_eq!(report.suite, "nn_state");
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
         assert!(cases.iter().all(NnStateCaseReport::passed));
     }
 
@@ -6613,7 +6613,7 @@ mod tests {
 
         assert_eq!(report.suite, "nn_state");
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
         assert!(cases.iter().all(NnStateCaseReport::passed));
     }
 
@@ -6625,7 +6625,7 @@ mod tests {
 
         assert_eq!(report.suite, "optimizer_state");
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
         assert!(cases.iter().all(|case| case.passed()));
     }
 
@@ -6637,7 +6637,7 @@ mod tests {
 
         assert_eq!(report.suite, "optimizer_state");
         assert_eq!(report.cases_total, cases.len());
-        assert_eq!(report.cases_total, report.cases_passed);
+        assert_eq!(report.cases_passed, report.cases_total);
         assert!(cases.iter().all(|case| case.passed()));
     }
 
