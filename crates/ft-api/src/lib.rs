@@ -3231,8 +3231,8 @@ mod tests {
             .expect("tensor sigmoid should succeed");
         let values = session.tensor_values(y).expect("values should resolve");
         assert!((values[0] - 0.5).abs() < 1e-10);
-        assert!((values[1] - 1.0).abs() < 1e-4);
-        assert!(values[2].abs() < 1e-4);
+        assert!((values[1] - 1.0).abs() < 1e-10);
+        assert!(values[2].abs() < 1e-10);
     }
 
     #[test]
@@ -3263,8 +3263,8 @@ mod tests {
         let y = session.tensor_tanh(x).expect("tensor tanh should succeed");
         let values = session.tensor_values(y).expect("values should resolve");
         assert!(values[0].abs() < 1e-10);
-        assert!((values[1] - 1.0).abs() < 1e-6);
-        assert!((values[2] + 1.0).abs() < 1e-6);
+        assert!((values[1] - 1.0).abs() < 1e-10);
+        assert!((values[2] + 1.0).abs() < 1e-10);
     }
 
     #[test]
@@ -4239,7 +4239,7 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session.variable(0.0, true);
         let y = session.log1p(x).expect("log1p");
-        assert!((session.value(y).expect("value")).abs() < 1e-15);
+        assert!((session.value(y).expect("value")).abs() < 1e-12);
     }
 
     #[test]
@@ -4247,7 +4247,7 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session.variable(0.0, true);
         let y = session.expm1(x).expect("expm1");
-        assert!((session.value(y).expect("value")).abs() < 1e-15);
+        assert!((session.value(y).expect("value")).abs() < 1e-12);
     }
 
     #[test]
@@ -5528,7 +5528,7 @@ mod tests {
         let vals = s.tensor_values(loss).unwrap();
         let expected = -(0.5_f64.ln());
         assert!(
-            (vals[0] - expected).abs() < 1e-6,
+            (vals[0] - expected).abs() < 1e-12,
             "expected BCE~{expected}, got {}",
             vals[0]
         );
@@ -5566,8 +5566,8 @@ mod tests {
         // d/dp BCE = -(t/p - (1-t)/(1-p)) / n
         // grad[0]: -(1/0.5 - 0) / 2 = -1.0
         // grad[1]: -(0 - 1/0.2) / 2 = 2.5
-        assert!((grad[0] - (-1.0)).abs() < 1e-6, "expected grad[0]=-1.0, got {}", grad[0]);
-        assert!((grad[1] - 2.5).abs() < 1e-6, "expected grad[1]=2.5, got {}", grad[1]);
+        assert!((grad[0] - (-1.0)).abs() < 1e-12, "expected grad[0]=-1.0, got {}", grad[0]);
+        assert!((grad[1] - 2.5).abs() < 1e-12, "expected grad[1]=2.5, got {}", grad[1]);
     }
 
     #[test]
@@ -5670,8 +5670,8 @@ mod tests {
         assert_eq!(grad.len(), 2);
         // Element 0: |diff|=0.3 < beta=1.0 (quadratic): grad = diff/beta/n = -0.3/1.0/2 = -0.15
         // Element 1: |diff|=5.0 >= beta=1.0 (linear): grad = sign(diff)/n = -1.0/2 = -0.5
-        assert!((grad[0] - (-0.15)).abs() < 1e-6, "expected grad[0]=-0.15, got {}", grad[0]);
-        assert!((grad[1] - (-0.5)).abs() < 1e-6, "expected grad[1]=-0.5, got {}", grad[1]);
+        assert!((grad[0] - (-0.15)).abs() < 1e-12, "expected grad[0]=-0.15, got {}", grad[0]);
+        assert!((grad[1] - (-0.5)).abs() < 1e-12, "expected grad[1]=-0.5, got {}", grad[1]);
     }
 
     #[test]

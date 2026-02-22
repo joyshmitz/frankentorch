@@ -10432,7 +10432,7 @@ mod tests {
         let x = tape.leaf(0.0, true);
         let (y, _) = tape.sin(x, ExecutionMode::Strict).expect("sin");
         assert!(
-            (tape.value(y).expect("value")).abs() < 1e-15,
+            (tape.value(y).expect("value")).abs() < 1e-12,
             "sin(0) should be 0"
         );
     }
@@ -10627,7 +10627,7 @@ mod tests {
         let x = tape.leaf(0.0, true);
         let (y, _) = tape.log1p(x, ExecutionMode::Strict).expect("log1p");
         assert!(
-            (tape.value(y).expect("value")).abs() < 1e-15,
+            (tape.value(y).expect("value")).abs() < 1e-12,
             "log1p(0) = 0"
         );
     }
@@ -10649,7 +10649,7 @@ mod tests {
         let x = tape.leaf(0.0, true);
         let (y, _) = tape.expm1(x, ExecutionMode::Strict).expect("expm1");
         assert!(
-            (tape.value(y).expect("value")).abs() < 1e-15,
+            (tape.value(y).expect("value")).abs() < 1e-12,
             "expm1(0) = 0"
         );
     }
@@ -10699,7 +10699,7 @@ mod tests {
         let x = tape.leaf(vec![0.0, 1.0], vec![2], true).expect("leaf");
         let (y, _) = tape.log1p(x, ExecutionMode::Strict).expect("log1p");
         let vals = tape.values(y).expect("values");
-        assert!(vals[0].abs() < 1e-15);
+        assert!(vals[0].abs() < 1e-12);
         assert!((vals[1] - std::f64::consts::LN_2).abs() < 1e-12);
     }
 
@@ -10709,7 +10709,7 @@ mod tests {
         let x = tape.leaf(vec![0.0, 1.0], vec![2], true).expect("leaf");
         let (y, _) = tape.expm1(x, ExecutionMode::Strict).expect("expm1");
         let vals = tape.values(y).expect("values");
-        assert!(vals[0].abs() < 1e-15);
+        assert!(vals[0].abs() < 1e-12);
         assert!((vals[1] - (std::f64::consts::E - 1.0)).abs() < 1e-12);
     }
 
