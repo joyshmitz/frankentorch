@@ -5861,7 +5861,8 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let input_numel = meta.numel();
-            let new_numel: usize = new_shape.iter().product();
+            let new_numel =
+                Self::checked_shape_numel(&new_shape, "reshape target shape volume overflow")?;
             if input_numel != new_numel {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
                     ft_kernel_cpu::KernelError::ShapeMismatch {
@@ -6014,7 +6015,7 @@ impl TensorTape {
                 let mut perm: Vec<usize> = (0..ndim).collect();
                 perm.swap(dim0, dim1);
                 let storage = input_node.tensor.storage().to_vec();
-                let new_storage = Self::permute_data(&storage, shape, &perm);
+                let new_storage = Self::permute_data(&storage, shape, &perm)?;
                 let mut new_shape = shape.to_vec();
                 new_shape.swap(dim0, dim1);
                 (
@@ -6074,7 +6075,7 @@ impl TensorTape {
             }
 
             let storage = input_node.tensor.storage().to_vec();
-            let new_storage = Self::permute_data(&storage, shape, &dims);
+            let new_storage = Self::permute_data(&storage, shape, &dims)?;
             let new_shape: Vec<usize> = dims.iter().map(|&d| shape[d]).collect();
             (
                 input_node.requires_grad,
@@ -6113,7 +6114,10 @@ impl TensorTape {
                     ft_kernel_cpu::KernelError::InvalidDimension { dim: end_dim, ndim },
                 )));
             }
-            let flat_size: usize = shape[start_dim..=end_dim].iter().product();
+            let flat_size = Self::checked_shape_numel(
+                &shape[start_dim..=end_dim],
+                "flatten shape multiplication overflow",
+            )?;
             let mut new_shape = Vec::with_capacity(ndim - (end_dim - start_dim));
             new_shape.extend_from_slice(&shape[..start_dim]);
             new_shape.push(flat_size);
@@ -6138,7 +6142,8 @@ impl TensorTape {
                     ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
                 )));
             }
-            let expected: usize = sizes.iter().product();
+            let expected =
+                Self::checked_shape_numel(&sizes, "unflatten sizes multiplication overflow")?;
             if expected != shape[dim] {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
                     ft_kernel_cpu::KernelError::ShapeMismatch {
@@ -6348,11 +6353,15 @@ impl TensorTape {
     /// Physically rearranges data according to a dimension permutation.
     /// Given source data in contiguous row-major layout with `src_shape`,
     /// produces data in contiguous row-major layout for the permuted shape.
-    fn permute_data(src: &[f64], src_shape: &[usize], perm: &[usize]) -> Vec<f64> {
+    fn permute_data(
+        src: &[f64],
+        src_shape: &[usize],
+        perm: &[usize],
+    ) -> Result<Vec<f64>, AutogradError> {
         let ndim = src_shape.len();
-        let numel: usize = src_shape.iter().product();
+        let numel = Self::checked_shape_numel(src_shape, "permute shape volume overflow")?;
         if numel == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let src_strides = ft_core::contiguous_strides(src_shape);
@@ -6379,7 +6388,7 @@ impl TensorTape {
             dst[flat_dst] = val;
         }
 
-        dst
+        Ok(dst)
     }
 
     #[allow(clippy::needless_range_loop)]
@@ -6409,7 +6418,7 @@ impl TensorTape {
             )
         };
 
-        let numel = shape.iter().product::<usize>();
+        let numel = Self::checked_shape_numel(&shape, "flip shape volume overflow")?;
         let strides = ft_core::contiguous_strides(&shape);
         let ndim = shape.len();
         let mut result = vec![0.0; numel];
@@ -6472,19 +6481,23 @@ impl TensorTape {
         };
 
         let ndim = original_shape.len();
-        let output_shape: Vec<usize> = original_shape
-            .iter()
-            .zip(repeats.iter())
-            .map(|(&s, &r)| s * r)
-            .collect();
-        let output_numel: usize = output_shape.iter().product();
+        let mut output_shape = Vec::with_capacity(ndim);
+        for (&size, &repeat) in original_shape.iter().zip(repeats.iter()) {
+            output_shape.push(Self::checked_mul_usize(
+                size,
+                repeat,
+                "repeat shape multiplication overflow",
+            )?);
+        }
+        let output_numel =
+            Self::checked_shape_numel(&output_shape, "repeat output shape volume overflow")?;
         let output_strides = ft_core::contiguous_strides(&output_shape);
+        let src_strides = ft_core::contiguous_strides(&original_shape);
 
         let mut result = vec![0.0; output_numel];
         for flat in 0..output_numel {
             let mut remaining = flat;
             let mut src_flat = 0;
-            let src_strides = ft_core::contiguous_strides(&original_shape);
             for d in 0..ndim {
                 let coord = remaining / output_strides[d];
                 remaining %= output_strides[d];
@@ -6534,7 +6547,7 @@ impl TensorTape {
             )
         };
 
-        let numel = shape.iter().product::<usize>();
+        let numel = Self::checked_shape_numel(&shape, "roll shape volume overflow")?;
         let strides = ft_core::contiguous_strides(&shape);
         let ndim = shape.len();
         let dim_size = shape[dim];
@@ -8336,7 +8349,7 @@ impl TensorTape {
                     let ndim = output_shape.len();
                     let mut inv_perm: Vec<usize> = (0..ndim).collect();
                     inv_perm.swap(dim0, dim1);
-                    let permuted_grad = Self::permute_data(&incoming, output_shape, &inv_perm);
+                    let permuted_grad = Self::permute_data(&incoming, output_shape, &inv_perm)?;
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &permuted_grad)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
@@ -8354,7 +8367,7 @@ impl TensorTape {
                     for (i, &d) in dims.iter().enumerate() {
                         inv_perm[d] = i;
                     }
-                    let permuted_grad = Self::permute_data(&incoming, output_shape, &inv_perm);
+                    let permuted_grad = Self::permute_data(&incoming, output_shape, &inv_perm)?;
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &permuted_grad)?;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
@@ -8765,15 +8778,25 @@ impl TensorTape {
                 } => {
                     // Sum gradients over the repeated tiles
                     let ndim = original_shape.len();
-                    let input_numel: usize = original_shape.iter().product();
-                    let output_shape: Vec<usize> = original_shape
-                        .iter()
-                        .zip(repeats.iter())
-                        .map(|(&s, &r)| s * r)
-                        .collect();
+                    let input_numel = Self::checked_shape_numel(
+                        original_shape,
+                        "repeat backward input shape volume overflow",
+                    )?;
+                    let mut output_shape = Vec::with_capacity(ndim);
+                    for (&size, &repeat) in original_shape.iter().zip(repeats.iter()) {
+                        output_shape.push(Self::checked_mul_usize(
+                            size,
+                            repeat,
+                            "repeat backward shape multiplication overflow",
+                        )?);
+                    }
+                    let output_numel = Self::checked_shape_numel(
+                        &output_shape,
+                        "repeat backward output shape volume overflow",
+                    )?;
+                    Self::ensure_tensor_len(node_id, output_numel, incoming.len())?;
                     let output_strides = ft_core::contiguous_strides(&output_shape);
                     let input_strides = ft_core::contiguous_strides(original_shape);
-                    let output_numel = incoming.len();
 
                     let mut contrib = vec![0.0; input_numel];
                     for flat in 0..output_numel {
@@ -9116,6 +9139,38 @@ impl TensorTape {
             });
         }
         Ok(())
+    }
+
+    fn checked_shape_numel(
+        shape: &[usize],
+        overflow_reason: &'static str,
+    ) -> Result<usize, AutogradError> {
+        let mut product = 1usize;
+        for dim in shape.iter().copied() {
+            if dim == 0 {
+                return Ok(0);
+            }
+            let Some(next) = product.checked_mul(dim) else {
+                return Err(Self::shape_overflow_error(overflow_reason));
+            };
+            product = next;
+        }
+        Ok(product)
+    }
+
+    fn checked_mul_usize(
+        lhs: usize,
+        rhs: usize,
+        overflow_reason: &'static str,
+    ) -> Result<usize, AutogradError> {
+        lhs.checked_mul(rhs)
+            .ok_or_else(|| Self::shape_overflow_error(overflow_reason))
+    }
+
+    fn shape_overflow_error(reason: &'static str) -> AutogradError {
+        AutogradError::Dispatch(DispatchError::Key(DispatchKeyError::IncompatibleSet {
+            reason,
+        }))
     }
 
     fn matmul_dims(lhs: &[usize], rhs: &[usize]) -> Result<(usize, usize, usize), AutogradError> {

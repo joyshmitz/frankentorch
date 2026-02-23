@@ -1703,15 +1703,21 @@ impl FrankenTorchSession {
         shape: &[usize],
         overflow_reason: &'static str,
     ) -> Result<usize, AutogradError> {
-        shape.iter().copied().try_fold(1usize, |acc, dim| {
-            acc.checked_mul(dim).ok_or({
-                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+        let mut product = 1usize;
+        for dim in shape.iter().copied() {
+            if dim == 0 {
+                return Ok(0);
+            }
+            let Some(next) = product.checked_mul(dim) else {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
                         reason: overflow_reason,
                     },
-                ))
-            })
-        })
+                )));
+            };
+            product = next;
+        }
+        Ok(product)
     }
 
     fn checked_square_numel(
@@ -2214,7 +2220,7 @@ impl FrankenTorchSession {
     /// (matching PyTorch's behavior for integer-like cases).
     pub fn tensor_median(&mut self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(node)?;
-        let numel: usize = shape.iter().product();
+        let numel = Self::checked_shape_numel(&shape, "median shape volume overflow")?;
         if numel == 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -5376,6 +5382,25 @@ mod tests {
         assert_eq!(shape_restored, vec![2, 3, 4]);
     }
 
+    #[test]
+    fn session_tensor_unflatten_rejects_size_product_overflow() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], false)
+            .expect("x");
+        let err = session
+            .tensor_unflatten(x, 0, vec![usize::MAX, usize::MAX])
+            .expect_err("overflowing unflatten sizes must fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "unflatten sizes multiplication overflow"
+                }
+            ))
+        ));
+    }
+
     // narrow tests
 
     #[test]
@@ -6515,6 +6540,25 @@ mod tests {
     }
 
     #[test]
+    fn session_tensor_reshape_rejects_shape_volume_overflow() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0], vec![1], false)
+            .expect("t");
+        let err = session
+            .tensor_reshape(t, vec![usize::MAX, usize::MAX])
+            .expect_err("overflowing reshape shape must fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "reshape target shape volume overflow"
+                }
+            ))
+        ));
+    }
+
+    #[test]
     fn session_tensor_squeeze_non_singleton_is_noop() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = session
@@ -7493,6 +7537,25 @@ mod tests {
                 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0,
             ]
         );
+    }
+
+    #[test]
+    fn session_repeat_rejects_shape_multiplication_overflow() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .expect("t");
+        let err = session
+            .tensor_repeat(t, &[usize::MAX])
+            .expect_err("overflowing repeat shape must fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "repeat shape multiplication overflow"
+                }
+            ))
+        ));
     }
 
     // ---- roll ----

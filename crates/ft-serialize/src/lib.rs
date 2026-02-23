@@ -311,7 +311,7 @@ pub fn generate_raptorq_sidecar(
 }
 
 fn decode_checkpoint_strict(input: &str) -> Result<CheckpointEnvelope, SerializeError> {
-    let envelope: CheckpointEnvelope = serde_json::from_str(input).map_err(|error| {
+    let mut envelope: CheckpointEnvelope = serde_json::from_str(input).map_err(|error| {
         if let Some(field) = extract_unknown_field(error.to_string().as_str()) {
             SerializeError::UnknownField { field }
         } else {
@@ -321,6 +321,7 @@ fn decode_checkpoint_strict(input: &str) -> Result<CheckpointEnvelope, Serialize
         }
     })?;
     validate_checkpoint(&envelope)?;
+    envelope.entries = normalize_entries(envelope.entries.as_slice());
     Ok(envelope)
 }
 
@@ -350,12 +351,13 @@ fn decode_checkpoint_hardened(input: &str) -> Result<CheckpointEnvelope, Seriali
         }
     }
 
-    let envelope: CheckpointEnvelope =
+    let mut envelope: CheckpointEnvelope =
         serde_json::from_value(raw).map_err(|error| SerializeError::IncompatiblePayload {
             reason: bounded(error.to_string().as_str(), 200),
         })?;
 
     validate_checkpoint(&envelope)?;
+    envelope.entries = normalize_entries(envelope.entries.as_slice());
     Ok(envelope)
 }
 
@@ -665,6 +667,73 @@ mod tests {
         assert_eq!(decoded.entries[1].node_id, 1);
         assert_eq!(decoded.entries[1].value, 3.0);
         assert_eq!(decoded.entries[1].grad, Some(2.0));
+    }
+
+    #[test]
+    fn strict_decode_canonicalizes_entry_order() {
+        let entries = vec![
+            SnapshotEntry {
+                node_id: 2,
+                value: 20.0,
+                grad: None,
+            },
+            SnapshotEntry {
+                node_id: 0,
+                value: 0.0,
+                grad: Some(1.0),
+            },
+            SnapshotEntry {
+                node_id: 1,
+                value: 10.0,
+                grad: None,
+            },
+        ];
+        let encoded =
+            encode_checkpoint(&entries, CheckpointMode::Strict).expect("strict encode should work");
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&encoded).expect("valid encoded checkpoint");
+        let mut reversed_entries = payload["entries"]
+            .as_array()
+            .expect("entries must be an array")
+            .clone();
+        reversed_entries.reverse();
+        payload["entries"] = serde_json::Value::Array(reversed_entries);
+
+        let decoded = decode_checkpoint(payload.to_string().as_str(), DecodeMode::Strict)
+            .expect("strict decode should canonicalize entry order");
+        let node_ids: Vec<usize> = decoded.entries.iter().map(|entry| entry.node_id).collect();
+        assert_eq!(node_ids, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn hardened_decode_canonicalizes_entry_order() {
+        let entries = vec![
+            SnapshotEntry {
+                node_id: 4,
+                value: 4.0,
+                grad: None,
+            },
+            SnapshotEntry {
+                node_id: 3,
+                value: 3.0,
+                grad: Some(0.5),
+            },
+        ];
+        let encoded = encode_checkpoint(&entries, CheckpointMode::Hardened)
+            .expect("hardened encode should work");
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&encoded).expect("valid encoded checkpoint");
+        let mut reversed_entries = payload["entries"]
+            .as_array()
+            .expect("entries must be an array")
+            .clone();
+        reversed_entries.reverse();
+        payload["entries"] = serde_json::Value::Array(reversed_entries);
+
+        let decoded = decode_checkpoint(payload.to_string().as_str(), DecodeMode::Hardened)
+            .expect("hardened decode should canonicalize entry order");
+        let node_ids: Vec<usize> = decoded.entries.iter().map(|entry| entry.node_id).collect();
+        assert_eq!(node_ids, vec![3, 4]);
     }
 
     #[test]

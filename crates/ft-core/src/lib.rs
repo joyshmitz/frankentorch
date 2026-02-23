@@ -147,11 +147,17 @@ impl TensorMeta {
         if self.shape.is_empty() {
             return 1;
         }
-        self.shape
-            .iter()
-            .copied()
-            .try_fold(1usize, usize::checked_mul)
-            .unwrap_or(usize::MAX)
+        let mut product = 1usize;
+        for dim in self.shape.iter().copied() {
+            if dim == 0 {
+                return 0;
+            }
+            let Some(next) = product.checked_mul(dim) else {
+                return usize::MAX;
+            };
+            product = next;
+        }
+        product
     }
 
     #[must_use]
@@ -974,6 +980,12 @@ mod tests {
     fn numel_saturates_on_overflow() {
         let meta = TensorMeta::from_shape(vec![usize::MAX, 2], DType::F64, Device::Cpu);
         assert_eq!(meta.numel(), usize::MAX);
+    }
+
+    #[test]
+    fn numel_zero_dimension_short_circuits_before_overflow() {
+        let meta = TensorMeta::from_shape(vec![usize::MAX, 2, 0], DType::F64, Device::Cpu);
+        assert_eq!(meta.numel(), 0);
     }
 
     #[test]
