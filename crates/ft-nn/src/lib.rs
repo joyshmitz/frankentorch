@@ -2,6 +2,7 @@
 
 use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, TensorNodeId};
+use ft_dispatch::{DispatchError, DispatchKeyError};
 
 /// Trait for neural network modules.
 ///
@@ -37,6 +38,13 @@ impl Linear {
         out_features: usize,
         use_bias: bool,
     ) -> Result<Self, AutogradError> {
+        if in_features == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "linear layer requires in_features > 0",
+                },
+            )));
+        }
         // PyTorch Linear initialization: U(-bound, bound) where bound = sqrt(1 / in_features)
         let bound = 1.0 / (in_features as f64).sqrt();
 
@@ -299,6 +307,13 @@ impl Module for Dropout {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if !self.p.is_finite() || !(0.0..=1.0).contains(&self.p) {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "dropout probability p must be finite and in [0, 1]",
+                },
+            )));
+        }
         if !self.training || self.p == 0.0 {
             return Ok(input);
         }
@@ -431,6 +446,29 @@ mod tests {
     }
 
     #[test]
+    fn dropout_invalid_probability_fails_closed() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("variable should succeed");
+
+        for p in [-0.1, 1.1, f64::NAN] {
+            let dropout = Dropout::new(p);
+            let err = dropout
+                .forward(&mut session, x)
+                .expect_err("invalid dropout probability must fail closed");
+            assert!(matches!(
+                err,
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "dropout probability p must be finite and in [0, 1]"
+                    }
+                ))
+            ));
+        }
+    }
+
+    #[test]
     fn activation_modules_have_no_parameters() {
         assert!(ReLU.parameters().is_empty());
         assert!(Sigmoid.parameters().is_empty());
@@ -478,6 +516,20 @@ mod tests {
             .expect("forward should succeed");
         let vals = session.tensor_values(y).expect("values should resolve");
         assert_eq!(vals.len(), 2);
+    }
+
+    #[test]
+    fn linear_rejects_zero_in_features() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let result = Linear::new(&mut session, 0, 2, true);
+        assert!(matches!(
+            result,
+            Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "linear layer requires in_features > 0"
+                }
+            )))
+        ));
     }
 
     #[test]
