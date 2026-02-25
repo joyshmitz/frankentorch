@@ -7600,6 +7600,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn session_flip_empty_dims_is_noop() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("t");
+        let f = session.tensor_flip(t, &[]).expect("flip");
+        assert_eq!(session.tensor_values(f).expect("vals"), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn session_flip_rejects_invalid_dimension() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("t");
+        let err = session
+            .tensor_flip(t, &[1])
+            .expect_err("flip should reject out-of-range dim");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim: 1, ndim: 1 }
+            ))
+        ));
+    }
+
     // ---- repeat ----
 
     #[test]
@@ -7656,6 +7683,34 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn session_repeat_rejects_rank_mismatch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .expect("t");
+        let err = session
+            .tensor_repeat(t, &[2, 3])
+            .expect_err("repeat should reject repeat rank mismatch");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch { lhs, rhs }
+            )) if lhs == vec![2] && rhs == vec![2, 3]
+        ));
+    }
+
+    #[test]
+    fn session_repeat_zero_factor_produces_empty_tensor() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("t");
+        let r = session.tensor_repeat(t, &[0]).expect("repeat");
+        assert_eq!(session.tensor_shape(r).expect("shape"), vec![0]);
+        assert!(session.tensor_values(r).expect("vals").is_empty());
+    }
+
     // ---- roll ----
 
     #[test]
@@ -7697,6 +7752,36 @@ mod tests {
             session.tensor_values(r).expect("vals"),
             vec![3.0, 1.0, 2.0, 6.0, 4.0, 5.0]
         );
+    }
+
+    #[test]
+    fn session_roll_large_shift_wraps_mod_dimension() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .expect("t");
+        let r = session.tensor_roll(t, 5, 0).expect("roll");
+        assert_eq!(
+            session.tensor_values(r).expect("vals"),
+            vec![4.0, 1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn session_roll_rejects_invalid_dimension() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("t");
+        let err = session
+            .tensor_roll(t, 1, 1)
+            .expect_err("roll should reject out-of-range dim");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim: 1, ndim: 1 }
+            ))
+        ));
     }
 
     #[cfg(target_pointer_width = "32")]
@@ -7874,6 +7959,13 @@ mod tests {
     }
 
     #[test]
+    fn session_tensor_any_empty_false() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session.tensor_variable(vec![], vec![0], false).expect("t");
+        assert!(!session.tensor_any(t).expect("any"));
+    }
+
+    #[test]
     fn session_tensor_all_true() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = session
@@ -7889,6 +7981,13 @@ mod tests {
             .tensor_variable(vec![1.0, 0.0, 3.0], vec![3], false)
             .expect("t");
         assert!(!session.tensor_all(t).expect("all"));
+    }
+
+    #[test]
+    fn session_tensor_all_empty_true() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session.tensor_variable(vec![], vec![0], false).expect("t");
+        assert!(session.tensor_all(t).expect("all"));
     }
 
     // ---- median ----
@@ -7922,5 +8021,38 @@ mod tests {
             .expect("t");
         let m = session.tensor_median(t).expect("median");
         assert_eq!(session.tensor_values(m).expect("vals"), vec![42.0]);
+    }
+
+    #[test]
+    fn session_tensor_median_rejects_empty() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session.tensor_variable(vec![], vec![0], false).expect("t");
+        let err = session
+            .tensor_median(t)
+            .expect_err("median over empty tensor must fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "median requires non-empty tensor"
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn session_tensor_median_backward_unique_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![3.0, 1.0, 2.0], vec![3], true)
+            .expect("x");
+        let m = session.tensor_median(x).expect("median");
+        assert_eq!(session.tensor_values(m).expect("vals"), vec![2.0]);
+
+        let report = session.tensor_backward(m).expect("backward");
+        assert_eq!(
+            session.tensor_gradient(&report, x).expect("x grad"),
+            &[0.0, 0.0, 1.0]
+        );
     }
 }
