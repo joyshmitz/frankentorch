@@ -6488,30 +6488,24 @@ impl TensorTape {
         input: TensorNodeId,
         repeats: Vec<usize>,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (requires_grad, storage, original_shape, dtype, device) = {
+        let (requires_grad, storage, original_shape, repeat_shape, dtype, device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let shape = meta.shape().to_vec();
-            if repeats.len() != shape.len() {
-                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
-                    ft_kernel_cpu::KernelError::ShapeMismatch {
-                        lhs: shape,
-                        rhs: repeats,
-                    },
-                )));
-            }
+            let repeat_shape = Self::normalize_repeat_shape(&shape, &repeats)?;
             (
                 input_node.requires_grad,
                 input_node.tensor.contiguous_values()?.to_vec(),
                 shape,
+                repeat_shape,
                 meta.dtype(),
                 meta.device(),
             )
         };
 
-        let ndim = original_shape.len();
+        let ndim = repeats.len();
         let mut output_shape = Vec::with_capacity(ndim);
-        for (&size, &repeat) in original_shape.iter().zip(repeats.iter()) {
+        for (&size, &repeat) in repeat_shape.iter().zip(repeats.iter()) {
             output_shape.push(Self::checked_mul_usize(
                 size,
                 repeat,
@@ -6521,7 +6515,7 @@ impl TensorTape {
         let output_numel =
             Self::checked_shape_numel(&output_shape, "repeat output shape volume overflow")?;
         let output_strides = ft_core::contiguous_strides(&output_shape);
-        let src_strides = ft_core::contiguous_strides(&original_shape);
+        let src_strides = ft_core::contiguous_strides(&repeat_shape);
 
         let mut result = vec![0.0; output_numel];
         for flat in 0..output_numel {
@@ -6530,7 +6524,7 @@ impl TensorTape {
             for d in 0..ndim {
                 let coord = remaining / output_strides[d];
                 remaining %= output_strides[d];
-                let src_coord = coord % original_shape[d];
+                let src_coord = coord % repeat_shape[d];
                 src_flat += src_coord * src_strides[d];
             }
             result[flat] = storage[src_flat];
@@ -9005,13 +8999,14 @@ impl TensorTape {
                     ref repeats,
                 } => {
                     // Sum gradients over the repeated tiles
-                    let ndim = original_shape.len();
+                    let repeat_shape = Self::normalize_repeat_shape(original_shape, repeats)?;
+                    let ndim = repeats.len();
                     let input_numel = Self::checked_shape_numel(
-                        original_shape,
+                        &repeat_shape,
                         "repeat backward input shape volume overflow",
                     )?;
                     let mut output_shape = Vec::with_capacity(ndim);
-                    for (&size, &repeat) in original_shape.iter().zip(repeats.iter()) {
+                    for (&size, &repeat) in repeat_shape.iter().zip(repeats.iter()) {
                         output_shape.push(Self::checked_mul_usize(
                             size,
                             repeat,
@@ -9024,7 +9019,7 @@ impl TensorTape {
                     )?;
                     Self::ensure_tensor_len(node_id, output_numel, incoming.len())?;
                     let output_strides = ft_core::contiguous_strides(&output_shape);
-                    let input_strides = ft_core::contiguous_strides(original_shape);
+                    let input_strides = ft_core::contiguous_strides(&repeat_shape);
 
                     let mut contrib = vec![0.0; input_numel];
                     for flat in 0..output_numel {
@@ -9033,7 +9028,7 @@ impl TensorTape {
                         for d in 0..ndim {
                             let coord = remaining / output_strides[d];
                             remaining %= output_strides[d];
-                            let src_coord = coord % original_shape[d];
+                            let src_coord = coord % repeat_shape[d];
                             src_flat += src_coord * input_strides[d];
                         }
                         contrib[src_flat] += incoming[flat];
@@ -9395,6 +9390,25 @@ impl TensorTape {
             product = next;
         }
         Ok(product)
+    }
+
+    fn normalize_repeat_shape(
+        input_shape: &[usize],
+        repeats: &[usize],
+    ) -> Result<Vec<usize>, AutogradError> {
+        if repeats.len() < input_shape.len() {
+            return Err(AutogradError::Dispatch(DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: input_shape.to_vec(),
+                    rhs: repeats.to_vec(),
+                },
+            )));
+        }
+
+        let leading_dims = repeats.len() - input_shape.len();
+        let mut normalized_shape = vec![1usize; leading_dims];
+        normalized_shape.extend_from_slice(input_shape);
+        Ok(normalized_shape)
     }
 
     fn checked_dim_loop_sizes(

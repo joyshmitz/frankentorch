@@ -695,8 +695,9 @@ impl FrankenTorchSession {
 
     /// Repeat a tensor along each dimension.
     ///
-    /// `repeats` specifies the number of repetitions for each dimension.
-    /// The length of `repeats` must match the number of dimensions.
+    /// `repeats` specifies the number of repetitions for each output dimension.
+    /// Its length must be greater than or equal to the input rank; when larger,
+    /// leading singleton dimensions are implicitly prepended (PyTorch-compatible).
     pub fn tensor_repeat(
         &mut self,
         input: TensorNodeId,
@@ -7684,19 +7685,33 @@ mod tests {
     }
 
     #[test]
-    fn session_repeat_rejects_rank_mismatch() {
+    fn session_repeat_with_leading_dims() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = session
             .tensor_variable(vec![1.0, 2.0], vec![2], false)
             .expect("t");
+        let r = session.tensor_repeat(t, &[2, 3]).expect("repeat");
+        assert_eq!(session.tensor_shape(r).expect("shape"), vec![2, 6]);
+        assert_eq!(
+            session.tensor_values(r).expect("vals"),
+            vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn session_repeat_rejects_short_repeat_tuple() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("t");
         let err = session
-            .tensor_repeat(t, &[2, 3])
-            .expect_err("repeat should reject repeat rank mismatch");
+            .tensor_repeat(t, &[2])
+            .expect_err("repeat tuple shorter than rank should fail closed");
         assert!(matches!(
             err,
             AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
                 ft_kernel_cpu::KernelError::ShapeMismatch { lhs, rhs }
-            )) if lhs == vec![2] && rhs == vec![2, 3]
+            )) if lhs == vec![2, 2] && rhs == vec![2]
         ));
     }
 
@@ -7888,6 +7903,23 @@ mod tests {
         assert_eq!(
             session.tensor_gradient(&report, x).expect("x grad"),
             &[6.0, 6.0, 6.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn session_repeat_backward_with_leading_dims() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .expect("x");
+        let r = session.tensor_repeat(x, &[2, 3]).expect("repeat");
+        assert_eq!(session.tensor_shape(r).expect("shape"), vec![2, 9]);
+        let s = session.tensor_sum(r).expect("sum");
+
+        let report = session.tensor_backward(s).expect("backward");
+        assert_eq!(
+            session.tensor_gradient(&report, x).expect("x grad"),
+            &[6.0, 6.0, 6.0]
         );
     }
 
