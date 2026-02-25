@@ -26,33 +26,45 @@ This matrix tracks execution progress, not allowable scope reduction. Release re
 | Loss functions | parity_green | mse_loss, l1_loss, bce_loss, smooth_l1_loss (composed from autograd ops) |
 | Shape operations | parity_green | reshape, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk |
 | Advanced reductions | parity_green | argmax, argmin, max_dim, min_dim (with backward), softmax, log_softmax, sum_dim, mean_dim, prod_dim, var_dim, std_dim |
-| Neural network modules (ft-nn) | parity_green | Module trait, Linear (Kaiming init), ReLU, Sigmoid, Tanh, GELU, SiLU, Sequential, Dropout |
+| Neural network modules (ft-nn) | parity_green | Module trait, Linear (Kaiming init), Conv1d, ReLU, Sigmoid, Tanh, GELU, SiLU, LeakyReLU, ELU, Mish, Softplus, Sequential, Dropout, LayerNorm, BatchNorm1d, Embedding, MultiheadAttention, Softmax, LogSoftmax, Flatten, AvgPool1d |
 | Optimizers (ft-optim) | parity_green | Optimizer trait, SGD (momentum, weight_decay, nesterov), Adam (bias correction, weight_decay) |
 | Advanced indexing | parity_green | index_select, gather, scatter, masked_fill (with backward for index_select, gather) |
 | Full PyTorch drop-in surface | in_progress | aggregate parity-closure tracker; no intentional feature omissions permitted at release |
 
 ## Detailed Operation Coverage
 
-### Unary Ops (30+)
-neg, abs, exp, log, relu, sigmoid, tanh, sin, cos, tan, floor, ceil, round, log2, log10, log1p, expm1, sign, trunc, frac, asin, acos, atan, sinh, cosh, gelu, silu, leaky_relu, elu, sqrt, reciprocal, pow
+### Unary Ops (40+)
+neg, abs, exp, log, relu, sigmoid, tanh, sin, cos, tan, floor, ceil, round, log2, log10, log1p, expm1, sign, trunc, frac, asin, acos, atan, sinh, cosh, gelu, silu, leaky_relu, elu, sqrt, reciprocal, pow, rsqrt, erf, erfc, hardswish, hardsigmoid, hardtanh, softplus, mish, square
 
 ### Binary Ops
-add, sub, mul, div, min, max, clamp (all with broadcasting + backward)
+add, sub, mul, div, min, max, clamp, atan2, fmod, remainder (all with broadcasting + backward)
 
 ### Comparison Ops
 eq, ne, lt, gt, le, ge (all with broadcasting, return 0.0/1.0 masks)
 
+### Float Classification Ops
+isnan, isinf, isfinite (return 0.0/1.0 masks, no autograd tracking)
+
 ### Reductions
 sum, mean (global); sum_dim, mean_dim, prod_dim, var_dim, std_dim (per-dim); argmax, argmin, max_dim, min_dim (per-dim with indices)
+
+### Norm Operations
+norm (global p-norm), norm_dim (per-dim p-norm) — supports L0, L1, L2, Lp, Linf, L-inf with backward
 
 ### Normalization
 softmax, log_softmax (per-dim, numerically stable)
 
 ### Shape Operations
-reshape, view, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk
+reshape, view, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk, unbind
 
 ### Matrix Operations
-matmul (with backward)
+matmul, addmm, addmv (with backward)
+
+### Interpolation
+lerp (linear interpolation, with backward)
+
+### Grid/Creation Operations
+meshgrid, diagonal (with offset support), one_hot
 
 ### Random Operations
 rand (uniform [0,1)), randn (normal), rand_like, randn_like (deterministic xoshiro256++ PRNG)
@@ -66,6 +78,12 @@ mse_loss, l1_loss, bce_loss, smooth_l1_loss
 ### Advanced Indexing
 index_select, gather, scatter, masked_fill
 
+### Sorting & Selection
+sort, topk, argsort
+
+### Padding
+tensor_pad (constant padding, PyTorch F.pad convention)
+
 ## Current Green Scope
 
 - `crates/ft-conformance/fixtures/scalar_autograd_cases.json`
@@ -74,7 +92,7 @@ index_select, gather, scatter, masked_fill
 - `crates/ft-conformance/fixtures/serialization_cases.json`
 
 Modes tested for all listed families: strict + hardened.
-1009 tests passing across workspace.
+1269 tests passing across workspace.
 
 ## Gap Policy
 

@@ -5,35 +5,45 @@ use std::{collections::BTreeMap, fmt};
 use ft_core::{Device, ExecutionMode, ScalarTensor, TensorCompatError, TensorMeta};
 use ft_kernel_cpu::{
     KernelError, abs_scalar, abs_tensor_contiguous_f64, acos_scalar, acos_tensor_contiguous_f64,
-    add_scalar, add_tensor_contiguous_f64, asin_scalar, asin_tensor_contiguous_f64, atan_scalar,
-    atan_tensor_contiguous_f64, bmm_tensor_contiguous_f64, cat_tensor_contiguous_f64, ceil_scalar,
-    ceil_tensor_contiguous_f64, clamp_scalar, clamp_tensor_contiguous_f64, cos_scalar,
-    cos_tensor_contiguous_f64, cosh_scalar, cosh_tensor_contiguous_f64,
-    cumprod_tensor_contiguous_f64, cumsum_tensor_contiguous_f64, div_scalar,
-    div_tensor_contiguous_f64, dot_tensor_contiguous_f64, elu_scalar, elu_tensor_contiguous_f64,
-    eq_scalar, eq_tensor_contiguous_f64, exp_scalar, exp_tensor_contiguous_f64, expm1_scalar,
-    expm1_tensor_contiguous_f64, floor_scalar, floor_tensor_contiguous_f64, frac_scalar,
+    add_scalar, add_tensor_contiguous_f64, addmm_tensor_contiguous_f64,
+    addmv_tensor_contiguous_f64, asin_scalar, asin_tensor_contiguous_f64, atan_scalar,
+    atan_tensor_contiguous_f64, atan2_scalar, atan2_tensor_contiguous_f64,
+    bmm_tensor_contiguous_f64, cat_tensor_contiguous_f64, ceil_scalar, ceil_tensor_contiguous_f64,
+    clamp_scalar, clamp_tensor_contiguous_f64, cos_scalar, cos_tensor_contiguous_f64, cosh_scalar,
+    cosh_tensor_contiguous_f64, cumprod_tensor_contiguous_f64, cumsum_tensor_contiguous_f64,
+    div_scalar, div_tensor_contiguous_f64, dot_tensor_contiguous_f64, elu_scalar,
+    elu_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, erf_scalar,
+    erf_tensor_contiguous_f64, erfc_scalar, erfc_tensor_contiguous_f64, exp_scalar,
+    exp_tensor_contiguous_f64, expm1_scalar, expm1_tensor_contiguous_f64, floor_scalar,
+    floor_tensor_contiguous_f64, fmod_scalar, fmod_tensor_contiguous_f64, frac_scalar,
     frac_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gelu_scalar,
-    gelu_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, le_scalar,
-    le_tensor_contiguous_f64, leaky_relu_scalar, leaky_relu_tensor_contiguous_f64, log_scalar,
+    gelu_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, hardsigmoid_scalar,
+    hardsigmoid_tensor_contiguous_f64, hardswish_scalar, hardswish_tensor_contiguous_f64,
+    hardtanh_scalar, hardtanh_tensor_contiguous_f64, isfinite_scalar,
+    isfinite_tensor_contiguous_f64, isinf_scalar, isinf_tensor_contiguous_f64, isnan_scalar,
+    isnan_tensor_contiguous_f64, le_scalar, le_tensor_contiguous_f64, leaky_relu_scalar,
+    leaky_relu_tensor_contiguous_f64, lerp_tensor_contiguous_f64, log_scalar,
     log_softmax_dim_tensor_contiguous_f64, log_tensor_contiguous_f64, log1p_scalar,
     log1p_tensor_contiguous_f64, log2_scalar, log2_tensor_contiguous_f64, log10_scalar,
     log10_tensor_contiguous_f64, lt_scalar, lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64,
     max_scalar, max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64,
-    mean_tensor_contiguous_f64, min_scalar, min_tensor_contiguous_f64, mul_scalar,
-    mul_tensor_contiguous_f64, ne_scalar, ne_tensor_contiguous_f64, neg_scalar,
-    neg_tensor_contiguous_f64, outer_tensor_contiguous_f64, pow_scalar, pow_tensor_contiguous_f64,
-    prod_dim_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
-    relu_scalar, relu_tensor_contiguous_f64, round_scalar, round_tensor_contiguous_f64,
-    sigmoid_scalar, sigmoid_tensor_contiguous_f64, sign_scalar, sign_tensor_contiguous_f64,
-    silu_scalar, silu_tensor_contiguous_f64, sin_scalar, sin_tensor_contiguous_f64, sinh_scalar,
-    sinh_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64, sort_tensor_contiguous_f64,
-    sqrt_scalar, sqrt_tensor_contiguous_f64, stack_tensor_contiguous_f64,
-    std_dim_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
-    sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tan_scalar,
-    tan_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64, topk_tensor_contiguous_f64,
-    trace_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
-    var_dim_tensor_contiguous_f64,
+    mean_tensor_contiguous_f64, min_scalar, min_tensor_contiguous_f64, mish_scalar,
+    mish_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
+    ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64,
+    norm_dim_tensor_contiguous_f64, norm_tensor_contiguous_f64, outer_tensor_contiguous_f64,
+    pow_scalar, pow_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64, reciprocal_scalar,
+    reciprocal_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64, remainder_scalar,
+    remainder_tensor_contiguous_f64, round_scalar, round_tensor_contiguous_f64, rsqrt_scalar,
+    rsqrt_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sign_scalar,
+    sign_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64, sin_scalar,
+    sin_tensor_contiguous_f64, sinh_scalar, sinh_tensor_contiguous_f64,
+    softmax_dim_tensor_contiguous_f64, softplus_scalar, softplus_tensor_contiguous_f64,
+    sort_tensor_contiguous_f64, sqrt_scalar, sqrt_tensor_contiguous_f64, square_scalar,
+    square_tensor_contiguous_f64, stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64,
+    sub_scalar, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64,
+    sum_tensor_contiguous_f64, tan_scalar, tan_tensor_contiguous_f64, tanh_scalar,
+    tanh_tensor_contiguous_f64, topk_tensor_contiguous_f64, trace_tensor_contiguous_f64,
+    trunc_scalar, trunc_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +58,9 @@ pub enum BinaryOp {
     Dot,
     Outer,
     Bmm,
+    Atan2,
+    Fmod,
+    Remainder,
 }
 
 impl BinaryOp {
@@ -64,6 +77,9 @@ impl BinaryOp {
             "dot" => Some(Self::Dot),
             "outer" => Some(Self::Outer),
             "bmm" => Some(Self::Bmm),
+            "atan2" => Some(Self::Atan2),
+            "fmod" => Some(Self::Fmod),
+            "remainder" => Some(Self::Remainder),
             _ => None,
         }
     }
@@ -102,6 +118,18 @@ pub enum UnaryOp {
     Silu,
     LeakyRelu,
     Elu,
+    Rsqrt,
+    Erf,
+    Erfc,
+    Hardswish,
+    Hardsigmoid,
+    Hardtanh,
+    Softplus,
+    Mish,
+    Square,
+    IsNan,
+    IsInf,
+    IsFinite,
 }
 
 impl UnaryOp {
@@ -139,6 +167,18 @@ impl UnaryOp {
             "silu" => Some(Self::Silu),
             "leaky_relu" => Some(Self::LeakyRelu),
             "elu" => Some(Self::Elu),
+            "rsqrt" => Some(Self::Rsqrt),
+            "erf" => Some(Self::Erf),
+            "erfc" => Some(Self::Erfc),
+            "hardswish" => Some(Self::Hardswish),
+            "hardsigmoid" => Some(Self::Hardsigmoid),
+            "hardtanh" => Some(Self::Hardtanh),
+            "softplus" => Some(Self::Softplus),
+            "mish" => Some(Self::Mish),
+            "square" => Some(Self::Square),
+            "isnan" => Some(Self::IsNan),
+            "isinf" => Some(Self::IsInf),
+            "isfinite" => Some(Self::IsFinite),
             _ => None,
         }
     }
@@ -1030,6 +1070,16 @@ pub fn dispatch_scalar_binary_with_keyset(
         (DispatchKey::AutogradCPU, BinaryOp::Max) => {
             (max_scalar(lhs, rhs)?, "autograd_cpu::max_scalar")
         }
+        (DispatchKey::AutogradCPU, BinaryOp::Atan2) => {
+            (atan2_scalar(lhs, rhs)?, "autograd_cpu::atan2_scalar")
+        }
+        (DispatchKey::AutogradCPU, BinaryOp::Fmod) => {
+            (fmod_scalar(lhs, rhs)?, "autograd_cpu::fmod_scalar")
+        }
+        (DispatchKey::AutogradCPU, BinaryOp::Remainder) => (
+            remainder_scalar(lhs, rhs)?,
+            "autograd_cpu::remainder_scalar",
+        ),
         (DispatchKey::CPU, BinaryOp::Add) => (add_scalar(lhs, rhs)?, "cpu::add_scalar"),
         (DispatchKey::CPU, BinaryOp::Sub) => (sub_scalar(lhs, rhs)?, "cpu::sub_scalar"),
         (DispatchKey::CPU, BinaryOp::Div) => (div_scalar(lhs, rhs)?, "cpu::div_scalar"),
@@ -1045,6 +1095,11 @@ pub fn dispatch_scalar_binary_with_keyset(
         }
         (DispatchKey::CPU, BinaryOp::Min) => (min_scalar(lhs, rhs)?, "cpu::min_scalar"),
         (DispatchKey::CPU, BinaryOp::Max) => (max_scalar(lhs, rhs)?, "cpu::max_scalar"),
+        (DispatchKey::CPU, BinaryOp::Atan2) => (atan2_scalar(lhs, rhs)?, "cpu::atan2_scalar"),
+        (DispatchKey::CPU, BinaryOp::Fmod) => (fmod_scalar(lhs, rhs)?, "cpu::fmod_scalar"),
+        (DispatchKey::CPU, BinaryOp::Remainder) => {
+            (remainder_scalar(lhs, rhs)?, "cpu::remainder_scalar")
+        }
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
                 reason: "resolved dispatch key is unsupported for scalar binary ops",
@@ -1147,6 +1202,18 @@ pub fn dispatch_tensor_binary_contiguous_f64_with_keyset(
             bmm_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
             "autograd_cpu::bmm_tensor_contiguous_f64",
         ),
+        (DispatchKey::AutogradCPU, BinaryOp::Atan2) => (
+            atan2_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::atan2_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Fmod) => (
+            fmod_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::fmod_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Remainder) => (
+            remainder_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::remainder_tensor_contiguous_f64",
+        ),
         (DispatchKey::CPU, BinaryOp::Add) => (
             add_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
             "cpu::add_tensor_contiguous_f64",
@@ -1186,6 +1253,18 @@ pub fn dispatch_tensor_binary_contiguous_f64_with_keyset(
         (DispatchKey::CPU, BinaryOp::Bmm) => (
             bmm_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
             "cpu::bmm_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Atan2) => (
+            atan2_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::atan2_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Fmod) => (
+            fmod_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::fmod_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, BinaryOp::Remainder) => (
+            remainder_tensor_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::remainder_tensor_contiguous_f64",
         ),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
@@ -1313,6 +1392,41 @@ pub fn dispatch_scalar_unary(
             (leaky_relu_scalar(input), "autograd_cpu::leaky_relu_scalar")
         }
         (DispatchKey::AutogradCPU, UnaryOp::Elu) => (elu_scalar(input), "autograd_cpu::elu_scalar"),
+        (DispatchKey::AutogradCPU, UnaryOp::Rsqrt) => {
+            (rsqrt_scalar(input), "autograd_cpu::rsqrt_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Erf) => (erf_scalar(input), "autograd_cpu::erf_scalar"),
+        (DispatchKey::AutogradCPU, UnaryOp::Erfc) => {
+            (erfc_scalar(input), "autograd_cpu::erfc_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Hardswish) => {
+            (hardswish_scalar(input), "autograd_cpu::hardswish_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Hardsigmoid) => (
+            hardsigmoid_scalar(input),
+            "autograd_cpu::hardsigmoid_scalar",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Hardtanh) => {
+            (hardtanh_scalar(input), "autograd_cpu::hardtanh_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Softplus) => {
+            (softplus_scalar(input), "autograd_cpu::softplus_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Mish) => {
+            (mish_scalar(input), "autograd_cpu::mish_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::Square) => {
+            (square_scalar(input), "autograd_cpu::square_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::IsNan) => {
+            (isnan_scalar(input), "autograd_cpu::isnan_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::IsInf) => {
+            (isinf_scalar(input), "autograd_cpu::isinf_scalar")
+        }
+        (DispatchKey::AutogradCPU, UnaryOp::IsFinite) => {
+            (isfinite_scalar(input), "autograd_cpu::isfinite_scalar")
+        }
         (DispatchKey::CPU, UnaryOp::Neg) => (neg_scalar(input), "cpu::neg_scalar"),
         (DispatchKey::CPU, UnaryOp::Abs) => (abs_scalar(input), "cpu::abs_scalar"),
         (DispatchKey::CPU, UnaryOp::Exp) => (exp_scalar(input), "cpu::exp_scalar"),
@@ -1348,6 +1462,22 @@ pub fn dispatch_scalar_unary(
             (leaky_relu_scalar(input), "cpu::leaky_relu_scalar")
         }
         (DispatchKey::CPU, UnaryOp::Elu) => (elu_scalar(input), "cpu::elu_scalar"),
+        (DispatchKey::CPU, UnaryOp::Rsqrt) => (rsqrt_scalar(input), "cpu::rsqrt_scalar"),
+        (DispatchKey::CPU, UnaryOp::Erf) => (erf_scalar(input), "cpu::erf_scalar"),
+        (DispatchKey::CPU, UnaryOp::Erfc) => (erfc_scalar(input), "cpu::erfc_scalar"),
+        (DispatchKey::CPU, UnaryOp::Hardswish) => {
+            (hardswish_scalar(input), "cpu::hardswish_scalar")
+        }
+        (DispatchKey::CPU, UnaryOp::Hardsigmoid) => {
+            (hardsigmoid_scalar(input), "cpu::hardsigmoid_scalar")
+        }
+        (DispatchKey::CPU, UnaryOp::Hardtanh) => (hardtanh_scalar(input), "cpu::hardtanh_scalar"),
+        (DispatchKey::CPU, UnaryOp::Softplus) => (softplus_scalar(input), "cpu::softplus_scalar"),
+        (DispatchKey::CPU, UnaryOp::Mish) => (mish_scalar(input), "cpu::mish_scalar"),
+        (DispatchKey::CPU, UnaryOp::Square) => (square_scalar(input), "cpu::square_scalar"),
+        (DispatchKey::CPU, UnaryOp::IsNan) => (isnan_scalar(input), "cpu::isnan_scalar"),
+        (DispatchKey::CPU, UnaryOp::IsInf) => (isinf_scalar(input), "cpu::isinf_scalar"),
+        (DispatchKey::CPU, UnaryOp::IsFinite) => (isfinite_scalar(input), "cpu::isfinite_scalar"),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
                 reason: "resolved dispatch key is unsupported for scalar unary ops",
@@ -1506,6 +1636,54 @@ pub fn dispatch_tensor_unary_contiguous_f64(
             elu_tensor_contiguous_f64(input, meta)?,
             "autograd_cpu::elu_tensor_contiguous_f64",
         ),
+        (DispatchKey::AutogradCPU, UnaryOp::Rsqrt) => (
+            rsqrt_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::rsqrt_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Erf) => (
+            erf_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::erf_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Erfc) => (
+            erfc_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::erfc_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Hardswish) => (
+            hardswish_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::hardswish_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Hardsigmoid) => (
+            hardsigmoid_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::hardsigmoid_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Hardtanh) => (
+            hardtanh_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::hardtanh_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Softplus) => (
+            softplus_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::softplus_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Mish) => (
+            mish_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::mish_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Square) => (
+            square_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::square_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::IsNan) => (
+            isnan_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::isnan_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::IsInf) => (
+            isinf_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::isinf_tensor_contiguous_f64",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::IsFinite) => (
+            isfinite_tensor_contiguous_f64(input, meta)?,
+            "autograd_cpu::isfinite_tensor_contiguous_f64",
+        ),
         (DispatchKey::CPU, UnaryOp::Neg) => (
             neg_tensor_contiguous_f64(input, meta)?,
             "cpu::neg_tensor_contiguous_f64",
@@ -1629,6 +1807,54 @@ pub fn dispatch_tensor_unary_contiguous_f64(
         (DispatchKey::CPU, UnaryOp::Elu) => (
             elu_tensor_contiguous_f64(input, meta)?,
             "cpu::elu_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Rsqrt) => (
+            rsqrt_tensor_contiguous_f64(input, meta)?,
+            "cpu::rsqrt_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Erf) => (
+            erf_tensor_contiguous_f64(input, meta)?,
+            "cpu::erf_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Erfc) => (
+            erfc_tensor_contiguous_f64(input, meta)?,
+            "cpu::erfc_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Hardswish) => (
+            hardswish_tensor_contiguous_f64(input, meta)?,
+            "cpu::hardswish_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Hardsigmoid) => (
+            hardsigmoid_tensor_contiguous_f64(input, meta)?,
+            "cpu::hardsigmoid_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Hardtanh) => (
+            hardtanh_tensor_contiguous_f64(input, meta)?,
+            "cpu::hardtanh_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Softplus) => (
+            softplus_tensor_contiguous_f64(input, meta)?,
+            "cpu::softplus_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Mish) => (
+            mish_tensor_contiguous_f64(input, meta)?,
+            "cpu::mish_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::Square) => (
+            square_tensor_contiguous_f64(input, meta)?,
+            "cpu::square_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::IsNan) => (
+            isnan_tensor_contiguous_f64(input, meta)?,
+            "cpu::isnan_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::IsInf) => (
+            isinf_tensor_contiguous_f64(input, meta)?,
+            "cpu::isinf_tensor_contiguous_f64",
+        ),
+        (DispatchKey::CPU, UnaryOp::IsFinite) => (
+            isfinite_tensor_contiguous_f64(input, meta)?,
+            "cpu::isfinite_tensor_contiguous_f64",
         ),
         _ => {
             return Err(DispatchKeyError::IncompatibleSet {
@@ -2253,6 +2479,304 @@ pub fn dispatch_tensor_pow_contiguous_f64(
             mode,
             kernel,
             exponent,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormDispatchDecision {
+    pub mode: ExecutionMode,
+    pub kernel: &'static str,
+    pub p: f64,
+    pub selected_key: DispatchKey,
+    pub backend_key: DispatchKey,
+    pub keyset_bits: u64,
+    pub fallback_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorNormDispatchOutcome {
+    pub value: f64,
+    pub decision: NormDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorNormDimDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: NormDispatchDecision,
+}
+
+pub fn dispatch_tensor_norm_contiguous_f64(
+    mode: ExecutionMode,
+    input: &[f64],
+    meta: &TensorMeta,
+    p: f64,
+    requires_grad: bool,
+) -> Result<TensorNormDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (value, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            norm_tensor_contiguous_f64(input, meta, p)?,
+            "autograd_cpu::norm_tensor_contiguous_f64",
+        ),
+        DispatchKey::CPU => (
+            norm_tensor_contiguous_f64(input, meta, p)?,
+            "cpu::norm_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor norm op",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorNormDispatchOutcome {
+        value,
+        decision: NormDispatchDecision {
+            mode,
+            kernel,
+            p,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+pub fn dispatch_tensor_norm_dim_contiguous_f64(
+    mode: ExecutionMode,
+    input: &[f64],
+    meta: &TensorMeta,
+    p: f64,
+    dim: usize,
+    requires_grad: bool,
+) -> Result<TensorNormDimDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            norm_dim_tensor_contiguous_f64(input, meta, p, dim)?,
+            "autograd_cpu::norm_dim_tensor_contiguous_f64",
+        ),
+        DispatchKey::CPU => (
+            norm_dim_tensor_contiguous_f64(input, meta, p, dim)?,
+            "cpu::norm_dim_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor norm dim op",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorNormDimDispatchOutcome {
+        values,
+        decision: NormDispatchDecision {
+            mode,
+            kernel,
+            p,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LerpDispatchDecision {
+    pub mode: ExecutionMode,
+    pub kernel: &'static str,
+    pub weight: f64,
+    pub selected_key: DispatchKey,
+    pub backend_key: DispatchKey,
+    pub keyset_bits: u64,
+    pub fallback_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorLerpDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: LerpDispatchDecision,
+}
+
+pub fn dispatch_tensor_lerp_contiguous_f64(
+    mode: ExecutionMode,
+    start: &[f64],
+    end: &[f64],
+    weight: f64,
+    meta: &TensorMeta,
+    requires_grad: bool,
+) -> Result<TensorLerpDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            lerp_tensor_contiguous_f64(start, end, weight, meta)?,
+            "autograd_cpu::lerp_tensor_contiguous_f64",
+        ),
+        DispatchKey::CPU => (
+            lerp_tensor_contiguous_f64(start, end, weight, meta)?,
+            "cpu::lerp_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor lerp op",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorLerpDispatchOutcome {
+        values,
+        decision: LerpDispatchDecision {
+            mode,
+            kernel,
+            weight,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddmmDispatchDecision {
+    pub mode: ExecutionMode,
+    pub kernel: &'static str,
+    pub beta: f64,
+    pub alpha: f64,
+    pub selected_key: DispatchKey,
+    pub backend_key: DispatchKey,
+    pub keyset_bits: u64,
+    pub fallback_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorAddmmDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: AddmmDispatchDecision,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn dispatch_tensor_addmm_contiguous_f64(
+    mode: ExecutionMode,
+    input: &[f64],
+    mat1: &[f64],
+    mat2: &[f64],
+    input_meta: &TensorMeta,
+    mat1_meta: &TensorMeta,
+    mat2_meta: &TensorMeta,
+    beta: f64,
+    alpha: f64,
+    requires_grad: bool,
+) -> Result<TensorAddmmDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(mat1_meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            addmm_tensor_contiguous_f64(
+                input, mat1, mat2, input_meta, mat1_meta, mat2_meta, beta, alpha,
+            )?,
+            "autograd_cpu::addmm_tensor_contiguous_f64",
+        ),
+        DispatchKey::CPU => (
+            addmm_tensor_contiguous_f64(
+                input, mat1, mat2, input_meta, mat1_meta, mat2_meta, beta, alpha,
+            )?,
+            "cpu::addmm_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor addmm op",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorAddmmDispatchOutcome {
+        values,
+        decision: AddmmDispatchDecision {
+            mode,
+            kernel,
+            beta,
+            alpha,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorAddmvDispatchOutcome {
+    pub values: Vec<f64>,
+    pub decision: AddmmDispatchDecision,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn dispatch_tensor_addmv_contiguous_f64(
+    mode: ExecutionMode,
+    input: &[f64],
+    mat: &[f64],
+    vec_data: &[f64],
+    input_meta: &TensorMeta,
+    mat_meta: &TensorMeta,
+    vec_meta: &TensorMeta,
+    beta: f64,
+    alpha: f64,
+    requires_grad: bool,
+) -> Result<TensorAddmvDispatchOutcome, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(mat_meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => (
+            addmv_tensor_contiguous_f64(
+                input, mat, vec_data, input_meta, mat_meta, vec_meta, beta, alpha,
+            )?,
+            "autograd_cpu::addmv_tensor_contiguous_f64",
+        ),
+        DispatchKey::CPU => (
+            addmv_tensor_contiguous_f64(
+                input, mat, vec_data, input_meta, mat_meta, vec_meta, beta, alpha,
+            )?,
+            "cpu::addmv_tensor_contiguous_f64",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor addmv op",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorAddmvDispatchOutcome {
+        values,
+        decision: AddmmDispatchDecision {
+            mode,
+            kernel,
+            beta,
+            alpha,
             selected_key,
             backend_key,
             keyset_bits: keyset.bits(),
@@ -4757,6 +5281,15 @@ mod tests {
             ("silu", UnaryOp::Silu),
             ("leaky_relu", UnaryOp::LeakyRelu),
             ("elu", UnaryOp::Elu),
+            ("rsqrt", UnaryOp::Rsqrt),
+            ("erf", UnaryOp::Erf),
+            ("erfc", UnaryOp::Erfc),
+            ("hardswish", UnaryOp::Hardswish),
+            ("hardsigmoid", UnaryOp::Hardsigmoid),
+            ("hardtanh", UnaryOp::Hardtanh),
+            ("softplus", UnaryOp::Softplus),
+            ("mish", UnaryOp::Mish),
+            ("square", UnaryOp::Square),
         ];
         for (base, expected) in &cases {
             assert_eq!(

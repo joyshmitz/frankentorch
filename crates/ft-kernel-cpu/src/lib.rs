@@ -225,6 +225,114 @@ pub fn elu_scalar(input: &ScalarTensor) -> ScalarTensor {
     input.with_value(elu_value(input.value()))
 }
 
+pub fn rsqrt_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(1.0 / input.value().sqrt())
+}
+
+/// Gauss error function approximation (Abramowitz and Stegun, formula 7.1.26).
+/// Maximum error: |ε(x)| ≤ 1.5×10⁻⁷.
+fn erf_value(x: f64) -> f64 {
+    let a1 = 0.254829592;
+    let a2 = -0.284496736;
+    let a3 = 1.421413741;
+    let a4 = -1.453152027;
+    let a5 = 1.061405429;
+    let p = 0.3275911;
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let abs_x = x.abs();
+    let t = 1.0 / (1.0 + p * abs_x);
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-abs_x * abs_x).exp();
+    sign * y
+}
+
+pub fn erf_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(erf_value(input.value()))
+}
+
+pub fn erfc_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(1.0 - erf_value(input.value()))
+}
+
+fn hardswish_value(x: f64) -> f64 {
+    if x <= -3.0 {
+        0.0
+    } else if x >= 3.0 {
+        x
+    } else {
+        x * (x + 3.0) / 6.0
+    }
+}
+
+pub fn hardswish_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(hardswish_value(input.value()))
+}
+
+fn hardsigmoid_value(x: f64) -> f64 {
+    if x <= -3.0 {
+        0.0
+    } else if x >= 3.0 {
+        1.0
+    } else {
+        (x + 3.0) / 6.0
+    }
+}
+
+pub fn hardsigmoid_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(hardsigmoid_value(input.value()))
+}
+
+fn hardtanh_value(x: f64) -> f64 {
+    x.clamp(-1.0, 1.0)
+}
+
+pub fn hardtanh_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(hardtanh_value(input.value()))
+}
+
+fn softplus_value(x: f64) -> f64 {
+    // Numerically stable: for large x, softplus(x) ≈ x
+    if x > 20.0 {
+        x
+    } else if x < -20.0 {
+        0.0
+    } else {
+        (1.0 + x.exp()).ln()
+    }
+}
+
+pub fn softplus_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(softplus_value(input.value()))
+}
+
+fn mish_value(x: f64) -> f64 {
+    x * softplus_value(x).tanh()
+}
+
+pub fn mish_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(mish_value(input.value()))
+}
+
+pub fn square_scalar(input: &ScalarTensor) -> ScalarTensor {
+    let v = input.value();
+    input.with_value(v * v)
+}
+
+pub fn isnan_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(if input.value().is_nan() { 1.0 } else { 0.0 })
+}
+
+pub fn isinf_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(if input.value().is_infinite() {
+        1.0
+    } else {
+        0.0
+    })
+}
+
+pub fn isfinite_scalar(input: &ScalarTensor) -> ScalarTensor {
+    input.with_value(if input.value().is_finite() { 1.0 } else { 0.0 })
+}
+
 pub fn pow_scalar(input: &ScalarTensor, exponent: f64) -> ScalarTensor {
     input.with_value(input.value().powf(exponent))
 }
@@ -311,6 +419,26 @@ pub fn div_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor
 pub fn mul_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
     ensure_compatible(lhs, rhs)?;
     Ok(lhs.with_value(lhs.value() * rhs.value()))
+}
+
+pub fn atan2_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
+    ensure_compatible(lhs, rhs)?;
+    Ok(lhs.with_value(lhs.value().atan2(rhs.value())))
+}
+
+pub fn fmod_scalar(lhs: &ScalarTensor, rhs: &ScalarTensor) -> Result<ScalarTensor, KernelError> {
+    ensure_compatible(lhs, rhs)?;
+    Ok(lhs.with_value(lhs.value() % rhs.value()))
+}
+
+pub fn remainder_scalar(
+    lhs: &ScalarTensor,
+    rhs: &ScalarTensor,
+) -> Result<ScalarTensor, KernelError> {
+    ensure_compatible(lhs, rhs)?;
+    let a = lhs.value();
+    let b = rhs.value();
+    Ok(lhs.with_value(a - (a / b).floor() * b))
 }
 
 fn ensure_dtype_device_and_layout(lhs: &TensorMeta, rhs: &TensorMeta) -> Result<(), KernelError> {
@@ -798,6 +926,90 @@ pub fn elu_tensor_contiguous_f64(
     unary_contiguous_f64(input, meta, elu_value)
 }
 
+pub fn rsqrt_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |v| 1.0 / v.sqrt())
+}
+
+pub fn erf_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, erf_value)
+}
+
+pub fn erfc_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |v| 1.0 - erf_value(v))
+}
+
+pub fn hardswish_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, hardswish_value)
+}
+
+pub fn hardsigmoid_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, hardsigmoid_value)
+}
+
+pub fn hardtanh_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, hardtanh_value)
+}
+
+pub fn softplus_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, softplus_value)
+}
+
+pub fn mish_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, mish_value)
+}
+
+pub fn square_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |v| v * v)
+}
+
+pub fn isnan_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |v| if v.is_nan() { 1.0 } else { 0.0 })
+}
+
+pub fn isinf_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |v| if v.is_infinite() { 1.0 } else { 0.0 })
+}
+
+pub fn isfinite_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    unary_contiguous_f64(input, meta, |v| if v.is_finite() { 1.0 } else { 0.0 })
+}
+
 pub fn pow_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
@@ -876,6 +1088,33 @@ pub fn max_tensor_contiguous_f64(
             l.max(r)
         }
     })
+}
+
+pub fn atan2_tensor_contiguous_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |y, x| y.atan2(x))
+}
+
+pub fn fmod_tensor_contiguous_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |a, b| a % b)
+}
+
+pub fn remainder_tensor_contiguous_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |a, b| a - (a / b).floor() * b)
 }
 
 pub fn eq_tensor_contiguous_f64(
@@ -1136,6 +1375,141 @@ pub fn matmul_tensor_contiguous_f64(
     Ok(out)
 }
 
+pub fn lerp_tensor_contiguous_f64(
+    start: &[f64],
+    end: &[f64],
+    weight: f64,
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(start, meta)?;
+    let numel = meta.numel();
+    let offset = meta.storage_offset();
+    if end.len() < offset + numel {
+        return Err(KernelError::ShapeMismatch {
+            lhs: meta.shape().to_vec(),
+            rhs: vec![end.len()],
+        });
+    }
+    let s = &start[offset..offset + numel];
+    let e = &end[offset..offset + numel];
+    Ok(s.iter()
+        .zip(e.iter())
+        .map(|(&sv, &ev)| sv + weight * (ev - sv))
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn addmm_tensor_contiguous_f64(
+    input: &[f64],
+    mat1: &[f64],
+    mat2: &[f64],
+    input_meta: &TensorMeta,
+    mat1_meta: &TensorMeta,
+    mat2_meta: &TensorMeta,
+    beta: f64,
+    alpha: f64,
+) -> Result<Vec<f64>, KernelError> {
+    // mat1: [m, k], mat2: [k, n] => output: [m, n]
+    // input must be broadcastable to [m, n]
+    let (m, k, n) = matmul_dims(mat1_meta, mat2_meta)?;
+    let out_numel = checked_mul(m, n, "addmm output shape multiplication overflow")?;
+    ensure_storage_len(mat1, mat1_meta, "mat1")?;
+    ensure_storage_len(mat2, mat2_meta, "mat2")?;
+
+    let mat1_start = mat1_meta.storage_offset();
+    let mat2_start = mat2_meta.storage_offset();
+    let input_offset = input_meta.storage_offset();
+
+    // input can be 1-D [n] or 2-D [m,n]
+    let input_shape = input_meta.shape();
+    let input_1d = input_shape.len() == 1 && input_shape[0] == n;
+    let input_2d = input_shape.len() == 2 && input_shape[0] == m && input_shape[1] == n;
+    if !input_1d && !input_2d {
+        return Err(KernelError::ShapeMismatch {
+            lhs: input_shape.to_vec(),
+            rhs: vec![m, n],
+        });
+    }
+
+    let mut out = vec![0.0; out_numel];
+    for row in 0..m {
+        for col in 0..n {
+            let mut acc = 0.0;
+            for inner in 0..k {
+                acc += mat1[mat1_start + row * k + inner] * mat2[mat2_start + inner * n + col];
+            }
+            let bias_idx = if input_1d {
+                input_offset + col
+            } else {
+                input_offset + row * n + col
+            };
+            out[row * n + col] = beta * input[bias_idx] + alpha * acc;
+        }
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn addmv_tensor_contiguous_f64(
+    input: &[f64],
+    mat: &[f64],
+    vec_data: &[f64],
+    input_meta: &TensorMeta,
+    mat_meta: &TensorMeta,
+    vec_meta: &TensorMeta,
+    beta: f64,
+    alpha: f64,
+) -> Result<Vec<f64>, KernelError> {
+    // mat: [m, k], vec: [k] => output: [m]
+    // input must be [m]
+    let mat_shape = mat_meta.shape();
+    let vec_shape = vec_meta.shape();
+    if mat_shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: mat_shape.to_vec(),
+            rhs: vec![0, 0],
+        });
+    }
+    if vec_shape.len() != 1 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec_shape.to_vec(),
+            rhs: vec![mat_shape[1]],
+        });
+    }
+    let m = mat_shape[0];
+    let k = mat_shape[1];
+    if vec_shape[0] != k {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec_shape.to_vec(),
+            rhs: vec![k],
+        });
+    }
+    let input_shape = input_meta.shape();
+    if input_shape.len() != 1 || input_shape[0] != m {
+        return Err(KernelError::ShapeMismatch {
+            lhs: input_shape.to_vec(),
+            rhs: vec![m],
+        });
+    }
+    ensure_storage_len(mat, mat_meta, "mat")?;
+    ensure_storage_len(vec_data, vec_meta, "vec")?;
+    ensure_storage_len(input, input_meta, "input")?;
+
+    let mat_start = mat_meta.storage_offset();
+    let vec_start = vec_meta.storage_offset();
+    let input_start = input_meta.storage_offset();
+
+    let mut out = vec![0.0; m];
+    for row in 0..m {
+        let mut acc = 0.0;
+        for col in 0..k {
+            acc += mat[mat_start + row * k + col] * vec_data[vec_start + col];
+        }
+        out[row] = beta * input[input_start + row] + alpha * acc;
+    }
+    Ok(out)
+}
+
 pub fn dot_tensor_contiguous_f64(
     lhs: &[f64],
     rhs: &[f64],
@@ -1379,6 +1753,134 @@ pub fn std_dim_tensor_contiguous_f64(
     for v in &mut output {
         *v = v.sqrt();
     }
+    Ok(output)
+}
+
+pub fn norm_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    p: f64,
+) -> Result<f64, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let offset = meta.storage_offset();
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(0.0);
+    }
+    let data = &input[offset..offset + numel];
+
+    if p == f64::INFINITY {
+        Ok(data.iter().fold(0.0_f64, |acc, &x| acc.max(x.abs())))
+    } else if p == f64::NEG_INFINITY {
+        Ok(data.iter().fold(f64::INFINITY, |acc, &x| acc.min(x.abs())))
+    } else if p == 0.0 {
+        // L0 "norm": count of non-zero elements
+        Ok(data.iter().filter(|&&x| x != 0.0).count() as f64)
+    } else if p == 1.0 {
+        Ok(data.iter().map(|x| x.abs()).sum())
+    } else if p == 2.0 {
+        let sum_sq: f64 = data.iter().map(|x| x * x).sum();
+        Ok(sum_sq.sqrt())
+    } else {
+        let sum_pow: f64 = data.iter().map(|x| x.abs().powf(p)).sum();
+        Ok(sum_pow.powf(1.0 / p))
+    }
+}
+
+pub fn norm_dim_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+    p: f64,
+    dim: usize,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "norm_dim shape volume overflow")?;
+    let out_numel = checked_mul(
+        outer_size,
+        inner_size,
+        "norm_dim shape multiplication overflow",
+    )?;
+    let data = &input[offset..];
+
+    let mut output = vec![0.0; out_numel];
+
+    if p == f64::INFINITY {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut max_abs = 0.0_f64;
+                for r in 0..reduce_size {
+                    max_abs = max_abs
+                        .max(data[outer * reduce_size * inner_size + r * inner_size + inner].abs());
+                }
+                output[outer * inner_size + inner] = max_abs;
+            }
+        }
+    } else if p == f64::NEG_INFINITY {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut min_abs = f64::INFINITY;
+                for r in 0..reduce_size {
+                    min_abs = min_abs
+                        .min(data[outer * reduce_size * inner_size + r * inner_size + inner].abs());
+                }
+                output[outer * inner_size + inner] = min_abs;
+            }
+        }
+    } else if p == 0.0 {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut count = 0.0;
+                for r in 0..reduce_size {
+                    if data[outer * reduce_size * inner_size + r * inner_size + inner] != 0.0 {
+                        count += 1.0;
+                    }
+                }
+                output[outer * inner_size + inner] = count;
+            }
+        }
+    } else if p == 1.0 {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut sum = 0.0;
+                for r in 0..reduce_size {
+                    sum += data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
+                }
+                output[outer * inner_size + inner] = sum;
+            }
+        }
+    } else if p == 2.0 {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut sum_sq = 0.0;
+                for r in 0..reduce_size {
+                    let v = data[outer * reduce_size * inner_size + r * inner_size + inner];
+                    sum_sq += v * v;
+                }
+                output[outer * inner_size + inner] = sum_sq.sqrt();
+            }
+        }
+    } else {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut sum_pow = 0.0;
+                for r in 0..reduce_size {
+                    sum_pow += data[outer * reduce_size * inner_size + r * inner_size + inner]
+                        .abs()
+                        .powf(p);
+                }
+                output[outer * inner_size + inner] = sum_pow.powf(1.0 / p);
+            }
+        }
+    }
+
     Ok(output)
 }
 
