@@ -3396,6 +3396,1913 @@ pub fn qr_contiguous_f64(
     }
 }
 
+// =========================================================================
+// f32 kernel functions (bd-2do9.3)
+// =========================================================================
+
+fn ensure_storage_len_f32(
+    buffer: &[f32],
+    meta: &TensorMeta,
+    side: &'static str,
+) -> Result<(), KernelError> {
+    let needed = contiguous_required_len(meta, side)?;
+    if buffer.len() < needed {
+        return Err(KernelError::InsufficientStorage {
+            side,
+            needed,
+            available: buffer.len(),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_unary_layout_and_storage_f32(
+    buffer: &[f32],
+    meta: &TensorMeta,
+) -> Result<(), KernelError> {
+    if !meta.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "input" });
+    }
+    ensure_storage_len_f32(buffer, meta, "input")
+}
+
+fn unary_contiguous_f32<F>(
+    input: &[f32],
+    meta: &TensorMeta,
+    op: F,
+) -> Result<Vec<f32>, KernelError>
+where
+    F: Fn(f32) -> f32,
+{
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+    let start = meta.storage_offset();
+    let window = &input[start..start + numel];
+    Ok(window.iter().map(|value| op(*value)).collect())
+}
+
+fn elementwise_contiguous_f32<F>(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    op: F,
+) -> Result<Vec<f32>, KernelError>
+where
+    F: Fn(f32, f32) -> f32,
+{
+    ensure_meta_compatible(lhs_meta, rhs_meta)?;
+    ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
+    ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
+    let numel = lhs_meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+    let lhs_start = lhs_meta.storage_offset();
+    let rhs_start = rhs_meta.storage_offset();
+    let lhs_window = &lhs[lhs_start..lhs_start + numel];
+    let rhs_window = &rhs[rhs_start..rhs_start + numel];
+    Ok(lhs_window
+        .iter()
+        .zip(rhs_window.iter())
+        .map(|(left, right)| op(*left, *right))
+        .collect())
+}
+
+fn ensure_dtype_device_and_layout_f32(
+    lhs: &TensorMeta,
+    rhs: &TensorMeta,
+) -> Result<(), KernelError> {
+    if lhs.dtype() != rhs.dtype() {
+        return Err(KernelError::Incompatible(
+            TensorCompatError::DTypeMismatch {
+                lhs: lhs.dtype(),
+                rhs: rhs.dtype(),
+            },
+        ));
+    }
+    if lhs.device() != rhs.device() {
+        return Err(KernelError::Incompatible(
+            TensorCompatError::DeviceMismatch {
+                lhs: lhs.device(),
+                rhs: rhs.device(),
+            },
+        ));
+    }
+    if !lhs.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "lhs" });
+    }
+    if !rhs.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "rhs" });
+    }
+    Ok(())
+}
+
+// f32 activation helpers
+
+fn gelu_value_f32(x: f32) -> f32 {
+    let c = std::f32::consts::FRAC_2_SQRT_PI * std::f32::consts::FRAC_1_SQRT_2;
+    let k = c * (x + 0.044715f32 * x * x * x);
+    0.5f32 * x * (1.0f32 + k.tanh())
+}
+
+fn silu_value_f32(x: f32) -> f32 {
+    x / (1.0f32 + (-x).exp())
+}
+
+fn leaky_relu_value_f32(x: f32) -> f32 {
+    if x >= 0.0f32 { x } else { 0.01f32 * x }
+}
+
+fn elu_value_f32(x: f32) -> f32 {
+    if x > 0.0f32 { x } else { x.exp() - 1.0f32 }
+}
+
+fn erf_value_f32(x: f32) -> f32 {
+    let a1 = 0.254829592f32;
+    let a2 = -0.284496736f32;
+    let a3 = 1.421413741f32;
+    let a4 = -1.453152027f32;
+    let a5 = 1.061405429f32;
+    let p = 0.3275911f32;
+    let sign = if x < 0.0f32 { -1.0f32 } else { 1.0f32 };
+    let abs_x = x.abs();
+    let t = 1.0f32 / (1.0f32 + p * abs_x);
+    let y = 1.0f32
+        - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-abs_x * abs_x).exp();
+    sign * y
+}
+
+fn hardswish_value_f32(x: f32) -> f32 {
+    if x <= -3.0f32 {
+        0.0f32
+    } else if x >= 3.0f32 {
+        x
+    } else {
+        x * (x + 3.0f32) / 6.0f32
+    }
+}
+
+fn hardsigmoid_value_f32(x: f32) -> f32 {
+    if x <= -3.0f32 {
+        0.0f32
+    } else if x >= 3.0f32 {
+        1.0f32
+    } else {
+        (x + 3.0f32) / 6.0f32
+    }
+}
+
+fn hardtanh_value_f32(x: f32) -> f32 {
+    x.clamp(-1.0f32, 1.0f32)
+}
+
+fn softplus_value_f32(x: f32) -> f32 {
+    if x > 20.0f32 {
+        x
+    } else if x < -20.0f32 {
+        0.0f32
+    } else {
+        (1.0f32 + x.exp()).ln()
+    }
+}
+
+fn mish_value_f32(x: f32) -> f32 {
+    x * softplus_value_f32(x).tanh()
+}
+
+// ── Macro-generated simple f32 unary kernels ────────────────────────────
+
+macro_rules! define_unary_f32 {
+    ($name:ident, $op:expr) => {
+        pub fn $name(input: &[f32], meta: &TensorMeta) -> Result<Vec<f32>, KernelError> {
+            unary_contiguous_f32(input, meta, $op)
+        }
+    };
+}
+
+define_unary_f32!(neg_tensor_contiguous_f32, |v: f32| -v);
+define_unary_f32!(abs_tensor_contiguous_f32, f32::abs);
+define_unary_f32!(exp_tensor_contiguous_f32, f32::exp);
+define_unary_f32!(log_tensor_contiguous_f32, f32::ln);
+define_unary_f32!(relu_tensor_contiguous_f32, |v: f32| if v > 0.0f32 {
+    v
+} else {
+    0.0f32
+});
+define_unary_f32!(sigmoid_tensor_contiguous_f32, |v: f32| 1.0f32
+    / (1.0f32 + (-v).exp()));
+define_unary_f32!(tanh_tensor_contiguous_f32, f32::tanh);
+define_unary_f32!(sqrt_tensor_contiguous_f32, f32::sqrt);
+define_unary_f32!(reciprocal_tensor_contiguous_f32, |v: f32| 1.0f32 / v);
+define_unary_f32!(sin_tensor_contiguous_f32, f32::sin);
+define_unary_f32!(cos_tensor_contiguous_f32, f32::cos);
+define_unary_f32!(tan_tensor_contiguous_f32, f32::tan);
+define_unary_f32!(floor_tensor_contiguous_f32, f32::floor);
+define_unary_f32!(ceil_tensor_contiguous_f32, f32::ceil);
+define_unary_f32!(round_tensor_contiguous_f32, f32::round);
+define_unary_f32!(log2_tensor_contiguous_f32, f32::log2);
+define_unary_f32!(log10_tensor_contiguous_f32, f32::log10);
+define_unary_f32!(log1p_tensor_contiguous_f32, f32::ln_1p);
+define_unary_f32!(expm1_tensor_contiguous_f32, f32::exp_m1);
+define_unary_f32!(sign_tensor_contiguous_f32, f32::signum);
+define_unary_f32!(trunc_tensor_contiguous_f32, f32::trunc);
+define_unary_f32!(frac_tensor_contiguous_f32, f32::fract);
+define_unary_f32!(asin_tensor_contiguous_f32, f32::asin);
+define_unary_f32!(acos_tensor_contiguous_f32, f32::acos);
+define_unary_f32!(atan_tensor_contiguous_f32, f32::atan);
+define_unary_f32!(sinh_tensor_contiguous_f32, f32::sinh);
+define_unary_f32!(cosh_tensor_contiguous_f32, f32::cosh);
+define_unary_f32!(gelu_tensor_contiguous_f32, gelu_value_f32);
+define_unary_f32!(silu_tensor_contiguous_f32, silu_value_f32);
+define_unary_f32!(leaky_relu_tensor_contiguous_f32, leaky_relu_value_f32);
+define_unary_f32!(elu_tensor_contiguous_f32, elu_value_f32);
+define_unary_f32!(rsqrt_tensor_contiguous_f32, |v: f32| 1.0f32 / v.sqrt());
+define_unary_f32!(erf_tensor_contiguous_f32, erf_value_f32);
+define_unary_f32!(erfc_tensor_contiguous_f32, |v: f32| 1.0f32
+    - erf_value_f32(v));
+define_unary_f32!(hardswish_tensor_contiguous_f32, hardswish_value_f32);
+define_unary_f32!(hardsigmoid_tensor_contiguous_f32, hardsigmoid_value_f32);
+define_unary_f32!(hardtanh_tensor_contiguous_f32, hardtanh_value_f32);
+define_unary_f32!(softplus_tensor_contiguous_f32, softplus_value_f32);
+define_unary_f32!(mish_tensor_contiguous_f32, mish_value_f32);
+define_unary_f32!(square_tensor_contiguous_f32, |v: f32| v * v);
+define_unary_f32!(isnan_tensor_contiguous_f32, |v: f32| if v.is_nan() {
+    1.0f32
+} else {
+    0.0f32
+});
+define_unary_f32!(isinf_tensor_contiguous_f32, |v: f32| if v.is_infinite() {
+    1.0f32
+} else {
+    0.0f32
+});
+define_unary_f32!(isfinite_tensor_contiguous_f32, |v: f32| if v.is_finite() {
+    1.0f32
+} else {
+    0.0f32
+});
+
+// ── Macro-generated simple f32 binary kernels ───────────────────────────
+
+macro_rules! define_binary_f32 {
+    ($name:ident, $op:expr) => {
+        pub fn $name(
+            lhs: &[f32],
+            rhs: &[f32],
+            lhs_meta: &TensorMeta,
+            rhs_meta: &TensorMeta,
+        ) -> Result<Vec<f32>, KernelError> {
+            elementwise_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta, $op)
+        }
+    };
+}
+
+define_binary_f32!(add_tensor_contiguous_f32, |l: f32, r: f32| l + r);
+define_binary_f32!(sub_tensor_contiguous_f32, |l: f32, r: f32| l - r);
+define_binary_f32!(mul_tensor_contiguous_f32, |l: f32, r: f32| l * r);
+define_binary_f32!(div_tensor_contiguous_f32, |l: f32, r: f32| l / r);
+define_binary_f32!(min_tensor_contiguous_f32, |l: f32, r: f32| {
+    if l.is_nan() || r.is_nan() {
+        f32::NAN
+    } else {
+        l.min(r)
+    }
+});
+define_binary_f32!(max_tensor_contiguous_f32, |l: f32, r: f32| {
+    if l.is_nan() || r.is_nan() {
+        f32::NAN
+    } else {
+        l.max(r)
+    }
+});
+define_binary_f32!(atan2_tensor_contiguous_f32, |y: f32, x: f32| y.atan2(x));
+define_binary_f32!(fmod_tensor_contiguous_f32, |a: f32, b: f32| a % b);
+define_binary_f32!(remainder_tensor_contiguous_f32, |a: f32, b: f32| a
+    - (a / b).floor() * b);
+
+// ── Comparison ops f32 ──────────────────────────────────────────────────
+
+define_binary_f32!(eq_tensor_contiguous_f32, |l: f32, r: f32| if l == r {
+    1.0f32
+} else {
+    0.0f32
+});
+define_binary_f32!(ne_tensor_contiguous_f32, |l: f32, r: f32| if l != r {
+    1.0f32
+} else {
+    0.0f32
+});
+define_binary_f32!(lt_tensor_contiguous_f32, |l: f32, r: f32| if l < r {
+    1.0f32
+} else {
+    0.0f32
+});
+define_binary_f32!(gt_tensor_contiguous_f32, |l: f32, r: f32| if l > r {
+    1.0f32
+} else {
+    0.0f32
+});
+define_binary_f32!(le_tensor_contiguous_f32, |l: f32, r: f32| if l <= r {
+    1.0f32
+} else {
+    0.0f32
+});
+define_binary_f32!(ge_tensor_contiguous_f32, |l: f32, r: f32| if l >= r {
+    1.0f32
+} else {
+    0.0f32
+});
+
+// ── Hand-written complex f32 kernels ────────────────────────────────────
+
+pub fn pow_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    exponent: f32,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+    let start = meta.storage_offset();
+    let window = &input[start..start + numel];
+    Ok(window.iter().map(|value| value.powf(exponent)).collect())
+}
+
+pub fn clamp_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    min_val: f32,
+    max_val: f32,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+    let start = meta.storage_offset();
+    let window = &input[start..start + numel];
+    Ok(window
+        .iter()
+        .map(|value| {
+            if value.is_nan() {
+                f32::NAN
+            } else if !min_val.is_nan() && *value < min_val {
+                min_val
+            } else if !max_val.is_nan() && *value > max_val {
+                max_val
+            } else {
+                *value
+            }
+        })
+        .collect())
+}
+
+pub fn sum_tensor_contiguous_f32(input: &[f32], meta: &TensorMeta) -> Result<f32, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let offset = meta.storage_offset();
+    let numel = meta.numel();
+    Ok(input[offset..offset + numel].iter().sum())
+}
+
+pub fn mean_tensor_contiguous_f32(input: &[f32], meta: &TensorMeta) -> Result<f32, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let offset = meta.storage_offset();
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(f32::NAN);
+    }
+    let sum: f32 = input[offset..offset + numel].iter().sum();
+    Ok(sum / numel as f32)
+}
+
+pub fn sum_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "sum_dim_f32 shape volume overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "sum_dim_f32 overflow")?;
+    let mut output = vec![0.0f32; out_numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut sum = 0.0f32;
+            for r in 0..reduce_size {
+                sum += data[outer * reduce_size * inner_size + r * inner_size + inner];
+            }
+            output[outer * inner_size + inner] = sum;
+        }
+    }
+    Ok(output)
+}
+
+pub fn mean_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "mean_dim_f32 shape volume overflow")?;
+    if reduce_size == 0 {
+        let out_numel = checked_mul(outer_size, inner_size, "mean_dim_f32 overflow")?;
+        return Ok(vec![f32::NAN; out_numel]);
+    }
+    let mut output = sum_dim_tensor_contiguous_f32(input, meta, dim)?;
+    let scale = 1.0f32 / reduce_size as f32;
+    for v in &mut output {
+        *v *= scale;
+    }
+    Ok(output)
+}
+
+pub fn matmul_tensor_contiguous_f32(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_dtype_device_and_layout_f32(lhs_meta, rhs_meta)?;
+    let (m, k, n) = matmul_dims(lhs_meta, rhs_meta)?;
+    checked_mul(m, k, "matmul_f32 lhs overflow")?;
+    checked_mul(k, n, "matmul_f32 rhs overflow")?;
+    let out_numel = checked_mul(m, n, "matmul_f32 output overflow")?;
+    ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
+    ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
+    let lhs_start = lhs_meta.storage_offset();
+    let rhs_start = rhs_meta.storage_offset();
+    let mut out = vec![0.0f32; out_numel];
+    for row in 0..m {
+        let out_row_base = row * n;
+        let lhs_row_base = lhs_start + row * k;
+        for col in 0..n {
+            let mut acc = 0.0f32;
+            for inner in 0..k {
+                acc += lhs[lhs_row_base + inner] * rhs[rhs_start + inner * n + col];
+            }
+            out[out_row_base + col] = acc;
+        }
+    }
+    Ok(out)
+}
+
+pub fn dot_tensor_contiguous_f32(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<f32, KernelError> {
+    ensure_dtype_device_and_layout_f32(lhs_meta, rhs_meta)?;
+    if lhs_meta.shape().len() != 1 || rhs_meta.shape().len() != 1 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: lhs_meta.shape().to_vec(),
+            rhs: rhs_meta.shape().to_vec(),
+        });
+    }
+    if lhs_meta.shape()[0] != rhs_meta.shape()[0] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: lhs_meta.shape().to_vec(),
+            rhs: rhs_meta.shape().to_vec(),
+        });
+    }
+    ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
+    ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
+    let n = lhs_meta.shape()[0];
+    let lhs_start = lhs_meta.storage_offset();
+    let rhs_start = rhs_meta.storage_offset();
+    let mut acc = 0.0f32;
+    for i in 0..n {
+        acc += lhs[lhs_start + i] * rhs[rhs_start + i];
+    }
+    Ok(acc)
+}
+
+pub fn outer_tensor_contiguous_f32(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_dtype_device_and_layout_f32(lhs_meta, rhs_meta)?;
+    if lhs_meta.shape().len() != 1 || rhs_meta.shape().len() != 1 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: lhs_meta.shape().to_vec(),
+            rhs: rhs_meta.shape().to_vec(),
+        });
+    }
+    let m = lhs_meta.shape()[0];
+    let n = rhs_meta.shape()[0];
+    let out_numel = checked_mul(m, n, "outer_f32 output overflow")?;
+    ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
+    ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
+    let lhs_start = lhs_meta.storage_offset();
+    let rhs_start = rhs_meta.storage_offset();
+    let mut out = vec![0.0f32; out_numel];
+    for i in 0..m {
+        for j in 0..n {
+            out[i * n + j] = lhs[lhs_start + i] * rhs[rhs_start + j];
+        }
+    }
+    Ok(out)
+}
+
+pub fn bmm_tensor_contiguous_f32(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_dtype_device_and_layout_f32(lhs_meta, rhs_meta)?;
+    if lhs_meta.shape().len() != 3 || rhs_meta.shape().len() != 3 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: lhs_meta.shape().to_vec(),
+            rhs: rhs_meta.shape().to_vec(),
+        });
+    }
+    let batch = lhs_meta.shape()[0];
+    let m = lhs_meta.shape()[1];
+    let k = lhs_meta.shape()[2];
+    let rhs_batch = rhs_meta.shape()[0];
+    let rhs_k = rhs_meta.shape()[1];
+    let n = rhs_meta.shape()[2];
+    if batch != rhs_batch || k != rhs_k {
+        return Err(KernelError::ShapeMismatch {
+            lhs: lhs_meta.shape().to_vec(),
+            rhs: rhs_meta.shape().to_vec(),
+        });
+    }
+    let lhs_batch_stride = checked_mul(m, k, "bmm_f32 lhs batch stride overflow")?;
+    let rhs_batch_stride = checked_mul(k, n, "bmm_f32 rhs batch stride overflow")?;
+    let out_batch_stride = checked_mul(m, n, "bmm_f32 output batch stride overflow")?;
+    checked_mul(batch, lhs_batch_stride, "bmm_f32 lhs overflow")?;
+    checked_mul(batch, rhs_batch_stride, "bmm_f32 rhs overflow")?;
+    let out_numel = checked_mul(batch, out_batch_stride, "bmm_f32 output overflow")?;
+    ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
+    ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
+    let lhs_start = lhs_meta.storage_offset();
+    let rhs_start = rhs_meta.storage_offset();
+    let mut out = vec![0.0f32; out_numel];
+    for b in 0..batch {
+        let lhs_base = lhs_start + b * lhs_batch_stride;
+        let rhs_base = rhs_start + b * rhs_batch_stride;
+        let out_base = b * out_batch_stride;
+        for row in 0..m {
+            for col in 0..n {
+                let mut acc = 0.0f32;
+                for inner in 0..k {
+                    acc += lhs[lhs_base + row * k + inner] * rhs[rhs_base + inner * n + col];
+                }
+                out[out_base + row * n + col] = acc;
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn trace_tensor_contiguous_f32(input: &[f32], meta: &TensorMeta) -> Result<f32, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    if meta.shape().len() != 2 {
+        return Err(KernelError::InvalidDimension {
+            dim: meta.shape().len(),
+            ndim: 2,
+        });
+    }
+    let rows = meta.shape()[0];
+    let cols = meta.shape()[1];
+    let diag_len = rows.min(cols);
+    let offset = meta.storage_offset();
+    let mut acc = 0.0f32;
+    for i in 0..diag_len {
+        acc += input[offset + i * cols + i];
+    }
+    Ok(acc)
+}
+
+pub fn prod_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "prod_dim_f32 overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "prod_dim_f32 overflow")?;
+    let mut output = vec![1.0f32; out_numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut prod = 1.0f32;
+            for r in 0..reduce_size {
+                prod *= data[outer * reduce_size * inner_size + r * inner_size + inner];
+            }
+            output[outer * inner_size + inner] = prod;
+        }
+    }
+    Ok(output)
+}
+
+pub fn var_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "var_dim_f32 overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "var_dim_f32 overflow")?;
+    let data = &input[offset..];
+    if reduce_size < 2 {
+        return Ok(vec![f32::NAN; out_numel]);
+    }
+    let mut output = vec![0.0f32; out_numel];
+    let correction = (reduce_size - 1) as f32;
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut sum = 0.0f32;
+            for r in 0..reduce_size {
+                sum += data[outer * reduce_size * inner_size + r * inner_size + inner];
+            }
+            let mean = sum / reduce_size as f32;
+            let mut var_sum = 0.0f32;
+            for r in 0..reduce_size {
+                let diff = data[outer * reduce_size * inner_size + r * inner_size + inner] - mean;
+                var_sum += diff * diff;
+            }
+            output[outer * inner_size + inner] = var_sum / correction;
+        }
+    }
+    Ok(output)
+}
+
+pub fn std_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    let mut output = var_dim_tensor_contiguous_f32(input, meta, dim)?;
+    for v in &mut output {
+        *v = v.sqrt();
+    }
+    Ok(output)
+}
+
+pub fn norm_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    p: f32,
+) -> Result<f32, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let offset = meta.storage_offset();
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(0.0f32);
+    }
+    let data = &input[offset..offset + numel];
+    if p == f32::INFINITY {
+        Ok(data.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
+    } else if p == f32::NEG_INFINITY {
+        Ok(data
+            .iter()
+            .fold(f32::INFINITY, |acc, &x| acc.min(x.abs())))
+    } else if p == 0.0f32 {
+        Ok(data.iter().filter(|&&x| x != 0.0f32).count() as f32)
+    } else if p == 1.0f32 {
+        Ok(data.iter().map(|x| x.abs()).sum())
+    } else if p == 2.0f32 {
+        let sum_sq: f32 = data.iter().map(|x| x * x).sum();
+        Ok(sum_sq.sqrt())
+    } else {
+        let sum_pow: f32 = data.iter().map(|x| x.abs().powf(p)).sum();
+        Ok(sum_pow.powf(1.0f32 / p))
+    }
+}
+
+pub fn norm_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    p: f32,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "norm_dim_f32 overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "norm_dim_f32 overflow")?;
+    let data = &input[offset..];
+    let mut output = vec![0.0f32; out_numel];
+
+    if p == f32::INFINITY {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut max_abs = 0.0f32;
+                for r in 0..reduce_size {
+                    max_abs = max_abs
+                        .max(data[outer * reduce_size * inner_size + r * inner_size + inner].abs());
+                }
+                output[outer * inner_size + inner] = max_abs;
+            }
+        }
+    } else if p == f32::NEG_INFINITY {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut min_abs = f32::INFINITY;
+                for r in 0..reduce_size {
+                    min_abs = min_abs
+                        .min(data[outer * reduce_size * inner_size + r * inner_size + inner].abs());
+                }
+                output[outer * inner_size + inner] = min_abs;
+            }
+        }
+    } else if p == 0.0f32 {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut count = 0.0f32;
+                for r in 0..reduce_size {
+                    if data[outer * reduce_size * inner_size + r * inner_size + inner] != 0.0f32 {
+                        count += 1.0f32;
+                    }
+                }
+                output[outer * inner_size + inner] = count;
+            }
+        }
+    } else if p == 1.0f32 {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut sum = 0.0f32;
+                for r in 0..reduce_size {
+                    sum += data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
+                }
+                output[outer * inner_size + inner] = sum;
+            }
+        }
+    } else if p == 2.0f32 {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut sum_sq = 0.0f32;
+                for r in 0..reduce_size {
+                    let v = data[outer * reduce_size * inner_size + r * inner_size + inner];
+                    sum_sq += v * v;
+                }
+                output[outer * inner_size + inner] = sum_sq.sqrt();
+            }
+        }
+    } else {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut sum_pow = 0.0f32;
+                for r in 0..reduce_size {
+                    sum_pow += data[outer * reduce_size * inner_size + r * inner_size + inner]
+                        .abs()
+                        .powf(p);
+                }
+                output[outer * inner_size + inner] = sum_pow.powf(1.0f32 / p);
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn softmax_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, numel) =
+        checked_dim_loop_sizes(shape, dim, "softmax_f32 overflow")?;
+    let mut output = vec![0.0f32; numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut max_val = f32::NEG_INFINITY;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                if data[idx] > max_val {
+                    max_val = data[idx];
+                }
+            }
+            let mut sum = 0.0f32;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                let e = (data[idx] - max_val).exp();
+                output[idx] = e;
+                sum += e;
+            }
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                output[idx] /= sum;
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn log_softmax_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, numel) =
+        checked_dim_loop_sizes(shape, dim, "log_softmax_f32 overflow")?;
+    let mut output = vec![0.0f32; numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut max_val = f32::NEG_INFINITY;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                if data[idx] > max_val {
+                    max_val = data[idx];
+                }
+            }
+            let mut sum_exp = 0.0f32;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                sum_exp += (data[idx] - max_val).exp();
+            }
+            let log_sum_exp = max_val + sum_exp.ln();
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                output[idx] = data[idx] - log_sum_exp;
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn argmax_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "argmax_f32 overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "argmax_f32 overflow")?;
+    let mut output = vec![0.0f32; out_numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut best_idx = 0usize;
+            let mut best_val = f32::NEG_INFINITY;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                let val = data[idx];
+                if val.is_nan() {
+                    best_idx = r;
+                    break;
+                } else if val > best_val {
+                    best_val = val;
+                    best_idx = r;
+                }
+            }
+            output[outer * inner_size + inner] = best_idx as f32;
+        }
+    }
+    Ok(output)
+}
+
+pub fn argmin_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "argmin_f32 overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "argmin_f32 overflow")?;
+    let mut output = vec![0.0f32; out_numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut best_idx = 0usize;
+            let mut best_val = f32::INFINITY;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                let val = data[idx];
+                if val.is_nan() {
+                    best_idx = r;
+                    break;
+                } else if val < best_val {
+                    best_val = val;
+                    best_idx = r;
+                }
+            }
+            output[outer * inner_size + inner] = best_idx as f32;
+        }
+    }
+    Ok(output)
+}
+
+pub fn max_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<(Vec<f32>, Vec<f32>), KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "max_dim_f32 overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "max_dim_f32 overflow")?;
+    let mut values = vec![f32::NEG_INFINITY; out_numel];
+    let mut indices = vec![0.0f32; out_numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let out_idx = outer * inner_size + inner;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                let val = data[idx];
+                if val.is_nan() {
+                    values[out_idx] = f32::NAN;
+                    indices[out_idx] = r as f32;
+                    break;
+                } else if val > values[out_idx] {
+                    values[out_idx] = val;
+                    indices[out_idx] = r as f32;
+                }
+            }
+        }
+    }
+    Ok((values, indices))
+}
+
+pub fn min_dim_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<(Vec<f32>, Vec<f32>), KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let reduce_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "min_dim_f32 overflow")?;
+    let out_numel = checked_mul(outer_size, inner_size, "min_dim_f32 overflow")?;
+    let mut values = vec![f32::INFINITY; out_numel];
+    let mut indices = vec![0.0f32; out_numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let out_idx = outer * inner_size + inner;
+            for r in 0..reduce_size {
+                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
+                let val = data[idx];
+                if val.is_nan() {
+                    values[out_idx] = f32::NAN;
+                    indices[out_idx] = r as f32;
+                    break;
+                } else if val < values[out_idx] {
+                    values[out_idx] = val;
+                    indices[out_idx] = r as f32;
+                }
+            }
+        }
+    }
+    Ok((values, indices))
+}
+
+pub fn cat_tensor_contiguous_f32(
+    inputs: &[(&[f32], &TensorMeta)],
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    if inputs.is_empty() {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![],
+            rhs: vec![],
+        });
+    }
+    let first_shape = inputs[0].1.shape();
+    let ndim = first_shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    for (data, meta) in inputs {
+        ensure_unary_layout_and_storage_f32(data, meta)?;
+        let shape = meta.shape();
+        if shape.len() != ndim {
+            return Err(KernelError::ShapeMismatch {
+                lhs: first_shape.to_vec(),
+                rhs: shape.to_vec(),
+            });
+        }
+        for d in 0..ndim {
+            if d != dim && shape[d] != first_shape[d] {
+                return Err(KernelError::ShapeMismatch {
+                    lhs: first_shape.to_vec(),
+                    rhs: shape.to_vec(),
+                });
+            }
+        }
+    }
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(first_shape, dim, "cat_f32 overflow")?;
+    let total_cat_size: usize = inputs.iter().map(|(_, m)| m.shape()[dim]).sum();
+    let out_numel = checked_mul(
+        checked_mul(outer_size, total_cat_size, "cat_f32 overflow")?,
+        inner_size,
+        "cat_f32 overflow",
+    )?;
+    let mut output = Vec::with_capacity(out_numel);
+    for outer in 0..outer_size {
+        for (data, meta) in inputs {
+            let cat_size = meta.shape()[dim];
+            let offset = meta.storage_offset();
+            let d = &data[offset..];
+            for r in 0..cat_size {
+                for inner in 0..inner_size {
+                    output.push(d[outer * cat_size * inner_size + r * inner_size + inner]);
+                }
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn stack_tensor_contiguous_f32(
+    inputs: &[(&[f32], &TensorMeta)],
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    if inputs.is_empty() {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![],
+            rhs: vec![],
+        });
+    }
+    let first_shape = inputs[0].1.shape();
+    let ndim = first_shape.len();
+    if dim > ndim {
+        return Err(KernelError::InvalidDimension {
+            dim,
+            ndim: ndim + 1,
+        });
+    }
+    for (data, meta) in inputs {
+        ensure_unary_layout_and_storage_f32(data, meta)?;
+        if meta.shape() != first_shape {
+            return Err(KernelError::ShapeMismatch {
+                lhs: first_shape.to_vec(),
+                rhs: meta.shape().to_vec(),
+            });
+        }
+    }
+    let num_inputs = inputs.len();
+    let outer_size = checked_shape_numel(&first_shape[..dim], "stack_f32 overflow")?;
+    let inner_size = checked_shape_numel(&first_shape[dim..], "stack_f32 overflow")?;
+    let out_numel = checked_mul(
+        checked_mul(outer_size, num_inputs, "stack_f32 overflow")?,
+        inner_size,
+        "stack_f32 overflow",
+    )?;
+    let mut output = Vec::with_capacity(out_numel);
+    for outer in 0..outer_size {
+        for (data, meta) in inputs {
+            let offset = meta.storage_offset();
+            let d = &data[offset..];
+            for inner in 0..inner_size {
+                output.push(d[outer * inner_size + inner]);
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn narrow_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+    start: usize,
+    length: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let end = start
+        .checked_add(length)
+        .ok_or(KernelError::InvalidDimension {
+            dim: start,
+            ndim: shape[dim],
+        })?;
+    if end > shape[dim] {
+        return Err(KernelError::InvalidDimension {
+            dim: end,
+            ndim: shape[dim],
+        });
+    }
+    if length == 0 {
+        return Ok(Vec::new());
+    }
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "narrow_f32 overflow")?;
+    let dim_size = shape[dim];
+    let out_numel = checked_mul(
+        checked_mul(outer_size, length, "narrow_f32 overflow")?,
+        inner_size,
+        "narrow_f32 overflow",
+    )?;
+    let offset = meta.storage_offset();
+    let data = &input[offset..];
+    let mut output = Vec::with_capacity(out_numel);
+    for outer in 0..outer_size {
+        for r in 0..length {
+            for inner in 0..inner_size {
+                let idx = outer * dim_size * inner_size + (start + r) * inner_size + inner;
+                output.push(data[idx]);
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn expand_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    target_shape: &[usize],
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if target_shape.len() != ndim {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: target_shape.to_vec(),
+        });
+    }
+    for d in 0..ndim {
+        if shape[d] != target_shape[d] && shape[d] != 1 {
+            return Err(KernelError::ShapeMismatch {
+                lhs: shape.to_vec(),
+                rhs: target_shape.to_vec(),
+            });
+        }
+    }
+    let out_numel = checked_shape_numel(target_shape, "expand_f32 overflow")?;
+    if out_numel == 0 {
+        return Ok(Vec::new());
+    }
+    let input_strides = broadcast_strides(shape, target_shape, "expand_f32 strides overflow")?;
+    let offset = meta.storage_offset();
+    let mut output = Vec::with_capacity(out_numel);
+    let mut coords = vec![0usize; ndim];
+    for _ in 0..out_numel {
+        let mut idx = offset;
+        for d in 0..ndim {
+            idx += coords[d] * input_strides[d];
+        }
+        output.push(input[idx]);
+        for d in (0..ndim).rev() {
+            coords[d] += 1;
+            if coords[d] < target_shape[d] {
+                break;
+            }
+            coords[d] = 0;
+        }
+    }
+    Ok(output)
+}
+
+pub fn index_select_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+    indices: &[f64],
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "index_select_f32 overflow")?;
+    let num_indices = indices.len();
+    let out_numel = checked_mul(
+        checked_mul(outer_size, num_indices, "index_select_f32 overflow")?,
+        inner_size,
+        "index_select_f32 overflow",
+    )?;
+    let offset = meta.storage_offset();
+    let data = &input[offset..];
+    let mut output = Vec::with_capacity(out_numel);
+    for outer in 0..outer_size {
+        for &idx_f in indices {
+            let idx = normalize_wrapped_index_value(idx_f, dim_size)?;
+            for inner in 0..inner_size {
+                let src = outer * dim_size * inner_size + idx * inner_size + inner;
+                output.push(data[src]);
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn gather_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+    index: &[f64],
+    index_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    ensure_unary_layout_and_storage(index, index_meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let idx_shape = index_meta.shape();
+    if idx_shape.len() != ndim {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: idx_shape.to_vec(),
+        });
+    }
+    for d in 0..ndim {
+        if d != dim && idx_shape[d] != shape[d] {
+            return Err(KernelError::ShapeMismatch {
+                lhs: shape.to_vec(),
+                rhs: idx_shape.to_vec(),
+            });
+        }
+    }
+    let dim_size = shape[dim];
+    let idx_dim_size = idx_shape[dim];
+    let (outer_size, inner_size, out_numel) =
+        checked_dim_loop_sizes(idx_shape, dim, "gather_f32 overflow")?;
+    let offset = meta.storage_offset();
+    let data = &input[offset..];
+    let idx_offset = index_meta.storage_offset();
+    let index_data = &index[idx_offset..];
+    let mut output = Vec::with_capacity(out_numel);
+    for outer in 0..outer_size {
+        for r in 0..idx_dim_size {
+            for inner in 0..inner_size {
+                let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
+                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
+                let src = outer * dim_size * inner_size + selected * inner_size + inner;
+                output.push(data[src]);
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn scatter_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+    index: &[f64],
+    index_meta: &TensorMeta,
+    src: &[f32],
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    ensure_unary_layout_and_storage(index, index_meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let idx_shape = index_meta.shape();
+    if idx_shape.len() != ndim {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: idx_shape.to_vec(),
+        });
+    }
+    for d in 0..ndim {
+        if d != dim && idx_shape[d] != shape[d] {
+            return Err(KernelError::ShapeMismatch {
+                lhs: shape.to_vec(),
+                rhs: idx_shape.to_vec(),
+            });
+        }
+    }
+    let src_numel = checked_shape_numel(idx_shape, "scatter_f32 overflow")?;
+    if src.len() < src_numel {
+        return Err(KernelError::InsufficientStorage {
+            side: "src",
+            needed: src_numel,
+            available: src.len(),
+        });
+    }
+    let dim_size = shape[dim];
+    let idx_dim_size = idx_shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(idx_shape, dim, "scatter_f32 overflow")?;
+    let offset = meta.storage_offset();
+    let numel = meta.numel();
+    let mut output = input[offset..offset + numel].to_vec();
+    let idx_offset = index_meta.storage_offset();
+    let index_data = &index[idx_offset..];
+    for outer in 0..outer_size {
+        for r in 0..idx_dim_size {
+            for inner in 0..inner_size {
+                let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
+                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
+                let dst = outer * dim_size * inner_size + selected * inner_size + inner;
+                output[dst] = src[idx_pos];
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn masked_fill_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    mask: &[f64],
+    value: f32,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let numel = meta.numel();
+    let offset = meta.storage_offset();
+    if mask.len() < offset + numel {
+        return Err(KernelError::ShapeMismatch {
+            lhs: meta.shape().to_vec(),
+            rhs: vec![mask.len()],
+        });
+    }
+    let data = &input[offset..offset + numel];
+    let output = data
+        .iter()
+        .zip(mask[offset..offset + numel].iter())
+        .map(|(&d, &m)| if m != 0.0 { value } else { d })
+        .collect();
+    Ok(output)
+}
+
+pub fn where_tensor_contiguous_f32(
+    condition: &[f64],
+    x: &[f32],
+    y: &[f32],
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(x, meta)?;
+    let numel = meta.numel();
+    let offset = meta.storage_offset();
+    if condition.len() < offset + numel {
+        return Err(KernelError::ShapeMismatch {
+            lhs: meta.shape().to_vec(),
+            rhs: vec![condition.len()],
+        });
+    }
+    if y.len() < offset + numel {
+        return Err(KernelError::ShapeMismatch {
+            lhs: meta.shape().to_vec(),
+            rhs: vec![y.len()],
+        });
+    }
+    let cond = &condition[offset..offset + numel];
+    let x_data = &x[offset..offset + numel];
+    let y_data = &y[offset..offset + numel];
+    let output = cond
+        .iter()
+        .zip(x_data.iter())
+        .zip(y_data.iter())
+        .map(|((&c, &xv), &yv)| if c != 0.0 { xv } else { yv })
+        .collect();
+    Ok(output)
+}
+
+pub fn cumsum_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "cumsum_f32 overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "cumsum_f32 overflow")?,
+        inner_size,
+        "cumsum_f32 overflow",
+    )?;
+    let mut output = vec![0.0f32; numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut acc = 0.0f32;
+            for d in 0..dim_size {
+                let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                acc += data[idx];
+                output[idx] = acc;
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn cumsum_backward_tensor_contiguous_f32(
+    grad_output: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(grad_output, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "cumsum_backward_f32 overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "cumsum_backward_f32 overflow")?,
+        inner_size,
+        "cumsum_backward_f32 overflow",
+    )?;
+    let mut grad_input = vec![0.0f32; numel];
+    let data = &grad_output[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut acc = 0.0f32;
+            for d in (0..dim_size).rev() {
+                let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                acc += data[idx];
+                grad_input[idx] = acc;
+            }
+        }
+    }
+    Ok(grad_input)
+}
+
+pub fn cumprod_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "cumprod_f32 overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "cumprod_f32 overflow")?,
+        inner_size,
+        "cumprod_f32 overflow",
+    )?;
+    let mut output = vec![0.0f32; numel];
+    let data = &input[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut acc = 1.0f32;
+            for d in 0..dim_size {
+                let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                acc *= data[idx];
+                output[idx] = acc;
+            }
+        }
+    }
+    Ok(output)
+}
+
+pub fn cumprod_backward_tensor_contiguous_f32(
+    grad_output: &[f32],
+    input: &[f32],
+    output: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "cumprod_backward_f32 overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "cumprod_backward_f32 overflow")?,
+        inner_size,
+        "cumprod_backward_f32 overflow",
+    )?;
+    let mut grad_input = vec![0.0f32; numel];
+    let in_data = &input[offset..];
+    let out_data = &output[offset..];
+    let go_data = &grad_output[offset..];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut acc = 0.0f32;
+            for d in (0..dim_size).rev() {
+                let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                acc += go_data[idx] * out_data[idx];
+                let inp = in_data[idx];
+                if inp.abs() > f32::EPSILON {
+                    grad_input[idx] = acc / inp;
+                } else {
+                    let mut sum = 0.0f32;
+                    for j in d..dim_size {
+                        let j_idx = outer * dim_size * inner_size + j * inner_size + inner;
+                        let mut prod = 1.0f32;
+                        for kk in d..=j {
+                            if kk != d {
+                                let k_idx =
+                                    outer * dim_size * inner_size + kk * inner_size + inner;
+                                prod *= in_data[k_idx];
+                            }
+                        }
+                        if d > 0 {
+                            let prev_idx =
+                                outer * dim_size * inner_size + (d - 1) * inner_size + inner;
+                            prod *= out_data[prev_idx];
+                        }
+                        sum += go_data[j_idx] * prod;
+                    }
+                    grad_input[idx] = sum;
+                }
+            }
+        }
+    }
+    Ok(grad_input)
+}
+
+pub fn sort_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    dim: usize,
+    descending: bool,
+) -> Result<(Vec<f32>, Vec<usize>), KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let offset = meta.storage_offset();
+    let dim_size = shape[dim];
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "sort_f32 overflow")?;
+    let numel = checked_mul(
+        checked_mul(outer_size, dim_size, "sort_f32 overflow")?,
+        inner_size,
+        "sort_f32 overflow",
+    )?;
+    let data = &input[offset..];
+    let mut sorted_values = vec![0.0f32; numel];
+    let mut indices = vec![0usize; numel];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut lane: Vec<(usize, f32)> = (0..dim_size)
+                .map(|d| {
+                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                    (d, data[idx])
+                })
+                .collect();
+            if descending {
+                lane.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            } else {
+                lane.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            for (out_d, (orig_d, val)) in lane.into_iter().enumerate() {
+                let out_idx = outer * dim_size * inner_size + out_d * inner_size + inner;
+                sorted_values[out_idx] = val;
+                indices[out_idx] = orig_d;
+            }
+        }
+    }
+    Ok((sorted_values, indices))
+}
+
+pub fn topk_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+    k: usize,
+    dim: usize,
+    largest: bool,
+    sorted: bool,
+) -> Result<(Vec<f32>, Vec<usize>), KernelError> {
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    if dim >= ndim {
+        return Err(KernelError::InvalidDimension { dim, ndim });
+    }
+    let dim_size = shape[dim];
+    if k > dim_size {
+        return Err(KernelError::InvalidDimension {
+            dim: k,
+            ndim: dim_size,
+        });
+    }
+    let offset = meta.storage_offset();
+    let (outer_size, inner_size, _) =
+        checked_dim_loop_sizes(shape, dim, "topk_f32 overflow")?;
+    let out_numel = checked_mul(
+        checked_mul(outer_size, k, "topk_f32 overflow")?,
+        inner_size,
+        "topk_f32 overflow",
+    )?;
+    let data = &input[offset..];
+    let mut out_values = vec![0.0f32; out_numel];
+    let mut out_indices = vec![0usize; out_numel];
+    for outer in 0..outer_size {
+        for inner in 0..inner_size {
+            let mut lane: Vec<(usize, f32)> = (0..dim_size)
+                .map(|d| {
+                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                    (d, data[idx])
+                })
+                .collect();
+            if largest {
+                lane.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            } else {
+                lane.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            let top = &lane[..k];
+            let mut selected: Vec<(usize, f32)> = top.to_vec();
+            if !sorted {
+                selected.sort_by_key(|(orig_idx, _)| *orig_idx);
+            }
+            for (out_d, (orig_d, val)) in selected.into_iter().enumerate() {
+                let out_idx = outer * k * inner_size + out_d * inner_size + inner;
+                out_values[out_idx] = val;
+                out_indices[out_idx] = orig_d;
+            }
+        }
+    }
+    Ok((out_values, out_indices))
+}
+
+pub fn lerp_tensor_contiguous_f32(
+    start: &[f32],
+    end: &[f32],
+    weight: f32,
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(start, meta)?;
+    let numel = meta.numel();
+    let offset = meta.storage_offset();
+    if end.len() < offset + numel {
+        return Err(KernelError::ShapeMismatch {
+            lhs: meta.shape().to_vec(),
+            rhs: vec![end.len()],
+        });
+    }
+    let s = &start[offset..offset + numel];
+    let e = &end[offset..offset + numel];
+    Ok(s.iter()
+        .zip(e.iter())
+        .map(|(&sv, &ev)| sv + weight * (ev - sv))
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn addmm_tensor_contiguous_f32(
+    input: &[f32],
+    mat1: &[f32],
+    mat2: &[f32],
+    input_meta: &TensorMeta,
+    mat1_meta: &TensorMeta,
+    mat2_meta: &TensorMeta,
+    beta: f32,
+    alpha: f32,
+) -> Result<Vec<f32>, KernelError> {
+    let (m, k, n) = matmul_dims(mat1_meta, mat2_meta)?;
+    let out_numel = checked_mul(m, n, "addmm_f32 output overflow")?;
+    ensure_storage_len_f32(mat1, mat1_meta, "mat1")?;
+    ensure_storage_len_f32(mat2, mat2_meta, "mat2")?;
+    let mat1_start = mat1_meta.storage_offset();
+    let mat2_start = mat2_meta.storage_offset();
+    let input_offset = input_meta.storage_offset();
+    let input_shape = input_meta.shape();
+    let input_1d = input_shape.len() == 1 && input_shape[0] == n;
+    let input_2d = input_shape.len() == 2 && input_shape[0] == m && input_shape[1] == n;
+    if !input_1d && !input_2d {
+        return Err(KernelError::ShapeMismatch {
+            lhs: input_shape.to_vec(),
+            rhs: vec![m, n],
+        });
+    }
+    let mut out = vec![0.0f32; out_numel];
+    for row in 0..m {
+        for col in 0..n {
+            let mut acc = 0.0f32;
+            for inner in 0..k {
+                acc += mat1[mat1_start + row * k + inner] * mat2[mat2_start + inner * n + col];
+            }
+            let bias_idx = if input_1d {
+                input_offset + col
+            } else {
+                input_offset + row * n + col
+            };
+            out[row * n + col] = beta * input[bias_idx] + alpha * acc;
+        }
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn addmv_tensor_contiguous_f32(
+    input: &[f32],
+    mat: &[f32],
+    vec_data: &[f32],
+    input_meta: &TensorMeta,
+    mat_meta: &TensorMeta,
+    vec_meta: &TensorMeta,
+    beta: f32,
+    alpha: f32,
+) -> Result<Vec<f32>, KernelError> {
+    let mat_shape = mat_meta.shape();
+    let vec_shape = vec_meta.shape();
+    if mat_shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: mat_shape.to_vec(),
+            rhs: vec![0, 0],
+        });
+    }
+    if vec_shape.len() != 1 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec_shape.to_vec(),
+            rhs: vec![mat_shape[1]],
+        });
+    }
+    let m = mat_shape[0];
+    let k = mat_shape[1];
+    if vec_shape[0] != k {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec_shape.to_vec(),
+            rhs: vec![k],
+        });
+    }
+    let input_shape = input_meta.shape();
+    if input_shape.len() != 1 || input_shape[0] != m {
+        return Err(KernelError::ShapeMismatch {
+            lhs: input_shape.to_vec(),
+            rhs: vec![m],
+        });
+    }
+    ensure_storage_len_f32(mat, mat_meta, "mat")?;
+    ensure_storage_len_f32(vec_data, vec_meta, "vec")?;
+    ensure_storage_len_f32(input, input_meta, "input")?;
+    let mat_start = mat_meta.storage_offset();
+    let vec_start = vec_meta.storage_offset();
+    let input_start = input_meta.storage_offset();
+    let mut out = vec![0.0f32; m];
+    for row in 0..m {
+        let mut acc = 0.0f32;
+        for col in 0..k {
+            acc += mat[mat_start + row * k + col] * vec_data[vec_start + col];
+        }
+        out[row] = beta * input[input_start + row] + alpha * acc;
+    }
+    Ok(out)
+}
+
+pub fn reduce_sum_for_broadcast_f32(
+    expanded_grad: &[f32],
+    expanded_shape: &[usize],
+    original_shape: &[usize],
+) -> Result<Vec<f32>, KernelError> {
+    let ndim = expanded_shape.len();
+    if ndim != original_shape.len() {
+        return Err(KernelError::ShapeMismatch {
+            lhs: expanded_shape.to_vec(),
+            rhs: original_shape.to_vec(),
+        });
+    }
+    for d in 0..ndim {
+        let expanded = expanded_shape[d];
+        let original = original_shape[d];
+        if original != expanded && original != 1 {
+            return Err(KernelError::ShapeMismatch {
+                lhs: expanded_shape.to_vec(),
+                rhs: original_shape.to_vec(),
+            });
+        }
+    }
+    let expanded_numel =
+        checked_shape_numel(expanded_shape, "broadcast_f32 reduction expanded shape")?;
+    if expanded_grad.len() != expanded_numel {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![expanded_grad.len()],
+            rhs: vec![expanded_numel],
+        });
+    }
+    let original_numel =
+        checked_shape_numel(original_shape, "broadcast_f32 reduction original shape")?;
+    if original_numel == 0 {
+        return Ok(Vec::new());
+    }
+    let original_strides =
+        broadcast_strides(original_shape, expanded_shape, "broadcast_f32 strides overflow")?;
+    let mut reduced = vec![0.0f32; original_numel];
+    let mut coords = vec![0usize; ndim];
+    for grad in expanded_grad {
+        let mut original_idx = 0usize;
+        for d in 0..ndim {
+            original_idx += coords[d] * original_strides[d];
+        }
+        reduced[original_idx] += *grad;
+        for d in (0..ndim).rev() {
+            coords[d] += 1;
+            if coords[d] < expanded_shape[d] {
+                break;
+            }
+            coords[d] = 0;
+        }
+    }
+    Ok(reduced)
+}
+
 #[cfg(test)]
 mod tests {
     use ft_core::{DType, Device, ScalarTensor, TensorCompatError, TensorMeta};

@@ -2,48 +2,72 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use ft_core::{Device, ExecutionMode, ScalarTensor, TensorCompatError, TensorMeta};
+use ft_core::{DType, Device, ExecutionMode, ScalarTensor, TensorCompatError, TensorMeta, TensorStorage};
 use ft_kernel_cpu::{
-    KernelError, abs_scalar, abs_tensor_contiguous_f64, acos_scalar, acos_tensor_contiguous_f64,
-    add_scalar, add_tensor_contiguous_f64, addmm_tensor_contiguous_f64,
-    addmv_tensor_contiguous_f64, asin_scalar, asin_tensor_contiguous_f64, atan_scalar,
-    atan_tensor_contiguous_f64, atan2_scalar, atan2_tensor_contiguous_f64,
-    bmm_tensor_contiguous_f64, cat_tensor_contiguous_f64, ceil_scalar, ceil_tensor_contiguous_f64,
-    clamp_scalar, clamp_tensor_contiguous_f64, cos_scalar, cos_tensor_contiguous_f64, cosh_scalar,
-    cosh_tensor_contiguous_f64, cumprod_tensor_contiguous_f64, cumsum_tensor_contiguous_f64,
-    div_scalar, div_tensor_contiguous_f64, dot_tensor_contiguous_f64, elu_scalar,
-    elu_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, erf_scalar,
-    erf_tensor_contiguous_f64, erfc_scalar, erfc_tensor_contiguous_f64, exp_scalar,
-    exp_tensor_contiguous_f64, expm1_scalar, expm1_tensor_contiguous_f64, floor_scalar,
-    floor_tensor_contiguous_f64, fmod_scalar, fmod_tensor_contiguous_f64, frac_scalar,
-    frac_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gelu_scalar,
-    gelu_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64, hardsigmoid_scalar,
-    hardsigmoid_tensor_contiguous_f64, hardswish_scalar, hardswish_tensor_contiguous_f64,
-    hardtanh_scalar, hardtanh_tensor_contiguous_f64, isfinite_scalar,
-    isfinite_tensor_contiguous_f64, isinf_scalar, isinf_tensor_contiguous_f64, isnan_scalar,
-    isnan_tensor_contiguous_f64, le_scalar, le_tensor_contiguous_f64, leaky_relu_scalar,
-    leaky_relu_tensor_contiguous_f64, lerp_tensor_contiguous_f64, log_scalar,
-    log_softmax_dim_tensor_contiguous_f64, log_tensor_contiguous_f64, log1p_scalar,
-    log1p_tensor_contiguous_f64, log2_scalar, log2_tensor_contiguous_f64, log10_scalar,
-    log10_tensor_contiguous_f64, lt_scalar, lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64,
-    max_scalar, max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64,
-    mean_tensor_contiguous_f64, min_scalar, min_tensor_contiguous_f64, mish_scalar,
-    mish_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64, ne_scalar,
-    ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64,
-    norm_dim_tensor_contiguous_f64, norm_tensor_contiguous_f64, outer_tensor_contiguous_f64,
-    pow_scalar, pow_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64, reciprocal_scalar,
-    reciprocal_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64, remainder_scalar,
-    remainder_tensor_contiguous_f64, round_scalar, round_tensor_contiguous_f64, rsqrt_scalar,
-    rsqrt_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sign_scalar,
-    sign_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64, sin_scalar,
-    sin_tensor_contiguous_f64, sinh_scalar, sinh_tensor_contiguous_f64,
-    softmax_dim_tensor_contiguous_f64, softplus_scalar, softplus_tensor_contiguous_f64,
-    sort_tensor_contiguous_f64, sqrt_scalar, sqrt_tensor_contiguous_f64, square_scalar,
+    KernelError,
+    // --- f64 scalar ops ---
+    abs_scalar, acos_scalar, add_scalar, asin_scalar, atan_scalar, atan2_scalar, ceil_scalar,
+    clamp_scalar, cos_scalar, cosh_scalar, div_scalar, elu_scalar, eq_scalar, erf_scalar,
+    erfc_scalar, exp_scalar, expm1_scalar, floor_scalar, fmod_scalar, frac_scalar, ge_scalar,
+    gelu_scalar, gt_scalar, hardsigmoid_scalar, hardswish_scalar, hardtanh_scalar,
+    isfinite_scalar, isinf_scalar, isnan_scalar, le_scalar, leaky_relu_scalar, log_scalar,
+    log1p_scalar, log2_scalar, log10_scalar, lt_scalar, max_scalar, min_scalar, mish_scalar,
+    mul_scalar, ne_scalar, neg_scalar, pow_scalar, reciprocal_scalar, relu_scalar,
+    remainder_scalar, round_scalar, rsqrt_scalar, sigmoid_scalar, sign_scalar, silu_scalar,
+    sin_scalar, sinh_scalar, softplus_scalar, sqrt_scalar, square_scalar, sub_scalar, tan_scalar,
+    tanh_scalar, trunc_scalar,
+    // --- f64 tensor ops ---
+    abs_tensor_contiguous_f64, acos_tensor_contiguous_f64, add_tensor_contiguous_f64,
+    addmm_tensor_contiguous_f64, addmv_tensor_contiguous_f64, asin_tensor_contiguous_f64,
+    atan_tensor_contiguous_f64, atan2_tensor_contiguous_f64, bmm_tensor_contiguous_f64,
+    cat_tensor_contiguous_f64, ceil_tensor_contiguous_f64, clamp_tensor_contiguous_f64,
+    cos_tensor_contiguous_f64, cosh_tensor_contiguous_f64, cumprod_tensor_contiguous_f64,
+    cumsum_tensor_contiguous_f64, div_tensor_contiguous_f64, dot_tensor_contiguous_f64,
+    elu_tensor_contiguous_f64, eq_tensor_contiguous_f64, erf_tensor_contiguous_f64,
+    erfc_tensor_contiguous_f64, exp_tensor_contiguous_f64, expm1_tensor_contiguous_f64,
+    floor_tensor_contiguous_f64, fmod_tensor_contiguous_f64, frac_tensor_contiguous_f64,
+    ge_tensor_contiguous_f64, gelu_tensor_contiguous_f64, gt_tensor_contiguous_f64,
+    hardsigmoid_tensor_contiguous_f64, hardswish_tensor_contiguous_f64,
+    hardtanh_tensor_contiguous_f64, isfinite_tensor_contiguous_f64, isinf_tensor_contiguous_f64,
+    isnan_tensor_contiguous_f64, le_tensor_contiguous_f64, leaky_relu_tensor_contiguous_f64,
+    lerp_tensor_contiguous_f64, log_softmax_dim_tensor_contiguous_f64,
+    log_tensor_contiguous_f64, log1p_tensor_contiguous_f64, log2_tensor_contiguous_f64,
+    log10_tensor_contiguous_f64, lt_tensor_contiguous_f64, matmul_tensor_contiguous_f64,
+    max_tensor_contiguous_f64, mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64,
+    min_tensor_contiguous_f64, mish_tensor_contiguous_f64, mul_tensor_contiguous_f64,
+    ne_tensor_contiguous_f64, neg_tensor_contiguous_f64, norm_dim_tensor_contiguous_f64,
+    norm_tensor_contiguous_f64, outer_tensor_contiguous_f64, pow_tensor_contiguous_f64,
+    prod_dim_tensor_contiguous_f64, reciprocal_tensor_contiguous_f64, relu_tensor_contiguous_f64,
+    remainder_tensor_contiguous_f64, round_tensor_contiguous_f64, rsqrt_tensor_contiguous_f64,
+    sigmoid_tensor_contiguous_f64, sign_tensor_contiguous_f64, silu_tensor_contiguous_f64,
+    sin_tensor_contiguous_f64, sinh_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64,
+    softplus_tensor_contiguous_f64, sort_tensor_contiguous_f64, sqrt_tensor_contiguous_f64,
     square_tensor_contiguous_f64, stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64,
-    sub_scalar, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64,
-    sum_tensor_contiguous_f64, tan_scalar, tan_tensor_contiguous_f64, tanh_scalar,
-    tanh_tensor_contiguous_f64, topk_tensor_contiguous_f64, trace_tensor_contiguous_f64,
-    trunc_scalar, trunc_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
+    sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64,
+    tan_tensor_contiguous_f64, tanh_tensor_contiguous_f64, topk_tensor_contiguous_f64,
+    trace_tensor_contiguous_f64, trunc_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
+    // --- f32 unary tensor ops ---
+    abs_tensor_contiguous_f32, acos_tensor_contiguous_f32, asin_tensor_contiguous_f32,
+    atan_tensor_contiguous_f32, ceil_tensor_contiguous_f32, cos_tensor_contiguous_f32,
+    cosh_tensor_contiguous_f32, elu_tensor_contiguous_f32, erf_tensor_contiguous_f32,
+    erfc_tensor_contiguous_f32, exp_tensor_contiguous_f32, expm1_tensor_contiguous_f32,
+    floor_tensor_contiguous_f32, frac_tensor_contiguous_f32, gelu_tensor_contiguous_f32,
+    hardsigmoid_tensor_contiguous_f32, hardswish_tensor_contiguous_f32,
+    hardtanh_tensor_contiguous_f32, isfinite_tensor_contiguous_f32, isinf_tensor_contiguous_f32,
+    isnan_tensor_contiguous_f32, leaky_relu_tensor_contiguous_f32, log_tensor_contiguous_f32,
+    log1p_tensor_contiguous_f32, log2_tensor_contiguous_f32, log10_tensor_contiguous_f32,
+    mish_tensor_contiguous_f32, neg_tensor_contiguous_f32, reciprocal_tensor_contiguous_f32,
+    relu_tensor_contiguous_f32, round_tensor_contiguous_f32, rsqrt_tensor_contiguous_f32,
+    sigmoid_tensor_contiguous_f32, sign_tensor_contiguous_f32, silu_tensor_contiguous_f32,
+    sin_tensor_contiguous_f32, sinh_tensor_contiguous_f32, softplus_tensor_contiguous_f32,
+    sqrt_tensor_contiguous_f32, square_tensor_contiguous_f32, tan_tensor_contiguous_f32,
+    tanh_tensor_contiguous_f32, trunc_tensor_contiguous_f32,
+    // --- f32 binary tensor ops ---
+    add_tensor_contiguous_f32, atan2_tensor_contiguous_f32, bmm_tensor_contiguous_f32,
+    div_tensor_contiguous_f32, dot_tensor_contiguous_f32, fmod_tensor_contiguous_f32,
+    matmul_tensor_contiguous_f32, max_tensor_contiguous_f32, min_tensor_contiguous_f32,
+    mul_tensor_contiguous_f32, outer_tensor_contiguous_f32, remainder_tensor_contiguous_f32,
+    sub_tensor_contiguous_f32,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -505,6 +529,30 @@ pub struct TensorDispatchOutcome {
 pub struct TensorUnaryDispatchOutcome {
     pub values: Vec<f64>,
     pub decision: UnaryDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorDispatchOutcomeF32 {
+    pub values: Vec<f32>,
+    pub decision: DispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorUnaryDispatchOutcomeF32 {
+    pub values: Vec<f32>,
+    pub decision: UnaryDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedUnaryOutcome {
+    pub storage: TensorStorage,
+    pub decision: UnaryDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedBinaryOutcome {
+    pub storage: TensorStorage,
+    pub decision: DispatchDecision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1288,6 +1336,147 @@ pub fn dispatch_tensor_binary_contiguous_f64_with_keyset(
     })
 }
 
+pub fn dispatch_tensor_binary_contiguous_f32(
+    op: BinaryOp,
+    mode: ExecutionMode,
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    requires_grad: bool,
+) -> Result<TensorDispatchOutcomeF32, DispatchError> {
+    ensure_tensor_meta_compatible(lhs_meta, rhs_meta)?;
+    let keyset = dispatch_keyset_for_tensor_meta(lhs_meta, rhs_meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match (effective_key, op) {
+        (DispatchKey::AutogradCPU, BinaryOp::Add) => (
+            add_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::add_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Sub) => (
+            sub_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::sub_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Div) => (
+            div_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::div_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Mul) => (
+            mul_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::mul_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::MatMul) => (
+            matmul_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::matmul_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Min) => (
+            min_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::min_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Max) => (
+            max_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::max_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Dot) => (
+            vec![dot_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?],
+            "autograd_cpu::dot_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Outer) => (
+            outer_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::outer_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Bmm) => (
+            bmm_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::bmm_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Atan2) => (
+            atan2_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::atan2_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Fmod) => (
+            fmod_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::fmod_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, BinaryOp::Remainder) => (
+            remainder_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "autograd_cpu::remainder_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Add) => (
+            add_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::add_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Sub) => (
+            sub_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::sub_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Div) => (
+            div_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::div_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Mul) => (
+            mul_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::mul_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::MatMul) => (
+            matmul_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::matmul_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Min) => (
+            min_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::min_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Max) => (
+            max_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::max_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Dot) => (
+            vec![dot_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?],
+            "cpu::dot_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Outer) => (
+            outer_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::outer_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Bmm) => (
+            bmm_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::bmm_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Atan2) => (
+            atan2_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::atan2_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Fmod) => (
+            fmod_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::fmod_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, BinaryOp::Remainder) => (
+            remainder_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+            "cpu::remainder_tensor_contiguous_f32",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor binary f32 ops",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorDispatchOutcomeF32 {
+        values,
+        decision: DispatchDecision {
+            op,
+            mode,
+            kernel,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
 #[must_use]
 pub fn dispatch_keyset_for_single_tensor(
     input: &ScalarTensor,
@@ -1865,6 +2054,384 @@ pub fn dispatch_tensor_unary_contiguous_f64(
     };
 
     Ok(TensorUnaryDispatchOutcome {
+        values,
+        decision: UnaryDispatchDecision {
+            op,
+            mode,
+            kernel,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+pub fn dispatch_tensor_unary_contiguous_f32(
+    op: UnaryOp,
+    mode: ExecutionMode,
+    input: &[f32],
+    meta: &TensorMeta,
+    requires_grad: bool,
+) -> Result<TensorUnaryDispatchOutcomeF32, DispatchError> {
+    let keyset = dispatch_keyset_for_single_tensor_meta(meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match (effective_key, op) {
+        (DispatchKey::AutogradCPU, UnaryOp::Neg) => (
+            neg_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::neg_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Abs) => (
+            abs_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::abs_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Exp) => (
+            exp_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::exp_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Log) => (
+            log_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::log_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Relu) => (
+            relu_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::relu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sigmoid) => (
+            sigmoid_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::sigmoid_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Tanh) => (
+            tanh_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::tanh_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sqrt) => (
+            sqrt_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::sqrt_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Reciprocal) => (
+            reciprocal_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::reciprocal_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sin) => (
+            sin_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::sin_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Cos) => (
+            cos_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::cos_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Tan) => (
+            tan_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::tan_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Floor) => (
+            floor_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::floor_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Ceil) => (
+            ceil_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::ceil_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Round) => (
+            round_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::round_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Log2) => (
+            log2_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::log2_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Log10) => (
+            log10_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::log10_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Log1p) => (
+            log1p_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::log1p_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Expm1) => (
+            expm1_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::expm1_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sign) => (
+            sign_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::sign_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Trunc) => (
+            trunc_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::trunc_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Frac) => (
+            frac_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::frac_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Asin) => (
+            asin_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::asin_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Acos) => (
+            acos_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::acos_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Atan) => (
+            atan_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::atan_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Sinh) => (
+            sinh_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::sinh_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Cosh) => (
+            cosh_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::cosh_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Gelu) => (
+            gelu_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::gelu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Silu) => (
+            silu_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::silu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::LeakyRelu) => (
+            leaky_relu_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::leaky_relu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Elu) => (
+            elu_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::elu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Rsqrt) => (
+            rsqrt_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::rsqrt_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Erf) => (
+            erf_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::erf_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Erfc) => (
+            erfc_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::erfc_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Hardswish) => (
+            hardswish_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::hardswish_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Hardsigmoid) => (
+            hardsigmoid_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::hardsigmoid_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Hardtanh) => (
+            hardtanh_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::hardtanh_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Softplus) => (
+            softplus_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::softplus_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Mish) => (
+            mish_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::mish_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::Square) => (
+            square_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::square_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::IsNan) => (
+            isnan_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::isnan_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::IsInf) => (
+            isinf_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::isinf_tensor_contiguous_f32",
+        ),
+        (DispatchKey::AutogradCPU, UnaryOp::IsFinite) => (
+            isfinite_tensor_contiguous_f32(input, meta)?,
+            "autograd_cpu::isfinite_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Neg) => (
+            neg_tensor_contiguous_f32(input, meta)?,
+            "cpu::neg_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Abs) => (
+            abs_tensor_contiguous_f32(input, meta)?,
+            "cpu::abs_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Exp) => (
+            exp_tensor_contiguous_f32(input, meta)?,
+            "cpu::exp_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Log) => (
+            log_tensor_contiguous_f32(input, meta)?,
+            "cpu::log_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Relu) => (
+            relu_tensor_contiguous_f32(input, meta)?,
+            "cpu::relu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sigmoid) => (
+            sigmoid_tensor_contiguous_f32(input, meta)?,
+            "cpu::sigmoid_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Tanh) => (
+            tanh_tensor_contiguous_f32(input, meta)?,
+            "cpu::tanh_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sqrt) => (
+            sqrt_tensor_contiguous_f32(input, meta)?,
+            "cpu::sqrt_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Reciprocal) => (
+            reciprocal_tensor_contiguous_f32(input, meta)?,
+            "cpu::reciprocal_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sin) => (
+            sin_tensor_contiguous_f32(input, meta)?,
+            "cpu::sin_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Cos) => (
+            cos_tensor_contiguous_f32(input, meta)?,
+            "cpu::cos_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Tan) => (
+            tan_tensor_contiguous_f32(input, meta)?,
+            "cpu::tan_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Floor) => (
+            floor_tensor_contiguous_f32(input, meta)?,
+            "cpu::floor_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Ceil) => (
+            ceil_tensor_contiguous_f32(input, meta)?,
+            "cpu::ceil_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Round) => (
+            round_tensor_contiguous_f32(input, meta)?,
+            "cpu::round_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Log2) => (
+            log2_tensor_contiguous_f32(input, meta)?,
+            "cpu::log2_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Log10) => (
+            log10_tensor_contiguous_f32(input, meta)?,
+            "cpu::log10_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Log1p) => (
+            log1p_tensor_contiguous_f32(input, meta)?,
+            "cpu::log1p_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Expm1) => (
+            expm1_tensor_contiguous_f32(input, meta)?,
+            "cpu::expm1_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sign) => (
+            sign_tensor_contiguous_f32(input, meta)?,
+            "cpu::sign_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Trunc) => (
+            trunc_tensor_contiguous_f32(input, meta)?,
+            "cpu::trunc_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Frac) => (
+            frac_tensor_contiguous_f32(input, meta)?,
+            "cpu::frac_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Asin) => (
+            asin_tensor_contiguous_f32(input, meta)?,
+            "cpu::asin_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Acos) => (
+            acos_tensor_contiguous_f32(input, meta)?,
+            "cpu::acos_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Atan) => (
+            atan_tensor_contiguous_f32(input, meta)?,
+            "cpu::atan_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Sinh) => (
+            sinh_tensor_contiguous_f32(input, meta)?,
+            "cpu::sinh_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Cosh) => (
+            cosh_tensor_contiguous_f32(input, meta)?,
+            "cpu::cosh_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Gelu) => (
+            gelu_tensor_contiguous_f32(input, meta)?,
+            "cpu::gelu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Silu) => (
+            silu_tensor_contiguous_f32(input, meta)?,
+            "cpu::silu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::LeakyRelu) => (
+            leaky_relu_tensor_contiguous_f32(input, meta)?,
+            "cpu::leaky_relu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Elu) => (
+            elu_tensor_contiguous_f32(input, meta)?,
+            "cpu::elu_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Rsqrt) => (
+            rsqrt_tensor_contiguous_f32(input, meta)?,
+            "cpu::rsqrt_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Erf) => (
+            erf_tensor_contiguous_f32(input, meta)?,
+            "cpu::erf_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Erfc) => (
+            erfc_tensor_contiguous_f32(input, meta)?,
+            "cpu::erfc_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Hardswish) => (
+            hardswish_tensor_contiguous_f32(input, meta)?,
+            "cpu::hardswish_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Hardsigmoid) => (
+            hardsigmoid_tensor_contiguous_f32(input, meta)?,
+            "cpu::hardsigmoid_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Hardtanh) => (
+            hardtanh_tensor_contiguous_f32(input, meta)?,
+            "cpu::hardtanh_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Softplus) => (
+            softplus_tensor_contiguous_f32(input, meta)?,
+            "cpu::softplus_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Mish) => (
+            mish_tensor_contiguous_f32(input, meta)?,
+            "cpu::mish_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::Square) => (
+            square_tensor_contiguous_f32(input, meta)?,
+            "cpu::square_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::IsNan) => (
+            isnan_tensor_contiguous_f32(input, meta)?,
+            "cpu::isnan_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::IsInf) => (
+            isinf_tensor_contiguous_f32(input, meta)?,
+            "cpu::isinf_tensor_contiguous_f32",
+        ),
+        (DispatchKey::CPU, UnaryOp::IsFinite) => (
+            isfinite_tensor_contiguous_f32(input, meta)?,
+            "cpu::isfinite_tensor_contiguous_f32",
+        ),
+        _ => {
+            return Err(DispatchKeyError::IncompatibleSet {
+                reason: "resolved dispatch key is unsupported for contiguous tensor unary f32 ops",
+            }
+            .into());
+        }
+    };
+
+    Ok(TensorUnaryDispatchOutcomeF32 {
         values,
         decision: UnaryDispatchDecision {
             op,
@@ -3030,6 +3597,113 @@ pub fn dispatch_tensor_topk_contiguous_f64(
             fallback_used,
         },
     })
+}
+
+// --- Typed dispatch wrappers (f32/f64 routing) ---
+
+pub fn dispatch_tensor_unary_contiguous_typed(
+    op: UnaryOp,
+    mode: ExecutionMode,
+    storage: &TensorStorage,
+    meta: &TensorMeta,
+    requires_grad: bool,
+) -> Result<TypedUnaryOutcome, DispatchError> {
+    match storage {
+        TensorStorage::F64(data) => {
+            let outcome =
+                dispatch_tensor_unary_contiguous_f64(op, mode, data, meta, requires_grad)?;
+            Ok(TypedUnaryOutcome {
+                storage: TensorStorage::F64(outcome.values),
+                decision: outcome.decision,
+            })
+        }
+        TensorStorage::F32(data) => {
+            let outcome =
+                dispatch_tensor_unary_contiguous_f32(op, mode, data, meta, requires_grad)?;
+            Ok(TypedUnaryOutcome {
+                storage: TensorStorage::F32(outcome.values),
+                decision: outcome.decision,
+            })
+        }
+    }
+}
+
+pub fn dispatch_tensor_binary_contiguous_typed(
+    op: BinaryOp,
+    mode: ExecutionMode,
+    lhs_storage: &TensorStorage,
+    rhs_storage: &TensorStorage,
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    requires_grad: bool,
+) -> Result<TypedBinaryOutcome, DispatchError> {
+    match (lhs_storage, rhs_storage) {
+        (TensorStorage::F64(lhs), TensorStorage::F64(rhs)) => {
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                op,
+                mode,
+                lhs,
+                rhs,
+                lhs_meta,
+                rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F64(outcome.values),
+                decision: outcome.decision,
+            })
+        }
+        (TensorStorage::F32(lhs), TensorStorage::F32(rhs)) => {
+            let outcome = dispatch_tensor_binary_contiguous_f32(
+                op,
+                mode,
+                lhs,
+                rhs,
+                lhs_meta,
+                rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F32(outcome.values),
+                decision: outcome.decision,
+            })
+        }
+        // Mixed dtypes: promote f32 to f64
+        (TensorStorage::F64(lhs), TensorStorage::F32(rhs_f32)) => {
+            let rhs: Vec<f64> = rhs_f32.iter().map(|&v| f64::from(v)).collect();
+            let promoted_rhs_meta = rhs_meta.clone().with_dtype(DType::F64);
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                op,
+                mode,
+                lhs,
+                &rhs,
+                lhs_meta,
+                &promoted_rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F64(outcome.values),
+                decision: outcome.decision,
+            })
+        }
+        (TensorStorage::F32(lhs_f32), TensorStorage::F64(rhs)) => {
+            let lhs: Vec<f64> = lhs_f32.iter().map(|&v| f64::from(v)).collect();
+            let promoted_lhs_meta = lhs_meta.clone().with_dtype(DType::F64);
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                op,
+                mode,
+                &lhs,
+                rhs,
+                &promoted_lhs_meta,
+                rhs_meta,
+                requires_grad,
+            )?;
+            Ok(TypedBinaryOutcome {
+                storage: TensorStorage::F64(outcome.values),
+                decision: outcome.decision,
+            })
+        }
+    }
 }
 
 #[cfg(test)]

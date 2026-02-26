@@ -6,6 +6,7 @@ use std::fmt;
 
 use ft_core::{
     DType, DenseTensor, DenseTensorError, Device, ExecutionMode, ScalarTensor, TensorMeta,
+    TensorStorage,
 };
 use ft_dispatch::{
     AddmmDispatchDecision, BinaryOp, ClampDispatchDecision, DispatchDecision, DispatchError,
@@ -15,13 +16,13 @@ use ft_dispatch::{
     TopKDispatchDecision, UnaryDispatchDecision, UnaryOp, dispatch_scalar_binary,
     dispatch_scalar_clamp, dispatch_scalar_pow, dispatch_scalar_unary,
     dispatch_tensor_addmm_contiguous_f64, dispatch_tensor_addmv_contiguous_f64,
-    dispatch_tensor_binary_contiguous_f64, dispatch_tensor_clamp_contiguous_f64,
+    dispatch_tensor_binary_contiguous_typed, dispatch_tensor_clamp_contiguous_f64,
     dispatch_tensor_join_contiguous_f64, dispatch_tensor_lerp_contiguous_f64,
     dispatch_tensor_norm_contiguous_f64, dispatch_tensor_norm_dim_contiguous_f64,
     dispatch_tensor_normalize_dim_contiguous_f64, dispatch_tensor_pow_contiguous_f64,
     dispatch_tensor_reduction_contiguous_f64, dispatch_tensor_reduction_dim_contiguous_f64,
     dispatch_tensor_scan_dim_contiguous_f64, dispatch_tensor_sort_contiguous_f64,
-    dispatch_tensor_topk_contiguous_f64, dispatch_tensor_unary_contiguous_f64,
+    dispatch_tensor_topk_contiguous_f64, dispatch_tensor_unary_contiguous_typed,
 };
 use ft_kernel_cpu::{
     argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64,
@@ -590,6 +591,12 @@ enum TensorNodeOp {
         vec: TensorNodeId,
         beta: f64,
         alpha: f64,
+    },
+    CastF32 {
+        input: TensorNodeId,
+    },
+    CastF64 {
+        input: TensorNodeId,
     },
 }
 
@@ -3844,6 +3851,76 @@ impl TensorTape {
         Ok(&self.node(node)?.tensor)
     }
 
+    pub fn leaf_f32(
+        &mut self,
+        values: Vec<f32>,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let tensor = DenseTensor::from_contiguous_values_f32(values, shape, Device::Cpu)?;
+        Ok(self.leaf_tensor(tensor, requires_grad))
+    }
+
+    pub fn values_f32(&self, node: TensorNodeId) -> Result<Vec<f32>, AutogradError> {
+        Ok(self.node(node)?.tensor.contiguous_values_f32()?.to_vec())
+    }
+
+    pub fn dtype(&self, node: TensorNodeId) -> Result<DType, AutogradError> {
+        Ok(self.node(node)?.tensor.meta().dtype())
+    }
+
+    pub fn to_f32(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_node = self.node(input)?;
+        if input_node.tensor.meta().dtype() == DType::F32 {
+            return Ok(input);
+        }
+        let requires_grad = input_node.requires_grad && self.grad_enabled;
+        let meta = input_node.tensor.meta().clone();
+        let f64_values = input_node.tensor.contiguous_values()?;
+        let f32_values: Vec<f32> = f64_values.iter().map(|&v| v as f32).collect();
+
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_typed_storage(
+                TensorMeta::from_shape(meta.shape().to_vec(), DType::F32, meta.device()),
+                TensorStorage::F32(f32_values),
+            )?,
+            requires_grad,
+            op: TensorNodeOp::CastF32 { input },
+        });
+
+        Ok(out)
+    }
+
+    pub fn to_f64(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_node = self.node(input)?;
+        if input_node.tensor.meta().dtype() == DType::F64 {
+            return Ok(input);
+        }
+        let requires_grad = input_node.requires_grad && self.grad_enabled;
+        let meta = input_node.tensor.meta().clone();
+        let f32_values = input_node.tensor.contiguous_values_f32()?;
+        let f64_values: Vec<f64> = f32_values.iter().map(|&v| v as f64).collect();
+
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_typed_storage(
+                TensorMeta::from_shape(meta.shape().to_vec(), DType::F64, meta.device()),
+                TensorStorage::F64(f64_values),
+            )?,
+            requires_grad,
+            op: TensorNodeOp::CastF64 { input },
+        });
+
+        Ok(out)
+    }
+
     pub fn add(
         &mut self,
         lhs: TensorNodeId,
@@ -3972,10 +4049,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Neg,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -3991,9 +4068,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Neg { input },
@@ -4019,10 +4096,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Abs,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4038,9 +4115,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Abs { input },
@@ -4066,10 +4143,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Exp,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4085,9 +4162,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Exp { input },
@@ -4113,10 +4190,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Log,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4132,9 +4209,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Log { input },
@@ -4160,10 +4237,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Relu,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4179,9 +4256,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Relu { input },
@@ -4207,10 +4284,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Sigmoid,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4226,9 +4303,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Sigmoid { input },
@@ -4254,10 +4331,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Tanh,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4273,9 +4350,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Tanh { input },
@@ -4301,10 +4378,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Sin,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4315,7 +4392,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Sin { input },
         });
@@ -4340,10 +4417,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Cos,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4354,7 +4431,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Cos { input },
         });
@@ -4379,10 +4456,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Tan,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4393,7 +4470,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Tan { input },
         });
@@ -4418,10 +4495,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Floor,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4432,7 +4509,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Floor { input },
         });
@@ -4457,10 +4534,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Ceil,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4471,7 +4548,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Ceil { input },
         });
@@ -4496,10 +4573,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Round,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4510,7 +4587,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Round { input },
         });
@@ -4535,10 +4612,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Log2,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4548,7 +4625,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Log2 { input },
         });
@@ -4572,10 +4649,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Log10,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4585,7 +4662,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Log10 { input },
         });
@@ -4609,10 +4686,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Log1p,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4622,7 +4699,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Log1p { input },
         });
@@ -4646,10 +4723,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Expm1,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4659,7 +4736,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Expm1 { input },
         });
@@ -4683,10 +4760,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Sign,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4696,7 +4773,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Sign { input },
         });
@@ -4720,10 +4797,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Trunc,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4733,7 +4810,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Trunc { input },
         });
@@ -4757,10 +4834,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Frac,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4770,7 +4847,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Frac { input },
         });
@@ -4794,10 +4871,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Asin,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4807,7 +4884,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Asin { input },
         });
@@ -4831,10 +4908,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Acos,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4844,7 +4921,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Acos { input },
         });
@@ -4868,10 +4945,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Atan,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4881,7 +4958,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Atan { input },
         });
@@ -4905,10 +4982,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Sinh,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4918,7 +4995,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Sinh { input },
         });
@@ -4942,10 +5019,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Cosh,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4955,7 +5032,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Cosh { input },
         });
@@ -4979,10 +5056,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Gelu,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -4992,7 +5069,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Gelu { input },
         });
@@ -5016,10 +5093,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Silu,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5029,7 +5106,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Silu { input },
         });
@@ -5053,10 +5130,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::LeakyRelu,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5066,7 +5143,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::LeakyRelu { input },
         });
@@ -5090,10 +5167,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Elu,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5103,7 +5180,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Elu { input },
         });
@@ -5127,10 +5204,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Rsqrt,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5140,7 +5217,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Rsqrt { input },
         });
@@ -5164,10 +5241,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Erf,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5177,7 +5254,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Erf { input },
         });
@@ -5201,10 +5278,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Erfc,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5214,7 +5291,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Erfc { input },
         });
@@ -5238,10 +5315,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Hardswish,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5251,7 +5328,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Hardswish { input },
         });
@@ -5275,10 +5352,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Hardsigmoid,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5288,7 +5365,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Hardsigmoid { input },
         });
@@ -5312,10 +5389,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Hardtanh,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5325,7 +5402,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Hardtanh { input },
         });
@@ -5349,10 +5426,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Softplus,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5362,7 +5439,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Softplus { input },
         });
@@ -5386,10 +5463,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Mish,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5399,7 +5476,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Mish { input },
         });
@@ -5423,10 +5500,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Square,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5436,7 +5513,7 @@ impl TensorTape {
         let input_meta = self.nodes[input.0].tensor.meta().clone();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(input_meta, outcome.values)?,
+            tensor: DenseTensor::from_typed_storage(input_meta, outcome.storage)?,
             requires_grad,
             op: TensorNodeOp::Square { input },
         });
@@ -5460,10 +5537,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Sqrt,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5479,9 +5556,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Sqrt { input },
@@ -5507,10 +5584,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_unary_contiguous_f64(
+            let outcome = dispatch_tensor_unary_contiguous_typed(
                 UnaryOp::Reciprocal,
                 mode,
-                input_node.tensor.storage(),
+                input_node.tensor.typed_storage(),
                 &meta,
                 requires_grad,
             )
@@ -5526,9 +5603,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Reciprocal { input },
@@ -5606,20 +5683,21 @@ impl TensorTape {
                 (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_binary_contiguous_f64(
+            let outcome = dispatch_tensor_binary_contiguous_typed(
                 BinaryOp::Min,
                 mode,
-                lhs_node.tensor.storage(),
-                rhs_node.tensor.storage(),
+                lhs_node.tensor.typed_storage(),
+                rhs_node.tensor.typed_storage(),
                 &meta_l,
                 &meta_r,
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
+            let result_dtype = outcome.storage.dtype();
             (
                 requires_grad,
                 meta_l.shape().to_vec(),
-                meta_l.dtype(),
+                result_dtype,
                 meta_l.device(),
                 outcome,
             )
@@ -5627,9 +5705,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Min { lhs, rhs },
@@ -5660,20 +5738,21 @@ impl TensorTape {
                 (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_binary_contiguous_f64(
+            let outcome = dispatch_tensor_binary_contiguous_typed(
                 BinaryOp::Max,
                 mode,
-                lhs_node.tensor.storage(),
-                rhs_node.tensor.storage(),
+                lhs_node.tensor.typed_storage(),
+                rhs_node.tensor.typed_storage(),
                 &meta_l,
                 &meta_r,
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
+            let result_dtype = outcome.storage.dtype();
             (
                 requires_grad,
                 meta_l.shape().to_vec(),
-                meta_l.dtype(),
+                result_dtype,
                 meta_l.device(),
                 outcome,
             )
@@ -5681,9 +5760,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Max { lhs, rhs },
@@ -5714,20 +5793,21 @@ impl TensorTape {
                 (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_binary_contiguous_f64(
+            let outcome = dispatch_tensor_binary_contiguous_typed(
                 BinaryOp::Atan2,
                 mode,
-                lhs_node.tensor.storage(),
-                rhs_node.tensor.storage(),
+                lhs_node.tensor.typed_storage(),
+                rhs_node.tensor.typed_storage(),
                 &meta_l,
                 &meta_r,
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
+            let result_dtype = outcome.storage.dtype();
             (
                 requires_grad,
                 meta_l.shape().to_vec(),
-                meta_l.dtype(),
+                result_dtype,
                 meta_l.device(),
                 outcome,
             )
@@ -5735,9 +5815,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Atan2 { lhs, rhs },
@@ -5768,20 +5848,21 @@ impl TensorTape {
                 (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_binary_contiguous_f64(
+            let outcome = dispatch_tensor_binary_contiguous_typed(
                 BinaryOp::Fmod,
                 mode,
-                lhs_node.tensor.storage(),
-                rhs_node.tensor.storage(),
+                lhs_node.tensor.typed_storage(),
+                rhs_node.tensor.typed_storage(),
                 &meta_l,
                 &meta_r,
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
+            let result_dtype = outcome.storage.dtype();
             (
                 requires_grad,
                 meta_l.shape().to_vec(),
-                meta_l.dtype(),
+                result_dtype,
                 meta_l.device(),
                 outcome,
             )
@@ -5789,9 +5870,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Fmod { lhs, rhs },
@@ -5822,20 +5903,21 @@ impl TensorTape {
                 (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_binary_contiguous_f64(
+            let outcome = dispatch_tensor_binary_contiguous_typed(
                 BinaryOp::Remainder,
                 mode,
-                lhs_node.tensor.storage(),
-                rhs_node.tensor.storage(),
+                lhs_node.tensor.typed_storage(),
+                rhs_node.tensor.typed_storage(),
                 &meta_l,
                 &meta_r,
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
+            let result_dtype = outcome.storage.dtype();
             (
                 requires_grad,
                 meta_l.shape().to_vec(),
-                meta_l.dtype(),
+                result_dtype,
                 meta_l.device(),
                 outcome,
             )
@@ -5843,9 +5925,9 @@ impl TensorTape {
 
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
+            tensor: DenseTensor::from_typed_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+                outcome.storage,
             )?,
             requires_grad,
             op: TensorNodeOp::Remainder { lhs, rhs },
@@ -7036,15 +7118,15 @@ impl TensorTape {
             }
             let requires_grad =
                 (x_node.requires_grad || y_node.requires_grad) && self.grad_enabled;
-            let cond_values = cond_node.tensor.contiguous_values()?;
-            let x_values = x_node.tensor.contiguous_values()?;
-            let y_values = y_node.tensor.contiguous_values()?;
+            let cond_values = cond_node.tensor.contiguous_values_as_f64()?;
+            let x_values = x_node.tensor.contiguous_values_as_f64()?;
+            let y_values = y_node.tensor.contiguous_values_as_f64()?;
             let meta = ft_core::TensorMeta::from_shape(
                 x_meta.shape().to_vec(),
                 x_meta.dtype(),
                 x_meta.device(),
             );
-            let values = where_tensor_contiguous_f64(cond_values, x_values, y_values, &meta)
+            let values = where_tensor_contiguous_f64(&cond_values, &x_values, &y_values, &meta)
                 .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let output_shape = meta.shape().to_vec();
             (
@@ -7652,10 +7734,10 @@ impl TensorTape {
             let meta = input_node.tensor.meta();
             let shape = meta.shape();
             let original_shape = shape.to_vec();
-            let storage = input_node.tensor.contiguous_values()?;
+            let storage = input_node.tensor.contiguous_values_as_f64()?;
 
             let result_data =
-                ft_kernel_cpu::narrow_tensor_contiguous_f64(storage, meta, dim, start, length)
+                ft_kernel_cpu::narrow_tensor_contiguous_f64(&storage, meta, dim, start, length)
                     .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
 
             let mut new_shape = shape.to_vec();
@@ -7695,10 +7777,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let original_shape = meta.shape().to_vec();
-            let storage = input_node.tensor.contiguous_values()?;
+            let storage = input_node.tensor.contiguous_values_as_f64()?;
 
             let result_data =
-                ft_kernel_cpu::expand_tensor_contiguous_f64(storage, meta, &target_shape)
+                ft_kernel_cpu::expand_tensor_contiguous_f64(&storage, meta, &target_shape)
                     .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
 
             (
@@ -8271,18 +8353,18 @@ impl TensorTape {
         rhs: TensorNodeId,
         mode: ExecutionMode,
     ) -> Result<(TensorNodeId, TensorOperationEvent), AutogradError> {
-        let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
+        let (requires_grad, output_shape, output_device, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
             let requires_grad =
                 (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let lhs_meta = lhs_node.tensor.meta().clone();
             let rhs_meta = rhs_node.tensor.meta().clone();
-            let outcome = dispatch_tensor_binary_contiguous_f64(
+            let outcome = dispatch_tensor_binary_contiguous_typed(
                 op,
                 mode,
-                lhs_node.tensor.storage(),
-                rhs_node.tensor.storage(),
+                lhs_node.tensor.typed_storage(),
+                rhs_node.tensor.typed_storage(),
                 &lhs_meta,
                 &rhs_meta,
                 requires_grad,
@@ -8309,17 +8391,17 @@ impl TensorTape {
             (
                 requires_grad,
                 output_shape,
-                lhs_meta.dtype(),
                 lhs_meta.device(),
                 outcome,
             )
         };
 
+        let result_dtype = outcome.storage.dtype();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(
-                ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
-                outcome.values,
+            tensor: DenseTensor::from_typed_storage(
+                ft_core::TensorMeta::from_shape(output_shape, result_dtype, output_device),
+                outcome.storage,
             )?,
             requires_grad,
             op: match op {
@@ -8457,8 +8539,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Div { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
                     Self::ensure_tensor_len(rhs, rhs_values.len(), incoming.len())?;
 
@@ -8489,8 +8571,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Mul { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
                     Self::ensure_tensor_len(rhs, rhs_values.len(), incoming.len())?;
 
@@ -8518,8 +8600,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::MatMul { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     let lhs_shape = self.nodes[lhs.0].tensor.meta().shape();
                     let rhs_shape = self.nodes[rhs.0].tensor.meta().shape();
                     let (m, k, n) = Self::matmul_dims(lhs_shape, rhs_shape)?;
@@ -8583,8 +8665,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Dot { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, 1, incoming.len())?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), rhs_values.len())?;
                     let grad_out = incoming[0];
@@ -8605,8 +8687,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Outer { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     let m = lhs_values.len();
                     let n = rhs_values.len();
                     let out_numel = Self::checked_mul_usize(
@@ -8649,8 +8731,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Bmm { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     let lhs_shape = self.nodes[lhs.0].tensor.meta().shape();
                     let rhs_shape = self.nodes[rhs.0].tensor.meta().shape();
                     if lhs_shape.len() != 3 || rhs_shape.len() != 3 {
@@ -8756,7 +8838,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Abs { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
 
                     let abs_contrib = incoming
@@ -8786,7 +8868,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Exp { input } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
 
                     let exp_contrib = incoming
@@ -8805,7 +8887,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Log { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
 
                     let log_contrib = incoming
@@ -8824,7 +8906,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Relu { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
 
                     let relu_contrib = incoming
@@ -8851,7 +8933,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Sigmoid { input } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
 
                     let sigmoid_contrib = incoming
@@ -8870,7 +8952,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Tanh { input } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
 
                     let tanh_contrib = incoming
@@ -8889,7 +8971,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Sin { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
 
                     let sin_contrib = incoming
@@ -8908,7 +8990,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Cos { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
 
                     let cos_contrib = incoming
@@ -8927,7 +9009,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Tan { input } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
 
                     let tan_contrib = incoming
@@ -8961,7 +9043,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Log2 { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -8977,7 +9059,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Log10 { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -8993,7 +9075,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Log1p { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9009,7 +9091,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Expm1 { input } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
                     // d/dx expm1(x) = exp(x) = expm1(x) + 1
                     let contrib: Vec<f64> = incoming
@@ -9059,7 +9141,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Asin { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx asin(x) = 1/sqrt(1-x^2)
                     let contrib: Vec<f64> = incoming
@@ -9076,7 +9158,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Acos { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx acos(x) = -1/sqrt(1-x^2)
                     let contrib: Vec<f64> = incoming
@@ -9093,7 +9175,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Atan { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx atan(x) = 1/(1+x^2)
                     let contrib: Vec<f64> = incoming
@@ -9110,7 +9192,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Sinh { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx sinh(x) = cosh(x)
                     let contrib: Vec<f64> = incoming
@@ -9127,7 +9209,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Cosh { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // d/dx cosh(x) = sinh(x)
                     let contrib: Vec<f64> = incoming
@@ -9144,7 +9226,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Gelu { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2;
                     let contrib: Vec<f64> = incoming
@@ -9166,7 +9248,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Silu { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9185,7 +9267,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::LeakyRelu { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9209,8 +9291,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Elu { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9235,7 +9317,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Rsqrt { input } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9251,7 +9333,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Erf { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let coeff = 2.0 / std::f64::consts::PI.sqrt();
                     let contrib: Vec<f64> = incoming
@@ -9268,7 +9350,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Erfc { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let coeff = 2.0 / std::f64::consts::PI.sqrt();
                     let contrib: Vec<f64> = incoming
@@ -9285,7 +9367,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Hardswish { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9309,7 +9391,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Hardsigmoid { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9331,7 +9413,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Hardtanh { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9347,7 +9429,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Softplus { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9363,7 +9445,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Mish { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9390,7 +9472,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Square { input } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
@@ -9406,7 +9488,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Sqrt { input } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
 
                     let sqrt_contrib = incoming
@@ -9425,7 +9507,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Reciprocal { input } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(node_id, output_values.len(), incoming.len())?;
 
                     let recip_contrib = incoming
@@ -9444,7 +9526,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Pow { input, exponent } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
 
                     let pow_contrib = incoming
@@ -9469,8 +9551,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Min { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
 
                     let lhs_contrib: Vec<f64> = incoming
@@ -9516,8 +9598,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Max { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
 
                     let lhs_contrib: Vec<f64> = incoming
@@ -9563,8 +9645,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Atan2 { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
 
                     let lhs_contrib: Vec<f64> = incoming
@@ -9596,8 +9678,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Fmod { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
 
                     let lhs_contrib: Vec<f64> = incoming.to_vec();
@@ -9619,8 +9701,8 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Remainder { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values()?;
+                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
 
                     let lhs_contrib: Vec<f64> = incoming.to_vec();
@@ -9646,7 +9728,7 @@ impl TensorTape {
                     min_val,
                     max_val,
                 } => {
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
 
                     let clamp_contrib: Vec<f64> = incoming
@@ -9830,8 +9912,8 @@ impl TensorTape {
                         "prod_dim backward shape multiplication overflow",
                     )?;
                     Self::ensure_tensor_len(node_id, expected_incoming, incoming.len())?;
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     let mut prod_dim_contrib = vec![0.0; input_numel];
 
                     for outer in 0..outer_size {
@@ -9895,7 +9977,7 @@ impl TensorTape {
                         "var_dim backward shape multiplication overflow",
                     )?;
                     Self::ensure_tensor_len(node_id, expected_incoming, incoming.len())?;
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     let correction = if reduce_size > 1 {
                         (reduce_size - 1) as f64
                     } else {
@@ -9947,8 +10029,8 @@ impl TensorTape {
                         "std_dim backward shape multiplication overflow",
                     )?;
                     Self::ensure_tensor_len(node_id, expected_incoming, incoming.len())?;
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     let correction = if reduce_size > 1 {
                         (reduce_size - 1) as f64
                     } else {
@@ -9995,7 +10077,7 @@ impl TensorTape {
                     input_numel,
                 } => {
                     let grad_scalar = incoming[0];
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     let norm_val = self.nodes[node_id.0].tensor.contiguous_values()?[0];
                     let mut norm_contrib = vec![0.0; input_numel];
 
@@ -10061,8 +10143,8 @@ impl TensorTape {
                         "norm_dim backward shape multiplication overflow",
                     )?;
                     Self::ensure_tensor_len(node_id, expected_incoming, incoming.len())?;
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     let mut norm_dim_contrib = vec![0.0; input_numel];
 
                     for outer in 0..outer_size {
@@ -10167,8 +10249,8 @@ impl TensorTape {
                         "cumprod backward shape volume overflow",
                     )?;
                     Self::ensure_tensor_len(node_id, input_numel, incoming.len())?;
-                    let input_values = self.nodes[input.0].tensor.contiguous_values()?;
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     let mut cumprod_grad = vec![0.0; input_numel];
 
                     for outer in 0..outer_size {
@@ -10220,7 +10302,7 @@ impl TensorTape {
                 }
                 TensorNodeOp::Where { condition, x, y } => {
                     // Gradient flows to x where condition is true, to y where condition is false
-                    let cond_vals = self.nodes[condition.0].tensor.contiguous_values()?;
+                    let cond_vals = self.nodes[condition.0].tensor.contiguous_values_as_f64()?;
                     let numel = incoming.len();
                     Self::ensure_tensor_len(condition, numel, cond_vals.len())?;
 
@@ -10374,7 +10456,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Softmax { input, dim } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let reduce_size = shape[dim];
                     let (outer_size, inner_size, input_numel) = Self::checked_dim_loop_sizes(
@@ -10411,7 +10493,7 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::LogSoftmax { input, dim } => {
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values()?;
+                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let reduce_size = shape[dim];
                     let (outer_size, inner_size, input_numel) = Self::checked_dim_loop_sizes(
@@ -11165,8 +11247,8 @@ impl TensorTape {
                     // d/d(input) = beta * grad_out
                     // d/d(mat1) = alpha * grad_out @ mat2^T
                     // d/d(mat2) = alpha * mat1^T @ grad_out
-                    let mat1_vals = self.nodes[mat1.0].tensor.contiguous_values()?;
-                    let mat2_vals = self.nodes[mat2.0].tensor.contiguous_values()?;
+                    let mat1_vals = self.nodes[mat1.0].tensor.contiguous_values_as_f64()?;
+                    let mat2_vals = self.nodes[mat2.0].tensor.contiguous_values_as_f64()?;
                     let mat1_shape = self.nodes[mat1.0].tensor.meta().shape().to_vec();
                     let mat2_shape = self.nodes[mat2.0].tensor.meta().shape().to_vec();
                     let m = mat1_shape[0];
@@ -11244,8 +11326,8 @@ impl TensorTape {
                     // d/d(input) = beta * grad_out  (shape: [m])
                     // d/d(mat) = alpha * grad_out (outer) vec^T  (shape: [m,k])
                     // d/d(vec) = alpha * mat^T @ grad_out  (shape: [k])
-                    let mat_vals = self.nodes[mat.0].tensor.contiguous_values()?;
-                    let vec_vals = self.nodes[vec_id.0].tensor.contiguous_values()?;
+                    let mat_vals = self.nodes[mat.0].tensor.contiguous_values_as_f64()?;
+                    let vec_vals = self.nodes[vec_id.0].tensor.contiguous_values_as_f64()?;
                     let mat_shape = self.nodes[mat.0].tensor.meta().shape().to_vec();
                     let m = mat_shape[0];
                     let k = mat_shape[1];
@@ -11283,6 +11365,18 @@ impl TensorTape {
                         node: node_id,
                         incoming_grad_len: incoming.len(),
                         rule: "d(addmv)/d_input=beta*grad, d/d_mat=alpha*outer(grad,vec), d/d_vec=alpha*mat^T@grad",
+                    });
+                }
+                TensorNodeOp::CastF32 { input } | TensorNodeOp::CastF64 { input } => {
+                    // Cast is identity for gradients — gradient passes through unchanged.
+                    // Backward always operates in f64 so no conversion needed.
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &incoming)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(cast)/d_input=grad (identity)",
                     });
                 }
             }
@@ -11427,7 +11521,9 @@ impl TensorTape {
                 | TensorNodeOp::TopK { input, .. }
                 | TensorNodeOp::Flip { input, .. }
                 | TensorNodeOp::Repeat { input, .. }
-                | TensorNodeOp::Roll { input, .. } => {
+                | TensorNodeOp::Roll { input, .. }
+                | TensorNodeOp::CastF32 { input }
+                | TensorNodeOp::CastF64 { input } => {
                     stack.push(input);
                 }
                 TensorNodeOp::Cat { ref inputs, .. } | TensorNodeOp::Stack { ref inputs, .. } => {
@@ -11568,7 +11664,9 @@ impl TensorTape {
                 | TensorNodeOp::TopK { input, .. }
                 | TensorNodeOp::Flip { input, .. }
                 | TensorNodeOp::Repeat { input, .. }
-                | TensorNodeOp::Roll { input, .. } => {
+                | TensorNodeOp::Roll { input, .. }
+                | TensorNodeOp::CastF32 { input }
+                | TensorNodeOp::CastF64 { input } => {
                     pending[input.0] = pending[input.0].saturating_add(1);
                 }
                 TensorNodeOp::Cat { ref inputs, .. } | TensorNodeOp::Stack { ref inputs, .. } => {
