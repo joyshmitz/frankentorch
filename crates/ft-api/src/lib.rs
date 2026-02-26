@@ -10,7 +10,7 @@ use ft_autograd::{
     TensorSortOperationEvent, TensorTape, TensorTopKOperationEvent, TensorUnaryOperationEvent,
     UnaryOperationEvent,
 };
-use ft_core::{DenseTensor, ExecutionMode, TensorCompatError, TensorMeta};
+use ft_core::{DType, DenseTensor, ExecutionMode, TensorCompatError, TensorMeta};
 use ft_dispatch::{
     ComparisonDispatchDecision, ComparisonOp, UnaryDispatchDecision, UnaryOp,
     dispatch_scalar_comparison, dispatch_scalar_unary, dispatch_tensor_comparison_contiguous_f64,
@@ -506,6 +506,70 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> TensorNodeId {
         self.tensor_tape.leaf_tensor(tensor, requires_grad)
+    }
+
+    pub fn tensor_variable_f32(
+        &mut self,
+        values: Vec<f32>,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.leaf_f32(values, shape, requires_grad)
+    }
+
+    pub fn tensor_values_f32(&self, node: TensorNodeId) -> Result<Vec<f32>, AutogradError> {
+        self.tensor_tape.values_f32(node)
+    }
+
+    pub fn tensor_dtype(&self, node: TensorNodeId) -> Result<DType, AutogradError> {
+        self.tensor_tape.dtype(node)
+    }
+
+    pub fn tensor_to_f32(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.to_f32(input)
+    }
+
+    pub fn tensor_to_f64(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.to_f64(input)
+    }
+
+    pub fn zeros_f32(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel = Self::checked_shape_numel(
+            &shape,
+            "tensor factory shape volume overflow in zeros_f32",
+        )?;
+        self.tensor_tape
+            .leaf_f32(vec![0.0f32; numel], shape, requires_grad)
+    }
+
+    pub fn ones_f32(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel = Self::checked_shape_numel(
+            &shape,
+            "tensor factory shape volume overflow in ones_f32",
+        )?;
+        self.tensor_tape
+            .leaf_f32(vec![1.0f32; numel], shape, requires_grad)
+    }
+
+    pub fn randn_f32(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel = Self::checked_shape_numel(
+            &shape,
+            "tensor factory shape volume overflow in randn_f32",
+        )?;
+        let values: Vec<f32> = (0..numel).map(|_| self.rng.next_normal() as f32).collect();
+        self.tensor_tape.leaf_f32(values, shape, requires_grad)
     }
 
     pub fn zeros(
@@ -10876,5 +10940,91 @@ mod tests {
         let z = session.add(x, y).expect("add");
         let report = session.backward(z).expect("backward");
         assert_eq!(report.gradient(x), Some(1.0));
+    }
+
+    // ── f32 dtype API tests ──────────────────────────────────────────
+
+    #[test]
+    fn f32_tensor_variable_and_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        assert_eq!(session.tensor_dtype(a).unwrap(), DType::F32);
+        let vals = session.tensor_values_f32(a).unwrap();
+        assert_eq!(vals, vec![1.0f32, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn f32_zeros_ones_factory() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let z = session.zeros_f32(vec![3], false).unwrap();
+        assert_eq!(session.tensor_dtype(z).unwrap(), DType::F32);
+        assert_eq!(session.tensor_values_f32(z).unwrap(), vec![0.0f32; 3]);
+
+        let o = session.ones_f32(vec![2, 2], false).unwrap();
+        assert_eq!(session.tensor_dtype(o).unwrap(), DType::F32);
+        assert_eq!(session.tensor_values_f32(o).unwrap(), vec![1.0f32; 4]);
+    }
+
+    #[test]
+    fn f32_randn_factory() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let r = session.randn_f32(vec![10], false).unwrap();
+        assert_eq!(session.tensor_dtype(r).unwrap(), DType::F32);
+        let vals = session.tensor_values_f32(r).unwrap();
+        assert_eq!(vals.len(), 10);
+    }
+
+    #[test]
+    fn f32_arithmetic_preserves_dtype() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable_f32(vec![1.0f32, 2.0], vec![2], false).unwrap();
+        let b = session.tensor_variable_f32(vec![3.0f32, 4.0], vec![2], false).unwrap();
+        let c = session.tensor_add(a, b).unwrap();
+        assert_eq!(session.tensor_dtype(c).unwrap(), DType::F32);
+        assert_eq!(session.tensor_values_f32(c).unwrap(), vec![4.0f32, 6.0]);
+    }
+
+    #[test]
+    fn f32_mixed_promotes_to_f64() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable_f32(vec![1.0f32, 2.0], vec![2], false).unwrap();
+        let b = session.tensor_variable(vec![3.0f64, 4.0], vec![2], false).unwrap();
+        let c = session.tensor_add(a, b).unwrap();
+        assert_eq!(session.tensor_dtype(c).unwrap(), DType::F64);
+        assert_eq!(session.tensor_values(c).unwrap(), vec![4.0f64, 6.0]);
+    }
+
+    #[test]
+    fn f32_cast_roundtrip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable(vec![1.5f64, 2.5], vec![2], false).unwrap();
+        let b = session.tensor_to_f32(a).unwrap();
+        assert_eq!(session.tensor_dtype(b).unwrap(), DType::F32);
+        let c = session.tensor_to_f64(b).unwrap();
+        assert_eq!(session.tensor_dtype(c).unwrap(), DType::F64);
+        assert_eq!(session.tensor_values(c).unwrap(), vec![1.5, 2.5]);
+    }
+
+    #[test]
+    fn f32_backward_produces_f64_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable_f32(vec![1.0f32, 2.0, 3.0], vec![3], true).unwrap();
+        let b = session.tensor_neg(a).unwrap();
+        let c = session.tensor_sum(b).unwrap();
+        let report = session.tensor_backward(c).unwrap();
+        let grad = report.gradient(a).unwrap();
+        assert_eq!(grad, &[-1.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn f32_unary_ops_preserve_dtype() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session.tensor_variable_f32(vec![0.5f32, 1.0, 1.5], vec![3], false).unwrap();
+        let b = session.tensor_exp(a).unwrap();
+        assert_eq!(session.tensor_dtype(b).unwrap(), DType::F32);
+        let c = session.tensor_sin(a).unwrap();
+        assert_eq!(session.tensor_dtype(c).unwrap(), DType::F32);
     }
 }
