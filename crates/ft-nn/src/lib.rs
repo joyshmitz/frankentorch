@@ -3337,8 +3337,11 @@ impl LossModule for BCELoss {
 
 /// Binary cross-entropy with logits loss module.
 ///
-/// Applies sigmoid to `input` before computing BCE loss. More numerically
-/// stable than applying sigmoid and BCELoss separately.
+/// Uses the numerically-stable formulation:
+/// `mean(max(x, 0) - x * y + log1p(exp(-|x|)))`
+///
+/// This avoids computing `log(sigmoid(x))` which is unstable for extreme
+/// input values.
 pub struct BCEWithLogitsLoss;
 
 impl LossModule for BCEWithLogitsLoss {
@@ -3348,8 +3351,7 @@ impl LossModule for BCEWithLogitsLoss {
         input: TensorNodeId,
         target: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let probs = session.tensor_sigmoid(input)?;
-        session.bce_loss(probs, target)
+        session.bce_with_logits_loss(input, target)
     }
 }
 

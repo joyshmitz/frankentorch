@@ -2902,6 +2902,45 @@ impl FrankenTorchSession {
         self.tensor_neg(mean_val)
     }
 
+    /// Binary cross-entropy with logits loss (numerically stable):
+    /// `mean(max(x, 0) - x * y + log1p(exp(-|x|)))`
+    ///
+    /// This is equivalent to `sigmoid(x)` followed by BCE loss but avoids
+    /// the numerical instability of computing `log(sigmoid(x))` for extreme
+    /// input values.
+    pub fn bce_with_logits_loss(
+        &mut self,
+        logits: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // max(x, 0) = relu(x)
+        let relu_x = self.tensor_relu(logits)?;
+
+        // x * y
+        let x_times_y = self.tensor_mul(logits, target)?;
+
+        // |x|
+        let abs_x = self.tensor_abs(logits)?;
+
+        // -|x|
+        let neg_abs_x = self.tensor_neg(abs_x)?;
+
+        // exp(-|x|)
+        let exp_neg_abs = self.tensor_exp(neg_abs_x)?;
+
+        // log1p(exp(-|x|)) = log(1 + exp(-|x|))
+        let log_term = self.tensor_log1p(exp_neg_abs)?;
+
+        // relu(x) - x * y
+        let diff = self.tensor_sub(relu_x, x_times_y)?;
+
+        // relu(x) - x * y + log1p(exp(-|x|))
+        let elementwise = self.tensor_add(diff, log_term)?;
+
+        // mean reduction
+        self.tensor_mean(elementwise)
+    }
+
     /// Smooth L1 (Huber) loss:
     /// - When `|d| < beta`: `0.5 * d^2 / beta`
     /// - When `|d| >= beta`: `|d| - 0.5 * beta`
@@ -6826,6 +6865,147 @@ mod tests {
             vals[0] < 0.1,
             "BCE with matched extreme preds should be small, got {}",
             vals[0]
+        );
+    }
+
+    #[test]
+    fn bce_with_logits_loss_known_value() {
+        // logits=0 => sigmoid(0)=0.5, target=1.0
+        // Stable formula: max(0,0) - 0*1 + log1p(exp(-|0|)) = 0 - 0 + log(2) = ln(2)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits = s.tensor_variable(vec![0.0, 0.0], vec![2], true).unwrap();
+        let target = s
+            .tensor_variable(vec![1.0, 1.0], vec![2], false)
+            .unwrap();
+        let loss = s.bce_with_logits_loss(logits, target).unwrap();
+        let vals = s.tensor_values(loss).unwrap();
+        let expected = 2.0_f64.ln();
+        assert!(
+            (vals[0] - expected).abs() < 1e-12,
+            "expected BCEWithLogits~{expected}, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn bce_with_logits_loss_positive_logit() {
+        // logit=2.0, target=1.0
+        // max(2,0) - 2*1 + log1p(exp(-2)) = 2 - 2 + log(1+exp(-2))
+        // = log(1 + exp(-2)) ≈ 0.12692801104297263
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits = s.tensor_variable(vec![2.0], vec![1], true).unwrap();
+        let target = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let loss = s.bce_with_logits_loss(logits, target).unwrap();
+        let vals = s.tensor_values(loss).unwrap();
+        let expected = (1.0 + (-2.0_f64).exp()).ln();
+        assert!(
+            (vals[0] - expected).abs() < 1e-12,
+            "expected {expected}, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn bce_with_logits_loss_negative_logit() {
+        // logit=-3.0, target=0.0
+        // max(-3,0) - (-3)*0 + log1p(exp(-|-3|)) = 0 - 0 + log(1+exp(-3))
+        // = log(1 + exp(-3)) ≈ 0.04858735157374196
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits = s.tensor_variable(vec![-3.0], vec![1], true).unwrap();
+        let target = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let loss = s.bce_with_logits_loss(logits, target).unwrap();
+        let vals = s.tensor_values(loss).unwrap();
+        let expected = (1.0 + (-3.0_f64).exp()).ln();
+        assert!(
+            (vals[0] - expected).abs() < 1e-12,
+            "expected {expected}, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn bce_with_logits_loss_extreme_logits_finite() {
+        // Very large logits should not produce NaN or Inf
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits = s
+            .tensor_variable(vec![100.0, -100.0], vec![2], true)
+            .unwrap();
+        let target = s
+            .tensor_variable(vec![1.0, 0.0], vec![2], false)
+            .unwrap();
+        let loss = s.bce_with_logits_loss(logits, target).unwrap();
+        let vals = s.tensor_values(loss).unwrap();
+        assert!(
+            vals[0].is_finite(),
+            "BCEWithLogitsLoss should be finite for extreme logits, got {}",
+            vals[0]
+        );
+        // For x=100, y=1: max(100,0) - 100*1 + log1p(exp(-100)) ≈ 0
+        // For x=-100, y=0: max(-100,0) - (-100)*0 + log1p(exp(-100)) ≈ 0
+        // Mean ≈ 0
+        assert!(
+            vals[0] < 1e-10,
+            "BCEWithLogitsLoss for perfectly matching extreme logits should be near 0, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn bce_with_logits_loss_backward_produces_gradients() {
+        // The gradient of BCEWithLogitsLoss w.r.t. logits is (sigmoid(x) - y) / n
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits = s
+            .tensor_variable(vec![0.5, -0.5], vec![2], true)
+            .unwrap();
+        let target = s
+            .tensor_variable(vec![1.0, 0.0], vec![2], false)
+            .unwrap();
+        let loss = s.bce_with_logits_loss(logits, target).unwrap();
+        let report = s
+            .tensor_backward(loss)
+            .expect("backward should succeed");
+        let grad = s
+            .tensor_gradient(&report, logits)
+            .expect("logits grad should exist");
+        assert_eq!(grad.len(), 2);
+        // Check gradients are finite and non-zero
+        assert!(grad[0].is_finite(), "grad[0] should be finite");
+        assert!(grad[1].is_finite(), "grad[1] should be finite");
+        assert!(grad[0].abs() > 1e-15, "grad[0] should be non-zero");
+        assert!(grad[1].abs() > 1e-15, "grad[1] should be non-zero");
+    }
+
+    #[test]
+    fn bce_with_logits_matches_sigmoid_then_bce() {
+        // The numerically-stable formulation should produce the same result as
+        // sigmoid + bce_loss for moderate input values
+        let mut s1 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits1 = s1
+            .tensor_variable(vec![0.5, -1.0, 2.0, -0.3], vec![4], true)
+            .unwrap();
+        let target1 = s1
+            .tensor_variable(vec![1.0, 0.0, 1.0, 0.0], vec![4], false)
+            .unwrap();
+        let loss1 = s1.bce_with_logits_loss(logits1, target1).unwrap();
+        let vals1 = s1.tensor_values(loss1).unwrap();
+
+        // Compare with sigmoid + bce_loss approach
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits2 = s2
+            .tensor_variable(vec![0.5, -1.0, 2.0, -0.3], vec![4], true)
+            .unwrap();
+        let target2 = s2
+            .tensor_variable(vec![1.0, 0.0, 1.0, 0.0], vec![4], false)
+            .unwrap();
+        let probs = s2.tensor_sigmoid(logits2).unwrap();
+        let loss2 = s2.bce_loss(probs, target2).unwrap();
+        let vals2 = s2.tensor_values(loss2).unwrap();
+
+        assert!(
+            (vals1[0] - vals2[0]).abs() < 1e-6,
+            "BCEWithLogitsLoss ({}) should match sigmoid+BCE ({}) for moderate inputs",
+            vals1[0],
+            vals2[0]
         );
     }
 
