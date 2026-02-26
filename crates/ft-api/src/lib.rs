@@ -2992,11 +2992,11 @@ impl FrankenTorchSession {
         // Linear branch: delta * (|diff| - 0.5 * delta)
         let half_delta = self.full(shape.clone(), 0.5 * delta, false)?;
         let shifted = self.tensor_sub(abs_diff, half_delta)?;
-        let delta_tensor_for_linear = self.full(shape.clone(), delta, false)?;
-        let linear = self.tensor_mul(delta_tensor_for_linear, shifted)?;
+        let delta_tensor = self.full(shape.clone(), delta, false)?;
+        let linear = self.tensor_mul(delta_tensor, shifted)?;
 
         // Mask: 1.0 where |diff| <= delta (i.e., delta >= |diff|)
-        let delta_tensor = self.full(shape.clone(), delta, false)?;
+        // Reuses delta_tensor — DAG allows multiple refs
         let in_quadratic = self.tensor_ge(delta_tensor, abs_diff)?;
 
         // Blend: mask * quadratic + (1 - mask) * linear
@@ -3037,6 +3037,18 @@ impl FrankenTorchSession {
 
         let batch_size = x1_shape[0];
 
+        // Validate target values: must be exactly 1.0 or -1.0
+        let target_vals = self.tensor_values(target)?;
+        for &t in &target_vals {
+            if t != 1.0 && t != -1.0 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "cosine_embedding_loss target must contain only 1.0 or -1.0",
+                    },
+                )));
+            }
+        }
+
         // cos_sim along dim=1 (feature dimension) -> [batch]
         let cos_sim = self.cosine_similarity(x1, x2, 1, 1e-8)?;
 
@@ -3051,11 +3063,9 @@ impl FrankenTorchSession {
         let neg_loss = self.tensor_max(neg_diff, zeros)?;
 
         // Select based on target: mask = (target + 1) / 2 -> 1.0 for positive, 0.0 for negative
-        let target_vals = self.tensor_values(target)?;
         let mask_vals: Vec<f64> = target_vals.iter().map(|t| (t + 1.0) / 2.0).collect();
         let mask = self.tensor_variable(mask_vals, vec![batch_size], false)?;
-        let ones_for_inv = self.full(vec![batch_size], 1.0, false)?;
-        let inv_mask = self.tensor_sub(ones_for_inv, mask)?;
+        let inv_mask = self.tensor_sub(ones, mask)?;
 
         // result = mask * pos_loss + (1 - mask) * neg_loss
         let weighted_pos = self.tensor_mul(mask, pos_loss)?;
@@ -7250,6 +7260,23 @@ mod tests {
             (vals[0] - 0.5).abs() < 1e-4,
             "mixed targets should give mean loss ~0.5, got {}",
             vals[0]
+        );
+    }
+
+    #[test]
+    fn cosine_embedding_loss_rejects_invalid_target() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
+        let x2 = s
+            .tensor_variable(vec![3.0, 4.0], vec![1, 2], false)
+            .unwrap();
+        // target=0.5 is invalid (must be 1.0 or -1.0)
+        let target = s.tensor_variable(vec![0.5], vec![1], false).unwrap();
+        assert!(
+            s.cosine_embedding_loss(x1, x2, target, 0.0).is_err(),
+            "invalid target value should be rejected"
         );
     }
 
