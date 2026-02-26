@@ -17,6 +17,88 @@ pub trait Module {
 
     /// Collect all trainable parameter node IDs.
     fn parameters(&self) -> Vec<TensorNodeId>;
+
+    /// Return this module's own named parameters (non-recursive).
+    ///
+    /// Each tuple is `(local_name, node_id)` — e.g. `("weight", id)`, `("bias", id)`.
+    /// Container modules that only hold children (like Sequential) should return an
+    /// empty vec here; their children's parameters are collected by `named_parameters`.
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        Vec::new()
+    }
+
+    /// Return direct child sub-modules with their local names.
+    ///
+    /// For indexed containers (Sequential, ModuleList), names are `"0"`, `"1"`, etc.
+    /// For named containers (ModuleDict), names are the user-supplied keys.
+    /// For composite modules (MultiheadAttention), names are field names like `"q_proj"`.
+    fn named_children(&self) -> Vec<(String, &dyn Module)> {
+        Vec::new()
+    }
+}
+
+/// Collect direct child modules without names.
+pub fn children(module: &dyn Module) -> Vec<&dyn Module> {
+    module
+        .named_children()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect()
+}
+
+/// Recursively collect all named parameters with hierarchical dot-separated prefixes.
+///
+/// Pass an empty string for `prefix` to get unqualified names from the root.
+/// This matches PyTorch's `module.named_parameters()` behavior: own parameters
+/// first, then children's parameters in registration order.
+pub fn named_parameters(module: &dyn Module, prefix: &str) -> Vec<(String, TensorNodeId)> {
+    let mut result = Vec::new();
+    for (name, id) in module.named_parameters_own() {
+        let full = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        result.push((full, id));
+    }
+    for (child_name, child) in module.named_children() {
+        let child_prefix = if prefix.is_empty() {
+            child_name
+        } else {
+            format!("{prefix}.{child_name}")
+        };
+        result.extend(named_parameters(child, &child_prefix));
+    }
+    result
+}
+
+/// Recursively collect all sub-modules depth-first, including the root.
+///
+/// Pass an empty string for `prefix` to get unqualified names from the root.
+/// The root module is included with the given prefix (empty string for root).
+/// Ordering matches PyTorch's `module.named_modules()` depth-first traversal.
+pub fn named_modules<'a>(
+    module: &'a dyn Module,
+    prefix: &str,
+) -> Vec<(String, &'a dyn Module)> {
+    let mut result = vec![(prefix.to_string(), module)];
+    for (child_name, child) in module.named_children() {
+        let child_prefix = if prefix.is_empty() {
+            child_name
+        } else {
+            format!("{prefix}.{child_name}")
+        };
+        result.extend(named_modules(child, &child_prefix));
+    }
+    result
+}
+
+/// Collect all sub-modules recursively without names.
+pub fn modules(module: &dyn Module) -> Vec<&dyn Module> {
+    named_modules(module, "")
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect()
 }
 
 /// Fully connected linear layer: output = input @ weight^T + bias.
@@ -134,6 +216,14 @@ impl Module for Linear {
         let mut params = vec![self.weight];
         if let Some(bias) = self.bias {
             params.push(bias);
+        }
+        params
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        let mut params = vec![("weight", self.weight)];
+        if let Some(bias) = self.bias {
+            params.push(("bias", bias));
         }
         params
     }
@@ -265,6 +355,14 @@ impl Module for Sequential {
 
     fn parameters(&self) -> Vec<TensorNodeId> {
         self.modules.iter().flat_map(|m| m.parameters()).collect()
+    }
+
+    fn named_children(&self) -> Vec<(String, &dyn Module)> {
+        self.modules
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (i.to_string(), m.as_ref() as &dyn Module))
+            .collect()
     }
 }
 
@@ -431,6 +529,10 @@ impl Module for LayerNorm {
 
     fn parameters(&self) -> Vec<TensorNodeId> {
         vec![self.weight, self.bias]
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        vec![("weight", self.weight), ("bias", self.bias)]
     }
 }
 
@@ -603,6 +705,10 @@ impl Module for Embedding {
 
     fn parameters(&self) -> Vec<TensorNodeId> {
         vec![self.weight]
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        vec![("weight", self.weight)]
     }
 }
 
@@ -842,6 +948,10 @@ impl Module for BatchNorm1d {
     fn parameters(&self) -> Vec<TensorNodeId> {
         vec![self.weight, self.bias]
     }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        vec![("weight", self.weight), ("bias", self.bias)]
+    }
 }
 
 /// 1D convolution module.
@@ -1034,6 +1144,14 @@ impl Module for Conv1d {
         let mut params = vec![self.weight];
         if let Some(bias) = self.bias {
             params.push(bias);
+        }
+        params
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        let mut params = vec![("weight", self.weight)];
+        if let Some(bias) = self.bias {
+            params.push(("bias", bias));
         }
         params
     }
@@ -1294,6 +1412,15 @@ impl Module for MultiheadAttention {
         params.extend(self.v_proj.parameters());
         params.extend(self.out_proj.parameters());
         params
+    }
+
+    fn named_children(&self) -> Vec<(String, &dyn Module)> {
+        vec![
+            ("q_proj".to_string(), &self.q_proj as &dyn Module),
+            ("k_proj".to_string(), &self.k_proj as &dyn Module),
+            ("v_proj".to_string(), &self.v_proj as &dyn Module),
+            ("out_proj".to_string(), &self.out_proj as &dyn Module),
+        ]
     }
 }
 
@@ -1618,6 +1745,13 @@ impl Module for GroupNorm {
             _ => Vec::new(),
         }
     }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        match (self.weight, self.bias) {
+            (Some(w), Some(b)) => vec![("weight", w), ("bias", b)],
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Instance normalization for 1D inputs (Ulyanov et al., 2016).
@@ -1662,6 +1796,10 @@ impl Module for InstanceNorm1d {
 
     fn parameters(&self) -> Vec<TensorNodeId> {
         self.inner.parameters()
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        self.inner.named_parameters_own()
     }
 }
 
@@ -1728,6 +1866,10 @@ impl Module for InstanceNorm2d {
 
     fn parameters(&self) -> Vec<TensorNodeId> {
         self.inner.parameters()
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        self.inner.named_parameters_own()
     }
 }
 
@@ -2036,6 +2178,14 @@ impl Module for Conv2d {
         let mut params = vec![self.weight];
         if let Some(bias) = self.bias {
             params.push(bias);
+        }
+        params
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        let mut params = vec![("weight", self.weight)];
+        if let Some(bias) = self.bias {
+            params.push(("bias", bias));
         }
         params
     }
@@ -2497,6 +2647,10 @@ impl Module for BatchNorm2d {
     fn parameters(&self) -> Vec<TensorNodeId> {
         vec![self.weight, self.bias]
     }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        vec![("weight", self.weight), ("bias", self.bias)]
+    }
 }
 
 pub struct Identity;
@@ -2826,6 +2980,14 @@ impl Module for ConvTranspose1d {
         let mut params = vec![self.weight];
         if let Some(bias) = self.bias {
             params.push(bias);
+        }
+        params
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        let mut params = vec![("weight", self.weight)];
+        if let Some(bias) = self.bias {
+            params.push(("bias", bias));
         }
         params
     }
@@ -3537,6 +3699,14 @@ impl Module for ModuleList {
             .flat_map(|m| m.parameters())
             .collect()
     }
+
+    fn named_children(&self) -> Vec<(String, &dyn Module)> {
+        self.modules
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (i.to_string(), m.as_ref() as &dyn Module))
+            .collect()
+    }
 }
 
 /// A dictionary of named modules.
@@ -3615,6 +3785,13 @@ impl Module for ModuleDict {
         self.entries
             .iter()
             .flat_map(|(_, m)| m.parameters())
+            .collect()
+    }
+
+    fn named_children(&self) -> Vec<(String, &dyn Module)> {
+        self.entries
+            .iter()
+            .map(|(name, m)| (name.clone(), m.as_ref() as &dyn Module))
             .collect()
     }
 }
@@ -6883,5 +7060,378 @@ mod tests {
         // First pair: cos_sim=1, loss=0; Second: cos_sim=-1, loss=max(0,-1-0)=0
         // Total mean = 0.0
         assert!(vals[0].abs() < 1e-6);
+    }
+
+    // ── named_parameters / named_children / named_modules tests ───────
+
+    #[test]
+    fn linear_named_parameters_own() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin = Linear::new(&mut session, 3, 2, true).expect("linear");
+        let params = lin.named_parameters_own();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "weight");
+        assert_eq!(params[1].0, "bias");
+    }
+
+    #[test]
+    fn linear_no_bias_named_parameters_own() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin = Linear::new(&mut session, 3, 2, false).expect("linear");
+        let params = lin.named_parameters_own();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "weight");
+    }
+
+    #[test]
+    fn sequential_named_children() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+        let lin2 = Linear::new(&mut session, 4, 2, true).expect("lin2");
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(lin1));
+        seq.push(Box::new(ReLU));
+        seq.push(Box::new(lin2));
+
+        let ch = seq.named_children();
+        assert_eq!(ch.len(), 3);
+        assert_eq!(ch[0].0, "0");
+        assert_eq!(ch[1].0, "1");
+        assert_eq!(ch[2].0, "2");
+    }
+
+    #[test]
+    fn sequential_named_parameters_hierarchical() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+        let lin2 = Linear::new(&mut session, 4, 2, false).expect("lin2");
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(lin1));
+        seq.push(Box::new(ReLU));
+        seq.push(Box::new(lin2));
+
+        let params = named_parameters(&seq, "");
+        // lin1: weight + bias = 2, ReLU: 0, lin2: weight = 1
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0].0, "0.weight");
+        assert_eq!(params[1].0, "0.bias");
+        assert_eq!(params[2].0, "2.weight");
+    }
+
+    #[test]
+    fn sequential_named_parameters_with_prefix() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(lin1));
+
+        let params = named_parameters(&seq, "encoder");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "encoder.0.weight");
+        assert_eq!(params[1].0, "encoder.0.bias");
+    }
+
+    #[test]
+    fn nested_sequential_named_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+        let lin2 = Linear::new(&mut session, 4, 2, true).expect("lin2");
+
+        let mut inner = Sequential::new();
+        inner.push(Box::new(lin1));
+        inner.push(Box::new(ReLU));
+
+        let mut outer = Sequential::new();
+        outer.push(Box::new(inner));
+        outer.push(Box::new(lin2));
+
+        let params = named_parameters(&outer, "");
+        // inner.lin1: "0.0.weight", "0.0.bias"; outer.lin2: "1.weight", "1.bias"
+        assert_eq!(params.len(), 4);
+        assert_eq!(params[0].0, "0.0.weight");
+        assert_eq!(params[1].0, "0.0.bias");
+        assert_eq!(params[2].0, "1.weight");
+        assert_eq!(params[3].0, "1.bias");
+    }
+
+    #[test]
+    fn named_modules_depth_first() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+        let lin2 = Linear::new(&mut session, 4, 2, true).expect("lin2");
+
+        let mut inner = Sequential::new();
+        inner.push(Box::new(lin1));
+        inner.push(Box::new(ReLU));
+
+        let mut outer = Sequential::new();
+        outer.push(Box::new(inner));
+        outer.push(Box::new(lin2));
+
+        let mods = named_modules(&outer, "");
+        // depth-first: root(""), inner("0"), lin1("0.0"), relu("0.1"), lin2("1")
+        assert_eq!(mods.len(), 5);
+        assert_eq!(mods[0].0, "");
+        assert_eq!(mods[1].0, "0");
+        assert_eq!(mods[2].0, "0.0");
+        assert_eq!(mods[3].0, "0.1");
+        assert_eq!(mods[4].0, "1");
+    }
+
+    #[test]
+    fn named_modules_with_prefix() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin = Linear::new(&mut session, 3, 2, true).expect("lin");
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(lin));
+
+        let mods = named_modules(&seq, "model");
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].0, "model");
+        assert_eq!(mods[1].0, "model.0");
+    }
+
+    #[test]
+    fn children_of_sequential() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin = Linear::new(&mut session, 3, 2, true).expect("lin");
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(lin));
+        seq.push(Box::new(ReLU));
+
+        let ch = children(&seq);
+        assert_eq!(ch.len(), 2);
+    }
+
+    #[test]
+    fn modules_count_recursive() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+        let lin2 = Linear::new(&mut session, 4, 2, true).expect("lin2");
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(lin1));
+        seq.push(Box::new(lin2));
+
+        // root Sequential + 2 Linears = 3
+        let all = modules(&seq);
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn multihead_attention_named_children() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 8, 2).expect("mha");
+
+        let ch = mha.named_children();
+        assert_eq!(ch.len(), 4);
+        assert_eq!(ch[0].0, "q_proj");
+        assert_eq!(ch[1].0, "k_proj");
+        assert_eq!(ch[2].0, "v_proj");
+        assert_eq!(ch[3].0, "out_proj");
+    }
+
+    #[test]
+    fn multihead_attention_named_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 8, 2).expect("mha");
+
+        let params = named_parameters(&mha, "");
+        // 4 projections × (weight + bias) = 8 parameters
+        assert_eq!(params.len(), 8);
+        assert_eq!(params[0].0, "q_proj.weight");
+        assert_eq!(params[1].0, "q_proj.bias");
+        assert_eq!(params[2].0, "k_proj.weight");
+        assert_eq!(params[3].0, "k_proj.bias");
+        assert_eq!(params[4].0, "v_proj.weight");
+        assert_eq!(params[5].0, "v_proj.bias");
+        assert_eq!(params[6].0, "out_proj.weight");
+        assert_eq!(params[7].0, "out_proj.bias");
+    }
+
+    #[test]
+    fn module_dict_named_children_uses_keys() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+        let lin2 = Linear::new(&mut session, 4, 2, true).expect("lin2");
+
+        let mut dict = ModuleDict::new();
+        dict.insert("encoder".to_string(), Box::new(lin1));
+        dict.insert("decoder".to_string(), Box::new(lin2));
+
+        let ch = dict.named_children();
+        assert_eq!(ch.len(), 2);
+        assert_eq!(ch[0].0, "encoder");
+        assert_eq!(ch[1].0, "decoder");
+    }
+
+    #[test]
+    fn module_dict_named_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin = Linear::new(&mut session, 3, 2, true).expect("lin");
+
+        let mut dict = ModuleDict::new();
+        dict.insert("layer".to_string(), Box::new(lin));
+
+        let params = named_parameters(&dict, "");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "layer.weight");
+        assert_eq!(params[1].0, "layer.bias");
+    }
+
+    #[test]
+    fn module_list_named_children() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+        let lin2 = Linear::new(&mut session, 4, 2, true).expect("lin2");
+
+        let mut list = ModuleList::new();
+        list.push(Box::new(lin1));
+        list.push(Box::new(lin2));
+
+        let ch = list.named_children();
+        assert_eq!(ch.len(), 2);
+        assert_eq!(ch[0].0, "0");
+        assert_eq!(ch[1].0, "1");
+    }
+
+    #[test]
+    fn stateless_module_named_parameters_empty() {
+        let relu = ReLU;
+        assert!(relu.named_parameters_own().is_empty());
+        assert!(relu.named_children().is_empty());
+        assert!(named_parameters(&relu, "").is_empty());
+    }
+
+    #[test]
+    fn parameters_matches_named_parameters_count() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin1 = Linear::new(&mut session, 3, 4, true).expect("lin1");
+        let lin2 = Linear::new(&mut session, 4, 2, true).expect("lin2");
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(lin1));
+        seq.push(Box::new(ReLU));
+        seq.push(Box::new(lin2));
+
+        let flat = seq.parameters();
+        let named = named_parameters(&seq, "");
+        assert_eq!(flat.len(), named.len());
+        // Verify same node IDs in same order
+        for (flat_id, (_, named_id)) in flat.iter().zip(named.iter()) {
+            assert_eq!(flat_id, named_id);
+        }
+    }
+
+    #[test]
+    fn embedding_named_parameters_own() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let emb = Embedding::new(&mut session, 10, 4).expect("emb");
+        let params = emb.named_parameters_own();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "weight");
+    }
+
+    #[test]
+    fn layer_norm_named_parameters_own() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ln = LayerNorm::new(&mut session, vec![4], 1e-5).expect("ln");
+        let params = ln.named_parameters_own();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "weight");
+        assert_eq!(params[1].0, "bias");
+    }
+
+    #[test]
+    fn conv1d_named_parameters_own() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv1d::new(&mut session, 1, 2, 3, 1, 0, true).expect("conv");
+        let params = conv.named_parameters_own();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "weight");
+        assert_eq!(params[1].0, "bias");
+    }
+
+    #[test]
+    fn conv2d_named_parameters_own() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv2d::new(&mut session, 1, 2, (3, 3), (1, 1), (0, 0), false).expect("conv");
+        let params = conv.named_parameters_own();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "weight");
+    }
+
+    #[test]
+    fn batch_norm_named_parameters_own() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, 0.1).expect("bn");
+        let params = bn.named_parameters_own();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "weight");
+        assert_eq!(params[1].0, "bias");
+    }
+
+    #[test]
+    fn group_norm_affine_named_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let gn = GroupNorm::new(&mut session, 2, 4, 1e-5, true).expect("gn");
+        let params = gn.named_parameters_own();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "weight");
+        assert_eq!(params[1].0, "bias");
+    }
+
+    #[test]
+    fn group_norm_no_affine_named_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let gn = GroupNorm::new(&mut session, 2, 4, 1e-5, false).expect("gn");
+        let params = gn.named_parameters_own();
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn deep_nesting_named_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lin = Linear::new(&mut session, 2, 2, true).expect("lin");
+
+        let mut inner = Sequential::new();
+        inner.push(Box::new(lin));
+
+        let mut mid = Sequential::new();
+        mid.push(Box::new(inner));
+
+        let mut outer = Sequential::new();
+        outer.push(Box::new(mid));
+
+        let params = named_parameters(&outer, "");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "0.0.0.weight");
+        assert_eq!(params[1].0, "0.0.0.bias");
+    }
+
+    #[test]
+    fn named_modules_leaf_only() {
+        let relu = ReLU;
+        let mods = named_modules(&relu, "");
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].0, "");
+    }
+
+    #[test]
+    fn named_parameters_consistency_with_flat_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 8, 2).expect("mha");
+
+        let flat = mha.parameters();
+        let named = named_parameters(&mha, "");
+        assert_eq!(flat.len(), named.len());
+        for (f, (_, n)) in flat.iter().zip(named.iter()) {
+            assert_eq!(f, n);
+        }
     }
 }

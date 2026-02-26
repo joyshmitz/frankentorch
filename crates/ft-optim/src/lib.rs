@@ -67,6 +67,12 @@ pub trait Optimizer {
     /// Zero out accumulated gradients (no-op for this implementation since
     /// gradients are recomputed each backward pass, but included for API parity).
     fn zero_grad(&mut self, session: &mut FrankenTorchSession) -> Result<(), AutogradError>;
+
+    /// Return the current learning rate.
+    fn get_lr(&self) -> f64;
+
+    /// Set the learning rate.
+    fn set_lr(&mut self, lr: f64);
 }
 
 /// Stochastic Gradient Descent optimizer with optional momentum and weight decay.
@@ -142,6 +148,14 @@ impl SGD {
 }
 
 impl Optimizer for SGD {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
     fn step(
         &mut self,
         session: &mut FrankenTorchSession,
@@ -300,6 +314,14 @@ impl Adam {
 }
 
 impl Optimizer for Adam {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
     fn step(
         &mut self,
         session: &mut FrankenTorchSession,
@@ -459,6 +481,14 @@ impl AdamW {
 }
 
 impl Optimizer for AdamW {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
     fn step(
         &mut self,
         session: &mut FrankenTorchSession,
@@ -646,6 +676,14 @@ impl RMSprop {
 }
 
 impl Optimizer for RMSprop {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
     fn step(
         &mut self,
         session: &mut FrankenTorchSession,
@@ -835,6 +873,14 @@ impl Adagrad {
 }
 
 impl Optimizer for Adagrad {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
     fn step(
         &mut self,
         session: &mut FrankenTorchSession,
@@ -983,6 +1029,14 @@ impl RAdam {
 }
 
 impl Optimizer for RAdam {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
     fn step(
         &mut self,
         session: &mut FrankenTorchSession,
@@ -1073,6 +1127,174 @@ impl Optimizer for RAdam {
 
     fn zero_grad(&mut self, _session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Learning Rate Schedulers
+// ---------------------------------------------------------------------------
+
+/// Serializable scheduler state for save/restore.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchedulerState {
+    /// Current epoch (0-based after first step()).
+    pub last_epoch: i64,
+    /// Per-param-group learning rates after the last step().
+    pub last_lrs: Vec<f64>,
+    /// Scheduler-specific extra state.
+    pub extra: Vec<(String, f64)>,
+}
+
+/// Trait for learning rate schedulers.
+///
+/// Schedulers adjust the optimizer learning rate according to a policy.
+/// After constructing a scheduler, call `step()` once per epoch (or per
+/// iteration, depending on the scheduler) to advance the schedule.
+pub trait LRScheduler {
+    /// Advance the scheduler by one step, updating the optimizer learning rate.
+    ///
+    /// If `epoch` is `Some(n)`, the scheduler jumps to that epoch directly.
+    /// If `None`, the scheduler auto-increments from the last epoch.
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>);
+
+    /// Return the current computed learning rates (one per param group).
+    fn get_lr(&self) -> Vec<f64>;
+
+    /// Return the learning rates from the last `step()` call.
+    fn get_last_lr(&self) -> Vec<f64>;
+
+    /// Serialize the scheduler state.
+    fn state_dict(&self) -> SchedulerState;
+
+    /// Restore scheduler state from a previously serialized snapshot.
+    fn load_state_dict(&mut self, state: SchedulerState);
+}
+
+/// StepLR: decays the learning rate by `gamma` every `step_size` epochs.
+///
+/// ```text
+/// lr = initial_lr * gamma ^ (epoch / step_size)
+/// ```
+///
+/// This is one of the simplest and most commonly used schedulers.
+pub struct StepLR {
+    initial_lr: f64,
+    step_size: usize,
+    gamma: f64,
+    last_epoch: i64,
+    last_lr: f64,
+    verbose: bool,
+}
+
+impl StepLR {
+    /// Create a new `StepLR` scheduler.
+    ///
+    /// # Arguments
+    /// * `optimizer` - The optimizer whose learning rate will be scheduled.
+    /// * `step_size` - Period of learning rate decay (in epochs).
+    /// * `gamma` - Multiplicative decay factor (default: 0.1).
+    /// * `last_epoch` - The index of the last epoch. Use -1 to start fresh.
+    pub fn new(optimizer: &dyn Optimizer, step_size: usize) -> Self {
+        let initial_lr = optimizer.get_lr();
+        Self {
+            initial_lr,
+            step_size,
+            gamma: 0.1,
+            last_epoch: -1,
+            last_lr: initial_lr,
+            verbose: false,
+        }
+    }
+
+    /// Set the multiplicative decay factor (default: 0.1).
+    #[must_use]
+    pub fn gamma(mut self, gamma: f64) -> Self {
+        self.gamma = gamma;
+        self
+    }
+
+    /// Set the last epoch index for resuming (default: -1).
+    ///
+    /// When set to a non-negative value, the scheduler resumes from that epoch.
+    /// The next call to `step(None)` will advance to `last_epoch + 1`.
+    #[must_use]
+    pub fn last_epoch(mut self, last_epoch: i64) -> Self {
+        self.last_epoch = last_epoch;
+        if last_epoch >= 0 {
+            self.last_lr = self.compute_lr_at_epoch(last_epoch);
+        }
+        self
+    }
+
+    /// Enable verbose mode: prints lr changes.
+    #[must_use]
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    fn compute_lr_at_epoch(&self, epoch: i64) -> f64 {
+        if epoch < 0 {
+            return self.initial_lr;
+        }
+        let e = epoch as usize;
+        let exponent = e / self.step_size;
+        self.initial_lr * self.gamma.powi(exponent as i32)
+    }
+}
+
+impl LRScheduler for StepLR {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        let new_epoch = match epoch {
+            Some(e) => e,
+            None => self.last_epoch + 1,
+        };
+        self.last_epoch = new_epoch;
+        let new_lr = self.compute_lr_at_epoch(new_epoch);
+        let old_lr = self.last_lr;
+        self.last_lr = new_lr;
+        optimizer.set_lr(new_lr);
+
+        if self.verbose && (new_lr - old_lr).abs() > f64::EPSILON {
+            eprintln!(
+                "StepLR: adjusting learning rate from {old_lr:.6e} to {new_lr:.6e} at epoch {new_epoch}."
+            );
+        }
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.compute_lr_at_epoch(self.last_epoch)]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                ("initial_lr".to_owned(), self.initial_lr),
+                ("step_size".to_owned(), self.step_size as f64),
+                ("gamma".to_owned(), self.gamma),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "initial_lr" => self.initial_lr = *val,
+                "step_size" => self.step_size = *val as usize,
+                "gamma" => self.gamma = *val,
+                _ => {}
+            }
+        }
     }
 }
 
@@ -2957,5 +3179,313 @@ mod tests {
             "RAdam should increase b toward 0, got {}",
             b_val
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // LRScheduler / StepLR tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn optimizer_get_set_lr_roundtrip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.05);
+        assert!((opt.get_lr() - 0.05).abs() < f64::EPSILON);
+        opt.set_lr(0.01);
+        assert!((opt.get_lr() - 0.01).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn step_lr_basic_decay() {
+        // lr = 0.1 * 0.1^(epoch / 10)
+        // epoch  0-9  -> lr = 0.1
+        // epoch 10-19 -> lr = 0.01
+        // epoch 20-29 -> lr = 0.001
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = StepLR::new(&opt, 10).gamma(0.1);
+
+        for epoch in 0..30 {
+            scheduler.step(&mut opt, None);
+            let expected = if epoch < 10 {
+                0.1
+            } else if epoch < 20 {
+                0.01
+            } else {
+                0.001
+            };
+            let actual = opt.get_lr();
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "epoch {epoch}: expected lr {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn step_lr_gamma_half() {
+        // gamma=0.5, step_size=10: lr halves every 10 epochs
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = StepLR::new(&opt, 10).gamma(0.5);
+
+        for epoch in 0..30 {
+            scheduler.step(&mut opt, None);
+            let expected = 0.5_f64.powi((epoch as i32) / 10);
+            let actual = opt.get_lr();
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "epoch {epoch}: expected lr {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn step_lr_epoch_zero_unchanged() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = Adam::new(vec![x], 0.001);
+        let mut scheduler = StepLR::new(&opt, 5).gamma(0.5);
+
+        // First step: epoch 0
+        scheduler.step(&mut opt, None);
+        assert!(
+            (opt.get_lr() - 0.001).abs() < 1e-12,
+            "lr should remain initial at epoch 0"
+        );
+    }
+
+    #[test]
+    fn step_lr_get_lr_and_get_last_lr() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = StepLR::new(&opt, 5).gamma(0.5);
+
+        // Before any step
+        assert_eq!(scheduler.get_lr(), vec![0.1]);
+        assert_eq!(scheduler.get_last_lr(), vec![0.1]);
+
+        // Step through epochs 0-4 (lr should be 0.1)
+        for _ in 0..5 {
+            scheduler.step(&mut opt, None);
+        }
+        assert_eq!(scheduler.get_lr(), vec![0.1]);
+
+        // Step to epoch 5 (lr should be 0.05)
+        scheduler.step(&mut opt, None);
+        let lr = scheduler.get_lr()[0];
+        assert!((lr - 0.05).abs() < 1e-12, "expected 0.05 got {lr}");
+        assert!((scheduler.get_last_lr()[0] - 0.05).abs() < 1e-12);
+    }
+
+    #[test]
+    fn step_lr_step_size_one() {
+        // step_size=1: lr decays every epoch
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = StepLR::new(&opt, 1).gamma(0.5);
+
+        for epoch in 0..5 {
+            scheduler.step(&mut opt, None);
+            let expected = 0.5_f64.powi(epoch as i32);
+            let actual = opt.get_lr();
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "epoch {epoch}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn step_lr_gamma_one_constant() {
+        // gamma=1.0: lr never changes
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = StepLR::new(&opt, 5).gamma(1.0);
+
+        for _epoch in 0..20 {
+            scheduler.step(&mut opt, None);
+            assert!(
+                (opt.get_lr() - 0.1).abs() < 1e-12,
+                "lr should remain constant with gamma=1.0"
+            );
+        }
+    }
+
+    #[test]
+    fn step_lr_resume_from_middle() {
+        // last_epoch != -1: resume from epoch 15
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = StepLR::new(&opt, 10).gamma(0.1).last_epoch(15);
+
+        // At epoch 15: exponent = 15/10 = 1, lr = 0.1 * 0.1^1 = 0.01
+        let lr = scheduler.get_lr()[0];
+        assert!(
+            (lr - 0.01).abs() < 1e-12,
+            "expected 0.01 at epoch 15, got {lr}"
+        );
+
+        // Next step is epoch 16
+        scheduler.step(&mut opt, None);
+        assert!(
+            (opt.get_lr() - 0.01).abs() < 1e-12,
+            "lr should still be 0.01 at epoch 16"
+        );
+    }
+
+    #[test]
+    fn step_lr_explicit_epoch() {
+        // step() called with explicit epoch
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = StepLR::new(&opt, 10).gamma(0.1);
+
+        scheduler.step(&mut opt, Some(20));
+        // epoch 20: exponent = 2, lr = 0.1 * 0.01 = 0.001
+        let actual = opt.get_lr();
+        assert!(
+            (actual - 0.001).abs() < 1e-12,
+            "expected 0.001 at epoch 20, got {actual}"
+        );
+    }
+
+    #[test]
+    fn step_lr_state_dict_round_trip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = StepLR::new(&opt, 10).gamma(0.1);
+
+        // Advance to epoch 15
+        for _ in 0..16 {
+            scheduler.step(&mut opt, None);
+        }
+
+        let state = scheduler.state_dict();
+        assert_eq!(state.last_epoch, 15);
+
+        // Create a fresh scheduler and load state
+        let mut scheduler2 = StepLR::new(&opt, 10).gamma(0.1);
+        scheduler2.load_state_dict(state.clone());
+
+        assert_eq!(scheduler2.state_dict(), state);
+        assert_eq!(scheduler2.get_lr(), scheduler.get_lr());
+        assert_eq!(scheduler2.get_last_lr(), scheduler.get_last_lr());
+    }
+
+    #[test]
+    fn step_lr_with_sgd_integration() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.5);
+        let mut scheduler = StepLR::new(&opt, 2).gamma(0.5);
+
+        // Simulate 4 epochs of training
+        for _epoch in 0..4 {
+            let x_sq = session.tensor_mul(x, x).expect("mul");
+            let loss = session.tensor_sum(x_sq).expect("sum");
+            let report = session.tensor_backward(loss).expect("backward");
+            opt.step(&mut session, &report).expect("opt step");
+            scheduler.step(&mut opt, None);
+        }
+
+        // After 4 epochs, lr should have decayed twice
+        // epoch 0: lr=0.5, epoch 1: lr=0.5, epoch 2: lr=0.25, epoch 3: lr=0.25
+        let final_lr = opt.get_lr();
+        assert!(
+            (final_lr - 0.25).abs() < 1e-12,
+            "expected 0.25 after 4 epochs, got {final_lr}"
+        );
+    }
+
+    #[test]
+    fn step_lr_with_adam_integration() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![3.0], vec![1], true)
+            .expect("var");
+        let mut opt = Adam::new(vec![x], 0.01);
+        let mut scheduler = StepLR::new(&opt, 5).gamma(0.5);
+
+        // Simulate 10 epochs
+        for _epoch in 0..10 {
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("opt step");
+            scheduler.step(&mut opt, None);
+        }
+
+        // After 10 epochs, lr should have decayed twice
+        // epochs 0-4: lr=0.01, epochs 5-9: lr=0.005
+        let final_lr = opt.get_lr();
+        assert!(
+            (final_lr - 0.005).abs() < 1e-12,
+            "expected 0.005 after 10 epochs, got {final_lr}"
+        );
+    }
+
+    #[test]
+    fn step_lr_30_epoch_schedule() {
+        // Full 30-epoch test with step_size=10, gamma=0.1
+        // Verify lr values at key epoch boundaries
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = StepLR::new(&opt, 10).gamma(0.1);
+
+        let expected_at = [
+            (0, 1.0),
+            (9, 1.0),
+            (10, 0.1),
+            (19, 0.1),
+            (20, 0.01),
+            (29, 0.01),
+        ];
+
+        for epoch in 0..30 {
+            scheduler.step(&mut opt, None);
+            for &(check_epoch, expected_lr) in &expected_at {
+                if epoch == check_epoch {
+                    let actual = opt.get_lr();
+                    assert!(
+                        (actual - expected_lr).abs() < 1e-12,
+                        "epoch {epoch}: expected lr {expected_lr}, got {actual}"
+                    );
+                }
+            }
+        }
     }
 }

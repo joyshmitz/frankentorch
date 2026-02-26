@@ -3022,6 +3022,380 @@ pub fn topk_tensor_contiguous_f64(
     Ok((out_values, out_indices))
 }
 
+// ---------------------------------------------------------------------------
+// Linear Algebra: LU Decomposition with Partial Pivoting
+// ---------------------------------------------------------------------------
+
+/// Result of LU factorization in compact form.
+///
+/// The `lu` matrix stores L (lower triangle, unit diagonal implied) and U
+/// (upper triangle including diagonal) packed together.
+#[derive(Debug, Clone)]
+pub struct LuFactorResult {
+    /// Packed LU matrix in row-major order (n x n).
+    pub lu: Vec<f64>,
+    /// Pivot indices: row i was swapped with row pivots[i] during elimination.
+    pub pivots: Vec<usize>,
+    /// Matrix dimension (n x n).
+    pub n: usize,
+}
+
+/// Result of full LU decomposition: P, L, U as separate matrices.
+#[derive(Debug, Clone)]
+pub struct LuResult {
+    /// Permutation matrix (n x n) in row-major order.
+    pub p: Vec<f64>,
+    /// Lower triangular matrix with unit diagonal (n x n) in row-major order.
+    pub l: Vec<f64>,
+    /// Upper triangular matrix (n x n) in row-major order.
+    pub u: Vec<f64>,
+    /// Matrix dimension (n x n).
+    pub n: usize,
+}
+
+/// Compute the LU factorization of a square matrix with partial pivoting.
+///
+/// Returns the packed LU matrix and pivot indices. The input matrix is given
+/// as a contiguous row-major f64 buffer with the given `TensorMeta`.
+///
+/// The matrix must be 2-D and square (n x n).
+pub fn lu_factor_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+) -> Result<LuFactorResult, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![shape.len()],
+        });
+    }
+    let n = shape[0];
+    if n != shape[1] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![n],
+            rhs: vec![shape[1]],
+        });
+    }
+    if n == 0 {
+        return Ok(LuFactorResult {
+            lu: Vec::new(),
+            pivots: Vec::new(),
+            n: 0,
+        });
+    }
+
+    let offset = meta.storage_offset();
+    let mut lu: Vec<f64> = data[offset..offset + n * n].to_vec();
+    let mut pivots: Vec<usize> = (0..n).collect();
+
+    for k in 0..n {
+        // Find pivot: row with max |lu[i][k]| for i >= k
+        let mut max_val = lu[k * n + k].abs();
+        let mut max_row = k;
+        for i in (k + 1)..n {
+            let val = lu[i * n + k].abs();
+            if val > max_val {
+                max_val = val;
+                max_row = i;
+            }
+        }
+
+        // Swap rows k and max_row
+        if max_row != k {
+            pivots.swap(k, max_row);
+            for j in 0..n {
+                let a = k * n + j;
+                let b = max_row * n + j;
+                lu.swap(a, b);
+            }
+        }
+
+        let diag = lu[k * n + k];
+        if diag.abs() < f64::EPSILON * 1e3 {
+            // Near-singular: we continue but the result may be unreliable.
+            // Downstream consumers (det, inv, solve) should check for this.
+            continue;
+        }
+
+        // Elimination
+        for i in (k + 1)..n {
+            let multiplier = lu[i * n + k] / diag;
+            lu[i * n + k] = multiplier; // Store L factor
+            for j in (k + 1)..n {
+                lu[i * n + j] -= multiplier * lu[k * n + j];
+            }
+        }
+    }
+
+    Ok(LuFactorResult { lu, pivots, n })
+}
+
+/// Unpack a compact LU factorization into separate P, L, U matrices.
+pub fn lu_unpack(factor: &LuFactorResult) -> LuResult {
+    let n = factor.n;
+    if n == 0 {
+        return LuResult {
+            p: Vec::new(),
+            l: Vec::new(),
+            u: Vec::new(),
+            n: 0,
+        };
+    }
+
+    // Build permutation matrix from pivot vector.
+    // pivots[i] = original row that ended up at position i in the LU matrix.
+    // For the convention P @ L @ U = A, we need P[pivots[i]][i] = 1.
+    let mut p = vec![0.0; n * n];
+    for (i, &orig_row) in factor.pivots.iter().enumerate() {
+        p[orig_row * n + i] = 1.0;
+    }
+
+    // Extract L (lower triangular with unit diagonal)
+    let mut l = vec![0.0; n * n];
+    for i in 0..n {
+        l[i * n + i] = 1.0; // unit diagonal
+        for j in 0..i {
+            l[i * n + j] = factor.lu[i * n + j];
+        }
+    }
+
+    // Extract U (upper triangular including diagonal)
+    let mut u = vec![0.0; n * n];
+    for i in 0..n {
+        for j in i..n {
+            u[i * n + j] = factor.lu[i * n + j];
+        }
+    }
+
+    LuResult { p, l, u, n }
+}
+
+/// Solve A * X = B using a pre-computed LU factorization.
+///
+/// `b` is a column vector of length n (or an n x m matrix for multiple RHS).
+/// Returns the solution vector/matrix X.
+pub fn lu_solve_contiguous_f64(
+    factor: &LuFactorResult,
+    b_data: &[f64],
+    b_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(b_data, b_meta)?;
+    let b_shape = b_meta.shape();
+    let n = factor.n;
+
+    // b can be [n] (single RHS) or [n, m] (multiple RHS)
+    let (b_rows, num_rhs) = match b_shape.len() {
+        1 => (b_shape[0], 1usize),
+        2 => (b_shape[0], b_shape[1]),
+        _ => {
+            return Err(KernelError::ShapeMismatch {
+                lhs: vec![n],
+                rhs: b_shape.to_vec(),
+            });
+        }
+    };
+    if b_rows != n {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![n],
+            rhs: vec![b_rows],
+        });
+    }
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    let offset = b_meta.storage_offset();
+    let mut x: Vec<f64> = b_data[offset..offset + n * num_rhs].to_vec();
+
+    // Apply pivot permutation to each RHS column.
+    // pivots[i] = original row at LU position i, so we need:
+    // permuted[i] = b[pivots[i]] (reorder b to match LU row order)
+    for rhs in 0..num_rhs {
+        let mut permuted = vec![0.0; n];
+        for i in 0..n {
+            permuted[i] = x[factor.pivots[i] * num_rhs + rhs];
+        }
+        for i in 0..n {
+            x[i * num_rhs + rhs] = permuted[i];
+        }
+    }
+
+    // Forward substitution: L * y = P * b
+    for k in 0..n {
+        for i in (k + 1)..n {
+            let l_ik = factor.lu[i * n + k];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] -= l_ik * x[k * num_rhs + rhs];
+            }
+        }
+    }
+
+    // Back substitution: U * x = y
+    for k in (0..n).rev() {
+        let diag = factor.lu[k * n + k];
+        if diag.abs() < f64::EPSILON * 1e3 {
+            // Singular or near-singular — set solution to 0 for this row
+            for rhs in 0..num_rhs {
+                x[k * num_rhs + rhs] = 0.0;
+            }
+            continue;
+        }
+        for rhs in 0..num_rhs {
+            x[k * num_rhs + rhs] /= diag;
+        }
+        for i in 0..k {
+            let u_ik = factor.lu[i * n + k];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] -= u_ik * x[k * num_rhs + rhs];
+            }
+        }
+    }
+
+    Ok(x)
+}
+
+/// Result of QR decomposition.
+#[derive(Debug, Clone)]
+pub struct QrResult {
+    /// Orthogonal matrix Q in row-major order.
+    pub q: Vec<f64>,
+    /// Upper triangular matrix R in row-major order.
+    pub r: Vec<f64>,
+    /// Number of rows (m).
+    pub m: usize,
+    /// Number of columns (n).
+    pub n: usize,
+}
+
+/// Compute the QR decomposition of an (m x n) matrix via Householder reflections.
+///
+/// Returns `(Q, R)` such that `A = Q @ R`:
+/// - Q: orthogonal matrix (m x m) for `reduced=false`, or (m x k) for `reduced=true` where k=min(m,n)
+/// - R: upper triangular matrix (m x n) for `reduced=false`, or (k x n) for `reduced=true`
+///
+/// The matrix must be 2-D.
+pub fn qr_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+    reduced: bool,
+) -> Result<QrResult, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![shape.len()],
+        });
+    }
+    let m = shape[0];
+    let n = shape[1];
+
+    if m == 0 || n == 0 {
+        let k = if reduced { m.min(n) } else { m };
+        return Ok(QrResult {
+            q: vec![0.0; m * k],
+            r: vec![0.0; k * n],
+            m: k,
+            n,
+        });
+    }
+
+    let k = m.min(n);
+    let offset = meta.storage_offset();
+
+    // Copy A into working matrix R (m x n, row-major)
+    let mut r_mat = data[offset..offset + m * n].to_vec();
+
+    // Build Q as product of Householder reflections, starting as identity (m x m)
+    let mut q_mat = vec![0.0; m * m];
+    for i in 0..m {
+        q_mat[i * m + i] = 1.0;
+    }
+
+    for j in 0..k {
+        // Extract the column vector below the diagonal: v = R[j:m, j]
+        let col_len = m - j;
+        let mut v = vec![0.0; col_len];
+        for i in 0..col_len {
+            v[i] = r_mat[(i + j) * n + j];
+        }
+
+        // Compute the Householder reflection: v[0] += sign(v[0]) * ||v||
+        let norm_v: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm_v < f64::EPSILON * 1e6 {
+            continue; // Skip near-zero column
+        }
+        let sign = if v[0] >= 0.0 { 1.0 } else { -1.0 };
+        v[0] += sign * norm_v;
+
+        // Normalize v
+        let norm_v2: f64 = v.iter().map(|x| x * x).sum();
+        if norm_v2 < f64::EPSILON * 1e6 {
+            continue;
+        }
+        let inv_norm = 1.0 / norm_v2;
+
+        // Apply Householder to R: R[j:m, :] -= 2 * v * (v^T @ R[j:m, :])
+        for col in 0..n {
+            let mut dot = 0.0;
+            for i in 0..col_len {
+                dot += v[i] * r_mat[(i + j) * n + col];
+            }
+            let factor = 2.0 * dot * inv_norm;
+            for i in 0..col_len {
+                r_mat[(i + j) * n + col] -= factor * v[i];
+            }
+        }
+
+        // Apply Householder to Q: Q[:, j:m] -= 2 * Q[:, j:m] @ v * v^T
+        for row in 0..m {
+            let mut dot = 0.0;
+            for i in 0..col_len {
+                dot += q_mat[row * m + (i + j)] * v[i];
+            }
+            let factor = 2.0 * dot * inv_norm;
+            for i in 0..col_len {
+                q_mat[row * m + (i + j)] -= factor * v[i];
+            }
+        }
+    }
+
+    // Clean up R: zero out below-diagonal elements
+    for i in 0..m {
+        for j in 0..i.min(n) {
+            r_mat[i * n + j] = 0.0;
+        }
+    }
+
+    if reduced {
+        // Q is m x k (first k columns of full Q)
+        let mut q_reduced = vec![0.0; m * k];
+        for i in 0..m {
+            for j in 0..k {
+                q_reduced[i * k + j] = q_mat[i * m + j];
+            }
+        }
+        // R is k x n (first k rows of full R)
+        let r_reduced = r_mat[..k * n].to_vec();
+        Ok(QrResult {
+            q: q_reduced,
+            r: r_reduced,
+            m: k,
+            n,
+        })
+    } else {
+        // Q is m x m, R is m x n
+        Ok(QrResult {
+            q: q_mat,
+            r: r_mat,
+            m,
+            n,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ft_core::{DType, Device, ScalarTensor, TensorCompatError, TensorMeta};
@@ -5325,5 +5699,492 @@ mod tests {
         let input = vec![1.0, 2.0, 3.0];
         let result = super::topk_tensor_contiguous_f64(&input, &meta, 5, 0, true, true);
         assert!(result.is_err());
+    }
+
+    // -------------------------------------------------------------------
+    // LU Decomposition tests
+    // -------------------------------------------------------------------
+
+    fn mat_mul_nn(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+        let mut c = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut acc = 0.0;
+                for k in 0..n {
+                    acc += a[i * n + k] * b[k * n + j];
+                }
+                c[i * n + j] = acc;
+            }
+        }
+        c
+    }
+
+    fn assert_mat_approx_eq(a: &[f64], b: &[f64], tol: f64, msg: &str) {
+        assert_eq!(a.len(), b.len(), "{msg}: length mismatch");
+        for (i, (&av, &bv)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (av - bv).abs() < tol,
+                "{msg}: element {i} differs: {av} vs {bv} (tol={tol})"
+            );
+        }
+    }
+
+    #[test]
+    fn lu_factor_identity_3x3() {
+        let meta = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ];
+        let result = super::lu_factor_contiguous_f64(&a, &meta).expect("lu_factor should succeed");
+        assert_eq!(result.n, 3);
+
+        let unpacked = super::lu_unpack(&result);
+        // For identity: P=I, L=I, U=I
+        assert_mat_approx_eq(&unpacked.l, &a, 1e-12, "L should be identity");
+        assert_mat_approx_eq(&unpacked.u, &a, 1e-12, "U should be identity");
+
+        // P @ L @ U == A
+        let pl = mat_mul_nn(&unpacked.p, &unpacked.l, 3);
+        let plu = mat_mul_nn(&pl, &unpacked.u, 3);
+        assert_mat_approx_eq(&plu, &a, 1e-12, "P @ L @ U should equal A");
+    }
+
+    #[test]
+    fn lu_factor_known_3x3() {
+        let meta = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            2.0, 1.0, 1.0,
+            4.0, 3.0, 3.0,
+            8.0, 7.0, 9.0,
+        ];
+        let result = super::lu_factor_contiguous_f64(&a, &meta).expect("lu_factor should succeed");
+        let unpacked = super::lu_unpack(&result);
+
+        // Verify P @ L @ U == A
+        let pl = mat_mul_nn(&unpacked.p, &unpacked.l, 3);
+        let plu = mat_mul_nn(&pl, &unpacked.u, 3);
+        assert_mat_approx_eq(&plu, &a, 1e-10, "P @ L @ U should equal A");
+
+        // Verify L is lower triangular with unit diagonal
+        for i in 0..3 {
+            assert!(
+                (unpacked.l[i * 3 + i] - 1.0).abs() < 1e-12,
+                "L diagonal should be 1.0"
+            );
+            for j in (i + 1)..3 {
+                assert!(
+                    unpacked.l[i * 3 + j].abs() < 1e-12,
+                    "L should be zero above diagonal"
+                );
+            }
+        }
+
+        // Verify U is upper triangular
+        for i in 0..3 {
+            for j in 0..i {
+                assert!(
+                    unpacked.u[i * 3 + j].abs() < 1e-12,
+                    "U should be zero below diagonal"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lu_factor_already_upper_triangular() {
+        let meta = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            3.0, 2.0, 1.0,
+            0.0, 5.0, 4.0,
+            0.0, 0.0, 6.0,
+        ];
+        let result = super::lu_factor_contiguous_f64(&a, &meta).expect("lu_factor");
+        let unpacked = super::lu_unpack(&result);
+
+        let pl = mat_mul_nn(&unpacked.p, &unpacked.l, 3);
+        let plu = mat_mul_nn(&pl, &unpacked.u, 3);
+        assert_mat_approx_eq(&plu, &a, 1e-10, "P @ L @ U should equal A");
+    }
+
+    #[test]
+    fn lu_factor_1x1() {
+        let meta = TensorMeta::from_shape(vec![1, 1], DType::F64, Device::Cpu);
+        let a = vec![5.0];
+        let result = super::lu_factor_contiguous_f64(&a, &meta).expect("lu_factor");
+        let unpacked = super::lu_unpack(&result);
+
+        assert_mat_approx_eq(&unpacked.p, &[1.0], 1e-12, "P for 1x1");
+        assert_mat_approx_eq(&unpacked.l, &[1.0], 1e-12, "L for 1x1");
+        assert_mat_approx_eq(&unpacked.u, &[5.0], 1e-12, "U for 1x1");
+    }
+
+    #[test]
+    fn lu_factor_requires_square() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let result = super::lu_factor_contiguous_f64(&a, &meta);
+        assert!(result.is_err(), "non-square matrix should error");
+    }
+
+    #[test]
+    fn lu_factor_requires_2d() {
+        let meta = TensorMeta::from_shape(vec![8], DType::F64, Device::Cpu);
+        let a = vec![1.0; 8];
+        let result = super::lu_factor_contiguous_f64(&a, &meta);
+        assert!(result.is_err(), "1D tensor should error");
+    }
+
+    #[test]
+    fn lu_factor_zeros_on_diagonal_needs_pivoting() {
+        let meta = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            0.0, 1.0, 2.0,
+            3.0, 4.0, 5.0,
+            6.0, 7.0, 8.0,
+        ];
+        let result = super::lu_factor_contiguous_f64(&a, &meta).expect("pivoting should handle this");
+        let unpacked = super::lu_unpack(&result);
+
+        let pl = mat_mul_nn(&unpacked.p, &unpacked.l, 3);
+        let plu = mat_mul_nn(&pl, &unpacked.u, 3);
+        assert_mat_approx_eq(&plu, &a, 1e-10, "P @ L @ U should equal A even with zero diagonal");
+    }
+
+    #[test]
+    fn lu_solve_simple_system() {
+        // Solve A * x = b where A = [[2, 1], [5, 3]], b = [4, 7]
+        // Expected: x = [5, -6]
+        let meta_a = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let a = vec![2.0, 1.0, 5.0, 3.0];
+        let factor = super::lu_factor_contiguous_f64(&a, &meta_a).expect("lu_factor");
+
+        let meta_b = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let b = vec![4.0, 7.0];
+        let x = super::lu_solve_contiguous_f64(&factor, &b, &meta_b).expect("lu_solve");
+
+        assert_mat_approx_eq(&x, &[5.0, -6.0], 1e-10, "solution should be [5, -6]");
+    }
+
+    #[test]
+    fn lu_solve_3x3_system() {
+        // A = [[1, 2, 3], [4, 5, 6], [7, 8, 10]]
+        // b = [1, 2, 3]
+        let meta_a = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 10.0,
+        ];
+        let factor = super::lu_factor_contiguous_f64(&a, &meta_a).expect("lu_factor");
+
+        let meta_b = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let b = vec![1.0, 2.0, 3.0];
+        let x = super::lu_solve_contiguous_f64(&factor, &b, &meta_b).expect("lu_solve");
+
+        // Verify A * x ≈ b
+        let mut ax = vec![0.0; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                ax[i] += a[i * 3 + j] * x[j];
+            }
+        }
+        assert_mat_approx_eq(&ax, &b, 1e-10, "A * x should equal b");
+    }
+
+    #[test]
+    fn lu_solve_multiple_rhs() {
+        let meta_a = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let a = vec![2.0, 1.0, 5.0, 3.0];
+        let factor = super::lu_factor_contiguous_f64(&a, &meta_a).expect("lu_factor");
+
+        // B is [2, 2]: two right-hand sides
+        let meta_b = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let b = vec![4.0, 3.0, 7.0, 8.0]; // columns: [4,7] and [3,8]
+        let x = super::lu_solve_contiguous_f64(&factor, &b, &meta_b).expect("lu_solve multi-rhs");
+
+        // Verify A * X ≈ B (column by column)
+        for rhs in 0..2 {
+            for i in 0..2 {
+                let mut val = 0.0;
+                for j in 0..2 {
+                    val += a[i * 2 + j] * x[j * 2 + rhs];
+                }
+                assert!(
+                    (val - b[i * 2 + rhs]).abs() < 1e-10,
+                    "A*X[{i},{rhs}] = {val}, expected {}",
+                    b[i * 2 + rhs]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lu_solve_dimension_mismatch_errors() {
+        let meta_a = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        // Use a simple diagonal to avoid singularity
+        let a_diag = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let factor = super::lu_factor_contiguous_f64(&a_diag, &meta_a).expect("lu_factor");
+
+        let meta_b = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let b = vec![1.0, 2.0];
+        let result = super::lu_solve_contiguous_f64(&factor, &b, &meta_b);
+        assert!(result.is_err(), "mismatched dimensions should error");
+    }
+
+    #[test]
+    fn lu_factor_empty_matrix() {
+        let meta = TensorMeta::from_shape(vec![0, 0], DType::F64, Device::Cpu);
+        let a: Vec<f64> = vec![];
+        let result = super::lu_factor_contiguous_f64(&a, &meta).expect("empty should succeed");
+        assert_eq!(result.n, 0);
+        assert!(result.lu.is_empty());
+        assert!(result.pivots.is_empty());
+    }
+
+    // ---- QR Decomposition tests (bd-2drq.4) ----
+
+    /// Multiply an (m x p) matrix by a (p x n) matrix, returning (m x n).
+    fn mat_mul(a: &[f64], b: &[f64], m: usize, p: usize, n: usize) -> Vec<f64> {
+        let mut c = vec![0.0; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = 0.0;
+                for k in 0..p {
+                    acc += a[i * p + k] * b[k * n + j];
+                }
+                c[i * n + j] = acc;
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn qr_identity_3x3_complete() {
+        let meta = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ];
+        let result = super::qr_contiguous_f64(&a, &meta, false).expect("qr should succeed");
+        // Complete mode: Q is 3x3, R is 3x3
+        assert_eq!(result.q.len(), 9);
+        assert_eq!(result.r.len(), 9);
+
+        // Q should be orthogonal (Q^T @ Q == I)
+        let qtq = mat_mul_nn(&transpose_mat(&result.q, 3, 3), &result.q, 3);
+        assert_mat_approx_eq(&qtq, &a, 1e-12, "Q^T @ Q should be identity");
+
+        // Q @ R == A
+        let qr = mat_mul(&result.q, &result.r, 3, 3, 3);
+        assert_mat_approx_eq(&qr, &a, 1e-12, "Q @ R should equal A");
+    }
+
+    fn transpose_mat(a: &[f64], m: usize, n: usize) -> Vec<f64> {
+        let mut t = vec![0.0; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                t[j * m + i] = a[i * n + j];
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn qr_known_3x3_reduced() {
+        let meta = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            12.0, -51.0,   4.0,
+             6.0, 167.0, -68.0,
+            -4.0,  24.0, -41.0,
+        ];
+        let result = super::qr_contiguous_f64(&a, &meta, true).expect("qr should succeed");
+        // Reduced: k = min(3,3) = 3, so Q is 3x3, R is 3x3
+        assert_eq!(result.q.len(), 9);
+        assert_eq!(result.r.len(), 9);
+
+        // Q @ R == A
+        let qr = mat_mul(&result.q, &result.r, 3, 3, 3);
+        assert_mat_approx_eq(&qr, &a, 1e-10, "Q @ R should equal A");
+
+        // Q^T @ Q should be identity
+        let qtq = mat_mul(&transpose_mat(&result.q, 3, 3), &result.q, 3, 3, 3);
+        #[rustfmt::skip]
+        let eye3 = vec![
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ];
+        assert_mat_approx_eq(&qtq, &eye3, 1e-12, "Q^T @ Q should be identity");
+
+        // R should be upper triangular
+        for i in 0..3 {
+            for j in 0..i {
+                assert!(
+                    result.r[i * 3 + j].abs() < 1e-12,
+                    "R[{i},{j}] = {} should be zero",
+                    result.r[i * 3 + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn qr_tall_matrix_4x2_reduced() {
+        let meta = TensorMeta::from_shape(vec![4, 2], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 2.0,
+            3.0, 4.0,
+            5.0, 6.0,
+            7.0, 8.0,
+        ];
+        let result = super::qr_contiguous_f64(&a, &meta, true).expect("qr should succeed");
+        let m = 4;
+        let n = 2;
+        let k = 2; // min(4,2)
+        // Reduced: Q is 4x2, R is 2x2
+        assert_eq!(result.q.len(), m * k);
+        assert_eq!(result.r.len(), k * n);
+
+        // Q @ R == A
+        let qr = mat_mul(&result.q, &result.r, m, k, n);
+        assert_mat_approx_eq(&qr, &a, 1e-10, "Q @ R should equal A");
+
+        // Q^T @ Q should be k x k identity
+        let qtq = mat_mul(&transpose_mat(&result.q, m, k), &result.q, k, m, k);
+        let mut eye_k = vec![0.0; k * k];
+        for i in 0..k {
+            eye_k[i * k + i] = 1.0;
+        }
+        assert_mat_approx_eq(&qtq, &eye_k, 1e-12, "Q^T @ Q should be identity");
+    }
+
+    #[test]
+    fn qr_tall_matrix_4x2_complete() {
+        let meta = TensorMeta::from_shape(vec![4, 2], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 2.0,
+            3.0, 4.0,
+            5.0, 6.0,
+            7.0, 8.0,
+        ];
+        let result = super::qr_contiguous_f64(&a, &meta, false).expect("qr should succeed");
+        let m = 4;
+        let n = 2;
+        // Complete: Q is 4x4, R is 4x2
+        assert_eq!(result.q.len(), m * m);
+        assert_eq!(result.r.len(), m * n);
+
+        // Q @ R == A
+        let qr = mat_mul(&result.q, &result.r, m, m, n);
+        assert_mat_approx_eq(&qr, &a, 1e-10, "Q @ R should equal A");
+
+        // Q^T @ Q should be m x m identity
+        let qtq = mat_mul(&transpose_mat(&result.q, m, m), &result.q, m, m, m);
+        let mut eye_m = vec![0.0; m * m];
+        for i in 0..m {
+            eye_m[i * m + i] = 1.0;
+        }
+        assert_mat_approx_eq(&qtq, &eye_m, 1e-12, "Q^T @ Q should be identity");
+    }
+
+    #[test]
+    fn qr_wide_matrix_2x4_reduced() {
+        let meta = TensorMeta::from_shape(vec![2, 4], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+        ];
+        let result = super::qr_contiguous_f64(&a, &meta, true).expect("qr should succeed");
+        let m = 2;
+        let n = 4;
+        let k = 2; // min(2,4)
+        // Reduced: Q is 2x2, R is 2x4
+        assert_eq!(result.q.len(), m * k);
+        assert_eq!(result.r.len(), k * n);
+
+        // Q @ R == A
+        let qr = mat_mul(&result.q, &result.r, m, k, n);
+        assert_mat_approx_eq(&qr, &a, 1e-10, "Q @ R should equal A");
+
+        // Q^T @ Q should be k x k identity
+        let qtq = mat_mul(&transpose_mat(&result.q, m, k), &result.q, k, m, k);
+        let mut eye_k = vec![0.0; k * k];
+        for i in 0..k {
+            eye_k[i * k + i] = 1.0;
+        }
+        assert_mat_approx_eq(&qtq, &eye_k, 1e-12, "Q^T @ Q should be identity");
+    }
+
+    #[test]
+    fn qr_1x1() {
+        let meta = TensorMeta::from_shape(vec![1, 1], DType::F64, Device::Cpu);
+        let a = vec![5.0];
+        let result = super::qr_contiguous_f64(&a, &meta, true).expect("qr should succeed");
+        assert_eq!(result.q.len(), 1);
+        assert_eq!(result.r.len(), 1);
+        // For scalar: Q = ±1, R = ±5, Q*R = 5
+        let qr_val = result.q[0] * result.r[0];
+        assert!((qr_val - 5.0).abs() < 1e-12, "Q*R should equal 5.0");
+        // Q should be orthogonal: |Q| = 1
+        assert!(
+            (result.q[0].abs() - 1.0).abs() < 1e-12,
+            "Q should be ±1"
+        );
+    }
+
+    #[test]
+    fn qr_empty_matrix() {
+        let meta = TensorMeta::from_shape(vec![0, 3], DType::F64, Device::Cpu);
+        let a: Vec<f64> = vec![];
+        let result = super::qr_contiguous_f64(&a, &meta, true).expect("empty should succeed");
+        assert!(result.q.is_empty());
+        assert!(result.r.is_empty());
+    }
+
+    #[test]
+    fn qr_rejects_1d_tensor() {
+        let meta = TensorMeta::from_shape(vec![4], DType::F64, Device::Cpu);
+        let a = vec![1.0, 2.0, 3.0, 4.0];
+        assert!(
+            super::qr_contiguous_f64(&a, &meta, true).is_err(),
+            "1D tensor should be rejected"
+        );
+    }
+
+    #[test]
+    fn qr_r_is_upper_triangular() {
+        let meta = TensorMeta::from_shape(vec![4, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+            10.0, 11.0, 12.0,
+        ];
+        let result = super::qr_contiguous_f64(&a, &meta, true).expect("qr should succeed");
+        let k = 3; // min(4,3)
+        let n = 3;
+        for i in 0..k {
+            for j in 0..i.min(n) {
+                assert!(
+                    result.r[i * n + j].abs() < 1e-12,
+                    "R[{i},{j}] = {} should be zero below diagonal",
+                    result.r[i * n + j]
+                );
+            }
+        }
     }
 }

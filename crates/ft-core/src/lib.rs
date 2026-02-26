@@ -11,6 +11,51 @@ static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 pub enum DType {
     F64,
     F32,
+    I64,
+    I32,
+    Bool,
+}
+
+impl DType {
+    /// Size of one element in bytes.
+    #[must_use]
+    pub fn element_size(self) -> usize {
+        match self {
+            Self::F64 | Self::I64 => 8,
+            Self::F32 | Self::I32 => 4,
+            Self::Bool => 1,
+        }
+    }
+
+    /// Returns true for floating-point dtypes.
+    #[must_use]
+    pub fn is_floating_point(self) -> bool {
+        matches!(self, Self::F64 | Self::F32)
+    }
+
+    /// Returns true for integer dtypes (not bool).
+    #[must_use]
+    pub fn is_integer(self) -> bool {
+        matches!(self, Self::I32 | Self::I64)
+    }
+
+    /// Returns true for the boolean dtype.
+    #[must_use]
+    pub fn is_bool(self) -> bool {
+        matches!(self, Self::Bool)
+    }
+
+    /// Promote two floating-point dtypes: F32+F64→F64, same→same.
+    /// Returns `None` for non-floating-point dtypes.
+    #[must_use]
+    pub fn promote(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (Self::F64, Self::F64) => Some(Self::F64),
+            (Self::F32, Self::F32) => Some(Self::F32),
+            (Self::F64, Self::F32) | (Self::F32, Self::F64) => Some(Self::F64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,6 +124,12 @@ impl TensorMeta {
     #[must_use]
     pub fn with_storage_offset(mut self, storage_offset: usize) -> Self {
         self.storage_offset = storage_offset;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dtype(mut self, dtype: DType) -> Self {
+        self.dtype = dtype;
         self
     }
 
@@ -427,12 +478,75 @@ impl ScalarTensor {
     }
 }
 
+// ── Typed Tensor Storage ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TensorStorage {
+    F32(Vec<f32>),
+    F64(Vec<f64>),
+}
+
+impl TensorStorage {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::F32(v) => v.len(),
+            Self::F64(v) => v.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[must_use]
+    pub fn dtype(&self) -> DType {
+        match self {
+            Self::F32(_) => DType::F32,
+            Self::F64(_) => DType::F64,
+        }
+    }
+
+    #[must_use]
+    pub fn as_f64(&self) -> Option<&[f64]> {
+        match self {
+            Self::F64(v) => Some(v.as_slice()),
+            Self::F32(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_f32(&self) -> Option<&[f32]> {
+        match self {
+            Self::F32(v) => Some(v.as_slice()),
+            Self::F64(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn to_f64_vec(&self) -> Vec<f64> {
+        match self {
+            Self::F64(v) => v.clone(),
+            Self::F32(v) => v.iter().map(|&x| f64::from(x)).collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn to_f32_vec(&self) -> Vec<f32> {
+        match self {
+            Self::F32(v) => v.clone(),
+            Self::F64(v) => v.iter().map(|&x| x as f32).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DenseTensor {
     id: u64,
     storage_id: u64,
     meta: TensorMeta,
-    storage: Vec<f64>,
+    storage: TensorStorage,
     version: u64,
 }
 
@@ -451,7 +565,7 @@ impl fmt::Display for DenseTensorError {
             Self::Meta(error) => write!(f, "invalid tensor metadata: {error}"),
             Self::UnsupportedDType(dtype) => write!(
                 f,
-                "unsupported dense tensor dtype: expected F64, got {dtype:?}"
+                "unsupported tensor dtype for this storage type: {dtype:?}"
             ),
             Self::UnsupportedLayout => {
                 write!(f, "dense tensor requires contiguous layout")
@@ -480,9 +594,15 @@ impl From<TensorMetaError> for DenseTensorError {
 }
 
 impl DenseTensor {
-    pub fn from_storage(meta: TensorMeta, storage: Vec<f64>) -> Result<Self, DenseTensorError> {
+    pub fn from_typed_storage(
+        meta: TensorMeta,
+        storage: TensorStorage,
+    ) -> Result<Self, DenseTensorError> {
         meta.validate()?;
-        if meta.dtype() != DType::F64 {
+        if meta.dtype() != storage.dtype() {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        if !meta.dtype().is_floating_point() {
             return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
         }
 
@@ -503,6 +623,20 @@ impl DenseTensor {
         })
     }
 
+    pub fn from_storage(meta: TensorMeta, storage: Vec<f64>) -> Result<Self, DenseTensorError> {
+        if meta.dtype() != DType::F64 {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        Self::from_typed_storage(meta, TensorStorage::F64(storage))
+    }
+
+    pub fn from_storage_f32(meta: TensorMeta, storage: Vec<f32>) -> Result<Self, DenseTensorError> {
+        if meta.dtype() != DType::F32 {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        Self::from_typed_storage(meta, TensorStorage::F32(storage))
+    }
+
     pub fn from_contiguous_values(
         values: Vec<f64>,
         shape: Vec<usize>,
@@ -510,6 +644,15 @@ impl DenseTensor {
     ) -> Result<Self, DenseTensorError> {
         let meta = TensorMeta::from_shape(shape, DType::F64, device);
         Self::from_storage(meta, values)
+    }
+
+    pub fn from_contiguous_values_f32(
+        values: Vec<f32>,
+        shape: Vec<usize>,
+        device: Device,
+    ) -> Result<Self, DenseTensorError> {
+        let meta = TensorMeta::from_shape(shape, DType::F32, device);
+        Self::from_storage_f32(meta, values)
     }
 
     fn contiguous_required_len(meta: &TensorMeta) -> Result<usize, DenseTensorError> {
@@ -567,7 +710,10 @@ impl DenseTensor {
     pub fn dispatch_values(&self) -> Result<&[f64], DenseTensorError> {
         let start = self.meta.storage_offset();
         let end = Self::storage_span_required_len(&self.meta)?;
-        Ok(&self.storage[start..end])
+        match &self.storage {
+            TensorStorage::F64(v) => Ok(&v[start..end]),
+            TensorStorage::F32(_) => Err(DenseTensorError::UnsupportedDType(DType::F32)),
+        }
     }
 
     pub fn contiguous_values(&self) -> Result<&[f64], DenseTensorError> {
@@ -577,9 +723,44 @@ impl DenseTensor {
         self.dispatch_values()
     }
 
+    pub fn contiguous_values_f32(&self) -> Result<&[f32], DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = Self::storage_span_required_len(&self.meta)?;
+        match &self.storage {
+            TensorStorage::F32(v) => Ok(&v[start..end]),
+            TensorStorage::F64(_) => Err(DenseTensorError::UnsupportedDType(DType::F64)),
+        }
+    }
+
+    /// Returns contiguous values as f64, converting from f32 if needed.
+    /// Used by backward pass to keep gradient computation in f64.
+    pub fn contiguous_values_as_f64(&self) -> Result<Vec<f64>, DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = Self::storage_span_required_len(&self.meta)?;
+        match &self.storage {
+            TensorStorage::F64(v) => Ok(v[start..end].to_vec()),
+            TensorStorage::F32(v) => Ok(v[start..end].iter().map(|&x| f64::from(x)).collect()),
+        }
+    }
+
+    #[must_use]
+    pub fn typed_storage(&self) -> &TensorStorage {
+        &self.storage
+    }
+
+    /// Returns the raw f64 storage slice. Panics on f32 tensors.
     #[must_use]
     pub fn storage(&self) -> &[f64] {
-        &self.storage
+        match &self.storage {
+            TensorStorage::F64(v) => v.as_slice(),
+            TensorStorage::F32(_) => panic!("called storage() on f32 DenseTensor; use typed_storage() or contiguous_values_f32()"),
+        }
     }
 
     #[must_use]
@@ -602,6 +783,28 @@ impl DenseTensor {
         self.version
     }
 
+    /// Cast this tensor to a different floating-point dtype.
+    pub fn to_dtype(&self, dtype: DType) -> Result<Self, DenseTensorError> {
+        if !dtype.is_floating_point() {
+            return Err(DenseTensorError::UnsupportedDType(dtype));
+        }
+        if self.meta.dtype() == dtype {
+            return Ok(self.clone());
+        }
+        let new_meta = self.meta.clone().with_dtype(dtype);
+        match (&self.storage, dtype) {
+            (TensorStorage::F64(v), DType::F32) => {
+                let f32_vals: Vec<f32> = v.iter().map(|&x| x as f32).collect();
+                Self::from_typed_storage(new_meta, TensorStorage::F32(f32_vals))
+            }
+            (TensorStorage::F32(v), DType::F64) => {
+                let f64_vals: Vec<f64> = v.iter().map(|&x| f64::from(x)).collect();
+                Self::from_typed_storage(new_meta, TensorStorage::F64(f64_vals))
+            }
+            _ => Ok(self.clone()),
+        }
+    }
+
     /// Update the contiguous values in-place and bump the version counter.
     ///
     /// The new values must exactly match the length of the contiguous slice.
@@ -611,16 +814,308 @@ impl DenseTensor {
         }
         let start = self.meta.storage_offset();
         let end = Self::contiguous_required_len(&self.meta)?;
-        let slice = &mut self.storage[start..end];
-        if new_values.len() != slice.len() {
-            return Err(DenseTensorError::InsufficientStorage {
-                needed: slice.len(),
-                actual: new_values.len(),
-            });
+        match &mut self.storage {
+            TensorStorage::F64(v) => {
+                let slice = &mut v[start..end];
+                if new_values.len() != slice.len() {
+                    return Err(DenseTensorError::InsufficientStorage {
+                        needed: slice.len(),
+                        actual: new_values.len(),
+                    });
+                }
+                slice.copy_from_slice(new_values);
+            }
+            TensorStorage::F32(_) => {
+                return Err(DenseTensorError::UnsupportedDType(DType::F32));
+            }
         }
-        slice.copy_from_slice(new_values);
         self.version += 1;
         Ok(())
+    }
+
+    /// Update the contiguous f32 values in-place and bump the version counter.
+    pub fn update_contiguous_values_f32(
+        &mut self,
+        new_values: &[f32],
+    ) -> Result<(), DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = Self::contiguous_required_len(&self.meta)?;
+        match &mut self.storage {
+            TensorStorage::F32(v) => {
+                let slice = &mut v[start..end];
+                if new_values.len() != slice.len() {
+                    return Err(DenseTensorError::InsufficientStorage {
+                        needed: slice.len(),
+                        actual: new_values.len(),
+                    });
+                }
+                slice.copy_from_slice(new_values);
+            }
+            TensorStorage::F64(_) => {
+                return Err(DenseTensorError::UnsupportedDType(DType::F64));
+            }
+        }
+        self.version += 1;
+        Ok(())
+    }
+}
+
+// ── Integer Tensor Types ───────────────────────────────────────────────
+
+/// Dense tensor backed by `Vec<i64>` storage.
+///
+/// Integer tensors do NOT participate in autograd (`requires_grad` is always false).
+/// They are used for indexing, class labels, and shape operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DenseI64Tensor {
+    id: u64,
+    storage_id: u64,
+    meta: TensorMeta,
+    storage: Vec<i64>,
+    version: u64,
+}
+
+impl DenseI64Tensor {
+    pub fn from_storage(meta: TensorMeta, storage: Vec<i64>) -> Result<Self, DenseTensorError> {
+        meta.validate()?;
+        if meta.dtype() != DType::I64 {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        if !meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let needed = meta.storage_offset() + meta.numel();
+        if storage.len() < needed {
+            return Err(DenseTensorError::InsufficientStorage {
+                needed,
+                actual: storage.len(),
+            });
+        }
+        Ok(Self {
+            id: NEXT_TENSOR_ID.fetch_add(1, Ordering::Relaxed),
+            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            meta,
+            storage,
+            version: 0,
+        })
+    }
+
+    pub fn from_contiguous_values(
+        values: Vec<i64>,
+        shape: Vec<usize>,
+        device: Device,
+    ) -> Result<Self, DenseTensorError> {
+        let meta = TensorMeta::from_shape(shape, DType::I64, device);
+        Self::from_storage(meta, values)
+    }
+
+    #[must_use]
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    #[must_use]
+    pub fn storage_id(&self) -> u64 {
+        self.storage_id
+    }
+
+    #[must_use]
+    pub fn meta(&self) -> &TensorMeta {
+        &self.meta
+    }
+
+    #[must_use]
+    pub fn storage(&self) -> &[i64] {
+        &self.storage
+    }
+
+    /// Return the contiguous values slice.
+    pub fn contiguous_values(&self) -> Result<&[i64], DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = start + self.meta.numel();
+        Ok(&self.storage[start..end])
+    }
+
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+}
+
+/// Dense tensor backed by `Vec<i32>` storage.
+///
+/// Integer tensors do NOT participate in autograd (`requires_grad` is always false).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DenseI32Tensor {
+    id: u64,
+    storage_id: u64,
+    meta: TensorMeta,
+    storage: Vec<i32>,
+    version: u64,
+}
+
+impl DenseI32Tensor {
+    pub fn from_storage(meta: TensorMeta, storage: Vec<i32>) -> Result<Self, DenseTensorError> {
+        meta.validate()?;
+        if meta.dtype() != DType::I32 {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        if !meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let needed = meta.storage_offset() + meta.numel();
+        if storage.len() < needed {
+            return Err(DenseTensorError::InsufficientStorage {
+                needed,
+                actual: storage.len(),
+            });
+        }
+        Ok(Self {
+            id: NEXT_TENSOR_ID.fetch_add(1, Ordering::Relaxed),
+            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            meta,
+            storage,
+            version: 0,
+        })
+    }
+
+    pub fn from_contiguous_values(
+        values: Vec<i32>,
+        shape: Vec<usize>,
+        device: Device,
+    ) -> Result<Self, DenseTensorError> {
+        let meta = TensorMeta::from_shape(shape, DType::I32, device);
+        Self::from_storage(meta, values)
+    }
+
+    #[must_use]
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    #[must_use]
+    pub fn storage_id(&self) -> u64 {
+        self.storage_id
+    }
+
+    #[must_use]
+    pub fn meta(&self) -> &TensorMeta {
+        &self.meta
+    }
+
+    #[must_use]
+    pub fn storage(&self) -> &[i32] {
+        &self.storage
+    }
+
+    /// Return the contiguous values slice.
+    pub fn contiguous_values(&self) -> Result<&[i32], DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = start + self.meta.numel();
+        Ok(&self.storage[start..end])
+    }
+
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+}
+
+/// Dense tensor backed by `Vec<u8>` storage (0=false, 1=true).
+///
+/// Bool tensors do NOT participate in autograd (`requires_grad` is always false).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DenseBoolTensor {
+    id: u64,
+    storage_id: u64,
+    meta: TensorMeta,
+    storage: Vec<u8>,
+    version: u64,
+}
+
+impl DenseBoolTensor {
+    pub fn from_storage(meta: TensorMeta, storage: Vec<u8>) -> Result<Self, DenseTensorError> {
+        meta.validate()?;
+        if meta.dtype() != DType::Bool {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        if !meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let needed = meta.storage_offset() + meta.numel();
+        if storage.len() < needed {
+            return Err(DenseTensorError::InsufficientStorage {
+                needed,
+                actual: storage.len(),
+            });
+        }
+        Ok(Self {
+            id: NEXT_TENSOR_ID.fetch_add(1, Ordering::Relaxed),
+            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            meta,
+            storage,
+            version: 0,
+        })
+    }
+
+    pub fn from_bools(
+        values: &[bool],
+        shape: Vec<usize>,
+        device: Device,
+    ) -> Result<Self, DenseTensorError> {
+        let storage: Vec<u8> = values.iter().map(|&b| u8::from(b)).collect();
+        let meta = TensorMeta::from_shape(shape, DType::Bool, device);
+        Self::from_storage(meta, storage)
+    }
+
+    #[must_use]
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    #[must_use]
+    pub fn storage_id(&self) -> u64 {
+        self.storage_id
+    }
+
+    #[must_use]
+    pub fn meta(&self) -> &TensorMeta {
+        &self.meta
+    }
+
+    #[must_use]
+    pub fn storage(&self) -> &[u8] {
+        &self.storage
+    }
+
+    /// Return the contiguous values slice as u8 (0=false, 1=true).
+    pub fn contiguous_values(&self) -> Result<&[u8], DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = start + self.meta.numel();
+        Ok(&self.storage[start..end])
+    }
+
+    /// Return the contiguous values as a Vec<bool>.
+    pub fn contiguous_bools(&self) -> Result<Vec<bool>, DenseTensorError> {
+        let values = self.contiguous_values()?;
+        Ok(values.iter().map(|&v| v != 0).collect())
+    }
+
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
     }
 }
 
@@ -664,8 +1159,9 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        DType, DenseTensor, DenseTensorError, Device, ScalarTensor, TensorMeta, TensorMetaError,
-        contiguous_strides, ensure_compatible,
+        DType, DenseBoolTensor, DenseI32Tensor, DenseI64Tensor, DenseTensor, DenseTensorError,
+        Device, ScalarTensor, TensorMeta, TensorMetaError, TensorStorage, contiguous_strides,
+        ensure_compatible,
     };
 
     fn det_seed(parts: &[usize]) -> u64 {
@@ -1211,13 +1707,23 @@ mod tests {
     }
 
     #[test]
-    fn dense_tensor_from_storage_rejects_unsupported_dtype() {
+    fn dense_tensor_from_storage_rejects_dtype_mismatch() {
+        // from_storage takes Vec<f64>, so passing F32 meta is a mismatch
         let meta = TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu);
         let err = DenseTensor::from_storage(meta, vec![1.0, 2.0])
-            .expect_err("F32 dtype should be rejected");
+            .expect_err("F32 meta with f64 storage should be rejected");
         assert!(
             matches!(err, DenseTensorError::UnsupportedDType(DType::F32)),
             "expected UnsupportedDType(F32), got {err:?}"
+        );
+
+        // from_storage_f32 with F64 meta is also a mismatch
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let err = DenseTensor::from_storage_f32(meta, vec![1.0f32, 2.0])
+            .expect_err("F64 meta with f32 storage should be rejected");
+        assert!(
+            matches!(err, DenseTensorError::UnsupportedDType(DType::F64)),
+            "expected UnsupportedDType(F64), got {err:?}"
         );
     }
 
@@ -1247,5 +1753,470 @@ mod tests {
                 .expect("replace should succeed");
         }
         assert_eq!(dt.version(), 5);
+    }
+
+    // ── Integer DType tests ───────────────────────────────────────────
+
+    #[test]
+    fn dtype_element_sizes() {
+        assert_eq!(DType::F64.element_size(), 8);
+        assert_eq!(DType::F32.element_size(), 4);
+        assert_eq!(DType::I64.element_size(), 8);
+        assert_eq!(DType::I32.element_size(), 4);
+    }
+
+    #[test]
+    fn dtype_is_floating_point() {
+        assert!(DType::F64.is_floating_point());
+        assert!(DType::F32.is_floating_point());
+        assert!(!DType::I64.is_floating_point());
+        assert!(!DType::I32.is_floating_point());
+    }
+
+    #[test]
+    fn dtype_is_integer() {
+        assert!(!DType::F64.is_integer());
+        assert!(!DType::F32.is_integer());
+        assert!(DType::I64.is_integer());
+        assert!(DType::I32.is_integer());
+    }
+
+    #[test]
+    fn tensor_meta_with_integer_dtypes() {
+        let meta_i64 = TensorMeta::from_shape(vec![2, 3], DType::I64, Device::Cpu);
+        assert_eq!(meta_i64.dtype(), DType::I64);
+        assert_eq!(meta_i64.numel(), 6);
+        assert_eq!(meta_i64.strides(), &[3, 1]);
+        assert!(meta_i64.is_contiguous());
+
+        let meta_i32 = TensorMeta::from_shape(vec![4], DType::I32, Device::Cpu);
+        assert_eq!(meta_i32.dtype(), DType::I32);
+        assert_eq!(meta_i32.numel(), 4);
+    }
+
+    #[test]
+    fn dense_i64_tensor_from_contiguous_values() {
+        let dt =
+            DenseI64Tensor::from_contiguous_values(vec![1, 2, 3, 4], vec![2, 2], Device::Cpu)
+                .expect("create i64 tensor");
+        assert_eq!(dt.meta().shape(), &[2, 2]);
+        assert_eq!(dt.meta().dtype(), DType::I64);
+        assert_eq!(
+            dt.contiguous_values().expect("values"),
+            &[1i64, 2, 3, 4]
+        );
+        assert!(dt.id() > 0);
+        assert_eq!(dt.version(), 0);
+    }
+
+    #[test]
+    fn dense_i32_tensor_from_contiguous_values() {
+        let dt =
+            DenseI32Tensor::from_contiguous_values(vec![10, 20, 30], vec![3], Device::Cpu)
+                .expect("create i32 tensor");
+        assert_eq!(dt.meta().shape(), &[3]);
+        assert_eq!(dt.meta().dtype(), DType::I32);
+        assert_eq!(
+            dt.contiguous_values().expect("values"),
+            &[10i32, 20, 30]
+        );
+    }
+
+    #[test]
+    fn dense_i64_tensor_rejects_wrong_dtype() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let err = DenseI64Tensor::from_storage(meta, vec![1, 2])
+            .expect_err("wrong dtype should be rejected");
+        assert!(matches!(err, DenseTensorError::UnsupportedDType(DType::F64)));
+    }
+
+    #[test]
+    fn dense_i32_tensor_rejects_wrong_dtype() {
+        let meta = TensorMeta::from_shape(vec![2], DType::I64, Device::Cpu);
+        let err = DenseI32Tensor::from_storage(meta, vec![1, 2])
+            .expect_err("wrong dtype should be rejected");
+        assert!(matches!(err, DenseTensorError::UnsupportedDType(DType::I64)));
+    }
+
+    #[test]
+    fn dense_i64_tensor_rejects_insufficient_storage() {
+        let meta = TensorMeta::from_shape(vec![5], DType::I64, Device::Cpu);
+        let err = DenseI64Tensor::from_storage(meta, vec![1, 2])
+            .expect_err("insufficient storage should fail");
+        assert!(matches!(
+            err,
+            DenseTensorError::InsufficientStorage {
+                needed: 5,
+                actual: 2
+            }
+        ));
+    }
+
+    #[test]
+    fn dense_i64_tensor_negative_values() {
+        let dt = DenseI64Tensor::from_contiguous_values(
+            vec![-100, 0, i64::MAX, i64::MIN],
+            vec![4],
+            Device::Cpu,
+        )
+        .expect("create with extreme values");
+        let vals = dt.contiguous_values().expect("values");
+        assert_eq!(vals[0], -100);
+        assert_eq!(vals[2], i64::MAX);
+        assert_eq!(vals[3], i64::MIN);
+    }
+
+    #[test]
+    fn dense_i32_tensor_extreme_values() {
+        let dt = DenseI32Tensor::from_contiguous_values(
+            vec![i32::MAX, i32::MIN, 0, -1],
+            vec![4],
+            Device::Cpu,
+        )
+        .expect("create with extreme values");
+        let vals = dt.contiguous_values().expect("values");
+        assert_eq!(vals[0], i32::MAX);
+        assert_eq!(vals[1], i32::MIN);
+    }
+
+    #[test]
+    fn dense_i64_tensor_scalar() {
+        let dt = DenseI64Tensor::from_contiguous_values(vec![42], vec![], Device::Cpu)
+            .expect("scalar i64 tensor");
+        assert_eq!(dt.meta().shape(), &[] as &[usize]);
+        assert_eq!(dt.meta().numel(), 1);
+        assert_eq!(dt.contiguous_values().expect("values"), &[42]);
+    }
+
+    #[test]
+    fn dense_i64_tensor_empty() {
+        let dt =
+            DenseI64Tensor::from_contiguous_values(vec![], vec![0], Device::Cpu)
+                .expect("empty i64 tensor");
+        assert_eq!(dt.meta().numel(), 0);
+        assert_eq!(dt.contiguous_values().expect("values"), &[] as &[i64]);
+    }
+
+    #[test]
+    fn dense_i64_tensor_storage_accessor() {
+        let dt =
+            DenseI64Tensor::from_contiguous_values(vec![5, 6, 7], vec![3], Device::Cpu)
+                .expect("create i64 tensor");
+        assert_eq!(dt.storage(), &[5i64, 6, 7]);
+    }
+
+    #[test]
+    fn dense_i32_tensor_storage_accessor() {
+        let dt =
+            DenseI32Tensor::from_contiguous_values(vec![8, 9], vec![2], Device::Cpu)
+                .expect("create i32 tensor");
+        assert_eq!(dt.storage(), &[8i32, 9]);
+    }
+
+    // ---- Bool DType tests (bd-2do9.2) ----
+
+    #[test]
+    fn bool_dtype_element_size_is_1() {
+        assert_eq!(DType::Bool.element_size(), 1);
+    }
+
+    #[test]
+    fn bool_dtype_is_not_floating_point() {
+        assert!(!DType::Bool.is_floating_point());
+    }
+
+    #[test]
+    fn bool_dtype_is_not_integer() {
+        assert!(!DType::Bool.is_integer());
+    }
+
+    #[test]
+    fn bool_dtype_is_bool() {
+        assert!(DType::Bool.is_bool());
+        assert!(!DType::F64.is_bool());
+        assert!(!DType::F32.is_bool());
+        assert!(!DType::I64.is_bool());
+        assert!(!DType::I32.is_bool());
+    }
+
+    #[test]
+    fn dense_bool_tensor_from_bools() {
+        let t = DenseBoolTensor::from_bools(
+            &[true, false, true, false],
+            vec![4],
+            Device::Cpu,
+        )
+        .expect("create bool tensor");
+        assert_eq!(t.meta().dtype(), DType::Bool);
+        assert_eq!(t.meta().shape(), &[4]);
+        assert_eq!(t.contiguous_values().unwrap(), &[1u8, 0, 1, 0]);
+        assert_eq!(t.contiguous_bools().unwrap(), vec![true, false, true, false]);
+    }
+
+    #[test]
+    fn dense_bool_tensor_2d() {
+        let t = DenseBoolTensor::from_bools(
+            &[true, true, false, false, true, false],
+            vec![2, 3],
+            Device::Cpu,
+        )
+        .expect("create 2d bool tensor");
+        assert_eq!(t.meta().shape(), &[2, 3]);
+        assert_eq!(t.meta().numel(), 6);
+        assert_eq!(t.contiguous_values().unwrap(), &[1u8, 1, 0, 0, 1, 0]);
+    }
+
+    #[test]
+    fn dense_bool_tensor_rejects_wrong_dtype() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let err = DenseBoolTensor::from_storage(meta, vec![0, 1])
+            .expect_err("wrong dtype should fail");
+        assert!(matches!(err, DenseTensorError::UnsupportedDType(DType::F64)));
+    }
+
+    #[test]
+    fn dense_bool_tensor_rejects_insufficient_storage() {
+        let meta = TensorMeta::from_shape(vec![5], DType::Bool, Device::Cpu);
+        let err = DenseBoolTensor::from_storage(meta, vec![0, 1])
+            .expect_err("insufficient storage should fail");
+        assert!(matches!(
+            err,
+            DenseTensorError::InsufficientStorage { needed: 5, actual: 2 }
+        ));
+    }
+
+    #[test]
+    fn dense_bool_tensor_all_true() {
+        let t = DenseBoolTensor::from_bools(&[true, true, true], vec![3], Device::Cpu)
+            .expect("all-true tensor");
+        assert!(t.contiguous_bools().unwrap().iter().all(|&b| b));
+    }
+
+    #[test]
+    fn dense_bool_tensor_all_false() {
+        let t = DenseBoolTensor::from_bools(&[false, false, false], vec![3], Device::Cpu)
+            .expect("all-false tensor");
+        assert!(t.contiguous_bools().unwrap().iter().all(|&b| !b));
+    }
+
+    #[test]
+    fn dense_bool_tensor_empty() {
+        let t = DenseBoolTensor::from_bools(&[], vec![0], Device::Cpu)
+            .expect("empty bool tensor");
+        assert_eq!(t.meta().numel(), 0);
+        assert_eq!(t.contiguous_values().unwrap(), &[] as &[u8]);
+    }
+
+    #[test]
+    fn dense_bool_tensor_scalar() {
+        let t = DenseBoolTensor::from_bools(&[true], vec![], Device::Cpu)
+            .expect("scalar bool tensor");
+        assert_eq!(t.meta().numel(), 1);
+        assert_eq!(t.contiguous_bools().unwrap(), vec![true]);
+    }
+
+    #[test]
+    fn dense_bool_tensor_storage_accessor() {
+        let t = DenseBoolTensor::from_bools(&[false, true], vec![2], Device::Cpu)
+            .expect("create bool tensor");
+        assert_eq!(t.storage(), &[0u8, 1]);
+    }
+
+    #[test]
+    fn dense_bool_tensor_has_unique_ids() {
+        let t1 = DenseBoolTensor::from_bools(&[true], vec![1], Device::Cpu).expect("t1");
+        let t2 = DenseBoolTensor::from_bools(&[false], vec![1], Device::Cpu).expect("t2");
+        assert_ne!(t1.id(), t2.id());
+        assert_ne!(t1.storage_id(), t2.storage_id());
+    }
+
+    #[test]
+    fn dense_bool_tensor_version_starts_at_zero() {
+        let t = DenseBoolTensor::from_bools(&[true, false], vec![2], Device::Cpu)
+            .expect("bool tensor");
+        assert_eq!(t.version(), 0);
+    }
+
+    // ── bd-2do9.3: TensorStorage and F32 DenseTensor tests ──────────────
+
+    #[test]
+    fn tensor_storage_f32_basic_ops() {
+        let s = TensorStorage::F32(vec![1.0f32, 2.0, 3.0]);
+        assert_eq!(s.len(), 3);
+        assert!(!s.is_empty());
+        assert_eq!(s.dtype(), DType::F32);
+        assert!(s.as_f32().is_some());
+        assert!(s.as_f64().is_none());
+        assert_eq!(s.as_f32().unwrap(), &[1.0f32, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn tensor_storage_f64_basic_ops() {
+        let s = TensorStorage::F64(vec![1.0, 2.0]);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s.dtype(), DType::F64);
+        assert!(s.as_f64().is_some());
+        assert!(s.as_f32().is_none());
+    }
+
+    #[test]
+    fn tensor_storage_empty() {
+        let s = TensorStorage::F32(Vec::new());
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn tensor_storage_to_f64_vec_from_f32() {
+        let s = TensorStorage::F32(vec![1.5f32, 2.5]);
+        let v = s.to_f64_vec();
+        assert_eq!(v, vec![1.5f64, 2.5]);
+    }
+
+    #[test]
+    fn tensor_storage_to_f32_vec_from_f64() {
+        let s = TensorStorage::F64(vec![1.5, 2.5]);
+        let v = s.to_f32_vec();
+        assert_eq!(v, vec![1.5f32, 2.5]);
+    }
+
+    #[test]
+    fn dense_tensor_f32_creation() {
+        let dt = DenseTensor::from_contiguous_values_f32(
+            vec![1.0f32, 2.0, 3.0],
+            vec![3],
+            Device::Cpu,
+        )
+        .expect("create f32 dense tensor");
+        assert_eq!(dt.meta().dtype(), DType::F32);
+        assert_eq!(dt.contiguous_values_f32().unwrap(), &[1.0f32, 2.0, 3.0]);
+        assert!(dt.contiguous_values().is_err()); // f64 access on f32 tensor fails
+    }
+
+    #[test]
+    fn dense_tensor_f32_contiguous_values_as_f64() {
+        let dt = DenseTensor::from_contiguous_values_f32(
+            vec![1.5f32, 2.5, 3.5],
+            vec![3],
+            Device::Cpu,
+        )
+        .expect("create f32 dense tensor");
+        let f64_vals = dt.contiguous_values_as_f64().unwrap();
+        assert_eq!(f64_vals, vec![1.5f64, 2.5, 3.5]);
+    }
+
+    #[test]
+    fn dense_tensor_f64_contiguous_values_as_f64() {
+        let dt = DenseTensor::from_contiguous_values(vec![1.0, 2.0], vec![2], Device::Cpu)
+            .expect("create f64 dense tensor");
+        let f64_vals = dt.contiguous_values_as_f64().unwrap();
+        assert_eq!(f64_vals, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn dense_tensor_to_dtype_f64_to_f32() {
+        let dt = DenseTensor::from_contiguous_values(vec![1.5, 2.5], vec![2], Device::Cpu)
+            .expect("create f64 tensor");
+        let f32_dt = dt.to_dtype(DType::F32).expect("cast to f32");
+        assert_eq!(f32_dt.meta().dtype(), DType::F32);
+        assert_eq!(f32_dt.contiguous_values_f32().unwrap(), &[1.5f32, 2.5]);
+    }
+
+    #[test]
+    fn dense_tensor_to_dtype_f32_to_f64() {
+        let dt = DenseTensor::from_contiguous_values_f32(vec![1.5f32, 2.5], vec![2], Device::Cpu)
+            .expect("create f32 tensor");
+        let f64_dt = dt.to_dtype(DType::F64).expect("cast to f64");
+        assert_eq!(f64_dt.meta().dtype(), DType::F64);
+        assert_eq!(f64_dt.contiguous_values().unwrap(), &[1.5, 2.5]);
+    }
+
+    #[test]
+    fn dense_tensor_to_dtype_same_is_clone() {
+        let dt = DenseTensor::from_contiguous_values(vec![1.0, 2.0], vec![2], Device::Cpu)
+            .expect("create tensor");
+        let same = dt.to_dtype(DType::F64).expect("same dtype");
+        assert_eq!(same.contiguous_values().unwrap(), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn dense_tensor_to_dtype_rejects_non_float() {
+        let dt = DenseTensor::from_contiguous_values(vec![1.0], vec![1], Device::Cpu)
+            .expect("create tensor");
+        assert!(dt.to_dtype(DType::I64).is_err());
+    }
+
+    #[test]
+    fn dtype_promote_f32_f32() {
+        assert_eq!(DType::F32.promote(DType::F32), Some(DType::F32));
+    }
+
+    #[test]
+    fn dtype_promote_f64_f64() {
+        assert_eq!(DType::F64.promote(DType::F64), Some(DType::F64));
+    }
+
+    #[test]
+    fn dtype_promote_mixed() {
+        assert_eq!(DType::F32.promote(DType::F64), Some(DType::F64));
+        assert_eq!(DType::F64.promote(DType::F32), Some(DType::F64));
+    }
+
+    #[test]
+    fn dtype_promote_non_float_returns_none() {
+        assert_eq!(DType::F32.promote(DType::I64), None);
+        assert_eq!(DType::I64.promote(DType::F64), None);
+    }
+
+    #[test]
+    fn tensor_meta_with_dtype() {
+        let meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let meta_f32 = meta.clone().with_dtype(DType::F32);
+        assert_eq!(meta_f32.dtype(), DType::F32);
+        assert_eq!(meta_f32.shape(), meta.shape());
+        assert_eq!(meta_f32.strides(), meta.strides());
+    }
+
+    #[test]
+    fn dense_tensor_typed_storage_accessor() {
+        let dt = DenseTensor::from_contiguous_values_f32(
+            vec![1.0f32, 2.0],
+            vec![2],
+            Device::Cpu,
+        )
+        .expect("create f32 tensor");
+        assert_eq!(dt.typed_storage().dtype(), DType::F32);
+        assert_eq!(dt.typed_storage().as_f32().unwrap(), &[1.0f32, 2.0]);
+    }
+
+    #[test]
+    fn dense_tensor_f32_update_contiguous_values() {
+        let mut dt = DenseTensor::from_contiguous_values_f32(
+            vec![1.0f32, 2.0, 3.0],
+            vec![3],
+            Device::Cpu,
+        )
+        .expect("create f32 tensor");
+        dt.update_contiguous_values_f32(&[4.0f32, 5.0, 6.0])
+            .expect("update should succeed");
+        assert_eq!(dt.version(), 1);
+        assert_eq!(dt.contiguous_values_f32().unwrap(), &[4.0f32, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn dense_tensor_from_typed_storage_f32() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu);
+        let storage = TensorStorage::F32(vec![1.0f32, 2.0]);
+        let dt = DenseTensor::from_typed_storage(meta, storage).expect("create from typed storage");
+        assert_eq!(dt.meta().dtype(), DType::F32);
+    }
+
+    #[test]
+    fn dense_tensor_from_typed_storage_rejects_non_float() {
+        let meta = TensorMeta::from_shape(vec![2], DType::I64, Device::Cpu);
+        let storage = TensorStorage::F64(vec![1.0, 2.0]);
+        let err = DenseTensor::from_typed_storage(meta, storage)
+            .expect_err("non-float dtype should be rejected");
+        assert!(matches!(err, DenseTensorError::UnsupportedDType(DType::I64)));
     }
 }

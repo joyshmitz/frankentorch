@@ -3837,7 +3837,7 @@ fn run_scheduler_case(
         .map_err(|error| format!("scheduler case '{}' mul failed: {error}", case.name))?;
 
     let report = tape
-        .backward_with_options(out, BackwardOptions::for_mode(mode))
+        .backward_with_options(out, BackwardOptions::for_mode(mode).with_retain_graph(true))
         .map_err(|error| format!("scheduler case '{}' backward failed: {error}", case.name))?;
 
     let tolerance = case.tolerance.unwrap_or(1e-12);
@@ -3864,6 +3864,7 @@ fn run_scheduler_case(
                     max_reentrant_depth: 1,
                     current_reentrant_depth: 2,
                     policy: ReentrantPolicy::StrictFail,
+                    retain_graph: true,
                 }
             ),
             Err(AutogradError::ReentrantDepthExceeded { .. })
@@ -3875,6 +3876,7 @@ fn run_scheduler_case(
                     max_reentrant_depth: 1,
                     current_reentrant_depth: 2,
                     policy: ReentrantPolicy::HardenedBoundedFallback,
+                    retain_graph: false,
                 },
             )
             .map(|overflow_report| overflow_report.telemetry.reentrant_guard_triggered)
@@ -4836,7 +4838,7 @@ fn evaluate_scheduler_with_tape(
         .map_err(|error| format!("scheduler case '{}' mul failed: {error}", case.name))?;
 
     let report = tape
-        .backward_with_options(out, BackwardOptions::for_mode(mode))
+        .backward_with_options(out, BackwardOptions::for_mode(mode).with_retain_graph(true))
         .map_err(|error| format!("scheduler case '{}' backward failed: {error}", case.name))?;
 
     let x_grad = report
@@ -4855,6 +4857,7 @@ fn evaluate_scheduler_with_tape(
                     max_reentrant_depth: 1,
                     current_reentrant_depth: 2,
                     policy: ReentrantPolicy::HardenedBoundedFallback,
+                    retain_graph: false,
                 },
             )
             .map(|overflow_report| overflow_report.telemetry.reentrant_guard_triggered)
@@ -4908,6 +4911,7 @@ fn strict_overflow_rejected(case: &SchedulerCase) -> Result<bool, String> {
             max_reentrant_depth: 1,
             current_reentrant_depth: 2,
             policy: ReentrantPolicy::StrictFail,
+            retain_graph: false,
         },
     );
     Ok(matches!(
@@ -4939,6 +4943,7 @@ fn hardened_overflow_guarded(case: &SchedulerCase) -> Result<bool, String> {
                 max_reentrant_depth: 1,
                 current_reentrant_depth: 2,
                 policy: ReentrantPolicy::HardenedBoundedFallback,
+                retain_graph: false,
             },
         )
         .map_err(|error| {

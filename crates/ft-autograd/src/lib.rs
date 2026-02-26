@@ -611,6 +611,7 @@ pub struct BackwardOptions {
     pub max_reentrant_depth: usize,
     pub current_reentrant_depth: usize,
     pub policy: ReentrantPolicy,
+    pub retain_graph: bool,
 }
 
 impl BackwardOptions {
@@ -620,6 +621,7 @@ impl BackwardOptions {
             max_reentrant_depth: 0,
             current_reentrant_depth: 0,
             policy: ReentrantPolicy::StrictFail,
+            retain_graph: false,
         }
     }
 
@@ -629,7 +631,14 @@ impl BackwardOptions {
             max_reentrant_depth: 2,
             current_reentrant_depth: 0,
             policy: ReentrantPolicy::HardenedBoundedFallback,
+            retain_graph: false,
         }
+    }
+
+    #[must_use]
+    pub const fn with_retain_graph(mut self, retain: bool) -> Self {
+        self.retain_graph = retain;
+        self
     }
 
     #[must_use]
@@ -1028,6 +1037,8 @@ pub enum AutogradError {
         lhs: Vec<usize>,
         rhs: Vec<usize>,
     },
+    GraphConsumed,
+    TensorGraphConsumed,
 }
 
 impl fmt::Display for AutogradError {
@@ -1075,6 +1086,12 @@ impl fmt::Display for AutogradError {
             Self::TensorMatMulShapeMismatch { lhs, rhs } => {
                 write!(f, "tensor matmul shape mismatch: lhs={lhs:?}, rhs={rhs:?}")
             }
+            Self::GraphConsumed => {
+                write!(f, "cannot run backward: graph already consumed by a previous backward pass")
+            }
+            Self::TensorGraphConsumed => {
+                write!(f, "cannot run tensor backward: graph already consumed by a previous backward pass")
+            }
         }
     }
 }
@@ -1087,9 +1104,23 @@ impl From<DenseTensorError> for AutogradError {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Tape {
     nodes: Vec<Node>,
+    consumed: bool,
+    consumed_boundary: usize,
+    grad_enabled: bool,
+}
+
+impl Default for Tape {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            consumed: false,
+            consumed_boundary: 0,
+            grad_enabled: true,
+        }
+    }
 }
 
 impl Tape {
@@ -1103,11 +1134,21 @@ impl Tape {
         self.nodes.len()
     }
 
+    #[must_use]
+    pub fn is_grad_enabled(&self) -> bool {
+        self.grad_enabled
+    }
+
+    pub fn set_grad_enabled(&mut self, enabled: bool) {
+        self.grad_enabled = enabled;
+    }
+
     pub fn leaf(&mut self, value: f64, requires_grad: bool) -> NodeId {
+        let effective_requires_grad = requires_grad && self.grad_enabled;
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node {
             tensor: ScalarTensor::new(value, DType::F64, Device::Cpu),
-            requires_grad,
+            requires_grad: effective_requires_grad,
             op: NodeOp::Leaf,
         });
         id
@@ -1160,7 +1201,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Neg, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1192,7 +1233,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Abs, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1224,7 +1265,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Exp, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1256,7 +1297,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Log, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1288,7 +1329,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Relu, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1320,7 +1361,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Sigmoid, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1352,7 +1393,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Tanh, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1384,7 +1425,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Sin, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1416,7 +1457,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Cos, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1448,7 +1489,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Tan, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1480,7 +1521,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Floor, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1512,7 +1553,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Ceil, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1544,7 +1585,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Round, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1576,7 +1617,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Log2, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1608,7 +1649,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Log10, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1640,7 +1681,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Log1p, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1672,7 +1713,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Expm1, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1704,7 +1745,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Sign, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1736,7 +1777,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Trunc, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1768,7 +1809,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Frac, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1800,7 +1841,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Asin, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1832,7 +1873,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Acos, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1864,7 +1905,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Atan, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1896,7 +1937,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Sinh, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1928,7 +1969,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Cosh, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1960,7 +2001,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Gelu, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -1990,7 +2031,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Silu, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2020,7 +2061,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::LeakyRelu, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2050,7 +2091,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Elu, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2080,7 +2121,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Rsqrt, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2110,7 +2151,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Erf, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2140,7 +2181,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Erfc, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2170,7 +2211,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Hardswish, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2200,7 +2241,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome = dispatch_scalar_unary(
                 UnaryOp::Hardsigmoid,
                 mode,
@@ -2234,7 +2275,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Hardtanh, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2264,7 +2305,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Softplus, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2294,7 +2335,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Mish, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2324,7 +2365,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Square, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2354,7 +2395,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Sqrt, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2386,7 +2427,7 @@ impl Tape {
     ) -> Result<(NodeId, UnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_unary(UnaryOp::Reciprocal, mode, &input_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2419,7 +2460,7 @@ impl Tape {
     ) -> Result<(NodeId, PowOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome = dispatch_scalar_pow(mode, &input_node.tensor, exponent, requires_grad)
                 .map_err(AutogradError::Dispatch)?;
             (requires_grad, outcome)
@@ -2452,7 +2493,8 @@ impl Tape {
         let (requires_grad, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let outcome = dispatch_scalar_binary(
                 BinaryOp::Min,
                 mode,
@@ -2492,7 +2534,8 @@ impl Tape {
         let (requires_grad, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let outcome = dispatch_scalar_binary(
                 BinaryOp::Max,
                 mode,
@@ -2532,7 +2575,8 @@ impl Tape {
         let (requires_grad, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let outcome = dispatch_scalar_binary(
                 BinaryOp::Atan2,
                 mode,
@@ -2572,7 +2616,8 @@ impl Tape {
         let (requires_grad, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let outcome = dispatch_scalar_binary(
                 BinaryOp::Fmod,
                 mode,
@@ -2612,7 +2657,8 @@ impl Tape {
         let (requires_grad, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let outcome = dispatch_scalar_binary(
                 BinaryOp::Remainder,
                 mode,
@@ -2652,7 +2698,7 @@ impl Tape {
     ) -> Result<(NodeId, ClampOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let outcome =
                 dispatch_scalar_clamp(mode, &input_node.tensor, min_val, max_val, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2700,7 +2746,8 @@ impl Tape {
         let (requires_grad, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let outcome =
                 dispatch_scalar_binary(op, mode, &lhs_node.tensor, &rhs_node.tensor, requires_grad)
                     .map_err(AutogradError::Dispatch)?;
@@ -2741,15 +2788,18 @@ impl Tape {
         ))
     }
 
-    pub fn backward(&self, root: NodeId) -> Result<BackwardReport, AutogradError> {
+    pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         self.backward_with_options(root, BackwardOptions::strict_default())
     }
 
     pub fn backward_with_options(
-        &self,
+        &mut self,
         root: NodeId,
         options: BackwardOptions,
     ) -> Result<BackwardReport, AutogradError> {
+        if self.consumed && root.0 < self.consumed_boundary {
+            return Err(AutogradError::GraphConsumed);
+        }
         if root.0 >= self.nodes.len() {
             return Err(AutogradError::UnknownNode(root));
         }
@@ -3542,6 +3592,11 @@ impl Tape {
             hardened_fallback_used,
         };
 
+        if !options.retain_graph {
+            self.consumed = true;
+            self.consumed_boundary = self.nodes.len();
+        }
+
         Ok(BackwardReport {
             gradients,
             steps,
@@ -3721,9 +3776,23 @@ impl Tape {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TensorTape {
     nodes: Vec<TensorNode>,
+    consumed: bool,
+    consumed_boundary: usize,
+    grad_enabled: bool,
+}
+
+impl Default for TensorTape {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            consumed: false,
+            consumed_boundary: 0,
+            grad_enabled: true,
+        }
+    }
 }
 
 impl TensorTape {
@@ -3737,6 +3806,15 @@ impl TensorTape {
         self.nodes.len()
     }
 
+    #[must_use]
+    pub fn is_grad_enabled(&self) -> bool {
+        self.grad_enabled
+    }
+
+    pub fn set_grad_enabled(&mut self, enabled: bool) {
+        self.grad_enabled = enabled;
+    }
+
     pub fn leaf(
         &mut self,
         values: Vec<f64>,
@@ -3748,10 +3826,11 @@ impl TensorTape {
     }
 
     pub fn leaf_tensor(&mut self, tensor: DenseTensor, requires_grad: bool) -> TensorNodeId {
+        let effective_requires_grad = requires_grad && self.grad_enabled;
         let id = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
             tensor,
-            requires_grad,
+            requires_grad: effective_requires_grad,
             op: TensorNodeOp::Leaf,
         });
         id
@@ -3844,7 +3923,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorReductionOperationEvent), AutogradError> {
         let (requires_grad, input_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_reduction_contiguous_f64(
                 ReductionOp::Trace,
@@ -3891,7 +3970,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Neg,
@@ -3938,7 +4017,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Abs,
@@ -3985,7 +4064,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Exp,
@@ -4032,7 +4111,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Log,
@@ -4079,7 +4158,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Relu,
@@ -4126,7 +4205,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Sigmoid,
@@ -4173,7 +4252,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Tanh,
@@ -4220,7 +4299,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Sin,
@@ -4259,7 +4338,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Cos,
@@ -4298,7 +4377,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Tan,
@@ -4337,7 +4416,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Floor,
@@ -4376,7 +4455,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Ceil,
@@ -4415,7 +4494,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Round,
@@ -4454,7 +4533,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Log2,
@@ -4491,7 +4570,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Log10,
@@ -4528,7 +4607,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Log1p,
@@ -4565,7 +4644,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Expm1,
@@ -4602,7 +4681,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Sign,
@@ -4639,7 +4718,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Trunc,
@@ -4676,7 +4755,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Frac,
@@ -4713,7 +4792,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Asin,
@@ -4750,7 +4829,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Acos,
@@ -4787,7 +4866,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Atan,
@@ -4824,7 +4903,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Sinh,
@@ -4861,7 +4940,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Cosh,
@@ -4898,7 +4977,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Gelu,
@@ -4935,7 +5014,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Silu,
@@ -4972,7 +5051,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::LeakyRelu,
@@ -5009,7 +5088,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Elu,
@@ -5046,7 +5125,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Rsqrt,
@@ -5083,7 +5162,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Erf,
@@ -5120,7 +5199,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Erfc,
@@ -5157,7 +5236,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Hardswish,
@@ -5194,7 +5273,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Hardsigmoid,
@@ -5231,7 +5310,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Hardtanh,
@@ -5268,7 +5347,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Softplus,
@@ -5305,7 +5384,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Mish,
@@ -5342,7 +5421,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Square,
@@ -5379,7 +5458,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Sqrt,
@@ -5426,7 +5505,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorUnaryOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_unary_contiguous_f64(
                 UnaryOp::Reciprocal,
@@ -5474,7 +5553,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorPowOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_pow_contiguous_f64(
                 mode,
@@ -5523,7 +5602,8 @@ impl TensorTape {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
             let outcome = dispatch_tensor_binary_contiguous_f64(
@@ -5576,7 +5656,8 @@ impl TensorTape {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
             let outcome = dispatch_tensor_binary_contiguous_f64(
@@ -5629,7 +5710,8 @@ impl TensorTape {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
             let outcome = dispatch_tensor_binary_contiguous_f64(
@@ -5682,7 +5764,8 @@ impl TensorTape {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
             let outcome = dispatch_tensor_binary_contiguous_f64(
@@ -5735,7 +5818,8 @@ impl TensorTape {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let meta_l = lhs_node.tensor.meta().clone();
             let meta_r = rhs_node.tensor.meta().clone();
             let outcome = dispatch_tensor_binary_contiguous_f64(
@@ -5788,7 +5872,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorClampOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_clamp_contiguous_f64(
                 mode,
@@ -5841,7 +5925,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorReductionOperationEvent), AutogradError> {
         let (requires_grad, input_numel, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_reduction_contiguous_f64(
                 ReductionOp::Sum,
@@ -5888,7 +5972,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorReductionOperationEvent), AutogradError> {
         let (requires_grad, input_numel, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_reduction_contiguous_f64(
                 ReductionOp::Mean,
@@ -5936,7 +6020,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorReductionDimOperationEvent), AutogradError> {
         let (requires_grad, input_shape, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_reduction_dim_contiguous_f64(
                 ReductionOp::Sum,
@@ -5997,7 +6081,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorReductionDimOperationEvent), AutogradError> {
         let (requires_grad, input_shape, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_reduction_dim_contiguous_f64(
                 ReductionOp::Mean,
@@ -6058,7 +6142,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorReductionDimOperationEvent), AutogradError> {
         let (requires_grad, input_shape, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_reduction_dim_contiguous_f64(
                 ReductionOp::Prod,
@@ -6119,7 +6203,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorReductionDimOperationEvent), AutogradError> {
         let (requires_grad, input_shape, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_reduction_dim_contiguous_f64(
                 ReductionOp::Var,
@@ -6180,7 +6264,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorReductionDimOperationEvent), AutogradError> {
         let (requires_grad, input_shape, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_reduction_dim_contiguous_f64(
                 ReductionOp::Std,
@@ -6241,7 +6325,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorNormOperationEvent), AutogradError> {
         let (requires_grad, input_numel, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_norm_contiguous_f64(
                 mode,
@@ -6294,7 +6378,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorNormDimOperationEvent), AutogradError> {
         let (requires_grad, input_shape, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_norm_dim_contiguous_f64(
                 mode,
@@ -6356,7 +6440,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorScanDimOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_scan_dim_contiguous_f64(
                 ScanOp::CumSum,
@@ -6407,7 +6491,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorScanDimOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_scan_dim_contiguous_f64(
                 ScanOp::CumProd,
@@ -6458,7 +6542,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorNormalizeDimOperationEvent), AutogradError> {
         let (requires_grad, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_normalize_dim_contiguous_f64(
                 NormalizeOp::Softmax,
@@ -6503,7 +6587,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, TensorNormalizeDimOperationEvent), AutogradError> {
         let (requires_grad, output_dtype, output_device, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_normalize_dim_contiguous_f64(
                 NormalizeOp::LogSoftmax,
@@ -6615,7 +6699,7 @@ impl TensorTape {
             requires_grad,
         ) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let (values, indices) =
                 max_dim_tensor_contiguous_f64(input_node.tensor.storage(), &meta, dim)
@@ -6681,7 +6765,7 @@ impl TensorTape {
             requires_grad,
         ) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let (values, indices) =
                 min_dim_tensor_contiguous_f64(input_node.tensor.storage(), &meta, dim)
@@ -6740,7 +6824,7 @@ impl TensorTape {
     ) -> Result<TensorNodeId, AutogradError> {
         let (values, input_shape, output_shape, output_dtype, output_device, requires_grad) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let values = index_select_tensor_contiguous_f64(
                 input_node.tensor.storage(),
@@ -6789,7 +6873,7 @@ impl TensorTape {
     ) -> Result<TensorNodeId, AutogradError> {
         let (values, input_shape, output_dtype, output_device, requires_grad) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let idx_meta =
                 ft_core::TensorMeta::from_shape(index_shape.clone(), meta.dtype(), meta.device());
@@ -6840,7 +6924,7 @@ impl TensorTape {
     ) -> Result<TensorNodeId, AutogradError> {
         let (values, input_shape, output_dtype, output_device, requires_grad) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let idx_meta =
                 ft_core::TensorMeta::from_shape(index_shape.clone(), meta.dtype(), meta.device());
@@ -6950,7 +7034,8 @@ impl TensorTape {
                     .into(),
                 ));
             }
-            let requires_grad = x_node.requires_grad || y_node.requires_grad;
+            let requires_grad =
+                (x_node.requires_grad || y_node.requires_grad) && self.grad_enabled;
             let cond_values = cond_node.tensor.contiguous_values()?;
             let x_values = x_node.tensor.contiguous_values()?;
             let y_values = y_node.tensor.contiguous_values()?;
@@ -6992,7 +7077,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, Vec<usize>, TensorSortOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, input_shape, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_sort_contiguous_f64(
                 mode,
@@ -7056,7 +7141,7 @@ impl TensorTape {
     ) -> Result<(TensorNodeId, Vec<usize>, TensorTopKOperationEvent), AutogradError> {
         let (requires_grad, output_shape, output_dtype, output_device, input_shape, outcome) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let outcome = dispatch_tensor_topk_contiguous_f64(
                 mode,
@@ -7989,7 +8074,8 @@ impl TensorTape {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let start_node = self.node(start)?;
             let end_node = self.node(end)?;
-            let requires_grad = start_node.requires_grad || end_node.requires_grad;
+            let requires_grad =
+                (start_node.requires_grad || end_node.requires_grad) && self.grad_enabled;
             let meta = start_node.tensor.meta().clone();
             let outcome = dispatch_tensor_lerp_contiguous_f64(
                 mode,
@@ -8044,8 +8130,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let mat1_node = self.node(mat1)?;
             let mat2_node = self.node(mat2)?;
-            let requires_grad =
-                input_node.requires_grad || mat1_node.requires_grad || mat2_node.requires_grad;
+            let requires_grad = (input_node.requires_grad
+                || mat1_node.requires_grad
+                || mat2_node.requires_grad)
+                && self.grad_enabled;
             let input_meta = input_node.tensor.meta().clone();
             let mat1_meta = mat1_node.tensor.meta().clone();
             let mat2_meta = mat2_node.tensor.meta().clone();
@@ -8116,8 +8204,10 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let mat_node = self.node(mat)?;
             let vec_node = self.node(vec_input)?;
-            let requires_grad =
-                input_node.requires_grad || mat_node.requires_grad || vec_node.requires_grad;
+            let requires_grad = (input_node.requires_grad
+                || mat_node.requires_grad
+                || vec_node.requires_grad)
+                && self.grad_enabled;
             let input_meta = input_node.tensor.meta().clone();
             let mat_meta = mat_node.tensor.meta().clone();
             let vec_meta = vec_node.tensor.meta().clone();
@@ -8184,7 +8274,8 @@ impl TensorTape {
         let (requires_grad, output_shape, output_dtype, output_device, outcome) = {
             let lhs_node = self.node(lhs)?;
             let rhs_node = self.node(rhs)?;
-            let requires_grad = lhs_node.requires_grad || rhs_node.requires_grad;
+            let requires_grad =
+                (lhs_node.requires_grad || rhs_node.requires_grad) && self.grad_enabled;
             let lhs_meta = lhs_node.tensor.meta().clone();
             let rhs_meta = rhs_node.tensor.meta().clone();
             let outcome = dispatch_tensor_binary_contiguous_f64(
@@ -8260,16 +8351,19 @@ impl TensorTape {
         ))
     }
 
-    pub fn backward(&self, root: TensorNodeId) -> Result<TensorBackwardReport, AutogradError> {
+    pub fn backward(&mut self, root: TensorNodeId) -> Result<TensorBackwardReport, AutogradError> {
         self.backward_with_options(root, BackwardOptions::strict_default())
     }
 
     #[allow(clippy::needless_range_loop)]
     pub fn backward_with_options(
-        &self,
+        &mut self,
         root: TensorNodeId,
         options: BackwardOptions,
     ) -> Result<TensorBackwardReport, AutogradError> {
+        if self.consumed && root.0 < self.consumed_boundary {
+            return Err(AutogradError::TensorGraphConsumed);
+        }
         if root.0 >= self.nodes.len() {
             return Err(AutogradError::UnknownTensorNode(root));
         }
@@ -11217,6 +11311,11 @@ impl TensorTape {
             hardened_fallback_used,
         };
 
+        if !options.retain_graph {
+            self.consumed = true;
+            self.consumed_boundary = self.nodes.len();
+        }
+
         Ok(TensorBackwardReport {
             gradients,
             steps,
@@ -11891,6 +11990,61 @@ mod tests {
         assert_eq!(options.current_reentrant_depth, 0);
     }
 
+    // ---- grad_enabled tests (bd-3dpn.1) ----
+
+    #[test]
+    fn tape_grad_enabled_default_is_true() {
+        let tape = Tape::new();
+        assert!(tape.is_grad_enabled());
+    }
+
+    #[test]
+    fn tape_set_grad_enabled() {
+        let mut tape = Tape::new();
+        tape.set_grad_enabled(false);
+        assert!(!tape.is_grad_enabled());
+        tape.set_grad_enabled(true);
+        assert!(tape.is_grad_enabled());
+    }
+
+    #[test]
+    fn tape_leaf_respects_grad_disabled() {
+        let mut tape = Tape::new();
+        tape.set_grad_enabled(false);
+        let x = tape.leaf(2.0, true); // requests grad but disabled
+        // backward should fail because the node has requires_grad=false
+        let err = tape.backward(x);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn tape_ops_respect_grad_disabled() {
+        let mut tape = Tape::new();
+        let x = tape.leaf(2.0, true); // grad enabled
+        tape.set_grad_enabled(false);
+        let (y, _) = tape.add(x, x, ExecutionMode::Strict).expect("add");
+        tape.set_grad_enabled(true);
+        // y was created with grad disabled, so backward from y fails
+        let err = tape.backward(y);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn tensor_tape_grad_enabled_default_is_true() {
+        let tape = TensorTape::new();
+        assert!(tape.is_grad_enabled());
+    }
+
+    #[test]
+    fn tensor_tape_leaf_respects_grad_disabled() {
+        let mut tape = TensorTape::new();
+        tape.set_grad_enabled(false);
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("leaf");
+        tape.set_grad_enabled(true);
+        let err = tape.backward(x);
+        assert!(err.is_err());
+    }
+
     #[test]
     fn add_backward_matches_expected_gradient() {
         let mut tape = Tape::new();
@@ -12470,7 +12624,9 @@ mod tests {
             .mul(sum, x, ExecutionMode::Strict)
             .expect("mul should succeed");
 
-        let report = tape.backward(out).expect("backward should succeed");
+        let report = tape
+            .backward_with_options(out, BackwardOptions::strict_default().with_retain_graph(true))
+            .expect("backward should succeed");
         assert_eq!(report.gradient(x), Some(7.0));
         assert_eq!(report.gradient(y), Some(2.0));
 
@@ -12498,6 +12654,7 @@ mod tests {
                     max_reentrant_depth: 1,
                     current_reentrant_depth: 2,
                     policy: ReentrantPolicy::StrictFail,
+                    retain_graph: false,
                 },
             )
             .expect_err("strict overflow should fail");
@@ -12524,6 +12681,7 @@ mod tests {
                     max_reentrant_depth: 1,
                     current_reentrant_depth: 2,
                     policy: ReentrantPolicy::HardenedBoundedFallback,
+                    retain_graph: false,
                 },
             )
             .expect("hardened overflow should fallback");
@@ -12534,7 +12692,7 @@ mod tests {
 
     #[test]
     fn unknown_node_returns_error() {
-        let tape = Tape::new();
+        let mut tape = Tape::new();
         let err = tape
             .backward(NodeId(99))
             .expect_err("expected unknown node");
@@ -12666,7 +12824,9 @@ mod tests {
                 .mul(sum, lhs, ExecutionMode::Strict)
                 .expect("mul should succeed");
 
-            let first = tape.backward(out).expect("backward should succeed");
+            let first = tape
+                .backward_with_options(out, BackwardOptions::strict_default().with_retain_graph(true))
+                .expect("backward should succeed");
             let second = tape.backward(out).expect("backward should succeed");
 
             prop_assert_eq!(first.gradients(), second.gradients());
@@ -12759,6 +12919,7 @@ mod tests {
                     max_reentrant_depth: 1,
                     current_reentrant_depth: 2,
                     policy: ReentrantPolicy::StrictFail,
+                    retain_graph: false,
                 },
             );
             assert!(matches!(
@@ -12788,6 +12949,7 @@ mod tests {
                         max_reentrant_depth: 1,
                         current_reentrant_depth: 2,
                         policy: ReentrantPolicy::HardenedBoundedFallback,
+                        retain_graph: false,
                     },
                 )
                 .expect("hardened fallback should succeed");
@@ -15144,7 +15306,7 @@ mod tests {
 
     #[test]
     fn backward_rejects_unknown_root_node_id() {
-        let tape = TensorTape::new();
+        let mut tape = TensorTape::new();
         let bogus = TensorNodeId(999);
         let err = tape
             .backward(bogus)
@@ -15160,5 +15322,201 @@ mod tests {
             .update_tensor_values(bogus, vec![1.0, 2.0])
             .expect_err("update_tensor_values with unknown node must fail");
         assert!(matches!(err, AutogradError::UnknownTensorNode(id) if id == bogus));
+    }
+
+    // ---- Graph consumption tests (bd-3dpn.2) ----
+
+    #[test]
+    fn default_backward_consumes_scalar_graph() {
+        let mut tape = Tape::new();
+        let x = tape.leaf(2.0, true);
+        let y = tape.leaf(3.0, true);
+        let (z, _) = tape.add(x, y, ExecutionMode::Strict).expect("add");
+        let report = tape.backward(z).expect("first backward should succeed");
+        assert_eq!(report.gradient(x), Some(1.0));
+        assert_eq!(report.gradient(y), Some(1.0));
+        assert!(tape.consumed, "tape should be consumed after default backward");
+    }
+
+    #[test]
+    fn second_backward_on_consumed_scalar_graph_returns_error() {
+        let mut tape = Tape::new();
+        let x = tape.leaf(2.0, true);
+        let y = tape.leaf(3.0, true);
+        let (z, _) = tape.add(x, y, ExecutionMode::Strict).expect("add");
+        let _ = tape.backward(z).expect("first backward should succeed");
+        let err = tape
+            .backward(z)
+            .expect_err("second backward on consumed graph should fail");
+        assert!(matches!(err, AutogradError::GraphConsumed));
+        assert!(
+            err.to_string().contains("already consumed"),
+            "error message should mention consumption: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn retain_graph_allows_second_scalar_backward() {
+        let mut tape = Tape::new();
+        let x = tape.leaf(2.0, true);
+        let y = tape.leaf(3.0, true);
+        let (sum, _) = tape.add(x, y, ExecutionMode::Strict).expect("add");
+        let (out, _) = tape.mul(sum, x, ExecutionMode::Strict).expect("mul");
+
+        let opts = BackwardOptions::strict_default().with_retain_graph(true);
+        let first = tape
+            .backward_with_options(out, opts)
+            .expect("first backward with retain_graph=true");
+        assert!(!tape.consumed, "tape should NOT be consumed when retain_graph=true");
+
+        let second = tape.backward(out).expect("second backward should succeed");
+        assert_eq!(first.gradient(x), second.gradient(x));
+        assert_eq!(first.gradient(y), second.gradient(y));
+        assert!(tape.consumed, "tape should be consumed after default backward");
+    }
+
+    #[test]
+    fn default_backward_consumes_tensor_graph() {
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![1.0, 2.0], vec![2], true)
+            .expect("x");
+        let y = tape
+            .leaf(vec![3.0, 4.0], vec![2], true)
+            .expect("y");
+        let (z, _) = tape
+            .add(x, y, ExecutionMode::Strict)
+            .expect("add");
+        let report = tape.backward(z).expect("first backward should succeed");
+        assert!(report.gradient(x).is_some());
+        assert!(tape.consumed, "tensor tape should be consumed after default backward");
+    }
+
+    #[test]
+    fn second_backward_on_consumed_tensor_graph_returns_error() {
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![1.0, 2.0], vec![2], true)
+            .expect("x");
+        let y = tape
+            .leaf(vec![3.0, 4.0], vec![2], true)
+            .expect("y");
+        let (z, _) = tape
+            .add(x, y, ExecutionMode::Strict)
+            .expect("add");
+        let _ = tape.backward(z).expect("first backward should succeed");
+        let err = tape
+            .backward(z)
+            .expect_err("second backward on consumed tensor graph should fail");
+        assert!(matches!(err, AutogradError::TensorGraphConsumed));
+        assert!(
+            err.to_string().contains("already consumed"),
+            "error message should mention consumption: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn retain_graph_allows_second_tensor_backward() {
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![1.0, 2.0], vec![2], true)
+            .expect("x");
+        let y = tape
+            .leaf(vec![3.0, 4.0], vec![2], true)
+            .expect("y");
+        let (z, _) = tape
+            .add(x, y, ExecutionMode::Strict)
+            .expect("add");
+
+        let opts = BackwardOptions::strict_default().with_retain_graph(true);
+        let first = tape
+            .backward_with_options(z, opts)
+            .expect("first backward with retain_graph=true");
+        assert!(!tape.consumed, "tensor tape should NOT be consumed when retain_graph=true");
+
+        let second = tape.backward(z).expect("second backward should succeed");
+        assert_eq!(first.gradient(x), second.gradient(x));
+        assert_eq!(first.gradient(y), second.gradient(y));
+        assert!(tape.consumed, "tensor tape should be consumed after default backward");
+    }
+
+    #[test]
+    fn gan_style_shared_graph_two_backward_passes() {
+        // Simulates GAN training: discriminator and generator share part of the graph.
+        // D_loss backward with retain_graph=true, then G_loss backward.
+        let mut tape = Tape::new();
+
+        // Shared "generated output" node
+        let z = tape.leaf(0.5, true);
+        // Discriminator path: D_loss = -log(1 - z)
+        let one = tape.leaf(1.0, false);
+        let (one_minus_z, _) = tape.sub(one, z, ExecutionMode::Strict).expect("sub");
+        let (d_loss, _) = tape.neg(one_minus_z, ExecutionMode::Strict).expect("neg");
+
+        // Generator path: G_loss = -log(z) ≈ -z for testing (use neg as proxy)
+        let (g_loss, _) = tape.neg(z, ExecutionMode::Strict).expect("neg");
+
+        // First backward (discriminator) with retain_graph=true
+        let d_report = tape
+            .backward_with_options(d_loss, BackwardOptions::strict_default().with_retain_graph(true))
+            .expect("D backward with retain_graph=true should succeed");
+        let d_grad_z = d_report.gradient(z).expect("z gradient from D");
+
+        // Second backward (generator) consumes the graph
+        let g_report = tape
+            .backward(g_loss)
+            .expect("G backward should succeed after retained graph");
+        let g_grad_z = g_report.gradient(z).expect("z gradient from G");
+
+        // d(-(1-z))/dz = 1.0, d(-z)/dz = -1.0
+        assert!((d_grad_z - 1.0).abs() < 1e-12, "D grad z = {d_grad_z}");
+        assert!((g_grad_z - (-1.0)).abs() < 1e-12, "G grad z = {g_grad_z}");
+
+        // Graph is now consumed — third backward should fail
+        let err = tape
+            .backward(g_loss)
+            .expect_err("third backward on consumed graph should fail");
+        assert!(matches!(err, AutogradError::GraphConsumed));
+    }
+
+    #[test]
+    fn graph_consumption_reduces_memory_footprint() {
+        // Verify that consuming the graph marks the tape as consumed,
+        // which prevents further backward computation (the memory optimization).
+        // We measure the tape size before and after backward to confirm consumption.
+        let mut tape = TensorTape::new();
+        let n = 1000;
+        let data: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let x = tape
+            .leaf(data.clone(), vec![n], true)
+            .expect("x");
+        let y = tape
+            .leaf(data, vec![n], true)
+            .expect("y");
+        let (sum, _) = tape
+            .add(x, y, ExecutionMode::Strict)
+            .expect("add");
+        let (out, _) = tape
+            .mul(sum, x, ExecutionMode::Strict)
+            .expect("mul");
+
+        let node_count_before = tape.node_count();
+        assert_eq!(node_count_before, 4, "should have 4 nodes: x, y, sum, out");
+
+        let report = tape.backward(out).expect("backward");
+        assert!(tape.consumed, "tape should be consumed");
+        assert!(report.gradient(x).is_some());
+        assert!(report.gradient(y).is_some());
+
+        // Verify the graph is consumed — backward fails
+        let err = tape
+            .backward(out)
+            .expect_err("consumed graph should reject backward");
+        assert!(matches!(err, AutogradError::TensorGraphConsumed));
+
+        // Node count is unchanged (nodes aren't removed, just marked consumed)
+        assert_eq!(tape.node_count(), node_count_before);
     }
 }

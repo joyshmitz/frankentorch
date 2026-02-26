@@ -76,6 +76,7 @@ pub struct FrankenTorchSession {
     tensor_tape: TensorTape,
     runtime: RuntimeContext,
     rng: Xoshiro256PlusPlus,
+    grad_enabled_stack: Vec<bool>,
 }
 
 impl FrankenTorchSession {
@@ -86,6 +87,7 @@ impl FrankenTorchSession {
             tensor_tape: TensorTape::new(),
             runtime: RuntimeContext::new(mode),
             rng: Xoshiro256PlusPlus::new(42),
+            grad_enabled_stack: vec![true],
         }
     }
 
@@ -96,6 +98,76 @@ impl FrankenTorchSession {
 
     pub fn set_mode(&mut self, mode: ExecutionMode) {
         self.runtime.set_mode(mode);
+    }
+
+    /// Returns true if gradient computation is currently enabled.
+    #[must_use]
+    pub fn is_grad_enabled(&self) -> bool {
+        *self.grad_enabled_stack.last().unwrap_or(&true)
+    }
+
+    /// Enter a no_grad context: disable gradient tracking for subsequent operations.
+    pub fn no_grad_enter(&mut self) {
+        self.grad_enabled_stack.push(false);
+        self.sync_grad_enabled();
+    }
+
+    /// Exit a no_grad context: restore the previous gradient tracking state.
+    pub fn no_grad_exit(&mut self) {
+        if self.grad_enabled_stack.len() > 1 {
+            self.grad_enabled_stack.pop();
+        }
+        self.sync_grad_enabled();
+    }
+
+    /// Enter an enable_grad context: enable gradient tracking for subsequent operations.
+    pub fn enable_grad_enter(&mut self) {
+        self.grad_enabled_stack.push(true);
+        self.sync_grad_enabled();
+    }
+
+    /// Exit an enable_grad context: restore the previous gradient tracking state.
+    pub fn enable_grad_exit(&mut self) {
+        if self.grad_enabled_stack.len() > 1 {
+            self.grad_enabled_stack.pop();
+        }
+        self.sync_grad_enabled();
+    }
+
+    /// Set the gradient enabled state directly (like `torch.set_grad_enabled(bool)`).
+    pub fn set_grad_enabled(&mut self, enabled: bool) {
+        if let Some(top) = self.grad_enabled_stack.last_mut() {
+            *top = enabled;
+        }
+        self.sync_grad_enabled();
+    }
+
+    /// Execute a closure with gradient tracking disabled (panic-safe RAII equivalent).
+    pub fn with_no_grad<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.no_grad_enter();
+        let result = f(self);
+        self.no_grad_exit();
+        result
+    }
+
+    /// Execute a closure with gradient tracking enabled (panic-safe RAII equivalent).
+    pub fn with_enable_grad<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.enable_grad_enter();
+        let result = f(self);
+        self.enable_grad_exit();
+        result
+    }
+
+    fn sync_grad_enabled(&mut self) {
+        let enabled = self.is_grad_enabled();
+        self.tape.set_grad_enabled(enabled);
+        self.tensor_tape.set_grad_enabled(enabled);
     }
 
     #[must_use]
@@ -3368,6 +3440,107 @@ impl FrankenTorchSession {
         self.tensor_tape.leaf(output, out_shape, false)
     }
 
+    // -------------------------------------------------------------------
+    // Linear Algebra: LU Decomposition
+    // -------------------------------------------------------------------
+
+    /// Compute the LU factorization of a square matrix with partial pivoting.
+    ///
+    /// Returns `(lu_factor_node, pivot_indices)` where `lu_factor_node` is a
+    /// tensor containing the packed LU matrix, and `pivot_indices` is a `Vec<usize>`
+    /// of row pivot indices.
+    ///
+    /// The input must be a 2-D square tensor (n x n).
+    pub fn tensor_lu_factor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, Vec<usize>), AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::lu_factor_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let n = result.n;
+        let lu_node = self.tensor_variable(result.lu, vec![n, n], false)?;
+        Ok((lu_node, result.pivots))
+    }
+
+    /// Compute the full LU decomposition: `P @ L @ U = A`.
+    ///
+    /// Returns `(P, L, U)` as three separate tensor nodes.
+    /// - P: permutation matrix (n x n)
+    /// - L: lower triangular with unit diagonal (n x n)
+    /// - U: upper triangular (n x n)
+    pub fn tensor_linalg_lu(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let factor = ft_kernel_cpu::lu_factor_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let unpacked = ft_kernel_cpu::lu_unpack(&factor);
+        let n = unpacked.n;
+        let p_node = self.tensor_variable(unpacked.p, vec![n, n], false)?;
+        let l_node = self.tensor_variable(unpacked.l, vec![n, n], false)?;
+        let u_node = self.tensor_variable(unpacked.u, vec![n, n], false)?;
+        Ok((p_node, l_node, u_node))
+    }
+
+    /// Solve `A * X = B` using a pre-computed LU factorization.
+    ///
+    /// `lu_packed` is the packed LU tensor from `tensor_lu_factor`.
+    /// `pivots` is the pivot indices from `tensor_lu_factor`.
+    /// `b` is the right-hand side tensor (shape [n] or [n, m]).
+    ///
+    /// Returns the solution tensor X.
+    pub fn tensor_lu_solve(
+        &mut self,
+        lu_packed: TensorNodeId,
+        pivots: &[usize],
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (lu_values, lu_meta) = self.tensor_values_meta(lu_packed)?;
+        let lu_shape = lu_meta.shape();
+        if lu_shape.len() != 2 || lu_shape[0] != lu_shape[1] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: lu_shape.to_vec(),
+                    rhs: vec![lu_shape.len()],
+                },
+            )));
+        }
+        let n = lu_shape[0];
+        let factor = ft_kernel_cpu::LuFactorResult {
+            lu: lu_values,
+            pivots: pivots.to_vec(),
+            n,
+        };
+
+        let (b_values, b_meta) = self.tensor_values_meta(b)?;
+        let b_shape = b_meta.shape().to_vec();
+        let solution = ft_kernel_cpu::lu_solve_contiguous_f64(&factor, &b_values, &b_meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+
+        self.tensor_variable(solution, b_shape, false)
+    }
+
+    /// Compute the QR decomposition: `A = Q @ R`.
+    ///
+    /// Returns `(Q, R)` as two separate tensor nodes.
+    /// - If `reduced` is true: Q is (m x k), R is (k x n) where k = min(m, n).
+    /// - If `reduced` is false: Q is (m x m), R is (m x n).
+    pub fn tensor_linalg_qr(
+        &mut self,
+        input: TensorNodeId,
+        reduced: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let input_m = meta.shape()[0];
+        let result = ft_kernel_cpu::qr_contiguous_f64(&values, &meta, reduced)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let q_node = self.tensor_variable(result.q, vec![input_m, result.m], false)?;
+        let r_node = self.tensor_variable(result.r, vec![result.m, result.n], false)?;
+        Ok((q_node, r_node))
+    }
+
     fn compute_strides(shape: &[usize]) -> Vec<usize> {
         let ndim = shape.len();
         let mut strides = vec![0usize; ndim];
@@ -3431,6 +3604,7 @@ mod tests {
                     max_reentrant_depth: 1,
                     current_reentrant_depth: 2,
                     policy: ReentrantPolicy::HardenedBoundedFallback,
+                    retain_graph: false,
                 },
             )
             .expect("hardened fallback should succeed");
@@ -3456,6 +3630,7 @@ mod tests {
                     max_reentrant_depth: 1,
                     current_reentrant_depth: 2,
                     policy: ReentrantPolicy::HardenedBoundedFallback,
+                    retain_graph: false,
                 },
             )
             .expect("hardened tensor fallback should succeed");
@@ -9480,7 +9655,7 @@ mod tests {
     }
 
     #[test]
-    fn session_hardtanh_forward_and_backward() {
+    fn session_hardtanh_forward_and_backward_in_range() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // x=0.5 (in range): output=0.5, grad=1
         let x = session.variable(0.5, true);
@@ -9488,6 +9663,11 @@ mod tests {
         assert!((session.value(y).expect("val") - 0.5).abs() < 1e-12);
         let report = session.backward(y).expect("backward");
         assert!((session.gradient(&report, x).unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_hardtanh_forward_and_backward_out_of_range() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // x=2.0 (out of range): output=1.0, grad=0
         let x2 = session.variable(2.0, true);
         let y2 = session.hardtanh(x2).expect("hardtanh");
@@ -10225,5 +10405,476 @@ mod tests {
             .tensor_variable(vec![1.0], vec![1], false)
             .expect("variable");
         assert!(session.tensor_pad(x, &[1], 0.0).is_err());
+    }
+
+    // -------------------------------------------------------------------
+    // LU Decomposition integration tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn session_lu_factor_and_unpack_round_trip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = session
+            .tensor_variable(
+                vec![2.0, 1.0, 1.0, 4.0, 3.0, 3.0, 8.0, 7.0, 9.0],
+                vec![3, 3],
+                false,
+            )
+            .expect("variable");
+
+        let (p, l, u) = session.tensor_linalg_lu(a).expect("linalg.lu");
+
+        // Verify P @ L @ U == A
+        let pl = session.tensor_matmul(p, l).expect("matmul P@L");
+        let plu = session.tensor_matmul(pl, u).expect("matmul PL@U");
+
+        let a_vals = session.tensor_values(a).expect("values");
+        let plu_vals = session.tensor_values(plu).expect("values");
+        for (i, (&av, &pv)) in a_vals.iter().zip(plu_vals.iter()).enumerate() {
+            assert!(
+                (av - pv).abs() < 1e-10,
+                "P@L@U[{i}] = {pv}, expected {av}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_lu_solve_2x2_system() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session
+            .tensor_variable(vec![2.0, 1.0, 5.0, 3.0], vec![2, 2], false)
+            .expect("variable");
+        let b = session
+            .tensor_variable(vec![4.0, 7.0], vec![2], false)
+            .expect("variable");
+
+        let (lu_packed, pivots) = session.tensor_lu_factor(a).expect("lu_factor");
+        let x = session
+            .tensor_lu_solve(lu_packed, &pivots, b)
+            .expect("lu_solve");
+
+        let x_vals = session.tensor_values(x).expect("values");
+        assert!(
+            (x_vals[0] - 5.0).abs() < 1e-10,
+            "x[0] = {}, expected 5.0",
+            x_vals[0]
+        );
+        assert!(
+            (x_vals[1] - (-6.0)).abs() < 1e-10,
+            "x[1] = {}, expected -6.0",
+            x_vals[1]
+        );
+    }
+
+    #[test]
+    fn session_lu_solve_3x3_system() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = session
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0],
+                vec![3, 3],
+                false,
+            )
+            .expect("variable");
+        let b = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("variable");
+
+        let (lu_packed, pivots) = session.tensor_lu_factor(a).expect("lu_factor");
+        let x = session
+            .tensor_lu_solve(lu_packed, &pivots, b)
+            .expect("lu_solve");
+
+        // Verify A @ x ≈ b
+        let a_vals = session.tensor_values(a).expect("values");
+        let x_vals = session.tensor_values(x).expect("values");
+        let b_vals = session.tensor_values(b).expect("values");
+        for i in 0..3 {
+            let mut ax_i = 0.0;
+            for j in 0..3 {
+                ax_i += a_vals[i * 3 + j] * x_vals[j];
+            }
+            assert!(
+                (ax_i - b_vals[i]).abs() < 1e-10,
+                "Ax[{i}] = {ax_i}, expected {}",
+                b_vals[i]
+            );
+        }
+    }
+
+    #[test]
+    fn session_lu_factor_identity() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let eye = session
+            .tensor_variable(
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                vec![3, 3],
+                false,
+            )
+            .expect("variable");
+
+        let (p, l, u) = session.tensor_linalg_lu(eye).expect("linalg.lu");
+
+        let p_vals = session.tensor_values(p).expect("values");
+        let l_vals = session.tensor_values(l).expect("values");
+        let u_vals = session.tensor_values(u).expect("values");
+        let eye_vals = session.tensor_values(eye).expect("values");
+
+        // For identity: P ≈ I, L ≈ I, U ≈ I
+        for i in 0..9 {
+            assert!(
+                (p_vals[i] - eye_vals[i]).abs() < 1e-12,
+                "P[{i}] should match identity"
+            );
+            assert!(
+                (l_vals[i] - eye_vals[i]).abs() < 1e-12,
+                "L[{i}] should match identity"
+            );
+            assert!(
+                (u_vals[i] - eye_vals[i]).abs() < 1e-12,
+                "U[{i}] should match identity"
+            );
+        }
+    }
+
+    #[test]
+    fn session_lu_factor_rejects_non_square() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("variable");
+        assert!(
+            session.tensor_lu_factor(a).is_err(),
+            "non-square should error"
+        );
+    }
+
+    // ---- QR Decomposition tests (bd-2drq.4) ----
+
+    #[test]
+    fn session_qr_reduced_round_trip_3x3() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = session
+            .tensor_variable(
+                vec![12.0, -51.0, 4.0, 6.0, 167.0, -68.0, -4.0, 24.0, -41.0],
+                vec![3, 3],
+                false,
+            )
+            .expect("variable");
+
+        let (q, r) = session.tensor_linalg_qr(a, true).expect("linalg.qr");
+
+        // Q @ R == A
+        let qr = session.tensor_matmul(q, r).expect("matmul Q@R");
+        let a_vals = session.tensor_values(a).expect("values");
+        let qr_vals = session.tensor_values(qr).expect("values");
+        for (i, (&av, &qv)) in a_vals.iter().zip(qr_vals.iter()).enumerate() {
+            assert!(
+                (av - qv).abs() < 1e-10,
+                "Q@R[{i}] = {qv}, expected {av}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_qr_complete_round_trip_3x3() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = session
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0],
+                vec![3, 3],
+                false,
+            )
+            .expect("variable");
+
+        let (q, r) = session.tensor_linalg_qr(a, false).expect("linalg.qr");
+
+        // Q @ R == A
+        let qr = session.tensor_matmul(q, r).expect("matmul Q@R");
+        let a_vals = session.tensor_values(a).expect("values");
+        let qr_vals = session.tensor_values(qr).expect("values");
+        for (i, (&av, &qv)) in a_vals.iter().zip(qr_vals.iter()).enumerate() {
+            assert!(
+                (av - qv).abs() < 1e-10,
+                "Q@R[{i}] = {qv}, expected {av}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_qr_tall_matrix_reduced() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = session
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                vec![4, 2],
+                false,
+            )
+            .expect("variable");
+
+        let (q, r) = session.tensor_linalg_qr(a, true).expect("linalg.qr");
+
+        // Q should have 4*2=8 elements, R should have 2*2=4 elements
+        let q_vals = session.tensor_values(q).expect("values");
+        let r_vals = session.tensor_values(r).expect("values");
+        assert_eq!(q_vals.len(), 8, "Q should be 4x2");
+        assert_eq!(r_vals.len(), 4, "R should be 2x2");
+
+        // Q @ R == A
+        let qr = session.tensor_matmul(q, r).expect("matmul Q@R");
+        let a_vals = session.tensor_values(a).expect("values");
+        let qr_vals = session.tensor_values(qr).expect("values");
+        for (i, (&av, &qv)) in a_vals.iter().zip(qr_vals.iter()).enumerate() {
+            assert!(
+                (av - qv).abs() < 1e-10,
+                "Q@R[{i}] = {qv}, expected {av}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_qr_identity_returns_identity() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let eye = session
+            .tensor_variable(
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                vec![3, 3],
+                false,
+            )
+            .expect("variable");
+
+        let (q, r) = session.tensor_linalg_qr(eye, true).expect("linalg.qr");
+
+        let q_vals = session.tensor_values(q).expect("values");
+        let r_vals = session.tensor_values(r).expect("values");
+
+        // Q @ R should reconstruct identity
+        let qr = session.tensor_matmul(q, r).expect("matmul Q@R");
+        let eye_vals = session.tensor_values(eye).expect("values");
+        let qr_vals = session.tensor_values(qr).expect("values");
+        for (i, (&ev, &qv)) in eye_vals.iter().zip(qr_vals.iter()).enumerate() {
+            assert!(
+                (ev - qv).abs() < 1e-12,
+                "Q@R[{i}] = {qv}, expected {ev}"
+            );
+        }
+
+        // For identity: |Q[i,i]| should be 1, R should be ±I
+        for i in 0..3 {
+            assert!(
+                (q_vals[i * 3 + i].abs() - 1.0).abs() < 1e-12,
+                "Q diagonal should be ±1"
+            );
+            assert!(
+                (r_vals[i * 3 + i].abs() - 1.0).abs() < 1e-12,
+                "R diagonal should be ±1"
+            );
+        }
+    }
+
+    #[test]
+    fn session_qr_rejects_1d_tensor() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("variable");
+        assert!(
+            session.tensor_linalg_qr(v, true).is_err(),
+            "1D tensor should be rejected"
+        );
+    }
+
+    // ---- no_grad / enable_grad tests (bd-3dpn.1) ----
+
+    #[test]
+    fn default_grad_enabled_is_true() {
+        let session = FrankenTorchSession::new(ExecutionMode::Strict);
+        assert!(session.is_grad_enabled());
+    }
+
+    #[test]
+    fn no_grad_disables_gradient_tracking() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        session.no_grad_enter();
+        assert!(!session.is_grad_enabled());
+        session.no_grad_exit();
+        assert!(session.is_grad_enabled());
+    }
+
+    #[test]
+    fn no_grad_block_produces_tensors_without_grad() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.0, true);
+        let y = session.variable(3.0, true);
+
+        session.no_grad_enter();
+        let z = session.add(x, y).expect("add in no_grad");
+        session.no_grad_exit();
+
+        // z was created inside no_grad, so backward from z should fail
+        // (z has requires_grad=false because grad was disabled)
+        let err = session.backward(z);
+        assert!(err.is_err(), "backward from no_grad node should fail");
+    }
+
+    #[test]
+    fn enable_grad_inside_no_grad_reenables_tracking() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        session.no_grad_enter();
+        assert!(!session.is_grad_enabled());
+
+        session.enable_grad_enter();
+        assert!(session.is_grad_enabled());
+        session.enable_grad_exit();
+
+        assert!(!session.is_grad_enabled());
+        session.no_grad_exit();
+        assert!(session.is_grad_enabled());
+    }
+
+    #[test]
+    fn nested_no_grad_enable_grad_restores_state() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        assert!(session.is_grad_enabled());
+
+        session.no_grad_enter();
+        assert!(!session.is_grad_enabled());
+
+        session.no_grad_enter(); // nested
+        assert!(!session.is_grad_enabled());
+
+        session.enable_grad_enter();
+        assert!(session.is_grad_enabled());
+
+        session.enable_grad_exit();
+        assert!(!session.is_grad_enabled());
+
+        session.no_grad_exit();
+        assert!(!session.is_grad_enabled());
+
+        session.no_grad_exit();
+        assert!(session.is_grad_enabled());
+    }
+
+    #[test]
+    fn with_no_grad_closure_api() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.0, true);
+        let y = session.variable(3.0, true);
+
+        let z = session.with_no_grad(|s| s.add(x, y).expect("add"));
+
+        // z was created inside no_grad, backward should fail
+        assert!(session.backward(z).is_err());
+
+        // But operations outside no_grad still track gradients
+        let w = session.add(x, y).expect("add outside no_grad");
+        let report = session.backward(w).expect("backward should work");
+        assert_eq!(report.gradient(x), Some(1.0));
+    }
+
+    #[test]
+    fn with_enable_grad_inside_no_grad() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.0, true);
+        let y = session.variable(3.0, true);
+
+        session.no_grad_enter();
+        let z = session.with_enable_grad(|s| s.add(x, y).expect("add"));
+        session.no_grad_exit();
+
+        // z was created inside enable_grad (even though inside no_grad),
+        // so backward should succeed
+        let report = session.backward(z).expect("backward should work");
+        assert_eq!(report.gradient(x), Some(1.0));
+        assert_eq!(report.gradient(y), Some(1.0));
+    }
+
+    #[test]
+    fn set_grad_enabled_toggles_state() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        assert!(session.is_grad_enabled());
+
+        session.set_grad_enabled(false);
+        assert!(!session.is_grad_enabled());
+
+        session.set_grad_enabled(true);
+        assert!(session.is_grad_enabled());
+    }
+
+    #[test]
+    fn no_grad_tensor_operations_skip_grad_tracking() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], true)
+            .expect("x");
+        let y = session
+            .tensor_variable(vec![3.0, 4.0], vec![2], true)
+            .expect("y");
+
+        session.no_grad_enter();
+        let z = session.tensor_add(x, y).expect("tensor add in no_grad");
+        session.no_grad_exit();
+
+        // z created in no_grad should not have gradient tracking
+        let err = session.tensor_backward(z);
+        assert!(err.is_err(), "tensor backward from no_grad node should fail");
+    }
+
+    #[test]
+    fn backward_after_no_grad_only_tracks_pre_nograd_ops() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.variable(2.0, true);
+        let y = session.variable(3.0, true);
+
+        // Create node with grad tracking
+        let sum = session.add(x, y).expect("add");
+        // Multiply inside no_grad — result has no grad
+        session.no_grad_enter();
+        let prod = session.mul(sum, x).expect("mul in no_grad");
+        session.no_grad_exit();
+
+        // prod has requires_grad=false because it was created in no_grad
+        // So backward from prod should fail
+        let err = session.backward(prod);
+        assert!(err.is_err());
+
+        // But backward from sum (created before no_grad) should work
+        let report = session.backward(sum).expect("backward from sum");
+        assert_eq!(report.gradient(x), Some(1.0));
+        assert_eq!(report.gradient(y), Some(1.0));
+    }
+
+    #[test]
+    fn deep_nested_grad_context_100_levels() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for _ in 0..100 {
+            session.no_grad_enter();
+        }
+        assert!(!session.is_grad_enabled());
+        for _ in 0..100 {
+            session.no_grad_exit();
+        }
+        assert!(session.is_grad_enabled());
+    }
+
+    #[test]
+    fn empty_no_grad_block_is_noop() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        session.no_grad_enter();
+        session.no_grad_exit();
+        assert!(session.is_grad_enabled());
+
+        // Operations after should still track gradients
+        let x = session.variable(2.0, true);
+        let y = session.variable(3.0, true);
+        let z = session.add(x, y).expect("add");
+        let report = session.backward(z).expect("backward");
+        assert_eq!(report.gradient(x), Some(1.0));
     }
 }
