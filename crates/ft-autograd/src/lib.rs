@@ -3874,8 +3874,14 @@ impl TensorTape {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_node = self.node(input)?;
-        if input_node.tensor.meta().dtype() == DType::F32 {
+        let input_dtype = input_node.tensor.meta().dtype();
+        if input_dtype == DType::F32 {
             return Ok(input);
+        }
+        if input_dtype != DType::F64 {
+            return Err(AutogradError::DenseTensor(
+                ft_core::DenseTensorError::UnsupportedDType(input_dtype),
+            ));
         }
         let requires_grad = input_node.requires_grad && self.grad_enabled;
         let meta = input_node.tensor.meta().clone();
@@ -3900,8 +3906,14 @@ impl TensorTape {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_node = self.node(input)?;
-        if input_node.tensor.meta().dtype() == DType::F64 {
+        let input_dtype = input_node.tensor.meta().dtype();
+        if input_dtype == DType::F64 {
             return Ok(input);
+        }
+        if input_dtype != DType::F32 {
+            return Err(AutogradError::DenseTensor(
+                ft_core::DenseTensorError::UnsupportedDType(input_dtype),
+            ));
         }
         let requires_grad = input_node.requires_grad && self.grad_enabled;
         let meta = input_node.tensor.meta().clone();
