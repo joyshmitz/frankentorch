@@ -23,11 +23,11 @@ This matrix tracks execution progress, not allowable scope reduction. Release re
 | Broadcasting | parity_green | NumPy-style broadcasting for all binary tensor ops with gradient reduction |
 | Random operations | parity_green | Deterministic xoshiro256++ PRNG: rand, randn, rand_like, randn_like |
 | In-place operations | parity_green | add_, sub_, mul_, div_, zero_, fill_, mul_scalar_, add_scalar_ with version tracking |
-| Loss functions | parity_green | mse_loss, l1_loss, bce_loss, smooth_l1_loss (composed from autograd ops) |
+| Loss functions | parity_green | mse_loss, l1_loss, bce_loss, smooth_l1_loss, huber_loss, cross_entropy_loss, nll_loss, cosine_embedding_loss (composed from autograd ops); nn modules: MSELoss, L1Loss, CrossEntropyLoss, NLLLoss, BCELoss, BCEWithLogitsLoss, SmoothL1Loss, HuberLoss, CosineEmbeddingLoss, KLDivLoss |
 | Shape operations | parity_green | reshape, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk |
 | Advanced reductions | parity_green | argmax, argmin, max_dim, min_dim (with backward), softmax, log_softmax, sum_dim, mean_dim, prod_dim, var_dim, std_dim |
-| Neural network modules (ft-nn) | parity_green | Module trait, Linear (Kaiming init), Conv1d, ReLU, Sigmoid, Tanh, GELU, SiLU, LeakyReLU, ELU, Mish, Softplus, Sequential, Dropout, LayerNorm, BatchNorm1d, Embedding, MultiheadAttention, Softmax, LogSoftmax, Flatten, AvgPool1d |
-| Optimizers (ft-optim) | parity_green | Optimizer trait, SGD (momentum, weight_decay, nesterov), Adam (bias correction, weight_decay) |
+| Neural network modules (ft-nn) | parity_green | Module trait, LossModule trait, Linear (Kaiming init), Conv1d, Conv2d, ConvTranspose1d, ReLU, Sigmoid, Tanh, GELU, SiLU, LeakyReLU, ELU, Mish, Softplus, Sequential, ModuleList, ModuleDict, Dropout, LayerNorm, BatchNorm1d, BatchNorm2d, GroupNorm, InstanceNorm1d, InstanceNorm2d, Embedding, MultiheadAttention, Softmax, LogSoftmax, Flatten, Identity, AvgPool1d, MaxPool1d, MaxPool2d, AdaptiveAvgPool2d, Upsample1d, Upsample2d, ConstantPad1d, ConstantPad2d, ZeroPad2d, RNNCell, LSTMCell, GRUCell, MSELoss, L1Loss, CrossEntropyLoss, NLLLoss, BCELoss, BCEWithLogitsLoss, SmoothL1Loss, HuberLoss, KLDivLoss |
+| Optimizers (ft-optim) | parity_green | Optimizer trait, SGD (momentum, weight_decay, nesterov), Adam (bias correction, weight_decay), AdamW, RMSprop, Adagrad, RAdam |
 | Advanced indexing | parity_green | index_select, gather, scatter, masked_fill (with backward for index_select, gather) |
 | Full PyTorch drop-in surface | in_progress | aggregate parity-closure tracker; no intentional feature omissions permitted at release |
 
@@ -73,7 +73,7 @@ rand (uniform [0,1)), randn (normal), rand_like, randn_like (deterministic xoshi
 tensor_add_, tensor_sub_, tensor_mul_, tensor_div_, tensor_zero_, tensor_fill_, tensor_mul_scalar_, tensor_add_scalar_
 
 ### Loss Functions
-mse_loss, l1_loss, bce_loss, smooth_l1_loss
+mse_loss, l1_loss, bce_loss, smooth_l1_loss, huber_loss, cross_entropy_loss, nll_loss, cosine_embedding_loss
 
 ### Advanced Indexing
 index_select, gather, scatter, masked_fill
