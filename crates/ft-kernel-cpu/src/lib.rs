@@ -3426,11 +3426,7 @@ fn ensure_unary_layout_and_storage_f32(
     ensure_storage_len_f32(buffer, meta, "input")
 }
 
-fn unary_contiguous_f32<F>(
-    input: &[f32],
-    meta: &TensorMeta,
-    op: F,
-) -> Result<Vec<f32>, KernelError>
+fn unary_contiguous_f32<F>(input: &[f32], meta: &TensorMeta, op: F) -> Result<Vec<f32>, KernelError>
 where
     F: Fn(f32) -> f32,
 {
@@ -3522,17 +3518,16 @@ fn elu_value_f32(x: f32) -> f32 {
 }
 
 fn erf_value_f32(x: f32) -> f32 {
-    let a1 = 0.254829592f32;
-    let a2 = -0.284496736f32;
-    let a3 = 1.421413741f32;
-    let a4 = -1.453152027f32;
-    let a5 = 1.061405429f32;
-    let p = 0.3275911f32;
+    let a1 = 0.254_829_6_f32;
+    let a2 = -0.284_496_72_f32;
+    let a3 = 1.421_413_8_f32;
+    let a4 = -1.453_152_1_f32;
+    let a5 = 1.061_405_4_f32;
+    let p = 0.327_591_1_f32;
     let sign = if x < 0.0f32 { -1.0f32 } else { 1.0f32 };
     let abs_x = x.abs();
     let t = 1.0f32 / (1.0f32 + p * abs_x);
-    let y = 1.0f32
-        - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-abs_x * abs_x).exp();
+    let y = 1.0f32 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-abs_x * abs_x).exp();
     sign * y
 }
 
@@ -4012,8 +4007,7 @@ pub fn prod_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "prod_dim_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "prod_dim_f32 overflow")?;
     let out_numel = checked_mul(outer_size, inner_size, "prod_dim_f32 overflow")?;
     let mut output = vec![1.0f32; out_numel];
     let data = &input[offset..];
@@ -4042,8 +4036,7 @@ pub fn var_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "var_dim_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "var_dim_f32 overflow")?;
     let out_numel = checked_mul(outer_size, inner_size, "var_dim_f32 overflow")?;
     let data = &input[offset..];
     if reduce_size < 2 {
@@ -4096,9 +4089,7 @@ pub fn norm_tensor_contiguous_f32(
     if p == f32::INFINITY {
         Ok(data.iter().fold(0.0f32, |acc, &x| acc.max(x.abs())))
     } else if p == f32::NEG_INFINITY {
-        Ok(data
-            .iter()
-            .fold(f32::INFINITY, |acc, &x| acc.min(x.abs())))
+        Ok(data.iter().fold(f32::INFINITY, |acc, &x| acc.min(x.abs())))
     } else if p == 0.0f32 {
         Ok(data.iter().filter(|&&x| x != 0.0f32).count() as f32)
     } else if p == 1.0f32 {
@@ -4126,8 +4117,7 @@ pub fn norm_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "norm_dim_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "norm_dim_f32 overflow")?;
     let out_numel = checked_mul(outer_size, inner_size, "norm_dim_f32 overflow")?;
     let data = &input[offset..];
     let mut output = vec![0.0f32; out_numel];
@@ -4299,8 +4289,7 @@ pub fn argmax_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "argmax_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "argmax_f32 overflow")?;
     let out_numel = checked_mul(outer_size, inner_size, "argmax_f32 overflow")?;
     let mut output = vec![0.0f32; out_numel];
     let data = &input[offset..];
@@ -4338,8 +4327,7 @@ pub fn argmin_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "argmin_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "argmin_f32 overflow")?;
     let out_numel = checked_mul(outer_size, inner_size, "argmin_f32 overflow")?;
     let mut output = vec![0.0f32; out_numel];
     let data = &input[offset..];
@@ -4377,8 +4365,7 @@ pub fn max_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "max_dim_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "max_dim_f32 overflow")?;
     let out_numel = checked_mul(outer_size, inner_size, "max_dim_f32 overflow")?;
     let mut values = vec![f32::NEG_INFINITY; out_numel];
     let mut indices = vec![0.0f32; out_numel];
@@ -4416,8 +4403,7 @@ pub fn min_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let reduce_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "min_dim_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "min_dim_f32 overflow")?;
     let out_numel = checked_mul(outer_size, inner_size, "min_dim_f32 overflow")?;
     let mut values = vec![f32::INFINITY; out_numel];
     let mut indices = vec![0.0f32; out_numel];
@@ -4475,8 +4461,7 @@ pub fn cat_tensor_contiguous_f32(
             }
         }
     }
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(first_shape, dim, "cat_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(first_shape, dim, "cat_f32 overflow")?;
     let total_cat_size: usize = inputs.iter().map(|(_, m)| m.shape()[dim]).sum();
     let out_numel = checked_mul(
         checked_mul(outer_size, total_cat_size, "cat_f32 overflow")?,
@@ -4575,8 +4560,7 @@ pub fn narrow_tensor_contiguous_f32(
     if length == 0 {
         return Ok(Vec::new());
     }
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "narrow_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "narrow_f32 overflow")?;
     let dim_size = shape[dim];
     let out_numel = checked_mul(
         checked_mul(outer_size, length, "narrow_f32 overflow")?,
@@ -4861,8 +4845,7 @@ pub fn cumsum_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let dim_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "cumsum_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "cumsum_f32 overflow")?;
     let numel = checked_mul(
         checked_mul(outer_size, dim_size, "cumsum_f32 overflow")?,
         inner_size,
@@ -4931,8 +4914,7 @@ pub fn cumprod_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let dim_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "cumprod_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "cumprod_f32 overflow")?;
     let numel = checked_mul(
         checked_mul(outer_size, dim_size, "cumprod_f32 overflow")?,
         inner_size,
@@ -4995,8 +4977,7 @@ pub fn cumprod_backward_tensor_contiguous_f32(
                         let mut prod = 1.0f32;
                         for kk in d..=j {
                             if kk != d {
-                                let k_idx =
-                                    outer * dim_size * inner_size + kk * inner_size + inner;
+                                let k_idx = outer * dim_size * inner_size + kk * inner_size + inner;
                                 prod *= in_data[k_idx];
                             }
                         }
@@ -5029,8 +5010,7 @@ pub fn sort_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let dim_size = shape[dim];
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "sort_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "sort_f32 overflow")?;
     let numel = checked_mul(
         checked_mul(outer_size, dim_size, "sort_f32 overflow")?,
         inner_size,
@@ -5084,8 +5064,7 @@ pub fn topk_tensor_contiguous_f32(
         });
     }
     let offset = meta.storage_offset();
-    let (outer_size, inner_size, _) =
-        checked_dim_loop_sizes(shape, dim, "topk_f32 overflow")?;
+    let (outer_size, inner_size, _) = checked_dim_loop_sizes(shape, dim, "topk_f32 overflow")?;
     let out_numel = checked_mul(
         checked_mul(outer_size, k, "topk_f32 overflow")?,
         inner_size,
@@ -5282,8 +5261,11 @@ pub fn reduce_sum_for_broadcast_f32(
     if original_numel == 0 {
         return Ok(Vec::new());
     }
-    let original_strides =
-        broadcast_strides(original_shape, expanded_shape, "broadcast_f32 strides overflow")?;
+    let original_strides = broadcast_strides(
+        original_shape,
+        expanded_shape,
+        "broadcast_f32 strides overflow",
+    )?;
     let mut reduced = vec![0.0f32; original_numel];
     let mut coords = vec![0usize; ndim];
     for grad in expanded_grad {
@@ -7755,12 +7737,18 @@ mod tests {
             3.0, 4.0, 5.0,
             6.0, 7.0, 8.0,
         ];
-        let result = super::lu_factor_contiguous_f64(&a, &meta).expect("pivoting should handle this");
+        let result =
+            super::lu_factor_contiguous_f64(&a, &meta).expect("pivoting should handle this");
         let unpacked = super::lu_unpack(&result);
 
         let pl = mat_mul_nn(&unpacked.p, &unpacked.l, 3);
         let plu = mat_mul_nn(&pl, &unpacked.u, 3);
-        assert_mat_approx_eq(&plu, &a, 1e-10, "P @ L @ U should equal A even with zero diagonal");
+        assert_mat_approx_eq(
+            &plu,
+            &a,
+            1e-10,
+            "P @ L @ U should equal A even with zero diagonal",
+        );
     }
 
     #[test]
@@ -8046,10 +8034,7 @@ mod tests {
         let qr_val = result.q[0] * result.r[0];
         assert!((qr_val - 5.0).abs() < 1e-12, "Q*R should equal 5.0");
         // Q should be orthogonal: |Q| = 1
-        assert!(
-            (result.q[0].abs() - 1.0).abs() < 1e-12,
-            "Q should be ±1"
-        );
+        assert!((result.q[0].abs() - 1.0).abs() < 1e-12, "Q should be ±1");
     }
 
     #[test]

@@ -727,8 +727,7 @@ impl Optimizer for RMSprop {
             let avg: Vec<f64> = if self.centered {
                 // Update running average of gradients:
                 // grad_avg = alpha * grad_avg + (1 - alpha) * grad
-                let ga =
-                    self.grad_avg[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+                let ga = self.grad_avg[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
                 ensure_state_len(
                     effective_grad.len(),
                     ga.len(),
@@ -748,8 +747,8 @@ impl Optimizer for RMSprop {
 
             if self.momentum > 0.0 {
                 // Update momentum buffer: buf = momentum * buf + grad / avg
-                let buf = self.momentum_buffer[i]
-                    .get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+                let buf =
+                    self.momentum_buffer[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
                 ensure_state_len(
                     effective_grad.len(),
                     buf.len(),
@@ -3239,7 +3238,7 @@ mod tests {
 
         for epoch in 0..30 {
             scheduler.step(&mut opt, None);
-            let expected = 0.5_f64.powi((epoch as i32) / 10);
+            let expected = 0.5_f64.powi(epoch / 10);
             let actual = opt.get_lr();
             assert!(
                 (actual - expected).abs() < 1e-12,
@@ -3303,7 +3302,7 @@ mod tests {
 
         for epoch in 0..5 {
             scheduler.step(&mut opt, None);
-            let expected = 0.5_f64.powi(epoch as i32);
+            let expected = 0.5_f64.powi(epoch);
             let actual = opt.get_lr();
             assert!(
                 (actual - expected).abs() < 1e-12,

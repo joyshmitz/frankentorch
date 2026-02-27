@@ -538,10 +538,8 @@ impl FrankenTorchSession {
         shape: Vec<usize>,
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let numel = Self::checked_shape_numel(
-            &shape,
-            "tensor factory shape volume overflow in zeros_f32",
-        )?;
+        let numel =
+            Self::checked_shape_numel(&shape, "tensor factory shape volume overflow in zeros_f32")?;
         self.tensor_tape
             .leaf_f32(vec![0.0f32; numel], shape, requires_grad)
     }
@@ -551,10 +549,8 @@ impl FrankenTorchSession {
         shape: Vec<usize>,
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let numel = Self::checked_shape_numel(
-            &shape,
-            "tensor factory shape volume overflow in ones_f32",
-        )?;
+        let numel =
+            Self::checked_shape_numel(&shape, "tensor factory shape volume overflow in ones_f32")?;
         self.tensor_tape
             .leaf_f32(vec![1.0f32; numel], shape, requires_grad)
     }
@@ -564,10 +560,8 @@ impl FrankenTorchSession {
         shape: Vec<usize>,
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let numel = Self::checked_shape_numel(
-            &shape,
-            "tensor factory shape volume overflow in randn_f32",
-        )?;
+        let numel =
+            Self::checked_shape_numel(&shape, "tensor factory shape volume overflow in randn_f32")?;
         let values: Vec<f32> = (0..numel).map(|_| self.rng.next_normal() as f32).collect();
         self.tensor_tape.leaf_f32(values, shape, requires_grad)
     }
@@ -7113,9 +7107,7 @@ mod tests {
         // Stable formula: max(0,0) - 0*1 + log1p(exp(-|0|)) = 0 - 0 + log(2) = ln(2)
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let logits = s.tensor_variable(vec![0.0, 0.0], vec![2], true).unwrap();
-        let target = s
-            .tensor_variable(vec![1.0, 1.0], vec![2], false)
-            .unwrap();
+        let target = s.tensor_variable(vec![1.0, 1.0], vec![2], false).unwrap();
         let loss = s.bce_with_logits_loss(logits, target).unwrap();
         let vals = s.tensor_values(loss).unwrap();
         let expected = 2.0_f64.ln();
@@ -7169,9 +7161,7 @@ mod tests {
         let logits = s
             .tensor_variable(vec![100.0, -100.0], vec![2], true)
             .unwrap();
-        let target = s
-            .tensor_variable(vec![1.0, 0.0], vec![2], false)
-            .unwrap();
+        let target = s.tensor_variable(vec![1.0, 0.0], vec![2], false).unwrap();
         let loss = s.bce_with_logits_loss(logits, target).unwrap();
         let vals = s.tensor_values(loss).unwrap();
         assert!(
@@ -7193,16 +7183,10 @@ mod tests {
     fn bce_with_logits_loss_backward_produces_gradients() {
         // The gradient of BCEWithLogitsLoss w.r.t. logits is (sigmoid(x) - y) / n
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let logits = s
-            .tensor_variable(vec![0.5, -0.5], vec![2], true)
-            .unwrap();
-        let target = s
-            .tensor_variable(vec![1.0, 0.0], vec![2], false)
-            .unwrap();
+        let logits = s.tensor_variable(vec![0.5, -0.5], vec![2], true).unwrap();
+        let target = s.tensor_variable(vec![1.0, 0.0], vec![2], false).unwrap();
         let loss = s.bce_with_logits_loss(logits, target).unwrap();
-        let report = s
-            .tensor_backward(loss)
-            .expect("backward should succeed");
+        let report = s.tensor_backward(loss).expect("backward should succeed");
         let grad = s
             .tensor_gradient(&report, logits)
             .expect("logits grad should exist");
@@ -7367,8 +7351,12 @@ mod tests {
     #[test]
     fn huber_loss_identical_tensors_returns_zero() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let pred = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
-        let target = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let pred = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let target = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
         let loss = s.huber_loss(pred, target, 1.0).unwrap();
         let vals = s.tensor_values(loss).unwrap();
         assert!(
@@ -7455,7 +7443,10 @@ mod tests {
         let loss = s.huber_loss(pred, target, 1.0).unwrap();
         let report = s.tensor_backward(loss).unwrap();
         let grad = s.tensor_gradient(&report, pred);
-        assert!(grad.is_some(), "huber_loss should produce gradients for pred");
+        assert!(
+            grad.is_some(),
+            "huber_loss should produce gradients for pred"
+        );
     }
 
     #[test]
@@ -7473,8 +7464,12 @@ mod tests {
     fn cosine_similarity_identical_vectors() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Two identical vectors: cos_sim = 1.0
-        let x1 = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
-        let x2 = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let x1 = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let x2 = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
         let sim = s.cosine_similarity(x1, x2, 0, 1e-8).unwrap();
         let vals = s.tensor_values(sim).unwrap();
         assert!(
@@ -7503,8 +7498,12 @@ mod tests {
     fn cosine_similarity_opposite_vectors() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Opposite vectors: cos_sim = -1.0
-        let x1 = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
-        let x2 = s.tensor_variable(vec![-1.0, -2.0, -3.0], vec![3], false).unwrap();
+        let x1 = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let x2 = s
+            .tensor_variable(vec![-1.0, -2.0, -3.0], vec![3], false)
+            .unwrap();
         let sim = s.cosine_similarity(x1, x2, 0, 1e-8).unwrap();
         let vals = s.tensor_values(sim).unwrap();
         assert!(
@@ -7543,8 +7542,12 @@ mod tests {
     #[test]
     fn cosine_similarity_backward_produces_gradients() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x1 = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).unwrap();
-        let x2 = s.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], true).unwrap();
+        let x1 = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let x2 = s
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], true)
+            .unwrap();
         let sim = s.cosine_similarity(x1, x2, 0, 1e-8).unwrap();
         let loss = s.tensor_sum(sim).unwrap();
         let report = s.tensor_backward(loss).unwrap();
@@ -7563,8 +7566,12 @@ mod tests {
     fn cosine_similarity_zero_vector_with_eps() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Zero vector: eps prevents NaN
-        let x1 = s.tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false).unwrap();
-        let x2 = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let x1 = s
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false)
+            .unwrap();
+        let x2 = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
         let sim = s.cosine_similarity(x1, x2, 0, 1e-8).unwrap();
         let vals = s.tensor_values(sim).unwrap();
         // dot = 0, norms product is clamped to eps, result should be ~0
@@ -10496,10 +10503,7 @@ mod tests {
         let a_vals = session.tensor_values(a).expect("values");
         let plu_vals = session.tensor_values(plu).expect("values");
         for (i, (&av, &pv)) in a_vals.iter().zip(plu_vals.iter()).enumerate() {
-            assert!(
-                (av - pv).abs() < 1e-10,
-                "P@L@U[{i}] = {pv}, expected {av}"
-            );
+            assert!((av - pv).abs() < 1e-10, "P@L@U[{i}] = {pv}, expected {av}");
         }
     }
 
@@ -10636,10 +10640,7 @@ mod tests {
         let a_vals = session.tensor_values(a).expect("values");
         let qr_vals = session.tensor_values(qr).expect("values");
         for (i, (&av, &qv)) in a_vals.iter().zip(qr_vals.iter()).enumerate() {
-            assert!(
-                (av - qv).abs() < 1e-10,
-                "Q@R[{i}] = {qv}, expected {av}"
-            );
+            assert!((av - qv).abs() < 1e-10, "Q@R[{i}] = {qv}, expected {av}");
         }
     }
 
@@ -10662,10 +10663,7 @@ mod tests {
         let a_vals = session.tensor_values(a).expect("values");
         let qr_vals = session.tensor_values(qr).expect("values");
         for (i, (&av, &qv)) in a_vals.iter().zip(qr_vals.iter()).enumerate() {
-            assert!(
-                (av - qv).abs() < 1e-10,
-                "Q@R[{i}] = {qv}, expected {av}"
-            );
+            assert!((av - qv).abs() < 1e-10, "Q@R[{i}] = {qv}, expected {av}");
         }
     }
 
@@ -10694,10 +10692,7 @@ mod tests {
         let a_vals = session.tensor_values(a).expect("values");
         let qr_vals = session.tensor_values(qr).expect("values");
         for (i, (&av, &qv)) in a_vals.iter().zip(qr_vals.iter()).enumerate() {
-            assert!(
-                (av - qv).abs() < 1e-10,
-                "Q@R[{i}] = {qv}, expected {av}"
-            );
+            assert!((av - qv).abs() < 1e-10, "Q@R[{i}] = {qv}, expected {av}");
         }
     }
 
@@ -10722,10 +10717,7 @@ mod tests {
         let eye_vals = session.tensor_values(eye).expect("values");
         let qr_vals = session.tensor_values(qr).expect("values");
         for (i, (&ev, &qv)) in eye_vals.iter().zip(qr_vals.iter()).enumerate() {
-            assert!(
-                (ev - qv).abs() < 1e-12,
-                "Q@R[{i}] = {qv}, expected {ev}"
-            );
+            assert!((ev - qv).abs() < 1e-12, "Q@R[{i}] = {qv}, expected {ev}");
         }
 
         // For identity: |Q[i,i]| should be 1, R should be ±I
@@ -10887,7 +10879,10 @@ mod tests {
 
         // z created in no_grad should not have gradient tracking
         let err = session.tensor_backward(z);
-        assert!(err.is_err(), "tensor backward from no_grad node should fail");
+        assert!(
+            err.is_err(),
+            "tensor backward from no_grad node should fail"
+        );
     }
 
     #[test]
@@ -10979,8 +10974,12 @@ mod tests {
     #[test]
     fn f32_arithmetic_preserves_dtype() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable_f32(vec![1.0f32, 2.0], vec![2], false).unwrap();
-        let b = session.tensor_variable_f32(vec![3.0f32, 4.0], vec![2], false).unwrap();
+        let a = session
+            .tensor_variable_f32(vec![1.0f32, 2.0], vec![2], false)
+            .unwrap();
+        let b = session
+            .tensor_variable_f32(vec![3.0f32, 4.0], vec![2], false)
+            .unwrap();
         let c = session.tensor_add(a, b).unwrap();
         assert_eq!(session.tensor_dtype(c).unwrap(), DType::F32);
         assert_eq!(session.tensor_values_f32(c).unwrap(), vec![4.0f32, 6.0]);
@@ -10989,8 +10988,12 @@ mod tests {
     #[test]
     fn f32_mixed_promotes_to_f64() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable_f32(vec![1.0f32, 2.0], vec![2], false).unwrap();
-        let b = session.tensor_variable(vec![3.0f64, 4.0], vec![2], false).unwrap();
+        let a = session
+            .tensor_variable_f32(vec![1.0f32, 2.0], vec![2], false)
+            .unwrap();
+        let b = session
+            .tensor_variable(vec![3.0f64, 4.0], vec![2], false)
+            .unwrap();
         let c = session.tensor_add(a, b).unwrap();
         assert_eq!(session.tensor_dtype(c).unwrap(), DType::F64);
         assert_eq!(session.tensor_values(c).unwrap(), vec![4.0f64, 6.0]);
@@ -10999,7 +11002,9 @@ mod tests {
     #[test]
     fn f32_cast_roundtrip() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable(vec![1.5f64, 2.5], vec![2], false).unwrap();
+        let a = session
+            .tensor_variable(vec![1.5f64, 2.5], vec![2], false)
+            .unwrap();
         let b = session.tensor_to_f32(a).unwrap();
         assert_eq!(session.tensor_dtype(b).unwrap(), DType::F32);
         let c = session.tensor_to_f64(b).unwrap();
@@ -11010,7 +11015,9 @@ mod tests {
     #[test]
     fn f32_backward_produces_f64_gradients() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable_f32(vec![1.0f32, 2.0, 3.0], vec![3], true).unwrap();
+        let a = session
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0], vec![3], true)
+            .unwrap();
         let b = session.tensor_neg(a).unwrap();
         let c = session.tensor_sum(b).unwrap();
         let report = session.tensor_backward(c).unwrap();
@@ -11021,7 +11028,9 @@ mod tests {
     #[test]
     fn f32_unary_ops_preserve_dtype() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable_f32(vec![0.5f32, 1.0, 1.5], vec![3], false).unwrap();
+        let a = session
+            .tensor_variable_f32(vec![0.5f32, 1.0, 1.5], vec![3], false)
+            .unwrap();
         let b = session.tensor_exp(a).unwrap();
         assert_eq!(session.tensor_dtype(b).unwrap(), DType::F32);
         let c = session.tensor_sin(a).unwrap();

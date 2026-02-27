@@ -1094,10 +1094,16 @@ impl fmt::Display for AutogradError {
                 write!(f, "tensor matmul shape mismatch: lhs={lhs:?}, rhs={rhs:?}")
             }
             Self::GraphConsumed => {
-                write!(f, "cannot run backward: graph already consumed by a previous backward pass")
+                write!(
+                    f,
+                    "cannot run backward: graph already consumed by a previous backward pass"
+                )
             }
             Self::TensorGraphConsumed => {
-                write!(f, "cannot run tensor backward: graph already consumed by a previous backward pass")
+                write!(
+                    f,
+                    "cannot run tensor backward: graph already consumed by a previous backward pass"
+                )
             }
         }
     }
@@ -3869,10 +3875,7 @@ impl TensorTape {
         Ok(self.node(node)?.tensor.meta().dtype())
     }
 
-    pub fn to_f32(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn to_f32(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let input_node = self.node(input)?;
         let input_dtype = input_node.tensor.meta().dtype();
         if input_dtype == DType::F32 {
@@ -3901,10 +3904,7 @@ impl TensorTape {
         Ok(out)
     }
 
-    pub fn to_f64(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn to_f64(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let input_node = self.node(input)?;
         let input_dtype = input_node.tensor.meta().dtype();
         if input_dtype == DType::F64 {
@@ -6546,13 +6546,7 @@ impl TensorTape {
             )
             .map_err(AutogradError::Dispatch)?;
             let out_shape = meta.shape().to_vec();
-            (
-                requires_grad,
-                out_shape,
-                DType::F64,
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, out_shape, DType::F64, meta.device(), outcome)
         };
 
         let out = TensorNodeId(self.nodes.len());
@@ -6597,13 +6591,7 @@ impl TensorTape {
             )
             .map_err(AutogradError::Dispatch)?;
             let out_shape = meta.shape().to_vec();
-            (
-                requires_grad,
-                out_shape,
-                DType::F64,
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, out_shape, DType::F64, meta.device(), outcome)
         };
 
         let out = TensorNodeId(self.nodes.len());
@@ -6726,8 +6714,12 @@ impl TensorTape {
         let (values, output_shape, output_dtype, output_device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta().clone();
-            let values = argmax_dim_tensor_contiguous_f64(&input_node.tensor.contiguous_values_as_f64()?, &meta, dim)
-                .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let values = argmax_dim_tensor_contiguous_f64(
+                &input_node.tensor.contiguous_values_as_f64()?,
+                &meta,
+                dim,
+            )
+            .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let mut out_shape = meta.shape().to_vec();
             out_shape.remove(dim);
             if out_shape.is_empty() {
@@ -6756,8 +6748,12 @@ impl TensorTape {
         let (values, output_shape, output_dtype, output_device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta().clone();
-            let values = argmin_dim_tensor_contiguous_f64(&input_node.tensor.contiguous_values_as_f64()?, &meta, dim)
-                .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let values = argmin_dim_tensor_contiguous_f64(
+                &input_node.tensor.contiguous_values_as_f64()?,
+                &meta,
+                dim,
+            )
+            .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let mut out_shape = meta.shape().to_vec();
             out_shape.remove(dim);
             if out_shape.is_empty() {
@@ -6795,9 +6791,12 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let (values, indices) =
-                max_dim_tensor_contiguous_f64(&input_node.tensor.contiguous_values_as_f64()?, &meta, dim)
-                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let (values, indices) = max_dim_tensor_contiguous_f64(
+                &input_node.tensor.contiguous_values_as_f64()?,
+                &meta,
+                dim,
+            )
+            .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let input_shape = meta.shape().to_vec();
             let mut out_shape = input_shape.clone();
             out_shape.remove(dim);
@@ -6861,9 +6860,12 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
-            let (values, indices) =
-                min_dim_tensor_contiguous_f64(&input_node.tensor.contiguous_values_as_f64()?, &meta, dim)
-                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let (values, indices) = min_dim_tensor_contiguous_f64(
+                &input_node.tensor.contiguous_values_as_f64()?,
+                &meta,
+                dim,
+            )
+            .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let input_shape = meta.shape().to_vec();
             let mut out_shape = input_shape.clone();
             out_shape.remove(dim);
@@ -7069,9 +7071,13 @@ impl TensorTape {
         let (values, output_shape, output_dtype, output_device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta().clone();
-            let values =
-                masked_fill_tensor_contiguous_f64(&input_node.tensor.contiguous_values_as_f64()?, &meta, mask, value)
-                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let values = masked_fill_tensor_contiguous_f64(
+                &input_node.tensor.contiguous_values_as_f64()?,
+                &meta,
+                mask,
+                value,
+            )
+            .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let output_shape = meta.shape().to_vec();
             (values, output_shape, DType::F64, meta.device())
         };
@@ -7128,8 +7134,7 @@ impl TensorTape {
                     .into(),
                 ));
             }
-            let requires_grad =
-                (x_node.requires_grad || y_node.requires_grad) && self.grad_enabled;
+            let requires_grad = (x_node.requires_grad || y_node.requires_grad) && self.grad_enabled;
             let cond_values = cond_node.tensor.contiguous_values_as_f64()?;
             let x_values = x_node.tensor.contiguous_values_as_f64()?;
             let y_values = y_node.tensor.contiguous_values_as_f64()?;
@@ -8224,10 +8229,9 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let mat1_node = self.node(mat1)?;
             let mat2_node = self.node(mat2)?;
-            let requires_grad = (input_node.requires_grad
-                || mat1_node.requires_grad
-                || mat2_node.requires_grad)
-                && self.grad_enabled;
+            let requires_grad =
+                (input_node.requires_grad || mat1_node.requires_grad || mat2_node.requires_grad)
+                    && self.grad_enabled;
             let input_meta = input_node.tensor.meta().clone();
             let mat1_meta = mat1_node.tensor.meta().clone();
             let mat2_meta = mat2_node.tensor.meta().clone();
@@ -8298,10 +8302,9 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let mat_node = self.node(mat)?;
             let vec_node = self.node(vec_input)?;
-            let requires_grad = (input_node.requires_grad
-                || mat_node.requires_grad
-                || vec_node.requires_grad)
-                && self.grad_enabled;
+            let requires_grad =
+                (input_node.requires_grad || mat_node.requires_grad || vec_node.requires_grad)
+                    && self.grad_enabled;
             let input_meta = input_node.tensor.meta().clone();
             let mat_meta = mat_node.tensor.meta().clone();
             let vec_meta = vec_node.tensor.meta().clone();
@@ -8400,12 +8403,7 @@ impl TensorTape {
                 }
                 _ => lhs_meta.shape().to_vec(),
             };
-            (
-                requires_grad,
-                output_shape,
-                lhs_meta.device(),
-                outcome,
-            )
+            (requires_grad, output_shape, lhs_meta.device(), outcome)
         };
 
         let result_dtype = outcome.storage.dtype();
@@ -12735,7 +12733,10 @@ mod tests {
             .expect("mul should succeed");
 
         let report = tape
-            .backward_with_options(out, BackwardOptions::strict_default().with_retain_graph(true))
+            .backward_with_options(
+                out,
+                BackwardOptions::strict_default().with_retain_graph(true),
+            )
             .expect("backward should succeed");
         assert_eq!(report.gradient(x), Some(7.0));
         assert_eq!(report.gradient(y), Some(2.0));
@@ -15445,7 +15446,10 @@ mod tests {
         let report = tape.backward(z).expect("first backward should succeed");
         assert_eq!(report.gradient(x), Some(1.0));
         assert_eq!(report.gradient(y), Some(1.0));
-        assert!(tape.consumed, "tape should be consumed after default backward");
+        assert!(
+            tape.consumed,
+            "tape should be consumed after default backward"
+        );
     }
 
     #[test]
@@ -15478,43 +15482,40 @@ mod tests {
         let first = tape
             .backward_with_options(out, opts)
             .expect("first backward with retain_graph=true");
-        assert!(!tape.consumed, "tape should NOT be consumed when retain_graph=true");
+        assert!(
+            !tape.consumed,
+            "tape should NOT be consumed when retain_graph=true"
+        );
 
         let second = tape.backward(out).expect("second backward should succeed");
         assert_eq!(first.gradient(x), second.gradient(x));
         assert_eq!(first.gradient(y), second.gradient(y));
-        assert!(tape.consumed, "tape should be consumed after default backward");
+        assert!(
+            tape.consumed,
+            "tape should be consumed after default backward"
+        );
     }
 
     #[test]
     fn default_backward_consumes_tensor_graph() {
         let mut tape = TensorTape::new();
-        let x = tape
-            .leaf(vec![1.0, 2.0], vec![2], true)
-            .expect("x");
-        let y = tape
-            .leaf(vec![3.0, 4.0], vec![2], true)
-            .expect("y");
-        let (z, _) = tape
-            .add(x, y, ExecutionMode::Strict)
-            .expect("add");
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let y = tape.leaf(vec![3.0, 4.0], vec![2], true).expect("y");
+        let (z, _) = tape.add(x, y, ExecutionMode::Strict).expect("add");
         let report = tape.backward(z).expect("first backward should succeed");
         assert!(report.gradient(x).is_some());
-        assert!(tape.consumed, "tensor tape should be consumed after default backward");
+        assert!(
+            tape.consumed,
+            "tensor tape should be consumed after default backward"
+        );
     }
 
     #[test]
     fn second_backward_on_consumed_tensor_graph_returns_error() {
         let mut tape = TensorTape::new();
-        let x = tape
-            .leaf(vec![1.0, 2.0], vec![2], true)
-            .expect("x");
-        let y = tape
-            .leaf(vec![3.0, 4.0], vec![2], true)
-            .expect("y");
-        let (z, _) = tape
-            .add(x, y, ExecutionMode::Strict)
-            .expect("add");
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let y = tape.leaf(vec![3.0, 4.0], vec![2], true).expect("y");
+        let (z, _) = tape.add(x, y, ExecutionMode::Strict).expect("add");
         let _ = tape.backward(z).expect("first backward should succeed");
         let err = tape
             .backward(z)
@@ -15530,26 +15531,26 @@ mod tests {
     #[test]
     fn retain_graph_allows_second_tensor_backward() {
         let mut tape = TensorTape::new();
-        let x = tape
-            .leaf(vec![1.0, 2.0], vec![2], true)
-            .expect("x");
-        let y = tape
-            .leaf(vec![3.0, 4.0], vec![2], true)
-            .expect("y");
-        let (z, _) = tape
-            .add(x, y, ExecutionMode::Strict)
-            .expect("add");
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let y = tape.leaf(vec![3.0, 4.0], vec![2], true).expect("y");
+        let (z, _) = tape.add(x, y, ExecutionMode::Strict).expect("add");
 
         let opts = BackwardOptions::strict_default().with_retain_graph(true);
         let first = tape
             .backward_with_options(z, opts)
             .expect("first backward with retain_graph=true");
-        assert!(!tape.consumed, "tensor tape should NOT be consumed when retain_graph=true");
+        assert!(
+            !tape.consumed,
+            "tensor tape should NOT be consumed when retain_graph=true"
+        );
 
         let second = tape.backward(z).expect("second backward should succeed");
         assert_eq!(first.gradient(x), second.gradient(x));
         assert_eq!(first.gradient(y), second.gradient(y));
-        assert!(tape.consumed, "tensor tape should be consumed after default backward");
+        assert!(
+            tape.consumed,
+            "tensor tape should be consumed after default backward"
+        );
     }
 
     #[test]
@@ -15570,7 +15571,10 @@ mod tests {
 
         // First backward (discriminator) with retain_graph=true
         let d_report = tape
-            .backward_with_options(d_loss, BackwardOptions::strict_default().with_retain_graph(true))
+            .backward_with_options(
+                d_loss,
+                BackwardOptions::strict_default().with_retain_graph(true),
+            )
             .expect("D backward with retain_graph=true should succeed");
         let d_grad_z = d_report.gradient(z).expect("z gradient from D");
 
@@ -15599,18 +15603,10 @@ mod tests {
         let mut tape = TensorTape::new();
         let n = 1000;
         let data: Vec<f64> = (0..n).map(|i| i as f64).collect();
-        let x = tape
-            .leaf(data.clone(), vec![n], true)
-            .expect("x");
-        let y = tape
-            .leaf(data, vec![n], true)
-            .expect("y");
-        let (sum, _) = tape
-            .add(x, y, ExecutionMode::Strict)
-            .expect("add");
-        let (out, _) = tape
-            .mul(sum, x, ExecutionMode::Strict)
-            .expect("mul");
+        let x = tape.leaf(data.clone(), vec![n], true).expect("x");
+        let y = tape.leaf(data, vec![n], true).expect("y");
+        let (sum, _) = tape.add(x, y, ExecutionMode::Strict).expect("add");
+        let (out, _) = tape.mul(sum, x, ExecutionMode::Strict).expect("mul");
 
         let node_count_before = tape.node_count();
         assert_eq!(node_count_before, 4, "should have 4 nodes: x, y, sum, out");
@@ -15646,7 +15642,9 @@ mod tests {
     #[test]
     fn f32_unary_neg_preserves_dtype() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf_f32(vec![1.0f32, -2.0, 3.0], vec![3], false).unwrap();
+        let a = tape
+            .leaf_f32(vec![1.0f32, -2.0, 3.0], vec![3], false)
+            .unwrap();
         let (out, _) = tape.neg(a, ExecutionMode::Strict).unwrap();
         assert_eq!(tape.dtype(out).unwrap(), DType::F32);
         let vals = tape.values_f32(out).unwrap();
@@ -15656,7 +15654,9 @@ mod tests {
     #[test]
     fn f32_unary_abs_preserves_dtype() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf_f32(vec![-1.0f32, 2.0, -3.0], vec![3], false).unwrap();
+        let a = tape
+            .leaf_f32(vec![-1.0f32, 2.0, -3.0], vec![3], false)
+            .unwrap();
         let (out, _) = tape.abs(a, ExecutionMode::Strict).unwrap();
         assert_eq!(tape.dtype(out).unwrap(), DType::F32);
         let vals = tape.values_f32(out).unwrap();
@@ -15724,7 +15724,9 @@ mod tests {
     #[test]
     fn f32_backward_through_unary() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], true).unwrap();
+        let a = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], true)
+            .unwrap();
         let (b, _) = tape.neg(a, ExecutionMode::Strict).unwrap();
         let (c, _) = tape.sum(b, ExecutionMode::Strict).unwrap();
         let report = tape.backward(c).unwrap();

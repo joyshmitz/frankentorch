@@ -77,10 +77,7 @@ pub fn named_parameters(module: &dyn Module, prefix: &str) -> Vec<(String, Tenso
 /// Pass an empty string for `prefix` to get unqualified names from the root.
 /// The root module is included with the given prefix (empty string for root).
 /// Ordering matches PyTorch's `module.named_modules()` depth-first traversal.
-pub fn named_modules<'a>(
-    module: &'a dyn Module,
-    prefix: &str,
-) -> Vec<(String, &'a dyn Module)> {
+pub fn named_modules<'a>(module: &'a dyn Module, prefix: &str) -> Vec<(String, &'a dyn Module)> {
     let mut result = vec![(prefix.to_string(), module)];
     for (child_name, child) in module.named_children() {
         let child_prefix = if prefix.is_empty() {
@@ -1708,8 +1705,11 @@ impl Module for GroupNorm {
             session.tensor_expand(var_us, vec![batch_size, self.num_groups, group_numel])?;
 
         // std = sqrt(var + eps)
-        let eps_t =
-            session.full(vec![batch_size, self.num_groups, group_numel], self.eps, false)?;
+        let eps_t = session.full(
+            vec![batch_size, self.num_groups, group_numel],
+            self.eps,
+            false,
+        )?;
         let var_eps = session.tensor_add(var_exp, eps_t)?;
         let std = session.tensor_sqrt(var_eps)?;
 
@@ -2021,11 +2021,8 @@ impl Conv2d {
         let w_shift = session.full(vec![numel], bound, false)?;
         let w_shifted = session.tensor_sub(w_scaled, w_shift)?;
         let w_values = session.tensor_values(w_shifted)?;
-        let weight = session.tensor_variable(
-            w_values,
-            vec![out_channels, in_channels, kh, kw],
-            true,
-        )?;
+        let weight =
+            session.tensor_variable(w_values, vec![out_channels, in_channels, kh, kw], true)?;
 
         let bias = if use_bias {
             let b_rand = session.rand(vec![out_channels], false)?;
@@ -2103,7 +2100,12 @@ impl Module for Conv2d {
             // PyTorch pad convention: innermost dim first -> [W_before, W_after, H_before, H_after]
             session.tensor_pad(
                 input,
-                &[self.padding_w, self.padding_w, self.padding_h, self.padding_h],
+                &[
+                    self.padding_w,
+                    self.padding_w,
+                    self.padding_h,
+                    self.padding_h,
+                ],
                 0.0,
             )?
         } else {
@@ -2164,10 +2166,8 @@ impl Module for Conv2d {
             Some(bias) => {
                 // bias: [C_out] -> [1, C_out, 1, 1] -> expand [N, C_out, H_out, W_out]
                 let b_rs = session.tensor_reshape(bias, vec![1, self.out_channels, 1, 1])?;
-                let b_exp = session.tensor_expand(
-                    b_rs,
-                    vec![batch_size, self.out_channels, h_out, w_out],
-                )?;
+                let b_exp = session
+                    .tensor_expand(b_rs, vec![batch_size, self.out_channels, h_out, w_out])?;
                 session.tensor_add(output_4d, b_exp)
             }
             None => Ok(output_4d),
@@ -2958,8 +2958,7 @@ impl Module for ConvTranspose1d {
                 // We do this by padding: pad left by out_pos, right by (l_out - out_pos - 1)
                 let pad_left = out_pos;
                 let pad_right = l_out - out_pos - 1;
-                let contrib_padded =
-                    session.tensor_pad(contrib, &[pad_left, pad_right], 0.0)?;
+                let contrib_padded = session.tensor_pad(contrib, &[pad_left, pad_right], 0.0)?;
 
                 result = session.tensor_add(result, contrib_padded)?;
             }
@@ -3694,10 +3693,7 @@ impl Module for ModuleList {
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
-        self.modules
-            .iter()
-            .flat_map(|m| m.parameters())
-            .collect()
+        self.modules.iter().flat_map(|m| m.parameters()).collect()
     }
 
     fn named_children(&self) -> Vec<(String, &dyn Module)> {
@@ -3828,11 +3824,7 @@ impl Module for ConstantPad1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        session.tensor_pad(
-            input,
-            &[self.padding_left, self.padding_right],
-            self.value,
-        )
+        session.tensor_pad(input, &[self.padding_left, self.padding_right], self.value)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -5280,14 +5272,21 @@ mod tests {
         let gn = GroupNorm::new(&mut session, 2, 4, 1e-5, true).expect("groupnorm");
 
         let x = session
-            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], vec![1, 4, 2], true)
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                vec![1, 4, 2],
+                true,
+            )
             .expect("var");
         let y = gn.forward(&mut session, x).expect("forward");
         let loss = session.tensor_sum(y).expect("sum");
         let report = session.tensor_backward(loss).expect("backward");
 
         let grad = session.tensor_gradient(&report, x);
-        assert!(grad.is_some(), "GroupNorm should produce gradients for input");
+        assert!(
+            grad.is_some(),
+            "GroupNorm should produce gradients for input"
+        );
     }
 
     #[test]
@@ -5366,9 +5365,21 @@ mod tests {
         let vals = session.tensor_values(y).expect("vals");
 
         // Channel 1 (constant) should normalize to ~0
-        assert!(vals[3].abs() < 1e-2, "constant channel should be ~0, got {}", vals[3]);
-        assert!(vals[4].abs() < 1e-2, "constant channel should be ~0, got {}", vals[4]);
-        assert!(vals[5].abs() < 1e-2, "constant channel should be ~0, got {}", vals[5]);
+        assert!(
+            vals[3].abs() < 1e-2,
+            "constant channel should be ~0, got {}",
+            vals[3]
+        );
+        assert!(
+            vals[4].abs() < 1e-2,
+            "constant channel should be ~0, got {}",
+            vals[4]
+        );
+        assert!(
+            vals[5].abs() < 1e-2,
+            "constant channel should be ~0, got {}",
+            vals[5]
+        );
     }
 
     #[test]
@@ -5493,8 +5504,7 @@ mod tests {
     #[test]
     fn conv2d_forward_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv =
-            Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (0, 0), false).expect("conv2d");
+        let conv = Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (0, 0), false).expect("conv2d");
         assert_eq!(conv.parameters().len(), 1); // weight only
 
         // Input [1, 1, 5, 5], kernel 3x3, no padding -> H_out = 3, W_out = 3
@@ -5511,8 +5521,7 @@ mod tests {
     #[test]
     fn conv2d_forward_with_bias() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv =
-            Conv2d::new(&mut session, 2, 4, (3, 3), (1, 1), (0, 0), true).expect("conv2d");
+        let conv = Conv2d::new(&mut session, 2, 4, (3, 3), (1, 1), (0, 0), true).expect("conv2d");
         assert_eq!(conv.parameters().len(), 2); // weight + bias
         assert!(conv.bias().is_some());
 
@@ -5529,8 +5538,7 @@ mod tests {
     fn conv2d_forward_with_padding() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // padding=1, same-size output: H_out = (3 + 2 - 3)/1 + 1 = 3
-        let conv =
-            Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (1, 1), false).expect("conv2d");
+        let conv = Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (1, 1), false).expect("conv2d");
 
         let x = session
             .tensor_variable(vec![1.0; 9], vec![1, 1, 3, 3], false)
@@ -5544,8 +5552,7 @@ mod tests {
     fn conv2d_forward_with_stride() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // stride=2: H_out = (6-3)/2 + 1 = 2, W_out = (6-3)/2 + 1 = 2
-        let conv =
-            Conv2d::new(&mut session, 1, 1, (3, 3), (2, 2), (0, 0), false).expect("conv2d");
+        let conv = Conv2d::new(&mut session, 1, 1, (3, 3), (2, 2), (0, 0), false).expect("conv2d");
 
         let x = session
             .tensor_variable(vec![1.0; 36], vec![1, 1, 6, 6], false)
@@ -5558,8 +5565,7 @@ mod tests {
     #[test]
     fn conv2d_backward_produces_gradients() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv =
-            Conv2d::new(&mut session, 1, 2, (3, 3), (1, 1), (0, 0), true).expect("conv2d");
+        let conv = Conv2d::new(&mut session, 1, 2, (3, 3), (1, 1), (0, 0), true).expect("conv2d");
 
         let x = session
             .tensor_variable(vec![1.0; 25], vec![1, 1, 5, 5], true)
@@ -5578,8 +5584,7 @@ mod tests {
     #[test]
     fn conv2d_rejects_wrong_input_dim() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv =
-            Conv2d::new(&mut session, 2, 1, (3, 3), (1, 1), (0, 0), false).expect("conv2d");
+        let conv = Conv2d::new(&mut session, 2, 1, (3, 3), (1, 1), (0, 0), false).expect("conv2d");
 
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
@@ -5592,8 +5597,7 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // Non-square kernel: kH=2, kW=3
         // Input [1, 1, 4, 5]: H_out = (4-2)/1+1=3, W_out = (5-3)/1+1=3
-        let conv =
-            Conv2d::new(&mut session, 1, 1, (2, 3), (1, 1), (0, 0), false).expect("conv2d");
+        let conv = Conv2d::new(&mut session, 1, 1, (2, 3), (1, 1), (0, 0), false).expect("conv2d");
 
         let x = session
             .tensor_variable(vec![1.0; 20], vec![1, 1, 4, 5], false)
@@ -5673,7 +5677,7 @@ mod tests {
         let y = pool.forward(&mut session, x).expect("forward");
         let (vals, meta) = session.tensor_values_meta(y).expect("values");
         assert_eq!(meta.shape(), &[2, 1, 1, 1]);
-        assert!((vals[0] - 4.0).abs() < 1e-10);  // batch 0: max(1,2,3,4) = 4
+        assert!((vals[0] - 4.0).abs() < 1e-10); // batch 0: max(1,2,3,4) = 4
         assert!((vals[1] - 40.0).abs() < 1e-10); // batch 1: max(10,20,30,40) = 40
     }
 
@@ -5730,7 +5734,10 @@ mod tests {
         // Output should be normalized: mean ≈ 0, std ≈ 1 per channel
         // Channel 0 values: 1..4, 9..12 → mean=6.5, Channel 1: 5..8, 13..16 → mean=10.5
         // First element of channel 0: (1 - 6.5) / std * 1 + 0 < 0
-        assert!(vals[0] < 0.0, "first elem of channel 0 should be negative after normalization");
+        assert!(
+            vals[0] < 0.0,
+            "first elem of channel 0 should be negative after normalization"
+        );
         assert_eq!(vals.len(), 16);
     }
 
@@ -5864,7 +5871,10 @@ mod tests {
         let rv = bn.running_var();
         // After one forward: running_mean should shift toward batch mean
         assert!(rm[0] > 0.0, "channel 0 running mean should be positive");
-        assert!(rm[1] > rm[0], "channel 1 mean should be greater than channel 0");
+        assert!(
+            rm[1] > rm[0],
+            "channel 1 mean should be greater than channel 0"
+        );
         // Running var should no longer be exactly 1.0
         assert!(rv[0] != 1.0, "running var should be updated");
     }
@@ -5905,8 +5915,14 @@ mod tests {
         // Each channel normalized independently: mean ≈ 0
         let ch0_mean: f64 = vals[..4].iter().sum::<f64>() / 4.0;
         let ch1_mean: f64 = vals[4..].iter().sum::<f64>() / 4.0;
-        assert!(ch0_mean.abs() < 1e-6, "channel 0 mean should be ~0, got {ch0_mean}");
-        assert!(ch1_mean.abs() < 1e-6, "channel 1 mean should be ~0, got {ch1_mean}");
+        assert!(
+            ch0_mean.abs() < 1e-6,
+            "channel 0 mean should be ~0, got {ch0_mean}"
+        );
+        assert!(
+            ch1_mean.abs() < 1e-6,
+            "channel 1 mean should be ~0, got {ch1_mean}"
+        );
     }
 
     #[test]
@@ -5941,7 +5957,11 @@ mod tests {
         let inn = InstanceNorm2d::new(&mut session, 2, 1e-5, true).expect("in2d");
 
         let x = session
-            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], vec![1, 2, 2, 2], true)
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                vec![1, 2, 2, 2],
+                true,
+            )
             .expect("variable");
         let out = inn.forward(&mut session, x).expect("forward");
         let loss = session.tensor_sum(out).expect("sum");
@@ -5967,7 +5987,11 @@ mod tests {
         let (vals, meta) = session.tensor_values_meta(out).expect("values_meta");
         assert_eq!(meta.shape(), &[1, 1, 1, 1]);
         // Global average: (1+2+3+4)/4 = 2.5
-        assert!((vals[0] - 2.5).abs() < 1e-10, "expected 2.5, got {}", vals[0]);
+        assert!(
+            (vals[0] - 2.5).abs() < 1e-10,
+            "expected 2.5, got {}",
+            vals[0]
+        );
     }
 
     #[test]
@@ -6005,13 +6029,29 @@ mod tests {
         let (vals, meta) = session.tensor_values_meta(out).expect("values_meta");
         assert_eq!(meta.shape(), &[1, 1, 2, 2]);
         // Top-left 2x2: (1+2+5+6)/4 = 3.5
-        assert!((vals[0] - 3.5).abs() < 1e-10, "expected 3.5, got {}", vals[0]);
+        assert!(
+            (vals[0] - 3.5).abs() < 1e-10,
+            "expected 3.5, got {}",
+            vals[0]
+        );
         // Top-right 2x2: (3+4+7+8)/4 = 5.5
-        assert!((vals[1] - 5.5).abs() < 1e-10, "expected 5.5, got {}", vals[1]);
+        assert!(
+            (vals[1] - 5.5).abs() < 1e-10,
+            "expected 5.5, got {}",
+            vals[1]
+        );
         // Bottom-left 2x2: (9+10+13+14)/4 = 11.5
-        assert!((vals[2] - 11.5).abs() < 1e-10, "expected 11.5, got {}", vals[2]);
+        assert!(
+            (vals[2] - 11.5).abs() < 1e-10,
+            "expected 11.5, got {}",
+            vals[2]
+        );
         // Bottom-right 2x2: (11+12+15+16)/4 = 13.5
-        assert!((vals[3] - 13.5).abs() < 1e-10, "expected 13.5, got {}", vals[3]);
+        assert!(
+            (vals[3] - 13.5).abs() < 1e-10,
+            "expected 13.5, got {}",
+            vals[3]
+        );
     }
 
     #[test]
@@ -6145,11 +6185,7 @@ mod tests {
         // Pre-computed log probabilities: log(0.5), log(0.3), log(0.2)
         let log_probs = session
             .tensor_variable(
-                vec![
-                    0.5_f64.ln(),
-                    0.3_f64.ln(),
-                    0.2_f64.ln(),
-                ],
+                vec![0.5_f64.ln(), 0.3_f64.ln(), 0.2_f64.ln()],
                 vec![1, 3],
                 true,
             )
@@ -6196,9 +6232,7 @@ mod tests {
             .tensor_variable(vec![1.0, 0.0], vec![2], false)
             .expect("target");
 
-        let loss = loss_fn
-            .forward(&mut session, logits, target)
-            .expect("loss");
+        let loss = loss_fn.forward(&mut session, logits, target).expect("loss");
         let (vals, _) = session.tensor_values_meta(loss).expect("vals");
         assert!(vals[0] > 0.0, "BCE with logits loss should be positive");
     }
@@ -6215,9 +6249,7 @@ mod tests {
             .tensor_variable(vec![1.0, 0.0], vec![2], false)
             .expect("target");
 
-        let loss = loss_fn
-            .forward(&mut session, logits, target)
-            .expect("loss");
+        let loss = loss_fn.forward(&mut session, logits, target).expect("loss");
         let report = session.tensor_backward(loss).expect("backward");
         assert!(session.tensor_gradient(&report, logits).is_some());
     }
@@ -6263,11 +6295,7 @@ mod tests {
 
         // log-probabilities as input: log(0.5), log(0.5)
         let log_q = session
-            .tensor_variable(
-                vec![0.5_f64.ln(), 0.5_f64.ln()],
-                vec![2],
-                true,
-            )
+            .tensor_variable(vec![0.5_f64.ln(), 0.5_f64.ln()], vec![2], true)
             .expect("log_q");
         // target probabilities
         let p = session
@@ -6287,11 +6315,7 @@ mod tests {
         let loss_fn = KLDivLoss;
 
         let log_q = session
-            .tensor_variable(
-                vec![0.4_f64.ln(), 0.6_f64.ln()],
-                vec![2],
-                true,
-            )
+            .tensor_variable(vec![0.4_f64.ln(), 0.6_f64.ln()], vec![2], true)
             .expect("log_q");
         let p = session
             .tensor_variable(vec![0.4, 0.6], vec![2], false)
@@ -6623,7 +6647,9 @@ mod tests {
         // [[1,1,2,2], [1,1,2,2], [3,3,4,4], [3,3,4,4]]
         assert_eq!(
             vals,
-            &[1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0]
+            &[
+                1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0
+            ]
         );
     }
 
@@ -6732,7 +6758,7 @@ mod tests {
         assert_eq!(meta.shape(), &[1, 4]);
         // With tanh, values should be in [-1, 1]
         for &v in &vals {
-            assert!(v >= -1.0 && v <= 1.0, "tanh output out of range: {v}");
+            assert!((-1.0..=1.0).contains(&v), "tanh output out of range: {v}");
         }
     }
 
