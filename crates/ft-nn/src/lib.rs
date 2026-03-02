@@ -4,6 +4,89 @@ use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, TensorNodeId};
 use ft_dispatch::{DispatchError, DispatchKeyError};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleRegistrationError {
+    InvalidName {
+        kind: &'static str,
+    },
+    NameConflict {
+        name: String,
+    },
+    Unsupported {
+        operation: &'static str,
+    },
+}
+
+impl std::fmt::Display for ModuleRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidName { kind } => write!(f, "invalid {kind} registration name"),
+            Self::NameConflict { name } => {
+                write!(f, "registration name '{name}' conflicts with existing state")
+            }
+            Self::Unsupported { operation } => {
+                write!(f, "module does not support '{operation}'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ModuleRegistrationError {}
+
+#[derive(Debug, Clone)]
+struct RegisteredParameter {
+    name: String,
+    tensor: Option<TensorNodeId>,
+}
+
+#[derive(Debug, Clone)]
+struct RegisteredBuffer {
+    name: String,
+    tensor: Option<TensorNodeId>,
+    persistent: bool,
+}
+
+fn is_valid_registration_name(name: &str) -> bool {
+    if name.is_empty() || name.starts_with('.') || name.ends_with('.') {
+        return false;
+    }
+    name.split('.')
+        .all(|part| !part.is_empty() && part.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()))
+}
+
+fn upsert_registered_parameter(
+    parameters: &mut Vec<RegisteredParameter>,
+    name: &str,
+    tensor: Option<TensorNodeId>,
+) {
+    if let Some(existing) = parameters.iter_mut().find(|entry| entry.name == name) {
+        existing.tensor = tensor;
+    } else {
+        parameters.push(RegisteredParameter {
+            name: name.to_string(),
+            tensor,
+        });
+    }
+}
+
+fn upsert_registered_buffer(
+    buffers: &mut Vec<RegisteredBuffer>,
+    name: &str,
+    tensor: Option<TensorNodeId>,
+    persistent: bool,
+) {
+    if let Some(existing) = buffers.iter_mut().find(|entry| entry.name == name) {
+        existing.tensor = tensor;
+        existing.persistent = persistent;
+    } else {
+        buffers.push(RegisteredBuffer {
+            name: name.to_string(),
+            tensor,
+            persistent,
+        });
+    }
+}
+
 /// Trait for neural network modules.
 ///
 /// Modules encapsulate parameters and define a forward computation.
@@ -27,6 +110,43 @@ pub trait Module {
         Vec::new()
     }
 
+    /// Return dynamically-registered own parameters, including optional slots.
+    ///
+    /// Entries with `None` represent registered names without tensor payload.
+    fn named_parameter_slots_own(&self) -> Vec<(String, Option<TensorNodeId>)> {
+        Vec::new()
+    }
+
+    /// Return own registered buffers, including persistence metadata.
+    ///
+    /// Entries with `None` represent registered names without tensor payload.
+    fn named_buffer_slots_own(&self) -> Vec<(String, Option<TensorNodeId>, bool)> {
+        Vec::new()
+    }
+
+    /// Register (or replace) a named parameter slot.
+    fn register_parameter(
+        &mut self,
+        _name: &str,
+        _parameter: Option<TensorNodeId>,
+    ) -> Result<(), ModuleRegistrationError> {
+        Err(ModuleRegistrationError::Unsupported {
+            operation: "register_parameter",
+        })
+    }
+
+    /// Register (or replace) a named buffer slot.
+    fn register_buffer(
+        &mut self,
+        _name: &str,
+        _tensor: Option<TensorNodeId>,
+        _persistent: bool,
+    ) -> Result<(), ModuleRegistrationError> {
+        Err(ModuleRegistrationError::Unsupported {
+            operation: "register_buffer",
+        })
+    }
+
     /// Return direct child sub-modules with their local names.
     ///
     /// For indexed containers (Sequential, ModuleList), names are `"0"`, `"1"`, etc.
@@ -34,6 +154,29 @@ pub trait Module {
     /// For composite modules (MultiheadAttention), names are field names like `"q_proj"`.
     fn named_children(&self) -> Vec<(String, &dyn Module)> {
         Vec::new()
+    }
+
+    /// Set training mode for this module and descendants.
+    ///
+    /// Default behavior recursively propagates to children.
+    fn train(&self, mode: bool) {
+        for (_, child) in self.named_children() {
+            child.train(mode);
+        }
+    }
+
+    /// Convenience helper to switch into evaluation mode.
+    fn eval(&self) {
+        self.train(false);
+    }
+
+    /// Returns whether this module is in training mode.
+    ///
+    /// Default behavior returns true for leaf modules and requires all children
+    /// to report training mode for container modules.
+    fn is_training(&self) -> bool {
+        let children = self.named_children();
+        children.is_empty() || children.iter().all(|(_, child)| child.is_training())
     }
 }
 
@@ -60,6 +203,16 @@ pub fn named_parameters(module: &dyn Module, prefix: &str) -> Vec<(String, Tenso
             format!("{prefix}.{name}")
         };
         result.push((full, id));
+    }
+    for (name, maybe_id) in module.named_parameter_slots_own() {
+        if let Some(id) = maybe_id {
+            let full = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}.{name}")
+            };
+            result.push((full, id));
+        }
     }
     for (child_name, child) in module.named_children() {
         let child_prefix = if prefix.is_empty() {
@@ -95,6 +248,64 @@ pub fn modules(module: &dyn Module) -> Vec<&dyn Module> {
     named_modules(module, "")
         .into_iter()
         .map(|(_, m)| m)
+        .collect()
+}
+
+/// Recursively collect all buffer tensors (including non-persistent buffers).
+pub fn named_buffers(module: &dyn Module, prefix: &str) -> Vec<(String, TensorNodeId)> {
+    let mut result = Vec::new();
+    for (name, maybe_id, _persistent) in module.named_buffer_slots_own() {
+        if let Some(id) = maybe_id {
+            let full = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}.{name}")
+            };
+            result.push((full, id));
+        }
+    }
+    for (child_name, child) in module.named_children() {
+        let child_prefix = if prefix.is_empty() {
+            child_name
+        } else {
+            format!("{prefix}.{child_name}")
+        };
+        result.extend(named_buffers(child, &child_prefix));
+    }
+    result
+}
+
+/// Recursively collect all persistent buffer tensors.
+pub fn named_persistent_buffers(module: &dyn Module, prefix: &str) -> Vec<(String, TensorNodeId)> {
+    let mut result = Vec::new();
+    for (name, maybe_id, persistent) in module.named_buffer_slots_own() {
+        if persistent {
+            if let Some(id) = maybe_id {
+                let full = if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}.{name}")
+                };
+                result.push((full, id));
+            }
+        }
+    }
+    for (child_name, child) in module.named_children() {
+        let child_prefix = if prefix.is_empty() {
+            child_name
+        } else {
+            format!("{prefix}.{child_name}")
+        };
+        result.extend(named_persistent_buffers(child, &child_prefix));
+    }
+    result
+}
+
+/// Collect all buffer tensors without names (including non-persistent buffers).
+pub fn buffers(module: &dyn Module) -> Vec<TensorNodeId> {
+    named_buffers(module, "")
+        .into_iter()
+        .map(|(_, id)| id)
         .collect()
 }
 
@@ -539,30 +750,33 @@ impl Module for LayerNorm {
 /// During eval, passes through unchanged.
 pub struct Dropout {
     p: f64,
-    training: bool,
+    training: std::cell::Cell<bool>,
 }
 
 impl Dropout {
     /// Create a new Dropout module with the given drop probability.
     #[must_use]
     pub fn new(p: f64) -> Self {
-        Self { p, training: true }
+        Self {
+            p,
+            training: std::cell::Cell::new(true),
+        }
     }
 
-    /// Set the module to training mode.
-    pub fn train(&mut self) {
-        self.training = true;
+    /// Set the module training mode.
+    pub fn train(&self, mode: bool) {
+        self.training.set(mode);
     }
 
     /// Set the module to evaluation mode.
-    pub fn eval(&mut self) {
-        self.training = false;
+    pub fn eval(&self) {
+        self.train(false);
     }
 
     /// Check if the module is in training mode.
     #[must_use]
     pub fn is_training(&self) -> bool {
-        self.training
+        self.training.get()
     }
 }
 
@@ -579,7 +793,7 @@ impl Module for Dropout {
                 },
             )));
         }
-        if !self.training || self.p == 0.0 {
+        if !self.training.get() || self.p == 0.0 {
             return Ok(input);
         }
         if self.p >= 1.0 {
@@ -615,6 +829,14 @@ impl Module for Dropout {
 
     fn parameters(&self) -> Vec<TensorNodeId> {
         Vec::new()
+    }
+
+    fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    fn is_training(&self) -> bool {
+        self.training.get()
     }
 }
 
@@ -718,10 +940,16 @@ pub struct BatchNorm1d {
     bias: TensorNodeId,
     running_mean: std::cell::RefCell<Vec<f64>>,
     running_var: std::cell::RefCell<Vec<f64>>,
+    running_mean_buffer: std::cell::RefCell<TensorNodeId>,
+    running_var_buffer: std::cell::RefCell<TensorNodeId>,
+    num_batches_tracked: std::cell::Cell<u64>,
+    num_batches_tracked_buffer: std::cell::RefCell<TensorNodeId>,
+    registered_parameters: std::cell::RefCell<Vec<RegisteredParameter>>,
+    registered_buffers: std::cell::RefCell<Vec<RegisteredBuffer>>,
     num_features: usize,
     eps: f64,
     momentum: f64,
-    training: bool,
+    training: std::cell::Cell<bool>,
 }
 
 impl BatchNorm1d {
@@ -745,16 +973,43 @@ impl BatchNorm1d {
 
         let weight = session.tensor_variable(vec![1.0; num_features], vec![num_features], true)?;
         let bias = session.tensor_variable(vec![0.0; num_features], vec![num_features], true)?;
+        let running_mean_buffer =
+            session.tensor_variable(vec![0.0; num_features], vec![num_features], false)?;
+        let running_var_buffer =
+            session.tensor_variable(vec![1.0; num_features], vec![num_features], false)?;
+        let num_batches_tracked_buffer = session.tensor_variable(vec![0.0], vec![1], false)?;
 
         Ok(Self {
             weight,
             bias,
             running_mean: std::cell::RefCell::new(vec![0.0; num_features]),
             running_var: std::cell::RefCell::new(vec![1.0; num_features]),
+            running_mean_buffer: std::cell::RefCell::new(running_mean_buffer),
+            running_var_buffer: std::cell::RefCell::new(running_var_buffer),
+            num_batches_tracked: std::cell::Cell::new(0),
+            num_batches_tracked_buffer: std::cell::RefCell::new(num_batches_tracked_buffer),
+            registered_parameters: std::cell::RefCell::new(Vec::new()),
+            registered_buffers: std::cell::RefCell::new(vec![
+                RegisteredBuffer {
+                    name: "running_mean".to_string(),
+                    tensor: Some(running_mean_buffer),
+                    persistent: true,
+                },
+                RegisteredBuffer {
+                    name: "running_var".to_string(),
+                    tensor: Some(running_var_buffer),
+                    persistent: true,
+                },
+                RegisteredBuffer {
+                    name: "num_batches_tracked".to_string(),
+                    tensor: Some(num_batches_tracked_buffer),
+                    persistent: true,
+                },
+            ]),
             num_features,
             eps,
             momentum,
-            training: true,
+            training: std::cell::Cell::new(true),
         })
     }
 
@@ -776,20 +1031,20 @@ impl BatchNorm1d {
         self.num_features
     }
 
-    /// Set the module to training mode.
-    pub fn train(&mut self) {
-        self.training = true;
+    /// Set the module training mode.
+    pub fn train(&self, mode: bool) {
+        self.training.set(mode);
     }
 
     /// Set the module to evaluation mode.
-    pub fn eval(&mut self) {
-        self.training = false;
+    pub fn eval(&self) {
+        self.train(false);
     }
 
     /// Check if the module is in training mode.
     #[must_use]
     pub fn is_training(&self) -> bool {
-        self.training
+        self.training.get()
     }
 
     /// Get a copy of the current running mean.
@@ -800,6 +1055,14 @@ impl BatchNorm1d {
     /// Get a copy of the current running variance.
     pub fn running_var(&self) -> Vec<f64> {
         self.running_var.borrow().clone()
+    }
+
+    fn has_builtin_parameter_name(name: &str) -> bool {
+        matches!(name, "weight" | "bias")
+    }
+
+    fn has_builtin_buffer_name(name: &str) -> bool {
+        matches!(name, "running_mean" | "running_var" | "num_batches_tracked")
     }
 
     fn forward_train(
@@ -935,7 +1198,7 @@ impl Module for BatchNorm1d {
             )));
         }
 
-        if self.training {
+        if self.training.get() {
             self.forward_train(session, input, &input_shape)
         } else {
             self.forward_eval(session, input, &input_shape)
@@ -948,6 +1211,14 @@ impl Module for BatchNorm1d {
 
     fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
         vec![("weight", self.weight), ("bias", self.bias)]
+    }
+
+    fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    fn is_training(&self) -> bool {
+        self.training.get()
     }
 }
 
@@ -2401,7 +2672,7 @@ pub struct BatchNorm2d {
     num_features: usize,
     eps: f64,
     momentum: f64,
-    training: bool,
+    training: std::cell::Cell<bool>,
 }
 
 impl BatchNorm2d {
@@ -2434,7 +2705,7 @@ impl BatchNorm2d {
             num_features,
             eps,
             momentum,
-            training: true,
+            training: std::cell::Cell::new(true),
         })
     }
 
@@ -2456,20 +2727,20 @@ impl BatchNorm2d {
         self.num_features
     }
 
-    /// Set the module to training mode.
-    pub fn train(&mut self) {
-        self.training = true;
+    /// Set the module training mode.
+    pub fn train(&self, mode: bool) {
+        self.training.set(mode);
     }
 
     /// Set the module to evaluation mode.
-    pub fn eval(&mut self) {
-        self.training = false;
+    pub fn eval(&self) {
+        self.train(false);
     }
 
     /// Check if the module is in training mode.
     #[must_use]
     pub fn is_training(&self) -> bool {
-        self.training
+        self.training.get()
     }
 
     /// Get a copy of the current running mean.
@@ -2637,7 +2908,7 @@ impl Module for BatchNorm2d {
             )));
         }
 
-        if self.training {
+        if self.training.get() {
             self.forward_train(session, input, &input_shape)
         } else {
             self.forward_eval(session, input, &input_shape)
@@ -2650,6 +2921,14 @@ impl Module for BatchNorm2d {
 
     fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
         vec![("weight", self.weight), ("bias", self.bias)]
+    }
+
+    fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    fn is_training(&self) -> bool {
+        self.training.get()
     }
 }
 
@@ -3981,7 +4260,7 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .expect("variable should succeed");
 
-        let mut dropout = Dropout::new(0.5);
+        let dropout = Dropout::new(0.5);
         dropout.eval();
         let y = dropout
             .forward(&mut session, x)
@@ -4287,12 +4566,67 @@ mod tests {
 
     #[test]
     fn dropout_train_eval_toggle() {
-        let mut dropout = Dropout::new(0.5);
+        let dropout = Dropout::new(0.5);
         assert!(dropout.is_training());
         dropout.eval();
         assert!(!dropout.is_training());
-        dropout.train();
+        dropout.train(true);
         assert!(dropout.is_training());
+    }
+
+    #[test]
+    fn module_eval_propagates_to_sequential_children() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut seq = Sequential::new();
+        seq.push(Box::new(Dropout::new(0.5)));
+
+        assert!(seq.is_training());
+        seq.eval();
+        assert!(!seq.is_training());
+
+        let x = session
+            .tensor_variable(vec![1.0; 128], vec![128], false)
+            .expect("variable should succeed");
+        let y_eval = seq
+            .forward(&mut session, x)
+            .expect("forward in eval mode should succeed");
+        let eval_vals = session
+            .tensor_values(y_eval)
+            .expect("values should resolve");
+        assert!(
+            eval_vals.iter().all(|v| (*v - 1.0).abs() < 1e-12),
+            "eval mode should disable dropout and preserve inputs"
+        );
+
+        seq.train(true);
+        assert!(seq.is_training());
+        let y_train = seq
+            .forward(&mut session, x)
+            .expect("forward in train mode should succeed");
+        let train_vals = session
+            .tensor_values(y_train)
+            .expect("values should resolve");
+        let zeros = train_vals.iter().filter(|&&v| v == 0.0).count();
+        assert!(zeros > 0, "train mode should apply dropout masking");
+    }
+
+    #[test]
+    fn module_eval_propagates_through_nested_containers() {
+        let mut inner = Sequential::new();
+        inner.push(Box::new(Dropout::new(0.5)));
+
+        let mut list = ModuleList::new();
+        list.push(Box::new(inner));
+
+        let mut outer = Sequential::new();
+        outer.push(Box::new(list));
+
+        assert!(outer.is_training());
+        outer.train(false);
+        assert!(!outer.is_training());
+
+        outer.train(true);
+        assert!(outer.is_training());
     }
 
     #[test]
@@ -4373,7 +4707,7 @@ mod tests {
         let x = session
             .tensor_variable(vec![5.0, 6.0, 7.0], vec![3], false)
             .expect("variable");
-        let mut dropout = Dropout::new(0.5);
+        let dropout = Dropout::new(0.5);
         dropout.eval();
         assert!(!dropout.is_training());
         let y = dropout.forward(&mut session, x).expect("forward");
@@ -4849,7 +5183,7 @@ mod tests {
     #[test]
     fn batchnorm1d_eval_mode() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mut bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("batchnorm");
+        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("batchnorm");
 
         // Run one training pass to update running stats
         let x = session
@@ -4924,11 +5258,11 @@ mod tests {
     #[test]
     fn batchnorm1d_train_eval_toggle() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mut bn = BatchNorm1d::new(&mut session, 4, 1e-5, 0.1).expect("batchnorm");
+        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, 0.1).expect("batchnorm");
         assert!(bn.is_training());
         bn.eval();
         assert!(!bn.is_training());
-        bn.train();
+        bn.train(true);
         assert!(bn.is_training());
     }
 
@@ -5758,7 +6092,7 @@ mod tests {
     #[test]
     fn batchnorm2d_eval_mode() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mut bn = BatchNorm2d::new(&mut session, 2, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, 0.1).expect("bn2d");
 
         // Train first to populate running stats
         #[rustfmt::skip]
@@ -5791,12 +6125,12 @@ mod tests {
     #[test]
     fn batchnorm2d_train_eval_toggle() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mut bn = BatchNorm2d::new(&mut session, 4, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 4, 1e-5, 0.1).expect("bn2d");
 
         assert!(bn.is_training());
         bn.eval();
         assert!(!bn.is_training());
-        bn.train();
+        bn.train(true);
         assert!(bn.is_training());
     }
 
