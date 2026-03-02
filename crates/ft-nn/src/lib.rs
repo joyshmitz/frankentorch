@@ -6,15 +6,9 @@ use ft_dispatch::{DispatchError, DispatchKeyError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleRegistrationError {
-    InvalidName {
-        kind: &'static str,
-    },
-    NameConflict {
-        name: String,
-    },
-    Unsupported {
-        operation: &'static str,
-    },
+    InvalidName { kind: &'static str },
+    NameConflict { name: String },
+    Unsupported { operation: &'static str },
 }
 
 impl std::fmt::Display for ModuleRegistrationError {
@@ -22,7 +16,10 @@ impl std::fmt::Display for ModuleRegistrationError {
         match self {
             Self::InvalidName { kind } => write!(f, "invalid {kind} registration name"),
             Self::NameConflict { name } => {
-                write!(f, "registration name '{name}' conflicts with existing state")
+                write!(
+                    f,
+                    "registration name '{name}' conflicts with existing state"
+                )
             }
             Self::Unsupported { operation } => {
                 write!(f, "module does not support '{operation}'")
@@ -279,15 +276,13 @@ pub fn named_buffers(module: &dyn Module, prefix: &str) -> Vec<(String, TensorNo
 pub fn named_persistent_buffers(module: &dyn Module, prefix: &str) -> Vec<(String, TensorNodeId)> {
     let mut result = Vec::new();
     for (name, maybe_id, persistent) in module.named_buffer_slots_own() {
-        if persistent {
-            if let Some(id) = maybe_id {
-                let full = if prefix.is_empty() {
-                    name
-                } else {
-                    format!("{prefix}.{name}")
-                };
-                result.push((full, id));
-            }
+        if persistent && let Some(id) = maybe_id {
+            let full = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}.{name}")
+            };
+            result.push((full, id));
         }
     }
     for (child_name, child) in module.named_children() {
@@ -1102,6 +1097,38 @@ impl BatchNorm1d {
                 rm[i] = (1.0 - self.momentum) * rm[i] + self.momentum * mean_vals[i];
                 rv[i] = (1.0 - self.momentum) * rv[i] + self.momentum * var_vals[i] * bessel_factor;
             }
+
+            let running_mean_buffer = session.tensor_variable(rm.clone(), vec![c], false)?;
+            let running_var_buffer = session.tensor_variable(rv.clone(), vec![c], false)?;
+            let num_batches_tracked = self.num_batches_tracked.get().saturating_add(1);
+            self.num_batches_tracked.set(num_batches_tracked);
+            let num_batches_tracked_buffer =
+                session.tensor_variable(vec![num_batches_tracked as f64], vec![1], false)?;
+
+            self.running_mean_buffer.replace(running_mean_buffer);
+            self.running_var_buffer.replace(running_var_buffer);
+            self.num_batches_tracked_buffer
+                .replace(num_batches_tracked_buffer);
+
+            let mut registered_buffers = self.registered_buffers.borrow_mut();
+            upsert_registered_buffer(
+                &mut registered_buffers,
+                "running_mean",
+                Some(running_mean_buffer),
+                true,
+            );
+            upsert_registered_buffer(
+                &mut registered_buffers,
+                "running_var",
+                Some(running_var_buffer),
+                true,
+            );
+            upsert_registered_buffer(
+                &mut registered_buffers,
+                "num_batches_tracked",
+                Some(num_batches_tracked_buffer),
+                true,
+            );
         }
 
         // std = sqrt(var + eps) -> [C]
@@ -1135,11 +1162,9 @@ impl BatchNorm1d {
         let n = input_shape[0];
         let c = input_shape[1];
 
-        // Create tensors from running stats (not tracked by autograd)
-        let rm = self.running_mean.borrow().clone();
-        let rv = self.running_var.borrow().clone();
-        let mean_t = session.tensor_variable(rm, vec![c], false)?;
-        let var_t = session.tensor_variable(rv, vec![c], false)?;
+        // Running-stat buffers are maintained as non-grad tensors.
+        let mean_t = *self.running_mean_buffer.borrow();
+        let var_t = *self.running_var_buffer.borrow();
 
         // Expand mean to [N, C]
         let mean_us = session.tensor_unsqueeze(mean_t, 0)?;
@@ -1206,11 +1231,102 @@ impl Module for BatchNorm1d {
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
-        vec![self.weight, self.bias]
+        let mut params = vec![self.weight, self.bias];
+        params.extend(
+            self.registered_parameters
+                .borrow()
+                .iter()
+                .filter_map(|entry| entry.tensor),
+        );
+        params
     }
 
     fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
         vec![("weight", self.weight), ("bias", self.bias)]
+    }
+
+    fn named_parameter_slots_own(&self) -> Vec<(String, Option<TensorNodeId>)> {
+        self.registered_parameters
+            .borrow()
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.tensor))
+            .collect()
+    }
+
+    fn named_buffer_slots_own(&self) -> Vec<(String, Option<TensorNodeId>, bool)> {
+        self.registered_buffers
+            .borrow()
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.tensor, entry.persistent))
+            .collect()
+    }
+
+    fn register_parameter(
+        &mut self,
+        name: &str,
+        parameter: Option<TensorNodeId>,
+    ) -> Result<(), ModuleRegistrationError> {
+        if !is_valid_registration_name(name) {
+            return Err(ModuleRegistrationError::InvalidName { kind: "parameter" });
+        }
+        if Self::has_builtin_parameter_name(name)
+            || Self::has_builtin_buffer_name(name)
+            || self
+                .registered_buffers
+                .borrow()
+                .iter()
+                .any(|entry| entry.name == name)
+        {
+            return Err(ModuleRegistrationError::NameConflict {
+                name: name.to_string(),
+            });
+        }
+        let mut registered_parameters = self.registered_parameters.borrow_mut();
+        upsert_registered_parameter(&mut registered_parameters, name, parameter);
+        Ok(())
+    }
+
+    fn register_buffer(
+        &mut self,
+        name: &str,
+        tensor: Option<TensorNodeId>,
+        persistent: bool,
+    ) -> Result<(), ModuleRegistrationError> {
+        if !is_valid_registration_name(name) {
+            return Err(ModuleRegistrationError::InvalidName { kind: "buffer" });
+        }
+        if Self::has_builtin_parameter_name(name)
+            || self
+                .registered_parameters
+                .borrow()
+                .iter()
+                .any(|entry| entry.name == name)
+        {
+            return Err(ModuleRegistrationError::NameConflict {
+                name: name.to_string(),
+            });
+        }
+
+        let effective_persistent = if Self::has_builtin_buffer_name(name) {
+            true
+        } else {
+            persistent
+        };
+        match (name, tensor) {
+            ("running_mean", Some(id)) => {
+                self.running_mean_buffer.replace(id);
+            }
+            ("running_var", Some(id)) => {
+                self.running_var_buffer.replace(id);
+            }
+            ("num_batches_tracked", Some(id)) => {
+                self.num_batches_tracked_buffer.replace(id);
+            }
+            _ => {}
+        }
+        let mut registered_buffers = self.registered_buffers.borrow_mut();
+        upsert_registered_buffer(&mut registered_buffers, name, tensor, effective_persistent);
+        Ok(())
     }
 
     fn train(&self, mode: bool) {
@@ -2669,6 +2785,12 @@ pub struct BatchNorm2d {
     bias: TensorNodeId,
     running_mean: std::cell::RefCell<Vec<f64>>,
     running_var: std::cell::RefCell<Vec<f64>>,
+    running_mean_buffer: std::cell::RefCell<TensorNodeId>,
+    running_var_buffer: std::cell::RefCell<TensorNodeId>,
+    num_batches_tracked: std::cell::Cell<u64>,
+    num_batches_tracked_buffer: std::cell::RefCell<TensorNodeId>,
+    registered_parameters: std::cell::RefCell<Vec<RegisteredParameter>>,
+    registered_buffers: std::cell::RefCell<Vec<RegisteredBuffer>>,
     num_features: usize,
     eps: f64,
     momentum: f64,
@@ -2696,12 +2818,39 @@ impl BatchNorm2d {
 
         let weight = session.tensor_variable(vec![1.0; num_features], vec![num_features], true)?;
         let bias = session.tensor_variable(vec![0.0; num_features], vec![num_features], true)?;
+        let running_mean_buffer =
+            session.tensor_variable(vec![0.0; num_features], vec![num_features], false)?;
+        let running_var_buffer =
+            session.tensor_variable(vec![1.0; num_features], vec![num_features], false)?;
+        let num_batches_tracked_buffer = session.tensor_variable(vec![0.0], vec![1], false)?;
 
         Ok(Self {
             weight,
             bias,
             running_mean: std::cell::RefCell::new(vec![0.0; num_features]),
             running_var: std::cell::RefCell::new(vec![1.0; num_features]),
+            running_mean_buffer: std::cell::RefCell::new(running_mean_buffer),
+            running_var_buffer: std::cell::RefCell::new(running_var_buffer),
+            num_batches_tracked: std::cell::Cell::new(0),
+            num_batches_tracked_buffer: std::cell::RefCell::new(num_batches_tracked_buffer),
+            registered_parameters: std::cell::RefCell::new(Vec::new()),
+            registered_buffers: std::cell::RefCell::new(vec![
+                RegisteredBuffer {
+                    name: "running_mean".to_string(),
+                    tensor: Some(running_mean_buffer),
+                    persistent: true,
+                },
+                RegisteredBuffer {
+                    name: "running_var".to_string(),
+                    tensor: Some(running_var_buffer),
+                    persistent: true,
+                },
+                RegisteredBuffer {
+                    name: "num_batches_tracked".to_string(),
+                    tensor: Some(num_batches_tracked_buffer),
+                    persistent: true,
+                },
+            ]),
             num_features,
             eps,
             momentum,
@@ -2753,6 +2902,14 @@ impl BatchNorm2d {
         self.running_var.borrow().clone()
     }
 
+    fn has_builtin_parameter_name(name: &str) -> bool {
+        matches!(name, "weight" | "bias")
+    }
+
+    fn has_builtin_buffer_name(name: &str) -> bool {
+        matches!(name, "running_mean" | "running_var" | "num_batches_tracked")
+    }
+
     fn forward_train(
         &self,
         session: &mut FrankenTorchSession,
@@ -2797,6 +2954,38 @@ impl BatchNorm2d {
                 rm[i] = (1.0 - self.momentum) * rm[i] + self.momentum * mean_vals[i];
                 rv[i] = (1.0 - self.momentum) * rv[i] + self.momentum * var_vals[i] * bessel_factor;
             }
+
+            let running_mean_buffer = session.tensor_variable(rm.clone(), vec![c], false)?;
+            let running_var_buffer = session.tensor_variable(rv.clone(), vec![c], false)?;
+            let num_batches_tracked = self.num_batches_tracked.get().saturating_add(1);
+            self.num_batches_tracked.set(num_batches_tracked);
+            let num_batches_tracked_buffer =
+                session.tensor_variable(vec![num_batches_tracked as f64], vec![1], false)?;
+
+            self.running_mean_buffer.replace(running_mean_buffer);
+            self.running_var_buffer.replace(running_var_buffer);
+            self.num_batches_tracked_buffer
+                .replace(num_batches_tracked_buffer);
+
+            let mut registered_buffers = self.registered_buffers.borrow_mut();
+            upsert_registered_buffer(
+                &mut registered_buffers,
+                "running_mean",
+                Some(running_mean_buffer),
+                true,
+            );
+            upsert_registered_buffer(
+                &mut registered_buffers,
+                "running_var",
+                Some(running_var_buffer),
+                true,
+            );
+            upsert_registered_buffer(
+                &mut registered_buffers,
+                "num_batches_tracked",
+                Some(num_batches_tracked_buffer),
+                true,
+            );
         }
 
         // std = sqrt(var + eps) -> [C]
@@ -2841,11 +3030,9 @@ impl BatchNorm2d {
         let perm = session.tensor_permute(input, vec![0, 2, 3, 1])?;
         let flat = session.tensor_reshape(perm, vec![m, c])?;
 
-        // Create tensors from running stats (not tracked by autograd)
-        let rm = self.running_mean.borrow().clone();
-        let rv = self.running_var.borrow().clone();
-        let mean_t = session.tensor_variable(rm, vec![c], false)?;
-        let var_t = session.tensor_variable(rv, vec![c], false)?;
+        // Running-stat buffers are maintained as non-grad tensors.
+        let mean_t = *self.running_mean_buffer.borrow();
+        let var_t = *self.running_var_buffer.borrow();
 
         // Expand mean to [m, C]
         let mean_us = session.tensor_unsqueeze(mean_t, 0)?;
@@ -2916,11 +3103,102 @@ impl Module for BatchNorm2d {
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
-        vec![self.weight, self.bias]
+        let mut params = vec![self.weight, self.bias];
+        params.extend(
+            self.registered_parameters
+                .borrow()
+                .iter()
+                .filter_map(|entry| entry.tensor),
+        );
+        params
     }
 
     fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
         vec![("weight", self.weight), ("bias", self.bias)]
+    }
+
+    fn named_parameter_slots_own(&self) -> Vec<(String, Option<TensorNodeId>)> {
+        self.registered_parameters
+            .borrow()
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.tensor))
+            .collect()
+    }
+
+    fn named_buffer_slots_own(&self) -> Vec<(String, Option<TensorNodeId>, bool)> {
+        self.registered_buffers
+            .borrow()
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.tensor, entry.persistent))
+            .collect()
+    }
+
+    fn register_parameter(
+        &mut self,
+        name: &str,
+        parameter: Option<TensorNodeId>,
+    ) -> Result<(), ModuleRegistrationError> {
+        if !is_valid_registration_name(name) {
+            return Err(ModuleRegistrationError::InvalidName { kind: "parameter" });
+        }
+        if Self::has_builtin_parameter_name(name)
+            || Self::has_builtin_buffer_name(name)
+            || self
+                .registered_buffers
+                .borrow()
+                .iter()
+                .any(|entry| entry.name == name)
+        {
+            return Err(ModuleRegistrationError::NameConflict {
+                name: name.to_string(),
+            });
+        }
+        let mut registered_parameters = self.registered_parameters.borrow_mut();
+        upsert_registered_parameter(&mut registered_parameters, name, parameter);
+        Ok(())
+    }
+
+    fn register_buffer(
+        &mut self,
+        name: &str,
+        tensor: Option<TensorNodeId>,
+        persistent: bool,
+    ) -> Result<(), ModuleRegistrationError> {
+        if !is_valid_registration_name(name) {
+            return Err(ModuleRegistrationError::InvalidName { kind: "buffer" });
+        }
+        if Self::has_builtin_parameter_name(name)
+            || self
+                .registered_parameters
+                .borrow()
+                .iter()
+                .any(|entry| entry.name == name)
+        {
+            return Err(ModuleRegistrationError::NameConflict {
+                name: name.to_string(),
+            });
+        }
+
+        let effective_persistent = if Self::has_builtin_buffer_name(name) {
+            true
+        } else {
+            persistent
+        };
+        match (name, tensor) {
+            ("running_mean", Some(id)) => {
+                self.running_mean_buffer.replace(id);
+            }
+            ("running_var", Some(id)) => {
+                self.running_var_buffer.replace(id);
+            }
+            ("num_batches_tracked", Some(id)) => {
+                self.num_batches_tracked_buffer.replace(id);
+            }
+            _ => {}
+        }
+        let mut registered_buffers = self.registered_buffers.borrow_mut();
+        upsert_registered_buffer(&mut registered_buffers, name, tensor, effective_persistent);
+        Ok(())
     }
 
     fn train(&self, mode: bool) {
@@ -7734,6 +8012,230 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].0, "weight");
         assert_eq!(params[1].0, "bias");
+    }
+
+    #[test]
+    fn batchnorm1d_register_parameter_and_buffer_semantics() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut bn = BatchNorm1d::new(&mut session, 3, 1e-5, 0.1).expect("bn");
+
+        let extra_param = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .expect("extra_param");
+        bn.register_parameter("extra_scale", Some(extra_param))
+            .expect("register_parameter");
+
+        let cache_a = session
+            .tensor_variable(vec![5.0], vec![1], false)
+            .expect("cache_a");
+        bn.register_buffer("cache", Some(cache_a), false)
+            .expect("register_buffer");
+        let cache_b = session
+            .tensor_variable(vec![7.0], vec![1], false)
+            .expect("cache_b");
+        // Same-name registration overwrites the previous tensor and flags.
+        bn.register_buffer("cache", Some(cache_b), true)
+            .expect("register_buffer overwrite");
+
+        let params = bn.parameters();
+        assert!(params.contains(&extra_param));
+        assert!(!params.contains(&cache_b));
+
+        let named_params = named_parameters(&bn, "");
+        assert!(
+            named_params
+                .iter()
+                .any(|(name, id)| name == "extra_scale" && *id == extra_param)
+        );
+
+        let all_buffers = named_buffers(&bn, "");
+        assert!(all_buffers.iter().any(|(name, _)| name == "running_mean"));
+        assert!(
+            all_buffers
+                .iter()
+                .any(|(name, id)| name == "cache" && *id == cache_b)
+        );
+
+        let persistent_buffers = named_persistent_buffers(&bn, "");
+        assert!(
+            persistent_buffers
+                .iter()
+                .any(|(name, id)| name == "cache" && *id == cache_b)
+        );
+    }
+
+    #[test]
+    fn batchnorm1d_register_none_slots_not_in_iterators() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("bn");
+
+        bn.register_parameter("optional_param", None)
+            .expect("optional parameter slot");
+        bn.register_buffer("optional_buffer", None, false)
+            .expect("optional buffer slot");
+
+        assert!(
+            bn.named_parameter_slots_own()
+                .iter()
+                .any(|(name, id)| name == "optional_param" && id.is_none())
+        );
+        assert!(
+            bn.named_buffer_slots_own()
+                .iter()
+                .any(|(name, id, persistent)| name == "optional_buffer"
+                    && id.is_none()
+                    && !*persistent)
+        );
+
+        assert!(
+            !named_parameters(&bn, "")
+                .iter()
+                .any(|(name, _)| name == "optional_param")
+        );
+        assert!(
+            !named_buffers(&bn, "")
+                .iter()
+                .any(|(name, _)| name == "optional_buffer")
+        );
+        assert!(
+            !named_persistent_buffers(&bn, "")
+                .iter()
+                .any(|(name, _)| name == "optional_buffer")
+        );
+    }
+
+    #[test]
+    fn batchnorm_register_name_validation_and_conflicts() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("bn");
+
+        let cache = session
+            .tensor_variable(vec![1.0], vec![1], false)
+            .expect("cache");
+        bn.register_buffer("state_cache", Some(cache), true)
+            .expect("register buffer");
+
+        let p = session
+            .tensor_variable(vec![2.0], vec![1], true)
+            .expect("p");
+        assert!(matches!(
+            bn.register_parameter("state_cache", Some(p)),
+            Err(ModuleRegistrationError::NameConflict { .. })
+        ));
+
+        let extra = session
+            .tensor_variable(vec![3.0], vec![1], true)
+            .expect("extra");
+        bn.register_parameter("extra_param", Some(extra))
+            .expect("register parameter");
+
+        let b = session
+            .tensor_variable(vec![4.0], vec![1], false)
+            .expect("b");
+        assert!(matches!(
+            bn.register_buffer("extra_param", Some(b), true),
+            Err(ModuleRegistrationError::NameConflict { .. })
+        ));
+
+        let bad_p = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("bad_p");
+        assert!(matches!(
+            bn.register_parameter(".bad", Some(bad_p)),
+            Err(ModuleRegistrationError::InvalidName { kind: "parameter" })
+        ));
+
+        let bad_b = session
+            .tensor_variable(vec![6.0], vec![1], false)
+            .expect("bad_b");
+        assert!(matches!(
+            bn.register_buffer("bad.", Some(bad_b), true),
+            Err(ModuleRegistrationError::InvalidName { kind: "buffer" })
+        ));
+
+        let builtin_buf_conflict = session
+            .tensor_variable(vec![7.0], vec![1], true)
+            .expect("builtin_buf_conflict");
+        assert!(matches!(
+            bn.register_parameter("running_mean", Some(builtin_buf_conflict)),
+            Err(ModuleRegistrationError::NameConflict { .. })
+        ));
+
+        let builtin_param_conflict = session
+            .tensor_variable(vec![8.0], vec![1], false)
+            .expect("builtin_param_conflict");
+        assert!(matches!(
+            bn.register_buffer("weight", Some(builtin_param_conflict), true),
+            Err(ModuleRegistrationError::NameConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn batchnorm2d_register_and_named_buffer_views() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut bn = BatchNorm2d::new(&mut session, 2, 1e-5, 0.1).expect("bn2d");
+
+        let extra_param = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("extra_param");
+        bn.register_parameter("extra_scale", Some(extra_param))
+            .expect("register parameter");
+
+        let scratch = session
+            .tensor_variable(vec![2.0], vec![1], false)
+            .expect("scratch");
+        bn.register_buffer("scratch", Some(scratch), false)
+            .expect("register scratch");
+
+        let all_buffers = named_buffers(&bn, "");
+        assert!(all_buffers.iter().any(|(name, _)| name == "running_mean"));
+        assert!(all_buffers.iter().any(|(name, _)| name == "running_var"));
+        assert!(
+            all_buffers
+                .iter()
+                .any(|(name, _)| name == "num_batches_tracked")
+        );
+        assert!(
+            all_buffers
+                .iter()
+                .any(|(name, id)| name == "scratch" && *id == scratch)
+        );
+
+        let persistent_buffers = named_persistent_buffers(&bn, "");
+        assert!(!persistent_buffers.iter().any(|(name, _)| name == "scratch"));
+        assert!(
+            persistent_buffers
+                .iter()
+                .any(|(name, _)| name == "running_mean")
+        );
+
+        let named_params = named_parameters(&bn, "");
+        assert!(
+            named_params
+                .iter()
+                .any(|(name, id)| name == "extra_scale" && *id == extra_param)
+        );
+        assert!(!bn.parameters().contains(&scratch));
+    }
+
+    #[test]
+    fn named_buffers_nested_module_prefixes() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn1 = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("bn1");
+        let bn2 = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("bn2");
+
+        let mut seq = Sequential::new();
+        seq.push(Box::new(bn1));
+        seq.push(Box::new(bn2));
+
+        let persistent = named_persistent_buffers(&seq, "");
+        assert!(persistent.iter().any(|(name, _)| name == "0.running_mean"));
+        assert!(persistent.iter().any(|(name, _)| name == "1.running_var"));
+        assert!(
+            persistent
+                .iter()
+                .any(|(name, _)| name == "0.num_batches_tracked")
+        );
     }
 
     #[test]
