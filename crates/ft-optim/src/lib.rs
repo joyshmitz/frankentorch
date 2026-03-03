@@ -1672,6 +1672,15 @@ pub trait LRScheduler {
     /// If `None`, the scheduler auto-increments from the last epoch.
     fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>);
 
+    /// Advance a metric-driven scheduler by one step using the provided metric.
+    ///
+    /// Schedulers that are not metric-driven ignore `metric` and delegate to
+    /// `step(optimizer, None)` by default.
+    fn step_with_metric(&mut self, optimizer: &mut dyn Optimizer, metric: f64) {
+        let _ = metric;
+        self.step(optimizer, None);
+    }
+
     /// Return the current computed learning rates (one per param group).
     fn get_lr(&self) -> Vec<f64>;
 
@@ -1807,6 +1816,966 @@ impl LRScheduler for StepLR {
                 "initial_lr" => self.initial_lr = *val,
                 "step_size" => self.step_size = *val as usize,
                 "gamma" => self.gamma = *val,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// MultiStepLR: decays lr by `gamma` at each milestone epoch.
+///
+/// ```text
+/// lr = initial_lr * gamma ^ (# of milestones <= epoch)
+/// ```
+///
+/// Milestones are sorted internally. Duplicate milestones apply repeated decay,
+/// matching PyTorch's multiplicative milestone semantics.
+pub struct MultiStepLR {
+    initial_lr: f64,
+    milestones: Vec<usize>,
+    gamma: f64,
+    last_epoch: i64,
+    last_lr: f64,
+    verbose: bool,
+}
+
+impl MultiStepLR {
+    /// Create a new `MultiStepLR` scheduler.
+    ///
+    /// # Arguments
+    /// * `optimizer` - The optimizer whose learning rate will be scheduled.
+    /// * `milestones` - Epoch indices where lr is multiplied by `gamma`.
+    pub fn new(optimizer: &dyn Optimizer, mut milestones: Vec<usize>) -> Self {
+        milestones.sort_unstable();
+        let initial_lr = optimizer.get_lr();
+        Self {
+            initial_lr,
+            milestones,
+            gamma: 0.1,
+            last_epoch: -1,
+            last_lr: initial_lr,
+            verbose: false,
+        }
+    }
+
+    /// Set the multiplicative decay factor (default: 0.1).
+    #[must_use]
+    pub fn gamma(mut self, gamma: f64) -> Self {
+        self.gamma = gamma;
+        self
+    }
+
+    /// Set the last epoch index for resuming (default: -1).
+    #[must_use]
+    pub fn last_epoch(mut self, last_epoch: i64) -> Self {
+        self.last_epoch = last_epoch;
+        if last_epoch >= 0 {
+            self.last_lr = self.compute_lr_at_epoch(last_epoch);
+        }
+        self
+    }
+
+    /// Enable verbose mode: prints lr changes.
+    #[must_use]
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    fn milestone_count_at_epoch(&self, epoch: i64) -> usize {
+        if epoch < 0 {
+            return 0;
+        }
+        let epoch = epoch as usize;
+        self.milestones
+            .partition_point(|&milestone| milestone <= epoch)
+    }
+
+    fn compute_lr_at_epoch(&self, epoch: i64) -> f64 {
+        let decay_count = self.milestone_count_at_epoch(epoch);
+        self.initial_lr * self.gamma.powi(decay_count as i32)
+    }
+}
+
+impl LRScheduler for MultiStepLR {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        let new_epoch = match epoch {
+            Some(e) => e,
+            None => self.last_epoch + 1,
+        };
+        self.last_epoch = new_epoch;
+        let new_lr = self.compute_lr_at_epoch(new_epoch);
+        let old_lr = self.last_lr;
+        self.last_lr = new_lr;
+        optimizer.set_lr(new_lr);
+
+        if self.verbose && (new_lr - old_lr).abs() > f64::EPSILON {
+            eprintln!(
+                "MultiStepLR: adjusting learning rate from {old_lr:.6e} to {new_lr:.6e} at epoch {new_epoch}."
+            );
+        }
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.compute_lr_at_epoch(self.last_epoch)]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        let mut extra = vec![
+            ("initial_lr".to_owned(), self.initial_lr),
+            ("gamma".to_owned(), self.gamma),
+            ("milestones_len".to_owned(), self.milestones.len() as f64),
+        ];
+        extra.extend(
+            self.milestones
+                .iter()
+                .enumerate()
+                .map(|(idx, milestone)| (format!("milestone_{idx}"), *milestone as f64)),
+        );
+
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra,
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+
+        let mut indexed_milestones = Vec::new();
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "initial_lr" => self.initial_lr = *val,
+                "gamma" => self.gamma = *val,
+                _ => {
+                    if let Some(index) = key
+                        .strip_prefix("milestone_")
+                        .and_then(|suffix| suffix.parse::<usize>().ok())
+                    {
+                        indexed_milestones.push((index, *val as usize));
+                    }
+                }
+            }
+        }
+
+        if !indexed_milestones.is_empty() {
+            indexed_milestones.sort_by_key(|(index, _)| *index);
+            self.milestones = indexed_milestones
+                .into_iter()
+                .map(|(_, milestone)| milestone)
+                .collect();
+        }
+        self.milestones.sort_unstable();
+    }
+}
+
+/// CosineAnnealingLR: anneals lr using a cosine schedule from `initial_lr`
+/// down to `eta_min` over `t_max` epochs.
+///
+/// ```text
+/// lr = eta_min + 0.5 * (initial_lr - eta_min) * (1 + cos(pi * epoch / t_max))
+/// ```
+///
+/// For epochs beyond `t_max`, lr stays at `eta_min`.
+pub struct CosineAnnealingLR {
+    initial_lr: f64,
+    t_max: usize,
+    eta_min: f64,
+    last_epoch: i64,
+    last_lr: f64,
+    verbose: bool,
+}
+
+impl CosineAnnealingLR {
+    /// Create a new `CosineAnnealingLR` scheduler.
+    pub fn new(optimizer: &dyn Optimizer, t_max: usize) -> Self {
+        let initial_lr = optimizer.get_lr();
+        Self {
+            initial_lr,
+            t_max: t_max.max(1),
+            eta_min: 0.0,
+            last_epoch: -1,
+            last_lr: initial_lr,
+            verbose: false,
+        }
+    }
+
+    /// Set the minimum learning rate (default: 0.0).
+    #[must_use]
+    pub fn eta_min(mut self, eta_min: f64) -> Self {
+        self.eta_min = eta_min;
+        self
+    }
+
+    /// Set the last epoch index for resuming (default: -1).
+    #[must_use]
+    pub fn last_epoch(mut self, last_epoch: i64) -> Self {
+        self.last_epoch = last_epoch;
+        if last_epoch >= 0 {
+            self.last_lr = self.compute_lr_at_epoch(last_epoch);
+        }
+        self
+    }
+
+    /// Enable verbose mode: prints lr changes.
+    #[must_use]
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    fn compute_lr_at_epoch(&self, epoch: i64) -> f64 {
+        if epoch < 0 {
+            return self.initial_lr;
+        }
+        let e = epoch as usize;
+        if e >= self.t_max {
+            return self.eta_min;
+        }
+        let ratio = e as f64 / self.t_max as f64;
+        self.eta_min
+            + 0.5 * (self.initial_lr - self.eta_min) * (1.0 + (std::f64::consts::PI * ratio).cos())
+    }
+}
+
+impl LRScheduler for CosineAnnealingLR {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        let new_epoch = match epoch {
+            Some(e) => e,
+            None => self.last_epoch + 1,
+        };
+        self.last_epoch = new_epoch;
+        let new_lr = self.compute_lr_at_epoch(new_epoch);
+        let old_lr = self.last_lr;
+        self.last_lr = new_lr;
+        optimizer.set_lr(new_lr);
+
+        if self.verbose && (new_lr - old_lr).abs() > f64::EPSILON {
+            eprintln!(
+                "CosineAnnealingLR: adjusting learning rate from {old_lr:.6e} to {new_lr:.6e} at epoch {new_epoch}."
+            );
+        }
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.compute_lr_at_epoch(self.last_epoch)]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                ("initial_lr".to_owned(), self.initial_lr),
+                ("t_max".to_owned(), self.t_max as f64),
+                ("eta_min".to_owned(), self.eta_min),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "initial_lr" => self.initial_lr = *val,
+                "t_max" => self.t_max = (*val as usize).max(1),
+                "eta_min" => self.eta_min = *val,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// CosineAnnealingWarmRestarts: cosine annealing with periodic warm restarts.
+///
+/// Cycle lengths are `t_0`, then `t_0 * t_mult`, then `t_0 * t_mult^2`, etc.
+pub struct CosineAnnealingWarmRestarts {
+    initial_lr: f64,
+    t_0: usize,
+    t_mult: usize,
+    eta_min: f64,
+    last_epoch: i64,
+    last_lr: f64,
+    t_cur: i64,
+    t_i: usize,
+    verbose: bool,
+}
+
+impl CosineAnnealingWarmRestarts {
+    /// Create a new `CosineAnnealingWarmRestarts` scheduler.
+    pub fn new(optimizer: &dyn Optimizer, t_0: usize) -> Self {
+        let initial_lr = optimizer.get_lr();
+        let t_0 = t_0.max(1);
+        Self {
+            initial_lr,
+            t_0,
+            t_mult: 1,
+            eta_min: 0.0,
+            last_epoch: -1,
+            last_lr: initial_lr,
+            t_cur: -1,
+            t_i: t_0,
+            verbose: false,
+        }
+    }
+
+    /// Set multiplicative cycle length growth factor (default: 1).
+    #[must_use]
+    pub fn t_mult(mut self, t_mult: usize) -> Self {
+        self.t_mult = t_mult.max(1);
+        self
+    }
+
+    /// Set the minimum learning rate (default: 0.0).
+    #[must_use]
+    pub fn eta_min(mut self, eta_min: f64) -> Self {
+        self.eta_min = eta_min;
+        self
+    }
+
+    /// Set the last epoch index for resuming (default: -1).
+    #[must_use]
+    pub fn last_epoch(mut self, last_epoch: i64) -> Self {
+        self.last_epoch = last_epoch;
+        if last_epoch >= 0 {
+            let (lr, t_cur, t_i) = self.compute_cycle_at_epoch(last_epoch);
+            self.last_lr = lr;
+            self.t_cur = t_cur;
+            self.t_i = t_i;
+        }
+        self
+    }
+
+    /// Enable verbose mode: prints lr changes.
+    #[must_use]
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    fn compute_cycle_at_epoch(&self, epoch: i64) -> (f64, i64, usize) {
+        if epoch < 0 {
+            return (self.initial_lr, -1, self.t_0);
+        }
+
+        let mut t_i = self.t_0;
+        let mut t_cur = epoch as usize;
+        if self.t_mult == 1 {
+            t_cur %= t_i;
+        } else {
+            while t_cur >= t_i {
+                t_cur -= t_i;
+                t_i = t_i.saturating_mul(self.t_mult);
+            }
+        }
+
+        let ratio = t_cur as f64 / t_i as f64;
+        let lr = self.eta_min
+            + 0.5 * (self.initial_lr - self.eta_min) * (1.0 + (std::f64::consts::PI * ratio).cos());
+        (lr, t_cur as i64, t_i)
+    }
+}
+
+impl LRScheduler for CosineAnnealingWarmRestarts {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        let new_epoch = match epoch {
+            Some(e) => e,
+            None => self.last_epoch + 1,
+        };
+        self.last_epoch = new_epoch;
+
+        let (new_lr, new_t_cur, new_t_i) = self.compute_cycle_at_epoch(new_epoch);
+        let old_lr = self.last_lr;
+        self.last_lr = new_lr;
+        self.t_cur = new_t_cur;
+        self.t_i = new_t_i;
+        optimizer.set_lr(new_lr);
+
+        if self.verbose && (new_lr - old_lr).abs() > f64::EPSILON {
+            eprintln!(
+                "CosineAnnealingWarmRestarts: adjusting learning rate from {old_lr:.6e} to {new_lr:.6e} at epoch {new_epoch} (t_cur={}, t_i={}).",
+                self.t_cur, self.t_i
+            );
+        }
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.compute_cycle_at_epoch(self.last_epoch).0]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                ("initial_lr".to_owned(), self.initial_lr),
+                ("t_0".to_owned(), self.t_0 as f64),
+                ("t_mult".to_owned(), self.t_mult as f64),
+                ("eta_min".to_owned(), self.eta_min),
+                ("t_cur".to_owned(), self.t_cur as f64),
+                ("t_i".to_owned(), self.t_i as f64),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "initial_lr" => self.initial_lr = *val,
+                "t_0" => self.t_0 = (*val as usize).max(1),
+                "t_mult" => self.t_mult = (*val as usize).max(1),
+                "eta_min" => self.eta_min = *val,
+                "t_cur" => self.t_cur = *val as i64,
+                "t_i" => self.t_i = (*val as usize).max(1),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// ExponentialLR: decays lr by a multiplicative `gamma` each epoch.
+///
+/// ```text
+/// lr = initial_lr * gamma^epoch
+/// ```
+pub struct ExponentialLR {
+    initial_lr: f64,
+    gamma: f64,
+    last_epoch: i64,
+    last_lr: f64,
+    verbose: bool,
+}
+
+impl ExponentialLR {
+    /// Create a new `ExponentialLR` scheduler.
+    pub fn new(optimizer: &dyn Optimizer, gamma: f64) -> Self {
+        let initial_lr = optimizer.get_lr();
+        Self {
+            initial_lr,
+            gamma,
+            last_epoch: -1,
+            last_lr: initial_lr,
+            verbose: false,
+        }
+    }
+
+    /// Set the last epoch index for resuming (default: -1).
+    #[must_use]
+    pub fn last_epoch(mut self, last_epoch: i64) -> Self {
+        self.last_epoch = last_epoch;
+        if last_epoch >= 0 {
+            self.last_lr = self.compute_lr_at_epoch(last_epoch);
+        }
+        self
+    }
+
+    /// Enable verbose mode: prints lr changes.
+    #[must_use]
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    fn compute_lr_at_epoch(&self, epoch: i64) -> f64 {
+        if epoch < 0 {
+            return self.initial_lr;
+        }
+        self.initial_lr * self.gamma.powf(epoch as f64)
+    }
+}
+
+impl LRScheduler for ExponentialLR {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        let new_epoch = match epoch {
+            Some(e) => e,
+            None => self.last_epoch + 1,
+        };
+        self.last_epoch = new_epoch;
+        let new_lr = self.compute_lr_at_epoch(new_epoch);
+        let old_lr = self.last_lr;
+        self.last_lr = new_lr;
+        optimizer.set_lr(new_lr);
+
+        if self.verbose && (new_lr - old_lr).abs() > f64::EPSILON {
+            eprintln!(
+                "ExponentialLR: adjusting learning rate from {old_lr:.6e} to {new_lr:.6e} at epoch {new_epoch}."
+            );
+        }
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.compute_lr_at_epoch(self.last_epoch)]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                ("initial_lr".to_owned(), self.initial_lr),
+                ("gamma".to_owned(), self.gamma),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "initial_lr" => self.initial_lr = *val,
+                "gamma" => self.gamma = *val,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// LinearLR: linearly interpolates an lr multiplier from `start_factor` to
+/// `end_factor` over `total_iters` epochs, then holds steady.
+pub struct LinearLR {
+    initial_lr: f64,
+    start_factor: f64,
+    end_factor: f64,
+    total_iters: usize,
+    last_epoch: i64,
+    last_lr: f64,
+    verbose: bool,
+}
+
+impl LinearLR {
+    /// Create a new `LinearLR` scheduler.
+    ///
+    /// Defaults mirror PyTorch's common warmup behavior.
+    pub fn new(optimizer: &dyn Optimizer) -> Self {
+        let initial_lr = optimizer.get_lr();
+        Self {
+            initial_lr,
+            start_factor: 1.0 / 3.0,
+            end_factor: 1.0,
+            total_iters: 5,
+            last_epoch: -1,
+            last_lr: initial_lr,
+            verbose: false,
+        }
+    }
+
+    /// Set the start multiplier (default: 1/3).
+    #[must_use]
+    pub fn start_factor(mut self, start_factor: f64) -> Self {
+        self.start_factor = start_factor;
+        self
+    }
+
+    /// Set the end multiplier (default: 1.0).
+    #[must_use]
+    pub fn end_factor(mut self, end_factor: f64) -> Self {
+        self.end_factor = end_factor;
+        self
+    }
+
+    /// Set interpolation length in epochs (default: 5).
+    #[must_use]
+    pub fn total_iters(mut self, total_iters: usize) -> Self {
+        self.total_iters = total_iters;
+        self
+    }
+
+    /// Set the last epoch index for resuming (default: -1).
+    #[must_use]
+    pub fn last_epoch(mut self, last_epoch: i64) -> Self {
+        self.last_epoch = last_epoch;
+        if last_epoch >= 0 {
+            self.last_lr = self.compute_lr_at_epoch(last_epoch);
+        }
+        self
+    }
+
+    /// Enable verbose mode: prints lr changes.
+    #[must_use]
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    fn multiplier_at_epoch(&self, epoch: i64) -> f64 {
+        if epoch < 0 {
+            return 1.0;
+        }
+        if self.total_iters == 0 {
+            return self.end_factor;
+        }
+        let progress = (epoch as usize).min(self.total_iters) as f64 / self.total_iters as f64;
+        self.start_factor + (self.end_factor - self.start_factor) * progress
+    }
+
+    fn compute_lr_at_epoch(&self, epoch: i64) -> f64 {
+        self.initial_lr * self.multiplier_at_epoch(epoch)
+    }
+}
+
+impl LRScheduler for LinearLR {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        let new_epoch = match epoch {
+            Some(e) => e,
+            None => self.last_epoch + 1,
+        };
+        self.last_epoch = new_epoch;
+        let new_lr = self.compute_lr_at_epoch(new_epoch);
+        let old_lr = self.last_lr;
+        self.last_lr = new_lr;
+        optimizer.set_lr(new_lr);
+
+        if self.verbose && (new_lr - old_lr).abs() > f64::EPSILON {
+            eprintln!(
+                "LinearLR: adjusting learning rate from {old_lr:.6e} to {new_lr:.6e} at epoch {new_epoch}."
+            );
+        }
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.compute_lr_at_epoch(self.last_epoch)]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                ("initial_lr".to_owned(), self.initial_lr),
+                ("start_factor".to_owned(), self.start_factor),
+                ("end_factor".to_owned(), self.end_factor),
+                ("total_iters".to_owned(), self.total_iters as f64),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "initial_lr" => self.initial_lr = *val,
+                "start_factor" => self.start_factor = *val,
+                "end_factor" => self.end_factor = *val,
+                "total_iters" => self.total_iters = *val as usize,
+                _ => {}
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlateauMode {
+    Min,
+    Max,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThresholdMode {
+    Rel,
+    Abs,
+}
+
+/// ReduceLROnPlateau: reduce lr when a monitored metric stops improving.
+///
+/// This scheduler is metric-driven. Use `step_with_metric(optimizer, metric)`
+/// each epoch with the metric value (for example validation loss).
+pub struct ReduceLROnPlateau {
+    mode: PlateauMode,
+    factor: f64,
+    patience: usize,
+    threshold: f64,
+    threshold_mode: ThresholdMode,
+    cooldown: usize,
+    min_lr: f64,
+    eps: f64,
+    last_epoch: i64,
+    last_lr: f64,
+    best: f64,
+    num_bad_epochs: usize,
+    cooldown_counter: usize,
+    initialized: bool,
+    verbose: bool,
+}
+
+impl ReduceLROnPlateau {
+    /// Create a new `ReduceLROnPlateau` scheduler with PyTorch-like defaults.
+    pub fn new(optimizer: &dyn Optimizer) -> Self {
+        Self {
+            mode: PlateauMode::Min,
+            factor: 0.1,
+            patience: 10,
+            threshold: 1e-4,
+            threshold_mode: ThresholdMode::Rel,
+            cooldown: 0,
+            min_lr: 0.0,
+            eps: 1e-8,
+            last_epoch: -1,
+            last_lr: optimizer.get_lr(),
+            best: 0.0,
+            num_bad_epochs: 0,
+            cooldown_counter: 0,
+            initialized: false,
+            verbose: false,
+        }
+    }
+
+    /// Switch to minimization mode (default): lower metric is better.
+    #[must_use]
+    pub fn mode_min(mut self) -> Self {
+        self.mode = PlateauMode::Min;
+        self
+    }
+
+    /// Switch to maximization mode: higher metric is better.
+    #[must_use]
+    pub fn mode_max(mut self) -> Self {
+        self.mode = PlateauMode::Max;
+        self
+    }
+
+    /// Set multiplicative reduction factor (default: 0.1).
+    #[must_use]
+    pub fn factor(mut self, factor: f64) -> Self {
+        self.factor = factor;
+        self
+    }
+
+    /// Set tolerated bad epochs before reducing lr (default: 10).
+    #[must_use]
+    pub fn patience(mut self, patience: usize) -> Self {
+        self.patience = patience;
+        self
+    }
+
+    /// Set improvement threshold (default: 1e-4).
+    #[must_use]
+    pub fn threshold(mut self, threshold: f64) -> Self {
+        self.threshold = threshold;
+        self
+    }
+
+    /// Use relative threshold mode (default).
+    #[must_use]
+    pub fn threshold_mode_rel(mut self) -> Self {
+        self.threshold_mode = ThresholdMode::Rel;
+        self
+    }
+
+    /// Use absolute threshold mode.
+    #[must_use]
+    pub fn threshold_mode_abs(mut self) -> Self {
+        self.threshold_mode = ThresholdMode::Abs;
+        self
+    }
+
+    /// Set cooldown epochs after each reduction (default: 0).
+    #[must_use]
+    pub fn cooldown(mut self, cooldown: usize) -> Self {
+        self.cooldown = cooldown;
+        self
+    }
+
+    /// Set minimum learning rate floor (default: 0.0).
+    #[must_use]
+    pub fn min_lr(mut self, min_lr: f64) -> Self {
+        self.min_lr = min_lr;
+        self
+    }
+
+    /// Minimum required absolute lr delta for applying a reduction.
+    #[must_use]
+    pub fn eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    /// Enable verbose mode.
+    #[must_use]
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    fn is_better(&self, metric: f64) -> bool {
+        if !self.initialized || metric.is_nan() {
+            return false;
+        }
+        match (self.mode, self.threshold_mode) {
+            (PlateauMode::Min, ThresholdMode::Rel) => metric < self.best * (1.0 - self.threshold),
+            (PlateauMode::Min, ThresholdMode::Abs) => metric < self.best - self.threshold,
+            (PlateauMode::Max, ThresholdMode::Rel) => metric > self.best * (1.0 + self.threshold),
+            (PlateauMode::Max, ThresholdMode::Abs) => metric > self.best + self.threshold,
+        }
+    }
+
+    fn reduce_lr(&mut self, optimizer: &mut dyn Optimizer) {
+        let old_lr = optimizer.get_lr();
+        let new_lr = (old_lr * self.factor).max(self.min_lr);
+        if (old_lr - new_lr).abs() > self.eps {
+            optimizer.set_lr(new_lr);
+            self.last_lr = new_lr;
+            if self.verbose {
+                eprintln!(
+                    "ReduceLROnPlateau: reducing learning rate from {old_lr:.6e} to {new_lr:.6e}."
+                );
+            }
+        } else {
+            self.last_lr = old_lr;
+        }
+    }
+}
+
+impl LRScheduler for ReduceLROnPlateau {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        self.last_epoch = epoch.unwrap_or(self.last_epoch + 1);
+        self.last_lr = optimizer.get_lr();
+    }
+
+    fn step_with_metric(&mut self, optimizer: &mut dyn Optimizer, metric: f64) {
+        self.last_epoch += 1;
+        self.last_lr = optimizer.get_lr();
+
+        if !self.initialized {
+            self.best = metric;
+            self.initialized = true;
+            self.num_bad_epochs = 0;
+            return;
+        }
+
+        if self.is_better(metric) {
+            self.best = metric;
+            self.num_bad_epochs = 0;
+        } else {
+            self.num_bad_epochs = self.num_bad_epochs.saturating_add(1);
+        }
+
+        if self.cooldown_counter > 0 {
+            self.cooldown_counter -= 1;
+            self.num_bad_epochs = 0;
+        }
+
+        if self.num_bad_epochs > self.patience {
+            self.reduce_lr(optimizer);
+            self.cooldown_counter = self.cooldown;
+            self.num_bad_epochs = 0;
+        }
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                (
+                    "mode".to_owned(),
+                    if self.mode == PlateauMode::Min {
+                        0.0
+                    } else {
+                        1.0
+                    },
+                ),
+                ("factor".to_owned(), self.factor),
+                ("patience".to_owned(), self.patience as f64),
+                ("threshold".to_owned(), self.threshold),
+                (
+                    "threshold_mode".to_owned(),
+                    if self.threshold_mode == ThresholdMode::Rel {
+                        0.0
+                    } else {
+                        1.0
+                    },
+                ),
+                ("cooldown".to_owned(), self.cooldown as f64),
+                ("min_lr".to_owned(), self.min_lr),
+                ("eps".to_owned(), self.eps),
+                ("best".to_owned(), self.best),
+                ("num_bad_epochs".to_owned(), self.num_bad_epochs as f64),
+                ("cooldown_counter".to_owned(), self.cooldown_counter as f64),
+                (
+                    "initialized".to_owned(),
+                    if self.initialized { 1.0 } else { 0.0 },
+                ),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "mode" => {
+                    self.mode = if *val >= 0.5 {
+                        PlateauMode::Max
+                    } else {
+                        PlateauMode::Min
+                    };
+                }
+                "factor" => self.factor = *val,
+                "patience" => self.patience = *val as usize,
+                "threshold" => self.threshold = *val,
+                "threshold_mode" => {
+                    self.threshold_mode = if *val >= 0.5 {
+                        ThresholdMode::Abs
+                    } else {
+                        ThresholdMode::Rel
+                    };
+                }
+                "cooldown" => self.cooldown = *val as usize,
+                "min_lr" => self.min_lr = *val,
+                "eps" => self.eps = *val,
+                "best" => self.best = *val,
+                "num_bad_epochs" => self.num_bad_epochs = *val as usize,
+                "cooldown_counter" => self.cooldown_counter = *val as usize,
+                "initialized" => self.initialized = *val >= 0.5,
                 _ => {}
             }
         }
@@ -4258,5 +5227,622 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn multistep_lr_milestone_boundaries() {
+        // milestones=[30, 60, 90], gamma=0.1
+        // epoch <30 -> 0.1
+        // 30..59 -> 0.01
+        // 60..89 -> 0.001
+        // >=90 -> 0.0001
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = MultiStepLR::new(&opt, vec![30, 60, 90]).gamma(0.1);
+
+        for epoch in 0..100 {
+            scheduler.step(&mut opt, None);
+            let expected = if epoch < 30 {
+                0.1
+            } else if epoch < 60 {
+                0.01
+            } else if epoch < 90 {
+                0.001
+            } else {
+                0.0001
+            };
+            let actual = opt.get_lr();
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "epoch {epoch}: expected lr {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn multistep_lr_empty_milestones_is_constant() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.2);
+        let mut scheduler = MultiStepLR::new(&opt, Vec::new()).gamma(0.5);
+
+        for _epoch in 0..25 {
+            scheduler.step(&mut opt, None);
+            assert!(
+                (opt.get_lr() - 0.2).abs() < 1e-12,
+                "lr should remain unchanged without milestones"
+            );
+        }
+    }
+
+    #[test]
+    fn multistep_lr_unsorted_milestones_are_sorted_internally() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = MultiStepLR::new(&opt, vec![10, 3, 7]).gamma(0.1);
+
+        scheduler.step(&mut opt, Some(2));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        scheduler.step(&mut opt, Some(3));
+        assert!((opt.get_lr() - 0.1).abs() < 1e-12);
+        scheduler.step(&mut opt, Some(7));
+        assert!((opt.get_lr() - 0.01).abs() < 1e-12);
+        scheduler.step(&mut opt, Some(10));
+        assert!((opt.get_lr() - 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn multistep_lr_duplicate_milestones_apply_multiple_decays() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = MultiStepLR::new(&opt, vec![2, 2, 4]).gamma(0.5);
+
+        scheduler.step(&mut opt, Some(1));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        scheduler.step(&mut opt, Some(2));
+        // Two milestones at epoch 2 -> gamma^2
+        assert!((opt.get_lr() - 0.25).abs() < 1e-12);
+        scheduler.step(&mut opt, Some(4));
+        // Third milestone -> gamma^3
+        assert!((opt.get_lr() - 0.125).abs() < 1e-12);
+    }
+
+    #[test]
+    fn multistep_lr_all_milestones_at_zero_decay_immediately() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = MultiStepLR::new(&opt, vec![0, 0, 0]).gamma(0.1);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 0.001).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(1));
+        assert!((opt.get_lr() - 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn multistep_lr_state_dict_round_trip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.8);
+        let mut scheduler = MultiStepLR::new(&opt, vec![4, 8, 12]).gamma(0.2);
+
+        scheduler.step(&mut opt, Some(9));
+        let state = scheduler.state_dict();
+
+        let mut scheduler2 = MultiStepLR::new(&opt, vec![1]).gamma(0.9);
+        scheduler2.load_state_dict(state.clone());
+
+        assert_eq!(scheduler2.state_dict(), state);
+        assert_eq!(scheduler2.get_last_lr(), scheduler.get_last_lr());
+        assert_eq!(scheduler2.get_lr(), scheduler.get_lr());
+    }
+
+    #[test]
+    fn cosine_annealing_lr_key_epochs() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = CosineAnnealingLR::new(&opt, 10).eta_min(0.0);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        assert!((scheduler.get_last_lr()[0] - 1.0).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(5));
+        let mid = opt.get_lr();
+        assert!(
+            (mid - 0.5).abs() < 1e-12,
+            "expected midpoint lr 0.5, got {mid}"
+        );
+
+        scheduler.step(&mut opt, Some(10));
+        let min_lr = opt.get_lr();
+        assert!(
+            min_lr.abs() < 1e-12,
+            "expected eta_min at epoch 10, got {min_lr}"
+        );
+
+        scheduler.step(&mut opt, Some(25));
+        let held = opt.get_lr();
+        assert!(
+            held.abs() < 1e-12,
+            "expected lr to remain eta_min beyond t_max, got {held}"
+        );
+    }
+
+    #[test]
+    fn cosine_annealing_lr_t_max_one_and_eta_min_constant() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.2);
+        let mut scheduler = CosineAnnealingLR::new(&opt, 1).eta_min(0.2);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 0.2).abs() < 1e-12);
+        scheduler.step(&mut opt, Some(1));
+        assert!((opt.get_lr() - 0.2).abs() < 1e-12);
+        scheduler.step(&mut opt, Some(7));
+        assert!((opt.get_lr() - 0.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cosine_annealing_lr_state_dict_round_trip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.8);
+
+        let mut scheduler = CosineAnnealingLR::new(&opt, 12).eta_min(0.1);
+        scheduler.step(&mut opt, Some(7));
+        let state = scheduler.state_dict();
+
+        let mut scheduler2 = CosineAnnealingLR::new(&opt, 3).eta_min(0.0);
+        scheduler2.load_state_dict(state.clone());
+
+        assert_eq!(scheduler2.state_dict(), state);
+        assert_eq!(scheduler2.get_last_lr(), scheduler.get_last_lr());
+        assert_eq!(scheduler2.get_lr(), scheduler.get_lr());
+    }
+
+    #[test]
+    fn cosine_warm_restarts_fixed_period_restarts() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = CosineAnnealingWarmRestarts::new(&opt, 4).eta_min(0.0);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(3));
+        let before_restart = opt.get_lr();
+        assert!(
+            (before_restart - 0.146_446_609_406_726_27).abs() < 1e-12,
+            "unexpected lr before restart: {before_restart}"
+        );
+
+        scheduler.step(&mut opt, Some(4));
+        let restart_lr = opt.get_lr();
+        assert!(
+            (restart_lr - 1.0).abs() < 1e-12,
+            "expected restart to reset lr to initial, got {restart_lr}"
+        );
+
+        scheduler.step(&mut opt, Some(8));
+        let second_restart = opt.get_lr();
+        assert!(
+            (second_restart - 1.0).abs() < 1e-12,
+            "expected periodic restart at epoch 8, got {second_restart}"
+        );
+    }
+
+    #[test]
+    fn cosine_warm_restarts_t_mult_doubles_period() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = CosineAnnealingWarmRestarts::new(&opt, 2)
+            .t_mult(2)
+            .eta_min(0.0);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(1));
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(2));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(5));
+        let tail_first_long_cycle = opt.get_lr();
+        assert!(
+            (tail_first_long_cycle - 0.146_446_609_406_726_27).abs() < 1e-12,
+            "unexpected lr at epoch 5: {tail_first_long_cycle}"
+        );
+
+        scheduler.step(&mut opt, Some(6));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cosine_warm_restarts_state_dict_round_trip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.5);
+
+        let mut scheduler = CosineAnnealingWarmRestarts::new(&opt, 3)
+            .t_mult(2)
+            .eta_min(0.05);
+        scheduler.step(&mut opt, Some(9));
+        let state = scheduler.state_dict();
+
+        let mut scheduler2 = CosineAnnealingWarmRestarts::new(&opt, 1)
+            .t_mult(1)
+            .eta_min(0.0);
+        scheduler2.load_state_dict(state.clone());
+
+        assert_eq!(scheduler2.state_dict(), state);
+        assert_eq!(scheduler2.get_last_lr(), scheduler.get_last_lr());
+        assert_eq!(scheduler2.get_lr(), scheduler.get_lr());
+    }
+
+    #[test]
+    fn exponential_lr_basic_curve() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ExponentialLR::new(&opt, 0.95);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(10));
+        let expected_10 = 0.95_f64.powi(10);
+        assert!(
+            (opt.get_lr() - expected_10).abs() < 1e-12,
+            "expected {expected_10}, got {}",
+            opt.get_lr()
+        );
+
+        scheduler.step(&mut opt, Some(100));
+        let expected_100 = 0.95_f64.powi(100);
+        assert!(
+            (opt.get_lr() - expected_100).abs() < 1e-12,
+            "expected {expected_100}, got {}",
+            opt.get_lr()
+        );
+    }
+
+    #[test]
+    fn exponential_lr_gamma_one_is_constant() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.3);
+        let mut scheduler = ExponentialLR::new(&opt, 1.0);
+
+        for epoch in 0..20 {
+            scheduler.step(&mut opt, Some(epoch));
+            assert!(
+                (opt.get_lr() - 0.3).abs() < 1e-12,
+                "lr should remain constant for gamma=1.0"
+            );
+        }
+    }
+
+    #[test]
+    fn exponential_lr_state_dict_round_trip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.7);
+
+        let mut scheduler = ExponentialLR::new(&opt, 0.9);
+        scheduler.step(&mut opt, Some(12));
+        let state = scheduler.state_dict();
+
+        let mut scheduler2 = ExponentialLR::new(&opt, 0.5);
+        scheduler2.load_state_dict(state.clone());
+
+        assert_eq!(scheduler2.state_dict(), state);
+        assert_eq!(scheduler2.get_last_lr(), scheduler.get_last_lr());
+        assert_eq!(scheduler2.get_lr(), scheduler.get_lr());
+    }
+
+    #[test]
+    fn linear_lr_warmup_curve_and_plateau() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = LinearLR::new(&opt)
+            .start_factor(0.1)
+            .end_factor(1.0)
+            .total_iters(10);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 0.1).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(5));
+        assert!((opt.get_lr() - 0.55).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(10));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(20));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn linear_lr_cooldown_curve() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = LinearLR::new(&opt)
+            .start_factor(1.0)
+            .end_factor(0.01)
+            .total_iters(50);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(25));
+        assert!((opt.get_lr() - 0.505).abs() < 1e-12);
+
+        scheduler.step(&mut opt, Some(50));
+        assert!((opt.get_lr() - 0.01).abs() < 1e-12);
+    }
+
+    #[test]
+    fn linear_lr_total_iters_zero_jumps_to_end_factor() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 2.0);
+        let mut scheduler = LinearLR::new(&opt)
+            .start_factor(0.25)
+            .end_factor(0.5)
+            .total_iters(0);
+
+        scheduler.step(&mut opt, Some(0));
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn linear_lr_state_dict_round_trip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.9);
+
+        let mut scheduler = LinearLR::new(&opt)
+            .start_factor(0.2)
+            .end_factor(1.1)
+            .total_iters(7);
+        scheduler.step(&mut opt, Some(4));
+        let state = scheduler.state_dict();
+
+        let mut scheduler2 = LinearLR::new(&opt)
+            .start_factor(1.0)
+            .end_factor(1.0)
+            .total_iters(1);
+        scheduler2.load_state_dict(state.clone());
+
+        assert_eq!(scheduler2.state_dict(), state);
+        assert_eq!(scheduler2.get_last_lr(), scheduler.get_last_lr());
+        assert_eq!(scheduler2.get_lr(), scheduler.get_lr());
+    }
+
+    #[test]
+    fn reduce_on_plateau_min_mode_reduces_after_patience() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ReduceLROnPlateau::new(&opt).factor(0.5).patience(2);
+
+        scheduler.step_with_metric(&mut opt, 1.0); // baseline
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 1.0); // bad #1
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 1.0); // bad #2
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 1.0); // bad #3 -> reduce
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_on_plateau_improvement_resets_bad_epoch_counter() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ReduceLROnPlateau::new(&opt).factor(0.5).patience(1);
+
+        scheduler.step_with_metric(&mut opt, 1.0); // baseline
+        scheduler.step_with_metric(&mut opt, 1.2); // bad #1
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 0.8); // improvement reset
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 0.9); // bad #1 after reset
+        assert!((opt.get_lr() - 1.0).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 0.9); // bad #2 -> reduce
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_on_plateau_cooldown_blocks_immediate_reductions() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ReduceLROnPlateau::new(&opt)
+            .factor(0.5)
+            .patience(0)
+            .cooldown(2);
+
+        scheduler.step_with_metric(&mut opt, 1.0); // baseline
+        scheduler.step_with_metric(&mut opt, 1.1); // reduce to 0.5 and enter cooldown
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+
+        scheduler.step_with_metric(&mut opt, 1.2); // cooldown #1
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 1.3); // cooldown #2
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 1.4); // cooldown ended -> reduce
+        assert!((opt.get_lr() - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_on_plateau_mode_max_with_relative_threshold() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ReduceLROnPlateau::new(&opt)
+            .mode_max()
+            .factor(0.5)
+            .patience(0)
+            .threshold(0.1)
+            .threshold_mode_rel();
+
+        scheduler.step_with_metric(&mut opt, 10.0); // baseline
+        scheduler.step_with_metric(&mut opt, 10.5); // not > 10 * 1.1
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+        scheduler.step_with_metric(&mut opt, 12.0); // strong improvement
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_on_plateau_mode_max_with_absolute_threshold() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ReduceLROnPlateau::new(&opt)
+            .mode_max()
+            .factor(0.5)
+            .patience(0)
+            .threshold(0.3)
+            .threshold_mode_abs();
+
+        scheduler.step_with_metric(&mut opt, 1.0); // baseline
+        scheduler.step_with_metric(&mut opt, 1.2); // not > 1.3, reduce
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_on_plateau_min_lr_floor_and_factor_one_noop() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+
+        let mut scheduler = ReduceLROnPlateau::new(&opt)
+            .factor(0.5)
+            .patience(0)
+            .min_lr(0.2);
+        scheduler.step_with_metric(&mut opt, 1.0); // baseline
+        scheduler.step_with_metric(&mut opt, 1.1); // 0.5
+        scheduler.step_with_metric(&mut opt, 1.2); // 0.25
+        scheduler.step_with_metric(&mut opt, 1.3); // 0.2 floor
+        scheduler.step_with_metric(&mut opt, 1.4); // stay at floor
+        assert!((opt.get_lr() - 0.2).abs() < 1e-12);
+
+        let x2 = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt_noop = SGD::new(vec![x2], 0.7);
+        let mut scheduler_noop = ReduceLROnPlateau::new(&opt_noop).factor(1.0).patience(0);
+        scheduler_noop.step_with_metric(&mut opt_noop, 1.0);
+        scheduler_noop.step_with_metric(&mut opt_noop, 1.1);
+        assert!((opt_noop.get_lr() - 0.7).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_on_plateau_nan_metric_treated_as_no_improvement() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut scheduler = ReduceLROnPlateau::new(&opt).factor(0.5).patience(0);
+
+        scheduler.step_with_metric(&mut opt, 1.0); // baseline
+        scheduler.step_with_metric(&mut opt, f64::NAN); // no improvement -> reduce
+        assert!((opt.get_lr() - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_on_plateau_state_dict_round_trip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.8);
+        let mut scheduler = ReduceLROnPlateau::new(&opt)
+            .mode_max()
+            .factor(0.3)
+            .patience(2)
+            .threshold(0.25)
+            .threshold_mode_abs()
+            .cooldown(1)
+            .min_lr(0.1)
+            .eps(1e-6);
+
+        scheduler.step_with_metric(&mut opt, 0.5);
+        scheduler.step_with_metric(&mut opt, 0.6);
+        let state = scheduler.state_dict();
+
+        let mut scheduler2 = ReduceLROnPlateau::new(&opt);
+        scheduler2.load_state_dict(state.clone());
+
+        assert_eq!(scheduler2.state_dict(), state);
+        assert_eq!(scheduler2.get_last_lr(), scheduler.get_last_lr());
+        assert_eq!(scheduler2.get_lr(), scheduler.get_lr());
     }
 }
