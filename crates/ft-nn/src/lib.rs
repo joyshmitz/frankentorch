@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, TensorNodeId};
+use ft_core::{DType, DenseTensor, DenseTensorError};
 use ft_dispatch::{DispatchError, DispatchKeyError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +32,91 @@ impl std::fmt::Display for ModuleRegistrationError {
 }
 
 impl std::error::Error for ModuleRegistrationError {}
+
+pub type StateDict = BTreeMap<String, DenseTensor>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadStateDictReport {
+    pub missing_keys: Vec<String>,
+    pub unexpected_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateDictError {
+    Autograd(AutogradError),
+    DenseTensor(DenseTensorError),
+    DuplicateStateKey {
+        key: String,
+    },
+    UnsupportedDType {
+        key: String,
+        dtype: DType,
+    },
+    StrictKeyMismatch {
+        missing_keys: Vec<String>,
+        unexpected_keys: Vec<String>,
+    },
+    ShapeMismatch {
+        key: String,
+        expected: Vec<usize>,
+        found: Vec<usize>,
+    },
+    DTypeMismatch {
+        key: String,
+        expected: DType,
+        found: DType,
+    },
+}
+
+impl std::fmt::Display for StateDictError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Autograd(error) => write!(f, "autograd error: {error}"),
+            Self::DenseTensor(error) => write!(f, "dense tensor error: {error}"),
+            Self::DuplicateStateKey { key } => write!(f, "duplicate state key '{key}'"),
+            Self::UnsupportedDType { key, dtype } => {
+                write!(f, "state key '{key}' uses unsupported dtype {dtype:?}")
+            }
+            Self::StrictKeyMismatch {
+                missing_keys,
+                unexpected_keys,
+            } => write!(
+                f,
+                "strict load_state_dict key mismatch: missing={missing_keys:?}, unexpected={unexpected_keys:?}"
+            ),
+            Self::ShapeMismatch {
+                key,
+                expected,
+                found,
+            } => write!(
+                f,
+                "shape mismatch for state key '{key}': expected={expected:?}, found={found:?}"
+            ),
+            Self::DTypeMismatch {
+                key,
+                expected,
+                found,
+            } => write!(
+                f,
+                "dtype mismatch for state key '{key}': expected={expected:?}, found={found:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StateDictError {}
+
+impl From<AutogradError> for StateDictError {
+    fn from(value: AutogradError) -> Self {
+        Self::Autograd(value)
+    }
+}
+
+impl From<DenseTensorError> for StateDictError {
+    fn from(value: DenseTensorError) -> Self {
+        Self::DenseTensor(value)
+    }
+}
 
 #[derive(Debug, Clone)]
 struct RegisteredParameter {
@@ -175,6 +263,29 @@ pub trait Module {
         let children = self.named_children();
         children.is_empty() || children.iter().all(|(_, child)| child.is_training())
     }
+
+    /// Export trainable parameters and persistent buffers in a deterministic key order.
+    fn state_dict(&self, session: &FrankenTorchSession) -> Result<StateDict, StateDictError>
+    where
+        Self: Sized,
+    {
+        module_state_dict(self, session)
+    }
+
+    /// Load trainable parameters and persistent buffers from a state dict.
+    ///
+    /// If `strict` is true, missing/unexpected keys cause an error and no updates are applied.
+    fn load_state_dict(
+        &self,
+        session: &mut FrankenTorchSession,
+        state: &StateDict,
+        strict: bool,
+    ) -> Result<LoadStateDictReport, StateDictError>
+    where
+        Self: Sized,
+    {
+        module_load_state_dict(self, session, state, strict)
+    }
 }
 
 /// Collect direct child modules without names.
@@ -302,6 +413,131 @@ pub fn buffers(module: &dyn Module) -> Vec<TensorNodeId> {
         .into_iter()
         .map(|(_, id)| id)
         .collect()
+}
+
+fn collect_state_targets(
+    module: &dyn Module,
+) -> Result<Vec<(String, TensorNodeId)>, StateDictError> {
+    let mut targets = Vec::new();
+    for (name, id) in named_parameters(module, "") {
+        targets.push((name, id));
+    }
+    for (name, id) in named_persistent_buffers(module, "") {
+        targets.push((name, id));
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    for (name, _) in &targets {
+        if !seen.insert(name.clone()) {
+            return Err(StateDictError::DuplicateStateKey { key: name.clone() });
+        }
+    }
+    Ok(targets)
+}
+
+fn snapshot_tensor_for_state_dict(
+    session: &FrankenTorchSession,
+    key: &str,
+    node: TensorNodeId,
+) -> Result<DenseTensor, StateDictError> {
+    let (values_f64, meta) = session.tensor_values_meta(node)?;
+    match meta.dtype() {
+        DType::F64 => DenseTensor::from_storage(meta, values_f64).map_err(StateDictError::from),
+        DType::F32 => {
+            let values_f32 = session.tensor_values_f32(node)?;
+            DenseTensor::from_storage_f32(meta, values_f32).map_err(StateDictError::from)
+        }
+        other => Err(StateDictError::UnsupportedDType {
+            key: key.to_string(),
+            dtype: other,
+        }),
+    }
+}
+
+pub fn module_state_dict(
+    module: &dyn Module,
+    session: &FrankenTorchSession,
+) -> Result<StateDict, StateDictError> {
+    let targets = collect_state_targets(module)?;
+    let mut state = StateDict::new();
+    for (name, node) in targets {
+        let snapshot = snapshot_tensor_for_state_dict(session, name.as_str(), node)?;
+        if state.insert(name.clone(), snapshot).is_some() {
+            return Err(StateDictError::DuplicateStateKey { key: name });
+        }
+    }
+    Ok(state)
+}
+
+pub fn module_load_state_dict(
+    module: &dyn Module,
+    session: &mut FrankenTorchSession,
+    state: &StateDict,
+    strict: bool,
+) -> Result<LoadStateDictReport, StateDictError> {
+    let targets = collect_state_targets(module)?;
+    let mut target_map: BTreeMap<String, TensorNodeId> = BTreeMap::new();
+    for (name, node) in targets {
+        if target_map.insert(name.clone(), node).is_some() {
+            return Err(StateDictError::DuplicateStateKey { key: name });
+        }
+    }
+
+    let mut missing_keys = Vec::new();
+    for key in target_map.keys() {
+        if !state.contains_key(key) {
+            missing_keys.push(key.clone());
+        }
+    }
+    let mut unexpected_keys = Vec::new();
+    for key in state.keys() {
+        if !target_map.contains_key(key) {
+            unexpected_keys.push(key.clone());
+        }
+    }
+
+    if strict && (!missing_keys.is_empty() || !unexpected_keys.is_empty()) {
+        return Err(StateDictError::StrictKeyMismatch {
+            missing_keys,
+            unexpected_keys,
+        });
+    }
+
+    // Validate all matching entries first so updates are all-or-nothing.
+    let mut updates: Vec<(TensorNodeId, DenseTensor)> = Vec::new();
+    for (name, target_node) in &target_map {
+        let Some(source_tensor) = state.get(name) else {
+            continue;
+        };
+        let (_, target_meta) = session.tensor_values_meta(*target_node)?;
+        let source_meta = source_tensor.meta();
+        if target_meta.shape() != source_meta.shape() {
+            return Err(StateDictError::ShapeMismatch {
+                key: name.clone(),
+                expected: target_meta.shape().to_vec(),
+                found: source_meta.shape().to_vec(),
+            });
+        }
+        if target_meta.dtype() != source_meta.dtype() {
+            return Err(StateDictError::DTypeMismatch {
+                key: name.clone(),
+                expected: target_meta.dtype(),
+                found: source_meta.dtype(),
+            });
+        }
+        updates.push((*target_node, source_tensor.clone()));
+    }
+
+    for (target_node, source_tensor) in updates {
+        let source_node = session.tensor_variable_from_storage(source_tensor, false);
+        session.tensor_zero_(target_node)?;
+        session.tensor_add_(target_node, source_node)?;
+    }
+
+    Ok(LoadStateDictReport {
+        missing_keys,
+        unexpected_keys,
+    })
 }
 
 /// Fully connected linear layer: output = input @ weight^T + bias.
@@ -4473,9 +4709,25 @@ impl Module for ZeroPad2d {
 #[cfg(test)]
 mod tests {
     use ft_api::FrankenTorchSession;
-    use ft_core::ExecutionMode;
+    use ft_core::{DType, DenseTensor, Device, ExecutionMode, TensorMeta};
 
     use super::*;
+
+    fn dense_values_f64(tensor: &DenseTensor) -> Vec<f64> {
+        match tensor.meta().dtype() {
+            DType::F64 => tensor
+                .contiguous_values()
+                .expect("f64 values should be contiguous")
+                .to_vec(),
+            DType::F32 => tensor
+                .contiguous_values_f32()
+                .expect("f32 values should be contiguous")
+                .iter()
+                .map(|&value| f64::from(value))
+                .collect(),
+            other => panic!("unsupported dtype in test helper: {other:?}"),
+        }
+    }
 
     #[test]
     fn relu_module_forward() {
@@ -8295,5 +8547,144 @@ mod tests {
         for (f, (_, n)) in flat.iter().zip(named.iter()) {
             assert_eq!(f, n);
         }
+    }
+
+    #[test]
+    fn state_dict_linear_contains_weight_and_bias() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 3, 2, true).expect("linear");
+
+        let state = linear.state_dict(&session).expect("state_dict");
+        assert_eq!(state.len(), 2);
+        assert!(state.contains_key("weight"));
+        assert!(state.contains_key("bias"));
+        assert_eq!(state.get("weight").expect("weight").meta().shape(), &[2, 3]);
+        assert_eq!(state.get("bias").expect("bias").meta().shape(), &[1, 2]);
+    }
+
+    #[test]
+    fn state_dict_includes_persistent_buffers() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, 0.1).expect("batch norm");
+        let state = bn.state_dict(&session).expect("state_dict");
+
+        assert!(state.contains_key("weight"));
+        assert!(state.contains_key("bias"));
+        assert!(state.contains_key("running_mean"));
+        assert!(state.contains_key("running_var"));
+        assert!(state.contains_key("num_batches_tracked"));
+    }
+
+    #[test]
+    fn load_state_dict_restores_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 3, 2, true).expect("linear");
+        let original = linear.state_dict(&session).expect("state_dict");
+
+        session
+            .tensor_fill_(linear.weight(), 123.0)
+            .expect("fill weight");
+        session
+            .tensor_fill_(linear.bias().expect("bias"), -42.0)
+            .expect("fill bias");
+
+        let report = linear
+            .load_state_dict(&mut session, &original, true)
+            .expect("load_state_dict");
+        assert!(report.missing_keys.is_empty());
+        assert!(report.unexpected_keys.is_empty());
+
+        let restored = linear.state_dict(&session).expect("restored state");
+        assert_eq!(
+            dense_values_f64(restored.get("weight").expect("weight")),
+            dense_values_f64(original.get("weight").expect("weight"))
+        );
+        assert_eq!(
+            dense_values_f64(restored.get("bias").expect("bias")),
+            dense_values_f64(original.get("bias").expect("bias"))
+        );
+    }
+
+    #[test]
+    fn load_state_dict_strict_rejects_missing_and_unexpected_keys() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 3, 2, true).expect("linear");
+        let mut state = linear.state_dict(&session).expect("state_dict");
+
+        let weight = state.get("weight").expect("weight").clone();
+        state.remove("bias");
+        state.insert("unexpected.key".to_string(), weight);
+
+        let err = linear
+            .load_state_dict(&mut session, &state, true)
+            .expect_err("strict load should fail on key mismatch");
+        match err {
+            StateDictError::StrictKeyMismatch {
+                missing_keys,
+                unexpected_keys,
+            } => {
+                assert!(missing_keys.iter().any(|key| key == "bias"));
+                assert!(unexpected_keys.iter().any(|key| key == "unexpected.key"));
+            }
+            other => panic!("unexpected error type: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_state_dict_non_strict_reports_keys_and_applies_matches() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 3, 2, true).expect("linear");
+        let mut state = linear.state_dict(&session).expect("state_dict");
+
+        let expected_weight = dense_values_f64(state.get("weight").expect("weight"));
+        let extra = state.get("weight").expect("weight").clone();
+        state.remove("bias");
+        state.insert("unexpected.key".to_string(), extra);
+
+        session
+            .tensor_fill_(linear.weight(), 999.0)
+            .expect("fill weight");
+        session
+            .tensor_fill_(linear.bias().expect("bias"), -777.0)
+            .expect("fill bias");
+
+        let report = linear
+            .load_state_dict(&mut session, &state, false)
+            .expect("non-strict load should succeed");
+        assert!(report.missing_keys.iter().any(|key| key == "bias"));
+        assert!(
+            report
+                .unexpected_keys
+                .iter()
+                .any(|key| key == "unexpected.key")
+        );
+
+        let loaded = linear.state_dict(&session).expect("loaded state");
+        assert_eq!(
+            dense_values_f64(loaded.get("weight").expect("weight")),
+            expected_weight
+        );
+        assert_eq!(
+            dense_values_f64(loaded.get("bias").expect("bias")),
+            vec![-777.0, -777.0]
+        );
+    }
+
+    #[test]
+    fn load_state_dict_rejects_shape_mismatch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let linear = Linear::new(&mut session, 3, 2, true).expect("linear");
+        let mut state = linear.state_dict(&session).expect("state_dict");
+        let weight = state.get("weight").expect("weight");
+        let wrong_values = dense_values_f64(weight);
+        let wrong_meta = TensorMeta::from_shape(vec![3, 2], DType::F64, Device::Cpu);
+        let wrong_weight =
+            DenseTensor::from_storage(wrong_meta, wrong_values).expect("wrong weight tensor");
+        state.insert("weight".to_string(), wrong_weight);
+
+        let err = linear
+            .load_state_dict(&mut session, &state, false)
+            .expect_err("shape mismatch must fail");
+        assert!(matches!(err, StateDictError::ShapeMismatch { key, .. } if key == "weight"));
     }
 }
