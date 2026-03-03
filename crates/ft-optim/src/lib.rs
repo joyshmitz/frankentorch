@@ -1142,6 +1142,509 @@ impl Optimizer for RAdam {
     }
 }
 
+fn vector_dot(lhs: &[f64], rhs: &[f64]) -> f64 {
+    lhs.iter().zip(rhs.iter()).map(|(l, r)| l * r).sum()
+}
+
+fn vector_max_abs(values: &[f64]) -> f64 {
+    values.iter().map(|value| value.abs()).fold(0.0, f64::max)
+}
+
+fn vector_max_abs_delta(lhs: &[f64], rhs: &[f64]) -> f64 {
+    lhs.iter()
+        .zip(rhs.iter())
+        .map(|(l, r)| (l - r).abs())
+        .fold(0.0, f64::max)
+}
+
+fn vector_add_scaled(base: &[f64], direction: &[f64], scale: f64) -> Vec<f64> {
+    base.iter()
+        .zip(direction.iter())
+        .map(|(value, delta)| value + scale * delta)
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LBFGSLineSearch {
+    None,
+    BacktrackingArmijo,
+    StrongWolfe,
+}
+
+/// Limited-memory BFGS optimizer.
+///
+/// This implementation supports both the regular `Optimizer` trait flow
+/// (`backward` followed by `step`) and an explicit closure-based update via
+/// [`LBFGS::step_with_closure`].
+pub struct LBFGS {
+    params: Vec<TensorNodeId>,
+    lr: f64,
+    max_iter: usize,
+    max_eval: usize,
+    tolerance_grad: f64,
+    tolerance_change: f64,
+    history_size: usize,
+    line_search_fn: LBFGSLineSearch,
+    s_history: Vec<Vec<f64>>,
+    y_history: Vec<Vec<f64>>,
+    rho_history: Vec<f64>,
+    previous_params: Option<Vec<f64>>,
+    previous_grad: Option<Vec<f64>>,
+}
+
+struct LBFGSSearchContext<'a> {
+    current_params: &'a [f64],
+    current_grad: &'a [f64],
+    direction: &'a [f64],
+    current_loss: f64,
+    eval_budget: usize,
+}
+
+impl LBFGS {
+    /// Create a new LBFGS optimizer.
+    ///
+    /// Defaults:
+    /// - `max_iter=20`
+    /// - `max_eval=25`
+    /// - `tolerance_grad=1e-7`
+    /// - `tolerance_change=1e-9`
+    /// - `history_size=100`
+    /// - `line_search_fn=StrongWolfe`
+    pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
+        Self {
+            params,
+            lr,
+            max_iter: 20,
+            max_eval: 25,
+            tolerance_grad: 1e-7,
+            tolerance_change: 1e-9,
+            history_size: 100,
+            line_search_fn: LBFGSLineSearch::StrongWolfe,
+            s_history: Vec::new(),
+            y_history: Vec::new(),
+            rho_history: Vec::new(),
+            previous_params: None,
+            previous_grad: None,
+        }
+    }
+
+    #[must_use]
+    pub fn max_iter(mut self, max_iter: usize) -> Self {
+        self.max_iter = max_iter;
+        self
+    }
+
+    #[must_use]
+    pub fn max_eval(mut self, max_eval: usize) -> Self {
+        self.max_eval = max_eval;
+        self
+    }
+
+    #[must_use]
+    pub fn tolerance_grad(mut self, tolerance_grad: f64) -> Self {
+        self.tolerance_grad = tolerance_grad;
+        self
+    }
+
+    #[must_use]
+    pub fn tolerance_change(mut self, tolerance_change: f64) -> Self {
+        self.tolerance_change = tolerance_change;
+        self
+    }
+
+    #[must_use]
+    pub fn history_size(mut self, history_size: usize) -> Self {
+        self.history_size = history_size;
+        self
+    }
+
+    #[must_use]
+    pub fn line_search_fn(mut self, line_search_fn: LBFGSLineSearch) -> Self {
+        self.line_search_fn = line_search_fn;
+        self
+    }
+
+    fn validate_hyperparams(&self) -> Result<(), AutogradError> {
+        if !self.lr.is_finite() || self.lr < 0.0 {
+            return Err(optimizer_hparam_error(
+                "lbfgs requires a finite non-negative learning rate",
+            ));
+        }
+        if self.max_iter == 0 {
+            return Err(optimizer_hparam_error("lbfgs requires max_iter >= 1"));
+        }
+        if self.max_eval == 0 {
+            return Err(optimizer_hparam_error("lbfgs requires max_eval >= 1"));
+        }
+        if !self.tolerance_grad.is_finite() || self.tolerance_grad < 0.0 {
+            return Err(optimizer_hparam_error(
+                "lbfgs requires finite non-negative tolerance_grad",
+            ));
+        }
+        if !self.tolerance_change.is_finite() || self.tolerance_change < 0.0 {
+            return Err(optimizer_hparam_error(
+                "lbfgs requires finite non-negative tolerance_change",
+            ));
+        }
+        if self.history_size == 0 {
+            return Err(optimizer_hparam_error("lbfgs requires history_size >= 1"));
+        }
+        Ok(())
+    }
+
+    fn clear_history(&mut self) {
+        self.s_history.clear();
+        self.y_history.clear();
+        self.rho_history.clear();
+    }
+
+    fn flatten_params(&self, session: &FrankenTorchSession) -> Result<Vec<f64>, AutogradError> {
+        let mut flat = Vec::new();
+        for &param in &self.params {
+            let values = session.tensor_values(param)?;
+            flat.extend(values);
+        }
+        Ok(flat)
+    }
+
+    fn flatten_gradients(
+        &self,
+        session: &FrankenTorchSession,
+    ) -> Result<Option<Vec<f64>>, AutogradError> {
+        let mut flat = Vec::new();
+        let mut any_grad = false;
+
+        for &param in &self.params {
+            let param_numel = session.tensor_numel(param)?;
+            match load_param_gradient(session, param)? {
+                Some(grad) => {
+                    ensure_grad_len_matches_param(param, param_numel, grad.len())?;
+                    flat.extend(grad);
+                    any_grad = true;
+                }
+                None => {
+                    flat.resize(flat.len() + param_numel, 0.0);
+                }
+            }
+        }
+
+        if any_grad { Ok(Some(flat)) } else { Ok(None) }
+    }
+
+    fn set_flat_params(
+        &self,
+        session: &mut FrankenTorchSession,
+        flat_params: &[f64],
+    ) -> Result<(), AutogradError> {
+        let mut offset = 0usize;
+        for &param in &self.params {
+            let numel = session.tensor_numel(param)?;
+            let shape = session.tensor_shape(param)?;
+            let end = offset
+                .checked_add(numel)
+                .ok_or_else(|| optimizer_state_error("lbfgs parameter offset overflow"))?;
+            if end > flat_params.len() {
+                return Err(optimizer_state_error(
+                    "lbfgs flat parameter vector is shorter than parameter footprint",
+                ));
+            }
+            let source =
+                session.tensor_variable(flat_params[offset..end].to_vec(), shape, false)?;
+            session.tensor_zero_(param)?;
+            session.tensor_add_(param, source)?;
+            offset = end;
+        }
+        if offset != flat_params.len() {
+            return Err(optimizer_state_error(
+                "lbfgs flat parameter vector has trailing unused values",
+            ));
+        }
+        Ok(())
+    }
+
+    fn push_history_pair(
+        &mut self,
+        old_params: &[f64],
+        old_grad: &[f64],
+        new_params: &[f64],
+        new_grad: &[f64],
+    ) {
+        if old_params.len() != new_params.len() || old_grad.len() != new_grad.len() {
+            self.clear_history();
+            return;
+        }
+
+        let s: Vec<f64> = new_params
+            .iter()
+            .zip(old_params.iter())
+            .map(|(new_value, old_value)| new_value - old_value)
+            .collect();
+        let y: Vec<f64> = new_grad
+            .iter()
+            .zip(old_grad.iter())
+            .map(|(new_value, old_value)| new_value - old_value)
+            .collect();
+        let ys = vector_dot(&y, &s);
+        if !ys.is_finite() || ys <= 1e-10 {
+            return;
+        }
+
+        let rho = 1.0 / ys;
+        if !rho.is_finite() {
+            return;
+        }
+
+        if self.s_history.len() == self.history_size {
+            self.s_history.remove(0);
+            self.y_history.remove(0);
+            self.rho_history.remove(0);
+        }
+        self.s_history.push(s);
+        self.y_history.push(y);
+        self.rho_history.push(rho);
+    }
+
+    fn record_history_from_previous(&mut self, current_params: &[f64], current_grad: &[f64]) {
+        let previous_params = self.previous_params.clone();
+        let previous_grad = self.previous_grad.clone();
+        if let (Some(prev_params), Some(prev_grad)) = (previous_params, previous_grad) {
+            self.push_history_pair(&prev_params, &prev_grad, current_params, current_grad);
+        }
+    }
+
+    fn two_loop_direction(&self, grad: &[f64]) -> Vec<f64> {
+        if self.s_history.is_empty() {
+            return grad.iter().map(|value| -value).collect();
+        }
+
+        let history_len = self.s_history.len();
+        let mut q = grad.to_vec();
+        let mut alpha = vec![0.0; history_len];
+
+        for index in (0..history_len).rev() {
+            let rho = self.rho_history[index];
+            let a = rho * vector_dot(&self.s_history[index], &q);
+            alpha[index] = a;
+            for (q_value, y_value) in q.iter_mut().zip(self.y_history[index].iter()) {
+                *q_value -= a * y_value;
+            }
+        }
+
+        let mut r = q;
+        if history_len > 0 {
+            let last = history_len - 1;
+            let yy = vector_dot(&self.y_history[last], &self.y_history[last]);
+            if yy.is_finite() && yy > 0.0 {
+                let gamma = vector_dot(&self.s_history[last], &self.y_history[last]) / yy;
+                if gamma.is_finite() && gamma > 0.0 {
+                    for value in &mut r {
+                        *value *= gamma;
+                    }
+                }
+            }
+        }
+
+        for (index, (s, y)) in self.s_history.iter().zip(self.y_history.iter()).enumerate() {
+            let beta = self.rho_history[index] * vector_dot(y, &r);
+            for (r_value, s_value) in r.iter_mut().zip(s.iter()) {
+                *r_value += s_value * (alpha[index] - beta);
+            }
+        }
+
+        r.into_iter().map(|value| -value).collect()
+    }
+
+    fn search_step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        closure: &mut dyn FnMut(&mut FrankenTorchSession) -> Result<f64, AutogradError>,
+        context: LBFGSSearchContext<'_>,
+    ) -> Result<(Vec<f64>, Vec<f64>, f64, usize), AutogradError> {
+        if context.eval_budget == 0 {
+            return Err(optimizer_state_error(
+                "lbfgs line search exhausted evaluation budget",
+            ));
+        }
+
+        let directional_derivative = vector_dot(context.current_grad, context.direction);
+        if !directional_derivative.is_finite() || directional_derivative >= 0.0 {
+            return Err(optimizer_state_error(
+                "lbfgs search direction must be a descent direction",
+            ));
+        }
+
+        if self.line_search_fn == LBFGSLineSearch::None {
+            let next_params = vector_add_scaled(context.current_params, context.direction, self.lr);
+            self.set_flat_params(session, &next_params)?;
+            let next_loss = closure(session)?;
+            let next_grad = self
+                .flatten_gradients(session)?
+                .unwrap_or_else(|| vec![0.0; next_params.len()]);
+            return Ok((next_params, next_grad, next_loss, 1));
+        }
+
+        let armijo_c1 = 1e-4;
+        let wolfe_c2 = 0.9;
+        let min_step = 1e-12;
+        let mut step_size = self.lr;
+
+        for attempt in 0..context.eval_budget {
+            let trial_params =
+                vector_add_scaled(context.current_params, context.direction, step_size);
+            self.set_flat_params(session, &trial_params)?;
+            let trial_loss = closure(session)?;
+            let trial_grad = self
+                .flatten_gradients(session)?
+                .unwrap_or_else(|| vec![0.0; trial_params.len()]);
+            let armijo_ok =
+                trial_loss <= context.current_loss + armijo_c1 * step_size * directional_derivative;
+            let accept = match self.line_search_fn {
+                LBFGSLineSearch::BacktrackingArmijo => armijo_ok,
+                LBFGSLineSearch::StrongWolfe => {
+                    let directional_grad = vector_dot(&trial_grad, context.direction);
+                    armijo_ok && directional_grad.abs() <= wolfe_c2 * directional_derivative.abs()
+                }
+                LBFGSLineSearch::None => true,
+            };
+            if accept {
+                return Ok((trial_params, trial_grad, trial_loss, attempt + 1));
+            }
+
+            step_size *= 0.5;
+            if step_size < min_step {
+                break;
+            }
+        }
+
+        self.set_flat_params(session, context.current_params)?;
+        Err(optimizer_state_error(
+            "lbfgs line search failed to satisfy acceptance criteria",
+        ))
+    }
+
+    /// Perform one LBFGS step using a closure that recomputes loss and gradients.
+    ///
+    /// The closure is expected to run forward + backward and return a scalar loss.
+    pub fn step_with_closure(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        closure: &mut dyn FnMut(&mut FrankenTorchSession) -> Result<f64, AutogradError>,
+    ) -> Result<f64, AutogradError> {
+        self.validate_hyperparams()?;
+
+        let mut eval_count = 1usize;
+        let mut loss = closure(session)?;
+        let mut params = self.flatten_params(session)?;
+        let mut grad = match self.flatten_gradients(session)? {
+            Some(grad) => grad,
+            None => {
+                self.previous_params = Some(params);
+                self.previous_grad = None;
+                return Ok(loss);
+            }
+        };
+        self.record_history_from_previous(&params, &grad);
+
+        for _ in 0..self.max_iter {
+            if vector_max_abs(&grad) <= self.tolerance_grad {
+                break;
+            }
+
+            let mut direction = self.two_loop_direction(&grad);
+            if vector_dot(&direction, &grad) >= 0.0 {
+                direction = grad.iter().map(|value| -value).collect();
+                self.clear_history();
+            }
+
+            let eval_budget = self.max_eval.saturating_sub(eval_count);
+            if eval_budget == 0 {
+                break;
+            }
+
+            let old_params = params;
+            let old_grad = grad;
+
+            let (next_params, next_grad, next_loss, evals_used) = self.search_step(
+                session,
+                closure,
+                LBFGSSearchContext {
+                    current_params: &old_params,
+                    current_grad: &old_grad,
+                    direction: &direction,
+                    current_loss: loss,
+                    eval_budget,
+                },
+            )?;
+
+            let max_change = vector_max_abs_delta(&old_params, &next_params);
+            self.push_history_pair(&old_params, &old_grad, &next_params, &next_grad);
+
+            params = next_params;
+            grad = next_grad;
+            loss = next_loss;
+            eval_count += evals_used;
+
+            if max_change <= self.tolerance_change || eval_count >= self.max_eval {
+                break;
+            }
+        }
+
+        self.previous_params = Some(params);
+        self.previous_grad = Some(grad);
+        Ok(loss)
+    }
+}
+
+impl Optimizer for LBFGS {
+    fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        _report: &TensorBackwardReport,
+    ) -> Result<(), AutogradError> {
+        self.validate_hyperparams()?;
+
+        let params = self.flatten_params(session)?;
+        let grad = match self.flatten_gradients(session)? {
+            Some(grad) => grad,
+            None => return Ok(()),
+        };
+        self.record_history_from_previous(&params, &grad);
+
+        if vector_max_abs(&grad) <= self.tolerance_grad {
+            self.previous_params = Some(params);
+            self.previous_grad = Some(grad);
+            return Ok(());
+        }
+
+        let mut direction = self.two_loop_direction(&grad);
+        if vector_dot(&direction, &grad) >= 0.0 {
+            direction = grad.iter().map(|value| -value).collect();
+            self.clear_history();
+        }
+
+        let next_params = vector_add_scaled(&params, &direction, self.lr);
+        if vector_max_abs_delta(&params, &next_params) > self.tolerance_change {
+            self.set_flat_params(session, &next_params)?;
+        }
+
+        self.previous_params = Some(params);
+        self.previous_grad = Some(grad);
+        Ok(())
+    }
+
+    fn zero_grad(&mut self, session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
+        zero_param_gradients(session, &self.params)
+    }
+
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Learning Rate Schedulers
 // ---------------------------------------------------------------------------
@@ -3356,6 +3859,97 @@ mod tests {
             "RAdam should increase b toward 0, got {}",
             b_val
         );
+    }
+
+    // ── LBFGS tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn lbfgs_basic_step_reduces_loss() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+        let mut optimizer = LBFGS::new(vec![x], 0.2);
+
+        optimizer.zero_grad(&mut session).expect("zero_grad");
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+
+        let before = session.tensor_values(x).expect("values")[0];
+        optimizer.step(&mut session, &report).expect("step");
+        let after = session.tensor_values(x).expect("values")[0];
+
+        assert!(
+            after < before,
+            "LBFGS should decrease x: before={}, after={}",
+            before,
+            after
+        );
+    }
+
+    #[test]
+    fn lbfgs_step_with_closure_reduces_quadratic_loss() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("var");
+        let mut optimizer = LBFGS::new(vec![x], 1.0)
+            .max_iter(10)
+            .max_eval(20)
+            .line_search_fn(LBFGSLineSearch::StrongWolfe);
+
+        let mut closure = |session: &mut FrankenTorchSession| -> Result<f64, AutogradError> {
+            session.tensor_zero_grads(&[x])?;
+            let loss = session.tensor_mul(x, x)?;
+            let loss_sum = session.tensor_sum(loss)?;
+            let loss_value = session.tensor_item(loss_sum)?;
+            let _report = session.tensor_backward(loss_sum)?;
+            Ok(loss_value)
+        };
+
+        let initial_loss = closure(&mut session).expect("initial closure");
+        let final_loss = optimizer
+            .step_with_closure(&mut session, &mut closure)
+            .expect("lbfgs closure step");
+
+        assert!(
+            final_loss < initial_loss,
+            "LBFGS closure step should reduce loss: initial={}, final={}",
+            initial_loss,
+            final_loss
+        );
+    }
+
+    #[test]
+    fn lbfgs_history_respects_history_size() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![3.0], vec![1], true)
+            .expect("var");
+        let mut optimizer = LBFGS::new(vec![x], 0.1).history_size(2);
+
+        for _ in 0..6 {
+            optimizer.zero_grad(&mut session).expect("zero grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            optimizer.step(&mut session, &report).expect("step");
+        }
+
+        assert!(
+            optimizer.s_history.len() <= 2
+                && optimizer.y_history.len() <= 2
+                && optimizer.rho_history.len() <= 2
+        );
+    }
+
+    #[test]
+    fn lbfgs_two_loop_defaults_to_negative_gradient_without_history() {
+        let optimizer = LBFGS::new(Vec::new(), 1.0);
+        let grad = vec![1.5, -2.0, 0.25];
+        let direction = optimizer.two_loop_direction(&grad);
+        assert_eq!(direction, vec![-1.5, 2.0, -0.25]);
     }
 
     // -----------------------------------------------------------------------

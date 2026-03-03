@@ -108,6 +108,100 @@
           "seed": 4877603649969877309
         }
       ]
+    },
+    {
+      "family_id": "op_schema_adversarial_contract",
+      "packet_id": "FT-P2C-003",
+      "fixtures": [
+        "crates/ft-conformance/fixtures/op_schema_cases.json"
+      ],
+      "coverage_tags": [
+        "parser-fail-closed",
+        "mode-split",
+        "e2e-replay"
+      ],
+      "replay_command": "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-003 --output artifacts/phase2c/e2e_forensics/ft-p2c-003.jsonl",
+      "deterministic_seed_examples": [
+        {
+          "scenario_id": "op_schema/strict:rejects_malformed_schema",
+          "seed": 16201460766125455020
+        },
+        {
+          "scenario_id": "op_schema/hardened:dispatch_metadata_recovery",
+          "seed": 11702804574861867214
+        }
+      ]
+    },
+    {
+      "family_id": "cpu_kernel_projection_fail_closed",
+      "packet_id": "FT-P2C-005",
+      "fixtures": [
+        "crates/ft-conformance/fixtures/scalar_autograd_cases.json",
+        "crates/ft-conformance/fixtures/tensor_meta_cases.json",
+        "crates/ft-conformance/fixtures/dispatch_key_cases.json"
+      ],
+      "coverage_tags": [
+        "state-transition",
+        "dispatch-fallback",
+        "e2e-replay"
+      ],
+      "replay_command": "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-005 --output artifacts/phase2c/e2e_forensics/ft-p2c-005.jsonl",
+      "deterministic_seed_examples": [
+        {
+          "scenario_id": "ft_p2c_005/dispatch_key/strict:strict_rejects_composite_fallback",
+          "seed": 17106834495565418409
+        },
+        {
+          "scenario_id": "ft_p2c_005/tensor_meta/hardened:out_of_bounds_index",
+          "seed": 16602465451752302605
+        }
+      ]
+    },
+    {
+      "family_id": "device_guard_projection_adversarial",
+      "packet_id": "FT-P2C-007",
+      "fixtures": [
+        "crates/ft-conformance/fixtures/dispatch_key_cases.json"
+      ],
+      "coverage_tags": [
+        "mode-split",
+        "dispatch-fallback",
+        "e2e-replay"
+      ],
+      "replay_command": "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-007 --output artifacts/phase2c/e2e_forensics/ft-p2c-007.jsonl",
+      "deterministic_seed_examples": [
+        {
+          "scenario_id": "ft_p2c_007/dispatch_key/strict:strict_rejects_composite_fallback",
+          "seed": 13209127731056961390
+        },
+        {
+          "scenario_id": "ft_p2c_007/dispatch_key/hardened:hardened_allows_composite_fallback",
+          "seed": 13669541938903902276
+        }
+      ]
+    },
+    {
+      "family_id": "nn_state_guardrails_and_adversarial",
+      "packet_id": "FT-P2C-008",
+      "fixtures": [
+        "crates/ft-conformance/fixtures/nn_state_cases.json"
+      ],
+      "coverage_tags": [
+        "state-transition",
+        "parser-fail-closed",
+        "e2e-replay"
+      ],
+      "replay_command": "cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-008 --output artifacts/phase2c/e2e_forensics/ft-p2c-008.jsonl",
+      "deterministic_seed_examples": [
+        {
+          "scenario_id": "nn_state/strict:register_parameter_name_guard",
+          "seed": 14738621408324335103
+        },
+        {
+          "scenario_id": "nn_state/hardened:load_state_shape_mismatch_recovery",
+          "seed": 1836271387022419723
+        }
+      ]
     }
   ],
   "crash_triage_pipeline": {

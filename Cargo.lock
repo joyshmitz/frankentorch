@@ -295,6 +295,7 @@ dependencies = [
  "ft-optim",
  "ft-runtime",
  "ft-serialize",
+ "proptest",
  "serde",
  "serde_json",
 ]

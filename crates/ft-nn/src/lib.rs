@@ -558,7 +558,7 @@ pub fn clip_grad_norm_(
             "clip_grad_norm_ requires finite non-negative max_norm",
         ));
     }
-    if !(norm_type.is_finite() && norm_type > 0.0) && !norm_type.is_infinite() {
+    if !(norm_type.is_infinite() || (norm_type.is_finite() && norm_type > 0.0)) {
         return Err(gradient_utils_error(
             "clip_grad_norm_ requires positive finite norm_type or +inf",
         ));

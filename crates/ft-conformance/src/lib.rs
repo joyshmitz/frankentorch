@@ -6338,6 +6338,15 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(feature = "fuzz")]
+    use ft_core::{DType, Device, TensorMeta};
+    #[cfg(feature = "fuzz")]
+    use ft_dispatch::{
+        BinaryOp, ReductionOp, UnaryOp, dispatch_tensor_binary_contiguous_f64,
+        dispatch_tensor_reduction_contiguous_f64, dispatch_tensor_unary_contiguous_f64,
+    };
+    #[cfg(feature = "fuzz")]
+    use proptest::prelude::*;
     use serde_json::{Value, json};
 
     use super::{
@@ -6354,6 +6363,241 @@ mod tests {
         run_serialization_conformance, run_smoke, run_tensor_binary_conformance,
         run_tensor_meta_conformance,
     };
+
+    #[test]
+    fn fuzz_corpus_manifest_covers_g4_packets_and_valid_fixtures() {
+        let cfg = HarnessConfig::default_paths();
+        let workspace_root = cfg.fixture_root.join("../../..");
+        let manifest_path =
+            workspace_root.join("artifacts/phase2c/ADVERSARIAL_FUZZ_CORPUS_MANIFEST_V1.json");
+        let manifest: Value = load_fixture(&manifest_path)
+            .expect("adversarial fuzz corpus manifest fixture should parse");
+        let families = manifest
+            .get("families")
+            .and_then(Value::as_array)
+            .expect("manifest must expose a families array");
+
+        let packet_ids: BTreeSet<&str> = families
+            .iter()
+            .filter_map(|family| family.get("packet_id").and_then(Value::as_str))
+            .collect();
+        for required_packet in ["FT-P2C-003", "FT-P2C-005", "FT-P2C-007", "FT-P2C-008"] {
+            assert!(
+                packet_ids.contains(required_packet),
+                "manifest is missing G4 packet coverage for {required_packet}"
+            );
+        }
+
+        for family in families {
+            let family_id = family
+                .get("family_id")
+                .and_then(Value::as_str)
+                .expect("family_id should be present");
+            let replay_command = family
+                .get("replay_command")
+                .and_then(Value::as_str)
+                .expect("replay_command should be present");
+            assert!(
+                replay_command.contains("--bin run_e2e_matrix"),
+                "family '{family_id}' must replay with run_e2e_matrix"
+            );
+
+            let fixtures = family
+                .get("fixtures")
+                .and_then(Value::as_array)
+                .expect("family fixtures should be present");
+            assert!(
+                !fixtures.is_empty(),
+                "family '{family_id}' must include at least one fixture path"
+            );
+            for fixture in fixtures {
+                let fixture_rel_path = fixture
+                    .as_str()
+                    .expect("fixture path entries must be strings");
+                let fixture_abs_path = workspace_root.join(fixture_rel_path);
+                assert!(
+                    fixture_abs_path.is_file(),
+                    "family '{family_id}' fixture missing on disk: {}",
+                    fixture_abs_path.display()
+                );
+            }
+
+            let seeds = family
+                .get("deterministic_seed_examples")
+                .and_then(Value::as_array)
+                .expect("deterministic_seed_examples should be present");
+            assert!(
+                !seeds.is_empty(),
+                "family '{family_id}' must publish deterministic seed examples"
+            );
+        }
+    }
+
+    #[cfg(feature = "fuzz")]
+    fn fuzz_meta_1d(len: usize) -> TensorMeta {
+        TensorMeta::from_shape(vec![len], DType::F64, Device::Cpu)
+    }
+
+    #[cfg(feature = "fuzz")]
+    fn fuzz_meta_2d(rows: usize, cols: usize) -> TensorMeta {
+        TensorMeta::from_shape(vec![rows, cols], DType::F64, Device::Cpu)
+    }
+
+    #[cfg(feature = "fuzz")]
+    proptest! {
+        #[test]
+        fn fuzz_corpus_prop_unary_abs_no_panic_and_finite(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 17.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            let outcome = dispatch_tensor_unary_contiguous_f64(
+                UnaryOp::Abs,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            ).expect("fuzz unary abs dispatch should not fail");
+
+            prop_assert_eq!(outcome.values.len(), input.len());
+            prop_assert!(outcome.values.iter().all(|value| value.is_finite()));
+        }
+
+        #[test]
+        fn fuzz_corpus_prop_binary_add_shape_and_finite(
+            pairs in prop::collection::vec((-1024i16..1024i16, -1024i16..1024i16), 1..24)
+        ) {
+            let lhs: Vec<f64> = pairs
+                .iter()
+                .map(|(lhs, _rhs)| f64::from(*lhs) / 19.0)
+                .collect();
+            let rhs: Vec<f64> = pairs
+                .iter()
+                .map(|(_lhs, rhs)| f64::from(*rhs) / 19.0)
+                .collect();
+            let meta = fuzz_meta_1d(lhs.len());
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                BinaryOp::Add,
+                ExecutionMode::Strict,
+                &lhs,
+                &rhs,
+                &meta,
+                &meta,
+                false,
+            ).expect("fuzz binary add dispatch should not fail");
+
+            prop_assert_eq!(outcome.values.len(), lhs.len());
+            prop_assert!(outcome.values.iter().all(|value| value.is_finite()));
+        }
+
+        #[test]
+        fn fuzz_corpus_prop_reduction_sum_matches_reference(
+            samples in prop::collection::vec(-3000i16..3000i16, 1..48)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 13.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            let expected = input.iter().sum::<f64>();
+            let outcome = dispatch_tensor_reduction_contiguous_f64(
+                ReductionOp::Sum,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            ).expect("fuzz reduction sum dispatch should not fail");
+
+            let tolerance = 1e-9 * expected.abs().max(1.0);
+            prop_assert!((outcome.value - expected).abs() <= tolerance);
+        }
+
+        #[test]
+        fn fuzz_corpus_prop_matmul_shape_and_finite(
+            (rows, mid, cols, lhs_raw, rhs_raw) in
+                (1usize..5, 1usize..5, 1usize..5)
+                    .prop_flat_map(|(rows, mid, cols)| (
+                        Just(rows),
+                        Just(mid),
+                        Just(cols),
+                        prop::collection::vec(-128i16..128i16, rows * mid),
+                        prop::collection::vec(-128i16..128i16, mid * cols),
+                    ))
+        ) {
+            let lhs: Vec<f64> = lhs_raw
+                .iter()
+                .map(|value| f64::from(*value) / 31.0)
+                .collect();
+            let rhs: Vec<f64> = rhs_raw
+                .iter()
+                .map(|value| f64::from(*value) / 31.0)
+                .collect();
+            let lhs_meta = fuzz_meta_2d(rows, mid);
+            let rhs_meta = fuzz_meta_2d(mid, cols);
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                BinaryOp::MatMul,
+                ExecutionMode::Strict,
+                &lhs,
+                &rhs,
+                &lhs_meta,
+                &rhs_meta,
+                false,
+            ).expect("fuzz matmul dispatch should not fail");
+
+            prop_assert_eq!(outcome.values.len(), rows * cols);
+            prop_assert!(outcome.values.iter().all(|value| value.is_finite()));
+        }
+    }
+
+    #[cfg(feature = "fuzz")]
+    #[test]
+    fn fuzz_corpus_adversarial_special_values_are_dispatch_safe() {
+        let adversarial = vec![
+            f64::NEG_INFINITY,
+            -1.0,
+            -0.0,
+            0.0,
+            1.0,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+        let meta = fuzz_meta_1d(adversarial.len());
+
+        let unary = dispatch_tensor_unary_contiguous_f64(
+            UnaryOp::Abs,
+            ExecutionMode::Strict,
+            &adversarial,
+            &meta,
+            false,
+        )
+        .expect("adversarial unary dispatch should not fail");
+        assert_eq!(unary.values.len(), adversarial.len());
+
+        let binary = dispatch_tensor_binary_contiguous_f64(
+            BinaryOp::Add,
+            ExecutionMode::Strict,
+            &adversarial,
+            &adversarial,
+            &meta,
+            &meta,
+            false,
+        )
+        .expect("adversarial binary dispatch should not fail");
+        assert_eq!(binary.values.len(), adversarial.len());
+
+        let reduction = dispatch_tensor_reduction_contiguous_f64(
+            ReductionOp::Sum,
+            ExecutionMode::Strict,
+            &adversarial,
+            &meta,
+            false,
+        )
+        .expect("adversarial reduction dispatch should not fail");
+        assert!(reduction.value.is_nan() || reduction.value.is_infinite());
+    }
 
     #[test]
     fn smoke_harness_reports_fixture_coverage_without_requiring_oracle_checkout() {

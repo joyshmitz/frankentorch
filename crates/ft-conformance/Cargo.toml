@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license-file = "../../LICENSE"
 
+[features]
+default = []
+fuzz = []
+
 [dependencies]
 ft-api = { workspace = true }
 ft-core = { workspace = true }
@@ -14,6 +18,9 @@ ft-runtime = { workspace = true }
 ft-optim = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.6.0"
 
 [lints]
 workspace = true
