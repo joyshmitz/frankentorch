@@ -3237,6 +3237,18 @@ impl FrankenTorchSession {
             .set_tensor_accumulated_gradient(node, gradient)
     }
 
+    /// Update a parameter's values directly, bypassing the leaf-grad in-place guard.
+    ///
+    /// This is the correct way for optimizers to update parameter values.
+    /// In PyTorch, `param.data -= update` also bypasses the autograd guard.
+    pub fn tensor_update_param_values(
+        &mut self,
+        param: TensorNodeId,
+        new_values: Vec<f64>,
+    ) -> Result<(), AutogradError> {
+        self.tensor_tape.update_tensor_values(param, new_values)
+    }
+
     #[must_use]
     pub fn evidence(&self) -> &[EvidenceEntry] {
         self.runtime.ledger().entries()
@@ -4469,6 +4481,236 @@ impl FrankenTorchSession {
         self.tensor_tape.tensor_where(condition, x, y)
     }
 
+    /// Returns indices of non-zero elements as a tensor of shape `[M, ndim]`
+    /// where M is the number of non-zero elements.
+    ///
+    /// NaN values are treated as non-zero (PyTorch behavior).
+    /// The result is a non-differentiable leaf tensor.
+    pub fn tensor_nonzero(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let values = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+
+        // Compute strides for index decomposition
+        let mut strides = vec![1usize; ndim];
+        for i in (0..ndim.saturating_sub(1)).rev() {
+            strides[i] = strides[i + 1] * shape[i + 1];
+        }
+
+        let mut indices = Vec::new();
+        let numel: usize = shape.iter().product();
+        for flat_idx in 0..numel {
+            if values[flat_idx] != 0.0 || values[flat_idx].is_nan() {
+                let mut remaining = flat_idx;
+                for d in 0..ndim {
+                    let dim_idx = remaining / strides[d];
+                    remaining %= strides[d];
+                    indices.push(dim_idx as f64);
+                }
+            }
+        }
+
+        let num_nonzero = if ndim > 0 { indices.len() / ndim } else { 0 };
+        let out_shape = vec![num_nonzero, ndim];
+        self.tensor_tape.leaf(indices, out_shape, false)
+    }
+
+    /// Returns indices of non-zero elements as a tuple of 1-D index tensors,
+    /// one per dimension. Equivalent to `torch.nonzero(input, as_tuple=True)`.
+    ///
+    /// The result tensors are non-differentiable leaves.
+    pub fn tensor_nonzero_as_tuple(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        let values = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+
+        let mut strides = vec![1usize; ndim];
+        for i in (0..ndim.saturating_sub(1)).rev() {
+            strides[i] = strides[i + 1] * shape[i + 1];
+        }
+
+        let mut per_dim_indices: Vec<Vec<f64>> = vec![Vec::new(); ndim];
+        let numel: usize = shape.iter().product();
+        for flat_idx in 0..numel {
+            if values[flat_idx] != 0.0 || values[flat_idx].is_nan() {
+                let mut remaining = flat_idx;
+                for d in 0..ndim {
+                    let dim_idx = remaining / strides[d];
+                    remaining %= strides[d];
+                    per_dim_indices[d].push(dim_idx as f64);
+                }
+            }
+        }
+
+        let mut result = Vec::with_capacity(ndim);
+        for dim_indices in per_dim_indices {
+            let len = dim_indices.len();
+            let t = self.tensor_tape.leaf(dim_indices, vec![len], false)?;
+            result.push(t);
+        }
+        Ok(result)
+    }
+
+    /// Selects elements from input where mask is non-zero, returning a 1-D tensor.
+    ///
+    /// The mask must have the same number of elements as the input.
+    /// Gradients flow to selected positions; masked-out positions receive zero gradient.
+    pub fn tensor_masked_select(
+        &mut self,
+        input: TensorNodeId,
+        mask: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        let mask_shape = self.tensor_shape(mask)?;
+        let input_numel: usize = input_shape.iter().product();
+        let mask_numel: usize = mask_shape.iter().product();
+        if input_numel != mask_numel {
+            return Err(AutogradError::Dispatch(
+                ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "masked_select: input and mask must have same number of elements",
+                    },
+                ),
+            ));
+        }
+
+        self.tensor_apply_function(
+            &[input, mask],
+            // Forward
+            |ctx, inputs| {
+                let (input_data, input_shape) = inputs[0];
+                let (mask_data, _) = inputs[1];
+
+                // Save mask for backward
+                ctx.save_for_backward(mask_data.to_vec(), input_shape.to_vec());
+
+                let selected: Vec<f64> = input_data
+                    .iter()
+                    .zip(mask_data.iter())
+                    .filter(|&(_, m)| *m != 0.0)
+                    .map(|(v, _)| *v)
+                    .collect();
+
+                let num_selected = selected.len();
+                Ok((selected, vec![num_selected]))
+            },
+            // Backward
+            |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let mask_data = &ctx.saved_tensors()[0];
+                let input_shape = &ctx.saved_shapes()[0];
+                let input_numel: usize = input_shape.iter().product();
+
+                let mut grad_input = vec![0.0f64; input_numel];
+                let mut grad_idx = 0;
+                for i in 0..input_numel {
+                    if mask_data[i] != 0.0 {
+                        if grad_idx < grad_out.len() {
+                            grad_input[i] = grad_out[grad_idx];
+                        }
+                        grad_idx += 1;
+                    }
+                }
+
+                // No gradient for mask
+                Ok(vec![Some(grad_input), None])
+            },
+        )
+    }
+
+    /// Binary search for insertion positions of `values` in a sorted sequence.
+    ///
+    /// For 1-D `sorted_sequence`, returns a tensor where each element is the index
+    /// at which the corresponding element of `values` should be inserted to maintain
+    /// sorted order.
+    ///
+    /// * `right=false` (default): returns the leftmost suitable position (lower_bound)
+    /// * `right=true`: returns the rightmost suitable position (upper_bound)
+    ///
+    /// The result is a non-differentiable leaf tensor.
+    pub fn tensor_searchsorted(
+        &mut self,
+        sorted_sequence: TensorNodeId,
+        values: TensorNodeId,
+        right: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let seq_vals = self.tensor_values(sorted_sequence)?;
+        let seq_shape = self.tensor_shape(sorted_sequence)?;
+        let val_vals = self.tensor_values(values)?;
+        let val_shape = self.tensor_shape(values)?;
+
+        if seq_shape.len() == 1 {
+            // 1-D sorted sequence: search for each value
+            let n = seq_vals.len();
+            let indices: Vec<f64> = val_vals
+                .iter()
+                .map(|&v| {
+                    if right {
+                        upper_bound(&seq_vals, v, n) as f64
+                    } else {
+                        lower_bound(&seq_vals, v, n) as f64
+                    }
+                })
+                .collect();
+            self.tensor_tape.leaf(indices, val_shape, false)
+        } else if seq_shape.len() == 2 && val_shape.len() == 2 {
+            // 2-D batched: seq [B, S], values [B, V]
+            let batch = seq_shape[0];
+            let seq_len = seq_shape[1];
+            if val_shape[0] != batch {
+                return Err(AutogradError::Dispatch(
+                    ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "searchsorted: batch dimensions must match",
+                        },
+                    ),
+                ));
+            }
+            let num_vals = val_shape[1];
+            let mut indices = Vec::with_capacity(batch * num_vals);
+            for b in 0..batch {
+                let seq_slice = &seq_vals[b * seq_len..(b + 1) * seq_len];
+                for v_idx in 0..num_vals {
+                    let v = val_vals[b * num_vals + v_idx];
+                    let idx = if right {
+                        upper_bound(seq_slice, v, seq_len)
+                    } else {
+                        lower_bound(seq_slice, v, seq_len)
+                    };
+                    indices.push(idx as f64);
+                }
+            }
+            self.tensor_tape.leaf(indices, val_shape, false)
+        } else {
+            Err(AutogradError::Dispatch(
+                ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "searchsorted: sorted_sequence must be 1-D or 2-D",
+                    },
+                ),
+            ))
+        }
+    }
+
+    /// Maps each element of `input` to a bucket index based on `boundaries`.
+    ///
+    /// Equivalent to `searchsorted(boundaries, input, right)`.
+    /// Returns a non-differentiable leaf tensor of bucket indices.
+    pub fn tensor_bucketize(
+        &mut self,
+        input: TensorNodeId,
+        boundaries: TensorNodeId,
+        right: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_searchsorted(boundaries, input, right)
+    }
+
     /// Sort a tensor along the given dimension.
     ///
     /// Returns `(sorted_values_tensor, indices)` where indices contains the original
@@ -5414,6 +5656,38 @@ pub use ft_autograd::{
     FunctionCtx as DacFunctionCtx, NodeId as DacNodeId, ReentrantPolicy as DacReentrantPolicy,
     TensorBackwardReport as DacTensorBackwardReport, TensorNodeId as DacTensorNodeId,
 };
+
+/// Binary search: leftmost insertion position (lower_bound).
+/// Returns the index i such that all elements before i are < value.
+fn lower_bound(sorted: &[f64], value: f64, n: usize) -> usize {
+    let mut lo = 0usize;
+    let mut hi = n;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if sorted[mid] < value {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Binary search: rightmost insertion position (upper_bound).
+/// Returns the index i such that all elements before i are <= value.
+fn upper_bound(sorted: &[f64], value: f64, n: usize) -> usize {
+    let mut lo = 0usize;
+    let mut hi = n;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if sorted[mid] <= value {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
 
 #[cfg(test)]
 mod tests {
@@ -15732,5 +16006,257 @@ mod tests {
 
         let report = s.tensor_backward(y).unwrap();
         assert_eq!(report.gradient(x).unwrap(), &[-3.0, -3.0]);
+    }
+
+    // ── nonzero tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn nonzero_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 1.0, 0.0, 3.0, 0.0], vec![5], false).unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let vals = s.tensor_values(nz).unwrap();
+        let shape = s.tensor_shape(nz).unwrap();
+        assert_eq!(shape, vec![2, 1]); // 2 nonzero elements, 1D
+        assert_eq!(vals, vec![1.0, 3.0]); // indices 1 and 3
+    }
+
+    #[test]
+    fn nonzero_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 0.0, 0.0, 2.0], vec![2, 2], false).unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let vals = s.tensor_values(nz).unwrap();
+        let shape = s.tensor_shape(nz).unwrap();
+        assert_eq!(shape, vec![2, 2]); // 2 nonzero elements, 2D indices
+        // (0,0) and (1,1)
+        assert_eq!(vals, vec![0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn nonzero_all_zeros() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false).unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let vals = s.tensor_values(nz).unwrap();
+        let shape = s.tensor_shape(nz).unwrap();
+        assert_eq!(shape, vec![0, 1]); // empty
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn nonzero_nan_is_nonzero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, f64::NAN, 0.0], vec![3], false).unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let vals = s.tensor_values(nz).unwrap();
+        assert_eq!(vals, vec![1.0]); // index 1 (NaN is nonzero)
+    }
+
+    #[test]
+    fn nonzero_all_nonzero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let shape = s.tensor_shape(nz).unwrap();
+        assert_eq!(shape, vec![3, 1]);
+        let vals = s.tensor_values(nz).unwrap();
+        assert_eq!(vals, vec![0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn nonzero_as_tuple_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 0.0, 0.0, 2.0], vec![2, 2], false).unwrap();
+        let tuple = s.tensor_nonzero_as_tuple(x).unwrap();
+        assert_eq!(tuple.len(), 2);
+        let rows = s.tensor_values(tuple[0]).unwrap();
+        let cols = s.tensor_values(tuple[1]).unwrap();
+        assert_eq!(rows, vec![0.0, 1.0]);
+        assert_eq!(cols, vec![0.0, 1.0]);
+    }
+
+    // ── masked_select tests ────────────────────────────────────────────
+
+    #[test]
+    fn masked_select_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![10.0, 20.0, 30.0], vec![3], false).unwrap();
+        let mask = s.tensor_variable(vec![1.0, 0.0, 1.0], vec![3], false).unwrap();
+        let sel = s.tensor_masked_select(x, mask).unwrap();
+        let vals = s.tensor_values(sel).unwrap();
+        assert_eq!(vals, vec![10.0, 30.0]);
+    }
+
+    #[test]
+    fn masked_select_all_false() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let mask = s.tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false).unwrap();
+        let sel = s.tensor_masked_select(x, mask).unwrap();
+        let vals = s.tensor_values(sel).unwrap();
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn masked_select_backward_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![10.0, 20.0, 30.0, 40.0], vec![4], true).unwrap();
+        let mask = s.tensor_variable(vec![1.0, 0.0, 1.0, 0.0], vec![4], false).unwrap();
+        let sel = s.tensor_masked_select(x, mask).unwrap();
+        // sum the selected elements to get a scalar
+        let loss = s.tensor_sum(sel).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = report.gradient(x).unwrap();
+        // Gradient is 1 at selected positions, 0 at masked-out positions
+        assert_eq!(grad, &[1.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn masked_select_boolean_indexing_pattern() {
+        // tensor[tensor > 5] equivalent
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![3.0, 7.0, 1.0, 9.0, 4.0], vec![5], false).unwrap();
+        // Create mask: x > 5
+        let threshold = s.tensor_variable(vec![5.0, 5.0, 5.0, 5.0, 5.0], vec![5], false).unwrap();
+        let x_vals = s.tensor_values(x).unwrap();
+        let t_vals = s.tensor_values(threshold).unwrap();
+        let mask_vals: Vec<f64> = x_vals.iter().zip(t_vals.iter())
+            .map(|(a, b)| if a > b { 1.0 } else { 0.0 })
+            .collect();
+        let mask = s.tensor_variable(mask_vals, vec![5], false).unwrap();
+        let sel = s.tensor_masked_select(x, mask).unwrap();
+        let vals = s.tensor_values(sel).unwrap();
+        assert_eq!(vals, vec![7.0, 9.0]);
+    }
+
+    #[test]
+    fn masked_select_shape_mismatch_error() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let mask = s.tensor_variable(vec![1.0, 0.0], vec![2], false).unwrap();
+        assert!(s.tensor_masked_select(x, mask).is_err());
+    }
+
+    // ── searchsorted / bucketize tests ─────────────────────────────────
+
+    #[test]
+    fn searchsorted_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sorted = s.tensor_variable(vec![1.0, 3.0, 5.0, 7.0], vec![4], false).unwrap();
+        let values = s.tensor_variable(vec![0.0, 2.0, 4.0, 6.0, 8.0], vec![5], false).unwrap();
+        let result = s.tensor_searchsorted(sorted, values, false).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // lower_bound: 0->0, 2->1, 4->2, 6->3, 8->4
+        assert_eq!(vals, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn searchsorted_right() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sorted = s.tensor_variable(vec![1.0, 3.0, 5.0, 7.0], vec![4], false).unwrap();
+        let values = s.tensor_variable(vec![3.0, 5.0], vec![2], false).unwrap();
+        let result = s.tensor_searchsorted(sorted, values, true).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // upper_bound: 3->2, 5->3
+        assert_eq!(vals, vec![2.0, 3.0]);
+    }
+
+    #[test]
+    fn searchsorted_left_at_boundary() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sorted = s.tensor_variable(vec![1.0, 3.0, 5.0], vec![3], false).unwrap();
+        let values = s.tensor_variable(vec![1.0, 3.0, 5.0], vec![3], false).unwrap();
+        let result = s.tensor_searchsorted(sorted, values, false).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // lower_bound at exact values: 1->0, 3->1, 5->2
+        assert_eq!(vals, vec![0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn searchsorted_duplicates() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sorted = s.tensor_variable(vec![1.0, 3.0, 3.0, 3.0, 5.0], vec![5], false).unwrap();
+        let values = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+
+        // left: first occurrence of 3 is at index 1
+        let left = s.tensor_searchsorted(sorted, values, false).unwrap();
+        assert_eq!(s.tensor_values(left).unwrap(), vec![1.0]);
+
+        // right: after last 3 is at index 4
+        let values2 = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        let right = s.tensor_searchsorted(sorted, values2, true).unwrap();
+        assert_eq!(s.tensor_values(right).unwrap(), vec![4.0]);
+    }
+
+    #[test]
+    fn searchsorted_empty_sequence() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sorted = s.tensor_variable(Vec::<f64>::new(), vec![0], false).unwrap();
+        let values = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let result = s.tensor_searchsorted(sorted, values, false).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // All values go to index 0 (before empty sequence)
+        assert_eq!(vals, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn searchsorted_batched_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // batch=2, seq_len=3
+        let sorted = s.tensor_variable(
+            vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0],
+            vec![2, 3],
+            false,
+        ).unwrap();
+        // batch=2, num_vals=2
+        let values = s.tensor_variable(
+            vec![2.0, 4.0, 3.0, 5.0],
+            vec![2, 2],
+            false,
+        ).unwrap();
+        let result = s.tensor_searchsorted(sorted, values, false).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // batch 0: [1,3,5], values [2,4] -> [1, 2]
+        // batch 1: [2,4,6], values [3,5] -> [1, 2]
+        assert_eq!(vals, vec![1.0, 2.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn bucketize_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let boundaries = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let input = s.tensor_variable(vec![0.5, 1.5, 2.5, 3.5], vec![4], false).unwrap();
+        let result = s.tensor_bucketize(input, boundaries, false).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // 0.5<1 -> bucket 0, 1<=1.5<2 -> bucket 1, 2<=2.5<3 -> bucket 2, 3.5>=3 -> bucket 3
+        assert_eq!(vals, vec![0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn bucketize_right() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let boundaries = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let result_left = s.tensor_bucketize(input, boundaries, false).unwrap();
+        let vals_left = s.tensor_values(result_left).unwrap();
+        // left: 1->0, 2->1, 3->2 (at boundary, goes left)
+        assert_eq!(vals_left, vec![0.0, 1.0, 2.0]);
+
+        let input2 = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let result_right = s.tensor_bucketize(input2, boundaries, true).unwrap();
+        let vals_right = s.tensor_values(result_right).unwrap();
+        // right: 1->1, 2->2, 3->3 (at boundary, goes right)
+        assert_eq!(vals_right, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn bucketize_empty_boundaries() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let boundaries = s.tensor_variable(Vec::<f64>::new(), vec![0], false).unwrap();
+        let input = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let result = s.tensor_bucketize(input, boundaries, false).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert_eq!(vals, vec![0.0, 0.0]);
     }
 }

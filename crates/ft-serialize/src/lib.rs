@@ -474,6 +474,292 @@ fn bounded(input: &str, max_len: usize) -> String {
     }
 }
 
+// ── Tensor State Dict Save/Load ─────────────────────────────────────────
+
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::path::Path;
+
+use ft_core::{DType, DenseTensor, DenseTensorError, Device, TensorMeta};
+
+/// Magic bytes identifying a FrankenTorch state dict file.
+const FT_MAGIC: &[u8; 4] = b"FTSV";
+/// Current format version.
+const FT_STATE_FORMAT_VERSION: u32 = 1;
+
+/// Errors from tensor state dict save/load operations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TensorIOError {
+    /// I/O failure (path, message).
+    Io { path: String, message: String },
+    /// Bad magic bytes in file header.
+    InvalidMagic,
+    /// Unsupported format version.
+    UnsupportedVersion { found: u32, max: u32 },
+    /// File is truncated or corrupt.
+    Corrupt { reason: String },
+    /// Tensor construction error.
+    TensorError(DenseTensorError),
+}
+
+impl fmt::Display for TensorIOError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, message } => write!(f, "I/O error at '{path}': {message}"),
+            Self::InvalidMagic => write!(f, "invalid magic bytes: not a FrankenTorch state file"),
+            Self::UnsupportedVersion { found, max } => {
+                write!(f, "unsupported format version {found} (max supported: {max})")
+            }
+            Self::Corrupt { reason } => write!(f, "corrupt state file: {reason}"),
+            Self::TensorError(e) => write!(f, "tensor error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for TensorIOError {}
+
+impl From<DenseTensorError> for TensorIOError {
+    fn from(e: DenseTensorError) -> Self {
+        Self::TensorError(e)
+    }
+}
+
+fn io_err(path: &str, e: std::io::Error) -> TensorIOError {
+    TensorIOError::Io {
+        path: path.to_string(),
+        message: e.to_string(),
+    }
+}
+
+fn dtype_to_tag(dtype: DType) -> u8 {
+    match dtype {
+        DType::F64 => 0,
+        DType::F32 => 1,
+        _ => 255, // unsupported for now
+    }
+}
+
+fn tag_to_dtype(tag: u8) -> Result<DType, TensorIOError> {
+    match tag {
+        0 => Ok(DType::F64),
+        1 => Ok(DType::F32),
+        _ => Err(TensorIOError::Corrupt {
+            reason: format!("unknown dtype tag: {tag}"),
+        }),
+    }
+}
+
+/// Save a state dict (map of named tensors) to a file in FrankenTorch native format.
+///
+/// Format: `FTSV` magic + version(u32) + num_tensors(u64) + per-tensor data.
+/// Each tensor: key_len(u64) + key_bytes + ndim(u64) + shape(ndim * u64) + dtype(u8) + values.
+pub fn save_state_dict<P: AsRef<Path>>(
+    state_dict: &BTreeMap<String, DenseTensor>,
+    path: P,
+) -> Result<(), TensorIOError> {
+    let path_str = path.as_ref().to_string_lossy().to_string();
+    let mut file =
+        std::fs::File::create(&path).map_err(|e| io_err(&path_str, e))?;
+
+    // Magic
+    file.write_all(FT_MAGIC).map_err(|e| io_err(&path_str, e))?;
+    // Version
+    file.write_all(&FT_STATE_FORMAT_VERSION.to_le_bytes())
+        .map_err(|e| io_err(&path_str, e))?;
+    // Number of tensors
+    let num_tensors = state_dict.len() as u64;
+    file.write_all(&num_tensors.to_le_bytes())
+        .map_err(|e| io_err(&path_str, e))?;
+
+    for (key, tensor) in state_dict {
+        let meta = tensor.meta();
+
+        // Key
+        let key_bytes = key.as_bytes();
+        file.write_all(&(key_bytes.len() as u64).to_le_bytes())
+            .map_err(|e| io_err(&path_str, e))?;
+        file.write_all(key_bytes)
+            .map_err(|e| io_err(&path_str, e))?;
+
+        // Shape
+        let shape = meta.shape();
+        file.write_all(&(shape.len() as u64).to_le_bytes())
+            .map_err(|e| io_err(&path_str, e))?;
+        for &dim in shape {
+            file.write_all(&(dim as u64).to_le_bytes())
+                .map_err(|e| io_err(&path_str, e))?;
+        }
+
+        // DType
+        file.write_all(&[dtype_to_tag(meta.dtype())])
+            .map_err(|e| io_err(&path_str, e))?;
+
+        // Values
+        match meta.dtype() {
+            DType::F64 => {
+                let values = tensor
+                    .contiguous_values()
+                    .map_err(|e| TensorIOError::TensorError(e))?;
+                for &v in values {
+                    file.write_all(&v.to_le_bytes())
+                        .map_err(|e| io_err(&path_str, e))?;
+                }
+            }
+            DType::F32 => {
+                let values = tensor
+                    .contiguous_values_f32()
+                    .map_err(|e| TensorIOError::TensorError(e))?;
+                for &v in values {
+                    file.write_all(&v.to_le_bytes())
+                        .map_err(|e| io_err(&path_str, e))?;
+                }
+            }
+            other => {
+                return Err(TensorIOError::Corrupt {
+                    reason: format!("unsupported dtype for save: {other:?}"),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Load a state dict from a FrankenTorch native format file.
+pub fn load_state_dict<P: AsRef<Path>>(
+    path: P,
+) -> Result<BTreeMap<String, DenseTensor>, TensorIOError> {
+    let path_str = path.as_ref().to_string_lossy().to_string();
+    let data = std::fs::read(&path).map_err(|e| io_err(&path_str, e))?;
+    load_state_dict_from_bytes(&data)
+}
+
+/// Load a state dict from raw bytes.
+pub fn load_state_dict_from_bytes(
+    data: &[u8],
+) -> Result<BTreeMap<String, DenseTensor>, TensorIOError> {
+    let mut pos = 0;
+
+    // Magic
+    if data.len() < 4 || &data[0..4] != FT_MAGIC {
+        return Err(TensorIOError::InvalidMagic);
+    }
+    pos += 4;
+
+    // Version
+    let version = read_u32(data, &mut pos)?;
+    if version > FT_STATE_FORMAT_VERSION {
+        return Err(TensorIOError::UnsupportedVersion {
+            found: version,
+            max: FT_STATE_FORMAT_VERSION,
+        });
+    }
+
+    // Number of tensors
+    let num_tensors = read_u64(data, &mut pos)? as usize;
+
+    let mut result = BTreeMap::new();
+    for _ in 0..num_tensors {
+        // Key
+        let key_len = read_u64(data, &mut pos)? as usize;
+        if pos + key_len > data.len() {
+            return Err(TensorIOError::Corrupt {
+                reason: "truncated key data".to_string(),
+            });
+        }
+        let key = String::from_utf8(data[pos..pos + key_len].to_vec()).map_err(|_| {
+            TensorIOError::Corrupt {
+                reason: "invalid UTF-8 in key".to_string(),
+            }
+        })?;
+        pos += key_len;
+
+        // Shape
+        let ndim = read_u64(data, &mut pos)? as usize;
+        let mut shape = Vec::with_capacity(ndim);
+        for _ in 0..ndim {
+            shape.push(read_u64(data, &mut pos)? as usize);
+        }
+
+        // DType
+        if pos >= data.len() {
+            return Err(TensorIOError::Corrupt {
+                reason: "truncated dtype".to_string(),
+            });
+        }
+        let dtype = tag_to_dtype(data[pos])?;
+        pos += 1;
+
+        // Values
+        let numel: usize = shape.iter().product();
+        let meta = TensorMeta::from_shape(shape, dtype, Device::Cpu);
+
+        let tensor = match dtype {
+            DType::F64 => {
+                let needed = numel * 8;
+                if pos + needed > data.len() {
+                    return Err(TensorIOError::Corrupt {
+                        reason: "truncated f64 data".to_string(),
+                    });
+                }
+                let mut values = Vec::with_capacity(numel);
+                for _ in 0..numel {
+                    let bytes: [u8; 8] = data[pos..pos + 8].try_into().unwrap();
+                    values.push(f64::from_le_bytes(bytes));
+                    pos += 8;
+                }
+                DenseTensor::from_storage(meta, values)?
+            }
+            DType::F32 => {
+                let needed = numel * 4;
+                if pos + needed > data.len() {
+                    return Err(TensorIOError::Corrupt {
+                        reason: "truncated f32 data".to_string(),
+                    });
+                }
+                let mut values = Vec::with_capacity(numel);
+                for _ in 0..numel {
+                    let bytes: [u8; 4] = data[pos..pos + 4].try_into().unwrap();
+                    values.push(f32::from_le_bytes(bytes));
+                    pos += 4;
+                }
+                DenseTensor::from_storage_f32(meta, values)?
+            }
+            _ => {
+                return Err(TensorIOError::Corrupt {
+                    reason: format!("unsupported dtype in file: {dtype:?}"),
+                });
+            }
+        };
+
+        result.insert(key, tensor);
+    }
+
+    Ok(result)
+}
+
+fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, TensorIOError> {
+    if *pos + 4 > data.len() {
+        return Err(TensorIOError::Corrupt {
+            reason: "truncated u32".to_string(),
+        });
+    }
+    let bytes: [u8; 4] = data[*pos..*pos + 4].try_into().unwrap();
+    *pos += 4;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, TensorIOError> {
+    if *pos + 8 > data.len() {
+        return Err(TensorIOError::Corrupt {
+            reason: "truncated u64".to_string(),
+        });
+    }
+    let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
+    *pos += 8;
+    Ok(u64::from_le_bytes(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1178,5 +1464,194 @@ mod tests {
             let msg = format!("{err}");
             assert!(!msg.is_empty(), "Display should produce non-empty output");
         }
+    }
+
+    // ── Tensor State Dict Save/Load Tests ──────────────────────────────
+
+    use super::{
+        load_state_dict, load_state_dict_from_bytes, save_state_dict, TensorIOError,
+    };
+    use ft_core::{DType, DenseTensor, Device, TensorMeta};
+
+    fn make_f64_tensor(values: Vec<f64>, shape: Vec<usize>) -> DenseTensor {
+        DenseTensor::from_contiguous_values(values, shape, Device::Cpu).unwrap()
+    }
+
+    #[test]
+    fn save_load_single_tensor() {
+        let dir = std::env::temp_dir().join("ft_test_save_single");
+        let _ = std::fs::remove_file(&dir);
+        let mut sd = BTreeMap::new();
+        sd.insert("weight".to_string(), make_f64_tensor(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]));
+
+        save_state_dict(&sd, &dir).unwrap();
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("weight"));
+        let t = &loaded["weight"];
+        assert_eq!(t.meta().shape(), &[2, 2]);
+        assert_eq!(t.meta().dtype(), DType::F64);
+        assert_eq!(t.contiguous_values().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn save_load_multiple_tensors() {
+        let dir = std::env::temp_dir().join("ft_test_save_multi");
+        let _ = std::fs::remove_file(&dir);
+        let mut sd = BTreeMap::new();
+        sd.insert("layer1.weight".to_string(), make_f64_tensor(vec![1.0, 2.0], vec![2]));
+        sd.insert("layer1.bias".to_string(), make_f64_tensor(vec![0.5], vec![1]));
+        sd.insert("layer2.weight".to_string(), make_f64_tensor(vec![3.0, 4.0, 5.0, 6.0], vec![2, 2]));
+
+        save_state_dict(&sd, &dir).unwrap();
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        assert_eq!(loaded.len(), 3);
+        assert_eq!(loaded["layer1.weight"].contiguous_values().unwrap(), &[1.0, 2.0]);
+        assert_eq!(loaded["layer1.bias"].contiguous_values().unwrap(), &[0.5]);
+        assert_eq!(loaded["layer2.weight"].contiguous_values().unwrap(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(loaded["layer2.weight"].meta().shape(), &[2, 2]);
+    }
+
+    #[test]
+    fn save_load_empty_state_dict() {
+        let dir = std::env::temp_dir().join("ft_test_save_empty");
+        let _ = std::fs::remove_file(&dir);
+        let sd = BTreeMap::new();
+
+        save_state_dict(&sd, &dir).unwrap();
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn save_load_scalar_tensor() {
+        let dir = std::env::temp_dir().join("ft_test_save_scalar");
+        let _ = std::fs::remove_file(&dir);
+        let mut sd = BTreeMap::new();
+        sd.insert("lr".to_string(), make_f64_tensor(vec![0.001], vec![1]));
+
+        save_state_dict(&sd, &dir).unwrap();
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        assert_eq!(loaded["lr"].contiguous_values().unwrap(), &[0.001]);
+    }
+
+    #[test]
+    fn save_load_f32_tensor() {
+        let dir = std::env::temp_dir().join("ft_test_save_f32");
+        let _ = std::fs::remove_file(&dir);
+        let mut sd = BTreeMap::new();
+        let meta = TensorMeta::from_shape(vec![3], DType::F32, Device::Cpu);
+        let t = DenseTensor::from_storage_f32(meta, vec![1.0f32, 2.0, 3.0]).unwrap();
+        sd.insert("w".to_string(), t);
+
+        save_state_dict(&sd, &dir).unwrap();
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        assert_eq!(loaded["w"].meta().dtype(), DType::F32);
+        assert_eq!(loaded["w"].contiguous_values_f32().unwrap(), &[1.0f32, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn load_invalid_magic() {
+        let data = b"NOPE0000";
+        let result = load_state_dict_from_bytes(data);
+        assert!(matches!(result, Err(TensorIOError::InvalidMagic)));
+    }
+
+    #[test]
+    fn load_truncated_file() {
+        let data = b"FTSV";
+        let result = load_state_dict_from_bytes(data);
+        assert!(matches!(result, Err(TensorIOError::Corrupt { .. })));
+    }
+
+    #[test]
+    fn load_unsupported_version() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&99u32.to_le_bytes()); // future version
+        let result = load_state_dict_from_bytes(&data);
+        assert!(matches!(result, Err(TensorIOError::UnsupportedVersion { .. })));
+    }
+
+    #[test]
+    fn magic_bytes_present() {
+        let dir = std::env::temp_dir().join("ft_test_magic");
+        let _ = std::fs::remove_file(&dir);
+        let sd = BTreeMap::new();
+        save_state_dict(&sd, &dir).unwrap();
+        let data = std::fs::read(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+        assert_eq!(&data[0..4], b"FTSV");
+    }
+
+    #[test]
+    fn save_load_large_tensor() {
+        let dir = std::env::temp_dir().join("ft_test_save_large");
+        let _ = std::fs::remove_file(&dir);
+        let n = 10_000;
+        let values: Vec<f64> = (0..n).map(|i| i as f64 * 0.001).collect();
+        let mut sd = BTreeMap::new();
+        sd.insert("big".to_string(), make_f64_tensor(values.clone(), vec![100, 100]));
+
+        save_state_dict(&sd, &dir).unwrap();
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        let loaded_vals = loaded["big"].contiguous_values().unwrap();
+        assert_eq!(loaded_vals.len(), n);
+        for i in 0..n {
+            assert!(
+                (loaded_vals[i] - values[i]).abs() < f64::EPSILON,
+                "mismatch at {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn tensor_io_error_display() {
+        let cases = vec![
+            TensorIOError::InvalidMagic,
+            TensorIOError::UnsupportedVersion { found: 99, max: 1 },
+            TensorIOError::Corrupt { reason: "test".to_string() },
+            TensorIOError::Io { path: "/tmp/test".to_string(), message: "not found".to_string() },
+        ];
+        for err in &cases {
+            let msg = format!("{err}");
+            assert!(!msg.is_empty());
+        }
+    }
+
+    #[test]
+    fn overwrite_existing_file() {
+        let dir = std::env::temp_dir().join("ft_test_overwrite");
+        let _ = std::fs::remove_file(&dir);
+
+        // Write first version
+        let mut sd1 = BTreeMap::new();
+        sd1.insert("a".to_string(), make_f64_tensor(vec![1.0], vec![1]));
+        save_state_dict(&sd1, &dir).unwrap();
+
+        // Overwrite with different data
+        let mut sd2 = BTreeMap::new();
+        sd2.insert("b".to_string(), make_f64_tensor(vec![2.0, 3.0], vec![2]));
+        save_state_dict(&sd2, &dir).unwrap();
+
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        // Should only contain the second version
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("b"));
+        assert_eq!(loaded["b"].contiguous_values().unwrap(), &[2.0, 3.0]);
     }
 }

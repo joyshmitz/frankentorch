@@ -308,6 +308,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ft-data"
+version = "0.1.0"
+dependencies = [
+ "ft-api",
+ "ft-autograd",
+ "ft-core",
+ "ft-dispatch",
+]
+
+[[package]]
 name = "ft-device"
 version = "0.1.0"
 dependencies = [
@@ -367,6 +377,7 @@ name = "ft-serialize"
 version = "0.1.0"
 dependencies = [
  "asupersync",
+ "ft-core",
  "proptest",
  "serde",
  "serde_json",

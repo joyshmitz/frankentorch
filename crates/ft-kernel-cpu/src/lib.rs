@@ -6352,6 +6352,78 @@ pub fn reduce_sum_for_broadcast_f32(
     Ok(reduced)
 }
 
+/// Returns indices of non-zero elements as a flat f64 vector.
+///
+/// For an N-dimensional input, returns an (M, N) shaped result where M is the
+/// number of non-zero elements. The result is stored row-major: each group of N
+/// consecutive values gives the multi-dimensional index of one non-zero element.
+///
+/// Returns `(indices_flat, num_nonzero)` where the output shape is `[num_nonzero, ndim]`.
+pub fn nonzero_tensor_contiguous_f64(
+    input: &[f64],
+    meta: &TensorMeta,
+) -> Result<(Vec<f64>, usize), KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let shape = meta.shape();
+    let ndim = shape.len();
+    let numel = meta.numel();
+    let offset = meta.storage_offset();
+    let data = &input[offset..offset + numel];
+
+    // Compute strides for index decomposition
+    let mut strides = vec![1usize; ndim];
+    for i in (0..ndim.saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1] * shape[i + 1];
+    }
+
+    let mut indices = Vec::new();
+    for flat_idx in 0..numel {
+        if data[flat_idx] != 0.0 || data[flat_idx].is_nan() {
+            // NaN is treated as non-zero (PyTorch behavior)
+            let mut remaining = flat_idx;
+            for d in 0..ndim {
+                let dim_idx = remaining / strides[d];
+                remaining %= strides[d];
+                indices.push(dim_idx as f64);
+            }
+        }
+    }
+
+    let num_nonzero = indices.len() / ndim.max(1);
+    Ok((indices, num_nonzero))
+}
+
+/// Selects elements from input where mask is non-zero.
+///
+/// Returns a 1-D vector of selected elements. The mask must have the same
+/// number of elements as the input.
+pub fn masked_select_tensor_contiguous_f64(
+    input: &[f64],
+    mask: &[f64],
+    meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(input, meta)?;
+    let numel = meta.numel();
+    let offset = meta.storage_offset();
+    if mask.len() < offset + numel {
+        return Err(KernelError::ShapeMismatch {
+            lhs: meta.shape().to_vec(),
+            rhs: vec![mask.len()],
+        });
+    }
+    let data = &input[offset..offset + numel];
+    let mask_data = &mask[offset..offset + numel];
+
+    let output: Vec<f64> = data
+        .iter()
+        .zip(mask_data.iter())
+        .filter(|&(_, m)| *m != 0.0)
+        .map(|(&v, _)| v)
+        .collect();
+
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use ft_core::{DType, Device, ScalarTensor, TensorCompatError, TensorMeta};
