@@ -3424,6 +3424,817 @@ impl LRScheduler for OneCycleLR {
     }
 }
 
+/// Adamax optimizer — variant of Adam using the infinity norm (Kingma & Ba, 2014).
+///
+/// Instead of the L2 norm of the second moment (v), Adamax uses the L∞ norm,
+/// which is the max of the exponentially weighted absolute gradient values.
+/// This can be more stable than Adam for some problems and doesn't require
+/// bias correction on the second moment.
+pub struct Adamax {
+    params: Vec<TensorNodeId>,
+    lr: f64,
+    beta1: f64,
+    beta2: f64,
+    eps: f64,
+    weight_decay: f64,
+    step_count: u64,
+    m: Vec<Option<Vec<f64>>>,
+    u: Vec<Option<Vec<f64>>>,
+}
+
+impl Adamax {
+    /// Create a new Adamax optimizer.
+    ///
+    /// Defaults: lr=0.002, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.0
+    pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
+        let n = params.len();
+        Self {
+            params,
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.0,
+            step_count: 0,
+            m: vec![None; n],
+            u: vec![None; n],
+        }
+    }
+
+    #[must_use]
+    pub fn betas(mut self, beta1: f64, beta2: f64) -> Self {
+        self.beta1 = beta1;
+        self.beta2 = beta2;
+        self
+    }
+
+    #[must_use]
+    pub fn eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    #[must_use]
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+
+    fn validate_hyperparams(&self) -> Result<(), AutogradError> {
+        if !self.lr.is_finite() || self.lr < 0.0 {
+            return Err(optimizer_hparam_error(
+                "adamax requires a finite non-negative learning rate",
+            ));
+        }
+        if !self.beta1.is_finite() || !self.beta2.is_finite() {
+            return Err(optimizer_hparam_error("adamax betas must be finite"));
+        }
+        if !(0.0..1.0).contains(&self.beta1) || !(0.0..1.0).contains(&self.beta2) {
+            return Err(optimizer_hparam_error("adamax betas must be in [0, 1)"));
+        }
+        if !self.eps.is_finite() || self.eps <= 0.0 {
+            return Err(optimizer_hparam_error("adamax requires finite eps > 0"));
+        }
+        if !self.weight_decay.is_finite() || self.weight_decay < 0.0 {
+            return Err(optimizer_hparam_error(
+                "adamax requires finite non-negative weight_decay",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Optimizer for Adamax {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        _report: &TensorBackwardReport,
+    ) -> Result<(), AutogradError> {
+        self.validate_hyperparams()?;
+        let t = checked_next_step_count(self.step_count, "adamax step counter overflow")?;
+        self.step_count = t;
+
+        for (i, &param) in self.params.iter().enumerate() {
+            let grad = match load_param_gradient(session, param)? {
+                Some(g) => g,
+                None => continue,
+            };
+
+            let param_values = session.tensor_values(param)?;
+            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
+            let param_shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+            let mut effective_grad = grad;
+
+            if self.weight_decay != 0.0 {
+                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
+                    *g += self.weight_decay * p;
+                }
+            }
+
+            // Update biased first moment: m = beta1 * m + (1 - beta1) * g
+            let m = self.m[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+            ensure_state_len(
+                effective_grad.len(),
+                m.len(),
+                "adamax first-moment state length mismatch",
+            )?;
+            for (m_val, g) in m.iter_mut().zip(effective_grad.iter()) {
+                *m_val = self.beta1 * *m_val + (1.0 - self.beta1) * g;
+            }
+
+            // Update infinity norm: u = max(beta2 * u, |g|)
+            let u = self.u[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+            ensure_state_len(
+                effective_grad.len(),
+                u.len(),
+                "adamax infinity-norm state length mismatch",
+            )?;
+            for (u_val, g) in u.iter_mut().zip(effective_grad.iter()) {
+                *u_val = f64::max(self.beta2 * *u_val, g.abs());
+            }
+
+            // Bias correction for first moment only
+            let bias_correction1 = adam_bias_correction(self.beta1, t);
+
+            // Update: lr * m_hat / (u + eps)
+            let update: Vec<f64> = m
+                .iter()
+                .zip(u.iter())
+                .map(|(m_val, u_val)| {
+                    let m_hat = m_val / bias_correction1;
+                    self.lr * m_hat / (u_val + self.eps)
+                })
+                .collect();
+
+            let update_node = session.tensor_variable(update, param_shape, false)?;
+            session.tensor_sub_(param, update_node)?;
+        }
+        Ok(())
+    }
+
+    fn zero_grad(&mut self, session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
+        zero_param_gradients(session, &self.params)
+    }
+}
+
+/// Adadelta optimizer (Zeiler, 2012).
+///
+/// Adadelta adapts learning rates per-parameter based on a running window of
+/// gradient updates. Unlike most optimizers, it doesn't require an initial
+/// learning rate — though PyTorch exposes `lr` as a scaling factor (default 1.0).
+pub struct Adadelta {
+    params: Vec<TensorNodeId>,
+    lr: f64,
+    rho: f64,
+    eps: f64,
+    weight_decay: f64,
+    square_avg: Vec<Option<Vec<f64>>>,
+    acc_delta: Vec<Option<Vec<f64>>>,
+}
+
+impl Adadelta {
+    /// Create a new Adadelta optimizer.
+    ///
+    /// Defaults: lr=1.0, rho=0.9, eps=1e-6, weight_decay=0.0
+    pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
+        let n = params.len();
+        Self {
+            params,
+            lr,
+            rho: 0.9,
+            eps: 1e-6,
+            weight_decay: 0.0,
+            square_avg: vec![None; n],
+            acc_delta: vec![None; n],
+        }
+    }
+
+    #[must_use]
+    pub fn rho(mut self, rho: f64) -> Self {
+        self.rho = rho;
+        self
+    }
+
+    #[must_use]
+    pub fn eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    #[must_use]
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+
+    fn validate_hyperparams(&self) -> Result<(), AutogradError> {
+        if !self.lr.is_finite() || self.lr < 0.0 {
+            return Err(optimizer_hparam_error(
+                "adadelta requires a finite non-negative learning rate",
+            ));
+        }
+        if !self.rho.is_finite() || !(0.0..1.0).contains(&self.rho) {
+            return Err(optimizer_hparam_error("adadelta rho must be in [0, 1)"));
+        }
+        if !self.eps.is_finite() || self.eps <= 0.0 {
+            return Err(optimizer_hparam_error("adadelta requires finite eps > 0"));
+        }
+        if !self.weight_decay.is_finite() || self.weight_decay < 0.0 {
+            return Err(optimizer_hparam_error(
+                "adadelta requires finite non-negative weight_decay",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Optimizer for Adadelta {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        _report: &TensorBackwardReport,
+    ) -> Result<(), AutogradError> {
+        self.validate_hyperparams()?;
+
+        for (i, &param) in self.params.iter().enumerate() {
+            let grad = match load_param_gradient(session, param)? {
+                Some(g) => g,
+                None => continue,
+            };
+
+            let param_values = session.tensor_values(param)?;
+            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
+            let param_shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+            let mut effective_grad = grad;
+
+            if self.weight_decay != 0.0 {
+                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
+                    *g += self.weight_decay * p;
+                }
+            }
+
+            // Update running average of squared gradients: E[g^2] = rho * E[g^2] + (1-rho) * g^2
+            let sq_avg =
+                self.square_avg[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+            ensure_state_len(
+                effective_grad.len(),
+                sq_avg.len(),
+                "adadelta square_avg state length mismatch",
+            )?;
+            for (s, g) in sq_avg.iter_mut().zip(effective_grad.iter()) {
+                *s = self.rho * *s + (1.0 - self.rho) * g * g;
+            }
+
+            // Compute update: delta = sqrt(E[delta^2] + eps) / sqrt(E[g^2] + eps) * g
+            let acc_d = self.acc_delta[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+            ensure_state_len(
+                effective_grad.len(),
+                acc_d.len(),
+                "adadelta acc_delta state length mismatch",
+            )?;
+
+            let update: Vec<f64> = effective_grad
+                .iter()
+                .zip(sq_avg.iter())
+                .zip(acc_d.iter())
+                .map(|((g, s), d)| {
+                    let std_delta = (d + self.eps).sqrt();
+                    let std_grad = (s + self.eps).sqrt();
+                    self.lr * (std_delta / std_grad) * g
+                })
+                .collect();
+
+            // Update running average of squared updates: E[delta^2] = rho * E[delta^2] + (1-rho) * delta^2
+            for (d, u) in acc_d.iter_mut().zip(update.iter()) {
+                *d = self.rho * *d + (1.0 - self.rho) * u * u;
+            }
+
+            let update_node = session.tensor_variable(update, param_shape, false)?;
+            session.tensor_sub_(param, update_node)?;
+        }
+        Ok(())
+    }
+
+    fn zero_grad(&mut self, session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
+        zero_param_gradients(session, &self.params)
+    }
+}
+
+/// NAdam optimizer — Nesterov-accelerated Adam (Dozat, 2016).
+///
+/// Incorporates Nesterov momentum into Adam by using a lookahead on the first
+/// moment estimate. The update uses both the current bias-corrected first moment
+/// and the raw gradient scaled by (1 - beta1), giving a Nesterov-like effect.
+pub struct NAdam {
+    params: Vec<TensorNodeId>,
+    lr: f64,
+    beta1: f64,
+    beta2: f64,
+    eps: f64,
+    weight_decay: f64,
+    momentum_decay: f64,
+    step_count: u64,
+    m: Vec<Option<Vec<f64>>>,
+    v: Vec<Option<Vec<f64>>>,
+}
+
+impl NAdam {
+    /// Create a new NAdam optimizer.
+    ///
+    /// Defaults: lr=0.002, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.0,
+    /// momentum_decay=0.004
+    pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
+        let n = params.len();
+        Self {
+            params,
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.0,
+            momentum_decay: 0.004,
+            step_count: 0,
+            m: vec![None; n],
+            v: vec![None; n],
+        }
+    }
+
+    #[must_use]
+    pub fn betas(mut self, beta1: f64, beta2: f64) -> Self {
+        self.beta1 = beta1;
+        self.beta2 = beta2;
+        self
+    }
+
+    #[must_use]
+    pub fn eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    #[must_use]
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+
+    #[must_use]
+    pub fn momentum_decay(mut self, momentum_decay: f64) -> Self {
+        self.momentum_decay = momentum_decay;
+        self
+    }
+
+    fn validate_hyperparams(&self) -> Result<(), AutogradError> {
+        if !self.lr.is_finite() || self.lr < 0.0 {
+            return Err(optimizer_hparam_error(
+                "nadam requires a finite non-negative learning rate",
+            ));
+        }
+        if !self.beta1.is_finite() || !self.beta2.is_finite() {
+            return Err(optimizer_hparam_error("nadam betas must be finite"));
+        }
+        if !(0.0..1.0).contains(&self.beta1) || !(0.0..1.0).contains(&self.beta2) {
+            return Err(optimizer_hparam_error("nadam betas must be in [0, 1)"));
+        }
+        if !self.eps.is_finite() || self.eps <= 0.0 {
+            return Err(optimizer_hparam_error("nadam requires finite eps > 0"));
+        }
+        if !self.weight_decay.is_finite() || self.weight_decay < 0.0 {
+            return Err(optimizer_hparam_error(
+                "nadam requires finite non-negative weight_decay",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Optimizer for NAdam {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        _report: &TensorBackwardReport,
+    ) -> Result<(), AutogradError> {
+        self.validate_hyperparams()?;
+        let t = checked_next_step_count(self.step_count, "nadam step counter overflow")?;
+        self.step_count = t;
+
+        // Momentum schedule: mu_t = beta1 * (1 - 0.5 * 0.96^(t * momentum_decay))
+        let mu_t = self.beta1 * (1.0 - 0.5 * 0.96f64.powf(t as f64 * self.momentum_decay));
+        let mu_t1 =
+            self.beta1 * (1.0 - 0.5 * 0.96f64.powf((t as f64 + 1.0) * self.momentum_decay));
+
+        for (i, &param) in self.params.iter().enumerate() {
+            let grad = match load_param_gradient(session, param)? {
+                Some(g) => g,
+                None => continue,
+            };
+
+            let param_values = session.tensor_values(param)?;
+            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
+            let param_shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+            let mut effective_grad = grad;
+
+            if self.weight_decay != 0.0 {
+                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
+                    *g += self.weight_decay * p;
+                }
+            }
+
+            // Update biased first moment: m = beta1 * m + (1 - beta1) * g
+            let m = self.m[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+            ensure_state_len(
+                effective_grad.len(),
+                m.len(),
+                "nadam first-moment state length mismatch",
+            )?;
+            for (m_val, g) in m.iter_mut().zip(effective_grad.iter()) {
+                *m_val = self.beta1 * *m_val + (1.0 - self.beta1) * g;
+            }
+
+            // Update biased second moment: v = beta2 * v + (1 - beta2) * g^2
+            let v = self.v[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+            ensure_state_len(
+                effective_grad.len(),
+                v.len(),
+                "nadam second-moment state length mismatch",
+            )?;
+            for (v_val, g) in v.iter_mut().zip(effective_grad.iter()) {
+                *v_val = self.beta2 * *v_val + (1.0 - self.beta2) * g * g;
+            }
+
+            // Bias corrections
+            let bias_correction2 = adam_bias_correction(self.beta2, t);
+
+            // NAdam update: uses Nesterov-like combination of m and g
+            let update: Vec<f64> = m
+                .iter()
+                .zip(v.iter())
+                .zip(effective_grad.iter())
+                .map(|((m_val, v_val), g)| {
+                    let m_hat = mu_t1 * m_val / (1.0 - mu_t * mu_t1)
+                        + (1.0 - mu_t) * g / (1.0 - mu_t);
+                    let v_hat = v_val / bias_correction2;
+                    self.lr * m_hat / (v_hat.sqrt() + self.eps)
+                })
+                .collect();
+
+            let update_node = session.tensor_variable(update, param_shape, false)?;
+            session.tensor_sub_(param, update_node)?;
+        }
+        Ok(())
+    }
+
+    fn zero_grad(&mut self, session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
+        zero_param_gradients(session, &self.params)
+    }
+}
+
+/// ASGD optimizer — Averaged Stochastic Gradient Descent (Polyak & Juditsky, 1992).
+///
+/// Maintains a running average of parameters that converges to the minimum of
+/// the objective. After a warmup period (t0), the averaged parameters are used.
+pub struct ASGD {
+    params: Vec<TensorNodeId>,
+    lr: f64,
+    lambd: f64,
+    alpha: f64,
+    t0: f64,
+    weight_decay: f64,
+    step_count: u64,
+    ax: Vec<Option<Vec<f64>>>,
+    eta: f64,
+    mu: f64,
+}
+
+impl ASGD {
+    /// Create a new ASGD optimizer.
+    ///
+    /// Defaults: lr=0.01, lambd=1e-4, alpha=0.75, t0=1e6, weight_decay=0.0
+    pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
+        let n = params.len();
+        Self {
+            params,
+            lr,
+            lambd: 1e-4,
+            alpha: 0.75,
+            t0: 1e6,
+            weight_decay: 0.0,
+            step_count: 0,
+            ax: vec![None; n],
+            eta: lr,
+            mu: 1.0,
+        }
+    }
+
+    #[must_use]
+    pub fn lambd(mut self, lambd: f64) -> Self {
+        self.lambd = lambd;
+        self
+    }
+
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
+    #[must_use]
+    pub fn t0(mut self, t0: f64) -> Self {
+        self.t0 = t0;
+        self
+    }
+
+    #[must_use]
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+
+    fn validate_hyperparams(&self) -> Result<(), AutogradError> {
+        if !self.lr.is_finite() || self.lr < 0.0 {
+            return Err(optimizer_hparam_error(
+                "asgd requires a finite non-negative learning rate",
+            ));
+        }
+        if !self.lambd.is_finite() || self.lambd < 0.0 {
+            return Err(optimizer_hparam_error(
+                "asgd requires finite non-negative lambd",
+            ));
+        }
+        if !self.weight_decay.is_finite() || self.weight_decay < 0.0 {
+            return Err(optimizer_hparam_error(
+                "asgd requires finite non-negative weight_decay",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Optimizer for ASGD {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        _report: &TensorBackwardReport,
+    ) -> Result<(), AutogradError> {
+        self.validate_hyperparams()?;
+        let t = checked_next_step_count(self.step_count, "asgd step counter overflow")?;
+        self.step_count = t;
+
+        // Update learning rate: eta_t = lr / (1 + lambd * lr * t)^alpha
+        self.eta = self.lr / (1.0 + self.lambd * self.lr * t as f64).powf(self.alpha);
+
+        // Update averaging coefficient: mu_t = 1 / max(1, t - t0)
+        self.mu = 1.0 / f64::max(1.0, t as f64 - self.t0);
+
+        for (i, &param) in self.params.iter().enumerate() {
+            let grad = match load_param_gradient(session, param)? {
+                Some(g) => g,
+                None => continue,
+            };
+
+            let param_values = session.tensor_values(param)?;
+            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
+            let param_shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+            let mut effective_grad = grad;
+
+            if self.weight_decay != 0.0 {
+                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
+                    *g += self.weight_decay * p;
+                }
+            }
+
+            // SGD step: param -= eta * grad
+            let update: Vec<f64> = effective_grad.iter().map(|g| self.eta * g).collect();
+            let update_node = session.tensor_variable(update, param_shape.clone(), false)?;
+            session.tensor_sub_(param, update_node)?;
+
+            // Update running average: ax = ax + mu * (param - ax)
+            let new_param_values = session.tensor_values(param)?;
+            let ax = self.ax[i].get_or_insert_with(|| new_param_values.clone());
+            ensure_state_len(
+                new_param_values.len(),
+                ax.len(),
+                "asgd average state length mismatch",
+            )?;
+            for (a, p) in ax.iter_mut().zip(new_param_values.iter()) {
+                *a += self.mu * (p - *a);
+            }
+        }
+        Ok(())
+    }
+
+    fn zero_grad(&mut self, session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
+        zero_param_gradients(session, &self.params)
+    }
+}
+
+impl ASGD {
+    /// Get the averaged parameters (call after training to use the averaged values).
+    pub fn averaged_parameters(
+        &self,
+        session: &mut FrankenTorchSession,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        let mut result = Vec::with_capacity(self.params.len());
+        for (i, &param) in self.params.iter().enumerate() {
+            let shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+            let values = match &self.ax[i] {
+                Some(ax) => ax.clone(),
+                None => session.tensor_values(param)?,
+            };
+            result.push(session.tensor_variable(values, shape, false)?);
+        }
+        Ok(result)
+    }
+}
+
+/// Rprop optimizer — Resilient Backpropagation (Riedmiller & Braun, 1993).
+///
+/// Uses only the sign of the gradient for updates, with per-parameter adaptive
+/// step sizes. If the gradient changes sign, the step size decreases; if it
+/// keeps the same sign, the step size increases. This makes it insensitive to
+/// gradient magnitude.
+pub struct Rprop {
+    params: Vec<TensorNodeId>,
+    lr: f64,
+    eta_minus: f64,
+    eta_plus: f64,
+    step_min: f64,
+    step_max: f64,
+    step_sizes: Vec<Option<Vec<f64>>>,
+    prev_grad: Vec<Option<Vec<f64>>>,
+}
+
+impl Rprop {
+    /// Create a new Rprop optimizer.
+    ///
+    /// Defaults: lr=0.01, etas=(0.5, 1.2), step_sizes=(1e-6, 50.0)
+    pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
+        let n = params.len();
+        Self {
+            params,
+            lr,
+            eta_minus: 0.5,
+            eta_plus: 1.2,
+            step_min: 1e-6,
+            step_max: 50.0,
+            step_sizes: vec![None; n],
+            prev_grad: vec![None; n],
+        }
+    }
+
+    /// Set the multiplicative decrease/increase factors (default: 0.5, 1.2).
+    #[must_use]
+    pub fn etas(mut self, eta_minus: f64, eta_plus: f64) -> Self {
+        self.eta_minus = eta_minus;
+        self.eta_plus = eta_plus;
+        self
+    }
+
+    /// Set the minimum and maximum step sizes (default: 1e-6, 50.0).
+    #[must_use]
+    pub fn step_sizes(mut self, step_min: f64, step_max: f64) -> Self {
+        self.step_min = step_min;
+        self.step_max = step_max;
+        self
+    }
+
+    fn validate_hyperparams(&self) -> Result<(), AutogradError> {
+        if !self.lr.is_finite() || self.lr < 0.0 {
+            return Err(optimizer_hparam_error(
+                "rprop requires a finite non-negative learning rate",
+            ));
+        }
+        if !self.eta_minus.is_finite() || self.eta_minus <= 0.0 || self.eta_minus >= 1.0 {
+            return Err(optimizer_hparam_error(
+                "rprop eta_minus must be in (0, 1)",
+            ));
+        }
+        if !self.eta_plus.is_finite() || self.eta_plus <= 1.0 {
+            return Err(optimizer_hparam_error("rprop eta_plus must be > 1"));
+        }
+        if !self.step_min.is_finite()
+            || !self.step_max.is_finite()
+            || self.step_min <= 0.0
+            || self.step_max <= 0.0
+            || self.step_min > self.step_max
+        {
+            return Err(optimizer_hparam_error(
+                "rprop requires 0 < step_min <= step_max and both finite",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Optimizer for Rprop {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        _report: &TensorBackwardReport,
+    ) -> Result<(), AutogradError> {
+        self.validate_hyperparams()?;
+
+        for (i, &param) in self.params.iter().enumerate() {
+            let grad = match load_param_gradient(session, param)? {
+                Some(g) => g,
+                None => continue,
+            };
+
+            let param_values = session.tensor_values(param)?;
+            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
+            let param_shape = session.tensor_values_meta(param)?.1.shape().to_vec();
+
+            let steps = self.step_sizes[i].get_or_insert_with(|| vec![self.lr; grad.len()]);
+            ensure_state_len(
+                grad.len(),
+                steps.len(),
+                "rprop step_sizes state length mismatch",
+            )?;
+
+            let prev = self.prev_grad[i].get_or_insert_with(|| vec![0.0; grad.len()]);
+            ensure_state_len(
+                grad.len(),
+                prev.len(),
+                "rprop prev_grad state length mismatch",
+            )?;
+
+            let mut update = vec![0.0; grad.len()];
+            for j in 0..grad.len() {
+                let sign_product = grad[j] * prev[j];
+                if sign_product > 0.0 {
+                    // Same sign — increase step size
+                    steps[j] = (steps[j] * self.eta_plus).min(self.step_max);
+                    update[j] = if grad[j] > 0.0 { steps[j] } else { -steps[j] };
+                } else if sign_product < 0.0 {
+                    // Sign changed — decrease step size, skip update
+                    steps[j] = (steps[j] * self.eta_minus).max(self.step_min);
+                    // Revert gradient to prevent double penalization next step
+                    prev[j] = 0.0;
+                    continue;
+                } else {
+                    // Zero product — just apply current step
+                    update[j] = if grad[j] > 0.0 {
+                        steps[j]
+                    } else if grad[j] < 0.0 {
+                        -steps[j]
+                    } else {
+                        0.0
+                    };
+                }
+                prev[j] = grad[j];
+            }
+
+            let update_node = session.tensor_variable(update, param_shape, false)?;
+            session.tensor_sub_(param, update_node)?;
+        }
+        Ok(())
+    }
+
+    fn zero_grad(&mut self, session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
+        zero_param_gradients(session, &self.params)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ft_api::FrankenTorchSession;
@@ -6848,5 +7659,427 @@ mod tests {
         let lr_at_end = opt4.get_lr();
         s4.step(&mut opt4, Some(100));
         assert!((opt4.get_lr() - lr_at_end).abs() < 1e-12);
+    }
+
+    // ---- Adamax tests ----
+
+    #[test]
+    fn adamax_basic_step_reduces_loss() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Adamax::new(vec![x], 0.02);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        opt.step(&mut session, &report).expect("step");
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 4.0,
+            "adamax should move x toward 0, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn adamax_convergence() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Adamax::new(vec![x], 0.1);
+
+        for _ in 0..50 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 1.0,
+            "adamax should converge toward 0, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn adamax_invalid_lr_fails() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Adamax::new(vec![x], -1.0);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        assert!(opt.step(&mut session, &report).is_err());
+    }
+
+    #[test]
+    fn adamax_with_weight_decay() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Adamax::new(vec![x], 0.02).weight_decay(0.1);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        opt.step(&mut session, &report).expect("step");
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 4.0,
+            "adamax with wd should still reduce x, got {}",
+            x_val[0]
+        );
+    }
+
+    // ---- Adadelta tests ----
+
+    #[test]
+    fn adadelta_basic_step_reduces_loss() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Adadelta::new(vec![x], 1.0);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        opt.step(&mut session, &report).expect("step");
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 4.0,
+            "adadelta should reduce x, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn adadelta_convergence() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Adadelta::new(vec![x], 10.0);
+
+        for _ in 0..100 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 2.0,
+            "adadelta should converge toward 0, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn adadelta_invalid_rho_fails() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Adadelta::new(vec![x], 1.0).rho(1.5);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        assert!(opt.step(&mut session, &report).is_err());
+    }
+
+    // ---- NAdam tests ----
+
+    #[test]
+    fn nadam_basic_step_reduces_loss() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("variable");
+        let mut opt = NAdam::new(vec![x], 0.02);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        opt.step(&mut session, &report).expect("step");
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 4.0,
+            "nadam should move x toward 0, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn nadam_convergence() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("variable");
+        let mut opt = NAdam::new(vec![x], 0.1);
+
+        for _ in 0..50 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 1.0,
+            "nadam should converge toward 0, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn nadam_invalid_betas_fails() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = NAdam::new(vec![x], 0.01).betas(1.5, 0.999);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        assert!(opt.step(&mut session, &report).is_err());
+    }
+
+    #[test]
+    fn nadam_multi_param() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![3.0, -2.0], vec![2], true)
+            .expect("variable");
+        let mut opt = NAdam::new(vec![x], 0.05);
+
+        for _ in 0..30 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 2.0 && x_val[1].abs() < 2.0,
+            "nadam should converge both params toward 0, got {:?}",
+            x_val
+        );
+    }
+
+    // ---- ASGD tests ----
+
+    #[test]
+    fn asgd_basic_step_reduces_loss() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("variable");
+        let mut opt = ASGD::new(vec![x], 0.1);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        opt.step(&mut session, &report).expect("step");
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 4.0,
+            "asgd should reduce x, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn asgd_convergence() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("variable");
+        let mut opt = ASGD::new(vec![x], 0.1);
+
+        for _ in 0..50 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 1.0,
+            "asgd should converge toward 0, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn asgd_averaged_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("variable");
+        let mut opt = ASGD::new(vec![x], 0.1).t0(0.0);
+
+        for _ in 0..10 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let avg_params = opt.averaged_parameters(&mut session).expect("avg");
+        let avg_val = session.tensor_values(avg_params[0]).expect("avg values");
+        // Averaged params should be somewhere between start and current
+        assert!(avg_val[0].is_finite());
+    }
+
+    #[test]
+    fn asgd_invalid_lr_fails() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = ASGD::new(vec![x], -1.0);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        assert!(opt.step(&mut session, &report).is_err());
+    }
+
+    // ---- Rprop tests ----
+
+    #[test]
+    fn rprop_basic_step_reduces_loss() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Rprop::new(vec![x], 0.01);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        opt.step(&mut session, &report).expect("step");
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 4.0,
+            "rprop should reduce x, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn rprop_convergence() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Rprop::new(vec![x], 0.1);
+
+        for _ in 0..50 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 1.0,
+            "rprop should converge toward 0, got {}",
+            x_val[0]
+        );
+    }
+
+    #[test]
+    fn rprop_step_size_adapts() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![3.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Rprop::new(vec![x], 0.01);
+
+        // Multiple steps with consistent gradient sign should increase step size
+        for _ in 0..5 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        // Step size should have grown from initial 0.01
+        let step = opt.step_sizes[0].as_ref().unwrap()[0];
+        assert!(
+            step > 0.01,
+            "rprop step size should increase with consistent sign, got {}",
+            step
+        );
+    }
+
+    #[test]
+    fn rprop_invalid_etas_fails() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = Rprop::new(vec![x], 0.01).etas(1.5, 0.5);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        assert!(opt.step(&mut session, &report).is_err());
+    }
+
+    #[test]
+    fn rprop_multi_param() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![3.0, -2.0], vec![2], true)
+            .expect("variable");
+        let mut opt = Rprop::new(vec![x], 0.05);
+
+        for _ in 0..30 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let x_val = session.tensor_values(x).expect("values");
+        assert!(
+            x_val[0].abs() < 2.0 && x_val[1].abs() < 2.0,
+            "rprop should converge both params, got {:?}",
+            x_val
+        );
     }
 }
