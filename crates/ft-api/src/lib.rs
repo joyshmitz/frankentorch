@@ -863,6 +863,61 @@ impl FrankenTorchSession {
         self.tensor_tape.leaf(values, vec![steps], requires_grad)
     }
 
+    /// Create a 1-D tensor with `steps` logarithmically spaced values.
+    ///
+    /// Values are `base^linspace(start, end, steps)`.
+    /// Default base is 10.0.
+    pub fn logspace(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        base: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let values = if steps == 0 {
+            vec![]
+        } else if steps == 1 {
+            vec![base.powf(start)]
+        } else {
+            (0..steps)
+                .map(|i| {
+                    let t = start + (end - start) * (i as f64) / ((steps - 1) as f64);
+                    base.powf(t)
+                })
+                .collect()
+        };
+        self.tensor_tape.leaf(values, vec![steps], requires_grad)
+    }
+
+    /// Create a tensor without initializing values (filled with zeros in Rust).
+    ///
+    /// In Rust, memory is always initialized, so `empty` produces zeros.
+    /// This is primarily for API compatibility with PyTorch.
+    pub fn empty(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel =
+            Self::checked_shape_numel(&shape, "tensor factory shape volume overflow in empty")?;
+        self.tensor_tape
+            .leaf(vec![0.0; numel], shape, requires_grad)
+    }
+
+    /// Create an uninitialized tensor with the same shape as `other`.
+    ///
+    /// In Rust, this produces zeros (see `empty`).
+    pub fn empty_like(
+        &mut self,
+        other: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let meta = self.tensor_tape.tensor_meta(other)?.clone();
+        let shape = meta.shape().to_vec();
+        self.empty(shape, requires_grad)
+    }
+
     /// Create a tensor with the same shape as `other`, filled with `fill_value`.
     pub fn full_like(
         &mut self,
@@ -1019,6 +1074,341 @@ impl FrankenTorchSession {
         let (out, event) = self.tensor_tape.bmm(lhs, rhs, self.mode())?;
         self.record_tensor_operation(&event);
         Ok(out)
+    }
+
+    /// Tensor contraction over specified dimensions (generalised matrix multiply).
+    ///
+    /// `dims` is the number of trailing dimensions of `a` to contract with
+    /// the leading dimensions of `b`.
+    /// Equivalent to PyTorch's `torch.tensordot(a, b, dims=N)`.
+    pub fn tensor_tensordot(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        dims: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let a_shape = self.tensor_shape(a)?;
+        let b_shape = self.tensor_shape(b)?;
+        let a_ndim = a_shape.len();
+        let b_ndim = b_shape.len();
+
+        if dims > a_ndim || dims > b_ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: dims,
+                    ndim: a_ndim.min(b_ndim),
+                },
+            )));
+        }
+
+        // Check that contracted dimensions match
+        for i in 0..dims {
+            if a_shape[a_ndim - dims + i] != b_shape[i] {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: a_shape.clone(),
+                        rhs: b_shape.clone(),
+                    },
+                )));
+            }
+        }
+
+        // Special case: dims=0 is outer product-like (no contraction)
+        if dims == 0 {
+            // Reshape a to [..., 1] and b to [1, ...], then matmul
+            let a_total: usize = a_shape.iter().product();
+            let b_total: usize = b_shape.iter().product();
+            let a_flat = self.tensor_reshape(a, vec![a_total, 1])?;
+            let b_flat = self.tensor_reshape(b, vec![1, b_total])?;
+            let result = self.tensor_matmul(a_flat, b_flat)?;
+            let mut out_shape = a_shape;
+            out_shape.extend_from_slice(&b_shape);
+            return self.tensor_reshape(result, out_shape);
+        }
+
+        // Reshape a: [free_a..., contract...] -> [prod(free_a), prod(contract)]
+        let free_a: usize = a_shape[..a_ndim - dims].iter().product();
+        let contract: usize = a_shape[a_ndim - dims..].iter().product();
+        let a_2d = self.tensor_reshape(a, vec![free_a, contract])?;
+
+        // Reshape b: [contract..., free_b...] -> [prod(contract), prod(free_b)]
+        let free_b: usize = b_shape[dims..].iter().product();
+        let b_2d = self.tensor_reshape(b, vec![contract, free_b])?;
+
+        // Matmul: [free_a, contract] @ [contract, free_b] -> [free_a, free_b]
+        let result = self.tensor_matmul(a_2d, b_2d)?;
+
+        // Reshape back to [...free_a_dims, ...free_b_dims]
+        let mut out_shape: Vec<usize> = a_shape[..a_ndim - dims].to_vec();
+        out_shape.extend_from_slice(&b_shape[dims..]);
+        if out_shape.is_empty() {
+            out_shape.push(1);
+        }
+        self.tensor_reshape(result, out_shape)
+    }
+
+    /// Kronecker product of two tensors.
+    ///
+    /// For 2D inputs A (m x n) and B (p x q), result is (m*p x n*q).
+    /// For 1D inputs a (m,) and b (n,), result is (m*n,).
+    pub fn tensor_kron(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let a_shape = self.tensor_shape(a)?;
+        let b_shape = self.tensor_shape(b)?;
+
+        match (a_shape.len(), b_shape.len()) {
+            (1, 1) => {
+                // 1D kron: outer product then flatten
+                let outer = self.tensor_outer(a, b)?;
+                let total = a_shape[0] * b_shape[0];
+                self.tensor_reshape(outer, vec![total])
+            }
+            (2, 2) => {
+                // 2D kron: for each (i,j) in A, place A[i,j]*B as block
+                let (ma, na) = (a_shape[0], a_shape[1]);
+                let (mb, nb) = (b_shape[0], b_shape[1]);
+                let a_vals = self.tensor_values(a)?;
+                let b_vals = self.tensor_values(b)?;
+                let mut result = vec![0.0f64; (ma * mb) * (na * nb)];
+                let out_cols = na * nb;
+                for ia in 0..ma {
+                    for ja in 0..na {
+                        let a_val = a_vals[ia * na + ja];
+                        for ib in 0..mb {
+                            for jb in 0..nb {
+                                let out_row = ia * mb + ib;
+                                let out_col = ja * nb + jb;
+                                result[out_row * out_cols + out_col] =
+                                    a_val * b_vals[ib * nb + jb];
+                            }
+                        }
+                    }
+                }
+                self.tensor_variable(result, vec![ma * mb, na * nb], false)
+            }
+            _ => {
+                // General case: pad shorter tensor dimensions to match
+                // For simplicity, only support 1D and 2D for now
+                Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: a_shape,
+                        rhs: b_shape,
+                    },
+                )))
+            }
+        }
+    }
+
+    /// Cross product of two 3-element vectors.
+    ///
+    /// Both inputs must be 1D tensors of length 3.
+    /// Returns a 1D tensor of length 3: c = a × b.
+    pub fn tensor_cross(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let a_shape = self.tensor_shape(a)?;
+        let b_shape = self.tensor_shape(b)?;
+        if a_shape != [3] || b_shape != [3] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: a_shape,
+                    rhs: b_shape,
+                },
+            )));
+        }
+        let av = self.tensor_values(a)?;
+        let bv = self.tensor_values(b)?;
+        let result = vec![
+            av[1] * bv[2] - av[2] * bv[1],
+            av[2] * bv[0] - av[0] * bv[2],
+            av[0] * bv[1] - av[1] * bv[0],
+        ];
+        self.tensor_variable(result, vec![3], false)
+    }
+
+    /// Dot product along the last dimension (batched dot product).
+    ///
+    /// For 1D inputs: equivalent to `tensor_dot`.
+    /// For N-D inputs: dot product along the last dimension, output has one fewer dim.
+    pub fn tensor_vecdot(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let a_shape = self.tensor_shape(a)?;
+        let b_shape = self.tensor_shape(b)?;
+        if a_shape != b_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: a_shape.clone(),
+                    rhs: b_shape,
+                },
+            )));
+        }
+        if a_shape.len() == 1 {
+            return self.tensor_dot(a, b);
+        }
+        // For N-D: element-wise multiply then sum along last dim
+        let prod = self.tensor_mul(a, b)?;
+        let last_dim = a_shape.len() - 1;
+        self.tensor_sum_dim(prod, last_dim)
+    }
+
+    /// Embed a 1D vector as the diagonal of a 2D matrix.
+    ///
+    /// `diag_embed([1,2,3])` produces `[[1,0,0],[0,2,0],[0,0,3]]`.
+    /// `offset` controls which diagonal: 0=main, 1=super, -1=sub.
+    pub fn tensor_diag_embed(
+        &mut self,
+        input: TensorNodeId,
+        offset: i32,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 1,
+                },
+            )));
+        }
+        let k = shape[0];
+        let abs_offset = offset.unsigned_abs() as usize;
+        let n = k + abs_offset;
+        let vals = self.tensor_values(input)?;
+        let mut result = vec![0.0f64; n * n];
+        for i in 0..k {
+            let (row, col) = if offset >= 0 {
+                (i, i + abs_offset)
+            } else {
+                (i + abs_offset, i)
+            };
+            result[row * n + col] = vals[i];
+        }
+        self.tensor_variable(result, vec![n, n], false)
+    }
+
+    /// Return unique elements from a 1D tensor.
+    ///
+    /// If `sorted` is true (default), output is sorted ascending.
+    /// If `return_inverse` is true, also returns index mapping input -> unique.
+    /// If `return_counts` is true, also returns count of each unique value.
+    pub fn tensor_unique(
+        &mut self,
+        input: TensorNodeId,
+        sorted: bool,
+        return_inverse: bool,
+        return_counts: bool,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        let vals = self.tensor_values(input)?;
+
+        // Collect unique values preserving first-occurrence order
+        let mut unique_vals: Vec<f64> = Vec::new();
+        let mut inverse_indices: Vec<usize> = Vec::with_capacity(vals.len());
+
+        for &v in &vals {
+            let pos = unique_vals
+                .iter()
+                .position(|&u| (u - v).abs() < f64::EPSILON || (u.is_nan() && v.is_nan()));
+            match pos {
+                Some(idx) => inverse_indices.push(idx),
+                None => {
+                    inverse_indices.push(unique_vals.len());
+                    unique_vals.push(v);
+                }
+            }
+        }
+
+        if sorted {
+            // Sort unique values and remap inverse indices
+            let mut order: Vec<usize> = (0..unique_vals.len()).collect();
+            order.sort_by(|&a, &b| unique_vals[a].partial_cmp(&unique_vals[b]).unwrap());
+            let mut remap = vec![0usize; unique_vals.len()];
+            for (new_idx, &old_idx) in order.iter().enumerate() {
+                remap[old_idx] = new_idx;
+            }
+            let sorted_vals: Vec<f64> = order.iter().map(|&i| unique_vals[i]).collect();
+            unique_vals = sorted_vals;
+            for idx in &mut inverse_indices {
+                *idx = remap[*idx];
+            }
+        }
+
+        let unique_len = unique_vals.len();
+        let unique_node = self.tensor_variable(unique_vals, vec![unique_len], false)?;
+
+        let inverse_node = if return_inverse {
+            let inv_f64: Vec<f64> = inverse_indices.iter().map(|&i| i as f64).collect();
+            let n = inv_f64.len();
+            Some(self.tensor_variable(inv_f64, vec![n], false)?)
+        } else {
+            None
+        };
+
+        let counts_node = if return_counts {
+            let mut counts = vec![0.0f64; unique_len];
+            for &idx in &inverse_indices {
+                counts[idx] += 1.0;
+            }
+            Some(self.tensor_variable(counts, vec![unique_len], false)?)
+        } else {
+            None
+        };
+
+        Ok((unique_node, inverse_node, counts_node))
+    }
+
+    /// Remove consecutive duplicate elements from a 1D tensor.
+    ///
+    /// Unlike `unique`, only removes adjacent duplicates (O(n) without sorting).
+    pub fn tensor_unique_consecutive(
+        &mut self,
+        input: TensorNodeId,
+        return_inverse: bool,
+        return_counts: bool,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        let vals = self.tensor_values(input)?;
+
+        let mut unique_vals: Vec<f64> = Vec::new();
+        let mut inverse_indices: Vec<usize> = Vec::with_capacity(vals.len());
+        let mut counts: Vec<f64> = Vec::new();
+
+        for &v in &vals {
+            if unique_vals.is_empty()
+                || !((unique_vals.last().unwrap() - v).abs() < f64::EPSILON
+                    || (unique_vals.last().unwrap().is_nan() && v.is_nan()))
+            {
+                unique_vals.push(v);
+                counts.push(1.0);
+            } else {
+                *counts.last_mut().unwrap() += 1.0;
+            }
+            inverse_indices.push(unique_vals.len() - 1);
+        }
+
+        let unique_len = unique_vals.len();
+        let unique_node = self.tensor_variable(unique_vals, vec![unique_len], false)?;
+
+        let inverse_node = if return_inverse {
+            let inv_f64: Vec<f64> = inverse_indices.iter().map(|&i| i as f64).collect();
+            let n = inv_f64.len();
+            Some(self.tensor_variable(inv_f64, vec![n], false)?)
+        } else {
+            None
+        };
+
+        let counts_node = if return_counts {
+            Some(self.tensor_variable(counts, vec![unique_len], false)?)
+        } else {
+            None
+        };
+
+        Ok((unique_node, inverse_node, counts_node))
     }
 
     pub fn tensor_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
@@ -3848,6 +4238,247 @@ impl FrankenTorchSession {
         self.tensor_variable(solution, b_shape, false)
     }
 
+    /// Solve the linear system `A @ X = B` for X.
+    ///
+    /// Internally factorises A via LU decomposition then solves.
+    /// A must be a square (n x n) tensor; B must be [n] or [n, m].
+    /// Returns the solution tensor X with the same shape as B.
+    pub fn tensor_linalg_solve(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (a_values, a_meta) = self.tensor_values_meta(a)?;
+        let factor = ft_kernel_cpu::lu_factor_contiguous_f64(&a_values, &a_meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let (b_values, b_meta) = self.tensor_values_meta(b)?;
+        let b_shape = b_meta.shape().to_vec();
+        let solution = ft_kernel_cpu::lu_solve_contiguous_f64(&factor, &b_values, &b_meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        self.tensor_variable(solution, b_shape, false)
+    }
+
+    /// Compute the Cholesky decomposition of a symmetric positive-definite matrix.
+    ///
+    /// Returns the lower triangular factor L such that A = L @ L^T.
+    /// If `upper` is true, returns U such that A = U^T @ U.
+    pub fn tensor_linalg_cholesky(
+        &mut self,
+        input: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::cholesky_contiguous_f64(&values, &meta, upper)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let n = result.n;
+        self.tensor_variable(result.factor, vec![n, n], false)
+    }
+
+    /// Solve A @ X = B given Cholesky factor L where A = L @ L^T.
+    ///
+    /// More efficient than general solve for symmetric positive-definite systems.
+    /// `cholesky_factor` is the result of `tensor_linalg_cholesky`.
+    /// B can be [n] or [n, m].
+    pub fn tensor_cholesky_solve(
+        &mut self,
+        b: TensorNodeId,
+        cholesky_factor: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (factor_values, factor_meta) = self.tensor_values_meta(cholesky_factor)?;
+        let factor_shape = factor_meta.shape();
+        if factor_shape.len() != 2 || factor_shape[0] != factor_shape[1] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: factor_shape.to_vec(),
+                    rhs: vec![factor_shape.len()],
+                },
+            )));
+        }
+        let n = factor_shape[0];
+        let chol = ft_kernel_cpu::CholeskyResult {
+            factor: factor_values,
+            n,
+        };
+        let (b_values, b_meta) = self.tensor_values_meta(b)?;
+        let b_shape = b_meta.shape().to_vec();
+        let solution =
+            ft_kernel_cpu::cholesky_solve_contiguous_f64(&chol, &b_values, &b_meta, upper)
+                .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        self.tensor_variable(solution, b_shape, false)
+    }
+
+    /// Compute the matrix inverse.
+    ///
+    /// Returns A^-1 where A @ A^-1 = I. Errors if A is singular.
+    pub fn tensor_linalg_inv(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let shape = meta.shape().to_vec();
+        let result = ft_kernel_cpu::inv_tensor_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        self.tensor_variable(result, shape, false)
+    }
+
+    /// Compute A^n via binary exponentiation.
+    ///
+    /// n > 0: repeated squaring. n = 0: identity. n < 0: inv(A)^|n|.
+    pub fn tensor_matrix_power(
+        &mut self,
+        input: TensorNodeId,
+        n: i32,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 || shape[0] != shape[1] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: shape,
+                    rhs: vec![2],
+                },
+            )));
+        }
+        let dim = shape[0];
+
+        if n == 0 {
+            return self.eye(dim, false);
+        }
+
+        // For negative n, invert first
+        let base = if n < 0 {
+            self.tensor_linalg_inv(input)?
+        } else {
+            input
+        };
+
+        let mut exp = n.unsigned_abs();
+        let mut result = self.eye(dim, false)?;
+        let mut current = base;
+
+        while exp > 0 {
+            if exp & 1 == 1 {
+                result = self.tensor_matmul(result, current)?;
+            }
+            exp >>= 1;
+            if exp > 0 {
+                current = self.tensor_matmul(current, current)?;
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Matrix exponential: exp(A).
+    ///
+    /// Uses scaling-and-squaring with Padé [6/6] approximation.
+    /// NOT element-wise exp — this is the matrix exponential.
+    pub fn tensor_matrix_exp(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::matrix_exp_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let shape = meta.shape().to_vec();
+        self.tensor_variable(result, shape, false)
+    }
+
+    /// Eigendecomposition of a symmetric matrix: A = V @ diag(λ) @ V^T.
+    ///
+    /// Returns `(eigenvalues, eigenvectors)` where eigenvalues are sorted ascending
+    /// and eigenvectors are the columns of V (orthonormal).
+    pub fn tensor_linalg_eigh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::eigh_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let n = result.n;
+        let evals = self.tensor_variable(result.eigenvalues, vec![n], false)?;
+        let evecs = self.tensor_variable(result.eigenvectors, vec![n, n], false)?;
+        Ok((evals, evecs))
+    }
+
+    /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
+    pub fn tensor_linalg_eigvalsh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let n = meta.shape()[0];
+        let evals = ft_kernel_cpu::eigvalsh_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        self.tensor_variable(evals, vec![n], false)
+    }
+
+    /// Compute the SVD: A = U @ diag(S) @ Vh.
+    ///
+    /// If `full_matrices` is true, U is (m x m) and Vh is (n x n).
+    /// If false (reduced), U is (m x k) and Vh is (k x n) where k = min(m,n).
+    /// S is always a 1D tensor of singular values sorted descending.
+    pub fn tensor_linalg_svd(
+        &mut self,
+        input: TensorNodeId,
+        full_matrices: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::svd_contiguous_f64(&values, &meta, full_matrices)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let m = result.m;
+        let n = result.n;
+        let k = result.k;
+        let u_cols = if full_matrices { m } else { k };
+        let vh_rows = if full_matrices { n } else { k };
+        let u_node = self.tensor_variable(result.u, vec![m, u_cols], false)?;
+        let s_node = self.tensor_variable(result.s, vec![k], false)?;
+        let vh_node = self.tensor_variable(result.vh, vec![vh_rows, n], false)?;
+        Ok((u_node, s_node, vh_node))
+    }
+
+    /// Compute just the singular values of a matrix.
+    ///
+    /// Returns a 1D tensor of singular values sorted descending.
+    pub fn tensor_linalg_svdvals(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let input_shape = meta.shape();
+        let k = input_shape[0].min(input_shape[1]);
+        let s = ft_kernel_cpu::svdvals_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        self.tensor_variable(s, vec![k], false)
+    }
+
+    /// Compute the determinant of a square matrix.
+    ///
+    /// Uses LU factorization: det = product(U diagonal) * sign(permutation).
+    pub fn tensor_linalg_det(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<f64, AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::det_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        Ok(result.det)
+    }
+
+    /// Compute sign and log-absolute-determinant of a square matrix.
+    ///
+    /// Returns `(sign, logabsdet)` where `det(A) = sign * exp(logabsdet)`.
+    /// More numerically stable than `det` for large matrices.
+    pub fn tensor_linalg_slogdet(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(f64, f64), AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::slogdet_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        Ok((result.sign, result.logabsdet))
+    }
+
     /// Compute the QR decomposition: `A = Q @ R`.
     ///
     /// Returns `(Q, R)` as two separate tensor nodes.
@@ -3877,6 +4508,415 @@ impl FrankenTorchSession {
             }
         }
         strides
+    }
+
+    // ── nn.init — Parameter Initialization Functions ───────────────────
+    //
+    // These functions modify tensor values in-place for parameter initialization.
+    // Unlike regular in-place ops, they bypass the requires_grad leaf validation
+    // because initialization is meant to set parameter values before training.
+    // This mirrors PyTorch's nn.init which uses @torch.no_grad() internally.
+
+    /// Compute (fan_in, fan_out) for a tensor based on its shape.
+    ///
+    /// For 2-D tensors (Linear): fan_in = shape[1], fan_out = shape[0].
+    /// For N-D tensors (Conv): fan_in = shape[1] * prod(shape[2:]),
+    ///                         fan_out = shape[0] * prod(shape[2:]).
+    pub fn calculate_fan_in_and_fan_out(
+        &self,
+        tensor: TensorNodeId,
+    ) -> Result<(usize, usize), AutogradError> {
+        let shape = self.tensor_shape(tensor)?;
+        if shape.len() < 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "calculate_fan_in_and_fan_out requires at least 2 dimensions",
+                },
+            )));
+        }
+        let receptive_field: usize = shape[2..].iter().product();
+        let fan_in = shape[1] * receptive_field;
+        let fan_out = shape[0] * receptive_field;
+        Ok((fan_in, fan_out))
+    }
+
+    /// Fill tensor with values drawn from uniform distribution U(a, b).
+    pub fn init_uniform_(
+        &mut self,
+        tensor: TensorNodeId,
+        a: f64,
+        b: f64,
+    ) -> Result<(), AutogradError> {
+        let numel = self.tensor_numel(tensor)?;
+        let values: Vec<f64> = (0..numel)
+            .map(|_| a + (b - a) * self.rng.next_f64())
+            .collect();
+        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.record_tensor_in_place_operation(
+            "init_uniform_",
+            tensor,
+            Some(format!("a={a} b={b}")),
+        );
+        Ok(())
+    }
+
+    /// Fill tensor with values drawn from normal distribution N(mean, std^2).
+    pub fn init_normal_(
+        &mut self,
+        tensor: TensorNodeId,
+        mean: f64,
+        std: f64,
+    ) -> Result<(), AutogradError> {
+        let numel = self.tensor_numel(tensor)?;
+        let values: Vec<f64> = (0..numel)
+            .map(|_| mean + std * self.rng.next_normal())
+            .collect();
+        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.record_tensor_in_place_operation(
+            "init_normal_",
+            tensor,
+            Some(format!("mean={mean} std={std}")),
+        );
+        Ok(())
+    }
+
+    /// Fill tensor with a constant value.
+    pub fn init_constant_(
+        &mut self,
+        tensor: TensorNodeId,
+        val: f64,
+    ) -> Result<(), AutogradError> {
+        let numel = self.tensor_numel(tensor)?;
+        let values = vec![val; numel];
+        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.record_tensor_in_place_operation(
+            "init_constant_",
+            tensor,
+            Some(format!("val={val}")),
+        );
+        Ok(())
+    }
+
+    /// Fill tensor with ones.
+    pub fn init_ones_(&mut self, tensor: TensorNodeId) -> Result<(), AutogradError> {
+        self.init_constant_(tensor, 1.0)
+    }
+
+    /// Fill tensor with zeros.
+    pub fn init_zeros_(&mut self, tensor: TensorNodeId) -> Result<(), AutogradError> {
+        self.init_constant_(tensor, 0.0)
+    }
+
+    /// Fill a 2-D tensor with the identity matrix.
+    pub fn init_eye_(&mut self, tensor: TensorNodeId) -> Result<(), AutogradError> {
+        let shape = self.tensor_shape(tensor)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "init_eye_ requires a 2-D tensor",
+                },
+            )));
+        }
+        let rows = shape[0];
+        let cols = shape[1];
+        let numel = rows * cols;
+        let mut values = vec![0.0; numel];
+        let min_dim = rows.min(cols);
+        for i in 0..min_dim {
+            values[i * cols + i] = 1.0;
+        }
+        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.record_tensor_in_place_operation("init_eye_", tensor, None);
+        Ok(())
+    }
+
+    /// Fill a {3,4,5}-D tensor with the Dirac delta function.
+    ///
+    /// For Conv weight tensors: sets input channel == output channel filters to identity.
+    pub fn init_dirac_(
+        &mut self,
+        tensor: TensorNodeId,
+        groups: usize,
+    ) -> Result<(), AutogradError> {
+        let shape = self.tensor_shape(tensor)?;
+        let ndim = shape.len();
+        if !(3..=5).contains(&ndim) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "init_dirac_ requires a 3-D, 4-D, or 5-D tensor",
+                },
+            )));
+        }
+        let out_channels = shape[0];
+        let in_channels = shape[1];
+        if groups == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "init_dirac_ requires groups > 0",
+                },
+            )));
+        }
+        let out_channels_per_group = out_channels / groups;
+        let min_dim = out_channels_per_group.min(in_channels);
+        let numel: usize = shape.iter().product();
+        let mut values = vec![0.0; numel];
+        let spatial: Vec<usize> = shape[2..].to_vec();
+        let spatial_numel: usize = spatial.iter().product();
+
+        for g in 0..groups {
+            for d in 0..min_dim {
+                let oc = g * out_channels_per_group + d;
+                let ic = d;
+                // Center index in each spatial dimension
+                let mut center_offset = 0usize;
+                let mut stride = 1;
+                for &s in spatial.iter().rev() {
+                    center_offset += (s / 2) * stride;
+                    stride *= s;
+                }
+                let flat_idx = oc * (in_channels * spatial_numel) + ic * spatial_numel + center_offset;
+                if flat_idx < numel {
+                    values[flat_idx] = 1.0;
+                }
+            }
+        }
+        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.record_tensor_in_place_operation(
+            "init_dirac_",
+            tensor,
+            Some(format!("groups={groups}")),
+        );
+        Ok(())
+    }
+
+    /// Xavier (Glorot) uniform initialization.
+    ///
+    /// Fills with values from U(-a, a) where a = gain * sqrt(6 / (fan_in + fan_out)).
+    pub fn init_xavier_uniform_(
+        &mut self,
+        tensor: TensorNodeId,
+        gain: f64,
+    ) -> Result<(), AutogradError> {
+        let (fan_in, fan_out) = self.calculate_fan_in_and_fan_out(tensor)?;
+        let a = gain * (6.0 / (fan_in + fan_out) as f64).sqrt();
+        self.init_uniform_(tensor, -a, a)
+    }
+
+    /// Xavier (Glorot) normal initialization.
+    ///
+    /// Fills with values from N(0, std^2) where std = gain * sqrt(2 / (fan_in + fan_out)).
+    pub fn init_xavier_normal_(
+        &mut self,
+        tensor: TensorNodeId,
+        gain: f64,
+    ) -> Result<(), AutogradError> {
+        let (fan_in, fan_out) = self.calculate_fan_in_and_fan_out(tensor)?;
+        let std = gain * (2.0 / (fan_in + fan_out) as f64).sqrt();
+        self.init_normal_(tensor, 0.0, std)
+    }
+
+    /// Compute gain for a given nonlinearity.
+    ///
+    /// Returns the recommended gain factor for the given activation function.
+    #[must_use]
+    pub fn calculate_gain(nonlinearity: &str, param: f64) -> f64 {
+        match nonlinearity {
+            "linear" | "conv1d" | "conv2d" | "conv3d" | "conv_transpose1d"
+            | "conv_transpose2d" | "conv_transpose3d" | "sigmoid" => 1.0,
+            "tanh" => 5.0 / 3.0,
+            "relu" => 2.0_f64.sqrt(),
+            "leaky_relu" => (2.0 / (1.0 + param * param)).sqrt(),
+            "selu" => 0.75,
+            _ => 1.0,
+        }
+    }
+
+    /// Kaiming (He) uniform initialization.
+    ///
+    /// Fills with values from U(-bound, bound) where bound = sqrt(3) * gain / sqrt(fan).
+    /// `mode` is "fan_in" or "fan_out". `nonlinearity` determines the gain.
+    pub fn init_kaiming_uniform_(
+        &mut self,
+        tensor: TensorNodeId,
+        a: f64,
+        mode: &str,
+        nonlinearity: &str,
+    ) -> Result<(), AutogradError> {
+        let (fan_in, fan_out) = self.calculate_fan_in_and_fan_out(tensor)?;
+        let fan = match mode {
+            "fan_in" => fan_in,
+            "fan_out" => fan_out,
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "init_kaiming_uniform_ mode must be 'fan_in' or 'fan_out'",
+                    },
+                )));
+            }
+        };
+        let gain = Self::calculate_gain(nonlinearity, a);
+        let std = gain / (fan as f64).sqrt();
+        let bound = 3.0_f64.sqrt() * std;
+        self.init_uniform_(tensor, -bound, bound)
+    }
+
+    /// Kaiming (He) normal initialization.
+    ///
+    /// Fills with values from N(0, std^2) where std = gain / sqrt(fan).
+    /// `mode` is "fan_in" or "fan_out". `nonlinearity` determines the gain.
+    pub fn init_kaiming_normal_(
+        &mut self,
+        tensor: TensorNodeId,
+        a: f64,
+        mode: &str,
+        nonlinearity: &str,
+    ) -> Result<(), AutogradError> {
+        let (fan_in, fan_out) = self.calculate_fan_in_and_fan_out(tensor)?;
+        let fan = match mode {
+            "fan_in" => fan_in,
+            "fan_out" => fan_out,
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "init_kaiming_normal_ mode must be 'fan_in' or 'fan_out'",
+                    },
+                )));
+            }
+        };
+        let gain = Self::calculate_gain(nonlinearity, a);
+        let std = gain / (fan as f64).sqrt();
+        self.init_normal_(tensor, 0.0, std)
+    }
+
+    /// Orthogonal initialization using QR decomposition.
+    ///
+    /// Fills a 2-D tensor with a (semi-)orthogonal matrix. For non-square tensors,
+    /// uses reduced QR decomposition.
+    pub fn init_orthogonal_(
+        &mut self,
+        tensor: TensorNodeId,
+        gain: f64,
+    ) -> Result<(), AutogradError> {
+        let shape = self.tensor_shape(tensor)?;
+        if shape.len() < 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "init_orthogonal_ requires at least 2 dimensions",
+                },
+            )));
+        }
+        let rows = shape[0];
+        let cols: usize = shape[1..].iter().product();
+
+        // Generate a random matrix and compute QR
+        let flat_shape = if rows >= cols {
+            vec![rows, cols]
+        } else {
+            vec![cols, rows]
+        };
+        let random_mat = self.randn(flat_shape.clone(), false)?;
+        let (q_node, r_node) = self.tensor_linalg_qr(random_mat, true)?;
+
+        // Fix sign: make diagonal of R positive (ensures unique Q)
+        let r_values = self.tensor_values(r_node)?;
+        let q_values = self.tensor_values(q_node)?;
+        let k = flat_shape[1]; // min(rows, cols) after our arrangement
+        let n_cols_q = k;
+
+        let mut q_fixed = q_values.clone();
+        for j in 0..k {
+            let r_diag = r_values[j * k + j]; // R is k x k (or k x cols)
+            if r_diag < 0.0 {
+                // Negate column j of Q
+                for i in 0..flat_shape[0] {
+                    q_fixed[i * n_cols_q + j] = -q_fixed[i * n_cols_q + j];
+                }
+            }
+        }
+
+        // If rows < cols, transpose Q
+        let final_values = if rows < cols {
+            let mut transposed = vec![0.0; rows * cols];
+            for i in 0..cols {
+                for j in 0..rows {
+                    transposed[j * cols + i] = q_fixed[i * rows + j];
+                }
+            }
+            transposed
+        } else {
+            q_fixed
+        };
+
+        // Apply gain and reshape to original tensor shape
+        let numel: usize = shape.iter().product();
+        let scaled: Vec<f64> = final_values[..numel].iter().map(|&v| v * gain).collect();
+        self.tensor_tape.update_tensor_values(tensor, scaled)?;
+        self.record_tensor_in_place_operation(
+            "init_orthogonal_",
+            tensor,
+            Some(format!("gain={gain}")),
+        );
+        Ok(())
+    }
+
+    /// Sparse initialization: fill tensor with normally distributed non-zero entries.
+    ///
+    /// Each column has a fraction `(1 - sparsity)` of non-zero entries.
+    pub fn init_sparse_(
+        &mut self,
+        tensor: TensorNodeId,
+        sparsity: f64,
+        std: f64,
+    ) -> Result<(), AutogradError> {
+        let shape = self.tensor_shape(tensor)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "init_sparse_ requires a 2-D tensor",
+                },
+            )));
+        }
+        if !(0.0..1.0).contains(&sparsity) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "init_sparse_ requires sparsity in [0, 1)",
+                },
+            )));
+        }
+        let rows = shape[0];
+        let cols = shape[1];
+        let num_zeros_per_col = (sparsity * rows as f64).ceil() as usize;
+        let num_zeros_per_col = num_zeros_per_col.min(rows);
+        let numel = rows * cols;
+        let mut values = vec![0.0; numel];
+
+        // Fill with normal values, then zero out `num_zeros_per_col` entries per column
+        for j in 0..cols {
+            // Generate normal values for this column
+            let mut col_values: Vec<f64> = (0..rows).map(|_| std * self.rng.next_normal()).collect();
+
+            // Generate random indices to zero out using Fisher-Yates partial shuffle
+            let mut indices: Vec<usize> = (0..rows).collect();
+            for k in 0..num_zeros_per_col {
+                let swap_idx = k + (self.rng.next_u64() as usize % (rows - k));
+                indices.swap(k, swap_idx);
+            }
+            for &idx in &indices[..num_zeros_per_col] {
+                col_values[idx] = 0.0;
+            }
+
+            for (i, &val) in col_values.iter().enumerate() {
+                values[i * cols + j] = val;
+            }
+        }
+
+        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.record_tensor_in_place_operation(
+            "init_sparse_",
+            tensor,
+            Some(format!("sparsity={sparsity} std={std}")),
+        );
+        Ok(())
     }
 }
 
@@ -11944,5 +12984,1783 @@ mod tests {
         assert_eq!(session.tensor_dtype(b).unwrap(), DType::F32);
         let c = session.tensor_sin(a).unwrap();
         assert_eq!(session.tensor_dtype(c).unwrap(), DType::F32);
+    }
+
+    // ── nn.init tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn init_uniform_fills_in_range() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 1000], vec![10, 100], true).unwrap();
+        s.init_uniform_(t, -0.5, 0.5).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        assert_eq!(vals.len(), 1000);
+        for &v in &vals {
+            assert!(v >= -0.5 && v < 0.5, "value {v} out of range [-0.5, 0.5)");
+        }
+    }
+
+    #[test]
+    fn init_normal_approximate_statistics() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 10000], vec![100, 100], true).unwrap();
+        s.init_normal_(t, 2.0, 0.5).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+        let var: f64 = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+        assert!((mean - 2.0).abs() < 0.05, "mean {mean} not near 2.0");
+        assert!((var.sqrt() - 0.5).abs() < 0.05, "std {} not near 0.5", var.sqrt());
+    }
+
+    #[test]
+    fn init_constant_fills_exact() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 6], vec![2, 3], true).unwrap();
+        s.init_constant_(t, 42.0).unwrap();
+        assert_eq!(s.tensor_values(t).unwrap(), vec![42.0; 6]);
+    }
+
+    #[test]
+    fn init_ones_fills_ones() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 4], vec![2, 2], true).unwrap();
+        s.init_ones_(t).unwrap();
+        assert_eq!(s.tensor_values(t).unwrap(), vec![1.0; 4]);
+    }
+
+    #[test]
+    fn init_zeros_fills_zeros() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![5.0; 4], vec![2, 2], true).unwrap();
+        s.init_zeros_(t).unwrap();
+        assert_eq!(s.tensor_values(t).unwrap(), vec![0.0; 4]);
+    }
+
+    #[test]
+    fn init_eye_fills_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 9], vec![3, 3], true).unwrap();
+        s.init_eye_(t).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        assert_eq!(vals, vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn init_eye_rectangular() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 6], vec![2, 3], true).unwrap();
+        s.init_eye_(t).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        // 2x3 identity: [[1,0,0],[0,1,0]]
+        assert_eq!(vals, vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn init_eye_rejects_non_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 8], vec![2, 2, 2], true).unwrap();
+        assert!(s.init_eye_(t).is_err());
+    }
+
+    #[test]
+    fn init_xavier_uniform_bounds() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 600], vec![20, 30], true).unwrap();
+        s.init_xavier_uniform_(t, 1.0).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        // a = sqrt(6 / (20 + 30)) = sqrt(0.12) ≈ 0.3464
+        let a = (6.0 / 50.0_f64).sqrt();
+        for &v in &vals {
+            assert!(v >= -a && v < a, "value {v} outside xavier bounds ±{a}");
+        }
+    }
+
+    #[test]
+    fn init_xavier_normal_std() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 10000], vec![100, 100], true).unwrap();
+        s.init_xavier_normal_(t, 1.0).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+        let var: f64 = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+        // expected std = sqrt(2 / (100 + 100)) = sqrt(0.01) = 0.1
+        let expected_std = (2.0 / 200.0_f64).sqrt();
+        assert!((mean).abs() < 0.02, "mean {mean} not near 0");
+        assert!((var.sqrt() - expected_std).abs() < 0.02, "std {} not near {expected_std}", var.sqrt());
+    }
+
+    #[test]
+    fn init_kaiming_uniform_relu() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 500], vec![50, 10], true).unwrap();
+        s.init_kaiming_uniform_(t, 0.0, "fan_in", "relu").unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        // gain for relu = sqrt(2), fan_in = 10
+        // std = sqrt(2) / sqrt(10), bound = sqrt(3) * std
+        let gain = 2.0_f64.sqrt();
+        let std = gain / (10.0_f64).sqrt();
+        let bound = 3.0_f64.sqrt() * std;
+        for &v in &vals {
+            assert!(v >= -bound && v < bound, "value {v} outside kaiming bounds ±{bound}");
+        }
+    }
+
+    #[test]
+    fn init_kaiming_normal_fan_out() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 10000], vec![100, 100], true).unwrap();
+        s.init_kaiming_normal_(t, 0.0, "fan_out", "relu").unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+        let var: f64 = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+        // gain = sqrt(2), fan_out = 100, std = sqrt(2) / sqrt(100) = sqrt(2)/10
+        let expected_std = 2.0_f64.sqrt() / 10.0;
+        assert!((mean).abs() < 0.02, "mean {mean} not near 0");
+        assert!((var.sqrt() - expected_std).abs() < 0.02, "std {} not near {expected_std}", var.sqrt());
+    }
+
+    #[test]
+    fn init_kaiming_invalid_mode() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 100], vec![10, 10], true).unwrap();
+        assert!(s.init_kaiming_uniform_(t, 0.0, "invalid", "relu").is_err());
+    }
+
+    #[test]
+    fn calculate_fan_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 60], vec![20, 3], true).unwrap();
+        let (fan_in, fan_out) = s.calculate_fan_in_and_fan_out(t).unwrap();
+        assert_eq!(fan_in, 3);
+        assert_eq!(fan_out, 20);
+    }
+
+    #[test]
+    fn calculate_fan_4d_conv() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Conv2d: [out_channels=16, in_channels=3, kH=5, kW=5]
+        let t = s.tensor_variable(vec![0.0; 16 * 3 * 5 * 5], vec![16, 3, 5, 5], true).unwrap();
+        let (fan_in, fan_out) = s.calculate_fan_in_and_fan_out(t).unwrap();
+        assert_eq!(fan_in, 3 * 5 * 5); // 75
+        assert_eq!(fan_out, 16 * 5 * 5); // 400
+    }
+
+    #[test]
+    fn calculate_fan_1d_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 10], vec![10], true).unwrap();
+        assert!(s.calculate_fan_in_and_fan_out(t).is_err());
+    }
+
+    #[test]
+    fn init_orthogonal_produces_orthogonal_matrix() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 25], vec![5, 5], true).unwrap();
+        s.init_orthogonal_(t, 1.0).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+
+        // Q^T @ Q should be identity (within tolerance)
+        for i in 0..5 {
+            for j in 0..5 {
+                let mut dot = 0.0;
+                for k in 0..5 {
+                    dot += vals[k * 5 + i] * vals[k * 5 + j];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-10,
+                    "Q^T @ Q [{i},{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn init_orthogonal_with_gain() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 4], vec![2, 2], true).unwrap();
+        s.init_orthogonal_(t, 2.0).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+
+        // (Q/gain)^T @ (Q/gain) should be identity
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut dot = 0.0;
+                for k in 0..2 {
+                    dot += (vals[k * 2 + i] / 2.0) * (vals[k * 2 + j] / 2.0);
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-10,
+                    "(Q/gain)^T @ (Q/gain) [{i},{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn init_orthogonal_rectangular() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Tall matrix: 6x3 -> Q is 6x3 semi-orthogonal
+        let t = s.tensor_variable(vec![0.0; 18], vec![6, 3], true).unwrap();
+        s.init_orthogonal_(t, 1.0).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+
+        // Q^T @ Q should be 3x3 identity
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut dot = 0.0;
+                for k in 0..6 {
+                    dot += vals[k * 3 + i] * vals[k * 3 + j];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-10,
+                    "Q^T @ Q [{i},{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn init_sparse_respects_sparsity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 200], vec![20, 10], true).unwrap();
+        s.init_sparse_(t, 0.5, 0.01).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+
+        // Check each column: approximately 50% zeros
+        for col in 0..10 {
+            let zero_count = (0..20).filter(|&row| vals[row * 10 + col] == 0.0).count();
+            // With 50% sparsity and 20 rows, expect 10 zeros per column
+            assert_eq!(zero_count, 10, "column {col}: expected 10 zeros, got {zero_count}");
+        }
+    }
+
+    #[test]
+    fn init_sparse_rejects_non_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 8], vec![2, 2, 2], true).unwrap();
+        assert!(s.init_sparse_(t, 0.5, 0.01).is_err());
+    }
+
+    #[test]
+    fn init_sparse_rejects_invalid_sparsity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 4], vec![2, 2], true).unwrap();
+        assert!(s.init_sparse_(t, 1.0, 0.01).is_err());
+        assert!(s.init_sparse_(t, -0.1, 0.01).is_err());
+    }
+
+    #[test]
+    fn init_dirac_3d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 1D conv weight: [out=2, in=2, kernel=3]
+        let t = s.tensor_variable(vec![0.0; 12], vec![2, 2, 3], true).unwrap();
+        s.init_dirac_(t, 1).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        // oc=0, ic=0, center=1 -> index 0*6 + 0*3 + 1 = 1
+        assert_eq!(vals[1], 1.0);
+        // oc=1, ic=1, center=1 -> index 1*6 + 1*3 + 1 = 10
+        assert_eq!(vals[10], 1.0);
+        // Everything else should be 0
+        let sum: f64 = vals.iter().sum();
+        assert!((sum - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn calculate_gain_values() {
+        assert!((FrankenTorchSession::calculate_gain("relu", 0.0) - 2.0_f64.sqrt()).abs() < 1e-10);
+        assert!((FrankenTorchSession::calculate_gain("tanh", 0.0) - 5.0 / 3.0).abs() < 1e-10);
+        assert!((FrankenTorchSession::calculate_gain("linear", 0.0) - 1.0).abs() < 1e-10);
+        assert!((FrankenTorchSession::calculate_gain("sigmoid", 0.0) - 1.0).abs() < 1e-10);
+        // leaky_relu with negative_slope=0.2: sqrt(2 / (1 + 0.04)) = sqrt(2/1.04)
+        let expected = (2.0 / 1.04_f64).sqrt();
+        assert!((FrankenTorchSession::calculate_gain("leaky_relu", 0.2) - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn init_works_on_requires_grad_leaf() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Init functions must work on leaf tensors with requires_grad=true
+        let t = s.tensor_variable(vec![0.0; 100], vec![10, 10], true).unwrap();
+        assert!(s.tensor_requires_grad(t).unwrap());
+        assert!(s.tensor_is_leaf(t).unwrap());
+        // These should NOT error (unlike regular in-place ops)
+        s.init_uniform_(t, -1.0, 1.0).unwrap();
+        s.init_normal_(t, 0.0, 1.0).unwrap();
+        s.init_constant_(t, 5.0).unwrap();
+        s.init_xavier_uniform_(t, 1.0).unwrap();
+        s.init_kaiming_normal_(t, 0.0, "fan_in", "relu").unwrap();
+    }
+
+    // ── linalg.det / slogdet tests ────────────────────────────────────
+
+    #[test]
+    fn det_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.eye(3, false).unwrap();
+        let det = s.tensor_linalg_det(a).unwrap();
+        assert!((det - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn det_scaled_identity_2n() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0], vec![3, 3], false)
+            .unwrap();
+        let det = s.tensor_linalg_det(a).unwrap();
+        assert!((det - 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn det_known_3x3_value() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 10.0,
+        ], vec![3, 3], false).unwrap();
+        let det = s.tensor_linalg_det(a).unwrap();
+        assert!((det - (-3.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn det_singular_zero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 2.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let det = s.tensor_linalg_det(a).unwrap();
+        assert!(det.abs() < 1e-10);
+    }
+
+    #[test]
+    fn det_1x1_scalar() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![7.5], vec![1, 1], false).unwrap();
+        let det = s.tensor_linalg_det(a).unwrap();
+        assert!((det - 7.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn slogdet_matches_det() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 10.0,
+        ], vec![3, 3], false).unwrap();
+        let det = s.tensor_linalg_det(a).unwrap();
+        let (sign, logabsdet) = s.tensor_linalg_slogdet(a).unwrap();
+        let reconstructed = sign * logabsdet.exp();
+        assert!((reconstructed - det).abs() < 1e-10);
+    }
+
+    #[test]
+    fn slogdet_singular_matrix() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 2.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let (sign, logabsdet) = s.tensor_linalg_slogdet(a).unwrap();
+        assert!(sign.abs() < 1e-12);
+        assert!(logabsdet.is_infinite() && logabsdet < 0.0);
+    }
+
+    #[test]
+    fn slogdet_negative_det() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // det([[0,1],[1,0]]) = -1
+        let a = s
+            .tensor_variable(vec![0.0, 1.0, 1.0, 0.0], vec![2, 2], false)
+            .unwrap();
+        let (sign, logabsdet) = s.tensor_linalg_slogdet(a).unwrap();
+        assert!((sign - (-1.0)).abs() < 1e-12);
+        assert!(logabsdet.abs() < 1e-12);
+    }
+
+    // ── unique / unique_consecutive tests (bd-2klp.3) ─────────────────
+
+    #[test]
+    fn unique_sorted() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![3.0, 1.0, 2.0, 1.0, 3.0], vec![5], false)
+            .unwrap();
+        let (u, _, _) = s.tensor_unique(t, true, false, false).unwrap();
+        let vals = s.tensor_values(u).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn unique_unsorted() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![3.0, 1.0, 2.0, 1.0, 3.0], vec![5], false)
+            .unwrap();
+        let (u, _, _) = s.tensor_unique(t, false, false, false).unwrap();
+        let vals = s.tensor_values(u).unwrap();
+        // First occurrence order: 3, 1, 2
+        assert_eq!(vals, vec![3.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn unique_with_inverse() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![3.0, 1.0, 2.0, 1.0, 3.0], vec![5], false)
+            .unwrap();
+        let (u, inv, _) = s.tensor_unique(t, true, true, false).unwrap();
+        let u_vals = s.tensor_values(u).unwrap();
+        let inv_vals = s.tensor_values(inv.unwrap()).unwrap();
+        assert_eq!(u_vals, vec![1.0, 2.0, 3.0]);
+        // Inverse maps: 3->2, 1->0, 2->1, 1->0, 3->2
+        assert_eq!(inv_vals, vec![2.0, 0.0, 1.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn unique_with_counts() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![3.0, 1.0, 2.0, 1.0, 3.0], vec![5], false)
+            .unwrap();
+        let (u, _, counts) = s.tensor_unique(t, true, false, true).unwrap();
+        let u_vals = s.tensor_values(u).unwrap();
+        let c_vals = s.tensor_values(counts.unwrap()).unwrap();
+        assert_eq!(u_vals, vec![1.0, 2.0, 3.0]);
+        // 1 appears 2x, 2 appears 1x, 3 appears 2x
+        assert_eq!(c_vals, vec![2.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn unique_all_same() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![5.0, 5.0, 5.0], vec![3], false)
+            .unwrap();
+        let (u, _, _) = s.tensor_unique(t, true, false, false).unwrap();
+        let vals = s.tensor_values(u).unwrap();
+        assert_eq!(vals, vec![5.0]);
+    }
+
+    #[test]
+    fn unique_all_different() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let (u, _, _) = s.tensor_unique(t, true, false, false).unwrap();
+        let vals = s.tensor_values(u).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn unique_consecutive_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 1.0, 2.0, 2.0, 1.0], vec![5], false)
+            .unwrap();
+        let (u, _, _) = s.tensor_unique_consecutive(t, false, false).unwrap();
+        let vals = s.tensor_values(u).unwrap();
+        // Only removes consecutive dupes: 1, 2, 1
+        assert_eq!(vals, vec![1.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn unique_consecutive_with_inverse() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 1.0, 2.0, 2.0, 1.0], vec![5], false)
+            .unwrap();
+        let (_, inv, _) = s.tensor_unique_consecutive(t, true, false).unwrap();
+        let inv_vals = s.tensor_values(inv.unwrap()).unwrap();
+        // Group 0: indices 0,1 -> 0; Group 1: indices 2,3 -> 1; Group 2: index 4 -> 2
+        assert_eq!(inv_vals, vec![0.0, 0.0, 1.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn unique_consecutive_with_counts() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 1.0, 2.0, 2.0, 1.0], vec![5], false)
+            .unwrap();
+        let (_, _, counts) = s.tensor_unique_consecutive(t, false, true).unwrap();
+        let c_vals = s.tensor_values(counts.unwrap()).unwrap();
+        // Group sizes: 2, 2, 1
+        assert_eq!(c_vals, vec![2.0, 2.0, 1.0]);
+    }
+
+    // ── matrix_power / matrix_exp tests (bd-2drq.10) ──────────────────
+
+    #[test]
+    fn matrix_power_zero_is_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![2.0, 1.0, 1.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let result = s.tensor_matrix_power(a, 0).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+        assert!(vals[1].abs() < 1e-12);
+        assert!(vals[2].abs() < 1e-12);
+        assert!((vals[3] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn matrix_power_one_is_self() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_data = vec![2.0, 1.0, 1.0, 3.0];
+        let a = s
+            .tensor_variable(a_data.clone(), vec![2, 2], false)
+            .unwrap();
+        let result = s.tensor_matrix_power(a, 1).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        for (i, (&v, &e)) in vals.iter().zip(a_data.iter()).enumerate() {
+            assert!((v - e).abs() < 1e-12, "power1[{i}] = {v}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn matrix_power_two_is_a_squared() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let a2 = s.tensor_matrix_power(a, 2).unwrap();
+        let mm = s.tensor_matmul(a, a).unwrap();
+        let a2_vals = s.tensor_values(a2).unwrap();
+        let mm_vals = s.tensor_values(mm).unwrap();
+        for (i, (&p, &m)) in a2_vals.iter().zip(mm_vals.iter()).enumerate() {
+            assert!((p - m).abs() < 1e-10, "power2[{i}] = {p}, matmul = {m}");
+        }
+    }
+
+    #[test]
+    fn matrix_power_three() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let a3 = s.tensor_matrix_power(a, 3).unwrap();
+        let a2 = s.tensor_matmul(a, a).unwrap();
+        let a3_ref = s.tensor_matmul(a2, a).unwrap();
+        let a3_vals = s.tensor_values(a3).unwrap();
+        let ref_vals = s.tensor_values(a3_ref).unwrap();
+        for (i, (&p, &r)) in a3_vals.iter().zip(ref_vals.iter()).enumerate() {
+            assert!((p - r).abs() < 1e-10, "power3[{i}] = {p}, ref = {r}");
+        }
+    }
+
+    #[test]
+    fn matrix_power_negative_one_is_inverse() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![2.0, 1.0, 1.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let a_inv = s.tensor_matrix_power(a, -1).unwrap();
+        let product = s.tensor_matmul(a, a_inv).unwrap();
+        let vals = s.tensor_values(product).unwrap();
+        // A @ A^-1 should be identity
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!(vals[1].abs() < 1e-10);
+        assert!(vals[2].abs() < 1e-10);
+        assert!((vals[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matrix_power_identity_any_n() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let i3 = s.eye(3, false).unwrap();
+        let result = s.tensor_matrix_power(i3, 100).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((vals[i * 3 + j] - expected).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_exp_zero_is_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![0.0; 4], vec![2, 2], false)
+            .unwrap();
+        let result = s.tensor_matrix_exp(a).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!(vals[1].abs() < 1e-10);
+        assert!(vals[2].abs() < 1e-10);
+        assert!((vals[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matrix_exp_diagonal() {
+        // exp(diag(a, b)) = diag(exp(a), exp(b))
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 2.0], vec![2, 2], false)
+            .unwrap();
+        let result = s.tensor_matrix_exp(a).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0f64.exp()).abs() < 1e-8);
+        assert!(vals[1].abs() < 1e-10);
+        assert!(vals[2].abs() < 1e-10);
+        assert!((vals[3] - 2.0f64.exp()).abs() < 1e-8);
+    }
+
+    #[test]
+    fn matrix_exp_1x1() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![3.0], vec![1, 1], false).unwrap();
+        let result = s.tensor_matrix_exp(a).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 3.0f64.exp()).abs() < 1e-8);
+    }
+
+    #[test]
+    fn linalg_inv_2x2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![4.0, 7.0, 2.0, 6.0], vec![2, 2], false)
+            .unwrap();
+        let inv = s.tensor_linalg_inv(a).unwrap();
+        let product = s.tensor_matmul(a, inv).unwrap();
+        let vals = s.tensor_values(product).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!(vals[1].abs() < 1e-10);
+        assert!(vals[2].abs() < 1e-10);
+        assert!((vals[3] - 1.0).abs() < 1e-10);
+    }
+
+    // ── Eigendecomposition tests (bd-2drq.7) ──────────────────────────
+
+    #[test]
+    fn eigh_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.eye(3, false).unwrap();
+        let (evals, _evecs) = s.tensor_linalg_eigh(a).unwrap();
+        let eval_vals = s.tensor_values(evals).unwrap();
+        for (i, &v) in eval_vals.iter().enumerate() {
+            assert!((v - 1.0).abs() < 1e-10, "eigenvalue[{i}] = {v}, expected 1.0");
+        }
+    }
+
+    #[test]
+    fn eigh_diagonal() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            3.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 2.0,
+        ], vec![3, 3], false).unwrap();
+        let (evals, _) = s.tensor_linalg_eigh(a).unwrap();
+        let vals = s.tensor_values(evals).unwrap();
+        // Sorted ascending: 1, 2, 3
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 2.0).abs() < 1e-10);
+        assert!((vals[2] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn eigh_reconstruction() {
+        // Verify A = V @ diag(λ) @ V^T
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a_data = vec![
+            2.0, 1.0, 0.0,
+            1.0, 3.0, 1.0,
+            0.0, 1.0, 2.0,
+        ];
+        let a = s
+            .tensor_variable(a_data.clone(), vec![3, 3], false)
+            .unwrap();
+        let (evals, evecs) = s.tensor_linalg_eigh(a).unwrap();
+        let eval_vals = s.tensor_values(evals).unwrap();
+        let evec_vals = s.tensor_values(evecs).unwrap();
+        let n = 3;
+        // Reconstruct: A = V @ diag(λ) @ V^T
+        for i in 0..n {
+            for j in 0..n {
+                let mut val = 0.0;
+                for k in 0..n {
+                    val += evec_vals[i * n + k] * eval_vals[k] * evec_vals[j * n + k];
+                }
+                assert!(
+                    (val - a_data[i * n + j]).abs() < 1e-10,
+                    "reconstructed[{i},{j}] = {val}, expected {}",
+                    a_data[i * n + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eigh_eigenvectors_orthonormal() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            4.0, 1.0,
+            1.0, 3.0,
+        ], vec![2, 2], false).unwrap();
+        let (_, evecs) = s.tensor_linalg_eigh(a).unwrap();
+        let v = s.tensor_values(evecs).unwrap();
+        let n = 2;
+        // V^T @ V = I
+        for i in 0..n {
+            for j in 0..n {
+                let mut dot = 0.0;
+                for k in 0..n {
+                    dot += v[k * n + i] * v[k * n + j];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-10,
+                    "(V^T@V)[{i},{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eigh_sorted_ascending() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            5.0, 2.0, 1.0,
+            2.0, 4.0, 2.0,
+            1.0, 2.0, 3.0,
+        ], vec![3, 3], false).unwrap();
+        let (evals, _) = s.tensor_linalg_eigh(a).unwrap();
+        let vals = s.tensor_values(evals).unwrap();
+        for i in 1..vals.len() {
+            assert!(
+                vals[i] >= vals[i - 1] - 1e-12,
+                "eigenvalues not ascending: λ[{}]={} < λ[{}]={}",
+                i - 1,
+                vals[i - 1],
+                i,
+                vals[i]
+            );
+        }
+    }
+
+    #[test]
+    fn eigh_1x1() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![7.0], vec![1, 1], false).unwrap();
+        let (evals, evecs) = s.tensor_linalg_eigh(a).unwrap();
+        let eval_vals = s.tensor_values(evals).unwrap();
+        let evec_vals = s.tensor_values(evecs).unwrap();
+        assert!((eval_vals[0] - 7.0).abs() < 1e-12);
+        assert!((evec_vals[0] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eigh_negative_eigenvalues() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // A = [[1, 3], [3, 1]] has eigenvalues -2 and 4
+        let a = s
+            .tensor_variable(vec![1.0, 3.0, 3.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let (evals, _) = s.tensor_linalg_eigh(a).unwrap();
+        let vals = s.tensor_values(evals).unwrap();
+        assert!((vals[0] - (-2.0)).abs() < 1e-10);
+        assert!((vals[1] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn eigvalsh_matches_eigh() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            2.0, 1.0,
+            1.0, 3.0,
+        ], vec![2, 2], false).unwrap();
+        let (evals_full, _) = s.tensor_linalg_eigh(a).unwrap();
+        let evals_only = s.tensor_linalg_eigvalsh(a).unwrap();
+        let full_vals = s.tensor_values(evals_full).unwrap();
+        let only_vals = s.tensor_values(evals_only).unwrap();
+        for (i, (&f, &o)) in full_vals.iter().zip(only_vals.iter()).enumerate() {
+            assert!((f - o).abs() < 1e-12, "mismatch at [{i}]: {f} vs {o}");
+        }
+    }
+
+    // ── SVD tests (bd-2drq.3) ─────────────────────────────────────────
+
+    #[test]
+    fn svd_identity_3x3() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.eye(3, false).unwrap();
+        let (u, sv, vh) = s.tensor_linalg_svd(a, false).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        // All singular values should be 1.0
+        for (i, &val) in sv_vals.iter().enumerate() {
+            assert!((val - 1.0).abs() < 1e-10, "s[{i}] = {val}, expected 1.0");
+        }
+    }
+
+    #[test]
+    fn svd_reconstruction_2x2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_data = vec![3.0, 1.0, 1.0, 3.0];
+        let a = s
+            .tensor_variable(a_data.clone(), vec![2, 2], false)
+            .unwrap();
+        let (u, sv, vh) = s.tensor_linalg_svd(a, false).unwrap();
+        let u_vals = s.tensor_values(u).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        let vh_vals = s.tensor_values(vh).unwrap();
+        // Reconstruct: A = U @ diag(S) @ Vh
+        let m = 2;
+        let n = 2;
+        let k = 2;
+        for i in 0..m {
+            for j in 0..n {
+                let mut val = 0.0;
+                for l in 0..k {
+                    val += u_vals[i * k + l] * sv_vals[l] * vh_vals[l * n + j];
+                }
+                assert!(
+                    (val - a_data[i * n + j]).abs() < 1e-10,
+                    "reconstructed[{i},{j}] = {val}, expected {}",
+                    a_data[i * n + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn svd_singular_values_sorted_descending() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 10.0,
+        ], vec![3, 3], false).unwrap();
+        let (_, sv, _) = s.tensor_linalg_svd(a, false).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        for i in 1..sv_vals.len() {
+            assert!(
+                sv_vals[i - 1] >= sv_vals[i] - 1e-12,
+                "s[{}] = {} < s[{}] = {}: not descending",
+                i - 1,
+                sv_vals[i - 1],
+                i,
+                sv_vals[i]
+            );
+        }
+    }
+
+    #[test]
+    fn svd_singular_values_nonnegative() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let (_, sv, _) = s.tensor_linalg_svd(a, false).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        for (i, &val) in sv_vals.iter().enumerate() {
+            assert!(val >= -1e-15, "s[{i}] = {val} is negative");
+        }
+    }
+
+    #[test]
+    fn svd_diagonal_matrix() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            5.0, 0.0, 0.0,
+            0.0, 3.0, 0.0,
+            0.0, 0.0, 1.0,
+        ], vec![3, 3], false).unwrap();
+        let (_, sv, _) = s.tensor_linalg_svd(a, false).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        assert!((sv_vals[0] - 5.0).abs() < 1e-10);
+        assert!((sv_vals[1] - 3.0).abs() < 1e-10);
+        assert!((sv_vals[2] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn svd_1x1() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-7.0], vec![1, 1], false).unwrap();
+        let (_, sv, _) = s.tensor_linalg_svd(a, false).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        assert!((sv_vals[0] - 7.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn svd_zero_matrix() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![0.0; 4], vec![2, 2], false)
+            .unwrap();
+        let (_, sv, _) = s.tensor_linalg_svd(a, false).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        for &val in &sv_vals {
+            assert!(val.abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn svd_rectangular_tall() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a_data = vec![
+            1.0, 2.0,
+            3.0, 4.0,
+            5.0, 6.0,
+        ];
+        let a = s
+            .tensor_variable(a_data.clone(), vec![3, 2], false)
+            .unwrap();
+        let (u, sv, vh) = s.tensor_linalg_svd(a, false).unwrap();
+        let u_shape = s.tensor_shape(u).unwrap();
+        let sv_shape = s.tensor_shape(sv).unwrap();
+        let vh_shape = s.tensor_shape(vh).unwrap();
+        assert_eq!(u_shape, vec![3, 2]); // reduced: (m, k)
+        assert_eq!(sv_shape, vec![2]);
+        assert_eq!(vh_shape, vec![2, 2]); // reduced: (k, n)
+
+        // Verify reconstruction
+        let u_vals = s.tensor_values(u).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        let vh_vals = s.tensor_values(vh).unwrap();
+        for i in 0..3 {
+            for j in 0..2 {
+                let mut val = 0.0;
+                for l in 0..2 {
+                    val += u_vals[i * 2 + l] * sv_vals[l] * vh_vals[l * 2 + j];
+                }
+                assert!(
+                    (val - a_data[i * 2 + j]).abs() < 1e-10,
+                    "reconstructed[{i},{j}] = {val}, expected {}",
+                    a_data[i * 2 + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn svd_rectangular_wide() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a_data = vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+        ];
+        let a = s
+            .tensor_variable(a_data.clone(), vec![2, 3], false)
+            .unwrap();
+        let (u, sv, vh) = s.tensor_linalg_svd(a, false).unwrap();
+        let u_shape = s.tensor_shape(u).unwrap();
+        let vh_shape = s.tensor_shape(vh).unwrap();
+        assert_eq!(u_shape, vec![2, 2]); // reduced: (m, k)
+        assert_eq!(vh_shape, vec![2, 3]); // reduced: (k, n)
+
+        // Verify reconstruction
+        let u_vals = s.tensor_values(u).unwrap();
+        let sv_vals = s.tensor_values(sv).unwrap();
+        let vh_vals = s.tensor_values(vh).unwrap();
+        for i in 0..2 {
+            for j in 0..3 {
+                let mut val = 0.0;
+                for l in 0..2 {
+                    val += u_vals[i * 2 + l] * sv_vals[l] * vh_vals[l * 3 + j];
+                }
+                assert!(
+                    (val - a_data[i * 3 + j]).abs() < 1e-10,
+                    "reconstructed[{i},{j}] = {val}, expected {}",
+                    a_data[i * 3 + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn svd_full_matrices_shapes() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            1.0, 2.0,
+            3.0, 4.0,
+            5.0, 6.0,
+        ], vec![3, 2], false).unwrap();
+        let (u, sv, vh) = s.tensor_linalg_svd(a, true).unwrap();
+        let u_shape = s.tensor_shape(u).unwrap();
+        let sv_shape = s.tensor_shape(sv).unwrap();
+        let vh_shape = s.tensor_shape(vh).unwrap();
+        assert_eq!(u_shape, vec![3, 3]); // full: (m, m)
+        assert_eq!(sv_shape, vec![2]);
+        assert_eq!(vh_shape, vec![2, 2]); // full: (n, n)
+    }
+
+    #[test]
+    fn svdvals_matches_svd() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 10.0,
+        ], vec![3, 3], false).unwrap();
+        let (_, sv_full, _) = s.tensor_linalg_svd(a, false).unwrap();
+        let sv_only = s.tensor_linalg_svdvals(a).unwrap();
+        let sv_full_vals = s.tensor_values(sv_full).unwrap();
+        let sv_only_vals = s.tensor_values(sv_only).unwrap();
+        assert_eq!(sv_full_vals.len(), sv_only_vals.len());
+        for (i, (&a_val, &b_val)) in sv_full_vals.iter().zip(sv_only_vals.iter()).enumerate() {
+            assert!(
+                (a_val - b_val).abs() < 1e-10,
+                "svdvals mismatch at [{i}]: {a_val} vs {b_val}"
+            );
+        }
+    }
+
+    #[test]
+    fn svd_orthogonality() {
+        // Verify U^T @ U = I and Vh @ Vh^T = I (for reduced SVD of square matrix)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            2.0, 1.0, 0.0,
+            1.0, 3.0, 1.0,
+            0.0, 1.0, 2.0,
+        ], vec![3, 3], false).unwrap();
+        let (u, _, vh) = s.tensor_linalg_svd(a, false).unwrap();
+        let u_vals = s.tensor_values(u).unwrap();
+        let vh_vals = s.tensor_values(vh).unwrap();
+        let n = 3;
+        // U^T @ U should be identity
+        for i in 0..n {
+            for j in 0..n {
+                let mut dot = 0.0;
+                for k in 0..n {
+                    dot += u_vals[k * n + i] * u_vals[k * n + j];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-10,
+                    "(U^T@U)[{i},{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+        // Vh @ Vh^T should be identity
+        for i in 0..n {
+            for j in 0..n {
+                let mut dot = 0.0;
+                for k in 0..n {
+                    dot += vh_vals[i * n + k] * vh_vals[j * n + k];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-10,
+                    "(Vh@Vh^T)[{i},{j}] = {dot}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    // ── cross / vecdot / diag_embed tests (bd-2drq.9) ─────────────────
+
+    #[test]
+    fn cross_standard_basis() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let i = s
+            .tensor_variable(vec![1.0, 0.0, 0.0], vec![3], false)
+            .unwrap();
+        let j = s
+            .tensor_variable(vec![0.0, 1.0, 0.0], vec![3], false)
+            .unwrap();
+        let k = s.tensor_cross(i, j).unwrap();
+        let vals = s.tensor_values(k).unwrap();
+        // i × j = k = [0, 0, 1]
+        assert!((vals[0]).abs() < 1e-12);
+        assert!((vals[1]).abs() < 1e-12);
+        assert!((vals[2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cross_anti_commutativity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false)
+            .unwrap();
+        let axb = s.tensor_cross(a, b).unwrap();
+        let bxa = s.tensor_cross(b, a).unwrap();
+        let axb_vals = s.tensor_values(axb).unwrap();
+        let bxa_vals = s.tensor_values(bxa).unwrap();
+        // a × b = -(b × a)
+        for i in 0..3 {
+            assert!(
+                (axb_vals[i] + bxa_vals[i]).abs() < 1e-12,
+                "anti-commutativity failed at [{i}]"
+            );
+        }
+    }
+
+    #[test]
+    fn cross_known_values() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false)
+            .unwrap();
+        let c = s.tensor_cross(a, b).unwrap();
+        let vals = s.tensor_values(c).unwrap();
+        // [2*6-3*5, 3*4-1*6, 1*5-2*4] = [12-15, 12-6, 5-8] = [-3, 6, -3]
+        assert!((vals[0] - (-3.0)).abs() < 1e-12);
+        assert!((vals[1] - 6.0).abs() < 1e-12);
+        assert!((vals[2] - (-3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cross_wrong_size_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![3.0, 4.0], vec![2], false)
+            .unwrap();
+        assert!(s.tensor_cross(a, b).is_err());
+    }
+
+    #[test]
+    fn vecdot_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false)
+            .unwrap();
+        let d = s.tensor_vecdot(a, b).unwrap();
+        let vals = s.tensor_values(d).unwrap();
+        // 1*4 + 2*5 + 3*6 = 32
+        assert!((vals[0] - 32.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vecdot_2d_batched() {
+        // a: [[1,2],[3,4]], b: [[5,6],[7,8]]
+        // vecdot along last dim: [1*5+2*6, 3*7+4*8] = [17, 53]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], false)
+            .unwrap();
+        let d = s.tensor_vecdot(a, b).unwrap();
+        let vals = s.tensor_values(d).unwrap();
+        assert!((vals[0] - 17.0).abs() < 1e-10);
+        assert!((vals[1] - 53.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn diag_embed_main_diagonal() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let d = s.tensor_diag_embed(v, 0).unwrap();
+        let vals = s.tensor_values(d).unwrap();
+        let shape = s.tensor_shape(d).unwrap();
+        assert_eq!(shape, vec![3, 3]);
+        #[rustfmt::skip]
+        let expected = vec![
+            1.0, 0.0, 0.0,
+            0.0, 2.0, 0.0,
+            0.0, 0.0, 3.0,
+        ];
+        for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
+            assert!((v - e).abs() < 1e-12, "diag[{i}] = {v}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn diag_embed_super_diagonal() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let d = s.tensor_diag_embed(v, 1).unwrap();
+        let vals = s.tensor_values(d).unwrap();
+        let shape = s.tensor_shape(d).unwrap();
+        assert_eq!(shape, vec![3, 3]);
+        #[rustfmt::skip]
+        let expected = vec![
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 2.0,
+            0.0, 0.0, 0.0,
+        ];
+        for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
+            assert!((v - e).abs() < 1e-12, "diag[{i}] = {v}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn diag_embed_sub_diagonal() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s.tensor_variable(vec![5.0, 6.0], vec![2], false).unwrap();
+        let d = s.tensor_diag_embed(v, -1).unwrap();
+        let vals = s.tensor_values(d).unwrap();
+        let shape = s.tensor_shape(d).unwrap();
+        assert_eq!(shape, vec![3, 3]);
+        #[rustfmt::skip]
+        let expected = vec![
+            0.0, 0.0, 0.0,
+            5.0, 0.0, 0.0,
+            0.0, 6.0, 0.0,
+        ];
+        for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
+            assert!((v - e).abs() < 1e-12, "diag[{i}] = {v}, expected {e}");
+        }
+    }
+
+    // ── tensordot / kron tests (bd-2klp.8) ────────────────────────────
+
+    #[test]
+    fn tensordot_dims1_matches_matmul() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0], vec![3, 2], false)
+            .unwrap();
+        let td = s.tensor_tensordot(a, b, 1).unwrap();
+        let mm = s.tensor_matmul(a, b).unwrap();
+        let td_vals = s.tensor_values(td).unwrap();
+        let mm_vals = s.tensor_values(mm).unwrap();
+        assert_eq!(td_vals.len(), mm_vals.len());
+        for (i, (&t, &m)) in td_vals.iter().zip(mm_vals.iter()).enumerate() {
+            assert!((t - m).abs() < 1e-10, "tensordot[{i}] = {t}, matmul = {m}");
+        }
+    }
+
+    #[test]
+    fn tensordot_dims0_outer_product() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let b = s
+            .tensor_variable(vec![3.0, 4.0, 5.0], vec![3], false)
+            .unwrap();
+        let td = s.tensor_tensordot(a, b, 0).unwrap();
+        let td_vals = s.tensor_values(td).unwrap();
+        let td_shape = s.tensor_shape(td).unwrap();
+        assert_eq!(td_shape, vec![2, 3]);
+        // [[1*3, 1*4, 1*5], [2*3, 2*4, 2*5]]
+        let expected = vec![3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
+        for (i, (&v, &e)) in td_vals.iter().zip(expected.iter()).enumerate() {
+            assert!((v - e).abs() < 1e-10, "td[{i}] = {v}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn tensordot_dims2_full_contraction() {
+        // dims=2 on 2x3 and 2x3: contracts both dimensions -> scalar
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0], vec![2, 3], false)
+            .unwrap();
+        let td = s.tensor_tensordot(a, b, 2).unwrap();
+        let td_vals = s.tensor_values(td).unwrap();
+        // sum of element-wise products: 1*7+2*8+3*9+4*10+5*11+6*12 = 7+16+27+40+55+72 = 217
+        assert!((td_vals[0] - 217.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn tensordot_3d_contract_1() {
+        // a: [2,3,4], b: [4,5] -> contract last 1 dim -> [2,3,5]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_data: Vec<f64> = (0..24).map(|x| x as f64).collect();
+        let b_data: Vec<f64> = (0..20).map(|x| x as f64).collect();
+        let a = s
+            .tensor_variable(a_data, vec![2, 3, 4], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(b_data, vec![4, 5], false)
+            .unwrap();
+        let td = s.tensor_tensordot(a, b, 1).unwrap();
+        let td_shape = s.tensor_shape(td).unwrap();
+        assert_eq!(td_shape, vec![2, 3, 5]);
+    }
+
+    #[test]
+    fn tensordot_shape_mismatch_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        // dims=1: a's last dim (3) != b's first dim (2)
+        assert!(s.tensor_tensordot(a, b, 1).is_err());
+    }
+
+    #[test]
+    fn kron_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let b = s
+            .tensor_variable(vec![3.0, 4.0, 5.0], vec![3], false)
+            .unwrap();
+        let k = s.tensor_kron(a, b).unwrap();
+        let vals = s.tensor_values(k).unwrap();
+        let shape = s.tensor_shape(k).unwrap();
+        assert_eq!(shape, vec![6]);
+        // [1*3, 1*4, 1*5, 2*3, 2*4, 2*5]
+        let expected = vec![3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
+        for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
+            assert!((v - e).abs() < 1e-10, "kron[{i}] = {v}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn kron_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![0.0, 5.0, 6.0, 7.0], vec![2, 2], false)
+            .unwrap();
+        let k = s.tensor_kron(a, b).unwrap();
+        let vals = s.tensor_values(k).unwrap();
+        let shape = s.tensor_shape(k).unwrap();
+        assert_eq!(shape, vec![4, 4]);
+        // Row-major 4x4:
+        // [1*[[0,5],[6,7]], 2*[[0,5],[6,7]]]
+        // [3*[[0,5],[6,7]], 4*[[0,5],[6,7]]]
+        #[rustfmt::skip]
+        let expected = vec![
+            0.0,  5.0,  0.0, 10.0,
+            6.0,  7.0, 12.0, 14.0,
+            0.0, 15.0,  0.0, 20.0,
+           18.0, 21.0, 24.0, 28.0,
+        ];
+        for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
+            assert!((v - e).abs() < 1e-10, "kron[{i}] = {v}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn kron_identity_2x2() {
+        // kron(I2, I2) = I4
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let i2 = s.eye(2, false).unwrap();
+        let k = s.tensor_kron(i2, i2).unwrap();
+        let vals = s.tensor_values(k).unwrap();
+        let shape = s.tensor_shape(k).unwrap();
+        assert_eq!(shape, vec![4, 4]);
+        for i in 0..4 {
+            for j in 0..4 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (vals[i * 4 + j] - expected).abs() < 1e-12,
+                    "kron(I,I)[{i},{j}] = {}, expected {expected}",
+                    vals[i * 4 + j]
+                );
+            }
+        }
+    }
+
+    // ── Cholesky tests (bd-2drq.5) ────────────────────────────────────
+
+    #[test]
+    fn cholesky_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.eye(3, false).unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        // L should be identity
+        #[rustfmt::skip]
+        let expected = vec![
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        ];
+        for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
+            assert!((v - e).abs() < 1e-12, "L[{i}] = {v}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn cholesky_known_spd() {
+        // A = [[4, 2], [2, 3]] is SPD
+        // L = [[2, 0], [1, sqrt(2)]]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![4.0, 2.0, 2.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        assert!((vals[0] - 2.0).abs() < 1e-12);
+        assert!(vals[1].abs() < 1e-12);
+        assert!((vals[2] - 1.0).abs() < 1e-12);
+        assert!((vals[3] - 2.0f64.sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cholesky_reconstruction() {
+        // Verify L @ L^T == A
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a_data = vec![
+            4.0, 12.0, -16.0,
+            12.0, 37.0, -43.0,
+            -16.0, -43.0, 98.0,
+        ];
+        let a = s
+            .tensor_variable(a_data.clone(), vec![3, 3], false)
+            .unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let l_vals = s.tensor_values(l).unwrap();
+        // Reconstruct A = L @ L^T manually
+        let n = 3;
+        for i in 0..n {
+            for j in 0..n {
+                let mut dot = 0.0;
+                for k in 0..n {
+                    dot += l_vals[i * n + k] * l_vals[j * n + k];
+                }
+                assert!(
+                    (dot - a_data[i * n + j]).abs() < 1e-10,
+                    "(L@L^T)[{i},{j}] = {dot}, expected {}",
+                    a_data[i * n + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cholesky_upper() {
+        // upper=true: A = U^T @ U
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![4.0, 2.0, 2.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let u = s.tensor_linalg_cholesky(a, true).unwrap();
+        let vals = s.tensor_values(u).unwrap();
+        // U should be upper triangular: [[2, 1], [0, sqrt(2)]]
+        assert!((vals[0] - 2.0).abs() < 1e-12);
+        assert!((vals[1] - 1.0).abs() < 1e-12);
+        assert!(vals[2].abs() < 1e-12);
+        assert!((vals[3] - 2.0f64.sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cholesky_1x1() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![9.0], vec![1, 1], false).unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        assert!((vals[0] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cholesky_not_positive_definite_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Not positive definite: eigenvalues include negative
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 2.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        assert!(s.tensor_linalg_cholesky(a, false).is_err());
+    }
+
+    #[test]
+    fn cholesky_diagonal_spd() {
+        // Diagonal SPD: L should be diagonal with sqrt elements
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            4.0, 0.0, 0.0,
+            0.0, 9.0, 0.0,
+            0.0, 0.0, 16.0,
+        ], vec![3, 3], false).unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        assert!((vals[0] - 2.0).abs() < 1e-12);
+        assert!((vals[4] - 3.0).abs() < 1e-12);
+        assert!((vals[8] - 4.0).abs() < 1e-12);
+        // Off-diagonals should be zero
+        for i in 0..3 {
+            for j in 0..3 {
+                if i != j {
+                    assert!(vals[i * 3 + j].abs() < 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cholesky_solve_identity_factor() {
+        // L = I => A = I, so solve I @ X = B => X = B
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.eye(3, false).unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let b = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let x = s.tensor_cholesky_solve(b, l, false).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+        assert!((vals[1] - 2.0).abs() < 1e-12);
+        assert!((vals[2] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cholesky_solve_matches_direct() {
+        // A = [[4, 2], [2, 3]], b = [1, 2]
+        // A^-1 = [[3, -2], [-2, 4]] / det(A)  det=8
+        // x = A^-1 @ b = [[3-4], [-2+8]]/8 = [-1/8, 6/8] = [-0.125, 0.75]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![4.0, 2.0, 2.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let x = s.tensor_cholesky_solve(b, l, false).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert!((vals[0] - (-0.125)).abs() < 1e-10);
+        assert!((vals[1] - 0.75).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cholesky_solve_multiple_rhs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![4.0, 2.0, 2.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        // B = [[1, 0], [0, 1]] (identity) => X = A^-1
+        let b = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let x = s.tensor_cholesky_solve(b, l, false).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        // A^-1 = [3/8, -2/8; -2/8, 4/8] = [0.375, -0.25; -0.25, 0.5]
+        assert!((vals[0] - 0.375).abs() < 1e-10);
+        assert!((vals[1] - (-0.25)).abs() < 1e-10);
+        assert!((vals[2] - (-0.25)).abs() < 1e-10);
+        assert!((vals[3] - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cholesky_solve_upper_flag() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![4.0, 2.0, 2.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let u = s.tensor_linalg_cholesky(a, true).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let x = s.tensor_cholesky_solve(b, u, true).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        // Same answer as lower: [-0.125, 0.75]
+        assert!((vals[0] - (-0.125)).abs() < 1e-10);
+        assert!((vals[1] - 0.75).abs() < 1e-10);
+    }
+
+    // ── linalg.solve tests (bd-2drq.6) ────────────────────────────────
+
+    #[test]
+    fn solve_identity_a() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.eye(3, false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let x = s.tensor_linalg_solve(a, b).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+        assert!((vals[1] - 2.0).abs() < 1e-12);
+        assert!((vals[2] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn solve_2x2_system() {
+        // A = [[2, 1], [5, 3]], b = [4, 7]
+        // Solution: x = [5, -6]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![2.0, 1.0, 5.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let b = s.tensor_variable(vec![4.0, 7.0], vec![2], false).unwrap();
+        let x = s.tensor_linalg_solve(a, b).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert!((vals[0] - 5.0).abs() < 1e-10);
+        assert!((vals[1] - (-6.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solve_multiple_rhs() {
+        // A = [[1, 2], [3, 4]], B = [[5, 6], [7, 8]]
+        // A @ X = B  =>  X = A^-1 @ B
+        // A^-1 = [[-2, 1], [1.5, -0.5]]
+        // X = [[-2*5+1*7, -2*6+1*8], [1.5*5-0.5*7, 1.5*6-0.5*8]]
+        //   = [[-3, -4], [4, 5]]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], false)
+            .unwrap();
+        let x = s.tensor_linalg_solve(a, b).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert!((vals[0] - (-3.0)).abs() < 1e-10);
+        assert!((vals[1] - (-4.0)).abs() < 1e-10);
+        assert!((vals[2] - 4.0).abs() < 1e-10);
+        assert!((vals[3] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn solve_3x3_verify_a_times_x() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a_data = vec![
+            2.0, 1.0, 1.0,
+            4.0, 3.0, 3.0,
+            8.0, 7.0, 9.0,
+        ];
+        let a = s
+            .tensor_variable(a_data.clone(), vec![3, 3], false)
+            .unwrap();
+        let b_data = vec![1.0, 1.0, 1.0];
+        let b = s
+            .tensor_variable(b_data.clone(), vec![3], false)
+            .unwrap();
+        let x = s.tensor_linalg_solve(a, b).unwrap();
+        let x_vals = s.tensor_values(x).unwrap();
+        // Verify A @ x ≈ b manually
+        for i in 0..3 {
+            let dot: f64 = (0..3).map(|j| a_data[i * 3 + j] * x_vals[j]).sum();
+            assert!(
+                (dot - b_data[i]).abs() < 1e-10,
+                "A@x[{i}] = {dot}, expected {}",
+                b_data[i]
+            );
+        }
+    }
+
+    #[test]
+    fn solve_singular_returns_result() {
+        // Singular A — lu_solve zeroes out dependent rows rather than erroring.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 2.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        // Does not error; returns a (possibly inaccurate) solution
+        let x = s.tensor_linalg_solve(a, b).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert_eq!(vals.len(), 2);
+    }
+
+    #[test]
+    fn solve_1x1() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![4.0], vec![1, 1], false).unwrap();
+        let b = s.tensor_variable(vec![8.0], vec![1], false).unwrap();
+        let x = s.tensor_linalg_solve(a, b).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert!((vals[0] - 2.0).abs() < 1e-12);
+    }
+
+    // ── Tensor factory tests (bd-2klp.4) ──────────────────────────────
+
+    #[test]
+    fn logspace_base10() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.logspace(0.0, 2.0, 3, 10.0, false).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        assert_eq!(vals.len(), 3);
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+        assert!((vals[1] - 10.0).abs() < 1e-10);
+        assert!((vals[2] - 100.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn logspace_base2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.logspace(0.0, 3.0, 4, 2.0, false).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        assert_eq!(vals.len(), 4);
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+        assert!((vals[1] - 2.0).abs() < 1e-12);
+        assert!((vals[2] - 4.0).abs() < 1e-12);
+        assert!((vals[3] - 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn logspace_single_step() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.logspace(0.0, 0.0, 1, 10.0, false).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        assert_eq!(vals.len(), 1);
+        assert!((vals[0] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn logspace_zero_steps() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.logspace(0.0, 2.0, 0, 10.0, false).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn empty_correct_shape_and_zeros() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.empty(vec![3, 4], false).unwrap();
+        let shape = s.tensor_shape(t).unwrap();
+        assert_eq!(shape, vec![3, 4]);
+        let vals = s.tensor_values(t).unwrap();
+        assert_eq!(vals.len(), 12);
+        // In Rust, empty produces zeros
+        assert!(vals.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn empty_zero_shape() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.empty(vec![0], false).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn empty_like_matches_shape() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let orig = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let t = s.empty_like(orig, false).unwrap();
+        assert_eq!(s.tensor_shape(t).unwrap(), vec![2, 3]);
+        assert_eq!(s.tensor_values(t).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn init_gain_zero_produces_zeros() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![1.0; 20], vec![4, 5], true).unwrap();
+        s.init_xavier_uniform_(t, 0.0).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+        for &v in &vals {
+            assert_eq!(v, 0.0);
+        }
     }
 }

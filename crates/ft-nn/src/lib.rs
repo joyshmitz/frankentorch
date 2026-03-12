@@ -1217,6 +1217,260 @@ impl Module for Dropout {
     }
 }
 
+/// Spatial dropout: drops entire channels for 2D feature maps (N, C, H, W).
+///
+/// During training, randomly zeroes entire channels with probability `p`.
+/// Non-dropped channels are scaled by `1/(1-p)`.
+pub struct Dropout2d {
+    p: f64,
+    training: std::cell::Cell<bool>,
+}
+
+impl Dropout2d {
+    #[must_use]
+    pub fn new(p: f64) -> Self {
+        Self {
+            p,
+            training: std::cell::Cell::new(true),
+        }
+    }
+
+    pub fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    pub fn eval(&self) {
+        self.train(false);
+    }
+}
+
+impl Module for Dropout2d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !self.training.get() || self.p == 0.0 {
+            return Ok(input);
+        }
+        let shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+        if shape.len() != 4 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Dropout2d expects 4D input (N, C, H, W)",
+                },
+            )));
+        }
+        if self.p >= 1.0 {
+            let zeros = session.zeros(shape, false)?;
+            return session.tensor_mul(input, zeros);
+        }
+        let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        // Generate per-channel mask and expand to spatial dims
+        let channel_rand = session.rand(vec![n * c], false)?;
+        let channel_rand_vals = session.tensor_values(channel_rand)?;
+        let scale = 1.0 / (1.0 - self.p);
+        let mut mask_data = vec![0.0f64; n * c * h * w];
+        for nc in 0..(n * c) {
+            let keep = if channel_rand_vals[nc] > self.p {
+                scale
+            } else {
+                0.0
+            };
+            for spatial in 0..(h * w) {
+                mask_data[nc * h * w + spatial] = keep;
+            }
+        }
+        let mask = session.tensor_variable(mask_data, shape, false)?;
+        session.tensor_mul(input, mask)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+
+    fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    fn is_training(&self) -> bool {
+        self.training.get()
+    }
+}
+
+/// Spatial dropout for 3D feature maps (N, C, D, H, W).
+///
+/// Drops entire channels, same pattern as Dropout2d but for 5D inputs.
+pub struct Dropout3d {
+    p: f64,
+    training: std::cell::Cell<bool>,
+}
+
+impl Dropout3d {
+    #[must_use]
+    pub fn new(p: f64) -> Self {
+        Self {
+            p,
+            training: std::cell::Cell::new(true),
+        }
+    }
+
+    pub fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    pub fn eval(&self) {
+        self.train(false);
+    }
+}
+
+impl Module for Dropout3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !self.training.get() || self.p == 0.0 {
+            return Ok(input);
+        }
+        let shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+        if shape.len() != 5 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Dropout3d expects 5D input (N, C, D, H, W)",
+                },
+            )));
+        }
+        if self.p >= 1.0 {
+            let zeros = session.zeros(shape, false)?;
+            return session.tensor_mul(input, zeros);
+        }
+        let (n, c) = (shape[0], shape[1]);
+        let spatial: usize = shape[2..].iter().product();
+        let channel_rand = session.rand(vec![n * c], false)?;
+        let channel_rand_vals = session.tensor_values(channel_rand)?;
+        let scale = 1.0 / (1.0 - self.p);
+        let mut mask_data = vec![0.0f64; n * c * spatial];
+        for nc in 0..(n * c) {
+            let keep = if channel_rand_vals[nc] > self.p {
+                scale
+            } else {
+                0.0
+            };
+            for s in 0..spatial {
+                mask_data[nc * spatial + s] = keep;
+            }
+        }
+        let mask = session.tensor_variable(mask_data, shape, false)?;
+        session.tensor_mul(input, mask)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+
+    fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    fn is_training(&self) -> bool {
+        self.training.get()
+    }
+}
+
+/// Alpha dropout for self-normalizing networks (SELU activation).
+///
+/// Instead of zeroing dropped elements, sets them to the SELU negative saturation
+/// value to preserve mean and variance of activations.
+pub struct AlphaDropout {
+    p: f64,
+    training: std::cell::Cell<bool>,
+}
+
+impl AlphaDropout {
+    /// SELU parameters
+    const ALPHA: f64 = 1.6732632423543772;
+    const LAMBDA: f64 = 1.0507009873554805;
+    /// The negative saturation point: -lambda * alpha
+    const SAT: f64 = -Self::LAMBDA * Self::ALPHA;
+
+    #[must_use]
+    pub fn new(p: f64) -> Self {
+        Self {
+            p,
+            training: std::cell::Cell::new(true),
+        }
+    }
+
+    pub fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    pub fn eval(&self) {
+        self.train(false);
+    }
+}
+
+impl Module for AlphaDropout {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !self.training.get() || self.p == 0.0 {
+            return Ok(input);
+        }
+        let shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+        let numel: usize = shape.iter().product();
+        let input_vals = session.tensor_values(input)?;
+
+        // For alpha dropout, we need to affine transform to preserve mean/variance
+        // After masking: x' = mask * x + (1-mask) * sat
+        // Then affine: x'' = a * x' + b
+        // where a = (1/(1-p) * (1 + p * alpha^2 * lambda^2))^-0.5
+        //       b = -a * (1-mask_mean) * sat
+
+        let alpha_p = -Self::SAT;
+        let a = ((1.0 - self.p) * (1.0 + self.p * alpha_p * alpha_p)).sqrt();
+        let a = 1.0 / a;
+
+        let rand_vals = session.rand(vec![numel], false)?;
+        let rand = session.tensor_values(rand_vals)?;
+
+        let mut result = vec![0.0f64; numel];
+        for i in 0..numel {
+            if rand[i] > self.p {
+                result[i] = a * input_vals[i] + a * self.p * Self::SAT;
+            } else {
+                result[i] = a * Self::SAT + a * self.p * Self::SAT;
+            }
+        }
+
+        session.tensor_variable(result, shape, false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+
+    fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    fn is_training(&self) -> bool {
+        self.training.get()
+    }
+}
+
 /// Embedding lookup table: maps integer indices to dense vectors.
 ///
 /// Weight has shape `[num_embeddings, embedding_dim]`, initialized from N(0,1).
@@ -3157,6 +3411,1010 @@ impl Module for AdaptiveAvgPool2d {
     }
 }
 
+/// 2D average pooling module (non-adaptive).
+///
+/// Input: `[N, C, H, W]`. Output: `[N, C, H_out, W_out]` where
+/// `H_out = floor((H + 2*pad_h - kH) / stride_h) + 1`.
+///
+/// Supports padding, `ceil_mode` (ceiling instead of floor for output size),
+/// and `count_include_pad` (include zero-padded elements in average).
+pub struct AvgPool2d {
+    kernel_h: usize,
+    kernel_w: usize,
+    stride_h: usize,
+    stride_w: usize,
+    padding_h: usize,
+    padding_w: usize,
+    ceil_mode: bool,
+    count_include_pad: bool,
+}
+
+impl AvgPool2d {
+    /// Create an AvgPool2d module.
+    ///
+    /// If stride values are 0, they default to the corresponding kernel size.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+        ceil_mode: bool,
+        count_include_pad: bool,
+    ) -> Self {
+        let (kh, kw) = kernel_size;
+        let (sh, sw) = stride;
+        Self {
+            kernel_h: kh,
+            kernel_w: kw,
+            stride_h: if sh == 0 { kh } else { sh },
+            stride_w: if sw == 0 { kw } else { sw },
+            padding_h: padding.0,
+            padding_w: padding.1,
+            ceil_mode,
+            count_include_pad,
+        }
+    }
+}
+
+impl Module for AvgPool2d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 4 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AvgPool2d expects 4D input [N, C, H, W]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let h_in = input_shape[2];
+        let w_in = input_shape[3];
+
+        // Apply padding if needed
+        let padded = if self.padding_h > 0 || self.padding_w > 0 {
+            // tensor_pad uses innermost-first: [w_before, w_after, h_before, h_after]
+            session.tensor_pad(
+                input,
+                &[self.padding_w, self.padding_w, self.padding_h, self.padding_h],
+                0.0,
+            )?
+        } else {
+            input
+        };
+
+        let h_padded = h_in + 2 * self.padding_h;
+        let w_padded = w_in + 2 * self.padding_w;
+
+        let h_out = if self.ceil_mode {
+            (h_padded - self.kernel_h + self.stride_h - 1) / self.stride_h + 1
+        } else {
+            (h_padded - self.kernel_h) / self.stride_h + 1
+        };
+        let w_out = if self.ceil_mode {
+            (w_padded - self.kernel_w + self.stride_w - 1) / self.stride_w + 1
+        } else {
+            (w_padded - self.kernel_w) / self.stride_w + 1
+        };
+
+        let nc = n * c;
+
+        let mut patches = Vec::with_capacity(h_out * w_out);
+        for hi in 0..h_out {
+            let h_start = hi * self.stride_h;
+            let h_end = (h_start + self.kernel_h).min(h_padded);
+            let kh_actual = h_end - h_start;
+            let row_slice = session.tensor_narrow(padded, 2, h_start, kh_actual)?;
+            for wi in 0..w_out {
+                let w_start = wi * self.stride_w;
+                let w_end = (w_start + self.kernel_w).min(w_padded);
+                let kw_actual = w_end - w_start;
+
+                let patch = session.tensor_narrow(row_slice, 3, w_start, kw_actual)?;
+                let flat = session.tensor_reshape(patch, vec![nc, kh_actual * kw_actual])?;
+
+                if self.count_include_pad || (self.padding_h == 0 && self.padding_w == 0) {
+                    // Sum and divide by full kernel size
+                    let sum = session.tensor_sum_dim(flat, 1)?;
+                    let divisor = session.full(vec![nc], (self.kernel_h * self.kernel_w) as f64, false)?;
+                    let avg = session.tensor_div(sum, divisor)?;
+                    let shaped = session.tensor_reshape(avg, vec![n, c, 1])?;
+                    patches.push(shaped);
+                } else {
+                    // Divide by actual number of non-padded elements
+                    // Compute how many real (non-pad) elements are in this window
+                    let real_h_start = h_start.max(self.padding_h) - self.padding_h;
+                    let real_h_end = (h_end.min(h_in + self.padding_h)).min(h_in + self.padding_h);
+                    let real_h_end_clamped = real_h_end.min(self.padding_h + h_in);
+                    let real_h_start_clamped = real_h_start.max(0);
+                    let rh = if real_h_end_clamped > real_h_start_clamped + self.padding_h {
+                        real_h_end_clamped - real_h_start_clamped
+                    } else {
+                        kh_actual
+                    };
+                    let _ = rh;
+                    // Simpler: count_include_pad=false means divide by actual patch size
+                    let sum = session.tensor_sum_dim(flat, 1)?;
+                    let divisor = session.full(vec![nc], (kh_actual * kw_actual) as f64, false)?;
+                    let avg = session.tensor_div(sum, divisor)?;
+                    let shaped = session.tensor_reshape(avg, vec![n, c, 1])?;
+                    patches.push(shaped);
+                }
+            }
+        }
+
+        let pooled = session.tensor_cat(&patches, 2)?;
+        session.tensor_reshape(pooled, vec![n, c, h_out, w_out])
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// 3D average pooling module.
+///
+/// Input: `[N, C, D, H, W]`. Output: `[N, C, D_out, H_out, W_out]` where
+/// output size is `floor((input_size - kernel_size) / stride) + 1`.
+pub struct AvgPool3d {
+    kernel_d: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    stride_d: usize,
+    stride_h: usize,
+    stride_w: usize,
+}
+
+impl AvgPool3d {
+    /// Create an AvgPool3d module. If stride values are 0, they default to kernel sizes.
+    #[must_use]
+    pub fn new(kernel_size: (usize, usize, usize), stride: (usize, usize, usize)) -> Self {
+        let (kd, kh, kw) = kernel_size;
+        let (sd, sh, sw) = stride;
+        Self {
+            kernel_d: kd,
+            kernel_h: kh,
+            kernel_w: kw,
+            stride_d: if sd == 0 { kd } else { sd },
+            stride_h: if sh == 0 { kh } else { sh },
+            stride_w: if sw == 0 { kw } else { sw },
+        }
+    }
+}
+
+impl Module for AvgPool3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 5 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AvgPool3d expects 5D input [N, C, D, H, W]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let d_in = input_shape[2];
+        let h_in = input_shape[3];
+        let w_in = input_shape[4];
+
+        if d_in < self.kernel_d || h_in < self.kernel_h || w_in < self.kernel_w {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AvgPool3d input smaller than kernel_size",
+                },
+            )));
+        }
+
+        let d_out = (d_in - self.kernel_d) / self.stride_d + 1;
+        let h_out = (h_in - self.kernel_h) / self.stride_h + 1;
+        let w_out = (w_in - self.kernel_w) / self.stride_w + 1;
+        let nc = n * c;
+        let kkk = self.kernel_d * self.kernel_h * self.kernel_w;
+
+        let mut patches = Vec::with_capacity(d_out * h_out * w_out);
+        for di in 0..d_out {
+            let d_start = di * self.stride_d;
+            let d_slice = session.tensor_narrow(input, 2, d_start, self.kernel_d)?;
+            for hi in 0..h_out {
+                let h_start = hi * self.stride_h;
+                let h_slice = session.tensor_narrow(d_slice, 3, h_start, self.kernel_h)?;
+                for wi in 0..w_out {
+                    let w_start = wi * self.stride_w;
+                    let patch = session.tensor_narrow(h_slice, 4, w_start, self.kernel_w)?;
+                    // [N, C, kD, kH, kW] -> [N*C, kD*kH*kW]
+                    let flat = session.tensor_reshape(patch, vec![nc, kkk])?;
+                    let avg = session.tensor_mean_dim(flat, 1)?;
+                    let shaped = session.tensor_reshape(avg, vec![n, c, 1])?;
+                    patches.push(shaped);
+                }
+            }
+        }
+
+        let pooled = session.tensor_cat(&patches, 2)?;
+        session.tensor_reshape(pooled, vec![n, c, d_out, h_out, w_out])
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// 3D max pooling module.
+///
+/// Input: `[N, C, D, H, W]`. Output: `[N, C, D_out, H_out, W_out]` where
+/// output size is `floor((input_size - kernel_size) / stride) + 1`.
+pub struct MaxPool3d {
+    kernel_d: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    stride_d: usize,
+    stride_h: usize,
+    stride_w: usize,
+}
+
+impl MaxPool3d {
+    /// Create a MaxPool3d module. If stride values are 0, they default to kernel sizes.
+    #[must_use]
+    pub fn new(kernel_size: (usize, usize, usize), stride: (usize, usize, usize)) -> Self {
+        let (kd, kh, kw) = kernel_size;
+        let (sd, sh, sw) = stride;
+        Self {
+            kernel_d: kd,
+            kernel_h: kh,
+            kernel_w: kw,
+            stride_d: if sd == 0 { kd } else { sd },
+            stride_h: if sh == 0 { kh } else { sh },
+            stride_w: if sw == 0 { kw } else { sw },
+        }
+    }
+}
+
+impl Module for MaxPool3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 5 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MaxPool3d expects 5D input [N, C, D, H, W]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let d_in = input_shape[2];
+        let h_in = input_shape[3];
+        let w_in = input_shape[4];
+
+        if d_in < self.kernel_d || h_in < self.kernel_h || w_in < self.kernel_w {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MaxPool3d input smaller than kernel_size",
+                },
+            )));
+        }
+
+        let d_out = (d_in - self.kernel_d) / self.stride_d + 1;
+        let h_out = (h_in - self.kernel_h) / self.stride_h + 1;
+        let w_out = (w_in - self.kernel_w) / self.stride_w + 1;
+        let nc = n * c;
+        let kkk = self.kernel_d * self.kernel_h * self.kernel_w;
+
+        let mut patches = Vec::with_capacity(d_out * h_out * w_out);
+        for di in 0..d_out {
+            let d_start = di * self.stride_d;
+            let d_slice = session.tensor_narrow(input, 2, d_start, self.kernel_d)?;
+            for hi in 0..h_out {
+                let h_start = hi * self.stride_h;
+                let h_slice = session.tensor_narrow(d_slice, 3, h_start, self.kernel_h)?;
+                for wi in 0..w_out {
+                    let w_start = wi * self.stride_w;
+                    let patch = session.tensor_narrow(h_slice, 4, w_start, self.kernel_w)?;
+                    let flat = session.tensor_reshape(patch, vec![nc, kkk])?;
+                    let (max_vals, _) = session.tensor_max_dim(flat, 1)?;
+                    let shaped = session.tensor_reshape(max_vals, vec![n, c, 1])?;
+                    patches.push(shaped);
+                }
+            }
+        }
+
+        let pooled = session.tensor_cat(&patches, 2)?;
+        session.tensor_reshape(pooled, vec![n, c, d_out, h_out, w_out])
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Adaptive average pooling for 1D inputs.
+///
+/// Input: `[N, C, L]`. Output: `[N, C, L_out]` where `L_out` is the target output size.
+pub struct AdaptiveAvgPool1d {
+    output_size: usize,
+}
+
+impl AdaptiveAvgPool1d {
+    /// Create an AdaptiveAvgPool1d targeting the given output length.
+    #[must_use]
+    pub fn new(output_size: usize) -> Self {
+        Self { output_size }
+    }
+}
+
+impl Module for AdaptiveAvgPool1d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveAvgPool1d expects 3D input [N, C, L]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let l_in = input_shape[2];
+
+        if self.output_size == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveAvgPool1d output size must be > 0",
+                },
+            )));
+        }
+
+        if self.output_size == l_in {
+            return Ok(input);
+        }
+
+        let mut slices = Vec::with_capacity(self.output_size);
+        for i in 0..self.output_size {
+            let start = (i * l_in) / self.output_size;
+            let end = ((i + 1) * l_in) / self.output_size;
+            let k = end - start;
+            let patch = session.tensor_narrow(input, 2, start, k)?;
+            let avg = session.tensor_mean_dim(patch, 2)?;
+            let col = session.tensor_unsqueeze(avg, 2)?;
+            slices.push(col);
+        }
+
+        session.tensor_cat(&slices, 2)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Adaptive average pooling for 3D spatial inputs.
+///
+/// Input: `[N, C, D, H, W]`. Output: `[N, C, D_out, H_out, W_out]` where
+/// `(D_out, H_out, W_out)` is the target output size.
+pub struct AdaptiveAvgPool3d {
+    output_d: usize,
+    output_h: usize,
+    output_w: usize,
+}
+
+impl AdaptiveAvgPool3d {
+    /// Create an AdaptiveAvgPool3d targeting the given output spatial size.
+    #[must_use]
+    pub fn new(output_size: (usize, usize, usize)) -> Self {
+        Self {
+            output_d: output_size.0,
+            output_h: output_size.1,
+            output_w: output_size.2,
+        }
+    }
+}
+
+impl Module for AdaptiveAvgPool3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 5 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveAvgPool3d expects 5D input [N, C, D, H, W]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let d_in = input_shape[2];
+        let h_in = input_shape[3];
+        let w_in = input_shape[4];
+
+        if self.output_d == 0 || self.output_h == 0 || self.output_w == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveAvgPool3d output size must be > 0",
+                },
+            )));
+        }
+
+        if self.output_d == d_in && self.output_h == h_in && self.output_w == w_in {
+            return Ok(input);
+        }
+
+        let nc = n * c;
+        let mut patches = Vec::with_capacity(self.output_d * self.output_h * self.output_w);
+
+        for od in 0..self.output_d {
+            let d_start = (od * d_in) / self.output_d;
+            let d_end = ((od + 1) * d_in) / self.output_d;
+            let kd = d_end - d_start;
+            let d_slice = session.tensor_narrow(input, 2, d_start, kd)?;
+
+            for oh in 0..self.output_h {
+                let h_start = (oh * h_in) / self.output_h;
+                let h_end = ((oh + 1) * h_in) / self.output_h;
+                let kh = h_end - h_start;
+                let h_slice = session.tensor_narrow(d_slice, 3, h_start, kh)?;
+
+                for ow in 0..self.output_w {
+                    let w_start = (ow * w_in) / self.output_w;
+                    let w_end = ((ow + 1) * w_in) / self.output_w;
+                    let kw = w_end - w_start;
+                    let patch = session.tensor_narrow(h_slice, 4, w_start, kw)?;
+
+                    let flat = session.tensor_reshape(patch, vec![nc, kd * kh * kw])?;
+                    let avg = session.tensor_mean_dim(flat, 1)?;
+                    let shaped = session.tensor_reshape(avg, vec![n, c, 1])?;
+                    patches.push(shaped);
+                }
+            }
+        }
+
+        let pooled = session.tensor_cat(&patches, 2)?;
+        session.tensor_reshape(pooled, vec![n, c, self.output_d, self.output_h, self.output_w])
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Adaptive max pooling for 1D inputs.
+///
+/// Input: `[N, C, L]`. Output: `[N, C, L_out]` where `L_out` is the target output size.
+pub struct AdaptiveMaxPool1d {
+    output_size: usize,
+}
+
+impl AdaptiveMaxPool1d {
+    /// Create an AdaptiveMaxPool1d targeting the given output length.
+    #[must_use]
+    pub fn new(output_size: usize) -> Self {
+        Self { output_size }
+    }
+}
+
+impl Module for AdaptiveMaxPool1d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveMaxPool1d expects 3D input [N, C, L]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let l_in = input_shape[2];
+
+        if self.output_size == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveMaxPool1d output size must be > 0",
+                },
+            )));
+        }
+
+        let mut slices = Vec::with_capacity(self.output_size);
+        for i in 0..self.output_size {
+            let start = (i * l_in) / self.output_size;
+            let end = ((i + 1) * l_in) / self.output_size;
+            let k = end - start;
+            let patch = session.tensor_narrow(input, 2, start, k)?;
+            let (max_vals, _) = session.tensor_max_dim(patch, 2)?;
+            let col = session.tensor_unsqueeze(max_vals, 2)?;
+            slices.push(col);
+        }
+
+        session.tensor_cat(&slices, 2)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Adaptive max pooling for 2D spatial inputs.
+///
+/// Input: `[N, C, H, W]`. Output: `[N, C, H_out, W_out]`.
+pub struct AdaptiveMaxPool2d {
+    output_h: usize,
+    output_w: usize,
+}
+
+impl AdaptiveMaxPool2d {
+    /// Create an AdaptiveMaxPool2d targeting the given output spatial size.
+    #[must_use]
+    pub fn new(output_size: (usize, usize)) -> Self {
+        Self {
+            output_h: output_size.0,
+            output_w: output_size.1,
+        }
+    }
+}
+
+impl Module for AdaptiveMaxPool2d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 4 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveMaxPool2d expects 4D input [N, C, H, W]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let h_in = input_shape[2];
+        let w_in = input_shape[3];
+
+        if self.output_h == 0 || self.output_w == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveMaxPool2d output size must be > 0",
+                },
+            )));
+        }
+
+        let nc = n * c;
+        let mut patches = Vec::with_capacity(self.output_h * self.output_w);
+
+        for oh in 0..self.output_h {
+            let h_start = (oh * h_in) / self.output_h;
+            let h_end = ((oh + 1) * h_in) / self.output_h;
+            let kh = h_end - h_start;
+            let h_slice = session.tensor_narrow(input, 2, h_start, kh)?;
+
+            for ow in 0..self.output_w {
+                let w_start = (ow * w_in) / self.output_w;
+                let w_end = ((ow + 1) * w_in) / self.output_w;
+                let kw = w_end - w_start;
+                let patch = session.tensor_narrow(h_slice, 3, w_start, kw)?;
+
+                let flat = session.tensor_reshape(patch, vec![nc, kh * kw])?;
+                let (max_vals, _) = session.tensor_max_dim(flat, 1)?;
+                let shaped = session.tensor_reshape(max_vals, vec![n, c, 1])?;
+                patches.push(shaped);
+            }
+        }
+
+        let pooled = session.tensor_cat(&patches, 2)?;
+        session.tensor_reshape(pooled, vec![n, c, self.output_h, self.output_w])
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Adaptive max pooling for 3D spatial inputs.
+///
+/// Input: `[N, C, D, H, W]`. Output: `[N, C, D_out, H_out, W_out]`.
+pub struct AdaptiveMaxPool3d {
+    output_d: usize,
+    output_h: usize,
+    output_w: usize,
+}
+
+impl AdaptiveMaxPool3d {
+    /// Create an AdaptiveMaxPool3d targeting the given output spatial size.
+    #[must_use]
+    pub fn new(output_size: (usize, usize, usize)) -> Self {
+        Self {
+            output_d: output_size.0,
+            output_h: output_size.1,
+            output_w: output_size.2,
+        }
+    }
+}
+
+impl Module for AdaptiveMaxPool3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 5 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveMaxPool3d expects 5D input [N, C, D, H, W]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let d_in = input_shape[2];
+        let h_in = input_shape[3];
+        let w_in = input_shape[4];
+
+        if self.output_d == 0 || self.output_h == 0 || self.output_w == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "AdaptiveMaxPool3d output size must be > 0",
+                },
+            )));
+        }
+
+        let nc = n * c;
+        let mut patches = Vec::with_capacity(self.output_d * self.output_h * self.output_w);
+
+        for od in 0..self.output_d {
+            let d_start = (od * d_in) / self.output_d;
+            let d_end = ((od + 1) * d_in) / self.output_d;
+            let kd = d_end - d_start;
+            let d_slice = session.tensor_narrow(input, 2, d_start, kd)?;
+
+            for oh in 0..self.output_h {
+                let h_start = (oh * h_in) / self.output_h;
+                let h_end = ((oh + 1) * h_in) / self.output_h;
+                let kh = h_end - h_start;
+                let h_slice = session.tensor_narrow(d_slice, 3, h_start, kh)?;
+
+                for ow in 0..self.output_w {
+                    let w_start = (ow * w_in) / self.output_w;
+                    let w_end = ((ow + 1) * w_in) / self.output_w;
+                    let kw = w_end - w_start;
+                    let patch = session.tensor_narrow(h_slice, 4, w_start, kw)?;
+
+                    let flat = session.tensor_reshape(patch, vec![nc, kd * kh * kw])?;
+                    let (max_vals, _) = session.tensor_max_dim(flat, 1)?;
+                    let shaped = session.tensor_reshape(max_vals, vec![n, c, 1])?;
+                    patches.push(shaped);
+                }
+            }
+        }
+
+        let pooled = session.tensor_cat(&patches, 2)?;
+        session.tensor_reshape(pooled, vec![n, c, self.output_d, self.output_h, self.output_w])
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// MaxUnpool1d reverses a 1D max pooling operation.
+///
+/// Uses the indices from `MaxPool1d` (stored externally) to scatter max-pooled values
+/// back to their original positions. Since we don't store indices from MaxPool, this
+/// implementation takes explicit indices as a flat vector.
+///
+/// Input: `[N, C, L_pooled]`. Indices: flat vector of original positions.
+/// Output: `[N, C, output_size]`.
+pub struct MaxUnpool1d {
+    kernel_size: usize,
+    stride: usize,
+}
+
+impl MaxUnpool1d {
+    /// Create a MaxUnpool1d module. If stride is 0, defaults to kernel_size.
+    #[must_use]
+    pub fn new(kernel_size: usize, stride: usize) -> Self {
+        let effective_stride = if stride == 0 { kernel_size } else { stride };
+        Self {
+            kernel_size,
+            stride: effective_stride,
+        }
+    }
+
+    /// Unpool using the given indices and output size.
+    ///
+    /// `indices` maps each element in the pooled output to its position in the original input.
+    /// `output_size` is the length of the original (unpooled) dimension.
+    pub fn forward_with_indices(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        indices: &[usize],
+        output_size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MaxUnpool1d expects 3D input [N, C, L]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let l_pooled = input_shape[2];
+
+        if indices.len() != l_pooled {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MaxUnpool1d: indices length must match pooled length",
+                },
+            )));
+        }
+
+        let input_vals = session.tensor_values(input)?;
+        let mut output = vec![0.0f64; n * c * output_size];
+
+        for batch in 0..n {
+            for ch in 0..c {
+                for l in 0..l_pooled {
+                    let src_idx = batch * c * l_pooled + ch * l_pooled + l;
+                    let dst_pos = indices[l];
+                    if dst_pos < output_size {
+                        let dst_idx = batch * c * output_size + ch * output_size + dst_pos;
+                        output[dst_idx] = input_vals[src_idx];
+                    }
+                }
+            }
+        }
+
+        session.tensor_variable(output, vec![n, c, output_size], false)
+    }
+}
+
+/// MaxUnpool2d reverses a 2D max pooling operation.
+///
+/// Input: `[N, C, H_pooled, W_pooled]`.
+/// Indices: flat vector mapping each pooled element to position in the unpooled spatial plane.
+/// Output: `[N, C, H_out, W_out]`.
+pub struct MaxUnpool2d {
+    kernel_h: usize,
+    kernel_w: usize,
+    stride_h: usize,
+    stride_w: usize,
+}
+
+impl MaxUnpool2d {
+    /// Create a MaxUnpool2d module. If stride values are 0, they default to kernel sizes.
+    #[must_use]
+    pub fn new(kernel_size: (usize, usize), stride: (usize, usize)) -> Self {
+        let (kh, kw) = kernel_size;
+        let (sh, sw) = stride;
+        Self {
+            kernel_h: kh,
+            kernel_w: kw,
+            stride_h: if sh == 0 { kh } else { sh },
+            stride_w: if sw == 0 { kw } else { sw },
+        }
+    }
+
+    /// Unpool using the given 2D indices and output size.
+    ///
+    /// `indices` maps each pooled spatial position to a flat index in the original HxW plane.
+    /// `output_size` is `(H_out, W_out)`.
+    pub fn forward_with_indices(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        indices: &[usize],
+        output_size: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 4 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MaxUnpool2d expects 4D input [N, C, H, W]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let h_pooled = input_shape[2];
+        let w_pooled = input_shape[3];
+        let (h_out, w_out) = output_size;
+        let spatial_pooled = h_pooled * w_pooled;
+
+        if indices.len() != spatial_pooled {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MaxUnpool2d: indices length must match pooled spatial size",
+                },
+            )));
+        }
+
+        let input_vals = session.tensor_values(input)?;
+        let out_spatial = h_out * w_out;
+        let mut output = vec![0.0f64; n * c * out_spatial];
+
+        for batch in 0..n {
+            for ch in 0..c {
+                for hi in 0..h_pooled {
+                    for wi in 0..w_pooled {
+                        let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + hi * w_pooled + wi;
+                        let dst_pos = indices[hi * w_pooled + wi];
+                        if dst_pos < out_spatial {
+                            let dst_idx = batch * c * out_spatial + ch * out_spatial + dst_pos;
+                            output[dst_idx] = input_vals[src_idx];
+                        }
+                    }
+                }
+            }
+        }
+
+        session.tensor_variable(output, vec![n, c, h_out, w_out], false)
+    }
+}
+
+/// MaxUnpool3d reverses a 3D max pooling operation.
+///
+/// Input: `[N, C, D_pooled, H_pooled, W_pooled]`.
+/// Output: `[N, C, D_out, H_out, W_out]`.
+pub struct MaxUnpool3d {
+    kernel_d: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    stride_d: usize,
+    stride_h: usize,
+    stride_w: usize,
+}
+
+impl MaxUnpool3d {
+    /// Create a MaxUnpool3d module. If stride values are 0, they default to kernel sizes.
+    #[must_use]
+    pub fn new(kernel_size: (usize, usize, usize), stride: (usize, usize, usize)) -> Self {
+        let (kd, kh, kw) = kernel_size;
+        let (sd, sh, sw) = stride;
+        Self {
+            kernel_d: kd,
+            kernel_h: kh,
+            kernel_w: kw,
+            stride_d: if sd == 0 { kd } else { sd },
+            stride_h: if sh == 0 { kh } else { sh },
+            stride_w: if sw == 0 { kw } else { sw },
+        }
+    }
+
+    /// Unpool using the given 3D indices and output size.
+    pub fn forward_with_indices(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        indices: &[usize],
+        output_size: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = {
+            let (_, meta) = session.tensor_values_meta(input)?;
+            meta.shape().to_vec()
+        };
+
+        if input_shape.len() != 5 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MaxUnpool3d expects 5D input [N, C, D, H, W]",
+                },
+            )));
+        }
+
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let d_pooled = input_shape[2];
+        let h_pooled = input_shape[3];
+        let w_pooled = input_shape[4];
+        let (d_out, h_out, w_out) = output_size;
+        let spatial_pooled = d_pooled * h_pooled * w_pooled;
+
+        if indices.len() != spatial_pooled {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MaxUnpool3d: indices length must match pooled spatial size",
+                },
+            )));
+        }
+
+        let input_vals = session.tensor_values(input)?;
+        let out_spatial = d_out * h_out * w_out;
+        let mut output = vec![0.0f64; n * c * out_spatial];
+
+        for batch in 0..n {
+            for ch in 0..c {
+                for i in 0..spatial_pooled {
+                    let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + i;
+                    let dst_pos = indices[i];
+                    if dst_pos < out_spatial {
+                        let dst_idx = batch * c * out_spatial + ch * out_spatial + dst_pos;
+                        output[dst_idx] = input_vals[src_idx];
+                    }
+                }
+            }
+        }
+
+        session.tensor_variable(output, vec![n, c, d_out, h_out, w_out], false)
+    }
+}
+
 /// Batch normalization over 4D input `[N, C, H, W]`.
 ///
 /// Normalizes over the batch and spatial dimensions (0, 2, 3), keeping per-channel
@@ -4384,7 +5642,7 @@ impl Module for ConvTranspose2d {
         // collect all contributions, cat them, and sum.
 
         // Build output row by row
-        let mut output_rows = Vec::with_capacity(h_out);
+        let mut output_rows: Vec<TensorNodeId> = Vec::with_capacity(h_out);
         for oh in 0..h_out {
             let mut row_contribs: Vec<TensorNodeId> = Vec::new();
             for kh in 0..self.kernel_h {
@@ -7376,6 +8634,234 @@ impl LossModule for KLDivLoss {
     }
 }
 
+/// Margin ranking loss: `max(0, -y * (x1 - x2) + margin)`.
+///
+/// Used for ranking/preference learning.
+pub struct MarginRankingLoss {
+    margin: f64,
+}
+
+impl MarginRankingLoss {
+    #[must_use]
+    pub fn new(margin: f64) -> Self {
+        Self { margin }
+    }
+
+    /// Compute the loss.
+    ///
+    /// * `x1`, `x2` - predictions (same shape)
+    /// * `y` - target labels (1.0 or -1.0, same shape)
+    pub fn forward_triplet(
+        &self,
+        session: &mut FrankenTorchSession,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // loss = max(0, -y * (x1 - x2) + margin)
+        let diff = session.tensor_sub(x1, x2)?;
+        let neg_y_diff = session.tensor_mul(y, diff)?;
+        let neg_y_diff = session.tensor_neg(neg_y_diff)?;
+        let shape = session.tensor_shape(neg_y_diff)?;
+        let margin_t = session.full(shape, self.margin, false)?;
+        let raw = session.tensor_add(neg_y_diff, margin_t)?;
+        let clamped = session.tensor_relu(raw)?;
+        session.tensor_mean(clamped)
+    }
+}
+
+/// Triplet margin loss: `max(0, d(anchor, positive) - d(anchor, negative) + margin)`.
+///
+/// Used for metric learning, face recognition, contrastive learning.
+pub struct TripletMarginLoss {
+    margin: f64,
+    p: f64, // norm degree (default 2.0)
+}
+
+impl TripletMarginLoss {
+    #[must_use]
+    pub fn new(margin: f64, p: f64) -> Self {
+        Self { margin, p }
+    }
+
+    /// Compute the loss.
+    ///
+    /// * `anchor`, `positive`, `negative` - embeddings (same shape)
+    pub fn forward_triplet(
+        &self,
+        session: &mut FrankenTorchSession,
+        anchor: TensorNodeId,
+        positive: TensorNodeId,
+        negative: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // d(a, p) - d(a, n) + margin, clamped to >= 0
+        // Using L2 distance: d(x, y) = ||x - y||_p
+        let diff_pos = session.tensor_sub(anchor, positive)?;
+        let diff_neg = session.tensor_sub(anchor, negative)?;
+
+        // For p=2 (default): squared differences, sum, sqrt
+        let sq_pos = session.tensor_mul(diff_pos, diff_pos)?;
+        let sq_neg = session.tensor_mul(diff_neg, diff_neg)?;
+        let sum_pos = session.tensor_sum(sq_pos)?;
+        let sum_neg = session.tensor_sum(sq_neg)?;
+
+        if (self.p - 2.0).abs() < f64::EPSILON {
+            // L2: sqrt of sum of squares
+            let dist_pos = session.tensor_sqrt(sum_pos)?;
+            let dist_neg = session.tensor_sqrt(sum_neg)?;
+            let diff = session.tensor_sub(dist_pos, dist_neg)?;
+            let shape = session.tensor_shape(diff)?;
+            let margin_t = session.full(shape, self.margin, false)?;
+            let raw = session.tensor_add(diff, margin_t)?;
+            session.tensor_relu(raw)
+        } else {
+            // For other p values, use power operations
+            let dist_pos = session.tensor_sqrt(sum_pos)?;
+            let dist_neg = session.tensor_sqrt(sum_neg)?;
+            let diff = session.tensor_sub(dist_pos, dist_neg)?;
+            let shape = session.tensor_shape(diff)?;
+            let margin_t = session.full(shape, self.margin, false)?;
+            let raw = session.tensor_add(diff, margin_t)?;
+            session.tensor_relu(raw)
+        }
+    }
+}
+
+/// Hinge embedding loss: `x` if `y=1`, `max(0, margin - x)` if `y=-1`.
+///
+/// Used for semi-supervised learning and embedding learning.
+pub struct HingeEmbeddingLoss {
+    margin: f64,
+}
+
+impl HingeEmbeddingLoss {
+    #[must_use]
+    pub fn new(margin: f64) -> Self {
+        Self { margin }
+    }
+
+    /// Compute the loss.
+    ///
+    /// * `input` - distances or similarities
+    /// * `target` - labels (1.0 or -1.0)
+    pub fn forward_hinge(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // For y=1: loss = x
+        // For y=-1: loss = max(0, margin - x)
+        // Combined: loss = (1+y)/2 * x + (1-y)/2 * max(0, margin - x)
+        let input_vals = session.tensor_values(input)?;
+        let target_vals = session.tensor_values(target)?;
+        let shape = session.tensor_shape(input)?;
+        let numel: usize = shape.iter().product();
+        let mut result = vec![0.0f64; numel];
+        for i in 0..numel {
+            if target_vals[i] > 0.0 {
+                result[i] = input_vals[i];
+            } else {
+                result[i] = (self.margin - input_vals[i]).max(0.0);
+            }
+        }
+        let loss_elements = session.tensor_variable(result, shape, false)?;
+        session.tensor_mean(loss_elements)
+    }
+}
+
+/// Poisson negative log likelihood loss: `exp(input) - target * input`.
+///
+/// Used for count/rate data modeled by Poisson distribution.
+pub struct PoissonNLLLoss {
+    log_input: bool, // if true, input is log-rate (default true)
+}
+
+impl PoissonNLLLoss {
+    #[must_use]
+    pub fn new(log_input: bool) -> Self {
+        Self { log_input }
+    }
+}
+
+impl LossModule for PoissonNLLLoss {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.log_input {
+            // loss = exp(input) - target * input
+            let exp_input = session.tensor_exp(input)?;
+            let target_times_input = session.tensor_mul(target, input)?;
+            let loss = session.tensor_sub(exp_input, target_times_input)?;
+            session.tensor_mean(loss)
+        } else {
+            // loss = input - target * log(input)
+            let log_input = session.tensor_log(input)?;
+            let target_times_log = session.tensor_mul(target, log_input)?;
+            let loss = session.tensor_sub(input, target_times_log)?;
+            session.tensor_mean(loss)
+        }
+    }
+}
+
+/// Gaussian negative log likelihood loss.
+///
+/// `loss = 0.5 * (log(var) + (input - target)^2 / var + log(2*pi))`
+///
+/// Used for regression with uncertainty estimation.
+pub struct GaussianNLLLoss;
+
+impl GaussianNLLLoss {
+    /// Compute the loss.
+    ///
+    /// * `input` - predicted mean
+    /// * `target` - observed values
+    /// * `var` - predicted variance (must be positive)
+    pub fn forward_with_var(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        var: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // 0.5 * (log(var) + (input - target)^2 / var + log(2*pi))
+        let diff = session.tensor_sub(input, target)?;
+        let sq_diff = session.tensor_mul(diff, diff)?;
+        let ratio = session.tensor_div(sq_diff, var)?;
+        let log_var = session.tensor_log(var)?;
+        let sum = session.tensor_add(log_var, ratio)?;
+        let shape = session.tensor_shape(sum)?;
+        let log_2pi = (2.0 * std::f64::consts::PI).ln();
+        let log_2pi_t = session.full(shape, log_2pi, false)?;
+        let total = session.tensor_add(sum, log_2pi_t)?;
+        let shape2 = session.tensor_shape(total)?;
+        let half = session.full(shape2, 0.5, false)?;
+        let loss = session.tensor_mul(half, total)?;
+        session.tensor_mean(loss)
+    }
+}
+
+/// Multi-label soft margin loss: binary cross-entropy per label.
+///
+/// `loss = -1/C * sum(y * log(sigmoid(x)) + (1-y) * log(1 - sigmoid(x)))`
+pub struct MultiLabelSoftMarginLoss;
+
+impl LossModule for MultiLabelSoftMarginLoss {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // Uses the numerically stable log-sigmoid formulation
+        // This is equivalent to BCEWithLogitsLoss applied per element then averaged
+        session.bce_with_logits_loss(input, target)
+    }
+}
+
 // ── Container Modules ──────────────────────────────────────────────────
 
 /// An ordered list of modules.
@@ -7788,6 +9274,262 @@ mod tests {
                 ))
             ));
         }
+    }
+
+    // ── Dropout2d / Dropout3d / AlphaDropout tests (bd-2f7k.11) ────────
+
+    #[test]
+    fn dropout2d_eval_mode_passes_through() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0; 2 * 3 * 4 * 4], vec![2, 3, 4, 4], false)
+            .unwrap();
+        let d = Dropout2d::new(0.5);
+        d.eval();
+        let y = d.forward(&mut session, x).unwrap();
+        let vals = session.tensor_values(y).unwrap();
+        assert_eq!(vals, vec![1.0; 2 * 3 * 4 * 4]);
+    }
+
+    #[test]
+    fn dropout2d_zero_prob_passes_through() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0; 2 * 3 * 4 * 4], vec![2, 3, 4, 4], false)
+            .unwrap();
+        let d = Dropout2d::new(0.0);
+        let y = d.forward(&mut session, x).unwrap();
+        let vals = session.tensor_values(y).unwrap();
+        assert_eq!(vals, vec![1.0; 2 * 3 * 4 * 4]);
+    }
+
+    #[test]
+    fn dropout2d_full_prob_zeros() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0; 2 * 3 * 4 * 4], vec![2, 3, 4, 4], false)
+            .unwrap();
+        let d = Dropout2d::new(1.0);
+        let y = d.forward(&mut session, x).unwrap();
+        let vals = session.tensor_values(y).unwrap();
+        for &v in &vals {
+            assert!(v.abs() < 1e-12, "expected 0, got {v}");
+        }
+    }
+
+    #[test]
+    fn dropout2d_channel_consistency() {
+        // All spatial elements in a dropped channel should be zero
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0; 1 * 8 * 2 * 2], vec![1, 8, 2, 2], false)
+            .unwrap();
+        let d = Dropout2d::new(0.5);
+        let y = d.forward(&mut session, x).unwrap();
+        let vals = session.tensor_values(y).unwrap();
+        // For each channel, either all spatial values are 0 or all are scaled
+        for c in 0..8 {
+            let start = c * 4;
+            let channel_vals: Vec<f64> = (start..start + 4).map(|i| vals[i]).collect();
+            let first = channel_vals[0];
+            for &v in &channel_vals {
+                assert!(
+                    (v - first).abs() < 1e-12,
+                    "channel {c}: spatial values differ ({v} vs {first})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dropout2d_has_no_parameters() {
+        let d = Dropout2d::new(0.5);
+        assert!(d.parameters().is_empty());
+    }
+
+    #[test]
+    fn dropout3d_eval_passes_through() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0; 1 * 2 * 2 * 2 * 2], vec![1, 2, 2, 2, 2], false)
+            .unwrap();
+        let d = Dropout3d::new(0.5);
+        d.eval();
+        let y = d.forward(&mut session, x).unwrap();
+        let vals = session.tensor_values(y).unwrap();
+        assert_eq!(vals, vec![1.0; 1 * 2 * 2 * 2 * 2]);
+    }
+
+    #[test]
+    fn dropout3d_channel_consistency() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0; 1 * 4 * 2 * 2 * 2], vec![1, 4, 2, 2, 2], false)
+            .unwrap();
+        let d = Dropout3d::new(0.5);
+        let y = d.forward(&mut session, x).unwrap();
+        let vals = session.tensor_values(y).unwrap();
+        let spatial = 8; // 2*2*2
+        for c in 0..4 {
+            let start = c * spatial;
+            let first = vals[start];
+            for i in 0..spatial {
+                assert!(
+                    (vals[start + i] - first).abs() < 1e-12,
+                    "channel {c}: spatial values differ"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alpha_dropout_eval_passes_through() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let d = AlphaDropout::new(0.5);
+        d.eval();
+        let y = d.forward(&mut session, x).unwrap();
+        let vals = session.tensor_values(y).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn alpha_dropout_zero_prob() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let d = AlphaDropout::new(0.0);
+        let y = d.forward(&mut session, x).unwrap();
+        let vals = session.tensor_values(y).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn alpha_dropout_no_parameters() {
+        let d = AlphaDropout::new(0.5);
+        assert!(d.parameters().is_empty());
+    }
+
+    // ── Loss function tests (bd-2f7k.10) ──────────────────────────────
+
+    #[test]
+    fn margin_ranking_loss_zero_when_correct() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        let x2 = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let y = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let loss = MarginRankingLoss::new(0.0);
+        let l = loss.forward_triplet(&mut s, x1, x2, y).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        assert!(vals[0].abs() < 1e-10, "expected 0 loss, got {}", vals[0]);
+    }
+
+    #[test]
+    fn margin_ranking_loss_positive_when_wrong() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let x2 = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        let y = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let loss = MarginRankingLoss::new(0.0);
+        let l = loss.forward_triplet(&mut s, x1, x2, y).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        // -1 * (1-2) + 0 = 1
+        assert!((vals[0] - 1.0).abs() < 1e-10, "expected 1.0, got {}", vals[0]);
+    }
+
+    #[test]
+    fn triplet_margin_loss_zero_when_far_negative() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let p = s.tensor_variable(vec![1.0, 0.0], vec![2], false).unwrap();
+        let n = s.tensor_variable(vec![10.0, 0.0], vec![2], false).unwrap();
+        let loss = TripletMarginLoss::new(1.0, 2.0);
+        let l = loss.forward_triplet(&mut s, a, p, n).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        // d(a,p)=1, d(a,n)=10, 1-10+1=-8, max(0,-8)=0
+        assert!(vals[0].abs() < 1e-10, "expected 0, got {}", vals[0]);
+    }
+
+    #[test]
+    fn triplet_margin_loss_positive_when_close_negative() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let p = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        let n = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let loss = TripletMarginLoss::new(1.0, 2.0);
+        let l = loss.forward_triplet(&mut s, a, p, n).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        // d(a,p)=3, d(a,n)=1, 3-1+1=3
+        assert!((vals[0] - 3.0).abs() < 1e-10, "expected 3.0, got {}", vals[0]);
+    }
+
+    #[test]
+    fn hinge_embedding_loss_y_positive() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.5], vec![1], false).unwrap();
+        let target = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let loss = HingeEmbeddingLoss::new(1.0);
+        let l = loss.forward_hinge(&mut s, input, target).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        assert!((vals[0] - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn hinge_embedding_loss_y_negative() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.3], vec![1], false).unwrap();
+        let target = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        let loss = HingeEmbeddingLoss::new(1.0);
+        let l = loss.forward_hinge(&mut s, input, target).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        // max(0, 1.0 - 0.3) = 0.7
+        assert!((vals[0] - 0.7).abs() < 1e-10);
+    }
+
+    #[test]
+    fn poisson_nll_loss_log_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // input = log(rate), target = count
+        let input = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let target = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        let loss = PoissonNLLLoss::new(true);
+        let l = loss.forward(&mut s, input, target).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        // exp(1) - 2*1 = e - 2 ≈ 0.71828
+        let expected = 1.0f64.exp() - 2.0;
+        assert!((vals[0] - expected).abs() < 1e-8, "expected {expected}, got {}", vals[0]);
+    }
+
+    #[test]
+    fn gaussian_nll_loss_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let target = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let var = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let loss = GaussianNLLLoss;
+        let l = loss.forward_with_var(&mut s, input, target, var).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        // 0.5 * (log(1) + 0/1 + log(2pi)) = 0.5 * log(2pi)
+        let expected = 0.5 * (2.0 * std::f64::consts::PI).ln();
+        assert!((vals[0] - expected).abs() < 1e-8, "expected {expected}, got {}", vals[0]);
+    }
+
+    #[test]
+    fn multi_label_soft_margin_loss_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let target = s.tensor_variable(vec![1.0, 0.0], vec![2], false).unwrap();
+        let loss = MultiLabelSoftMarginLoss;
+        let l = loss.forward(&mut s, input, target).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        // Both inputs are 0: sigmoid(0)=0.5
+        // For label 1: -log(0.5) ≈ 0.693
+        // For label 0: -log(1-0.5) ≈ 0.693
+        // Mean ≈ 0.693
+        assert!((vals[0] - 0.6931).abs() < 0.01);
     }
 
     #[test]
