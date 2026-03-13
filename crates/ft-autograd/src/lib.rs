@@ -7475,7 +7475,7 @@ impl TensorTape {
             )
         };
 
-        let indices_owned: Vec<Vec<f64>> = indices.iter().map(|v| v.clone()).collect();
+        let indices_owned: Vec<Vec<f64>> = indices.to_vec();
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
             tensor: DenseTensor::from_storage(
@@ -12597,22 +12597,22 @@ impl TensorTape {
 
         // Persist leaf gradients
         for (idx, grad_opt) in gradient_node_results.iter().enumerate() {
-            if let Some(gid) = grad_opt {
-                if self.nodes[idx].op == TensorNodeOp::Leaf && self.nodes[idx].requires_grad {
-                    let vals = self.nodes[gid.0]
-                        .tensor
-                        .contiguous_values_as_f64()
-                        .unwrap_or_default()
-                        .to_vec();
-                    self.persistent_grads
-                        .entry(idx)
-                        .and_modify(|existing: &mut Vec<f64>| {
-                            for (e, v) in existing.iter_mut().zip(vals.iter()) {
-                                *e += v;
-                            }
-                        })
-                        .or_insert(vals);
-                }
+            if let Some(gid) = grad_opt
+                && self.nodes[idx].op == TensorNodeOp::Leaf && self.nodes[idx].requires_grad
+            {
+                let vals = self.nodes[gid.0]
+                    .tensor
+                    .contiguous_values_as_f64()
+                    .unwrap_or_default()
+                    .to_vec();
+                self.persistent_grads
+                    .entry(idx)
+                    .and_modify(|existing: &mut Vec<f64>| {
+                        for (e, v) in existing.iter_mut().zip(vals.iter()) {
+                            *e += v;
+                        }
+                    })
+                    .or_insert(vals);
             }
         }
 
@@ -12882,7 +12882,7 @@ impl TensorTape {
             let dtype = base_node.tensor.meta().dtype();
             let device = base_node.tensor.meta().device();
             let rg = base_node.requires_grad || exp_node.requires_grad;
-            let exp_val = if exp_data.len() == 1 { exp_data[0] } else { exp_data[0] };
+            let exp_val = exp_data[0];
             let result: Vec<f64> = base_data.iter().zip(exp_data.iter()).map(|(&b, &e)| b.powf(e)).collect();
             (rg, result, shape, dtype, device, exp_val)
         };

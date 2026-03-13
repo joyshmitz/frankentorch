@@ -1576,6 +1576,7 @@ impl Module for Embedding {
 /// Modes: `"sum"`, `"mean"`, `"max"`.
 pub struct EmbeddingBag {
     weight: TensorNodeId,
+    #[allow(dead_code)]
     num_embeddings: usize,
     embedding_dim: usize,
     mode: EmbeddingBagMode,
@@ -1684,18 +1685,18 @@ impl EmbeddingBag {
                         }
                     }
                     if self.mode == EmbeddingBagMode::Mean && bag_size > 0 {
-                        for d in 0..dim {
-                            bag_result[d] /= bag_size as f64;
+                        for item in bag_result.iter_mut().take(dim) {
+                            *item /= bag_size as f64;
                         }
                     }
                 }
                 EmbeddingBagMode::Max => {
                     // Initialize with -inf
-                    for d in 0..dim {
-                        bag_result[d] = f64::NEG_INFINITY;
+                    for item in bag_result.iter_mut().take(dim) {
+                        *item = f64::NEG_INFINITY;
                     }
-                    for i in start..end {
-                        let idx = indices_vals[i] as usize;
+                    for &iv in indices_vals.iter().take(end).skip(start) {
+                        let idx = iv as usize;
                         if Some(idx) == self.padding_idx {
                             continue;
                         }
@@ -1707,9 +1708,9 @@ impl EmbeddingBag {
                         }
                     }
                     // If all were padding, replace -inf with 0
-                    for d in 0..dim {
-                        if bag_result[d] == f64::NEG_INFINITY {
-                            bag_result[d] = 0.0;
+                    for item in bag_result.iter_mut().take(dim) {
+                        if *item == f64::NEG_INFINITY {
+                            *item = 0.0;
                         }
                     }
                 }
@@ -2836,8 +2837,7 @@ impl Module for PReLU {
             let batch = if input_shape.len() >= 2 { input_shape[0] } else { 1 };
 
             for b in 0..batch {
-                for c in 0..channels {
-                    let a = weight_vals[c];
+                for (c, &a) in weight_vals.iter().enumerate().take(channels) {
                     for s in 0..spatial {
                         let idx = b * channels * spatial + c * spatial + s;
                         let x = input_vals[idx];
@@ -3898,12 +3898,12 @@ impl Module for AvgPool2d {
         let w_padded = w_in + 2 * self.padding_w;
 
         let h_out = if self.ceil_mode {
-            (h_padded - self.kernel_h + self.stride_h - 1) / self.stride_h + 1
+            (h_padded - self.kernel_h).div_ceil(self.stride_h) + 1
         } else {
             (h_padded - self.kernel_h) / self.stride_h + 1
         };
         let w_out = if self.ceil_mode {
-            (w_padded - self.kernel_w + self.stride_w - 1) / self.stride_w + 1
+            (w_padded - self.kernel_w).div_ceil(self.stride_w) + 1
         } else {
             (w_padded - self.kernel_w) / self.stride_w + 1
         };
@@ -4190,8 +4190,8 @@ impl Module for AdaptiveAvgPool1d {
             )));
         }
 
-        let n = input_shape[0];
-        let c = input_shape[1];
+        let _n = input_shape[0];
+        let _c = input_shape[1];
         let l_in = input_shape[2];
 
         if self.output_size == 0 {
@@ -4356,8 +4356,8 @@ impl Module for AdaptiveMaxPool1d {
             )));
         }
 
-        let n = input_shape[0];
-        let c = input_shape[1];
+        let _n = input_shape[0];
+        let _c = input_shape[1];
         let l_in = input_shape[2];
 
         if self.output_size == 0 {
@@ -4570,7 +4570,9 @@ impl Module for AdaptiveMaxPool3d {
 /// Input: `[N, C, L_pooled]`. Indices: flat vector of original positions.
 /// Output: `[N, C, output_size]`.
 pub struct MaxUnpool1d {
+    #[allow(dead_code)]
     kernel_size: usize,
+    #[allow(dead_code)]
     stride: usize,
 }
 
@@ -4626,9 +4628,8 @@ impl MaxUnpool1d {
 
         for batch in 0..n {
             for ch in 0..c {
-                for l in 0..l_pooled {
+                for (l, &dst_pos) in indices.iter().enumerate().take(l_pooled) {
                     let src_idx = batch * c * l_pooled + ch * l_pooled + l;
-                    let dst_pos = indices[l];
                     if dst_pos < output_size {
                         let dst_idx = batch * c * output_size + ch * output_size + dst_pos;
                         output[dst_idx] = input_vals[src_idx];
@@ -4647,9 +4648,13 @@ impl MaxUnpool1d {
 /// Indices: flat vector mapping each pooled element to position in the unpooled spatial plane.
 /// Output: `[N, C, H_out, W_out]`.
 pub struct MaxUnpool2d {
+    #[allow(dead_code)]
     kernel_h: usize,
+    #[allow(dead_code)]
     kernel_w: usize,
+    #[allow(dead_code)]
     stride_h: usize,
+    #[allow(dead_code)]
     stride_w: usize,
 }
 
@@ -4734,11 +4739,17 @@ impl MaxUnpool2d {
 /// Input: `[N, C, D_pooled, H_pooled, W_pooled]`.
 /// Output: `[N, C, D_out, H_out, W_out]`.
 pub struct MaxUnpool3d {
+    #[allow(dead_code)]
     kernel_d: usize,
+    #[allow(dead_code)]
     kernel_h: usize,
+    #[allow(dead_code)]
     kernel_w: usize,
+    #[allow(dead_code)]
     stride_d: usize,
+    #[allow(dead_code)]
     stride_h: usize,
+    #[allow(dead_code)]
     stride_w: usize,
 }
 
@@ -4801,9 +4812,8 @@ impl MaxUnpool3d {
 
         for batch in 0..n {
             for ch in 0..c {
-                for i in 0..spatial_pooled {
+                for (i, &dst_pos) in indices.iter().enumerate().take(spatial_pooled) {
                     let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + i;
-                    let dst_pos = indices[i];
                     if dst_pos < out_spatial {
                         let dst_idx = batch * c * out_spatial + ch * out_spatial + dst_pos;
                         output[dst_idx] = input_vals[src_idx];
@@ -6149,11 +6159,11 @@ impl Module for ConvTranspose2d {
                 // in the h_out x w_out output.
 
                 // Compute the valid region overlap with output
-                let src_h_start = if kh >= self.padding_h { 0 } else { self.padding_h - kh };
-                let dst_h_start = if kh >= self.padding_h { kh - self.padding_h } else { 0 };
+                let src_h_start = self.padding_h.saturating_sub(kh);
+                let dst_h_start = kh.saturating_sub(self.padding_h);
                 let src_h_end = up_h.min(h_out + self.padding_h - kh);
-                let src_w_start = if kw >= self.padding_w { 0 } else { self.padding_w - kw };
-                let dst_w_start = if kw >= self.padding_w { kw - self.padding_w } else { 0 };
+                let src_w_start = self.padding_w.saturating_sub(kw);
+                let dst_w_start = kw.saturating_sub(self.padding_w);
                 let src_w_end = up_w.min(w_out + self.padding_w - kw);
 
                 if src_h_start >= src_h_end || src_w_start >= src_w_end {

@@ -599,7 +599,7 @@ pub fn save_state_dict<P: AsRef<Path>>(
             DType::F64 => {
                 let values = tensor
                     .contiguous_values()
-                    .map_err(|e| TensorIOError::TensorError(e))?;
+                    .map_err(TensorIOError::TensorError)?;
                 for &v in values {
                     file.write_all(&v.to_le_bytes())
                         .map_err(|e| io_err(&path_str, e))?;
@@ -608,7 +608,7 @@ pub fn save_state_dict<P: AsRef<Path>>(
             DType::F32 => {
                 let values = tensor
                     .contiguous_values_f32()
-                    .map_err(|e| TensorIOError::TensorError(e))?;
+                    .map_err(TensorIOError::TensorError)?;
                 for &v in values {
                     file.write_all(&v.to_le_bytes())
                         .map_err(|e| io_err(&path_str, e))?;
@@ -758,6 +758,214 @@ fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, TensorIOError> {
     let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
     *pos += 8;
     Ok(u64::from_le_bytes(bytes))
+}
+
+// ── SafeTensors Format Support ──────────────────────────────────────────
+
+use std::borrow::Cow;
+
+use ft_core::TensorStorage;
+use safetensors::tensor::{self as st_tensor, Dtype as StDtype, SafeTensors};
+
+/// Convert FrankenTorch DType to SafeTensors Dtype.
+fn ft_dtype_to_st(dtype: DType) -> Result<StDtype, TensorIOError> {
+    match dtype {
+        DType::F64 => Ok(StDtype::F64),
+        DType::F32 => Ok(StDtype::F32),
+        DType::F16 => Ok(StDtype::F16),
+        DType::BF16 => Ok(StDtype::BF16),
+        DType::I64 => Ok(StDtype::I64),
+        DType::I32 => Ok(StDtype::I32),
+        DType::Bool => Ok(StDtype::BOOL),
+    }
+}
+
+/// Convert SafeTensors Dtype to FrankenTorch DType.
+fn st_dtype_to_ft(dtype: StDtype) -> Result<DType, TensorIOError> {
+    match dtype {
+        StDtype::F64 => Ok(DType::F64),
+        StDtype::F32 => Ok(DType::F32),
+        StDtype::F16 => Ok(DType::F16),
+        StDtype::BF16 => Ok(DType::BF16),
+        StDtype::I64 => Ok(DType::I64),
+        StDtype::I32 => Ok(DType::I32),
+        StDtype::BOOL => Ok(DType::Bool),
+        other => Err(TensorIOError::Corrupt {
+            reason: format!("unsupported SafeTensors dtype: {other:?}"),
+        }),
+    }
+}
+
+/// Wrapper to implement `safetensors::View` for a `DenseTensor`.
+struct TensorViewAdapter<'a> {
+    tensor: &'a DenseTensor,
+    st_dtype: StDtype,
+}
+
+impl st_tensor::View for TensorViewAdapter<'_> {
+    fn dtype(&self) -> StDtype {
+        self.st_dtype
+    }
+
+    fn shape(&self) -> &[usize] {
+        self.tensor.meta().shape()
+    }
+
+    fn data(&self) -> Cow<'_, [u8]> {
+        match self.tensor.typed_storage() {
+            TensorStorage::F64(v) => {
+                let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+                Cow::Owned(bytes)
+            }
+            TensorStorage::F32(v) => {
+                let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+                Cow::Owned(bytes)
+            }
+            TensorStorage::F16(v) => {
+                let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+                Cow::Owned(bytes)
+            }
+            TensorStorage::BF16(v) => {
+                let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+                Cow::Owned(bytes)
+            }
+        }
+    }
+
+    fn data_len(&self) -> usize {
+        self.tensor.meta().numel() * self.tensor.meta().dtype().element_size()
+    }
+}
+
+/// Save a state dict to a file in SafeTensors format.
+///
+/// SafeTensors is the Hugging Face standard for safe, zero-copy tensor storage.
+/// Uses a JSON header with tensor metadata followed by raw binary data.
+pub fn save_safetensors<P: AsRef<Path>>(
+    state_dict: &BTreeMap<String, DenseTensor>,
+    path: P,
+    metadata: Option<&std::collections::HashMap<String, String>>,
+) -> Result<(), TensorIOError> {
+    let path_str = path.as_ref().to_string_lossy().to_string();
+
+    // Build the list of (name, view) pairs
+    let views: Vec<(String, TensorViewAdapter<'_>)> = state_dict
+        .iter()
+        .map(|(name, tensor)| {
+            let st_dtype = ft_dtype_to_st(tensor.meta().dtype())?;
+            Ok((
+                name.clone(),
+                TensorViewAdapter {
+                    tensor,
+                    st_dtype,
+                },
+            ))
+        })
+        .collect::<Result<Vec<_>, TensorIOError>>()?;
+
+    let data = st_tensor::serialize(
+        views.into_iter(),
+        metadata.cloned(),
+    )
+    .map_err(|e| TensorIOError::Corrupt {
+        reason: format!("safetensors serialization failed: {e}"),
+    })?;
+
+    std::fs::write(&path, data).map_err(|e| io_err(&path_str, e))?;
+
+    Ok(())
+}
+
+/// Load a state dict from a SafeTensors format file.
+pub fn load_safetensors<P: AsRef<Path>>(
+    path: P,
+) -> Result<BTreeMap<String, DenseTensor>, TensorIOError> {
+    let path_str = path.as_ref().to_string_lossy().to_string();
+    let data = std::fs::read(&path).map_err(|e| io_err(&path_str, e))?;
+    load_safetensors_from_bytes(&data)
+}
+
+/// Load a state dict from SafeTensors-formatted bytes.
+pub fn load_safetensors_from_bytes(
+    data: &[u8],
+) -> Result<BTreeMap<String, DenseTensor>, TensorIOError> {
+    let tensors = SafeTensors::deserialize(data).map_err(|e| TensorIOError::Corrupt {
+        reason: format!("safetensors deserialization failed: {e}"),
+    })?;
+
+    let mut result = BTreeMap::new();
+
+    for (name, view) in tensors.tensors() {
+        let dtype = st_dtype_to_ft(view.dtype())?;
+        let shape: Vec<usize> = view.shape().to_vec();
+        let raw_data = view.data();
+
+        let tensor = match dtype {
+            DType::F64 => {
+                let numel = shape.iter().product::<usize>();
+                let mut values = Vec::with_capacity(numel);
+                for chunk in raw_data.chunks_exact(8) {
+                    let bytes: [u8; 8] = chunk.try_into().unwrap();
+                    values.push(f64::from_le_bytes(bytes));
+                }
+                let meta = TensorMeta::from_shape(shape, DType::F64, Device::Cpu);
+                DenseTensor::from_storage(meta, values)?
+            }
+            DType::F32 => {
+                let numel = shape.iter().product::<usize>();
+                let mut values = Vec::with_capacity(numel);
+                for chunk in raw_data.chunks_exact(4) {
+                    let bytes: [u8; 4] = chunk.try_into().unwrap();
+                    values.push(f32::from_le_bytes(bytes));
+                }
+                let meta = TensorMeta::from_shape(shape, DType::F32, Device::Cpu);
+                DenseTensor::from_storage_f32(meta, values)?
+            }
+            DType::F16 => {
+                let numel = shape.iter().product::<usize>();
+                let mut values = Vec::with_capacity(numel);
+                for chunk in raw_data.chunks_exact(2) {
+                    let bytes: [u8; 2] = chunk.try_into().unwrap();
+                    values.push(ft_core::Float16::from_le_bytes(bytes));
+                }
+                let meta = TensorMeta::from_shape(shape, DType::F16, Device::Cpu);
+                DenseTensor::from_storage_f16(meta, values)?
+            }
+            DType::BF16 => {
+                let numel = shape.iter().product::<usize>();
+                let mut values = Vec::with_capacity(numel);
+                for chunk in raw_data.chunks_exact(2) {
+                    let bytes: [u8; 2] = chunk.try_into().unwrap();
+                    values.push(ft_core::BFloat16::from_le_bytes(bytes));
+                }
+                let meta = TensorMeta::from_shape(shape, DType::BF16, Device::Cpu);
+                DenseTensor::from_storage_bf16(meta, values)?
+            }
+            _ => {
+                return Err(TensorIOError::Corrupt {
+                    reason: format!("unsupported dtype in SafeTensors file: {dtype:?}"),
+                });
+            }
+        };
+
+        result.insert(name, tensor);
+    }
+
+    Ok(result)
+}
+
+/// Load SafeTensors metadata (the string-to-string map) from a file.
+pub fn load_safetensors_metadata<P: AsRef<Path>>(
+    path: P,
+) -> Result<Option<std::collections::HashMap<String, String>>, TensorIOError> {
+    let path_str = path.as_ref().to_string_lossy().to_string();
+    let data = std::fs::read(&path).map_err(|e| io_err(&path_str, e))?;
+    let (_header_size, metadata) =
+        SafeTensors::read_metadata(&data).map_err(|e| TensorIOError::Corrupt {
+            reason: format!("safetensors metadata read failed: {e}"),
+        })?;
+
+    Ok(metadata.metadata().clone())
 }
 
 #[cfg(test)]
@@ -1653,5 +1861,202 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert!(loaded.contains_key("b"));
         assert_eq!(loaded["b"].contiguous_values().unwrap(), &[2.0, 3.0]);
+    }
+
+    // ── SafeTensors Format Tests ────────────────────────────────────────
+
+    use super::{
+        load_safetensors, load_safetensors_from_bytes, load_safetensors_metadata,
+        save_safetensors,
+    };
+
+    #[test]
+    fn safetensors_round_trip_f64() {
+        let path = std::env::temp_dir().join("ft_test_st_f64.safetensors");
+        let _ = std::fs::remove_file(&path);
+        let mut sd = BTreeMap::new();
+        sd.insert(
+            "weight".to_string(),
+            make_f64_tensor(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]),
+        );
+
+        save_safetensors(&sd, &path, None).unwrap();
+        let loaded = load_safetensors(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.len(), 1);
+        let t = &loaded["weight"];
+        assert_eq!(t.meta().shape(), &[2, 2]);
+        assert_eq!(t.meta().dtype(), DType::F64);
+        assert_eq!(t.contiguous_values().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn safetensors_round_trip_f32() {
+        let path = std::env::temp_dir().join("ft_test_st_f32.safetensors");
+        let _ = std::fs::remove_file(&path);
+        let mut sd = BTreeMap::new();
+        let meta = TensorMeta::from_shape(vec![3], DType::F32, Device::Cpu);
+        let t = DenseTensor::from_storage_f32(meta, vec![1.0f32, 2.0, 3.0]).unwrap();
+        sd.insert("w".to_string(), t);
+
+        save_safetensors(&sd, &path, None).unwrap();
+        let loaded = load_safetensors(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded["w"].meta().dtype(), DType::F32);
+        assert_eq!(
+            loaded["w"].contiguous_values_f32().unwrap(),
+            &[1.0f32, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn safetensors_round_trip_f16() {
+        let path = std::env::temp_dir().join("ft_test_st_f16.safetensors");
+        let _ = std::fs::remove_file(&path);
+        let mut sd = BTreeMap::new();
+        let vals: Vec<ft_core::Float16> = vec![1.0f32, 2.0, 3.0]
+            .into_iter()
+            .map(ft_core::Float16::from_f32)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![3], DType::F16, Device::Cpu);
+        let t = DenseTensor::from_storage_f16(meta, vals.clone()).unwrap();
+        sd.insert("h".to_string(), t);
+
+        save_safetensors(&sd, &path, None).unwrap();
+        let loaded = load_safetensors(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded["h"].meta().dtype(), DType::F16);
+        let loaded_f32: Vec<f32> = loaded["h"].typed_storage().to_f32_vec();
+        assert_eq!(loaded_f32, vec![1.0f32, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn safetensors_round_trip_bf16() {
+        let path = std::env::temp_dir().join("ft_test_st_bf16.safetensors");
+        let _ = std::fs::remove_file(&path);
+        let mut sd = BTreeMap::new();
+        let vals: Vec<ft_core::BFloat16> = vec![1.0f32, 2.0, 3.0]
+            .into_iter()
+            .map(ft_core::BFloat16::from_f32)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![3], DType::BF16, Device::Cpu);
+        let t = DenseTensor::from_storage_bf16(meta, vals).unwrap();
+        sd.insert("b".to_string(), t);
+
+        save_safetensors(&sd, &path, None).unwrap();
+        let loaded = load_safetensors(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded["b"].meta().dtype(), DType::BF16);
+        let loaded_f32: Vec<f32> = loaded["b"].typed_storage().to_f32_vec();
+        assert_eq!(loaded_f32, vec![1.0f32, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn safetensors_empty_state_dict() {
+        let path = std::env::temp_dir().join("ft_test_st_empty.safetensors");
+        let _ = std::fs::remove_file(&path);
+        let sd: BTreeMap<String, DenseTensor> = BTreeMap::new();
+
+        save_safetensors(&sd, &path, None).unwrap();
+        let loaded = load_safetensors(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn safetensors_multiple_tensors() {
+        let path = std::env::temp_dir().join("ft_test_st_multi.safetensors");
+        let _ = std::fs::remove_file(&path);
+        let mut sd = BTreeMap::new();
+        sd.insert(
+            "layer1.weight".to_string(),
+            make_f64_tensor(vec![1.0, 2.0], vec![2]),
+        );
+        sd.insert(
+            "layer1.bias".to_string(),
+            make_f64_tensor(vec![0.5], vec![1]),
+        );
+        sd.insert(
+            "layer2.weight".to_string(),
+            make_f64_tensor(vec![3.0, 4.0, 5.0, 6.0], vec![2, 2]),
+        );
+
+        save_safetensors(&sd, &path, None).unwrap();
+        let loaded = load_safetensors(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.len(), 3);
+        assert_eq!(
+            loaded["layer1.weight"].contiguous_values().unwrap(),
+            &[1.0, 2.0]
+        );
+        assert_eq!(
+            loaded["layer1.bias"].contiguous_values().unwrap(),
+            &[0.5]
+        );
+        assert_eq!(
+            loaded["layer2.weight"].contiguous_values().unwrap(),
+            &[3.0, 4.0, 5.0, 6.0]
+        );
+        assert_eq!(loaded["layer2.weight"].meta().shape(), &[2, 2]);
+    }
+
+    #[test]
+    fn safetensors_with_metadata() {
+        let path = std::env::temp_dir().join("ft_test_st_meta.safetensors");
+        let _ = std::fs::remove_file(&path);
+        let mut sd = BTreeMap::new();
+        sd.insert("x".to_string(), make_f64_tensor(vec![1.0], vec![1]));
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("format".to_string(), "ft".to_string());
+        meta.insert("version".to_string(), "1".to_string());
+
+        save_safetensors(&sd, &path, Some(&meta)).unwrap();
+        let loaded_meta = load_safetensors_metadata(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let loaded_meta = loaded_meta.expect("metadata should be present");
+        assert_eq!(loaded_meta.get("format").unwrap(), "ft");
+        assert_eq!(loaded_meta.get("version").unwrap(), "1");
+    }
+
+    #[test]
+    fn safetensors_no_metadata() {
+        let path = std::env::temp_dir().join("ft_test_st_nometa.safetensors");
+        let _ = std::fs::remove_file(&path);
+        let sd: BTreeMap<String, DenseTensor> = BTreeMap::new();
+
+        save_safetensors(&sd, &path, None).unwrap();
+        let loaded_meta = load_safetensors_metadata(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(loaded_meta.is_none());
+    }
+
+    #[test]
+    fn safetensors_from_bytes_round_trip() {
+        let mut sd = BTreeMap::new();
+        sd.insert("a".to_string(), make_f64_tensor(vec![1.0, 2.0], vec![2]));
+
+        let path = std::env::temp_dir().join("ft_test_st_bytes.safetensors");
+        let _ = std::fs::remove_file(&path);
+        save_safetensors(&sd, &path, None).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let loaded = load_safetensors_from_bytes(&bytes).unwrap();
+        assert_eq!(loaded["a"].contiguous_values().unwrap(), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn safetensors_corrupt_bytes() {
+        let result = load_safetensors_from_bytes(b"not a safetensors file");
+        assert!(result.is_err());
     }
 }

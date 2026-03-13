@@ -5,7 +5,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-pub use half::{bf16, f16};
+/// Half-precision float types re-exported from the `half` crate.
+/// Named `Float16`/`BFloat16` to avoid conflict with Rust 2024 primitive `f16`.
+pub type Float16 = half::f16;
+pub type BFloat16 = half::bf16;
 
 static NEXT_TENSOR_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
@@ -541,8 +544,8 @@ impl ScalarTensor {
 pub enum TensorStorage {
     F32(Arc<Vec<f32>>),
     F64(Arc<Vec<f64>>),
-    F16(Arc<Vec<f16>>),
-    BF16(Arc<Vec<bf16>>),
+    F16(Arc<Vec<Float16>>),
+    BF16(Arc<Vec<BFloat16>>),
 }
 
 impl TensorStorage {
@@ -588,7 +591,7 @@ impl TensorStorage {
     }
 
     #[must_use]
-    pub fn as_f16(&self) -> Option<&[f16]> {
+    pub fn as_f16(&self) -> Option<&[Float16]> {
         match self {
             Self::F16(v) => Some(v.as_slice()),
             _ => None,
@@ -596,7 +599,7 @@ impl TensorStorage {
     }
 
     #[must_use]
-    pub fn as_bf16(&self) -> Option<&[bf16]> {
+    pub fn as_bf16(&self) -> Option<&[BFloat16]> {
         match self {
             Self::BF16(v) => Some(v.as_slice()),
             _ => None,
@@ -722,7 +725,7 @@ impl DenseTensor {
         Self::from_typed_storage(meta, TensorStorage::F32(Arc::new(storage)))
     }
 
-    pub fn from_storage_f16(meta: TensorMeta, storage: Vec<f16>) -> Result<Self, DenseTensorError> {
+    pub fn from_storage_f16(meta: TensorMeta, storage: Vec<Float16>) -> Result<Self, DenseTensorError> {
         if meta.dtype() != DType::F16 {
             return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
         }
@@ -731,7 +734,7 @@ impl DenseTensor {
 
     pub fn from_storage_bf16(
         meta: TensorMeta,
-        storage: Vec<bf16>,
+        storage: Vec<BFloat16>,
     ) -> Result<Self, DenseTensorError> {
         if meta.dtype() != DType::BF16 {
             return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
@@ -758,7 +761,7 @@ impl DenseTensor {
     }
 
     pub fn from_contiguous_values_f16(
-        values: Vec<f16>,
+        values: Vec<Float16>,
         shape: Vec<usize>,
         device: Device,
     ) -> Result<Self, DenseTensorError> {
@@ -767,7 +770,7 @@ impl DenseTensor {
     }
 
     pub fn from_contiguous_values_bf16(
-        values: Vec<bf16>,
+        values: Vec<BFloat16>,
         shape: Vec<usize>,
         device: Device,
     ) -> Result<Self, DenseTensorError> {
@@ -930,11 +933,11 @@ impl DenseTensor {
             DType::F64 => TensorStorage::F64(Arc::new(as_f64())),
             DType::F32 => TensorStorage::F32(Arc::new(as_f32())),
             DType::F16 => {
-                let vals: Vec<f16> = as_f32().into_iter().map(f16::from_f32).collect();
+                let vals: Vec<Float16> = as_f32().into_iter().map(Float16::from_f32).collect();
                 TensorStorage::F16(Arc::new(vals))
             }
             DType::BF16 => {
-                let vals: Vec<bf16> = as_f32().into_iter().map(bf16::from_f32).collect();
+                let vals: Vec<BFloat16> = as_f32().into_iter().map(BFloat16::from_f32).collect();
                 TensorStorage::BF16(Arc::new(vals))
             }
             _ => return Err(DenseTensorError::UnsupportedDType(dtype)),
@@ -1331,9 +1334,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        DType, DenseBoolTensor, DenseI32Tensor, DenseI64Tensor, DenseTensor, DenseTensorError,
-        Device, ScalarTensor, TensorMeta, TensorMetaError, TensorStorage, contiguous_strides,
-        ensure_compatible,
+        BFloat16, DType, DenseBoolTensor, DenseI32Tensor, DenseI64Tensor, DenseTensor,
+        DenseTensorError, Device, Float16, ScalarTensor, TensorMeta, TensorMetaError,
+        TensorStorage, contiguous_strides, ensure_compatible,
     };
 
     fn det_seed(parts: &[usize]) -> u64 {
@@ -2385,14 +2388,18 @@ mod tests {
 
     #[test]
     fn promote_types_same_dtype_is_identity() {
-        for dtype in [DType::Bool, DType::I32, DType::I64, DType::F32, DType::F64] {
+        for dtype in [
+            DType::Bool, DType::I32, DType::I64, DType::F16, DType::BF16, DType::F32, DType::F64,
+        ] {
             assert_eq!(dtype.promote_types(dtype), dtype);
         }
     }
 
     #[test]
     fn promote_types_is_symmetric() {
-        let dtypes = [DType::Bool, DType::I32, DType::I64, DType::F32, DType::F64];
+        let dtypes = [
+            DType::Bool, DType::I32, DType::I64, DType::F16, DType::BF16, DType::F32, DType::F64,
+        ];
         for &a in &dtypes {
             for &b in &dtypes {
                 assert_eq!(
@@ -2442,15 +2449,28 @@ mod tests {
             (DType::Bool, DType::Bool, DType::Bool),
             (DType::Bool, DType::I32, DType::I32),
             (DType::Bool, DType::I64, DType::I64),
+            (DType::Bool, DType::F16, DType::F16),
+            (DType::Bool, DType::BF16, DType::BF16),
             (DType::Bool, DType::F32, DType::F32),
             (DType::Bool, DType::F64, DType::F64),
             (DType::I32, DType::I32, DType::I32),
             (DType::I32, DType::I64, DType::I64),
+            (DType::I32, DType::F16, DType::F16),
+            (DType::I32, DType::BF16, DType::BF16),
             (DType::I32, DType::F32, DType::F32),
             (DType::I32, DType::F64, DType::F64),
             (DType::I64, DType::I64, DType::I64),
+            (DType::I64, DType::F16, DType::F16),
+            (DType::I64, DType::BF16, DType::BF16),
             (DType::I64, DType::F32, DType::F32),
             (DType::I64, DType::F64, DType::F64),
+            (DType::F16, DType::F16, DType::F16),
+            (DType::F16, DType::BF16, DType::F32), // mixed half → F32
+            (DType::F16, DType::F32, DType::F32),
+            (DType::F16, DType::F64, DType::F64),
+            (DType::BF16, DType::BF16, DType::BF16),
+            (DType::BF16, DType::F32, DType::F32),
+            (DType::BF16, DType::F64, DType::F64),
             (DType::F32, DType::F32, DType::F32),
             (DType::F32, DType::F64, DType::F64),
             (DType::F64, DType::F64, DType::F64),
@@ -2467,5 +2487,254 @@ mod tests {
                 "promote_types({b:?}, {a:?}) should be {result:?} (symmetry)"
             );
         }
+    }
+
+    // ── F16 / BF16 tests ─────────────────────────────────────────────
+
+    #[test]
+    fn dtype_f16_properties() {
+        assert_eq!(DType::F16.element_size(), 2);
+        assert!(DType::F16.is_floating_point());
+        assert!(DType::F16.is_half());
+        assert!(!DType::F16.is_integer());
+        assert!(!DType::F16.is_bool());
+    }
+
+    #[test]
+    fn dtype_bf16_properties() {
+        assert_eq!(DType::BF16.element_size(), 2);
+        assert!(DType::BF16.is_floating_point());
+        assert!(DType::BF16.is_half());
+        assert!(!DType::BF16.is_integer());
+        assert!(!DType::BF16.is_bool());
+    }
+
+    #[test]
+    fn f16_roundtrip_preserves_value() {
+        let original: Vec<f32> = vec![1.0, 0.5, -3.25, 0.0, 100.0];
+        let f16_vals: Vec<Float16> = original.iter().map(|&x| Float16::from_f32(x)).collect();
+        let roundtrip: Vec<f32> = f16_vals.iter().map(|&x| x.to_f32()).collect();
+        for (orig, rt) in original.iter().zip(roundtrip.iter()) {
+            assert!(
+                (orig - rt).abs() < 0.01,
+                "f16 roundtrip failed: {orig} -> {rt}"
+            );
+        }
+    }
+
+    #[test]
+    fn bf16_roundtrip_preserves_value() {
+        let original: Vec<f32> = vec![1.0, 0.5, -3.25, 0.0, 100.0];
+        let bf16_vals: Vec<BFloat16> = original.iter().map(|&x| BFloat16::from_f32(x)).collect();
+        let roundtrip: Vec<f32> = bf16_vals.iter().map(|&x| x.to_f32()).collect();
+        for (orig, rt) in original.iter().zip(roundtrip.iter()) {
+            assert!(
+                (orig - rt).abs() < 1.0,
+                "bf16 roundtrip failed: {orig} -> {rt}"
+            );
+        }
+    }
+
+    #[test]
+    fn f16_overflow_above_65504() {
+        let big = Float16::from_f32(70000.0);
+        assert!(big.to_f32().is_infinite(), "f16 should overflow to inf for values > 65504");
+    }
+
+    #[test]
+    fn f16_inf_neg_inf() {
+        let pos_inf = Float16::from_f32(f32::INFINITY);
+        let neg_inf = Float16::from_f32(f32::NEG_INFINITY);
+        assert!(pos_inf.to_f32().is_infinite() && pos_inf.to_f32() > 0.0);
+        assert!(neg_inf.to_f32().is_infinite() && neg_inf.to_f32() < 0.0);
+    }
+
+    #[test]
+    fn f16_zero_and_neg_zero() {
+        let zero = Float16::from_f32(0.0);
+        let neg_zero = Float16::from_f32(-0.0);
+        assert_eq!(zero.to_f32(), 0.0);
+        assert_eq!(neg_zero.to_f32(), -0.0);
+        // Both should compare equal as floats
+        assert_eq!(zero.to_f32(), neg_zero.to_f32());
+    }
+
+    #[test]
+    fn bf16_same_exponent_range_as_f32() {
+        // BF16 has same 8-bit exponent as f32, so same max magnitude
+        let big = BFloat16::from_f32(1e38);
+        assert!(
+            big.to_f32().is_finite(),
+            "bf16 should handle 1e38 (within f32 range)"
+        );
+    }
+
+    #[test]
+    fn tensor_storage_f16_basic() {
+        let vals: Vec<Float16> = vec![1.0f32, 2.0, 3.0]
+            .into_iter()
+            .map(Float16::from_f32)
+            .collect();
+        let s = TensorStorage::F16(Arc::new(vals));
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.dtype(), DType::F16);
+        assert!(!s.is_empty());
+        // Conversion to f32
+        let f32_vals = s.to_f32_vec();
+        assert!((f32_vals[0] - 1.0).abs() < 0.01);
+        assert!((f32_vals[1] - 2.0).abs() < 0.01);
+        assert!((f32_vals[2] - 3.0).abs() < 0.01);
+        // Conversion to f64
+        let f64_vals = s.to_f64_vec();
+        assert!((f64_vals[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn tensor_storage_bf16_basic() {
+        let vals: Vec<BFloat16> = vec![1.0f32, 2.0, 3.0]
+            .into_iter()
+            .map(BFloat16::from_f32)
+            .collect();
+        let s = TensorStorage::BF16(Arc::new(vals));
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.dtype(), DType::BF16);
+        let f32_vals = s.to_f32_vec();
+        assert!((f32_vals[0] - 1.0).abs() < 0.01);
+        assert!((f32_vals[1] - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn dense_tensor_f16_create_and_read() {
+        let vals: Vec<Float16> = vec![1.0f32, 2.0, 3.0, 4.0]
+            .into_iter()
+            .map(Float16::from_f32)
+            .collect();
+        let dt =
+            DenseTensor::from_contiguous_values_f16(vals, vec![2, 2], Device::Cpu).unwrap();
+        assert_eq!(dt.meta().dtype(), DType::F16);
+        assert_eq!(dt.meta().shape(), &[2, 2]);
+        // contiguous_values_as_f64 should work
+        let f64_vals = dt.contiguous_values_as_f64().unwrap();
+        assert!((f64_vals[0] - 1.0).abs() < 0.01);
+        assert!((f64_vals[3] - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn dense_tensor_bf16_create_and_read() {
+        let vals: Vec<BFloat16> = vec![1.0f32, 2.0, 3.0]
+            .into_iter()
+            .map(BFloat16::from_f32)
+            .collect();
+        let dt =
+            DenseTensor::from_contiguous_values_bf16(vals, vec![3], Device::Cpu).unwrap();
+        assert_eq!(dt.meta().dtype(), DType::BF16);
+        let f64_vals = dt.contiguous_values_as_f64().unwrap();
+        assert!((f64_vals[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn to_dtype_f32_to_f16() {
+        let dt = DenseTensor::from_contiguous_values_f32(
+            vec![1.0f32, 2.5, -3.0],
+            vec![3],
+            Device::Cpu,
+        )
+        .unwrap();
+        let f16_dt = dt.to_dtype(DType::F16).unwrap();
+        assert_eq!(f16_dt.meta().dtype(), DType::F16);
+        let vals = f16_dt.contiguous_values_as_f64().unwrap();
+        assert!((vals[0] - 1.0).abs() < 0.01);
+        assert!((vals[1] - 2.5).abs() < 0.01);
+        assert!((vals[2] + 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn to_dtype_f16_to_f32() {
+        let vals: Vec<Float16> = vec![1.0f32, 2.5, -3.0]
+            .into_iter()
+            .map(Float16::from_f32)
+            .collect();
+        let dt =
+            DenseTensor::from_contiguous_values_f16(vals, vec![3], Device::Cpu).unwrap();
+        let f32_dt = dt.to_dtype(DType::F32).unwrap();
+        assert_eq!(f32_dt.meta().dtype(), DType::F32);
+        let vals = f32_dt.contiguous_values_f32().unwrap();
+        assert!((vals[0] - 1.0).abs() < 0.01);
+        assert!((vals[1] - 2.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn to_dtype_f16_to_f64() {
+        let vals: Vec<Float16> = vec![1.0f32, 2.0]
+            .into_iter()
+            .map(Float16::from_f32)
+            .collect();
+        let dt =
+            DenseTensor::from_contiguous_values_f16(vals, vec![2], Device::Cpu).unwrap();
+        let f64_dt = dt.to_dtype(DType::F64).unwrap();
+        assert_eq!(f64_dt.meta().dtype(), DType::F64);
+        let vals = f64_dt.contiguous_values().unwrap();
+        assert!((vals[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn to_dtype_bf16_roundtrip() {
+        let dt = DenseTensor::from_contiguous_values_f32(
+            vec![1.0f32, 0.5, -2.0],
+            vec![3],
+            Device::Cpu,
+        )
+        .unwrap();
+        let bf16_dt = dt.to_dtype(DType::BF16).unwrap();
+        assert_eq!(bf16_dt.meta().dtype(), DType::BF16);
+        let back_to_f32 = bf16_dt.to_dtype(DType::F32).unwrap();
+        let vals = back_to_f32.contiguous_values_f32().unwrap();
+        assert!((vals[0] - 1.0).abs() < 0.1);
+        assert!((vals[1] - 0.5).abs() < 0.1);
+        assert!((vals[2] + 2.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn promote_f16_with_f32() {
+        assert_eq!(DType::F16.promote(DType::F32), Some(DType::F32));
+        assert_eq!(DType::F32.promote(DType::F16), Some(DType::F32));
+    }
+
+    #[test]
+    fn promote_f16_with_f64() {
+        assert_eq!(DType::F16.promote(DType::F64), Some(DType::F64));
+        assert_eq!(DType::F64.promote(DType::F16), Some(DType::F64));
+    }
+
+    #[test]
+    fn promote_f16_with_bf16() {
+        assert_eq!(DType::F16.promote(DType::BF16), Some(DType::F32));
+        assert_eq!(DType::BF16.promote(DType::F16), Some(DType::F32));
+    }
+
+    #[test]
+    fn promote_bf16_with_f32() {
+        assert_eq!(DType::BF16.promote(DType::F32), Some(DType::F32));
+        assert_eq!(DType::F32.promote(DType::BF16), Some(DType::F32));
+    }
+
+    #[test]
+    fn f16_dispatch_values_returns_error() {
+        let vals: Vec<Float16> = vec![1.0f32, 2.0]
+            .into_iter()
+            .map(Float16::from_f32)
+            .collect();
+        let dt =
+            DenseTensor::from_contiguous_values_f16(vals, vec![2], Device::Cpu).unwrap();
+        assert!(dt.dispatch_values().is_err());
+        assert!(dt.contiguous_values().is_err());
+    }
+
+    #[test]
+    fn f16_subnormal_handling() {
+        // Smallest positive f16 subnormal: ~5.96e-8
+        let tiny = Float16::from_f32(5.96e-8);
+        let rt = tiny.to_f32();
+        assert!(rt >= 0.0 && rt < 1e-5, "f16 subnormal should be small positive or zero");
     }
 }

@@ -543,8 +543,19 @@ impl FrankenTorchSession {
         self.tensor_to_f64(input)
     }
 
+    /// PyTorch-style alias for casting a tensor to float16.
+    pub fn tensor_half(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to_dtype(input, DType::F16)
+    }
+
+    /// PyTorch-style alias for casting a tensor to bfloat16.
+    pub fn tensor_bfloat16(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to_dtype(input, DType::BF16)
+    }
+
     /// Cast a tensor to the given dtype.
-    /// Currently supports F32↔F64 casts. Returns unchanged if already target dtype.
+    /// Supports all floating-point casts: F16, BF16, F32, F64.
+    /// Returns unchanged if already target dtype.
     pub fn tensor_to_dtype(
         &mut self,
         input: TensorNodeId,
@@ -1330,8 +1341,8 @@ impl FrankenTorchSession {
                     } else {
                         // Keep indices that appear in remaining inputs or final output
                         let mut needed: std::collections::HashSet<char> = output_indices.iter().copied().collect();
-                        for j in (i + 1)..tensors.len() {
-                            for &ch in &input_indices[j] {
+                        for idx_set in &input_indices[(i + 1)..] {
+                            for &ch in idx_set {
                                 needed.insert(ch);
                             }
                         }
@@ -1366,7 +1377,7 @@ impl FrankenTorchSession {
         input_idx: &[char],
         output_idx: &[char],
         tensor: TensorNodeId,
-        dim_sizes: &std::collections::HashMap<char, usize>,
+        _dim_sizes: &std::collections::HashMap<char, usize>,
     ) -> Result<TensorNodeId, AutogradError> {
         let make_err = |reason: &'static str| {
             AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -1749,13 +1760,13 @@ impl FrankenTorchSession {
         let n = k + abs_offset;
         let vals = self.tensor_values(input)?;
         let mut result = vec![0.0f64; n * n];
-        for i in 0..k {
+        for (i, &v) in vals.iter().enumerate().take(k) {
             let (row, col) = if offset >= 0 {
                 (i, i + abs_offset)
             } else {
                 (i + abs_offset, i)
             };
-            result[row * n + col] = vals[i];
+            result[row * n + col] = v;
         }
         self.tensor_variable(result, vec![n, n], false)
     }
@@ -4513,18 +4524,18 @@ impl FrankenTorchSession {
 
         let mut indices = Vec::new();
         let numel: usize = shape.iter().product();
-        for flat_idx in 0..numel {
-            if values[flat_idx] != 0.0 || values[flat_idx].is_nan() {
+        for (flat_idx, &val) in values.iter().enumerate().take(numel) {
+            if val != 0.0 || val.is_nan() {
                 let mut remaining = flat_idx;
-                for d in 0..ndim {
-                    let dim_idx = remaining / strides[d];
-                    remaining %= strides[d];
+                for &s in &strides {
+                    let dim_idx = remaining / s;
+                    remaining %= s;
                     indices.push(dim_idx as f64);
                 }
             }
         }
 
-        let num_nonzero = if ndim > 0 { indices.len() / ndim } else { 0 };
+        let num_nonzero = indices.len().checked_div(ndim).unwrap_or(0);
         let out_shape = vec![num_nonzero, ndim];
         self.tensor_tape.leaf(indices, out_shape, false)
     }
@@ -4548,12 +4559,12 @@ impl FrankenTorchSession {
 
         let mut per_dim_indices: Vec<Vec<f64>> = vec![Vec::new(); ndim];
         let numel: usize = shape.iter().product();
-        for flat_idx in 0..numel {
-            if values[flat_idx] != 0.0 || values[flat_idx].is_nan() {
+        for (flat_idx, &val) in values.iter().enumerate().take(numel) {
+            if val != 0.0 || val.is_nan() {
                 let mut remaining = flat_idx;
-                for d in 0..ndim {
-                    let dim_idx = remaining / strides[d];
-                    remaining %= strides[d];
+                for (d, &s) in strides.iter().enumerate() {
+                    let dim_idx = remaining / s;
+                    remaining %= s;
                     per_dim_indices[d].push(dim_idx as f64);
                 }
             }
@@ -5178,7 +5189,7 @@ impl FrankenTorchSession {
         Ok((q_node, r_node))
     }
 
-    fn compute_strides(shape: &[usize]) -> Vec<usize> {
+    fn _compute_strides(shape: &[usize]) -> Vec<usize> {
         let ndim = shape.len();
         let mut strides = vec![0usize; ndim];
         if ndim > 0 {

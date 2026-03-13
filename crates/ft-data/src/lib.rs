@@ -385,7 +385,7 @@ impl BatchSampler {
         if self.drop_last {
             self.indices.len() / self.batch_size
         } else {
-            (self.indices.len() + self.batch_size - 1) / self.batch_size
+            self.indices.len().div_ceil(self.batch_size)
         }
     }
 
@@ -504,7 +504,7 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
         if self.config.drop_last {
             n / self.config.batch_size
         } else {
-            (n + self.config.batch_size - 1) / self.config.batch_size
+            n.div_ceil(self.config.batch_size)
         }
     }
 

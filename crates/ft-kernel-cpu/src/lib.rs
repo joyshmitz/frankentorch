@@ -3833,7 +3833,7 @@ pub fn matrix_exp_contiguous_f64(
     }
 
     // Padé [6/6] coefficients (from Higham's "The Scaling and Squaring Method")
-    let b: [f64; 7] = [
+    let _b: [f64; 7] = [
         1.0,
         1.0 / 2.0,
         1.0 / 9.0,          // b2 = 1/(2*3*3) actually let me use proper coefficients
@@ -4124,7 +4124,7 @@ pub fn svd_contiguous_f64(
         let u_rows = if full_matrices { m } else { k };
         let vh_cols = if full_matrices { n } else { k };
         // U for A = Vh_t^T: result.vh is (vh_t_rows x m), transpose to (m x vh_t_rows)
-        let vh_t_rows = if full_matrices { m } else { k };
+        let _vh_t_rows = if full_matrices { m } else { k };
         let mut u = vec![0.0f64; m * u_rows];
         for i in 0..m {
             for j in 0..u_rows {
@@ -4276,8 +4276,8 @@ fn svd_tall(a: &[f64], m: usize, n: usize, full_matrices: bool) -> Result<SvdRes
             }
             // Normalize
             let mut norm = 0.0;
-            for i in 0..m {
-                norm += col[i] * col[i];
+            for item in col.iter().take(m) {
+                norm += item * item;
             }
             let norm = norm.sqrt();
             if norm > tol {
@@ -6377,13 +6377,13 @@ pub fn nonzero_tensor_contiguous_f64(
     }
 
     let mut indices = Vec::new();
-    for flat_idx in 0..numel {
-        if data[flat_idx] != 0.0 || data[flat_idx].is_nan() {
+    for (flat_idx, &val) in data.iter().enumerate().take(numel) {
+        if val != 0.0 || val.is_nan() {
             // NaN is treated as non-zero (PyTorch behavior)
             let mut remaining = flat_idx;
-            for d in 0..ndim {
-                let dim_idx = remaining / strides[d];
-                remaining %= strides[d];
+            for stride in strides.iter().take(ndim) {
+                let dim_idx = remaining / stride;
+                remaining %= stride;
                 indices.push(dim_idx as f64);
             }
         }
