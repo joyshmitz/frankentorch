@@ -2821,7 +2821,7 @@ mod tests {
         // Smallest positive f16 subnormal: ~5.96e-8
         let tiny = Float16::from_f32(5.96e-8);
         let rt = tiny.to_f32();
-        assert!(rt >= 0.0 && rt < 1e-5, "f16 subnormal should be small positive or zero");
+        assert!((0.0..1e-5).contains(&rt), "f16 subnormal should be small positive or zero");
     }
 
     // ── Complex dtype tests ─────────────────────────────────────────
