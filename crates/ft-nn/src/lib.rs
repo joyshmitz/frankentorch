@@ -10658,7 +10658,7 @@ mod tests {
         // All spatial elements in a dropped channel should be zero
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
-            .tensor_variable(vec![1.0; 1 * 8 * 2 * 2], vec![1, 8, 2, 2], false)
+            .tensor_variable(vec![1.0; 8 * 2 * 2], vec![1, 8, 2, 2], false)
             .unwrap();
         let d = Dropout2d::new(0.5);
         let y = d.forward(&mut session, x).unwrap();
@@ -10687,20 +10687,20 @@ mod tests {
     fn dropout3d_eval_passes_through() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
-            .tensor_variable(vec![1.0; 1 * 2 * 2 * 2 * 2], vec![1, 2, 2, 2, 2], false)
+            .tensor_variable(vec![1.0; 2 * 2 * 2 * 2], vec![1, 2, 2, 2, 2], false)
             .unwrap();
         let d = Dropout3d::new(0.5);
         d.eval();
         let y = d.forward(&mut session, x).unwrap();
         let vals = session.tensor_values(y).unwrap();
-        assert_eq!(vals, vec![1.0; 1 * 2 * 2 * 2 * 2]);
+        assert_eq!(vals, vec![1.0; 2 * 2 * 2 * 2]);
     }
 
     #[test]
     fn dropout3d_channel_consistency() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
-            .tensor_variable(vec![1.0; 1 * 4 * 2 * 2 * 2], vec![1, 4, 2, 2, 2], false)
+            .tensor_variable(vec![1.0; 4 * 2 * 2 * 2], vec![1, 4, 2, 2, 2], false)
             .unwrap();
         let d = Dropout3d::new(0.5);
         let y = d.forward(&mut session, x).unwrap();
@@ -17125,7 +17125,7 @@ mod tests {
     #[test]
     fn embedding_bag_sum_mode() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let eb = EmbeddingBag::new(&mut session, 5, 3, EmbeddingBagMode::Sum, None).unwrap();
+        let _eb = EmbeddingBag::new(&mut session, 5, 3, EmbeddingBagMode::Sum, None).unwrap();
 
         // Set weights to known values
         let weight_vals: Vec<f64> = (0..15).map(|x| x as f64).collect();
@@ -17506,7 +17506,7 @@ mod tests {
 
         // T=2, N=1, C=3, target=[1]
         // Use valid log-probabilities
-        let logits_base = vec![
+        let logits_base = [
             vec![0.5, 1.0, 0.3], // t=0
             vec![0.2, 0.8, 0.5], // t=1
         ];
@@ -17601,7 +17601,7 @@ mod tests {
 
         // T=4, N=1, C=3, target=[1, 2]
         // Use valid log-probabilities (log-softmax normalized)
-        let logits = vec![
+        let logits = [
             vec![0.5, 1.0, 0.3],  // t=0
             vec![0.2, 1.5, 0.8],  // t=1
             vec![0.1, 0.7, 1.2],  // t=2

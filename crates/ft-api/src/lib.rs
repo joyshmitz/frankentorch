@@ -1614,9 +1614,7 @@ impl FrankenTorchSession {
             let result = self.tensor_bmm(lhs_3d, rhs_3d)?;
             let mut out_shape: Vec<usize> = Vec::new();
             for &ch in output_idx {
-                if batch_chars.contains(&ch) {
-                    out_shape.push(lhs_shape[lhs_pos(&ch)]);
-                } else if free_lhs_chars.contains(&ch) {
+                if batch_chars.contains(&ch) || free_lhs_chars.contains(&ch) {
                     out_shape.push(lhs_shape[lhs_pos(&ch)]);
                 } else if free_rhs_chars.contains(&ch) {
                     out_shape.push(rhs_shape[rhs_pos(&ch)]);
@@ -1649,14 +1647,13 @@ impl FrankenTorchSession {
         // Reshape to output shape
         let mut out_shape: Vec<usize> = Vec::new();
         for &ch in output_idx {
-            if batch_chars.contains(&ch) {
-                out_shape.push(lhs_shape[lhs_pos(&ch)]);
-            } else if free_lhs_chars.contains(&ch) {
+            if batch_chars.contains(&ch)
+                || free_lhs_chars.contains(&ch)
+                || contract_chars.contains(&ch)
+            {
                 out_shape.push(lhs_shape[lhs_pos(&ch)]);
             } else if free_rhs_chars.contains(&ch) {
                 out_shape.push(rhs_shape[rhs_pos(&ch)]);
-            } else if contract_chars.contains(&ch) {
-                out_shape.push(lhs_shape[lhs_pos(&ch)]);
             }
         }
 
@@ -13736,7 +13733,7 @@ mod tests {
         let vals = s.tensor_values(t).unwrap();
         assert_eq!(vals.len(), 1000);
         for &v in &vals {
-            assert!(v >= -0.5 && v < 0.5, "value {v} out of range [-0.5, 0.5)");
+            assert!((-0.5..0.5).contains(&v), "value {v} out of range [-0.5, 0.5)");
         }
     }
 
@@ -14538,7 +14535,7 @@ mod tests {
     fn svd_identity_3x3() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = s.eye(3, false).unwrap();
-        let (u, sv, vh) = s.tensor_linalg_svd(a, false).unwrap();
+        let (_u, sv, _vh) = s.tensor_linalg_svd(a, false).unwrap();
         let sv_vals = s.tensor_values(sv).unwrap();
         // All singular values should be 1.0
         for (i, &val) in sv_vals.iter().enumerate() {
@@ -15003,7 +15000,7 @@ mod tests {
         let td_shape = s.tensor_shape(td).unwrap();
         assert_eq!(td_shape, vec![2, 3]);
         // [[1*3, 1*4, 1*5], [2*3, 2*4, 2*5]]
-        let expected = vec![3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
+        let expected = [3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
         for (i, (&v, &e)) in td_vals.iter().zip(expected.iter()).enumerate() {
             assert!((v - e).abs() < 1e-10, "td[{i}] = {v}, expected {e}");
         }
@@ -15067,7 +15064,7 @@ mod tests {
         let shape = s.tensor_shape(k).unwrap();
         assert_eq!(shape, vec![6]);
         // [1*3, 1*4, 1*5, 2*3, 2*4, 2*5]
-        let expected = vec![3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
+        let expected = [3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
         for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
             assert!((v - e).abs() < 1e-10, "kron[{i}] = {v}, expected {e}");
         }
