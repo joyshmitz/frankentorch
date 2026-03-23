@@ -3784,10 +3784,7 @@ pub fn cholesky_solve_contiguous_f64(
 /// 1. Scale A by 2^-s so ||A/2^s|| < 1
 /// 2. Compute Padé [6/6] approximant R66(A/2^s)
 /// 3. Square the result s times: exp(A) = R66^(2^s)
-pub fn matrix_exp_contiguous_f64(
-    data: &[f64],
-    meta: &TensorMeta,
-) -> Result<Vec<f64>, KernelError> {
+pub fn matrix_exp_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
     if shape.len() != 2 || shape[0] != shape[1] {
@@ -3836,7 +3833,7 @@ pub fn matrix_exp_contiguous_f64(
     let _b: [f64; 7] = [
         1.0,
         1.0 / 2.0,
-        1.0 / 9.0,          // b2 = 1/(2*3*3) actually let me use proper coefficients
+        1.0 / 9.0, // b2 = 1/(2*3*3) actually let me use proper coefficients
         1.0 / 72.0,
         1.0 / 1008.0,
         1.0 / 30240.0,
@@ -3912,10 +3909,7 @@ pub struct EighResult {
 ///
 /// Returns eigenvalues sorted ascending and corresponding orthonormal eigenvectors.
 /// The input must be a square symmetric matrix.
-pub fn eigh_contiguous_f64(
-    data: &[f64],
-    meta: &TensorMeta,
-) -> Result<EighResult, KernelError> {
+pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
     if shape.len() != 2 || shape[0] != shape[1] {
@@ -4036,10 +4030,7 @@ pub fn eigh_contiguous_f64(
 }
 
 /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
-pub fn eigvalsh_contiguous_f64(
-    data: &[f64],
-    meta: &TensorMeta,
-) -> Result<Vec<f64>, KernelError> {
+pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     let result = eigh_contiguous_f64(data, meta)?;
     Ok(result.eigenvalues)
 }
@@ -4300,23 +4291,13 @@ fn svd_tall(a: &[f64], m: usize, n: usize, full_matrices: bool) -> Result<SvdRes
         }
     }
 
-    Ok(SvdResult {
-        u,
-        s,
-        vh,
-        m,
-        n,
-        k,
-    })
+    Ok(SvdResult { u, s, vh, m, n, k })
 }
 
 /// Compute just the singular values of an (m x n) matrix.
 ///
 /// More efficient than full SVD when U and Vh are not needed.
-pub fn svdvals_contiguous_f64(
-    data: &[f64],
-    meta: &TensorMeta,
-) -> Result<Vec<f64>, KernelError> {
+pub fn svdvals_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
     // For now, compute full SVD and return just S.
     // A dedicated implementation could skip computing U/V for better efficiency.
     let result = svd_contiguous_f64(data, meta, false)?;
@@ -6548,10 +6529,7 @@ pub fn complex_div_contiguous(
 }
 
 /// Construct complex tensor from separate real and imaginary f64 arrays.
-pub fn complex_from_real_imag(
-    real: &[f64],
-    imag: &[f64],
-) -> Result<Vec<Complex128>, KernelError> {
+pub fn complex_from_real_imag(real: &[f64], imag: &[f64]) -> Result<Vec<Complex128>, KernelError> {
     if real.len() != imag.len() {
         return Err(KernelError::ShapeMismatch {
             lhs: vec![real.len()],
@@ -9603,8 +9581,7 @@ mod tests {
     fn cholesky_not_positive_definite() {
         let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
         let a = vec![1.0, 2.0, 2.0, 1.0]; // eigenvalues: 3, -1
-        let err = super::cholesky_contiguous_f64(&a, &meta, false)
-            .expect_err("non-SPD must fail");
+        let err = super::cholesky_contiguous_f64(&a, &meta, false).expect_err("non-SPD must fail");
         assert!(matches!(err, super::KernelError::NotPositiveDefinite));
     }
 
@@ -9934,10 +9911,7 @@ mod tests {
     #[test]
     fn complex_conj_negates_imaginary() {
         let meta = TensorMeta::from_shape(vec![2], DType::Complex128, Device::Cpu);
-        let input = vec![
-            Complex128::new(1.0, 2.0),
-            Complex128::new(-3.0, 4.0),
-        ];
+        let input = vec![Complex128::new(1.0, 2.0), Complex128::new(-3.0, 4.0)];
         let result = super::complex_conj_contiguous(&input, &meta).unwrap();
         assert_eq!(result[0], Complex128::new(1.0, -2.0));
         assert_eq!(result[1], Complex128::new(-3.0, -4.0));
@@ -9947,8 +9921,8 @@ mod tests {
     fn complex_abs_returns_magnitude() {
         let meta = TensorMeta::from_shape(vec![2], DType::Complex128, Device::Cpu);
         let input = vec![
-            Complex128::new(3.0, 4.0),  // |3+4i| = 5
-            Complex128::new(0.0, 1.0),  // |i| = 1
+            Complex128::new(3.0, 4.0), // |3+4i| = 5
+            Complex128::new(0.0, 1.0), // |i| = 1
         ];
         let result = super::complex_abs_contiguous(&input, &meta).unwrap();
         assert!((result[0] - 5.0).abs() < 1e-12);
@@ -9959,9 +9933,9 @@ mod tests {
     fn complex_angle_returns_phase() {
         let meta = TensorMeta::from_shape(vec![3], DType::Complex128, Device::Cpu);
         let input = vec![
-            Complex128::new(1.0, 0.0),   // angle = 0
-            Complex128::new(0.0, 1.0),   // angle = pi/2
-            Complex128::new(-1.0, 0.0),  // angle = pi
+            Complex128::new(1.0, 0.0),  // angle = 0
+            Complex128::new(0.0, 1.0),  // angle = pi/2
+            Complex128::new(-1.0, 0.0), // angle = pi
         ];
         let result = super::complex_angle_contiguous(&input, &meta).unwrap();
         assert!(result[0].abs() < 1e-12);

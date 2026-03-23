@@ -27,11 +27,10 @@ use ft_dispatch::{
 };
 use ft_kernel_cpu::{
     argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64,
-    gather_tensor_contiguous_f64, index_select_tensor_contiguous_f64,
-    index_put_tensor_contiguous_f64, masked_fill_tensor_contiguous_f64,
+    gather_tensor_contiguous_f64, index_put_tensor_contiguous_f64,
+    index_select_tensor_contiguous_f64, masked_fill_tensor_contiguous_f64,
     max_dim_tensor_contiguous_f64, min_dim_tensor_contiguous_f64,
-    scatter_add_tensor_contiguous_f64, scatter_tensor_contiguous_f64,
-    where_tensor_contiguous_f64,
+    scatter_add_tensor_contiguous_f64, scatter_tensor_contiguous_f64, where_tensor_contiguous_f64,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1074,9 +1073,7 @@ impl TensorBackwardReport {
     /// node ID that can itself be differentiated.
     #[must_use]
     pub fn gradient_node(&self, node: TensorNodeId) -> Option<TensorNodeId> {
-        self.gradient_nodes
-            .get(node.0)
-            .and_then(|entry| *entry)
+        self.gradient_nodes.get(node.0).and_then(|entry| *entry)
     }
 }
 
@@ -4345,12 +4342,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                meta.shape().to_vec(),
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, meta.shape().to_vec(), meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -5975,12 +5967,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                meta.shape().to_vec(),
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, meta.shape().to_vec(), meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -6300,12 +6287,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                meta.shape().to_vec(),
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, meta.shape().to_vec(), meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -6352,12 +6334,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                meta.numel(),
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, meta.numel(), meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -6399,12 +6376,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                meta.numel(),
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, meta.numel(), meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -6752,12 +6724,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                meta.numel(),
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, meta.numel(), meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -7453,14 +7420,9 @@ impl TensorTape {
             let requires_grad = input_node.requires_grad && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let input_data = input_node.tensor.contiguous_values_as_f64()?;
-            let output_values = index_put_tensor_contiguous_f64(
-                &input_data,
-                &meta,
-                indices,
-                values,
-                accumulate,
-            )
-            .map_err(|e| AutogradError::Dispatch(e.into()))?;
+            let output_values =
+                index_put_tensor_contiguous_f64(&input_data, &meta, indices, values, accumulate)
+                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let shape = meta.shape();
             let num_indexed = indices.len();
             let suffix: usize = shape[num_indexed..].iter().product();
@@ -7479,11 +7441,7 @@ impl TensorTape {
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
             tensor: DenseTensor::from_storage(
-                ft_core::TensorMeta::from_shape(
-                    input_shape.clone(),
-                    output_dtype,
-                    output_device,
-                ),
+                ft_core::TensorMeta::from_shape(input_shape.clone(), output_dtype, output_device),
                 output_values,
             )?,
             requires_grad,
@@ -7841,10 +7799,8 @@ impl TensorTape {
             dispatch_inputs.push((node.tensor.typed_storage().clone(), meta));
         }
 
-        let refs: Vec<(&TensorStorage, &ft_core::TensorMeta)> = dispatch_inputs
-            .iter()
-            .map(|(s, m)| (s, m))
-            .collect();
+        let refs: Vec<(&TensorStorage, &ft_core::TensorMeta)> =
+            dispatch_inputs.iter().map(|(s, m)| (s, m)).collect();
 
         let outcome =
             dispatch_tensor_join_contiguous_typed(JoinOp::Cat, mode, &refs, dim, requires_grad)
@@ -7907,10 +7863,8 @@ impl TensorTape {
             dispatch_inputs.push((node.tensor.typed_storage().clone(), meta));
         }
 
-        let refs: Vec<(&TensorStorage, &ft_core::TensorMeta)> = dispatch_inputs
-            .iter()
-            .map(|(s, m)| (s, m))
-            .collect();
+        let refs: Vec<(&TensorStorage, &ft_core::TensorMeta)> =
+            dispatch_inputs.iter().map(|(s, m)| (s, m)).collect();
 
         let outcome =
             dispatch_tensor_join_contiguous_typed(JoinOp::Stack, mode, &refs, dim, requires_grad)
@@ -8812,12 +8766,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                meta.shape().to_vec(),
-                meta.device(),
-                outcome,
-            )
+            (requires_grad, meta.shape().to_vec(), meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -8877,12 +8826,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                vec![m, n],
-                mat1_meta.device(),
-                outcome,
-            )
+            (requires_grad, vec![m, n], mat1_meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -8949,12 +8893,7 @@ impl TensorTape {
                 requires_grad,
             )
             .map_err(AutogradError::Dispatch)?;
-            (
-                requires_grad,
-                vec![m],
-                mat_meta.device(),
-                outcome,
-            )
+            (requires_grad, vec![m], mat_meta.device(), outcome)
         };
 
         let output_dtype = outcome.storage.dtype();
@@ -12356,7 +12295,8 @@ impl TensorTape {
                     // d(x^n)/dx = n * x^(n-1) * grad
                     let exp_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let exp_numel: usize = exp_shape.iter().product();
-                    let exp_node = self.leaf(vec![exponent; exp_numel], exp_shape.clone(), false)?;
+                    let exp_node =
+                        self.leaf(vec![exponent; exp_numel], exp_shape.clone(), false)?;
                     let exp_m1_node =
                         self.leaf(vec![exponent - 1.0; exp_numel], exp_shape, false)?;
                     let x_pow = self.cg_pow(input, exp_m1_node)?;
@@ -12484,7 +12424,10 @@ impl TensorTape {
                     // d(relu(x))/dx = (x > 0) * grad
                     let vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
-                    let mask: Vec<f64> = vals.iter().map(|&v| if v > 0.0 { 1.0 } else { 0.0 }).collect();
+                    let mask: Vec<f64> = vals
+                        .iter()
+                        .map(|&v| if v > 0.0 { 1.0 } else { 0.0 })
+                        .collect();
                     let mask_node = self.leaf(mask, shape, false)?;
                     let grad_in = self.cg_mul(incoming_id, mask_node)?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
@@ -12598,7 +12541,8 @@ impl TensorTape {
         // Persist leaf gradients
         for (idx, grad_opt) in gradient_node_results.iter().enumerate() {
             if let Some(gid) = grad_opt
-                && self.nodes[idx].op == TensorNodeOp::Leaf && self.nodes[idx].requires_grad
+                && self.nodes[idx].op == TensorNodeOp::Leaf
+                && self.nodes[idx].requires_grad
             {
                 let vals = self.nodes[gid.0]
                     .tensor
@@ -12674,7 +12618,11 @@ impl TensorTape {
 
             // Handle broadcast: scalar grad + tensor
             let result = if lhs_data.len() == rhs_data.len() {
-                lhs_data.iter().zip(rhs_data.iter()).map(|(&a, &b)| a + b).collect()
+                lhs_data
+                    .iter()
+                    .zip(rhs_data.iter())
+                    .map(|(&a, &b)| a + b)
+                    .collect()
             } else if rhs_data.len() == 1 {
                 lhs_data.iter().map(|&a| a + rhs_data[0]).collect()
             } else if lhs_data.len() == 1 {
@@ -12714,7 +12662,11 @@ impl TensorTape {
             let dtype = lhs_node.tensor.meta().dtype();
             let device = lhs_node.tensor.meta().device();
             let rg = lhs_node.requires_grad || rhs_node.requires_grad;
-            let result = lhs_data.iter().zip(rhs_data.iter()).map(|(&a, &b)| a - b).collect();
+            let result = lhs_data
+                .iter()
+                .zip(rhs_data.iter())
+                .map(|(&a, &b)| a - b)
+                .collect();
             (rg, result, shape, dtype, device)
         };
 
@@ -12747,11 +12699,24 @@ impl TensorTape {
 
             // Handle broadcast: scalar * tensor
             let (result, shape) = if lhs_data.len() == rhs_data.len() {
-                (lhs_data.iter().zip(rhs_data.iter()).map(|(&a, &b)| a * b).collect(), lhs_shape)
+                (
+                    lhs_data
+                        .iter()
+                        .zip(rhs_data.iter())
+                        .map(|(&a, &b)| a * b)
+                        .collect(),
+                    lhs_shape,
+                )
             } else if rhs_data.len() == 1 {
-                (lhs_data.iter().map(|&a| a * rhs_data[0]).collect(), lhs_shape)
+                (
+                    lhs_data.iter().map(|&a| a * rhs_data[0]).collect(),
+                    lhs_shape,
+                )
             } else if lhs_data.len() == 1 {
-                (rhs_data.iter().map(|&b| lhs_data[0] * b).collect(), rhs_shape)
+                (
+                    rhs_data.iter().map(|&b| lhs_data[0] * b).collect(),
+                    rhs_shape,
+                )
             } else {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -12787,7 +12752,11 @@ impl TensorTape {
             let dtype = lhs_node.tensor.meta().dtype();
             let device = lhs_node.tensor.meta().device();
             let rg = lhs_node.requires_grad || rhs_node.requires_grad;
-            let result = lhs_data.iter().zip(rhs_data.iter()).map(|(&a, &b)| a / b).collect();
+            let result = lhs_data
+                .iter()
+                .zip(rhs_data.iter())
+                .map(|(&a, &b)| a / b)
+                .collect();
             (rg, result, shape, dtype, device)
         };
 
@@ -12883,7 +12852,11 @@ impl TensorTape {
             let device = base_node.tensor.meta().device();
             let rg = base_node.requires_grad || exp_node.requires_grad;
             let exp_val = exp_data[0];
-            let result: Vec<f64> = base_data.iter().zip(exp_data.iter()).map(|(&b, &e)| b.powf(e)).collect();
+            let result: Vec<f64> = base_data
+                .iter()
+                .zip(exp_data.iter())
+                .map(|(&b, &e)| b.powf(e))
+                .collect();
             (rg, result, shape, dtype, device, exp_val)
         };
 
@@ -12923,7 +12896,10 @@ impl TensorTape {
         self.nodes.push(TensorNode {
             tensor: DenseTensor::from_storage(meta, expanded_data)?,
             requires_grad,
-            op: TensorNodeOp::Expand { input, original_shape },
+            op: TensorNodeOp::Expand {
+                input,
+                original_shape,
+            },
         });
         Ok(out)
     }
@@ -17650,9 +17626,7 @@ mod tests {
     #[test]
     fn custom_function_straight_through_estimator() {
         let mut tape = TensorTape::new();
-        let x = tape
-            .leaf(vec![1.3, 2.7, -0.5], vec![3], true)
-            .expect("x");
+        let x = tape.leaf(vec![1.3, 2.7, -0.5], vec![3], true).expect("x");
 
         // STE: forward = round(x), backward = grad (straight-through)
         let y = tape
@@ -17701,10 +17675,16 @@ mod tests {
                     let saved_a = &ctx.saved_tensors()[0];
                     let saved_b = &ctx.saved_tensors()[1];
                     let grad = grad_outputs[0];
-                    let grad_a: Vec<f64> =
-                        grad.iter().zip(saved_b.iter()).map(|(g, b)| g * b).collect();
-                    let grad_b: Vec<f64> =
-                        grad.iter().zip(saved_a.iter()).map(|(g, a)| g * a).collect();
+                    let grad_a: Vec<f64> = grad
+                        .iter()
+                        .zip(saved_b.iter())
+                        .map(|(g, b)| g * b)
+                        .collect();
+                    let grad_b: Vec<f64> = grad
+                        .iter()
+                        .zip(saved_a.iter())
+                        .map(|(g, a)| g * a)
+                        .collect();
                     Ok(vec![Some(grad_a), Some(grad_b)])
                 },
             )
@@ -18019,12 +17999,15 @@ mod tests {
             let (x3, _) = tape.mul(x2, x, ExecutionMode::Strict).expect("x^3");
             let two = tape.leaf(vec![2.0], vec![1], false).expect("2");
             let (two_x2, _) = tape.mul(two, x2, ExecutionMode::Strict).expect("2x^2");
-            let (out, _) = tape.add(x3, two_x2, ExecutionMode::Strict).expect("x^3 + 2x^2");
+            let (out, _) = tape
+                .add(x3, two_x2, ExecutionMode::Strict)
+                .expect("x^3 + 2x^2");
             let report = tape.backward(out).expect("backward");
             report.gradient(x).expect("grad")[0]
         };
 
-        let fd_second_deriv = (compute_first_deriv(x_val + eps) - compute_first_deriv(x_val - eps)) / (2.0 * eps);
+        let fd_second_deriv =
+            (compute_first_deriv(x_val + eps) - compute_first_deriv(x_val - eps)) / (2.0 * eps);
 
         // Compute f''(x) analytically via create_graph
         let mut tape = TensorTape::new();
@@ -18033,7 +18016,9 @@ mod tests {
         let (x3, _) = tape.mul(x2, x, ExecutionMode::Strict).expect("x^3");
         let two = tape.leaf(vec![2.0], vec![1], false).expect("2");
         let (two_x2, _) = tape.mul(two, x2, ExecutionMode::Strict).expect("2x^2");
-        let (out, _) = tape.add(x3, two_x2, ExecutionMode::Strict).expect("x^3 + 2x^2");
+        let (out, _) = tape
+            .add(x3, two_x2, ExecutionMode::Strict)
+            .expect("x^3 + 2x^2");
 
         let report1 = tape
             .backward_with_options(
@@ -18057,7 +18042,9 @@ mod tests {
         );
         assert!(
             (analytic_second_deriv - fd_second_deriv).abs() < 1e-4,
-            "analytic {} should match finite-diff {}", analytic_second_deriv, fd_second_deriv
+            "analytic {} should match finite-diff {}",
+            analytic_second_deriv,
+            fd_second_deriv
         );
     }
 
@@ -18172,8 +18159,12 @@ mod tests {
         let dx_node = report1.gradient_node(x).expect("gradient node for x");
 
         // Compute ||grad||^2 = sum(grad^2)
-        let (grad_sq, _) = tape.mul(dx_node, dx_node, ExecutionMode::Strict).expect("grad^2");
-        let (penalty, _) = tape.sum(grad_sq, ExecutionMode::Strict).expect("sum(grad^2)");
+        let (grad_sq, _) = tape
+            .mul(dx_node, dx_node, ExecutionMode::Strict)
+            .expect("grad^2");
+        let (penalty, _) = tape
+            .sum(grad_sq, ExecutionMode::Strict)
+            .expect("sum(grad^2)");
 
         // Second backward to get dL/dx
         let report2 = tape.backward(penalty).expect("second backward");
@@ -18252,9 +18243,7 @@ mod tests {
     #[test]
     fn f32_pow_preserves_dtype() {
         let mut tape = TensorTape::new();
-        let a = tape
-            .leaf_f32(vec![2.0f32, 3.0], vec![2], false)
-            .unwrap();
+        let a = tape.leaf_f32(vec![2.0f32, 3.0], vec![2], false).unwrap();
         let (p, _) = tape.pow(a, 2.0, ExecutionMode::Strict).unwrap();
         assert_eq!(tape.dtype(p).unwrap(), DType::F32);
         let vals = tape.values_f32(p).unwrap();
@@ -18267,7 +18256,9 @@ mod tests {
         let a = tape
             .leaf_f32(vec![0.5f32, 1.5, 2.5, 3.5], vec![4], false)
             .unwrap();
-        let (c, _) = tape.tensor_clamp(a, 1.0, 3.0, ExecutionMode::Strict).unwrap();
+        let (c, _) = tape
+            .tensor_clamp(a, 1.0, 3.0, ExecutionMode::Strict)
+            .unwrap();
         assert_eq!(tape.dtype(c).unwrap(), DType::F32);
         let vals = tape.values_f32(c).unwrap();
         assert_eq!(vals, vec![1.0f32, 1.5, 2.5, 3.0]);
@@ -18283,7 +18274,10 @@ mod tests {
         assert_eq!(tape.dtype(s).unwrap(), DType::F32);
         let vals = tape.values_f32(s).unwrap();
         let total: f32 = vals.iter().sum();
-        assert!((total - 1.0).abs() < 1e-5, "softmax should sum to 1, got {total}");
+        assert!(
+            (total - 1.0).abs() < 1e-5,
+            "softmax should sum to 1, got {total}"
+        );
     }
 
     #[test]
@@ -18374,10 +18368,16 @@ mod tests {
         let vals = tape.values_f32(s).unwrap();
         for v in &vals {
             assert!(v.is_finite(), "softmax value should be finite, got {v}");
-            assert!(*v >= 0.0 && *v <= 1.0, "softmax value should be in [0,1], got {v}");
+            assert!(
+                *v >= 0.0 && *v <= 1.0,
+                "softmax value should be in [0,1], got {v}"
+            );
         }
         let total: f32 = vals.iter().sum();
-        assert!((total - 1.0).abs() < 1e-5, "softmax should sum to 1, got {total}");
+        assert!(
+            (total - 1.0).abs() < 1e-5,
+            "softmax should sum to 1, got {total}"
+        );
     }
 
     // ── F32 training loop ──────────────────────────────────────────────
@@ -18444,7 +18444,10 @@ mod tests {
                 assert_eq!(data.as_slice(), &[1.0f32, 2.0, 3.0, 4.0]);
             }
             other => {
-                panic!("f32 leaf should produce F32 storage, got {:?}", other.dtype());
+                panic!(
+                    "f32 leaf should produce F32 storage, got {:?}",
+                    other.dtype()
+                );
             }
         }
     }
@@ -18462,7 +18465,10 @@ mod tests {
                 assert_eq!(data.as_slice(), &[6.0f32]);
             }
             other => {
-                panic!("f32 sum should produce F32 storage, got {:?}", other.dtype());
+                panic!(
+                    "f32 sum should produce F32 storage, got {:?}",
+                    other.dtype()
+                );
             }
         }
     }
@@ -18530,7 +18536,9 @@ mod tests {
     #[test]
     fn view_same_shape_returns_same_data() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).unwrap();
+        let a = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
         let b = tape.view(a, vec![2, 2]).unwrap();
         assert_eq!(tape.values(b).unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
         assert_eq!(tape.tensor(b).unwrap().meta().shape(), &[2, 2]);
@@ -18539,7 +18547,9 @@ mod tests {
     #[test]
     fn view_flatten() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let a = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
         let b = tape.view(a, vec![6]).unwrap();
         assert_eq!(tape.values(b).unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         assert_eq!(tape.tensor(b).unwrap().meta().shape(), &[6]);
@@ -18548,7 +18558,9 @@ mod tests {
     #[test]
     fn view_unflatten() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], false).unwrap();
+        let a = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], false)
+            .unwrap();
         let b = tape.view(a, vec![2, 3]).unwrap();
         assert_eq!(tape.values(b).unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         assert_eq!(tape.tensor(b).unwrap().meta().shape(), &[2, 3]);
@@ -18586,7 +18598,9 @@ mod tests {
     #[test]
     fn view_of_view_shares_storage() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], false).unwrap();
+        let a = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], false)
+            .unwrap();
         let b = tape.view(a, vec![2, 3]).unwrap();
         let c = tape.view(b, vec![3, 2]).unwrap();
         let tensor_a = tape.tensor(a).unwrap();
@@ -18598,7 +18612,9 @@ mod tests {
     #[test]
     fn view_f32_shares_storage() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], false).unwrap();
+        let a = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], false)
+            .unwrap();
         let b = tape.view(a, vec![1, 3]).unwrap();
         assert_eq!(tape.dtype(b).unwrap(), DType::F32);
         assert_eq!(tape.values_f32(b).unwrap(), vec![1.0f32, 2.0, 3.0]);

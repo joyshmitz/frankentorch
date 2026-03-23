@@ -2809,7 +2809,8 @@ impl PReLU {
         num_parameters: usize,
         init: f64,
     ) -> Result<Self, AutogradError> {
-        let weight = session.tensor_variable(vec![init; num_parameters], vec![num_parameters], true)?;
+        let weight =
+            session.tensor_variable(vec![init; num_parameters], vec![num_parameters], true)?;
         Ok(Self {
             weight,
             num_parameters,
@@ -2838,7 +2839,11 @@ impl Module for PReLU {
         } else {
             // Multi-channel: weight[c] applies to channel c
             // Determine channel dimension (dim 1 for multi-dim, or dim 0 for 1D)
-            let channels = if input_shape.len() >= 2 { input_shape[1] } else { input_shape[0] };
+            let channels = if input_shape.len() >= 2 {
+                input_shape[1]
+            } else {
+                input_shape[0]
+            };
             if channels != self.num_parameters {
                 return Err(AutogradError::Dispatch(DispatchError::Key(
                     DispatchKeyError::IncompatibleSet {
@@ -2851,7 +2856,11 @@ impl Module for PReLU {
             } else {
                 1
             };
-            let batch = if input_shape.len() >= 2 { input_shape[0] } else { 1 };
+            let batch = if input_shape.len() >= 2 {
+                input_shape[0]
+            } else {
+                1
+            };
 
             for b in 0..batch {
                 for (c, &a) in weight_vals.iter().enumerate().take(channels) {
@@ -3904,7 +3913,12 @@ impl Module for AvgPool2d {
             // tensor_pad uses innermost-first: [w_before, w_after, h_before, h_after]
             session.tensor_pad(
                 input,
-                &[self.padding_w, self.padding_w, self.padding_h, self.padding_h],
+                &[
+                    self.padding_w,
+                    self.padding_w,
+                    self.padding_h,
+                    self.padding_h,
+                ],
                 0.0,
             )?
         } else {
@@ -3944,7 +3958,8 @@ impl Module for AvgPool2d {
                 if self.count_include_pad || (self.padding_h == 0 && self.padding_w == 0) {
                     // Sum and divide by full kernel size
                     let sum = session.tensor_sum_dim(flat, 1)?;
-                    let divisor = session.full(vec![nc], (self.kernel_h * self.kernel_w) as f64, false)?;
+                    let divisor =
+                        session.full(vec![nc], (self.kernel_h * self.kernel_w) as f64, false)?;
                     let avg = session.tensor_div(sum, divisor)?;
                     let shaped = session.tensor_reshape(avg, vec![n, c, 1])?;
                     patches.push(shaped);
@@ -4331,7 +4346,10 @@ impl Module for AdaptiveAvgPool3d {
         }
 
         let pooled = session.tensor_cat(&patches, 2)?;
-        session.tensor_reshape(pooled, vec![n, c, self.output_d, self.output_h, self.output_w])
+        session.tensor_reshape(
+            pooled,
+            vec![n, c, self.output_d, self.output_h, self.output_w],
+        )
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -4570,7 +4588,10 @@ impl Module for AdaptiveMaxPool3d {
         }
 
         let pooled = session.tensor_cat(&patches, 2)?;
-        session.tensor_reshape(pooled, vec![n, c, self.output_d, self.output_h, self.output_w])
+        session.tensor_reshape(
+            pooled,
+            vec![n, c, self.output_d, self.output_h, self.output_w],
+        )
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -4754,7 +4775,8 @@ impl MaxUnpool2d {
             for ch in 0..c {
                 for hi in 0..h_pooled {
                     for wi in 0..w_pooled {
-                        let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + hi * w_pooled + wi;
+                        let src_idx =
+                            batch * c * spatial_pooled + ch * spatial_pooled + hi * w_pooled + wi;
                         let dst_pos = indices[hi * w_pooled + wi];
                         if dst_pos < out_spatial {
                             let dst_idx = batch * c * out_spatial + ch * out_spatial + dst_pos;
@@ -5706,11 +5728,8 @@ impl Conv3d {
         let w_shift = session.full(vec![numel], bound, false)?;
         let w_shifted = session.tensor_sub(w_scaled, w_shift)?;
         let w_values = session.tensor_values(w_shifted)?;
-        let weight = session.tensor_variable(
-            w_values,
-            vec![out_channels, in_channels, kd, kh, kw],
-            true,
-        )?;
+        let weight =
+            session.tensor_variable(w_values, vec![out_channels, in_channels, kd, kh, kw], true)?;
 
         let bias = if use_bias {
             let b_rand = session.rand(vec![out_channels], false)?;
@@ -5792,9 +5811,12 @@ impl Module for Conv3d {
             session.tensor_pad(
                 input,
                 &[
-                    self.padding_w, self.padding_w,
-                    self.padding_h, self.padding_h,
-                    self.padding_d, self.padding_d,
+                    self.padding_w,
+                    self.padding_w,
+                    self.padding_h,
+                    self.padding_h,
+                    self.padding_d,
+                    self.padding_d,
                 ],
                 0.0,
             )?
@@ -5857,8 +5879,7 @@ impl Module for Conv3d {
 
         match self.bias {
             Some(bias) => {
-                let b_rs =
-                    session.tensor_reshape(bias, vec![1, self.out_channels, 1, 1, 1])?;
+                let b_rs = session.tensor_reshape(bias, vec![1, self.out_channels, 1, 1, 1])?;
                 let b_exp = session.tensor_expand(
                     b_rs,
                     vec![batch_size, self.out_channels, d_out, h_out, w_out],
@@ -5962,11 +5983,8 @@ impl ConvTranspose2d {
         let w_shift = session.full(vec![numel], bound, false)?;
         let w_shifted = session.tensor_sub(w_scaled, w_shift)?;
         let w_values = session.tensor_values(w_shifted)?;
-        let weight = session.tensor_variable(
-            w_values,
-            vec![in_channels, out_channels, kh, kw],
-            true,
-        )?;
+        let weight =
+            session.tensor_variable(w_values, vec![in_channels, out_channels, kh, kw], true)?;
 
         let bias = if use_bias {
             let b_rand = session.rand(vec![out_channels], false)?;
@@ -6041,10 +6059,10 @@ impl Module for ConvTranspose2d {
         let w_in = input_shape[3];
 
         // Output dimensions
-        let h_out = (h_in - 1) * self.stride_h - 2 * self.padding_h + self.kernel_h
-            + self.output_padding_h;
-        let w_out = (w_in - 1) * self.stride_w - 2 * self.padding_w + self.kernel_w
-            + self.output_padding_w;
+        let h_out =
+            (h_in - 1) * self.stride_h - 2 * self.padding_h + self.kernel_h + self.output_padding_h;
+        let w_out =
+            (w_in - 1) * self.stride_w - 2 * self.padding_w + self.kernel_w + self.output_padding_w;
 
         // Transposed convolution via col2im approach (autograd-friendly).
         // For each output position, we gather contributions from overlapping
@@ -6056,10 +6074,8 @@ impl Module for ConvTranspose2d {
         let ok = self.out_channels * self.kernel_h * self.kernel_w;
         // input: [N, C_in, H_in, W_in] -> flatten spatial: [N, C_in, H_in*W_in]
         // -> transpose: [N, H_in*W_in, C_in]
-        let x_flat = session.tensor_reshape(
-            input,
-            vec![batch_size, self.in_channels, h_in * w_in],
-        )?;
+        let x_flat =
+            session.tensor_reshape(input, vec![batch_size, self.in_channels, h_in * w_in])?;
         let x_flat = session.tensor_transpose(x_flat, 1, 2)?; // [N, H_in*W_in, C_in]
 
         // weight: [in_channels, out_channels, kH, kW] -> [in_channels, ok]
@@ -6068,8 +6084,7 @@ impl Module for ConvTranspose2d {
         let w_t = session.tensor_transpose(w_flat, 0, 1)?;
         // expand for bmm: [N, ok, in_channels]
         let w_us = session.tensor_unsqueeze(w_t, 0)?;
-        let w_expanded =
-            session.tensor_expand(w_us, vec![batch_size, ok, self.in_channels])?;
+        let w_expanded = session.tensor_expand(w_us, vec![batch_size, ok, self.in_channels])?;
 
         // bmm: [N, H_in*W_in, C_in] @ [N, C_in, ok]^T = [N, H_in*W_in, ok]
         // Actually: [N, H_in*W_in, C_in] @ [N, ok, C_in]^T
@@ -6081,7 +6096,14 @@ impl Module for ConvTranspose2d {
         // Reshape: [N, H_in, W_in, out_channels, kH, kW]
         let columns = session.tensor_reshape(
             columns,
-            vec![batch_size, h_in, w_in, self.out_channels, self.kernel_h, self.kernel_w],
+            vec![
+                batch_size,
+                h_in,
+                w_in,
+                self.out_channels,
+                self.kernel_h,
+                self.kernel_w,
+            ],
         )?;
 
         // Col2im: scatter each column into the output.
@@ -6122,10 +6144,8 @@ impl Module for ConvTranspose2d {
                 // Extract columns[:, :, :, :, kh, kw] -> [N, H_in, W_in, out_channels]
                 let c = session.tensor_narrow(columns, 4, kh, 1)?;
                 let c = session.tensor_narrow(c, 5, kw, 1)?;
-                let c = session.tensor_reshape(
-                    c,
-                    vec![batch_size, h_in, w_in, self.out_channels],
-                )?;
+                let c =
+                    session.tensor_reshape(c, vec![batch_size, h_in, w_in, self.out_channels])?;
                 // Transpose to [N, out_channels, H_in, W_in]
                 let c = session.tensor_transpose(c, 1, 3)?; // [N, out_ch, W_in, H_in]
                 let c = session.tensor_transpose(c, 2, 3)?; // [N, out_ch, H_in, W_in]
@@ -6145,11 +6165,10 @@ impl Module for ConvTranspose2d {
                         let row = session.tensor_narrow(upsampled, 2, hi, 1)?;
                         rows.push(row);
                     }
-                    let zero_row = session.zeros(
-                        vec![batch_size, self.out_channels, 1, w_in],
-                        false,
-                    )?;
-                    let mut interleaved = Vec::with_capacity(h_in + (h_in - 1) * (self.stride_h - 1));
+                    let zero_row =
+                        session.zeros(vec![batch_size, self.out_channels, 1, w_in], false)?;
+                    let mut interleaved =
+                        Vec::with_capacity(h_in + (h_in - 1) * (self.stride_h - 1));
                     for (i, row) in rows.iter().enumerate() {
                         interleaved.push(*row);
                         if i < h_in - 1 {
@@ -6173,11 +6192,10 @@ impl Module for ConvTranspose2d {
                         let col = session.tensor_narrow(upsampled, 3, wi, 1)?;
                         cols.push(col);
                     }
-                    let zero_col = session.zeros(
-                        vec![batch_size, self.out_channels, up_h, 1],
-                        false,
-                    )?;
-                    let mut interleaved = Vec::with_capacity(w_in + (w_in - 1) * (self.stride_w - 1));
+                    let zero_col =
+                        session.zeros(vec![batch_size, self.out_channels, up_h, 1], false)?;
+                    let mut interleaved =
+                        Vec::with_capacity(w_in + (w_in - 1) * (self.stride_w - 1));
                     for (i, col) in cols.iter().enumerate() {
                         interleaved.push(*col);
                         if i < w_in - 1 {
@@ -6241,10 +6259,8 @@ impl Module for ConvTranspose2d {
                 }
                 let bottom = h_out - dst_h_start - valid_h;
                 if bottom > 0 {
-                    let bot_zeros = session.zeros(
-                        vec![batch_size, self.out_channels, bottom, valid_w],
-                        false,
-                    )?;
+                    let bot_zeros = session
+                        .zeros(vec![batch_size, self.out_channels, bottom, valid_w], false)?;
                     padded = session.tensor_cat(&[padded, bot_zeros], 2)?;
                 }
                 // padded is now [N, out_ch, h_out, valid_w]
@@ -6259,10 +6275,8 @@ impl Module for ConvTranspose2d {
                 }
                 let right = w_out - dst_w_start - valid_w;
                 if right > 0 {
-                    let right_zeros = session.zeros(
-                        vec![batch_size, self.out_channels, h_out, right],
-                        false,
-                    )?;
+                    let right_zeros =
+                        session.zeros(vec![batch_size, self.out_channels, h_out, right], false)?;
                     padded = session.tensor_cat(&[padded, right_zeros], 3)?;
                 }
                 // padded is now [N, out_ch, h_out, w_out]
@@ -6274,10 +6288,8 @@ impl Module for ConvTranspose2d {
         // Add bias
         if let Some(bias) = self.bias {
             let b_rs = session.tensor_reshape(bias, vec![1, self.out_channels, 1, 1])?;
-            let b_exp = session.tensor_expand(
-                b_rs,
-                vec![batch_size, self.out_channels, h_out, w_out],
-            )?;
+            let b_exp =
+                session.tensor_expand(b_rs, vec![batch_size, self.out_channels, h_out, w_out])?;
             result = session.tensor_add(result, b_exp)?;
         }
 
@@ -6381,11 +6393,8 @@ impl ConvTranspose3d {
         let w_shift = session.full(vec![numel], bound, false)?;
         let w_shifted = session.tensor_sub(w_scaled, w_shift)?;
         let w_values = session.tensor_values(w_shifted)?;
-        let weight = session.tensor_variable(
-            w_values,
-            vec![in_channels, out_channels, kd, kh, kw],
-            true,
-        )?;
+        let weight =
+            session.tensor_variable(w_values, vec![in_channels, out_channels, kd, kh, kw], true)?;
 
         let bias = if use_bias {
             let b_rand = session.rand(vec![out_channels], false)?;
@@ -6464,15 +6473,17 @@ impl Module for ConvTranspose3d {
         let h_in = input_shape[3];
         let w_in = input_shape[4];
 
-        let d_out = (d_in - 1) * self.stride_d - 2 * self.padding_d + self.kernel_d
-            + self.output_padding_d;
-        let h_out = (h_in - 1) * self.stride_h - 2 * self.padding_h + self.kernel_h
-            + self.output_padding_h;
-        let w_out = (w_in - 1) * self.stride_w - 2 * self.padding_w + self.kernel_w
-            + self.output_padding_w;
+        let d_out =
+            (d_in - 1) * self.stride_d - 2 * self.padding_d + self.kernel_d + self.output_padding_d;
+        let h_out =
+            (h_in - 1) * self.stride_h - 2 * self.padding_h + self.kernel_h + self.output_padding_h;
+        let w_out =
+            (w_in - 1) * self.stride_w - 2 * self.padding_w + self.kernel_w + self.output_padding_w;
 
-        let mut result =
-            session.zeros(vec![batch_size, self.out_channels, d_out, h_out, w_out], false)?;
+        let mut result = session.zeros(
+            vec![batch_size, self.out_channels, d_out, h_out, w_out],
+            false,
+        )?;
 
         for kd in 0..self.kernel_d {
             for kh in 0..self.kernel_h {
@@ -6487,26 +6498,21 @@ impl Module for ConvTranspose3d {
 
                     for di in 0..d_in {
                         let out_d_raw = di * self.stride_d + kd;
-                        if out_d_raw < self.padding_d
-                            || out_d_raw - self.padding_d >= d_out
-                        {
+                        if out_d_raw < self.padding_d || out_d_raw - self.padding_d >= d_out {
                             continue;
                         }
                         let out_d = out_d_raw - self.padding_d;
 
                         for hi in 0..h_in {
                             let out_h_raw = hi * self.stride_h + kh;
-                            if out_h_raw < self.padding_h
-                                || out_h_raw - self.padding_h >= h_out
-                            {
+                            if out_h_raw < self.padding_h || out_h_raw - self.padding_h >= h_out {
                                 continue;
                             }
                             let out_h = out_h_raw - self.padding_h;
 
                             for wi in 0..w_in {
                                 let out_w_raw = wi * self.stride_w + kw;
-                                if out_w_raw < self.padding_w
-                                    || out_w_raw - self.padding_w >= w_out
+                                if out_w_raw < self.padding_w || out_w_raw - self.padding_w >= w_out
                                 {
                                     continue;
                                 }
@@ -6530,9 +6536,12 @@ impl Module for ConvTranspose3d {
                                 let contrib_padded = session.tensor_pad(
                                     contrib,
                                     &[
-                                        out_w, w_out - out_w - 1,
-                                        out_h, h_out - out_h - 1,
-                                        out_d, d_out - out_d - 1,
+                                        out_w,
+                                        w_out - out_w - 1,
+                                        out_h,
+                                        h_out - out_h - 1,
+                                        out_d,
+                                        d_out - out_d - 1,
                                     ],
                                     0.0,
                                 )?;
@@ -6546,8 +6555,7 @@ impl Module for ConvTranspose3d {
         }
 
         if let Some(bias) = self.bias {
-            let b_rs =
-                session.tensor_reshape(bias, vec![1, self.out_channels, 1, 1, 1])?;
+            let b_rs = session.tensor_reshape(bias, vec![1, self.out_channels, 1, 1, 1])?;
             let b_exp = session.tensor_expand(
                 b_rs,
                 vec![batch_size, self.out_channels, d_out, h_out, w_out],
@@ -7773,10 +7781,20 @@ impl RNN {
                 hidden_size * num_directions
             };
 
-            cells.push(RNNCell::new(session, layer_input_size, hidden_size, use_tanh)?);
+            cells.push(RNNCell::new(
+                session,
+                layer_input_size,
+                hidden_size,
+                use_tanh,
+            )?);
 
             if bidirectional {
-                cells.push(RNNCell::new(session, layer_input_size, hidden_size, use_tanh)?);
+                cells.push(RNNCell::new(
+                    session,
+                    layer_input_size,
+                    hidden_size,
+                    use_tanh,
+                )?);
             }
         }
 
@@ -8137,7 +8155,9 @@ impl TransformerEncoderLayer {
         if self.norm_first {
             // Pre-norm: x = x + dropout(self_attn(layernorm(x)))
             let normed = self.norm1.forward(session, src)?;
-            let attn_out = self.self_attn.forward_qkv(session, normed, normed, normed)?;
+            let attn_out = self
+                .self_attn
+                .forward_qkv(session, normed, normed, normed)?;
             let attn_out = self.dropout1.forward(session, attn_out)?;
             let x = session.tensor_add(src, attn_out)?;
 
@@ -8258,10 +8278,7 @@ impl TransformerEncoder {
             None
         };
 
-        Ok(Self {
-            layers,
-            final_norm,
-        })
+        Ok(Self { layers, final_norm })
     }
 }
 
@@ -8429,13 +8446,17 @@ impl TransformerDecoderLayer {
         if self.norm_first {
             // Pre-norm: self-attention
             let normed1 = self.norm1.forward(session, tgt)?;
-            let sa_out = self.self_attn.forward_qkv(session, normed1, normed1, normed1)?;
+            let sa_out = self
+                .self_attn
+                .forward_qkv(session, normed1, normed1, normed1)?;
             let sa_out = self.dropout1.forward(session, sa_out)?;
             let x = session.tensor_add(tgt, sa_out)?;
 
             // Pre-norm: cross-attention
             let normed2 = self.norm2.forward(session, x)?;
-            let ca_out = self.cross_attn.forward_qkv(session, normed2, memory, memory)?;
+            let ca_out = self
+                .cross_attn
+                .forward_qkv(session, normed2, memory, memory)?;
             let ca_out = self.dropout2.forward(session, ca_out)?;
             let x = session.tensor_add(x, ca_out)?;
 
@@ -8562,10 +8583,7 @@ impl TransformerDecoder {
             None
         };
 
-        Ok(Self {
-            layers,
-            final_norm,
-        })
+        Ok(Self { layers, final_norm })
     }
 
     /// Forward pass.
@@ -10394,7 +10412,9 @@ impl Module for CircularPad1d {
             let row = &vals[b * l..(b + 1) * l];
             // Left circular: take from end
             for i in 0..self.padding_left {
-                let src = ((l as isize - self.padding_left as isize + i as isize) % l as isize + l as isize) as usize % l;
+                let src = ((l as isize - self.padding_left as isize + i as isize) % l as isize
+                    + l as isize) as usize
+                    % l;
                 output.push(row[src]);
             }
             output.extend_from_slice(row);
@@ -10461,10 +10481,14 @@ impl Module for CircularPad2d {
         for b in 0..batch_dims {
             let plane = &vals[b * h * w..(b + 1) * h * w];
             for row_out in 0..new_h {
-                let src_row = ((row_out as isize - self.pad_top as isize) % h as isize + h as isize) as usize % h;
+                let src_row = ((row_out as isize - self.pad_top as isize) % h as isize + h as isize)
+                    as usize
+                    % h;
                 let row_data = &plane[src_row * w..(src_row + 1) * w];
                 for col_out in 0..new_w {
-                    let src_col = ((col_out as isize - self.pad_left as isize) % w as isize + w as isize) as usize % w;
+                    let src_col = ((col_out as isize - self.pad_left as isize) % w as isize
+                        + w as isize) as usize
+                        % w;
                     output.push(row_data[src_col]);
                 }
             }
@@ -10773,7 +10797,11 @@ mod tests {
         let l = loss.forward_triplet(&mut s, x1, x2, y).unwrap();
         let vals = s.tensor_values(l).unwrap();
         // -1 * (1-2) + 0 = 1
-        assert!((vals[0] - 1.0).abs() < 1e-10, "expected 1.0, got {}", vals[0]);
+        assert!(
+            (vals[0] - 1.0).abs() < 1e-10,
+            "expected 1.0, got {}",
+            vals[0]
+        );
     }
 
     #[test]
@@ -10799,7 +10827,11 @@ mod tests {
         let l = loss.forward_triplet(&mut s, a, p, n).unwrap();
         let vals = s.tensor_values(l).unwrap();
         // d(a,p)=3, d(a,n)=1, 3-1+1=3
-        assert!((vals[0] - 3.0).abs() < 1e-10, "expected 3.0, got {}", vals[0]);
+        assert!(
+            (vals[0] - 3.0).abs() < 1e-10,
+            "expected 3.0, got {}",
+            vals[0]
+        );
     }
 
     #[test]
@@ -10836,7 +10868,11 @@ mod tests {
         let vals = s.tensor_values(l).unwrap();
         // exp(1) - 2*1 = e - 2 ≈ 0.71828
         let expected = 1.0f64.exp() - 2.0;
-        assert!((vals[0] - expected).abs() < 1e-8, "expected {expected}, got {}", vals[0]);
+        assert!(
+            (vals[0] - expected).abs() < 1e-8,
+            "expected {expected}, got {}",
+            vals[0]
+        );
     }
 
     #[test]
@@ -10850,7 +10886,11 @@ mod tests {
         let vals = s.tensor_values(l).unwrap();
         // 0.5 * (log(1) + 0/1 + log(2pi)) = 0.5 * log(2pi)
         let expected = 0.5 * (2.0 * std::f64::consts::PI).ln();
-        assert!((vals[0] - expected).abs() < 1e-8, "expected {expected}, got {}", vals[0]);
+        assert!(
+            (vals[0] - expected).abs() < 1e-8,
+            "expected {expected}, got {}",
+            vals[0]
+        );
     }
 
     #[test]
@@ -13636,9 +13676,8 @@ mod tests {
     #[test]
     fn conv3d_forward_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv = Conv3d::new(
-            &mut session, 1, 1, (2, 2, 2), (1, 1, 1), (0, 0, 0), false,
-        ).expect("conv3d");
+        let conv = Conv3d::new(&mut session, 1, 1, (2, 2, 2), (1, 1, 1), (0, 0, 0), false)
+            .expect("conv3d");
         assert_eq!(conv.parameters().len(), 1);
 
         // [N=1, C=1, D=3, H=3, W=3], kernel=2x2x2, stride=1 -> out 2x2x2
@@ -13655,9 +13694,8 @@ mod tests {
     #[test]
     fn conv3d_forward_with_bias() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv = Conv3d::new(
-            &mut session, 2, 4, (2, 2, 2), (1, 1, 1), (0, 0, 0), true,
-        ).expect("conv3d");
+        let conv =
+            Conv3d::new(&mut session, 2, 4, (2, 2, 2), (1, 1, 1), (0, 0, 0), true).expect("conv3d");
         assert_eq!(conv.parameters().len(), 2);
         assert!(conv.bias().is_some());
 
@@ -13674,9 +13712,8 @@ mod tests {
     fn conv3d_forward_with_padding() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // padding=1 on all dims: D_out = (3+2-2)/1+1 = 4
-        let conv = Conv3d::new(
-            &mut session, 1, 1, (2, 2, 2), (1, 1, 1), (1, 1, 1), false,
-        ).expect("conv3d");
+        let conv = Conv3d::new(&mut session, 1, 1, (2, 2, 2), (1, 1, 1), (1, 1, 1), false)
+            .expect("conv3d");
 
         let x = session
             .tensor_variable(vec![1.0; 27], vec![1, 1, 3, 3, 3], false)
@@ -13690,9 +13727,8 @@ mod tests {
     fn conv3d_forward_with_stride() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // stride=2, D_out = (4-2)/2+1 = 2
-        let conv = Conv3d::new(
-            &mut session, 1, 1, (2, 2, 2), (2, 2, 2), (0, 0, 0), false,
-        ).expect("conv3d");
+        let conv = Conv3d::new(&mut session, 1, 1, (2, 2, 2), (2, 2, 2), (0, 0, 0), false)
+            .expect("conv3d");
 
         let x = session
             .tensor_variable(vec![1.0; 64], vec![1, 1, 4, 4, 4], false)
@@ -13705,9 +13741,8 @@ mod tests {
     #[test]
     fn conv3d_backward_produces_gradients() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv = Conv3d::new(
-            &mut session, 1, 2, (2, 2, 2), (1, 1, 1), (0, 0, 0), true,
-        ).expect("conv3d");
+        let conv =
+            Conv3d::new(&mut session, 1, 2, (2, 2, 2), (1, 1, 1), (0, 0, 0), true).expect("conv3d");
 
         let x = session
             .tensor_variable(vec![1.0; 27], vec![1, 1, 3, 3, 3], true)
@@ -13725,9 +13760,8 @@ mod tests {
     #[test]
     fn conv3d_rejects_wrong_dim() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv = Conv3d::new(
-            &mut session, 1, 1, (2, 2, 2), (1, 1, 1), (0, 0, 0), false,
-        ).expect("conv3d");
+        let conv = Conv3d::new(&mut session, 1, 1, (2, 2, 2), (1, 1, 1), (0, 0, 0), false)
+            .expect("conv3d");
 
         let x = session
             .tensor_variable(vec![1.0; 16], vec![1, 1, 4, 4], false)
@@ -13741,9 +13775,9 @@ mod tests {
     fn conv_transpose2d_output_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // stride=1, padding=0, output_padding=0: H_out = (3-1)*1 + 3 = 5
-        let deconv = ConvTranspose2d::new(
-            &mut session, 1, 1, (3, 3), (1, 1), (0, 0), (0, 0), false,
-        ).expect("new");
+        let deconv =
+            ConvTranspose2d::new(&mut session, 1, 1, (3, 3), (1, 1), (0, 0), (0, 0), false)
+                .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 9], vec![1, 1, 3, 3], false)
@@ -13757,9 +13791,9 @@ mod tests {
     fn conv_transpose2d_with_stride() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // stride=2: H_out = (2-1)*2 + 3 = 5
-        let deconv = ConvTranspose2d::new(
-            &mut session, 1, 1, (3, 3), (2, 2), (0, 0), (0, 0), false,
-        ).expect("new");
+        let deconv =
+            ConvTranspose2d::new(&mut session, 1, 1, (3, 3), (2, 2), (0, 0), (0, 0), false)
+                .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 4], vec![1, 1, 2, 2], false)
@@ -13773,9 +13807,9 @@ mod tests {
     fn conv_transpose2d_with_padding() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // padding=1: H_out = (3-1)*1 - 2 + 3 = 3
-        let deconv = ConvTranspose2d::new(
-            &mut session, 1, 1, (3, 3), (1, 1), (1, 1), (0, 0), false,
-        ).expect("new");
+        let deconv =
+            ConvTranspose2d::new(&mut session, 1, 1, (3, 3), (1, 1), (1, 1), (0, 0), false)
+                .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 9], vec![1, 1, 3, 3], false)
@@ -13789,9 +13823,9 @@ mod tests {
     fn conv_transpose2d_with_output_padding() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // stride=2, output_padding=1: H_out = (2-1)*2 - 0 + 3 + 1 = 6
-        let deconv = ConvTranspose2d::new(
-            &mut session, 1, 1, (3, 3), (2, 2), (0, 0), (1, 1), false,
-        ).expect("new");
+        let deconv =
+            ConvTranspose2d::new(&mut session, 1, 1, (3, 3), (2, 2), (0, 0), (1, 1), false)
+                .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 4], vec![1, 1, 2, 2], false)
@@ -13805,26 +13839,25 @@ mod tests {
     fn conv_transpose2d_output_padding_must_be_less_than_stride() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // output_padding=2 >= stride=2 should fail
-        assert!(ConvTranspose2d::new(
-            &mut session, 1, 1, (3, 3), (2, 2), (0, 0), (2, 2), false,
-        ).is_err());
+        assert!(
+            ConvTranspose2d::new(&mut session, 1, 1, (3, 3), (2, 2), (0, 0), (2, 2), false,)
+                .is_err()
+        );
     }
 
     #[test]
     fn conv_transpose2d_has_parameters() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose2d::new(
-            &mut session, 2, 3, (3, 3), (1, 1), (0, 0), (0, 0), true,
-        ).expect("new");
+        let deconv = ConvTranspose2d::new(&mut session, 2, 3, (3, 3), (1, 1), (0, 0), (0, 0), true)
+            .expect("new");
         assert_eq!(deconv.parameters().len(), 2);
     }
 
     #[test]
     fn conv_transpose2d_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose2d::new(
-            &mut session, 1, 1, (2, 2), (1, 1), (0, 0), (0, 0), true,
-        ).expect("new");
+        let deconv = ConvTranspose2d::new(&mut session, 1, 1, (2, 2), (1, 1), (0, 0), (0, 0), true)
+            .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 4], vec![1, 1, 2, 2], true)
@@ -13854,9 +13887,9 @@ mod tests {
     #[test]
     fn conv_transpose2d_rejects_wrong_dim() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose2d::new(
-            &mut session, 2, 3, (3, 3), (1, 1), (0, 0), (0, 0), false,
-        ).expect("new");
+        let deconv =
+            ConvTranspose2d::new(&mut session, 2, 3, (3, 3), (1, 1), (0, 0), (0, 0), false)
+                .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 6], vec![1, 2, 3], false)
@@ -13871,8 +13904,16 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // stride=1, padding=0: D_out = (2-1)*1 + 2 = 3
         let deconv = ConvTranspose3d::new(
-            &mut session, 1, 1, (2, 2, 2), (1, 1, 1), (0, 0, 0), (0, 0, 0), false,
-        ).expect("new");
+            &mut session,
+            1,
+            1,
+            (2, 2, 2),
+            (1, 1, 1),
+            (0, 0, 0),
+            (0, 0, 0),
+            false,
+        )
+        .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], false)
@@ -13887,8 +13928,16 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // stride=2: D_out = (2-1)*2 + 2 = 4
         let deconv = ConvTranspose3d::new(
-            &mut session, 1, 1, (2, 2, 2), (2, 2, 2), (0, 0, 0), (0, 0, 0), false,
-        ).expect("new");
+            &mut session,
+            1,
+            1,
+            (2, 2, 2),
+            (2, 2, 2),
+            (0, 0, 0),
+            (0, 0, 0),
+            false,
+        )
+        .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], false)
@@ -13902,25 +13951,51 @@ mod tests {
     fn conv_transpose3d_has_parameters() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let deconv = ConvTranspose3d::new(
-            &mut session, 2, 3, (2, 2, 2), (1, 1, 1), (0, 0, 0), (0, 0, 0), true,
-        ).expect("new");
+            &mut session,
+            2,
+            3,
+            (2, 2, 2),
+            (1, 1, 1),
+            (0, 0, 0),
+            (0, 0, 0),
+            true,
+        )
+        .expect("new");
         assert_eq!(deconv.parameters().len(), 2);
     }
 
     #[test]
     fn conv_transpose3d_output_padding_must_be_less_than_stride() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        assert!(ConvTranspose3d::new(
-            &mut session, 1, 1, (2, 2, 2), (2, 2, 2), (0, 0, 0), (2, 2, 2), false,
-        ).is_err());
+        assert!(
+            ConvTranspose3d::new(
+                &mut session,
+                1,
+                1,
+                (2, 2, 2),
+                (2, 2, 2),
+                (0, 0, 0),
+                (2, 2, 2),
+                false,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn conv_transpose3d_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let deconv = ConvTranspose3d::new(
-            &mut session, 1, 1, (2, 2, 2), (1, 1, 1), (0, 0, 0), (0, 0, 0), true,
-        ).expect("new");
+            &mut session,
+            1,
+            1,
+            (2, 2, 2),
+            (1, 1, 1),
+            (0, 0, 0),
+            (0, 0, 0),
+            true,
+        )
+        .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], true)
@@ -13939,8 +14014,16 @@ mod tests {
     fn conv_transpose3d_rejects_wrong_dim() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let deconv = ConvTranspose3d::new(
-            &mut session, 2, 3, (2, 2, 2), (1, 1, 1), (0, 0, 0), (0, 0, 0), false,
-        ).expect("new");
+            &mut session,
+            2,
+            3,
+            (2, 2, 2),
+            (1, 1, 1),
+            (0, 0, 0),
+            (0, 0, 0),
+            false,
+        )
+        .expect("new");
 
         let x = session
             .tensor_variable(vec![1.0; 32], vec![1, 2, 4, 4], false)
@@ -15291,7 +15374,9 @@ mod tests {
         let c0 = session
             .tensor_variable(vec![0.0; 3], vec![1, 3], false)
             .expect("c0");
-        let (cell_h, cell_c) = cell.forward_cell(&mut session, x, h0, c0).expect("cell fwd");
+        let (cell_h, cell_c) = cell
+            .forward_cell(&mut session, x, h0, c0)
+            .expect("cell fwd");
         let cell_h_vals = session.tensor_values(cell_h).expect("cell h vals");
         let cell_c_vals = session.tensor_values(cell_c).expect("cell c vals");
 
@@ -15316,11 +15401,20 @@ mod tests {
 
         // Values should be non-zero (non-trivial computation)
         let out_vals = session.tensor_values(result.output).expect("vals");
-        assert!(out_vals.iter().any(|&v| v != 0.0), "output should be non-zero");
+        assert!(
+            out_vals.iter().any(|&v| v != 0.0),
+            "output should be non-zero"
+        );
 
         // Cell output should also be non-zero
-        assert!(cell_h_vals.iter().any(|&v| v != 0.0), "cell h should be non-zero");
-        assert!(cell_c_vals.iter().any(|&v| v != 0.0), "cell c should be non-zero");
+        assert!(
+            cell_h_vals.iter().any(|&v| v != 0.0),
+            "cell h should be non-zero"
+        );
+        assert!(
+            cell_c_vals.iter().any(|&v| v != 0.0),
+            "cell c should be non-zero"
+        );
     }
 
     #[test]
@@ -15443,7 +15537,10 @@ mod tests {
         let vals_zero = session.tensor_values(result_zero.output).expect("zero");
 
         // Outputs should differ because initial states differ
-        assert_ne!(vals_custom, vals_zero, "custom and zero initial states should produce different outputs");
+        assert_ne!(
+            vals_custom, vals_zero,
+            "custom and zero initial states should produce different outputs"
+        );
     }
 
     #[test]
@@ -15797,9 +15894,7 @@ mod tests {
         let input2 = session
             .tensor_variable(vec![0.1; 4], vec![2, 1, 2], false)
             .expect("input2");
-        let result_zero = gru
-            .forward_gru(&mut session, input2, None)
-            .expect("zero");
+        let result_zero = gru.forward_gru(&mut session, input2, None).expect("zero");
 
         let vals_custom = session.tensor_values(result_custom.output).expect("custom");
         let vals_zero = session.tensor_values(result_zero.output).expect("zero");
@@ -15895,7 +15990,16 @@ mod tests {
     #[test]
     fn rnn_batch_first() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let rnn = RNN::new(&mut session, 3, 4, RNNConfig { batch_first: true, ..RNNConfig::default() }).expect("rnn");
+        let rnn = RNN::new(
+            &mut session,
+            3,
+            4,
+            RNNConfig {
+                batch_first: true,
+                ..RNNConfig::default()
+            },
+        )
+        .expect("rnn");
 
         let input = session
             .tensor_variable(vec![0.1; 30], vec![2, 5, 3], false)
@@ -15910,7 +16014,16 @@ mod tests {
     #[test]
     fn rnn_multi_layer_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let rnn = RNN::new(&mut session, 3, 4, RNNConfig { num_layers: 3, ..RNNConfig::default() }).expect("rnn");
+        let rnn = RNN::new(
+            &mut session,
+            3,
+            4,
+            RNNConfig {
+                num_layers: 3,
+                ..RNNConfig::default()
+            },
+        )
+        .expect("rnn");
 
         let input = session
             .tensor_variable(vec![0.1; 30], vec![5, 2, 3], false)
@@ -15925,7 +16038,16 @@ mod tests {
     #[test]
     fn rnn_bidirectional_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let rnn = RNN::new(&mut session, 3, 4, RNNConfig { bidirectional: true, ..RNNConfig::default() }).expect("rnn");
+        let rnn = RNN::new(
+            &mut session,
+            3,
+            4,
+            RNNConfig {
+                bidirectional: true,
+                ..RNNConfig::default()
+            },
+        )
+        .expect("rnn");
 
         let input = session
             .tensor_variable(vec![0.1; 30], vec![5, 2, 3], false)
@@ -15945,7 +16067,16 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
 
         let rnn_tanh = RNN::new(&mut session, 2, 3, RNNConfig::default()).expect("tanh");
-        let rnn_relu = RNN::new(&mut session, 2, 3, RNNConfig { use_tanh: false, ..RNNConfig::default() }).expect("relu");
+        let rnn_relu = RNN::new(
+            &mut session,
+            2,
+            3,
+            RNNConfig {
+                use_tanh: false,
+                ..RNNConfig::default()
+            },
+        )
+        .expect("relu");
 
         let input1 = session
             .tensor_variable(vec![0.5, -0.3, 0.1, 0.7], vec![2, 1, 2], false)
@@ -15996,20 +16127,58 @@ mod tests {
         let rnn1 = RNN::new(&mut session, 3, 4, RNNConfig::default()).expect("rnn1");
         assert_eq!(rnn1.parameters().len(), 4);
 
-        let rnn2 = RNN::new(&mut session, 3, 4, RNNConfig { num_layers: 2, ..RNNConfig::default() }).expect("rnn2");
+        let rnn2 = RNN::new(
+            &mut session,
+            3,
+            4,
+            RNNConfig {
+                num_layers: 2,
+                ..RNNConfig::default()
+            },
+        )
+        .expect("rnn2");
         assert_eq!(rnn2.parameters().len(), 8);
 
-        let rnn3 = RNN::new(&mut session, 3, 4, RNNConfig { bidirectional: true, ..RNNConfig::default() }).expect("rnn3");
+        let rnn3 = RNN::new(
+            &mut session,
+            3,
+            4,
+            RNNConfig {
+                bidirectional: true,
+                ..RNNConfig::default()
+            },
+        )
+        .expect("rnn3");
         assert_eq!(rnn3.parameters().len(), 8);
 
-        let rnn4 = RNN::new(&mut session, 3, 4, RNNConfig { num_layers: 2, bidirectional: true, ..RNNConfig::default() }).expect("rnn4");
+        let rnn4 = RNN::new(
+            &mut session,
+            3,
+            4,
+            RNNConfig {
+                num_layers: 2,
+                bidirectional: true,
+                ..RNNConfig::default()
+            },
+        )
+        .expect("rnn4");
         assert_eq!(rnn4.parameters().len(), 16);
     }
 
     #[test]
     fn rnn_train_eval_propagation() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let rnn = RNN::new(&mut session, 3, 4, RNNConfig { num_layers: 2, dropout: 0.5, ..RNNConfig::default() }).expect("rnn");
+        let rnn = RNN::new(
+            &mut session,
+            3,
+            4,
+            RNNConfig {
+                num_layers: 2,
+                dropout: 0.5,
+                ..RNNConfig::default()
+            },
+        )
+        .expect("rnn");
 
         assert!(rnn.is_training());
         rnn.eval();
@@ -16077,10 +16246,10 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let layer = TransformerEncoderLayer::new(
             &mut session,
-            8,    // d_model
-            2,    // nhead
-            32,   // dim_feedforward
-            0.0,  // dropout (disabled for determinism)
+            8,   // d_model
+            2,   // nhead
+            32,  // dim_feedforward
+            0.0, // dropout (disabled for determinism)
             TransformerActivation::Relu,
             false, // post-norm
         )
@@ -16100,7 +16269,13 @@ mod tests {
     fn transformer_encoder_layer_prenorm_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let layer = TransformerEncoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Gelu, true,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Gelu,
+            true,
         )
         .expect("pre-norm layer");
 
@@ -16118,12 +16293,24 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
 
         let post = TransformerEncoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("post-norm");
 
         let pre = TransformerEncoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Relu, true,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            true,
         )
         .expect("pre-norm");
 
@@ -16146,7 +16333,13 @@ mod tests {
     fn transformer_encoder_layer_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let layer = TransformerEncoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("layer");
 
@@ -16170,11 +16363,11 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let encoder = TransformerEncoder::new(
             &mut session,
-            8,    // d_model
-            2,    // nhead
-            3,    // num_layers
-            32,   // dim_feedforward
-            0.0,  // dropout
+            8,   // d_model
+            2,   // nhead
+            3,   // num_layers
+            32,  // dim_feedforward
+            0.0, // dropout
             TransformerActivation::Relu,
             false, // post-norm
             true,  // final_layer_norm
@@ -16194,7 +16387,15 @@ mod tests {
     fn transformer_encoder_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let encoder = TransformerEncoder::new(
-            &mut session, 8, 2, 2, 32, 0.0, TransformerActivation::Relu, false, false,
+            &mut session,
+            8,
+            2,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
+            false,
         )
         .expect("encoder");
 
@@ -16219,21 +16420,43 @@ mod tests {
 
         // Single layer: MHA(4 linears * 2 params each = 8) + FF(2 linears * 2 = 4) + LN(2 * 2 = 4) = 16
         let layer = TransformerEncoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("layer");
         assert_eq!(layer.parameters().len(), 16);
 
         // Encoder with 3 layers + final norm: 3*16 + 2 = 50
         let encoder = TransformerEncoder::new(
-            &mut session, 8, 2, 3, 32, 0.0, TransformerActivation::Relu, false, true,
+            &mut session,
+            8,
+            2,
+            3,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
+            true,
         )
         .expect("encoder");
         assert_eq!(encoder.parameters().len(), 50);
 
         // Without final norm: 3*16 = 48
         let encoder_no_norm = TransformerEncoder::new(
-            &mut session, 8, 2, 3, 32, 0.0, TransformerActivation::Relu, false, false,
+            &mut session,
+            8,
+            2,
+            3,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
+            false,
         )
         .expect("encoder");
         assert_eq!(encoder_no_norm.parameters().len(), 48);
@@ -16243,7 +16466,15 @@ mod tests {
     fn transformer_encoder_train_eval() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let encoder = TransformerEncoder::new(
-            &mut session, 8, 2, 2, 32, 0.5, TransformerActivation::Relu, false, false,
+            &mut session,
+            8,
+            2,
+            2,
+            32,
+            0.5,
+            TransformerActivation::Relu,
+            false,
+            false,
         )
         .expect("encoder");
 
@@ -16258,7 +16489,13 @@ mod tests {
     fn transformer_encoder_layer_gelu_activation() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let layer = TransformerEncoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Gelu, false,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Gelu,
+            false,
         )
         .expect("layer");
 
@@ -16277,7 +16514,13 @@ mod tests {
     fn transformer_decoder_layer_forward_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let layer = TransformerDecoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("decoder layer");
 
@@ -16301,7 +16544,13 @@ mod tests {
     fn transformer_decoder_layer_prenorm_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let layer = TransformerDecoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Gelu, true,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Gelu,
+            true,
         )
         .expect("pre-norm decoder");
 
@@ -16323,7 +16572,13 @@ mod tests {
     fn transformer_decoder_layer_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let layer = TransformerDecoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("layer");
 
@@ -16352,7 +16607,15 @@ mod tests {
     fn transformer_decoder_stacked_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let decoder = TransformerDecoder::new(
-            &mut session, 8, 2, 3, 32, 0.0, TransformerActivation::Relu, false, true,
+            &mut session,
+            8,
+            2,
+            3,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
+            true,
         )
         .expect("decoder");
 
@@ -16376,14 +16639,28 @@ mod tests {
 
         // Decoder layer: self_attn(8) + cross_attn(8) + ff(4) + 3 norms(2 each) = 26
         let layer = TransformerDecoderLayer::new(
-            &mut session, 8, 2, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("layer");
         assert_eq!(layer.parameters().len(), 26);
 
         // Decoder: 2 layers + final norm = 2*26 + 2 = 54
         let decoder = TransformerDecoder::new(
-            &mut session, 8, 2, 2, 32, 0.0, TransformerActivation::Relu, false, true,
+            &mut session,
+            8,
+            2,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
+            true,
         )
         .expect("decoder");
         assert_eq!(decoder.parameters().len(), 54);
@@ -16393,7 +16670,15 @@ mod tests {
     fn transformer_decoder_train_eval() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let decoder = TransformerDecoder::new(
-            &mut session, 8, 2, 2, 32, 0.5, TransformerActivation::Relu, false, false,
+            &mut session,
+            8,
+            2,
+            2,
+            32,
+            0.5,
+            TransformerActivation::Relu,
+            false,
+            false,
         )
         .expect("decoder");
 
@@ -16410,7 +16695,15 @@ mod tests {
     fn transformer_forward_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let transformer = Transformer::new(
-            &mut session, 8, 2, 2, 2, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            2,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("transformer");
 
@@ -16434,7 +16727,15 @@ mod tests {
     fn transformer_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let transformer = Transformer::new(
-            &mut session, 8, 2, 1, 1, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            1,
+            1,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("transformer");
 
@@ -16463,7 +16764,15 @@ mod tests {
     fn transformer_parameter_count() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let transformer = Transformer::new(
-            &mut session, 8, 2, 2, 2, 32, 0.0, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            2,
+            2,
+            32,
+            0.0,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("transformer");
 
@@ -16477,7 +16786,15 @@ mod tests {
     fn transformer_train_eval() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let transformer = Transformer::new(
-            &mut session, 8, 2, 1, 1, 32, 0.5, TransformerActivation::Relu, false,
+            &mut session,
+            8,
+            2,
+            1,
+            1,
+            32,
+            0.5,
+            TransformerActivation::Relu,
+            false,
         )
         .expect("transformer");
 
@@ -16498,24 +16815,32 @@ mod tests {
         assert_eq!(shape, vec![4, 4]);
 
         // Diagonal and below should be 0
-        assert_eq!(vals[0], 0.0);  // (0,0)
-        assert_eq!(vals[4], 0.0);  // (1,0)
-        assert_eq!(vals[5], 0.0);  // (1,1)
+        assert_eq!(vals[0], 0.0); // (0,0)
+        assert_eq!(vals[4], 0.0); // (1,0)
+        assert_eq!(vals[5], 0.0); // (1,1)
         assert_eq!(vals[10], 0.0); // (2,2)
         assert_eq!(vals[15], 0.0); // (3,3)
 
         // Above diagonal should be -inf
-        assert_eq!(vals[1], f64::NEG_INFINITY);  // (0,1)
-        assert_eq!(vals[2], f64::NEG_INFINITY);  // (0,2)
-        assert_eq!(vals[3], f64::NEG_INFINITY);  // (0,3)
-        assert_eq!(vals[7], f64::NEG_INFINITY);  // (1,3)
+        assert_eq!(vals[1], f64::NEG_INFINITY); // (0,1)
+        assert_eq!(vals[2], f64::NEG_INFINITY); // (0,2)
+        assert_eq!(vals[3], f64::NEG_INFINITY); // (0,3)
+        assert_eq!(vals[7], f64::NEG_INFINITY); // (1,3)
     }
 
     #[test]
     fn transformer_prenorm_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let transformer = Transformer::new(
-            &mut session, 8, 2, 1, 1, 32, 0.0, TransformerActivation::Gelu, true,
+            &mut session,
+            8,
+            2,
+            1,
+            1,
+            32,
+            0.0,
+            TransformerActivation::Gelu,
+            true,
         )
         .expect("pre-norm transformer");
 
@@ -16546,7 +16871,9 @@ mod tests {
             9.0, 10.0, 11.0, 12.0,
             13.0, 14.0, 15.0, 16.0,
         ];
-        let input = session.tensor_variable(data, vec![1, 1, 4, 4], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 4, 4], false)
+            .unwrap();
         let pool = AvgPool2d::new((2, 2), (2, 2), (0, 0), false, true);
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16567,7 +16894,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 3, 3] with padding=1, kernel=3, stride=1 => output [1, 1, 3, 3]
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
-        let input = session.tensor_variable(data, vec![1, 1, 3, 3], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 3, 3], false)
+            .unwrap();
         let pool = AvgPool2d::new((3, 3), (1, 1), (1, 1), false, true);
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16582,7 +16911,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 3, 3] kernel=2, stride=1 => [1, 1, 2, 2]
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
-        let input = session.tensor_variable(data, vec![1, 1, 3, 3], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 3, 3], false)
+            .unwrap();
         let pool = AvgPool2d::new((2, 2), (1, 1), (0, 0), false, true);
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16599,7 +16930,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 2, 2, 2] kernel=(2,2,2), stride=(1,1,1) => [1,1,1,1,1]
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
-        let input = session.tensor_variable(data, vec![1, 1, 2, 2, 2], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 2, 2, 2], false)
+            .unwrap();
         let pool = AvgPool3d::new((2, 2, 2), (1, 1, 1));
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16614,7 +16947,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 4, 4, 4] kernel=(2,2,2), stride=(2,2,2) => [1,1,2,2,2]
         let data: Vec<f64> = (1..=64).map(|x| x as f64).collect();
-        let input = session.tensor_variable(data, vec![1, 1, 4, 4, 4], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 4, 4, 4], false)
+            .unwrap();
         let pool = MaxPool3d::new((2, 2, 2), (2, 2, 2));
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16629,7 +16964,9 @@ mod tests {
     #[test]
     fn maxpool3d_wrong_dim() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = session.tensor_variable(vec![1.0; 16], vec![1, 1, 4, 4], false).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0; 16], vec![1, 1, 4, 4], false)
+            .unwrap();
         let pool = MaxPool3d::new((2, 2, 2), (2, 2, 2));
         assert!(pool.forward(&mut session, input).is_err());
     }
@@ -16655,7 +16992,9 @@ mod tests {
     fn adaptive_avg_pool1d_identity() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let data = vec![1.0, 2.0, 3.0];
-        let input = session.tensor_variable(data.clone(), vec![1, 1, 3], false).unwrap();
+        let input = session
+            .tensor_variable(data.clone(), vec![1, 1, 3], false)
+            .unwrap();
         let pool = AdaptiveAvgPool1d::new(3);
         let output = pool.forward(&mut session, input).unwrap();
         // output_size == input_size => identity
@@ -16667,7 +17006,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 4, 4, 4] -> (1, 1, 1) => global average
         let data: Vec<f64> = (1..=64).map(|x| x as f64).collect();
-        let input = session.tensor_variable(data, vec![1, 1, 4, 4, 4], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 4, 4, 4], false)
+            .unwrap();
         let pool = AdaptiveAvgPool3d::new((1, 1, 1));
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16704,7 +17045,9 @@ mod tests {
             9.0, 10.0, 11.0, 12.0,
             13.0, 14.0, 15.0, 16.0,
         ];
-        let input = session.tensor_variable(data, vec![1, 1, 4, 4], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 4, 4], false)
+            .unwrap();
         let pool = AdaptiveMaxPool2d::new((2, 2));
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16725,7 +17068,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 4, 4, 4] -> (1, 1, 1) => global max
         let data: Vec<f64> = (1..=64).map(|x| x as f64).collect();
-        let input = session.tensor_variable(data, vec![1, 1, 4, 4, 4], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 4, 4, 4], false)
+            .unwrap();
         let pool = AdaptiveMaxPool3d::new((1, 1, 1));
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16739,7 +17084,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [2, 3, 4, 4] -> (1, 1) => global max per channel per batch
         let data: Vec<f64> = (0..96).map(|x| x as f64).collect();
-        let input = session.tensor_variable(data, vec![2, 3, 4, 4], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![2, 3, 4, 4], false)
+            .unwrap();
         let pool = AdaptiveMaxPool2d::new((1, 1));
         let output = pool.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16755,9 +17102,13 @@ mod tests {
     fn maxunpool1d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // pooled [1, 1, 2], indices=[1, 3] => scatter into length 4
-        let pooled = session.tensor_variable(vec![5.0, 8.0], vec![1, 1, 2], false).unwrap();
+        let pooled = session
+            .tensor_variable(vec![5.0, 8.0], vec![1, 1, 2], false)
+            .unwrap();
         let unpool = MaxUnpool1d::new(2, 2);
-        let output = unpool.forward_with_indices(&mut session, pooled, &[1, 3], 4).unwrap();
+        let output = unpool
+            .forward_with_indices(&mut session, pooled, &[1, 3], 4)
+            .unwrap();
         let shape = session.tensor_shape(output).unwrap();
         assert_eq!(shape, vec![1, 1, 4]);
         let vals = session.tensor_values(output).unwrap();
@@ -16775,7 +17126,9 @@ mod tests {
             9.0, 10.0, 11.0, 12.0,
             13.0, 14.0, 15.0, 16.0,
         ];
-        let input = session.tensor_variable(data, vec![1, 1, 4, 4], false).unwrap();
+        let input = session
+            .tensor_variable(data, vec![1, 1, 4, 4], false)
+            .unwrap();
         let pool = MaxPool2d::new((2, 2), (2, 2));
         let pooled = pool.forward(&mut session, input).unwrap();
         let pool_vals = session.tensor_values(pooled).unwrap();
@@ -16784,9 +17137,9 @@ mod tests {
 
         let unpool = MaxUnpool2d::new((2, 2), (2, 2));
         // indices: 6 is at (1,1)=5, 8 is at (1,3)=7, 14 is at (3,1)=13, 16 is at (3,3)=15
-        let output = unpool.forward_with_indices(
-            &mut session, pooled, &[5, 7, 13, 15], (4, 4),
-        ).unwrap();
+        let output = unpool
+            .forward_with_indices(&mut session, pooled, &[5, 7, 13, 15], (4, 4))
+            .unwrap();
         let shape = session.tensor_shape(output).unwrap();
         assert_eq!(shape, vec![1, 1, 4, 4]);
         let vals = session.tensor_values(output).unwrap();
@@ -16804,11 +17157,13 @@ mod tests {
     fn maxunpool3d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 1, 1, 2] with indices pointing into 1x1x4 output space
-        let pooled = session.tensor_variable(vec![5.0, 9.0], vec![1, 1, 1, 1, 2], false).unwrap();
+        let pooled = session
+            .tensor_variable(vec![5.0, 9.0], vec![1, 1, 1, 1, 2], false)
+            .unwrap();
         let unpool = MaxUnpool3d::new((1, 1, 2), (1, 1, 2));
-        let output = unpool.forward_with_indices(
-            &mut session, pooled, &[1, 3], (1, 1, 4),
-        ).unwrap();
+        let output = unpool
+            .forward_with_indices(&mut session, pooled, &[1, 3], (1, 1, 4))
+            .unwrap();
         let shape = session.tensor_shape(output).unwrap();
         assert_eq!(shape, vec![1, 1, 1, 1, 4]);
         let vals = session.tensor_values(output).unwrap();
@@ -16842,10 +17197,12 @@ mod tests {
     fn prelu_default_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let prelu = PReLU::new(&mut session, 1, 0.25).unwrap();
-        let input = session.tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![1, 5], false).unwrap();
+        let input = session
+            .tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![1, 5], false)
+            .unwrap();
         let output = prelu.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(output).unwrap();
-        assert!((vals[0] - (-0.5)).abs() < 1e-10);  // -2 * 0.25
+        assert!((vals[0] - (-0.5)).abs() < 1e-10); // -2 * 0.25
         assert!((vals[1] - (-0.25)).abs() < 1e-10); // -1 * 0.25
         assert!((vals[2] - 0.0).abs() < 1e-10);
         assert!((vals[3] - 1.0).abs() < 1e-10);
@@ -16858,10 +17215,13 @@ mod tests {
         // 2 channels, each with different slope
         let prelu = PReLU::new(&mut session, 2, 0.1).unwrap();
         // Set channel slopes to [0.1, 0.5] manually
-        let input = session.tensor_variable(
-            vec![-1.0, -1.0],  // [1, 2] shape: batch=1, channels=2
-            vec![1, 2], false,
-        ).unwrap();
+        let input = session
+            .tensor_variable(
+                vec![-1.0, -1.0], // [1, 2] shape: batch=1, channels=2
+                vec![1, 2],
+                false,
+            )
+            .unwrap();
         let output = prelu.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(output).unwrap();
         // Both channels have slope 0.1 (init value)
@@ -16880,7 +17240,9 @@ mod tests {
     fn celu_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let celu = CELU::new(1.0);
-        let input = session.tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![5], false).unwrap();
+        let input = session
+            .tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![5], false)
+            .unwrap();
         let output = celu.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(output).unwrap();
         // For alpha=1.0, CELU == ELU
@@ -16896,10 +17258,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let celu = CELU::new(2.0);
         // Values near zero should be continuous
-        let input = session.tensor_variable(
-            vec![-0.001, -0.0001, 0.0, 0.0001, 0.001],
-            vec![5], false,
-        ).unwrap();
+        let input = session
+            .tensor_variable(vec![-0.001, -0.0001, 0.0, 0.0001, 0.001], vec![5], false)
+            .unwrap();
         let output = celu.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(output).unwrap();
         // All values should be close to 0
@@ -16913,10 +17274,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let glu = GLU::new(1);
         // Input [1, 4] -> split into a=[1,2] and b=[1,2], output = a * sigmoid(b)
-        let input = session.tensor_variable(
-            vec![1.0, 2.0, 0.0, 0.0],
-            vec![1, 4], false,
-        ).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 0.0, 0.0], vec![1, 4], false)
+            .unwrap();
         let output = glu.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
         assert_eq!(shape, vec![1, 2]);
@@ -16930,7 +17290,9 @@ mod tests {
     fn glu_odd_size_errors() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let glu = GLU::new(0);
-        let input = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
         assert!(glu.forward(&mut session, input).is_err());
     }
 
@@ -16938,10 +17300,9 @@ mod tests {
     fn threshold_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let threshold = Threshold::new(0.5, -1.0);
-        let input = session.tensor_variable(
-            vec![-1.0, 0.0, 0.5, 0.6, 1.0, 2.0],
-            vec![6], false,
-        ).unwrap();
+        let input = session
+            .tensor_variable(vec![-1.0, 0.0, 0.5, 0.6, 1.0, 2.0], vec![6], false)
+            .unwrap();
         let output = threshold.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(output).unwrap();
         // Values <= 0.5 -> -1.0, values > 0.5 -> pass through
@@ -16958,7 +17319,9 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // Threshold(0, 0) acts like ReLU
         let threshold = Threshold::new(0.0, 0.0);
-        let input = session.tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![5], false).unwrap();
+        let input = session
+            .tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![5], false)
+            .unwrap();
         let output = threshold.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(output).unwrap();
         assert_eq!(vals, vec![0.0, 0.0, 0.0, 1.0, 2.0]);
@@ -16977,7 +17340,9 @@ mod tests {
     fn reflection_pad1d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 4] with pad=(2,2) -> [1, 1, 8]
-        let input = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false)
+            .unwrap();
         let pad = ReflectionPad1d::new((2, 2));
         let output = pad.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -16990,7 +17355,9 @@ mod tests {
     #[test]
     fn reflection_pad1d_too_large_errors() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false)
+            .unwrap();
         let pad = ReflectionPad1d::new((3, 0)); // pad >= input size
         assert!(pad.forward(&mut session, input).is_err());
     }
@@ -16999,10 +17366,13 @@ mod tests {
     fn reflection_pad2d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 3, 3] with pad=(1,1,1,1) -> [1, 1, 5, 5]
-        let input = session.tensor_variable(
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
-            vec![1, 1, 3, 3], false,
-        ).unwrap();
+        let input = session
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![1, 1, 3, 3],
+                false,
+            )
+            .unwrap();
         let pad = ReflectionPad2d::new((1, 1, 1, 1));
         let output = pad.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -17017,7 +17387,9 @@ mod tests {
     #[test]
     fn replication_pad1d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false)
+            .unwrap();
         let pad = ReplicationPad1d::new((2, 3));
         let output = pad.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -17031,7 +17403,9 @@ mod tests {
     fn replication_pad2d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 2, 2] with pad=(1,1,1,1) -> [1, 1, 4, 4]
-        let input = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
         let pad = ReplicationPad2d::new((1, 1, 1, 1));
         let output = pad.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -17052,10 +17426,13 @@ mod tests {
     fn replication_pad3d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 2, 2, 2] with pad=(1,1,0,0,0,0) -> [1, 1, 2, 2, 4]
-        let input = session.tensor_variable(
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-            vec![1, 1, 2, 2, 2], false,
-        ).unwrap();
+        let input = session
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                vec![1, 1, 2, 2, 2],
+                false,
+            )
+            .unwrap();
         let pad = ReplicationPad3d::new((1, 1, 0, 0, 0, 0));
         let output = pad.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -17071,7 +17448,9 @@ mod tests {
     #[test]
     fn circular_pad1d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false)
+            .unwrap();
         let pad = CircularPad1d::new((2, 2));
         let output = pad.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
@@ -17085,25 +17464,26 @@ mod tests {
     fn circular_pad2d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 2, 3] with pad=(1,1,1,1) -> [1, 1, 4, 5]
-        let input = session.tensor_variable(
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            vec![1, 1, 2, 3], false,
-        ).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 1, 2, 3], false)
+            .unwrap();
         let pad = CircularPad2d::new((1, 1, 1, 1));
         let output = pad.forward(&mut session, input).unwrap();
         let shape = session.tensor_shape(output).unwrap();
         assert_eq!(shape, vec![1, 1, 4, 5]);
         let vals = session.tensor_values(output).unwrap();
         // Center 2x3 should be original data
-        assert!((vals[6] - 1.0).abs() < 1e-10);  // row1, col1
-        assert!((vals[7] - 2.0).abs() < 1e-10);  // row1, col2
-        assert!((vals[8] - 3.0).abs() < 1e-10);  // row1, col3
+        assert!((vals[6] - 1.0).abs() < 1e-10); // row1, col1
+        assert!((vals[7] - 2.0).abs() < 1e-10); // row1, col2
+        assert!((vals[8] - 3.0).abs() < 1e-10); // row1, col3
     }
 
     #[test]
     fn padding_zero_is_identity() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false)
+            .unwrap();
         let pad = ReflectionPad1d::new((0, 0));
         let output = pad.forward(&mut session, input).unwrap();
         assert_eq!(output, input);
@@ -17115,7 +17495,11 @@ mod tests {
         assert!(ReflectionPad2d::new((1, 1, 1, 1)).parameters().is_empty());
         assert!(ReplicationPad1d::new((1, 1)).parameters().is_empty());
         assert!(ReplicationPad2d::new((1, 1, 1, 1)).parameters().is_empty());
-        assert!(ReplicationPad3d::new((1, 1, 1, 1, 1, 1)).parameters().is_empty());
+        assert!(
+            ReplicationPad3d::new((1, 1, 1, 1, 1, 1))
+                .parameters()
+                .is_empty()
+        );
         assert!(CircularPad1d::new((1, 1)).parameters().is_empty());
         assert!(CircularPad2d::new((1, 1, 1, 1)).parameters().is_empty());
     }
@@ -17129,17 +17513,28 @@ mod tests {
 
         // Set weights to known values
         let weight_vals: Vec<f64> = (0..15).map(|x| x as f64).collect();
-        let weight = session.tensor_variable(weight_vals, vec![5, 3], true).unwrap();
+        let weight = session
+            .tensor_variable(weight_vals, vec![5, 3], true)
+            .unwrap();
         let eb = EmbeddingBag {
-            weight, num_embeddings: 5, embedding_dim: 3,
-            mode: EmbeddingBagMode::Sum, padding_idx: None,
+            weight,
+            num_embeddings: 5,
+            embedding_dim: 3,
+            mode: EmbeddingBagMode::Sum,
+            padding_idx: None,
         };
 
         // 2 bags: bag 0 = indices [0, 2], bag 1 = indices [1, 3, 4]
-        let indices = session.tensor_variable(vec![0.0, 2.0, 1.0, 3.0, 4.0], vec![5], false).unwrap();
-        let offsets = session.tensor_variable(vec![0.0, 2.0], vec![2], false).unwrap();
+        let indices = session
+            .tensor_variable(vec![0.0, 2.0, 1.0, 3.0, 4.0], vec![5], false)
+            .unwrap();
+        let offsets = session
+            .tensor_variable(vec![0.0, 2.0], vec![2], false)
+            .unwrap();
 
-        let output = eb.forward_with_offsets(&mut session, indices, offsets, None).unwrap();
+        let output = eb
+            .forward_with_offsets(&mut session, indices, offsets, None)
+            .unwrap();
         let shape = session.tensor_shape(output).unwrap();
         assert_eq!(shape, vec![2, 3]);
         let vals = session.tensor_values(output).unwrap();
@@ -17157,16 +17552,27 @@ mod tests {
     fn embedding_bag_mean_mode() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let weight_vals: Vec<f64> = (0..15).map(|x| x as f64).collect();
-        let weight = session.tensor_variable(weight_vals, vec![5, 3], true).unwrap();
+        let weight = session
+            .tensor_variable(weight_vals, vec![5, 3], true)
+            .unwrap();
         let eb = EmbeddingBag {
-            weight, num_embeddings: 5, embedding_dim: 3,
-            mode: EmbeddingBagMode::Mean, padding_idx: None,
+            weight,
+            num_embeddings: 5,
+            embedding_dim: 3,
+            mode: EmbeddingBagMode::Mean,
+            padding_idx: None,
         };
 
-        let indices = session.tensor_variable(vec![0.0, 2.0, 1.0, 3.0, 4.0], vec![5], false).unwrap();
-        let offsets = session.tensor_variable(vec![0.0, 2.0], vec![2], false).unwrap();
+        let indices = session
+            .tensor_variable(vec![0.0, 2.0, 1.0, 3.0, 4.0], vec![5], false)
+            .unwrap();
+        let offsets = session
+            .tensor_variable(vec![0.0, 2.0], vec![2], false)
+            .unwrap();
 
-        let output = eb.forward_with_offsets(&mut session, indices, offsets, None).unwrap();
+        let output = eb
+            .forward_with_offsets(&mut session, indices, offsets, None)
+            .unwrap();
         let vals = session.tensor_values(output).unwrap();
         // bag 0: mean of [0,1,2] and [6,7,8] = [3, 4, 5]
         assert!((vals[0] - 3.0).abs() < 1e-10);
@@ -17182,17 +17588,26 @@ mod tests {
     fn embedding_bag_max_mode() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let weight_vals = vec![1.0, 5.0, 3.0, 4.0, 2.0, 6.0, 7.0, 1.0, 2.0];
-        let weight = session.tensor_variable(weight_vals, vec![3, 3], true).unwrap();
+        let weight = session
+            .tensor_variable(weight_vals, vec![3, 3], true)
+            .unwrap();
         let eb = EmbeddingBag {
-            weight, num_embeddings: 3, embedding_dim: 3,
-            mode: EmbeddingBagMode::Max, padding_idx: None,
+            weight,
+            num_embeddings: 3,
+            embedding_dim: 3,
+            mode: EmbeddingBagMode::Max,
+            padding_idx: None,
         };
 
         // 1 bag with all 3 embeddings
-        let indices = session.tensor_variable(vec![0.0, 1.0, 2.0], vec![3], false).unwrap();
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0, 2.0], vec![3], false)
+            .unwrap();
         let offsets = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
 
-        let output = eb.forward_with_offsets(&mut session, indices, offsets, None).unwrap();
+        let output = eb
+            .forward_with_offsets(&mut session, indices, offsets, None)
+            .unwrap();
         let vals = session.tensor_values(output).unwrap();
         // max([1,5,3], [4,2,6], [7,1,2]) = [7, 5, 6]
         assert!((vals[0] - 7.0).abs() < 1e-10);
@@ -17204,17 +17619,28 @@ mod tests {
     fn embedding_bag_per_sample_weights() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let weight_vals: Vec<f64> = (0..6).map(|x| x as f64).collect();
-        let weight = session.tensor_variable(weight_vals, vec![3, 2], true).unwrap();
+        let weight = session
+            .tensor_variable(weight_vals, vec![3, 2], true)
+            .unwrap();
         let eb = EmbeddingBag {
-            weight, num_embeddings: 3, embedding_dim: 2,
-            mode: EmbeddingBagMode::Sum, padding_idx: None,
+            weight,
+            num_embeddings: 3,
+            embedding_dim: 2,
+            mode: EmbeddingBagMode::Sum,
+            padding_idx: None,
         };
 
-        let indices = session.tensor_variable(vec![0.0, 1.0], vec![2], false).unwrap();
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .unwrap();
         let offsets = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
-        let psw = session.tensor_variable(vec![2.0, 3.0], vec![2], false).unwrap();
+        let psw = session
+            .tensor_variable(vec![2.0, 3.0], vec![2], false)
+            .unwrap();
 
-        let output = eb.forward_with_offsets(&mut session, indices, offsets, Some(psw)).unwrap();
+        let output = eb
+            .forward_with_offsets(&mut session, indices, offsets, Some(psw))
+            .unwrap();
         let vals = session.tensor_values(output).unwrap();
         // 2*[0,1] + 3*[2,3] = [0,2] + [6,9] = [6, 11]
         assert!((vals[0] - 6.0).abs() < 1e-10);
@@ -17225,17 +17651,26 @@ mod tests {
     fn embedding_bag_empty_bag() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let weight_vals: Vec<f64> = (0..6).map(|x| x as f64).collect();
-        let weight = session.tensor_variable(weight_vals, vec![3, 2], true).unwrap();
+        let weight = session
+            .tensor_variable(weight_vals, vec![3, 2], true)
+            .unwrap();
         let eb = EmbeddingBag {
-            weight, num_embeddings: 3, embedding_dim: 2,
-            mode: EmbeddingBagMode::Sum, padding_idx: None,
+            weight,
+            num_embeddings: 3,
+            embedding_dim: 2,
+            mode: EmbeddingBagMode::Sum,
+            padding_idx: None,
         };
 
         // 2 bags: bag 0 is empty (offset 0 to 0), bag 1 has index 1
         let indices = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
-        let offsets = session.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let offsets = session
+            .tensor_variable(vec![0.0, 0.0], vec![2], false)
+            .unwrap();
 
-        let output = eb.forward_with_offsets(&mut session, indices, offsets, None).unwrap();
+        let output = eb
+            .forward_with_offsets(&mut session, indices, offsets, None)
+            .unwrap();
         let vals = session.tensor_values(output).unwrap();
         // bag 0: empty -> [0, 0]
         assert_eq!(vals[0], 0.0);
@@ -17280,14 +17715,22 @@ mod tests {
         lp_data.extend_from_slice(&lp_t1);
 
         let log_probs = make_log_probs(&mut session, lp_data, 2, 1, 3);
-        let targets = session.tensor_variable(vec![1.0], vec![1, 1], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0], vec![1, 1], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap();
         assert_eq!(loss_val.len(), 1);
@@ -17312,18 +17755,28 @@ mod tests {
         // P(blank) = 0.6 at each step
         let log_blank = 0.6f64.ln();
         let log_other = 0.4f64.ln();
-        let lp_data = vec![log_blank, log_other, log_blank, log_other, log_blank, log_other];
+        let lp_data = vec![
+            log_blank, log_other, log_blank, log_other, log_blank, log_other,
+        ];
 
         let log_probs = make_log_probs(&mut session, lp_data, 3, 1, 2);
         // Empty target: target_length = 0, targets can be anything (padded)
-        let targets = session.tensor_variable(vec![0.0], vec![1, 1], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![0.0], vec![1, 1], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![3.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap();
         // loss = -(3 * ln(0.6))
@@ -17342,17 +17795,29 @@ mod tests {
 
         let lp_data = vec![0.5f64.ln(), 0.3f64.ln(), 0.2f64.ln()];
         let log_probs = make_log_probs(&mut session, lp_data, 1, 1, 3);
-        let targets = session.tensor_variable(vec![1.0, 2.0], vec![1, 2], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap();
-        assert!(loss_val[0].is_infinite(), "expected inf, got {}", loss_val[0]);
+        assert!(
+            loss_val[0].is_infinite(),
+            "expected inf, got {}",
+            loss_val[0]
+        );
     }
 
     #[test]
@@ -17362,16 +17827,24 @@ mod tests {
 
         let lp_data = vec![0.5f64.ln(), 0.3f64.ln(), 0.2f64.ln()];
         let log_probs = make_log_probs(&mut session, lp_data, 1, 1, 3);
-        let targets = session.tensor_variable(vec![1.0, 2.0], vec![1, 2], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new()
             .with_reduction(CTCReduction::Sum)
             .with_zero_infinity(true);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap();
         assert_eq!(loss_val[0], 0.0);
@@ -17402,14 +17875,22 @@ mod tests {
         let log_half = 0.5f64.ln();
         let lp_data = vec![log_half; 6]; // T=3, N=1, C=2, all probs = 0.5
         let log_probs = make_log_probs(&mut session, lp_data, 3, 1, 2);
-        let targets = session.tensor_variable(vec![1.0, 1.0], vec![1, 2], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0, 1.0], vec![1, 2], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![3.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap();
         // With uniform probs 0.5, total P(aa) should be sum of valid alignment probs
@@ -17436,15 +17917,27 @@ mod tests {
         let lp_data = vec![log_third; 18]; // 3*2*3 = 18
 
         let log_probs = make_log_probs(&mut session, lp_data, 3, 2, 3);
-        let targets = session.tensor_variable(vec![1.0, 2.0], vec![2, 1], false).unwrap();
-        let input_lengths = session.tensor_variable(vec![3.0, 2.0], vec![2], false).unwrap();
-        let target_lengths = session.tensor_variable(vec![1.0, 1.0], vec![2], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0, 2.0], vec![2, 1], false)
+            .unwrap();
+        let input_lengths = session
+            .tensor_variable(vec![3.0, 2.0], vec![2], false)
+            .unwrap();
+        let target_lengths = session
+            .tensor_variable(vec![1.0, 1.0], vec![2], false)
+            .unwrap();
 
         // Test with reduction=None to get per-sample losses
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::None);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_vals = session.tensor_values(loss).unwrap();
         assert_eq!(loss_vals.len(), 2);
@@ -17469,27 +17962,43 @@ mod tests {
         // T=2, N=1, C=2
         let lp_data = vec![log_half; 4];
         let log_probs = make_log_probs(&mut session, lp_data.clone(), 2, 1, 2);
-        let targets = session.tensor_variable(vec![1.0], vec![1, 1], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0], vec![1, 1], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
 
         // Sum reduction first
         let loss_sum_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss_sum = loss_sum_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss_sum = loss_sum_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
         let sum_val = session.tensor_values(loss_sum).unwrap()[0];
 
         // Mean reduction
         let log_probs2 = make_log_probs(&mut session, lp_data, 2, 1, 2);
-        let targets2 = session.tensor_variable(vec![1.0], vec![1, 1], false).unwrap();
+        let targets2 = session
+            .tensor_variable(vec![1.0], vec![1, 1], false)
+            .unwrap();
         let input_lengths2 = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
         let target_lengths2 = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
 
         let loss_mean_mod = CTCLoss::new().with_reduction(CTCReduction::Mean);
-        let loss_mean = loss_mean_mod.forward_ctc(
-            &mut session, log_probs2, targets2, input_lengths2, target_lengths2,
-        ).unwrap();
+        let loss_mean = loss_mean_mod
+            .forward_ctc(
+                &mut session,
+                log_probs2,
+                targets2,
+                input_lengths2,
+                target_lengths2,
+            )
+            .unwrap();
         let mean_val = session.tensor_values(loss_mean).unwrap()[0];
 
         // Mean = Sum / sum(target_lengths) = Sum / 1.0
@@ -17513,14 +18022,22 @@ mod tests {
         let lp_base: Vec<f64> = logits_base.iter().flat_map(|l| log_softmax(l)).collect();
 
         let log_probs = make_log_probs(&mut session, lp_base.clone(), 2, 1, 3);
-        let targets = session.tensor_variable(vec![1.0], vec![1, 1], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0], vec![1, 1], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         // Run backward
         let report = session.tensor_backward(loss).unwrap();
@@ -17567,14 +18084,22 @@ mod tests {
 
         let lp_data = vec![0.3f64.ln(), 0.5f64.ln(), 0.2f64.ln()]; // C=3
         let log_probs = make_log_probs(&mut session, lp_data, 1, 1, 3);
-        let targets = session.tensor_variable(vec![1.0], vec![1, 1], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0], vec![1, 1], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap()[0];
         // Only alignment: emit class 1 at t=0
@@ -17602,24 +18127,35 @@ mod tests {
         // T=4, N=1, C=3, target=[1, 2]
         // Use valid log-probabilities (log-softmax normalized)
         let logits = [
-            vec![0.5, 1.0, 0.3],  // t=0
-            vec![0.2, 1.5, 0.8],  // t=1
-            vec![0.1, 0.7, 1.2],  // t=2
-            vec![0.8, 0.3, 1.0],  // t=3
+            vec![0.5, 1.0, 0.3], // t=0
+            vec![0.2, 1.5, 0.8], // t=1
+            vec![0.1, 0.7, 1.2], // t=2
+            vec![0.8, 0.3, 1.0], // t=3
         ];
         let lp_data: Vec<f64> = logits.iter().flat_map(|l| log_softmax(l)).collect();
         let log_probs = make_log_probs(&mut session, lp_data, 4, 1, 3);
-        let targets = session.tensor_variable(vec![1.0, 2.0], vec![1, 2], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
         let input_lengths = session.tensor_variable(vec![4.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap()[0];
-        assert!(loss_val > 0.0 && loss_val.is_finite(), "loss should be finite positive: {loss_val}");
+        assert!(
+            loss_val > 0.0 && loss_val.is_finite(),
+            "loss should be finite positive: {loss_val}"
+        );
 
         // Backward should succeed and produce finite gradients
         let report = session.tensor_backward(loss).unwrap();
@@ -17636,18 +18172,32 @@ mod tests {
 
         // T=2, N=1, C=3 (a=0, b=1, blank=2)
         let lp_data = vec![
-            0.4f64.ln(), 0.3f64.ln(), 0.3f64.ln(), // t=0
-            0.3f64.ln(), 0.4f64.ln(), 0.3f64.ln(), // t=1
+            0.4f64.ln(),
+            0.3f64.ln(),
+            0.3f64.ln(), // t=0
+            0.3f64.ln(),
+            0.4f64.ln(),
+            0.3f64.ln(), // t=1
         ];
         let log_probs = make_log_probs(&mut session, lp_data, 2, 1, 3);
-        let targets = session.tensor_variable(vec![0.0], vec![1, 1], false).unwrap(); // target = class 0 ('a')
+        let targets = session
+            .tensor_variable(vec![0.0], vec![1, 1], false)
+            .unwrap(); // target = class 0 ('a')
         let input_lengths = session.tensor_variable(vec![2.0], vec![1], false).unwrap();
         let target_lengths = session.tensor_variable(vec![1.0], vec![1], false).unwrap();
 
-        let loss_mod = CTCLoss::new().with_blank(2).with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss_mod = CTCLoss::new()
+            .with_blank(2)
+            .with_reduction(CTCReduction::Sum);
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap()[0];
         // Alignments for target 'a' (class 0) with blank=2:
@@ -17671,7 +18221,13 @@ mod tests {
         let mut lp_data = Vec::with_capacity(t * c);
         for step in 0..t {
             let probs: Vec<f64> = (0..c)
-                .map(|k| if k == (step % c) { 0.5 } else { 0.5 / (c as f64 - 1.0) })
+                .map(|k| {
+                    if k == (step % c) {
+                        0.5
+                    } else {
+                        0.5 / (c as f64 - 1.0)
+                    }
+                })
                 .collect();
             let sum: f64 = probs.iter().sum();
             for p in &probs {
@@ -17680,17 +18236,30 @@ mod tests {
         }
 
         let log_probs = make_log_probs(&mut session, lp_data, t, 1, c);
-        let targets = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false).unwrap();
-        let input_lengths = session.tensor_variable(vec![t as f64], vec![1], false).unwrap();
+        let targets = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .unwrap();
+        let input_lengths = session
+            .tensor_variable(vec![t as f64], vec![1], false)
+            .unwrap();
         let target_lengths = session.tensor_variable(vec![3.0], vec![1], false).unwrap();
 
         let loss_mod = CTCLoss::new().with_reduction(CTCReduction::Sum);
-        let loss = loss_mod.forward_ctc(
-            &mut session, log_probs, targets, input_lengths, target_lengths,
-        ).unwrap();
+        let loss = loss_mod
+            .forward_ctc(
+                &mut session,
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+            )
+            .unwrap();
 
         let loss_val = session.tensor_values(loss).unwrap()[0];
-        assert!(loss_val.is_finite(), "loss should be finite for long sequence: {loss_val}");
+        assert!(
+            loss_val.is_finite(),
+            "loss should be finite for long sequence: {loss_val}"
+        );
         assert!(loss_val > 0.0, "loss should be positive: {loss_val}");
     }
 }

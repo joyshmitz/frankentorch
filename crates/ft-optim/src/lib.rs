@@ -251,8 +251,7 @@ impl Optimizer for SGD {
                 }
             } else {
                 // Vanilla SGD: param -= lr * grad
-                let update: Vec<f64> =
-                    effective_grad.iter().map(|g| self.lr * g).collect();
+                let update: Vec<f64> = effective_grad.iter().map(|g| self.lr * g).collect();
                 apply_param_update(session, param, &update)?;
             }
         }
@@ -3678,8 +3677,7 @@ impl Optimizer for Adadelta {
             }
 
             // Update running average of squared gradients: E[g^2] = rho * E[g^2] + (1-rho) * g^2
-            let sq_avg =
-                self.square_avg[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
+            let sq_avg = self.square_avg[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
             ensure_state_len(
                 effective_grad.len(),
                 sq_avg.len(),
@@ -3831,8 +3829,7 @@ impl Optimizer for NAdam {
 
         // Momentum schedule: mu_t = beta1 * (1 - 0.5 * 0.96^(t * momentum_decay))
         let mu_t = self.beta1 * (1.0 - 0.5 * 0.96f64.powf(t as f64 * self.momentum_decay));
-        let mu_t1 =
-            self.beta1 * (1.0 - 0.5 * 0.96f64.powf((t as f64 + 1.0) * self.momentum_decay));
+        let mu_t1 = self.beta1 * (1.0 - 0.5 * 0.96f64.powf((t as f64 + 1.0) * self.momentum_decay));
 
         for (i, &param) in self.params.iter().enumerate() {
             let grad = match load_param_gradient(session, param)? {
@@ -3882,8 +3879,8 @@ impl Optimizer for NAdam {
                 .zip(v.iter())
                 .zip(effective_grad.iter())
                 .map(|((m_val, v_val), g)| {
-                    let m_hat = mu_t1 * m_val / (1.0 - mu_t * mu_t1)
-                        + (1.0 - mu_t) * g / (1.0 - mu_t);
+                    let m_hat =
+                        mu_t1 * m_val / (1.0 - mu_t * mu_t1) + (1.0 - mu_t) * g / (1.0 - mu_t);
                     let v_hat = v_val / bias_correction2;
                     self.lr * m_hat / (v_hat.sqrt() + self.eps)
                 })
@@ -4122,9 +4119,7 @@ impl Rprop {
             ));
         }
         if !self.eta_minus.is_finite() || self.eta_minus <= 0.0 || self.eta_minus >= 1.0 {
-            return Err(optimizer_hparam_error(
-                "rprop eta_minus must be in (0, 1)",
-            ));
+            return Err(optimizer_hparam_error("rprop eta_minus must be in (0, 1)"));
         }
         if !self.eta_plus.is_finite() || self.eta_plus <= 1.0 {
             return Err(optimizer_hparam_error("rprop eta_plus must be > 1"));

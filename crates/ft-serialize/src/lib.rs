@@ -508,7 +508,10 @@ impl fmt::Display for TensorIOError {
             Self::Io { path, message } => write!(f, "I/O error at '{path}': {message}"),
             Self::InvalidMagic => write!(f, "invalid magic bytes: not a FrankenTorch state file"),
             Self::UnsupportedVersion { found, max } => {
-                write!(f, "unsupported format version {found} (max supported: {max})")
+                write!(
+                    f,
+                    "unsupported format version {found} (max supported: {max})"
+                )
             }
             Self::Corrupt { reason } => write!(f, "corrupt state file: {reason}"),
             Self::TensorError(e) => write!(f, "tensor error: {e}"),
@@ -558,8 +561,7 @@ pub fn save_state_dict<P: AsRef<Path>>(
     path: P,
 ) -> Result<(), TensorIOError> {
     let path_str = path.as_ref().to_string_lossy().to_string();
-    let mut file =
-        std::fs::File::create(&path).map_err(|e| io_err(&path_str, e))?;
+    let mut file = std::fs::File::create(&path).map_err(|e| io_err(&path_str, e))?;
 
     // Magic
     file.write_all(FT_MAGIC).map_err(|e| io_err(&path_str, e))?;
@@ -880,22 +882,14 @@ pub fn save_safetensors<P: AsRef<Path>>(
         .iter()
         .map(|(name, tensor)| {
             let st_dtype = ft_dtype_to_st(tensor.meta().dtype())?;
-            Ok((
-                name.clone(),
-                TensorViewAdapter {
-                    tensor,
-                    st_dtype,
-                },
-            ))
+            Ok((name.clone(), TensorViewAdapter { tensor, st_dtype }))
         })
         .collect::<Result<Vec<_>, TensorIOError>>()?;
 
-    let data = st_tensor::serialize(
-        views.into_iter(),
-        metadata.cloned(),
-    )
-    .map_err(|e| TensorIOError::Corrupt {
-        reason: format!("safetensors serialization failed: {e}"),
+    let data = st_tensor::serialize(views.into_iter(), metadata.cloned()).map_err(|e| {
+        TensorIOError::Corrupt {
+            reason: format!("safetensors serialization failed: {e}"),
+        }
     })?;
 
     std::fs::write(&path, data).map_err(|e| io_err(&path_str, e))?;
@@ -1703,9 +1697,7 @@ mod tests {
 
     // ── Tensor State Dict Save/Load Tests ──────────────────────────────
 
-    use super::{
-        load_state_dict, load_state_dict_from_bytes, save_state_dict, TensorIOError,
-    };
+    use super::{TensorIOError, load_state_dict, load_state_dict_from_bytes, save_state_dict};
     use ft_core::{DType, DenseTensor, Device, TensorMeta};
 
     fn make_f64_tensor(values: Vec<f64>, shape: Vec<usize>) -> DenseTensor {
@@ -1717,7 +1709,10 @@ mod tests {
         let dir = std::env::temp_dir().join("ft_test_save_single");
         let _ = std::fs::remove_file(&dir);
         let mut sd = BTreeMap::new();
-        sd.insert("weight".to_string(), make_f64_tensor(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]));
+        sd.insert(
+            "weight".to_string(),
+            make_f64_tensor(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]),
+        );
 
         save_state_dict(&sd, &dir).unwrap();
         let loaded = load_state_dict(&dir).unwrap();
@@ -1736,18 +1731,33 @@ mod tests {
         let dir = std::env::temp_dir().join("ft_test_save_multi");
         let _ = std::fs::remove_file(&dir);
         let mut sd = BTreeMap::new();
-        sd.insert("layer1.weight".to_string(), make_f64_tensor(vec![1.0, 2.0], vec![2]));
-        sd.insert("layer1.bias".to_string(), make_f64_tensor(vec![0.5], vec![1]));
-        sd.insert("layer2.weight".to_string(), make_f64_tensor(vec![3.0, 4.0, 5.0, 6.0], vec![2, 2]));
+        sd.insert(
+            "layer1.weight".to_string(),
+            make_f64_tensor(vec![1.0, 2.0], vec![2]),
+        );
+        sd.insert(
+            "layer1.bias".to_string(),
+            make_f64_tensor(vec![0.5], vec![1]),
+        );
+        sd.insert(
+            "layer2.weight".to_string(),
+            make_f64_tensor(vec![3.0, 4.0, 5.0, 6.0], vec![2, 2]),
+        );
 
         save_state_dict(&sd, &dir).unwrap();
         let loaded = load_state_dict(&dir).unwrap();
         let _ = std::fs::remove_file(&dir);
 
         assert_eq!(loaded.len(), 3);
-        assert_eq!(loaded["layer1.weight"].contiguous_values().unwrap(), &[1.0, 2.0]);
+        assert_eq!(
+            loaded["layer1.weight"].contiguous_values().unwrap(),
+            &[1.0, 2.0]
+        );
         assert_eq!(loaded["layer1.bias"].contiguous_values().unwrap(), &[0.5]);
-        assert_eq!(loaded["layer2.weight"].contiguous_values().unwrap(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            loaded["layer2.weight"].contiguous_values().unwrap(),
+            &[3.0, 4.0, 5.0, 6.0]
+        );
         assert_eq!(loaded["layer2.weight"].meta().shape(), &[2, 2]);
     }
 
@@ -1792,7 +1802,10 @@ mod tests {
         let _ = std::fs::remove_file(&dir);
 
         assert_eq!(loaded["w"].meta().dtype(), DType::F32);
-        assert_eq!(loaded["w"].contiguous_values_f32().unwrap(), &[1.0f32, 2.0, 3.0]);
+        assert_eq!(
+            loaded["w"].contiguous_values_f32().unwrap(),
+            &[1.0f32, 2.0, 3.0]
+        );
     }
 
     #[test]
@@ -1815,7 +1828,10 @@ mod tests {
         data.extend_from_slice(b"FTSV");
         data.extend_from_slice(&99u32.to_le_bytes()); // future version
         let result = load_state_dict_from_bytes(&data);
-        assert!(matches!(result, Err(TensorIOError::UnsupportedVersion { .. })));
+        assert!(matches!(
+            result,
+            Err(TensorIOError::UnsupportedVersion { .. })
+        ));
     }
 
     #[test]
@@ -1836,7 +1852,10 @@ mod tests {
         let n = 10_000;
         let values: Vec<f64> = (0..n).map(|i| i as f64 * 0.001).collect();
         let mut sd = BTreeMap::new();
-        sd.insert("big".to_string(), make_f64_tensor(values.clone(), vec![100, 100]));
+        sd.insert(
+            "big".to_string(),
+            make_f64_tensor(values.clone(), vec![100, 100]),
+        );
 
         save_state_dict(&sd, &dir).unwrap();
         let loaded = load_state_dict(&dir).unwrap();
@@ -1857,8 +1876,13 @@ mod tests {
         let cases = vec![
             TensorIOError::InvalidMagic,
             TensorIOError::UnsupportedVersion { found: 99, max: 1 },
-            TensorIOError::Corrupt { reason: "test".to_string() },
-            TensorIOError::Io { path: "/tmp/test".to_string(), message: "not found".to_string() },
+            TensorIOError::Corrupt {
+                reason: "test".to_string(),
+            },
+            TensorIOError::Io {
+                path: "/tmp/test".to_string(),
+                message: "not found".to_string(),
+            },
         ];
         for err in &cases {
             let msg = format!("{err}");
@@ -1893,8 +1917,7 @@ mod tests {
     // ── SafeTensors Format Tests ────────────────────────────────────────
 
     use super::{
-        load_safetensors, load_safetensors_from_bytes, load_safetensors_metadata,
-        save_safetensors,
+        load_safetensors, load_safetensors_from_bytes, load_safetensors_metadata, save_safetensors,
     };
 
     #[test]
@@ -2022,10 +2045,7 @@ mod tests {
             loaded["layer1.weight"].contiguous_values().unwrap(),
             &[1.0, 2.0]
         );
-        assert_eq!(
-            loaded["layer1.bias"].contiguous_values().unwrap(),
-            &[0.5]
-        );
+        assert_eq!(loaded["layer1.bias"].contiguous_values().unwrap(), &[0.5]);
         assert_eq!(
             loaded["layer2.weight"].contiguous_values().unwrap(),
             &[3.0, 4.0, 5.0, 6.0]

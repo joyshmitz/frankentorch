@@ -81,7 +81,11 @@ impl TensorDataset {
         inputs: Vec<(Vec<f64>, Vec<usize>)>,
         targets: Vec<(Vec<f64>, Vec<usize>)>,
     ) -> Self {
-        assert_eq!(inputs.len(), targets.len(), "inputs and targets must have same length");
+        assert_eq!(
+            inputs.len(),
+            targets.len(),
+            "inputs and targets must have same length"
+        );
         let items = inputs
             .into_iter()
             .zip(targets)
@@ -116,7 +120,10 @@ pub struct Batch {
 impl Batch {
     /// Get a tensor by name.
     pub fn get(&self, name: &str) -> Option<TensorNodeId> {
-        self.tensors.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
+        self.tensors
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| *t)
     }
 
     /// Get the "input" tensor.
@@ -363,7 +370,11 @@ impl BatchSampler {
     }
 
     /// Create from a `SequentialSampler`.
-    pub fn from_sequential(sampler: &SequentialSampler, batch_size: usize, drop_last: bool) -> Self {
+    pub fn from_sequential(
+        sampler: &SequentialSampler,
+        batch_size: usize,
+        drop_last: bool,
+    ) -> Self {
         Self::new(sampler.indices(), batch_size, drop_last)
     }
 
@@ -547,7 +558,10 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
         // Fisher-Yates shuffle with simple LCG
         let n = self.indices.len();
         for i in (1..n).rev() {
-            self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            self.rng_state = self
+                .rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
             let j = (self.rng_state >> 33) as usize % (i + 1);
             self.indices.swap(i, j);
         }
@@ -563,7 +577,9 @@ fn collate(
     batch_size: usize,
 ) -> Result<Batch, AutogradError> {
     if samples.is_empty() {
-        return Ok(Batch { tensors: Vec::new() });
+        return Ok(Batch {
+            tensors: Vec::new(),
+        });
     }
 
     let num_tensors = samples[0].tensors.len();
@@ -576,23 +592,19 @@ fn collate(
         let sample_numel: usize = first_shape.iter().product();
         for sample in samples.iter().skip(1) {
             if sample.tensors.len() != num_tensors {
-                return Err(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "DataLoader: samples have different numbers of tensors",
-                        },
-                    ),
-                ));
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "DataLoader: samples have different numbers of tensors",
+                    },
+                )));
             }
             let (_, _, ref s_shape) = sample.tensors[tensor_idx];
             if s_shape != first_shape {
-                return Err(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "DataLoader: tensor shapes differ across samples in batch",
-                        },
-                    ),
-                ));
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "DataLoader: tensor shapes differ across samples in batch",
+                    },
+                )));
             }
         }
 
@@ -611,7 +623,9 @@ fn collate(
         batch_tensors.push((name.clone(), tensor));
     }
 
-    Ok(Batch { tensors: batch_tensors })
+    Ok(Batch {
+        tensors: batch_tensors,
+    })
 }
 
 #[cfg(test)]
@@ -651,14 +665,8 @@ mod tests {
 
     #[test]
     fn dataset_from_inputs_targets() {
-        let inputs = vec![
-            (vec![1.0, 2.0], vec![2]),
-            (vec![3.0, 4.0], vec![2]),
-        ];
-        let targets = vec![
-            (vec![0.0], vec![1]),
-            (vec![1.0], vec![1]),
-        ];
+        let inputs = vec![(vec![1.0, 2.0], vec![2]), (vec![3.0, 4.0], vec![2])];
+        let targets = vec![(vec![0.0], vec![1]), (vec![1.0], vec![1])];
         let ds = TensorDataset::from_inputs_targets(inputs, targets);
         assert_eq!(ds.len(), 2);
         let item = ds.get(1);
@@ -771,7 +779,10 @@ mod tests {
         let vals2 = session.tensor_values(batch2.input().unwrap()).unwrap();
 
         // With 20 elements, the probability of same order after shuffle is ~1/20!
-        assert_ne!(vals1, vals2, "shuffled epochs should produce different orders");
+        assert_ne!(
+            vals1, vals2,
+            "shuffled epochs should produce different orders"
+        );
     }
 
     #[test]
@@ -1080,13 +1091,19 @@ mod tests {
         let mut val_loader = DataLoader::with_indices(&ds, val_sampler.indices(), val_config);
 
         let train_batch = train_loader.next_batch(&mut session).unwrap().unwrap();
-        let train_targets = session.tensor_values(train_batch.target().unwrap()).unwrap();
+        let train_targets = session
+            .tensor_values(train_batch.target().unwrap())
+            .unwrap();
         // All train targets should be in 0..7
         assert!(train_targets.iter().all(|&v| (v as usize) < 7));
 
         let val_batch = val_loader.next_batch(&mut session).unwrap().unwrap();
         let val_targets = session.tensor_values(val_batch.target().unwrap()).unwrap();
         // All val targets should be in 7..10
-        assert!(val_targets.iter().all(|&v| (v as usize) >= 7 && (v as usize) < 10));
+        assert!(
+            val_targets
+                .iter()
+                .all(|&v| (v as usize) >= 7 && (v as usize) < 10)
+        );
     }
 }

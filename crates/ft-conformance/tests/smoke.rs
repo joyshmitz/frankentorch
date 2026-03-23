@@ -4,14 +4,14 @@ use ft_api::FrankenTorchSession;
 use ft_conformance::{
     HarnessConfig, run_autograd_scheduler_conformance, run_dispatch_conformance,
     run_optimizer_conformance, run_scalar_conformance, run_serialization_conformance, run_smoke,
-    run_tensor_comparison_conformance, run_tensor_einsum_conformance,
-    run_tensor_elementwise_cmp_conformance, run_tensor_factory_conformance,
-    run_tensor_advanced_conformance, run_tensor_indexing_conformance,
-    run_tensor_inplace_conformance, run_tensor_join_conformance,
-    run_tensor_linalg_conformance, run_tensor_loss_conformance, run_tensor_meta_conformance,
-    run_tensor_normalize_conformance, run_tensor_reduction_conformance,
-    run_tensor_scan_conformance, run_tensor_searchsorted_conformance,
-    run_tensor_shape_conformance, run_tensor_sort_conformance, run_tensor_unary_conformance,
+    run_tensor_advanced_conformance, run_tensor_comparison_conformance,
+    run_tensor_einsum_conformance, run_tensor_elementwise_cmp_conformance,
+    run_tensor_factory_conformance, run_tensor_indexing_conformance,
+    run_tensor_inplace_conformance, run_tensor_join_conformance, run_tensor_linalg_conformance,
+    run_tensor_loss_conformance, run_tensor_meta_conformance, run_tensor_normalize_conformance,
+    run_tensor_reduction_conformance, run_tensor_scan_conformance,
+    run_tensor_searchsorted_conformance, run_tensor_shape_conformance, run_tensor_sort_conformance,
+    run_tensor_unary_conformance,
 };
 use ft_core::{DType, DenseTensor, Device, ExecutionMode, TensorMeta};
 use ft_runtime::{EvidenceKind, RuntimeContext};
@@ -107,7 +107,10 @@ fn tensor_unary_fixture_executes_in_both_modes() {
     let (hardened_report, _) = run_tensor_unary_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-unary should run");
 
-    assert!(strict_report.cases_total >= 29, "expected at least 29 unary cases");
+    assert!(
+        strict_report.cases_total >= 29,
+        "expected at least 29 unary cases"
+    );
     assert_eq!(strict_report.cases_total, strict_cases.len());
     assert_eq!(strict_report.cases_total, strict_report.cases_passed);
     assert_eq!(hardened_report.cases_total, hardened_report.cases_passed);
@@ -306,9 +309,8 @@ fn tensor_comparison_fixture_executes_in_both_modes() {
     let (strict_report, strict_cases) =
         run_tensor_comparison_conformance(&cfg, ExecutionMode::Strict)
             .expect("strict tensor-comparison should run");
-    let (hardened_report, _) =
-        run_tensor_comparison_conformance(&cfg, ExecutionMode::Hardened)
-            .expect("hardened tensor-comparison should run");
+    let (hardened_report, _) = run_tensor_comparison_conformance(&cfg, ExecutionMode::Hardened)
+        .expect("hardened tensor-comparison should run");
 
     assert!(
         strict_report.cases_total >= 6,
@@ -322,9 +324,8 @@ fn tensor_comparison_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_factory_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_factory_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-factory should run");
+    let (strict_report, strict_cases) = run_tensor_factory_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-factory should run");
     let (hardened_report, _) = run_tensor_factory_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-factory should run");
 
@@ -340,9 +341,8 @@ fn tensor_factory_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_einsum_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_einsum_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-einsum should run");
+    let (strict_report, strict_cases) = run_tensor_einsum_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-einsum should run");
     let (hardened_report, _) = run_tensor_einsum_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-einsum should run");
 
@@ -361,9 +361,8 @@ fn tensor_searchsorted_fixture_executes_in_both_modes() {
     let (strict_report, strict_cases) =
         run_tensor_searchsorted_conformance(&cfg, ExecutionMode::Strict)
             .expect("strict tensor-searchsorted should run");
-    let (hardened_report, _) =
-        run_tensor_searchsorted_conformance(&cfg, ExecutionMode::Hardened)
-            .expect("hardened tensor-searchsorted should run");
+    let (hardened_report, _) = run_tensor_searchsorted_conformance(&cfg, ExecutionMode::Hardened)
+        .expect("hardened tensor-searchsorted should run");
 
     assert!(
         strict_report.cases_total >= 5,
@@ -395,9 +394,8 @@ fn tensor_reduction_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_loss_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_loss_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-loss should run");
+    let (strict_report, strict_cases) = run_tensor_loss_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-loss should run");
     let (hardened_report, _) = run_tensor_loss_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-loss should run");
 
@@ -413,9 +411,8 @@ fn tensor_loss_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_linalg_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_linalg_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-linalg should run");
+    let (strict_report, strict_cases) = run_tensor_linalg_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-linalg should run");
     let (hardened_report, _) = run_tensor_linalg_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-linalg should run");
 
@@ -468,9 +465,8 @@ fn tensor_elementwise_cmp_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_shape_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_shape_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-shape should run");
+    let (strict_report, strict_cases) = run_tensor_shape_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-shape should run");
     let (hardened_report, _) = run_tensor_shape_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-shape should run");
 
@@ -486,9 +482,8 @@ fn tensor_shape_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_scan_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_scan_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-scan should run");
+    let (strict_report, strict_cases) = run_tensor_scan_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-scan should run");
     let (hardened_report, _) = run_tensor_scan_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-scan should run");
 
@@ -504,9 +499,8 @@ fn tensor_scan_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_join_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_join_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-join should run");
+    let (strict_report, strict_cases) = run_tensor_join_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-join should run");
     let (hardened_report, _) = run_tensor_join_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-join should run");
 
@@ -522,9 +516,8 @@ fn tensor_join_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_sort_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_sort_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-sort should run");
+    let (strict_report, strict_cases) = run_tensor_sort_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-sort should run");
     let (hardened_report, _) = run_tensor_sort_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-sort should run");
 
@@ -558,9 +551,8 @@ fn tensor_indexing_fixture_executes_in_both_modes() {
 #[test]
 fn tensor_inplace_fixture_executes_in_both_modes() {
     let cfg = HarnessConfig::default_paths();
-    let (strict_report, strict_cases) =
-        run_tensor_inplace_conformance(&cfg, ExecutionMode::Strict)
-            .expect("strict tensor-inplace should run");
+    let (strict_report, strict_cases) = run_tensor_inplace_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-inplace should run");
     let (hardened_report, _) = run_tensor_inplace_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened tensor-inplace should run");
 

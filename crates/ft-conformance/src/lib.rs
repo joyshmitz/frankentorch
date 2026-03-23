@@ -1617,8 +1617,11 @@ pub fn run_tensor_searchsorted_conformance(
         case_reports.push(run_tensor_searchsorted_case(case, mode)?);
     }
 
-    let (cases_total, cases_passed) =
-        summarize_passes(case_reports.iter().map(TensorSearchsortedCaseReport::passed));
+    let (cases_total, cases_passed) = summarize_passes(
+        case_reports
+            .iter()
+            .map(TensorSearchsortedCaseReport::passed),
+    );
 
     let report = HarnessReport {
         suite: "tensor_searchsorted",
@@ -1744,7 +1747,9 @@ pub fn run_tensor_elementwise_cmp_conformance(
     config: &HarnessConfig,
     mode: ExecutionMode,
 ) -> Result<(HarnessReport, Vec<TensorElementwiseCmpCaseReport>), String> {
-    let fixture_path = config.fixture_root.join("tensor_elementwise_cmp_cases.json");
+    let fixture_path = config
+        .fixture_root
+        .join("tensor_elementwise_cmp_cases.json");
     let fixture: TensorElementwiseCmpFixtureFile = load_fixture(&fixture_path)?;
 
     let mut case_reports = Vec::with_capacity(fixture.cases.len());
@@ -1752,8 +1757,11 @@ pub fn run_tensor_elementwise_cmp_conformance(
         case_reports.push(run_tensor_elementwise_cmp_case(case, mode)?);
     }
 
-    let (cases_total, cases_passed) =
-        summarize_passes(case_reports.iter().map(TensorElementwiseCmpCaseReport::passed));
+    let (cases_total, cases_passed) = summarize_passes(
+        case_reports
+            .iter()
+            .map(TensorElementwiseCmpCaseReport::passed),
+    );
 
     let report = HarnessReport {
         suite: "tensor_elementwise_cmp",
@@ -4627,11 +4635,7 @@ fn run_tensor_unary_case(
         case.expected_grad.as_slice(),
         tolerance,
     );
-    let outcome = if output_ok && grad_ok {
-        "pass"
-    } else {
-        "fail"
-    };
+    let outcome = if output_ok && grad_ok { "pass" } else { "fail" };
     let reason_code = if outcome == "pass" {
         "tensor_unary_parity_ok"
     } else {
@@ -4639,10 +4643,7 @@ fn run_tensor_unary_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -4710,10 +4711,7 @@ fn run_tensor_comparison_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -4855,10 +4853,7 @@ fn run_tensor_factory_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5026,10 +5021,7 @@ fn run_tensor_searchsorted_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "right".to_string(),
-        serde_json::Value::Bool(case.right),
-    );
+    extra_fields.insert("right".to_string(), serde_json::Value::Bool(case.right));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5145,10 +5137,7 @@ fn run_tensor_reduction_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5234,10 +5223,7 @@ fn run_tensor_loss_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5365,8 +5351,7 @@ fn run_tensor_linalg_case(
                 let actual_values = session
                     .tensor_values(out)
                     .map_err(|e| format!("value read failed for '{}': {e}", case.name))?;
-                actual_values.len() == 1
-                    && (actual_values[0] - expected_scalar).abs() <= tolerance
+                actual_values.len() == 1 && (actual_values[0] - expected_scalar).abs() <= tolerance
             } else {
                 let expected_output = case.expected_output.as_ref().ok_or_else(|| {
                     format!(
@@ -5399,10 +5384,7 @@ fn run_tensor_linalg_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5505,10 +5487,7 @@ fn run_tensor_normalize_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5578,10 +5557,7 @@ fn run_tensor_elementwise_cmp_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5621,112 +5597,89 @@ fn run_tensor_shape_case(
         .tensor_variable(case.input.clone(), case.input_shape.clone(), false)
         .map_err(|e| format!("input tensor build failed for '{}': {e}", case.name))?;
 
-    let out = match case.op.as_str() {
-        "reshape" => {
-            let new_shape: Vec<usize> = serde_json::from_value(
-                case.params.get("new_shape").cloned().ok_or_else(|| {
-                    format!("reshape case '{}' missing new_shape param", case.name)
-                })?,
-            )
-            .map_err(|e| format!("invalid new_shape for '{}': {e}", case.name))?;
-            session.tensor_reshape(input, new_shape)
-        }
-        "squeeze" => {
-            let dim: usize = serde_json::from_value(
-                case.params
-                    .get("dim")
-                    .cloned()
-                    .ok_or_else(|| format!("squeeze case '{}' missing dim param", case.name))?,
-            )
-            .map_err(|e| format!("invalid dim for '{}': {e}", case.name))?;
-            session.tensor_squeeze(input, dim)
-        }
-        "unsqueeze" => {
-            let dim: usize = serde_json::from_value(
-                case.params
-                    .get("dim")
-                    .cloned()
-                    .ok_or_else(|| {
+    let out =
+        match case.op.as_str() {
+            "reshape" => {
+                let new_shape: Vec<usize> =
+                    serde_json::from_value(case.params.get("new_shape").cloned().ok_or_else(
+                        || format!("reshape case '{}' missing new_shape param", case.name),
+                    )?)
+                    .map_err(|e| format!("invalid new_shape for '{}': {e}", case.name))?;
+                session.tensor_reshape(input, new_shape)
+            }
+            "squeeze" => {
+                let dim: usize =
+                    serde_json::from_value(case.params.get("dim").cloned().ok_or_else(|| {
+                        format!("squeeze case '{}' missing dim param", case.name)
+                    })?)
+                    .map_err(|e| format!("invalid dim for '{}': {e}", case.name))?;
+                session.tensor_squeeze(input, dim)
+            }
+            "unsqueeze" => {
+                let dim: usize =
+                    serde_json::from_value(case.params.get("dim").cloned().ok_or_else(|| {
                         format!("unsqueeze case '{}' missing dim param", case.name)
-                    })?,
-            )
-            .map_err(|e| format!("invalid dim for '{}': {e}", case.name))?;
-            session.tensor_unsqueeze(input, dim)
-        }
-        "transpose" => {
-            let dim0: usize = serde_json::from_value(
-                case.params
-                    .get("dim0")
-                    .cloned()
-                    .ok_or_else(|| {
+                    })?)
+                    .map_err(|e| format!("invalid dim for '{}': {e}", case.name))?;
+                session.tensor_unsqueeze(input, dim)
+            }
+            "transpose" => {
+                let dim0: usize =
+                    serde_json::from_value(case.params.get("dim0").cloned().ok_or_else(|| {
                         format!("transpose case '{}' missing dim0 param", case.name)
-                    })?,
-            )
-            .map_err(|e| format!("invalid dim0 for '{}': {e}", case.name))?;
-            let dim1: usize = serde_json::from_value(
-                case.params
-                    .get("dim1")
-                    .cloned()
-                    .ok_or_else(|| {
+                    })?)
+                    .map_err(|e| format!("invalid dim0 for '{}': {e}", case.name))?;
+                let dim1: usize =
+                    serde_json::from_value(case.params.get("dim1").cloned().ok_or_else(|| {
                         format!("transpose case '{}' missing dim1 param", case.name)
-                    })?,
-            )
-            .map_err(|e| format!("invalid dim1 for '{}': {e}", case.name))?;
-            session.tensor_transpose(input, dim0, dim1)
-        }
-        "permute" => {
-            let dims: Vec<usize> = serde_json::from_value(
-                case.params
-                    .get("dims")
-                    .cloned()
-                    .ok_or_else(|| {
+                    })?)
+                    .map_err(|e| format!("invalid dim1 for '{}': {e}", case.name))?;
+                session.tensor_transpose(input, dim0, dim1)
+            }
+            "permute" => {
+                let dims: Vec<usize> =
+                    serde_json::from_value(case.params.get("dims").cloned().ok_or_else(|| {
                         format!("permute case '{}' missing dims param", case.name)
-                    })?,
-            )
-            .map_err(|e| format!("invalid dims for '{}': {e}", case.name))?;
-            session.tensor_permute(input, dims)
+                    })?)
+                    .map_err(|e| format!("invalid dims for '{}': {e}", case.name))?;
+                session.tensor_permute(input, dims)
+            }
+            "flatten" => {
+                let start_dim: usize =
+                    serde_json::from_value(case.params.get("start_dim").cloned().ok_or_else(
+                        || format!("flatten case '{}' missing start_dim param", case.name),
+                    )?)
+                    .map_err(|e| format!("invalid start_dim for '{}': {e}", case.name))?;
+                let end_dim: usize =
+                    serde_json::from_value(case.params.get("end_dim").cloned().ok_or_else(
+                        || format!("flatten case '{}' missing end_dim param", case.name),
+                    )?)
+                    .map_err(|e| format!("invalid end_dim for '{}': {e}", case.name))?;
+                session.tensor_flatten(input, start_dim, end_dim)
+            }
+            "narrow" => {
+                let dim: usize = serde_json::from_value(
+                    case.params
+                        .get("dim")
+                        .cloned()
+                        .ok_or_else(|| format!("narrow case '{}' missing dim param", case.name))?,
+                )
+                .map_err(|e| format!("invalid dim for '{}': {e}", case.name))?;
+                let start: usize =
+                    serde_json::from_value(case.params.get("start").cloned().ok_or_else(|| {
+                        format!("narrow case '{}' missing start param", case.name)
+                    })?)
+                    .map_err(|e| format!("invalid start for '{}': {e}", case.name))?;
+                let length: usize =
+                    serde_json::from_value(case.params.get("length").cloned().ok_or_else(
+                        || format!("narrow case '{}' missing length param", case.name),
+                    )?)
+                    .map_err(|e| format!("invalid length for '{}': {e}", case.name))?;
+                session.tensor_narrow(input, dim, start, length)
+            }
+            _ => return Err(format!("unsupported shape op '{}'", case.op)),
         }
-        "flatten" => {
-            let start_dim: usize = serde_json::from_value(
-                case.params.get("start_dim").cloned().ok_or_else(|| {
-                    format!("flatten case '{}' missing start_dim param", case.name)
-                })?,
-            )
-            .map_err(|e| format!("invalid start_dim for '{}': {e}", case.name))?;
-            let end_dim: usize = serde_json::from_value(
-                case.params.get("end_dim").cloned().ok_or_else(|| {
-                    format!("flatten case '{}' missing end_dim param", case.name)
-                })?,
-            )
-            .map_err(|e| format!("invalid end_dim for '{}': {e}", case.name))?;
-            session.tensor_flatten(input, start_dim, end_dim)
-        }
-        "narrow" => {
-            let dim: usize = serde_json::from_value(
-                case.params
-                    .get("dim")
-                    .cloned()
-                    .ok_or_else(|| format!("narrow case '{}' missing dim param", case.name))?,
-            )
-            .map_err(|e| format!("invalid dim for '{}': {e}", case.name))?;
-            let start: usize = serde_json::from_value(
-                case.params
-                    .get("start")
-                    .cloned()
-                    .ok_or_else(|| format!("narrow case '{}' missing start param", case.name))?,
-            )
-            .map_err(|e| format!("invalid start for '{}': {e}", case.name))?;
-            let length: usize = serde_json::from_value(
-                case.params.get("length").cloned().ok_or_else(|| {
-                    format!("narrow case '{}' missing length param", case.name)
-                })?,
-            )
-            .map_err(|e| format!("invalid length for '{}': {e}", case.name))?;
-            session.tensor_narrow(input, dim, start, length)
-        }
-        _ => return Err(format!("unsupported shape op '{}'", case.op)),
-    }
-    .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
+        .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
     let actual_output = session
         .tensor_values(out)
@@ -5747,10 +5700,7 @@ fn run_tensor_shape_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5803,9 +5753,7 @@ fn run_tensor_inplace_case(
                 .ok_or_else(|| format!("{} case '{}' missing other_shape", case.op, case.name))?;
             let other = session
                 .tensor_variable(other_data.clone(), other_shape.clone(), false)
-                .map_err(|e| {
-                    format!("other tensor build failed for '{}': {e}", case.name)
-                })?;
+                .map_err(|e| format!("other tensor build failed for '{}': {e}", case.name))?;
             match case.op.as_str() {
                 "add_" => session.tensor_add_(target, other),
                 "sub_" => session.tensor_sub_(target, other),
@@ -5845,10 +5793,7 @@ fn run_tensor_inplace_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -5948,10 +5893,7 @@ fn run_tensor_advanced_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -6055,10 +5997,7 @@ fn run_tensor_sort_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -6132,9 +6071,7 @@ fn run_tensor_indexing_case(
             let index_shape = case
                 .index_shape
                 .as_ref()
-                .ok_or_else(|| {
-                    format!("index_select case '{}' missing index_shape", case.name)
-                })?;
+                .ok_or_else(|| format!("index_select case '{}' missing index_shape", case.name))?;
             let indices = session
                 .tensor_variable(index_data.clone(), index_shape.clone(), false)
                 .map_err(|e| format!("index tensor build failed for '{}': {e}", case.name))?;
@@ -6185,9 +6122,7 @@ fn run_tensor_indexing_case(
             let index_shape = case
                 .index_shape
                 .as_ref()
-                .ok_or_else(|| {
-                    format!("scatter_add case '{}' missing index_shape", case.name)
-                })?;
+                .ok_or_else(|| format!("scatter_add case '{}' missing index_shape", case.name))?;
             let index = session
                 .tensor_variable(index_data.clone(), index_shape.clone(), false)
                 .map_err(|e| format!("index tensor build failed for '{}': {e}", case.name))?;
@@ -6198,9 +6133,7 @@ fn run_tensor_indexing_case(
             let src_shape = case
                 .src_shape
                 .as_ref()
-                .ok_or_else(|| {
-                    format!("scatter_add case '{}' missing src_shape", case.name)
-                })?;
+                .ok_or_else(|| format!("scatter_add case '{}' missing src_shape", case.name))?;
             let src = session
                 .tensor_variable(src_data.clone(), src_shape.clone(), false)
                 .map_err(|e| format!("src tensor build failed for '{}': {e}", case.name))?;
@@ -6217,9 +6150,7 @@ fn run_tensor_indexing_case(
             let mask_shape = case
                 .mask_shape
                 .as_ref()
-                .ok_or_else(|| {
-                    format!("masked_fill case '{}' missing mask_shape", case.name)
-                })?;
+                .ok_or_else(|| format!("masked_fill case '{}' missing mask_shape", case.name))?;
             let mask = session
                 .tensor_variable(mask_data.clone(), mask_shape.clone(), false)
                 .map_err(|e| format!("mask tensor build failed for '{}': {e}", case.name))?;
@@ -6236,14 +6167,10 @@ fn run_tensor_indexing_case(
             let cond_shape = case
                 .condition_shape
                 .as_ref()
-                .ok_or_else(|| {
-                    format!("where case '{}' missing condition_shape", case.name)
-                })?;
+                .ok_or_else(|| format!("where case '{}' missing condition_shape", case.name))?;
             let condition = session
                 .tensor_variable(cond_data.clone(), cond_shape.clone(), false)
-                .map_err(|e| {
-                    format!("condition tensor build failed for '{}': {e}", case.name)
-                })?;
+                .map_err(|e| format!("condition tensor build failed for '{}': {e}", case.name))?;
             let x_data = case
                 .x
                 .as_ref()
@@ -6296,10 +6223,7 @@ fn run_tensor_indexing_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -6385,10 +6309,7 @@ fn run_tensor_scan_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
@@ -6499,10 +6420,7 @@ fn run_tensor_join_case(
     };
 
     let mut extra_fields = std::collections::BTreeMap::new();
-    extra_fields.insert(
-        "op".to_string(),
-        serde_json::Value::String(case.op.clone()),
-    );
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
     extra_fields.insert(
         "runtime_evidence".to_string(),
         runtime_evidence_field(session.evidence()),
