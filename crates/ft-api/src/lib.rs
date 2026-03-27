@@ -808,6 +808,58 @@ impl FrankenTorchSession {
         self.tensor_mul(input, mask_tensor)
     }
 
+    /// Return the indices of the lower triangular part of a (row, col) matrix.
+    ///
+    /// Equivalent to `torch.tril_indices(row, col, offset=0)`.
+    /// Returns a 2-D tensor of shape `[2, N]` where row 0 contains row indices
+    /// and row 1 contains column indices.
+    pub fn tril_indices(
+        &mut self,
+        row: usize,
+        col: usize,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        for i in 0..row {
+            for j in 0..col {
+                if (j as i64) <= (i as i64) + offset {
+                    rows.push(i as f64);
+                    cols.push(j as f64);
+                }
+            }
+        }
+        let n = rows.len();
+        rows.extend(cols);
+        self.tensor_variable(rows, vec![2, n], false)
+    }
+
+    /// Return the indices of the upper triangular part of a (row, col) matrix.
+    ///
+    /// Equivalent to `torch.triu_indices(row, col, offset=0)`.
+    /// Returns a 2-D tensor of shape `[2, N]` where row 0 contains row indices
+    /// and row 1 contains column indices.
+    pub fn triu_indices(
+        &mut self,
+        row: usize,
+        col: usize,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        for i in 0..row {
+            for j in 0..col {
+                if (j as i64) >= (i as i64) + offset {
+                    rows.push(i as f64);
+                    cols.push(j as f64);
+                }
+            }
+        }
+        let n = rows.len();
+        rows.extend(cols);
+        self.tensor_variable(rows, vec![2, n], false)
+    }
+
     /// Create a tensor filled with uniform random values in [0, 1).
     pub fn rand(
         &mut self,
@@ -4930,6 +4982,142 @@ impl FrankenTorchSession {
             result.push(t);
         }
         Ok(result)
+    }
+
+    /// Count the number of non-zero elements in a tensor.
+    ///
+    /// Equivalent to `torch.count_nonzero(input)`. Returns a scalar tensor.
+    pub fn tensor_count_nonzero(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = self.tensor_values(input)?;
+        let count = vals.iter().filter(|&&v| v != 0.0).count() as f64;
+        self.tensor_variable(vec![count], vec![1], false)
+    }
+
+    /// Compute the n-th discrete difference along the given dimension.
+    ///
+    /// Equivalent to `torch.diff(input, n=1, dim=-1)`.
+    /// For n=1: `out[i] = input[i+1] - input[i]`.
+    pub fn tensor_diff(
+        &mut self,
+        input: TensorNodeId,
+        n: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if n == 0 {
+            return Ok(input);
+        }
+        let mut current = input;
+        for _ in 0..n {
+            let vals = self.tensor_values(current)?;
+            let shape = self.tensor_shape(current)?;
+            if vals.is_empty() || vals.len() < 2 {
+                return self.tensor_variable(vec![], vec![0], false);
+            }
+            // Flatten diff for 1-D; for multi-dim diff along last axis
+            let last_dim = *shape.last().unwrap_or(&0);
+            if last_dim < 2 {
+                return self.tensor_variable(vec![], vec![0], false);
+            }
+            let batch: usize = vals.len() / last_dim;
+            let new_last = last_dim - 1;
+            let mut result = Vec::with_capacity(batch * new_last);
+            for b in 0..batch {
+                let base = b * last_dim;
+                for i in 0..new_last {
+                    result.push(vals[base + i + 1] - vals[base + i]);
+                }
+            }
+            let mut new_shape = shape.clone();
+            *new_shape.last_mut().unwrap() = new_last;
+            current = self.tensor_variable(result, new_shape, false)?;
+        }
+        Ok(current)
+    }
+
+    /// Cumulative maximum along flattened tensor.
+    ///
+    /// Returns `(values, indices)` where values[i] = max(input[0..=i])
+    /// and indices[i] is the index of that maximum.
+    pub fn tensor_cummax(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let vals = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        let n = vals.len();
+        let mut cum_vals = Vec::with_capacity(n);
+        let mut cum_idx = Vec::with_capacity(n);
+        let mut max_val = f64::NEG_INFINITY;
+        let mut max_idx = 0usize;
+        for (i, &v) in vals.iter().enumerate() {
+            if v > max_val {
+                max_val = v;
+                max_idx = i;
+            }
+            cum_vals.push(max_val);
+            cum_idx.push(max_idx as f64);
+        }
+        let values = self.tensor_variable(cum_vals, shape.clone(), false)?;
+        let indices = self.tensor_variable(cum_idx, shape, false)?;
+        Ok((values, indices))
+    }
+
+    /// Cumulative minimum along flattened tensor.
+    ///
+    /// Returns `(values, indices)` where values[i] = min(input[0..=i])
+    /// and indices[i] is the index of that minimum.
+    pub fn tensor_cummin(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let vals = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        let n = vals.len();
+        let mut cum_vals = Vec::with_capacity(n);
+        let mut cum_idx = Vec::with_capacity(n);
+        let mut min_val = f64::INFINITY;
+        let mut min_idx = 0usize;
+        for (i, &v) in vals.iter().enumerate() {
+            if v < min_val {
+                min_val = v;
+                min_idx = i;
+            }
+            cum_vals.push(min_val);
+            cum_idx.push(min_idx as f64);
+        }
+        let values = self.tensor_variable(cum_vals, shape.clone(), false)?;
+        let indices = self.tensor_variable(cum_idx, shape, false)?;
+        Ok((values, indices))
+    }
+
+    /// Repeat each element of a 1-D tensor a given number of times.
+    ///
+    /// Equivalent to `torch.repeat_interleave(input, repeats)`.
+    /// `repeats` is a scalar: each element is repeated that many times.
+    pub fn tensor_repeat_interleave(
+        &mut self,
+        input: TensorNodeId,
+        repeats: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "repeat_interleave: input must be 1-D",
+                },
+            )));
+        }
+        let mut result = Vec::with_capacity(vals.len() * repeats);
+        for &v in &vals {
+            for _ in 0..repeats {
+                result.push(v);
+            }
+        }
+        let out_len = result.len();
+        self.tensor_variable(result, vec![out_len], false)
     }
 
     /// Selects elements from input where mask is non-zero, returning a 1-D tensor.
@@ -14731,6 +14919,113 @@ mod tests {
         assert!((vals[1] - 2.0).abs() < 1e-12); // 1.5, 100
     }
 
+    // ── count_nonzero tests ──────────────────────────────────────────
+
+    #[test]
+    fn count_nonzero_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 0.0, 3.0, 0.0, 5.0], vec![6], false)
+            .unwrap();
+        let out = s.tensor_count_nonzero(t).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn count_nonzero_all_zero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_count_nonzero(t).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!(vals[0].abs() < 1e-10);
+    }
+
+    // ── diff tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn diff_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 3.0, 6.0, 10.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_diff(t, 1).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn diff_n2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 3.0, 6.0, 10.0], vec![4], false)
+            .unwrap();
+        // diff twice: [2,3,4] -> [1,1]
+        let out = s.tensor_diff(t, 2).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn diff_n0_is_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let out = s.tensor_diff(t, 0).unwrap();
+        assert_eq!(out, t);
+    }
+
+    // ── cummax / cummin tests ──────────────────────────────────────────
+
+    #[test]
+    fn cummax_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 3.0, 2.0, 5.0, 4.0], vec![5], false)
+            .unwrap();
+        let (vals_id, idx_id) = s.tensor_cummax(t).unwrap();
+        let vals = s.tensor_values(vals_id).unwrap();
+        let idx = s.tensor_values(idx_id).unwrap();
+        assert_eq!(vals, vec![1.0, 3.0, 3.0, 5.0, 5.0]);
+        assert_eq!(idx, vec![0.0, 1.0, 1.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn cummin_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![5.0, 3.0, 4.0, 1.0, 2.0], vec![5], false)
+            .unwrap();
+        let (vals_id, idx_id) = s.tensor_cummin(t).unwrap();
+        let vals = s.tensor_values(vals_id).unwrap();
+        let idx = s.tensor_values(idx_id).unwrap();
+        assert_eq!(vals, vec![5.0, 3.0, 3.0, 1.0, 1.0]);
+        assert_eq!(idx, vec![0.0, 1.0, 1.0, 3.0, 3.0]);
+    }
+
+    // ── repeat_interleave tests ────────────────────────────────────────
+
+    #[test]
+    fn repeat_interleave_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_repeat_interleave(t, 2).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn repeat_interleave_one() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let out = s.tensor_repeat_interleave(t, 1).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0]);
+    }
+
     // ── block_diag tests ───────────────────────────────────────────────
 
     #[test]
@@ -15577,6 +15872,56 @@ mod tests {
         for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
             assert!((v - e).abs() < 1e-12, "diag[{i}] = {v}, expected {e}");
         }
+    }
+
+    // ── tril_indices / triu_indices tests ─────────────────────────────
+
+    #[test]
+    fn tril_indices_3x3() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let out = s.tril_indices(3, 3, 0).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        // Lower triangle of 3x3: (0,0),(1,0),(1,1),(2,0),(2,1),(2,2) = 6 entries
+        assert_eq!(shape, vec![2, 6]);
+        let vals = s.tensor_values(out).unwrap();
+        // Row indices: [0,1,1,2,2,2], Col indices: [0,0,1,0,1,2]
+        assert_eq!(&vals[0..6], &[0.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+        assert_eq!(&vals[6..12], &[0.0, 0.0, 1.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn triu_indices_3x3() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let out = s.triu_indices(3, 3, 0).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        // Upper triangle of 3x3: (0,0),(0,1),(0,2),(1,1),(1,2),(2,2) = 6 entries
+        assert_eq!(shape, vec![2, 6]);
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(&vals[0..6], &[0.0, 0.0, 0.0, 1.0, 1.0, 2.0]);
+        assert_eq!(&vals[6..12], &[0.0, 1.0, 2.0, 1.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn tril_indices_with_offset() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // offset=1 includes one super-diagonal
+        let out = s.tril_indices(3, 3, 1).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        // Lower + 1 super: 6 + 2 (the (0,1) and (1,2) entries) = 8... actually:
+        // (0,0),(0,1),(1,0),(1,1),(1,2),(2,0),(2,1),(2,2) = 8
+        assert_eq!(shape[0], 2);
+        assert_eq!(shape[1], 8);
+    }
+
+    #[test]
+    fn triu_indices_with_negative_offset() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // offset=-1: strictly above sub-diagonal
+        let out = s.triu_indices(3, 3, -1).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        // (0,0),(0,1),(0,2),(1,0),(1,1),(1,2),(2,1),(2,2) = 8
+        assert_eq!(shape[0], 2);
+        assert_eq!(shape[1], 8);
     }
 
     // ── tensordot / kron tests (bd-2klp.8) ────────────────────────────
