@@ -33,9 +33,9 @@ This project uses four pervasive disciplines:
 
 ## Current State
 
-- project charter docs established
-- legacy oracle cloned:
-  - /dp/frankentorch/legacy_pytorch_code/pytorch
+- workspace scaffolded with 12 Rust crates under `crates/`
+- deterministic autograd, CPU kernels, serialization, conformance harnesses, and higher-level nn/optim/data layers are all present in-tree
+- phase2c packet artifacts and replay/evidence ledgers are tracked under `artifacts/phase2c/`
 
 ## Delivery Sequencing (Not Scope Reduction)
 
@@ -43,7 +43,30 @@ Implementation proceeds in packetized waves (`FT-P2C-*`) to control risk and imp
 
 ## Architecture Direction
 
-tensor API -> dispatcher -> device kernels -> autograd engine -> nn and optimizer stack
+`ft-api` session facade -> `ft-autograd` tape/graph engine -> `ft-dispatch` routing/schema surfaces -> `ft-kernel-cpu` execution
+
+Supporting layers:
+- `ft-core`: tensor metadata, storage types, dtype/shape/stride rules, errors
+- `ft-device`: device identifiers and compatibility guards
+- `ft-serialize`: deterministic state-dict and tensor interchange formats
+- `ft-runtime`: DAC evidence ledgers and optional runtime integrations
+- `ft-nn`, `ft-optim`, `ft-data`: higher-level model, optimizer, and dataset abstractions
+- `ft-conformance`: differential, e2e, durability, and packet-level verification harnesses
+
+## Workspace Crates
+
+- `crates/ft-core`: zero-dependency tensor/value substrate
+- `crates/ft-dispatch`: operator schema modeling and device/kernel dispatch routing
+- `crates/ft-kernel-cpu`: concrete CPU implementations for tensor operators
+- `crates/ft-autograd`: deterministic backward graph execution and gradient accumulation
+- `crates/ft-device`: device topology and compatibility checks
+- `crates/ft-serialize`: tensor/state serialization and interchange
+- `crates/ft-api`: public `FrankenTorchSession` API surface
+- `crates/ft-conformance`: oracle-driven differential and forensic validation binaries/tests
+- `crates/ft-runtime`: DAC runtime evidence structures and feature-gated integrations
+- `crates/ft-nn`: neural-network modules and layers
+- `crates/ft-optim`: optimizers such as SGD, Adam, and AdamW
+- `crates/ft-data`: dataset and dataloader primitives
 
 ## Compatibility and Security Stance
 
@@ -64,8 +87,10 @@ Maintain deterministic gradient accumulation, alias/versioning rules, and backwa
 
 ## Conformance + E2E Forensics
 
+For agent-heavy or shared-host workflows, prefer offloading these commands with `rch exec -- ...`.
+
 - Run packet-side conformance:
-  - `cargo test -p ft-conformance -- --nocapture`
+  - `rch exec -- cargo test -p ft-conformance -- --nocapture`
 - Versioned user workflow scenario corpus:
   - `artifacts/phase2c/USER_WORKFLOW_SCENARIO_CORPUS_V1.json`
 - Scenario gap ledger (explicit non-covered branches + follow-up beads):
@@ -73,26 +98,26 @@ Maintain deterministic gradient accumulation, alias/versioning rules, and backwa
 - Unit/E2E/logging crosswalk (machine-diffable):
   - `artifacts/phase2c/UNIT_E2E_LOGGING_CROSSWALK_V1.json`
 - Emit structured e2e forensic JSONL logs:
-  - `cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --output artifacts/phase2c/e2e_forensics/e2e_matrix.jsonl`
+  - `rch exec -- cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --output artifacts/phase2c/e2e_forensics/e2e_matrix.jsonl`
 - Emit full golden-journey matrix and derive coverage summary:
-  - `cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --output artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl`
+  - `rch exec -- cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --output artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl`
   - `jq -s '{schema_version:\"ft-user-journey-coverage-v1\", generated_on:\"2026-02-14\", source:\"artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl\", total_entries:length, total_failed: map(select(.outcome != \"pass\")) | length, suites:(map(.suite_id)|unique), packets:(map(.packet_id)|unique), reason_codes:(map(.reason_code)|unique), scenario_ids:(map(.scenario_id)|unique)}' artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl > artifacts/phase2c/e2e_forensics/golden_journey_coverage_v1.json`
 - Packet-scoped e2e forensic slice:
-  - `cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-004 --output artifacts/phase2c/e2e_forensics/ft-p2c-004.jsonl`
+  - `rch exec -- cargo run -p ft-conformance --bin run_e2e_matrix -- --mode both --packet FT-P2C-004 --output artifacts/phase2c/e2e_forensics/ft-p2c-004.jsonl`
 - Triage failed forensic entries into replay-ready crash incidents:
-  - `cargo run -p ft-conformance --bin triage_forensics_failures -- --input artifacts/phase2c/e2e_forensics/e2e_matrix.jsonl --output artifacts/phase2c/e2e_forensics/crash_triage_v1.json`
+  - `rch exec -- cargo run -p ft-conformance --bin triage_forensics_failures -- --input artifacts/phase2c/e2e_forensics/e2e_matrix.jsonl --output artifacts/phase2c/e2e_forensics/crash_triage_v1.json`
 - Build failure forensics artifact index (unit/differential/e2e/perf/RaptorQ link map):
-  - `cargo run -p ft-conformance --bin build_failure_forensics_index -- --e2e artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl --triage artifacts/phase2c/e2e_forensics/crash_triage_full_v1.json --output artifacts/phase2c/e2e_forensics/failure_forensics_index_v1.json`
+  - `rch exec -- cargo run -p ft-conformance --bin build_failure_forensics_index -- --e2e artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl --triage artifacts/phase2c/e2e_forensics/crash_triage_full_v1.json --output artifacts/phase2c/e2e_forensics/failure_forensics_index_v1.json`
 - Run reliability budgets gate (coverage floors + flake budgets):
-  - `cargo run -p ft-conformance --bin check_reliability_budgets -- --policy artifacts/phase2c/RELIABILITY_BUDGET_POLICY_V1.json --e2e artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl --output artifacts/phase2c/e2e_forensics/reliability_gate_report_v1.json`
+  - `rch exec -- cargo run -p ft-conformance --bin check_reliability_budgets -- --policy artifacts/phase2c/RELIABILITY_BUDGET_POLICY_V1.json --e2e artifacts/phase2c/e2e_forensics/e2e_matrix_full_v1.jsonl --output artifacts/phase2c/e2e_forensics/reliability_gate_report_v1.json`
 - Run RaptorQ durability automation (sidecars + scrub + decode-event ledger):
-  - `cargo run -p ft-conformance --bin run_raptorq_durability_pipeline`
+  - `rch exec -- cargo run -p ft-conformance --bin run_raptorq_durability_pipeline`
   - outputs:
     - `artifacts/phase2c/RAPTORQ_REPAIR_SYMBOL_MANIFEST_V1.json`
     - `artifacts/phase2c/RAPTORQ_INTEGRITY_SCRUB_REPORT_V1.json`
     - `artifacts/phase2c/RAPTORQ_DECODE_PROOF_EVENTS_V1.json`
 - Validate packet + global durability gates (includes RaptorQ global artifacts):
-  - `cargo run -p ft-conformance --bin validate_phase2c_artifacts`
+  - `rch exec -- cargo run -p ft-conformance --bin validate_phase2c_artifacts`
 - Reliability policy + workflow contracts:
   - `artifacts/phase2c/RELIABILITY_BUDGET_POLICY_V1.json`
   - `artifacts/phase2c/RELIABILITY_GATE_WORKFLOW_V1.md`
@@ -103,11 +128,11 @@ Maintain deterministic gradient accumulation, alias/versioning rules, and backwa
 
 ## Next Steps
 
-1. Scaffold Cargo workspace and crate map.
-2. Expand from the first shipped vertical slice through parity-closure packets until all intentional parity gaps are closed.
-3. Establish differential conformance harness vs legacy oracle.
-4. Record baseline benchmarks and wire regression gates.
-5. Add RaptorQ sidecar durability for persistent evidence artifacts.
+1. Expand packet coverage and close the remaining parity gaps against the PyTorch behavioral oracle.
+2. Strengthen differential conformance, adversarial fixtures, and replay evidence for higher-level APIs.
+3. Broaden backend/runtime integration beyond the current CPU-first vertical slice without weakening DAC guarantees.
+4. Keep performance work proof-backed: baseline, optimize one lever, re-run conformance, and publish delta artifacts.
+5. Continue hardening durability and forensic automation around long-lived phase2c artifacts.
 
 ## Porting Artifact Set
 
