@@ -17,7 +17,7 @@ Deterministic Autograd Contract (DAC): replayable gradient graph execution with 
 
 Legacy oracle:
 
-- /dp/frankentorch/legacy_pytorch_code/pytorch
+- typical local checkout when present: /dp/frankentorch/legacy_pytorch_code/pytorch
 - upstream: https://github.com/pytorch/pytorch
 
 ## 1. Product Thesis
@@ -37,19 +37,21 @@ Temporary sequencing policy:
 
 ## 3. Architecture Blueprint
 
-tensor API -> dispatcher -> device kernels -> autograd engine -> nn and optimizer stack
+public session/api -> autograd tape + DAC evidence -> dispatch/schema routing -> CPU kernel execution -> nn/optim/data layers
 
-Planned crate families:
-- ft-types
-- ft-tensor
+Current workspace crate families:
+- ft-core
+- ft-api
 - ft-dispatch
+- ft-kernel-cpu
 - ft-autograd
-- ft-ops
+- ft-device
 - ft-nn
 - ft-optim
+- ft-data
 - ft-serialize
+- ft-runtime
 - ft-conformance
-- frankentorch
 
 ## 4. Compatibility Model (frankenlibc/frankenfs-inspired)
 

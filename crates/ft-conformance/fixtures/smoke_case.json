@@ -1,5 +1,5 @@
 {
   "suite": "smoke",
-  "oracle": "legacy_pytorch_code/pytorch",
+  "oracle": "legacy_pytorch_code/pytorch (default local mirror; override with FT_LEGACY_ORACLE_ROOT)",
   "notes": "Bootstrap fixture for first runnable conformance harness"
 }

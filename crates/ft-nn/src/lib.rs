@@ -3475,6 +3475,250 @@ impl Module for Threshold {
     }
 }
 
+/// Scaled Exponential Linear Unit (SELU).
+///
+/// `f(x) = scale * (max(0,x) + min(0, alpha*(exp(x)-1)))`
+/// where scale ≈ 1.0507 and alpha ≈ 1.6733 are fixed constants.
+/// Enables self-normalizing neural networks.
+pub struct SELU;
+
+impl Module for SELU {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        const ALPHA: f64 = 1.6732632423543772;
+        const SCALE: f64 = 1.0507009873554805;
+        let out: Vec<f64> = vals
+            .iter()
+            .map(|&x| {
+                if x >= 0.0 {
+                    SCALE * x
+                } else {
+                    SCALE * ALPHA * (x.exp() - 1.0)
+                }
+            })
+            .collect();
+        session.tensor_variable(out, shape, false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Hard Tanh activation.
+///
+/// `f(x) = max(min_val, min(max_val, x))`
+/// Default: min_val=-1, max_val=1 (clamp to [-1, 1]).
+pub struct Hardtanh {
+    min_val: f64,
+    max_val: f64,
+}
+
+impl Hardtanh {
+    #[must_use]
+    pub fn new(min_val: f64, max_val: f64) -> Self {
+        Self { min_val, max_val }
+    }
+}
+
+impl Default for Hardtanh {
+    fn default() -> Self {
+        Self::new(-1.0, 1.0)
+    }
+}
+
+impl Module for Hardtanh {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        let out: Vec<f64> = vals
+            .iter()
+            .map(|&x| x.clamp(self.min_val, self.max_val))
+            .collect();
+        session.tensor_variable(out, shape, false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Soft Shrinkage activation.
+///
+/// `f(x) = x - lambda if x > lambda, x + lambda if x < -lambda, else 0`
+pub struct Softshrink {
+    lambda: f64,
+}
+
+impl Softshrink {
+    #[must_use]
+    pub fn new(lambda: f64) -> Self {
+        Self { lambda }
+    }
+}
+
+impl Default for Softshrink {
+    fn default() -> Self {
+        Self::new(0.5)
+    }
+}
+
+impl Module for Softshrink {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        let out: Vec<f64> = vals
+            .iter()
+            .map(|&x| {
+                if x > self.lambda {
+                    x - self.lambda
+                } else if x < -self.lambda {
+                    x + self.lambda
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        session.tensor_variable(out, shape, false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Hard Shrinkage activation.
+///
+/// `f(x) = x if |x| > lambda, else 0`
+pub struct Hardshrink {
+    lambda: f64,
+}
+
+impl Hardshrink {
+    #[must_use]
+    pub fn new(lambda: f64) -> Self {
+        Self { lambda }
+    }
+}
+
+impl Default for Hardshrink {
+    fn default() -> Self {
+        Self::new(0.5)
+    }
+}
+
+impl Module for Hardshrink {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        let out: Vec<f64> = vals
+            .iter()
+            .map(|&x| if x.abs() > self.lambda { x } else { 0.0 })
+            .collect();
+        session.tensor_variable(out, shape, false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Tanh Shrinkage activation.
+///
+/// `f(x) = x - tanh(x)`
+pub struct Tanhshrink;
+
+impl Module for Tanhshrink {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        let out: Vec<f64> = vals.iter().map(|&x| x - x.tanh()).collect();
+        session.tensor_variable(out, shape, false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Softsign activation.
+///
+/// `f(x) = x / (1 + |x|)`
+/// Similar to tanh but slower saturation.
+pub struct Softsign;
+
+impl Module for Softsign {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        let out: Vec<f64> = vals.iter().map(|&x| x / (1.0 + x.abs())).collect();
+        session.tensor_variable(out, shape, false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Softmin activation module.
+///
+/// `softmin(x)_i = exp(-x_i) / sum_j exp(-x_j)`
+/// Equivalent to `Softmax(-x)`. Applied along `dim`.
+pub struct Softmin {
+    dim: usize,
+}
+
+impl Softmin {
+    #[must_use]
+    pub fn new(dim: usize) -> Self {
+        Self { dim }
+    }
+}
+
+impl Module for Softmin {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // Softmin(x) = Softmax(-x)
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        let neg_vals: Vec<f64> = vals.iter().map(|&x| -x).collect();
+        let neg_input = session.tensor_variable(neg_vals, shape, false)?;
+        session.tensor_softmax(neg_input, self.dim)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 /// Group normalization (Wu & He, 2018).
 ///
 /// Divides the channels into `num_groups` groups and normalizes within each group
@@ -9371,6 +9615,17 @@ pub trait LossModule {
     ) -> Result<TensorNodeId, AutogradError>;
 }
 
+/// Reduction mode for loss functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reduction {
+    /// No reduction: return per-element losses.
+    None,
+    /// Mean of all elements.
+    Mean,
+    /// Sum of all elements.
+    Sum,
+}
+
 // ── Loss Function Modules ──────────────────────────────────────────────
 
 /// Mean Squared Error loss module.
@@ -10421,6 +10676,227 @@ impl Module for ModuleDict {
             .iter()
             .map(|(name, m)| (name.clone(), m.as_ref() as &dyn Module))
             .collect()
+    }
+}
+
+/// Focal Loss for class-imbalanced classification.
+///
+/// `FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)`
+///
+/// Widely used in object detection (YOLO, RetinaNet) to down-weight
+/// easy examples and focus on hard misclassified ones.
+///
+/// Parameters:
+/// - `alpha`: balancing factor per class (typically 0.25 for foreground)
+/// - `gamma`: focusing parameter (default 2.0; gamma=0 reduces to cross-entropy)
+/// - `reduction`: "none" | "mean" | "sum"
+pub struct FocalLoss {
+    alpha: f64,
+    gamma: f64,
+    reduction: Reduction,
+}
+
+impl FocalLoss {
+    /// Create a FocalLoss with given alpha and gamma.
+    #[must_use]
+    pub fn new(alpha: f64, gamma: f64, reduction: Reduction) -> Self {
+        Self {
+            alpha,
+            gamma,
+            reduction,
+        }
+    }
+}
+
+impl LossModule for FocalLoss {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let logits = session.tensor_values(input)?;
+        let targets = session.tensor_values(target)?;
+        let input_shape = session.tensor_shape(input)?;
+
+        if input_shape.is_empty() {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "FocalLoss: input must have at least 1 dimension",
+                },
+            )));
+        }
+
+        let num_classes = *input_shape.last().unwrap();
+        let batch: usize = logits.len() / num_classes;
+
+        let mut losses = vec![0.0f64; batch];
+
+        for b in 0..batch {
+            let class_idx = targets[b] as usize;
+            if class_idx >= num_classes {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "FocalLoss: target class index out of range",
+                    },
+                )));
+            }
+
+            // Softmax for numerical stability
+            let offset = b * num_classes;
+            let mut max_logit = f64::NEG_INFINITY;
+            for c in 0..num_classes {
+                if logits[offset + c] > max_logit {
+                    max_logit = logits[offset + c];
+                }
+            }
+            let mut sum_exp = 0.0f64;
+            for c in 0..num_classes {
+                sum_exp += (logits[offset + c] - max_logit).exp();
+            }
+            let log_sum_exp = max_logit + sum_exp.ln();
+            let log_pt = logits[offset + class_idx] - log_sum_exp;
+            let pt = log_pt.exp();
+
+            losses[b] = -self.alpha * (1.0 - pt).powf(self.gamma) * log_pt;
+        }
+
+        match self.reduction {
+            Reduction::None => session.tensor_variable(losses, vec![batch], false),
+            Reduction::Mean => {
+                let mean = losses.iter().sum::<f64>() / batch as f64;
+                session.tensor_variable(vec![mean], vec![1], false)
+            }
+            Reduction::Sum => {
+                let sum = losses.iter().sum::<f64>();
+                session.tensor_variable(vec![sum], vec![1], false)
+            }
+        }
+    }
+}
+
+/// Multi-class hinge loss (SVM-style).
+///
+/// Equivalent to `torch.nn.MultiMarginLoss(p=1, margin=1.0)`.
+/// `loss(x, y) = sum_j max(0, margin - x[y] + x[j])^p / nclasses` for j != y.
+pub struct MultiMarginLoss {
+    p: f64,
+    margin: f64,
+    reduction: Reduction,
+}
+
+impl MultiMarginLoss {
+    /// Create with given p (1 or 2), margin, and reduction.
+    #[must_use]
+    pub fn new(p: f64, margin: f64, reduction: Reduction) -> Self {
+        Self {
+            p,
+            margin,
+            reduction,
+        }
+    }
+}
+
+impl LossModule for MultiMarginLoss {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let targets = session.tensor_values(target)?;
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MultiMarginLoss: input must be 2-D [N, C]",
+                },
+            )));
+        }
+        let (n, c) = (shape[0], shape[1]);
+        let mut losses = vec![0.0f64; n];
+
+        for i in 0..n {
+            let y = targets[i] as usize;
+            let xy = vals[i * c + y];
+            let mut loss = 0.0f64;
+            for j in 0..c {
+                if j == y {
+                    continue;
+                }
+                let margin_val = self.margin - xy + vals[i * c + j];
+                if margin_val > 0.0 {
+                    loss += margin_val.powf(self.p);
+                }
+            }
+            losses[i] = loss / c as f64;
+        }
+
+        match self.reduction {
+            Reduction::None => session.tensor_variable(losses, vec![n], false),
+            Reduction::Mean => {
+                let mean = losses.iter().sum::<f64>() / n as f64;
+                session.tensor_variable(vec![mean], vec![1], false)
+            }
+            Reduction::Sum => {
+                let sum = losses.iter().sum::<f64>();
+                session.tensor_variable(vec![sum], vec![1], false)
+            }
+        }
+    }
+}
+
+/// Binary classification logistic loss.
+///
+/// Equivalent to `torch.nn.SoftMarginLoss`.
+/// `loss(x, y) = log(1 + exp(-y * x))` where y ∈ {-1, +1}.
+pub struct SoftMarginLoss {
+    reduction: Reduction,
+}
+
+impl SoftMarginLoss {
+    #[must_use]
+    pub fn new(reduction: Reduction) -> Self {
+        Self { reduction }
+    }
+}
+
+impl LossModule for SoftMarginLoss {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let targets = session.tensor_values(target)?;
+        let shape = session.tensor_shape(input)?;
+        let n = vals.len();
+
+        let mut losses = Vec::with_capacity(n);
+        for i in 0..n {
+            // log(1 + exp(-y * x)) with numerical stability
+            let yx = targets[i] * vals[i];
+            let loss = if yx > 0.0 {
+                (-yx).exp().ln_1p()
+            } else {
+                -yx + (yx.exp()).ln_1p()
+            };
+            losses.push(loss);
+        }
+
+        match self.reduction {
+            Reduction::None => session.tensor_variable(losses, shape, false),
+            Reduction::Mean => {
+                let mean = losses.iter().sum::<f64>() / n as f64;
+                session.tensor_variable(vec![mean], vec![1], false)
+            }
+            Reduction::Sum => {
+                let sum = losses.iter().sum::<f64>();
+                session.tensor_variable(vec![sum], vec![1], false)
+            }
+        }
     }
 }
 
@@ -15940,6 +16416,113 @@ mod tests {
         assert!(params.is_empty());
     }
 
+    // ── Additional Activation Tests ────────────────────────────────────
+
+    #[test]
+    fn selu_positive_and_negative() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let selu = SELU;
+        let input = session
+            .tensor_variable(vec![1.0, -1.0, 0.0], vec![3], false)
+            .unwrap();
+        let out = selu.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        // Positive: scale * x = 1.0507 * 1.0
+        assert!((vals[0] - 1.0507009873554805).abs() < 1e-8);
+        // Negative: scale * alpha * (exp(-1) - 1)
+        assert!(vals[1] < 0.0);
+        // Zero: 0
+        assert!(vals[2].abs() < 1e-10);
+    }
+
+    #[test]
+    fn hardtanh_clamps() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ht = Hardtanh::default();
+        let input = session
+            .tensor_variable(vec![-5.0, 0.5, 5.0], vec![3], false)
+            .unwrap();
+        let out = ht.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!((vals[0] - (-1.0)).abs() < 1e-10);
+        assert!((vals[1] - 0.5).abs() < 1e-10);
+        assert!((vals[2] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn softshrink_shrinks() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ss = Softshrink::default(); // lambda=0.5
+        let input = session
+            .tensor_variable(vec![2.0, 0.3, -2.0, -0.3], vec![4], false)
+            .unwrap();
+        let out = ss.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!((vals[0] - 1.5).abs() < 1e-10);
+        assert!(vals[1].abs() < 1e-10); // inside dead zone
+        assert!((vals[2] - (-1.5)).abs() < 1e-10);
+        assert!(vals[3].abs() < 1e-10); // inside dead zone
+    }
+
+    #[test]
+    fn hardshrink_zeroes_small() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let hs = Hardshrink::default();
+        let input = session
+            .tensor_variable(vec![2.0, 0.3, -2.0, -0.3], vec![4], false)
+            .unwrap();
+        let out = hs.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!((vals[0] - 2.0).abs() < 1e-10);
+        assert!(vals[1].abs() < 1e-10);
+        assert!((vals[2] - (-2.0)).abs() < 1e-10);
+        assert!(vals[3].abs() < 1e-10);
+    }
+
+    #[test]
+    fn tanhshrink_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ts = Tanhshrink;
+        let input = session
+            .tensor_variable(vec![0.0, 1.0, -1.0], vec![3], false)
+            .unwrap();
+        let out = ts.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!(vals[0].abs() < 1e-10); // 0 - tanh(0) = 0
+        assert!((vals[1] - (1.0 - 1.0f64.tanh())).abs() < 1e-10);
+        assert!((vals[2] - (-1.0 - (-1.0f64).tanh())).abs() < 1e-10);
+    }
+
+    #[test]
+    fn softsign_bounded() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ss = Softsign;
+        let input = session
+            .tensor_variable(vec![0.0, 100.0, -100.0], vec![3], false)
+            .unwrap();
+        let out = ss.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!(vals[0].abs() < 1e-10); // 0/(1+0)
+        assert!((vals[1] - 100.0 / 101.0).abs() < 1e-8); // close to 1
+        assert!((vals[2] - (-100.0 / 101.0)).abs() < 1e-8); // close to -1
+    }
+
+    #[test]
+    fn softmin_is_softmax_of_negated() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sm = Softmin::new(0);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let out = sm.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        // Softmin should give highest prob to smallest value
+        assert!(vals[0] > vals[1]);
+        assert!(vals[1] > vals[2]);
+        let total: f64 = vals.iter().sum();
+        assert!((total - 1.0).abs() < 1e-8);
+    }
+
     // ── RMSNorm Tests ──────────────────────────────────────────────────
 
     #[test]
@@ -19320,5 +19903,137 @@ mod tests {
             "loss should be finite for long sequence: {loss_val}"
         );
         assert!(loss_val > 0.0, "loss should be positive: {loss_val}");
+    }
+
+    // ── FocalLoss Tests ────────────────────────────────────────────────
+
+    #[test]
+    fn focal_loss_gamma_zero_equals_ce() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // gamma=0, alpha=1 should be equivalent to cross-entropy
+        let fl = FocalLoss::new(1.0, 0.0, Reduction::Mean);
+        let logits = session
+            .tensor_variable(vec![2.0, 1.0, 0.1], vec![1, 3], false)
+            .unwrap();
+        let target = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let loss = fl.forward(&mut session, logits, target).unwrap();
+        let val = session.tensor_values(loss).unwrap()[0];
+        // Should be -log(softmax(2.0))
+        let sm = 2.0f64.exp() / (2.0f64.exp() + 1.0f64.exp() + 0.1f64.exp());
+        let expected = -sm.ln();
+        assert!(
+            (val - expected).abs() < 1e-6,
+            "gamma=0 focal loss should equal CE: got {val}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn focal_loss_reduces_easy_example_weight() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // High confidence correct prediction should have low focal loss
+        let fl_gamma0 = FocalLoss::new(1.0, 0.0, Reduction::None);
+        let fl_gamma2 = FocalLoss::new(1.0, 2.0, Reduction::None);
+        let logits = session
+            .tensor_variable(vec![10.0, 0.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let target = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+
+        let loss0 = fl_gamma0.forward(&mut session, logits, target).unwrap();
+        let loss2 = fl_gamma2.forward(&mut session, logits, target).unwrap();
+        let v0 = session.tensor_values(loss0).unwrap()[0];
+        let v2 = session.tensor_values(loss2).unwrap()[0];
+        assert!(
+            v2 < v0,
+            "focal loss (gamma=2) should be smaller than CE for easy example: {v2} vs {v0}"
+        );
+    }
+
+    #[test]
+    fn focal_loss_sum_reduction() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let fl = FocalLoss::new(0.25, 2.0, Reduction::Sum);
+        let logits = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let target = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .unwrap();
+        let loss = fl.forward(&mut session, logits, target).unwrap();
+        let val = session.tensor_values(loss).unwrap()[0];
+        assert!(val > 0.0, "focal loss sum should be positive");
+    }
+
+    // ── MultiMarginLoss Tests ──────────────────────────────────────────
+
+    #[test]
+    fn multi_margin_loss_perfect_classification() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mml = MultiMarginLoss::new(1.0, 1.0, Reduction::Mean);
+        // Large margin for correct class → loss should be 0
+        let input = session
+            .tensor_variable(vec![10.0, 0.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let target = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let loss = mml.forward(&mut session, input, target).unwrap();
+        let val = session.tensor_values(loss).unwrap()[0];
+        assert!(
+            val.abs() < 1e-10,
+            "perfect classification should have zero loss, got {val}"
+        );
+    }
+
+    #[test]
+    fn multi_margin_loss_misclassified() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mml = MultiMarginLoss::new(1.0, 1.0, Reduction::Mean);
+        // Correct class has lowest score → high loss
+        let input = session
+            .tensor_variable(vec![0.0, 5.0, 5.0], vec![1, 3], false)
+            .unwrap();
+        let target = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let loss = mml.forward(&mut session, input, target).unwrap();
+        let val = session.tensor_values(loss).unwrap()[0];
+        assert!(val > 0.0, "misclassified should have positive loss");
+    }
+
+    // ── SoftMarginLoss Tests ───────────────────────────────────────────
+
+    #[test]
+    fn soft_margin_loss_correct_predictions() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sml = SoftMarginLoss::new(Reduction::Mean);
+        // High positive prediction for y=+1 → low loss
+        let input = session
+            .tensor_variable(vec![5.0, -5.0], vec![2], false)
+            .unwrap();
+        let target = session
+            .tensor_variable(vec![1.0, -1.0], vec![2], false)
+            .unwrap();
+        let loss = sml.forward(&mut session, input, target).unwrap();
+        let val = session.tensor_values(loss).unwrap()[0];
+        // log(1 + exp(-5)) ≈ 0.0067 for both
+        assert!(
+            val < 0.01,
+            "correct predictions should have low loss, got {val}"
+        );
+    }
+
+    #[test]
+    fn soft_margin_loss_wrong_predictions() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sml = SoftMarginLoss::new(Reduction::Mean);
+        // Opposite predictions
+        let input = session
+            .tensor_variable(vec![-5.0, 5.0], vec![2], false)
+            .unwrap();
+        let target = session
+            .tensor_variable(vec![1.0, -1.0], vec![2], false)
+            .unwrap();
+        let loss = sml.forward(&mut session, input, target).unwrap();
+        let val = session.tensor_values(loss).unwrap()[0];
+        assert!(
+            val > 4.0,
+            "wrong predictions should have high loss, got {val}"
+        );
     }
 }

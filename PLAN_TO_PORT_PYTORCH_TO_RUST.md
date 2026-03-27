@@ -12,7 +12,8 @@ This project follows the spec-first `porting-to-rust` method:
 
 ## 2. Legacy Oracle
 
-- Path: `/dp/frankentorch/legacy_pytorch_code/pytorch`
+- Typical local mirror when present: `/dp/frankentorch/legacy_pytorch_code/pytorch`
+- Upstream oracle: `pytorch/pytorch`
 
 ## 3. Parity-Complete Target Surface
 
@@ -44,12 +45,14 @@ This project follows the spec-first `porting-to-rust` method:
 - frankensqlite adaptation crosswalk added
 
 ### Phase 4: Implementation (`in_progress`)
-- first deterministic scalar DAC vertical slice shipped:
+- core deterministic execution stack shipped:
   - `ft-core`, `ft-dispatch`, `ft-kernel-cpu`, `ft-autograd`, `ft-runtime`, `ft-api`
+- higher-level layers now exist in-tree:
+  - `ft-nn`, `ft-optim`, `ft-data`
 
 ### Phase 5: Conformance and QA (`in_progress`)
-- fixture-driven strict+hardened scalar conformance green
-- benchmark harness entrypoint added (`run_scalar_microbench`)
+- fixture-driven strict+hardened conformance families in-tree via `ft-conformance`
+- benchmark and packet-validation entrypoints available (`run_scalar_microbench`, `validate_phase2c_artifacts`)
 
 ## 6. Mandatory Exit Criteria
 

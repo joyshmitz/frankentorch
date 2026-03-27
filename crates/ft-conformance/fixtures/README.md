@@ -2,6 +2,9 @@
 
 This folder stores normalized oracle-vs-target fixtures for `ft-conformance`.
 
+The legacy PyTorch oracle is typically mirrored at `legacy_pytorch_code/pytorch` relative to the
+repo root. Harness runs may override that default with `FT_LEGACY_ORACLE_ROOT`.
+
 - `smoke_case.json`: minimal bootstrap fixture ensuring harness wiring works.
 - `scalar_autograd_cases.json`: deterministic scalar DAC fixture family (strict + hardened).
 - `tensor_binary_cases.json`: deterministic tensor binary DAC fixture family (strict + hardened) for add/sub/mul/div forward and gradient parity.

@@ -3413,6 +3413,166 @@ impl LRScheduler for OneCycleLR {
     }
 }
 
+/// Polynomial learning rate decay scheduler.
+///
+/// Equivalent to `torch.optim.lr_scheduler.PolynomialLR`.
+/// Decays the learning rate using a polynomial schedule:
+/// `lr = initial_lr * (1 - epoch/total_iters)^power` until epoch reaches total_iters,
+/// after which lr stays at 0.
+pub struct PolynomialLR {
+    initial_lr: f64,
+    total_iters: usize,
+    power: f64,
+    last_epoch: i64,
+    last_lr: f64,
+}
+
+impl PolynomialLR {
+    /// Create a new PolynomialLR scheduler.
+    ///
+    /// * `total_iters` - Number of iterations over which to decay.
+    /// * `power` - Polynomial exponent (default 1.0 = linear decay).
+    pub fn new(optimizer: &dyn Optimizer, total_iters: usize, power: f64) -> Self {
+        let initial_lr = optimizer.get_lr();
+        Self {
+            initial_lr,
+            total_iters,
+            power,
+            last_epoch: -1,
+            last_lr: initial_lr,
+        }
+    }
+}
+
+impl LRScheduler for PolynomialLR {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        self.last_epoch = epoch.unwrap_or(self.last_epoch + 1);
+        let e = self.last_epoch.max(0) as usize;
+        let lr = if e >= self.total_iters {
+            0.0
+        } else {
+            let frac = 1.0 - (e as f64 / self.total_iters as f64);
+            self.initial_lr * frac.powf(self.power)
+        };
+        optimizer.set_lr(lr);
+        self.last_lr = lr;
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                ("initial_lr".to_owned(), self.initial_lr),
+                ("total_iters".to_owned(), self.total_iters as f64),
+                ("power".to_owned(), self.power),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "initial_lr" => self.initial_lr = *val,
+                "total_iters" => self.total_iters = *val as usize,
+                "power" => self.power = *val,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Constant factor learning rate scheduler.
+///
+/// Equivalent to `torch.optim.lr_scheduler.ConstantLR`.
+/// Multiplies the learning rate by a constant factor for the first `total_iters`
+/// epochs, then returns to the original learning rate.
+pub struct ConstantLR {
+    initial_lr: f64,
+    factor: f64,
+    total_iters: usize,
+    last_epoch: i64,
+    last_lr: f64,
+}
+
+impl ConstantLR {
+    /// Create a new ConstantLR scheduler.
+    ///
+    /// * `factor` - Multiplicative factor applied during the first `total_iters` epochs.
+    /// * `total_iters` - Number of epochs to apply the factor. After this, lr is restored.
+    pub fn new(optimizer: &dyn Optimizer, factor: f64, total_iters: usize) -> Self {
+        let initial_lr = optimizer.get_lr();
+        Self {
+            initial_lr,
+            factor,
+            total_iters,
+            last_epoch: -1,
+            last_lr: initial_lr,
+        }
+    }
+}
+
+impl LRScheduler for ConstantLR {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        self.last_epoch = epoch.unwrap_or(self.last_epoch + 1);
+        let e = self.last_epoch.max(0) as usize;
+        let lr = if e < self.total_iters {
+            self.initial_lr * self.factor
+        } else {
+            self.initial_lr
+        };
+        optimizer.set_lr(lr);
+        self.last_lr = lr;
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                ("initial_lr".to_owned(), self.initial_lr),
+                ("factor".to_owned(), self.factor),
+                ("total_iters".to_owned(), self.total_iters as f64),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "initial_lr" => self.initial_lr = *val,
+                "factor" => self.factor = *val,
+                "total_iters" => self.total_iters = *val as usize,
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Adamax optimizer — variant of Adam using the infinity norm (Kingma & Ba, 2014).
 ///
 /// Instead of the L2 norm of the second moment (v), Adamax uses the L∞ norm,
@@ -8204,6 +8364,92 @@ mod tests {
             "rprop should converge both params, got {:?}",
             x_val
         );
+    }
+
+    // ── SparseAdam tests ───────────────────────────────────────────────
+
+    // ── PolynomialLR tests ───────────────────────────────────────────
+
+    #[test]
+    fn polynomial_lr_linear_decay() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut sched = PolynomialLR::new(&opt, 10, 1.0);
+
+        // Step 0: lr = 0.1 * (1 - 0/10)^1 = 0.1
+        sched.step(&mut opt, None);
+        assert!((opt.get_lr() - 0.1).abs() < 1e-10);
+
+        // Step 5: lr = 0.1 * (1 - 5/10)^1 = 0.05
+        sched.step(&mut opt, Some(5));
+        assert!((opt.get_lr() - 0.05).abs() < 1e-10);
+
+        // Step 10: lr = 0 (at total_iters)
+        sched.step(&mut opt, Some(10));
+        assert!(opt.get_lr().abs() < 1e-10);
+    }
+
+    #[test]
+    fn polynomial_lr_quadratic_decay() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let mut opt = SGD::new(vec![x], 1.0);
+        let mut sched = PolynomialLR::new(&opt, 10, 2.0);
+
+        // Step 5: lr = 1.0 * (1 - 5/10)^2 = 0.25
+        sched.step(&mut opt, Some(5));
+        assert!((opt.get_lr() - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn polynomial_lr_state_roundtrip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut sched = PolynomialLR::new(&opt, 20, 1.5);
+        sched.step(&mut opt, Some(7));
+        let state = sched.state_dict();
+        let mut sched2 = PolynomialLR::new(&opt, 20, 1.5);
+        sched2.load_state_dict(state);
+        assert_eq!(sched.get_last_lr(), sched2.get_last_lr());
+    }
+
+    // ── ConstantLR tests ───────────────────────────────────────────────
+
+    #[test]
+    fn constant_lr_warmup_pattern() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut sched = ConstantLR::new(&opt, 0.1, 5);
+
+        // During first 5 epochs: lr = 0.1 * 0.1 = 0.01
+        sched.step(&mut opt, None);
+        assert!((opt.get_lr() - 0.01).abs() < 1e-10);
+
+        sched.step(&mut opt, Some(3));
+        assert!((opt.get_lr() - 0.01).abs() < 1e-10);
+
+        // After 5 epochs: lr = 0.1 (original)
+        sched.step(&mut opt, Some(5));
+        assert!((opt.get_lr() - 0.1).abs() < 1e-10);
+
+        sched.step(&mut opt, Some(100));
+        assert!((opt.get_lr() - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn constant_lr_state_roundtrip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let mut opt = SGD::new(vec![x], 0.5);
+        let mut sched = ConstantLR::new(&opt, 0.2, 10);
+        sched.step(&mut opt, Some(3));
+        let state = sched.state_dict();
+        let mut sched2 = ConstantLR::new(&opt, 0.2, 10);
+        sched2.load_state_dict(state);
+        assert_eq!(sched.get_last_lr(), sched2.get_last_lr());
     }
 
     // ── SparseAdam tests ───────────────────────────────────────────────

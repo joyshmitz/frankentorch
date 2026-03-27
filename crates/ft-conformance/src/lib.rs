@@ -47,7 +47,7 @@ impl HarnessConfig {
     pub fn default_paths() -> Self {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         Self {
-            oracle_root: repo_root.join("legacy_pytorch_code/pytorch"),
+            oracle_root: default_oracle_root(&repo_root),
             fixture_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures"),
             allowlist_path: repo_root
                 .join("artifacts/phase2c/HARDENED_DEVIATION_ALLOWLIST_V1.json"),
@@ -8701,6 +8701,20 @@ fn default_oracle_python(repo_root: &Path) -> Option<PathBuf> {
     Some(PathBuf::from("python3"))
 }
 
+fn default_oracle_root(repo_root: &Path) -> PathBuf {
+    default_oracle_root_from_override(
+        repo_root,
+        std::env::var("FT_LEGACY_ORACLE_ROOT").ok().as_deref(),
+    )
+}
+
+fn default_oracle_root_from_override(repo_root: &Path, override_path: Option<&str>) -> PathBuf {
+    override_path
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root.join("legacy_pytorch_code/pytorch"))
+}
+
 const LEGACY_ORACLE_PROBE_SCRIPT: &str = r#"
 import json
 import torch
@@ -9881,6 +9895,21 @@ mod tests {
             report.cases_total >= 4,
             "expected at least one case from each fixture family"
         );
+    }
+
+    #[test]
+    fn default_oracle_root_uses_override_when_present() {
+        let repo_root = PathBuf::from("/tmp/frankentorch-repo");
+        let root =
+            super::default_oracle_root_from_override(&repo_root, Some("/opt/pytorch-mirror"));
+        assert_eq!(root, PathBuf::from("/opt/pytorch-mirror"));
+    }
+
+    #[test]
+    fn default_oracle_root_falls_back_to_repo_local_mirror() {
+        let repo_root = PathBuf::from("/tmp/frankentorch-repo");
+        let root = super::default_oracle_root_from_override(&repo_root, Some("   "));
+        assert_eq!(root, repo_root.join("legacy_pytorch_code/pytorch"));
     }
 
     #[test]

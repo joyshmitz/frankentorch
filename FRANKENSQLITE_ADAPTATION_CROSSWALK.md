@@ -16,7 +16,7 @@ Absolute doctrine carried from this project into all adaptations:
 | RaptorQ-everywhere artifact durability | RaptorQ sidecars for conformance fixtures, gradient mismatch bundles, and benchmark baselines |
 | strict vs hardened mode split | strict: PyTorch-observable parity; hardened: bounded defenses with fail-closed incompatibility handling |
 | evidence ledger for consequential runtime decisions | dispatch decision ledger + backward replay ledger for DAC proofs |
-| conformance harness as release gate | differential oracle harness against `legacy_pytorch_code/pytorch` with machine-readable parity reports |
+| conformance harness as release gate | differential oracle harness against a typically local `legacy_pytorch_code/pytorch` mirror, with machine-readable parity reports and explicit override support when the mirror lives elsewhere |
 | one-lever optimization doctrine + isomorphism proofs | each performance change must include gradient-isomorphism proof and benchmark delta |
 
 ## 2. Asupersync/FrankenTUI Leverage Plan
@@ -25,6 +25,11 @@ Absolute doctrine carried from this project into all adaptations:
 - Integrate `Cx`/budgeted execution for long-running conformance and benchmark jobs.
 - Reuse asupersync evidence and oracle patterns for deterministic replay reports.
 - Bind RaptorQ sidecar pipelines to asupersync transport/codec surfaces (mirroring FrankenSQLite usage).
+
+Current in-tree higher layers that consume this discipline:
+- `ft-nn`
+- `ft-optim`
+- `ft-data`
 
 ### FrankenTUI (`ftui`)
 - Build an operator-facing parity cockpit:
