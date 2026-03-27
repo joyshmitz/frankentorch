@@ -4214,6 +4214,148 @@ impl Optimizer for Rprop {
     }
 }
 
+/// SparseAdam optimizer for sparse gradients (Kingma & Ba, 2015 — sparse variant).
+///
+/// Equivalent to `torch.optim.SparseAdam`. Only updates moment estimates
+/// for gradient entries that are non-zero, making it efficient for sparse
+/// embedding layers in NLP models.
+///
+/// The key difference from dense Adam: moment estimates `m` and `v` are only
+/// updated at indices where the gradient is non-zero. Bias correction uses
+/// the global step count.
+pub struct SparseAdam {
+    params: Vec<TensorNodeId>,
+    lr: f64,
+    beta1: f64,
+    beta2: f64,
+    eps: f64,
+    step_count: u64,
+    m: Vec<Option<Vec<f64>>>,
+    v: Vec<Option<Vec<f64>>>,
+}
+
+impl SparseAdam {
+    /// Create a new SparseAdam optimizer.
+    ///
+    /// Defaults: lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8
+    pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
+        let n = params.len();
+        Self {
+            params,
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            step_count: 0,
+            m: vec![None; n],
+            v: vec![None; n],
+        }
+    }
+
+    /// Set beta coefficients.
+    #[must_use]
+    pub fn betas(mut self, beta1: f64, beta2: f64) -> Self {
+        self.beta1 = beta1;
+        self.beta2 = beta2;
+        self
+    }
+
+    /// Set epsilon for numerical stability.
+    #[must_use]
+    pub fn eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    fn validate_hyperparams(&self) -> Result<(), AutogradError> {
+        if !self.lr.is_finite() || self.lr < 0.0 {
+            return Err(optimizer_hparam_error(
+                "sparse_adam requires a finite non-negative learning rate",
+            ));
+        }
+        if !(0.0..1.0).contains(&self.beta1) || !(0.0..1.0).contains(&self.beta2) {
+            return Err(optimizer_hparam_error(
+                "sparse_adam betas must be in [0, 1)",
+            ));
+        }
+        if !self.eps.is_finite() || self.eps <= 0.0 {
+            return Err(optimizer_hparam_error(
+                "sparse_adam requires finite eps > 0",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Optimizer for SparseAdam {
+    fn get_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        _report: &TensorBackwardReport,
+    ) -> Result<(), AutogradError> {
+        self.validate_hyperparams()?;
+        let t = checked_next_step_count(self.step_count, "sparse_adam step counter overflow")?;
+        self.step_count = t;
+
+        let bias_correction1 = adam_bias_correction(self.beta1, t);
+        let bias_correction2 = adam_bias_correction(self.beta2, t);
+
+        for (i, &param) in self.params.iter().enumerate() {
+            let grad = match load_param_gradient(session, param)? {
+                Some(g) => g,
+                None => continue,
+            };
+
+            let param_values = session.tensor_values(param)?;
+            ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
+
+            let m = self.m[i].get_or_insert_with(|| vec![0.0; grad.len()]);
+            ensure_state_len(
+                grad.len(),
+                m.len(),
+                "sparse_adam first-moment state length mismatch",
+            )?;
+
+            let v = self.v[i].get_or_insert_with(|| vec![0.0; grad.len()]);
+            ensure_state_len(
+                grad.len(),
+                v.len(),
+                "sparse_adam second-moment state length mismatch",
+            )?;
+
+            // Only update at non-zero gradient indices
+            let mut update = vec![0.0; grad.len()];
+            for j in 0..grad.len() {
+                if grad[j] == 0.0 {
+                    continue;
+                }
+                // Update moments only at sparse indices
+                m[j] = self.beta1 * m[j] + (1.0 - self.beta1) * grad[j];
+                v[j] = self.beta2 * v[j] + (1.0 - self.beta2) * grad[j] * grad[j];
+
+                let m_hat = m[j] / bias_correction1;
+                let v_hat = v[j] / bias_correction2;
+                update[j] = self.lr * m_hat / (v_hat.sqrt() + self.eps);
+            }
+
+            apply_param_update(session, param, &update)?;
+        }
+        Ok(())
+    }
+
+    fn zero_grad(&mut self, session: &mut FrankenTorchSession) -> Result<(), AutogradError> {
+        zero_param_gradients(session, &self.params)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ft_api::FrankenTorchSession;
@@ -8062,5 +8204,90 @@ mod tests {
             "rprop should converge both params, got {:?}",
             x_val
         );
+    }
+
+    // ── SparseAdam tests ───────────────────────────────────────────────
+
+    #[test]
+    fn sparse_adam_basic_step() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![5.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SparseAdam::new(vec![x], 0.01);
+
+        let before = session.tensor_values(x).expect("values")[0];
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        opt.step(&mut session, &report).expect("step");
+
+        let after = session.tensor_values(x).expect("values")[0];
+        assert!(
+            after.abs() < before.abs(),
+            "sparse_adam should reduce magnitude"
+        );
+    }
+
+    #[test]
+    fn sparse_adam_skips_zero_grads() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Two-element parameter; only first has non-zero gradient
+        let x = session
+            .tensor_variable(vec![3.0, 0.0], vec![2], true)
+            .expect("variable");
+        let mut opt = SparseAdam::new(vec![x], 0.1);
+
+        // Loss uses only x[0] via tensor_sum(x * x) with x[1]=0
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        opt.step(&mut session, &report).expect("step");
+
+        let vals = session.tensor_values(x).expect("values");
+        // x[1] was 0 and grad[1]=0, so x[1] should still be 0
+        assert!(vals[1].abs() < 1e-15, "zero-grad element should stay at 0");
+        // x[0] should have been updated
+        assert!(
+            vals[0].abs() < 3.0,
+            "non-zero grad element should be updated"
+        );
+    }
+
+    #[test]
+    fn sparse_adam_convergence() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SparseAdam::new(vec![x], 0.1);
+
+        for _ in 0..100 {
+            opt.zero_grad(&mut session).expect("zero_grad");
+            let loss = session.tensor_mul(x, x).expect("mul");
+            let loss_sum = session.tensor_sum(loss).expect("sum");
+            let report = session.tensor_backward(loss_sum).expect("backward");
+            opt.step(&mut session, &report).expect("step");
+        }
+
+        let val = session.tensor_values(x).expect("values")[0];
+        assert!(
+            val.abs() < 0.5,
+            "sparse_adam should converge toward 0, got {val}"
+        );
+    }
+
+    #[test]
+    fn sparse_adam_invalid_betas() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SparseAdam::new(vec![x], 0.01).betas(1.5, 0.999);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        assert!(opt.step(&mut session, &report).is_err());
     }
 }

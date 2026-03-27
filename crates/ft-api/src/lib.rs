@@ -1908,6 +1908,343 @@ impl FrankenTorchSession {
         Ok((unique_node, inverse_node, counts_node))
     }
 
+    /// Count the number of occurrences of each value in a 1-D non-negative integer tensor.
+    ///
+    /// Equivalent to `torch.bincount(input, weights=None, minlength=0)`.
+    /// Input values are truncated to integers. Negative values cause an error.
+    /// If `weights` is provided, it must have the same length and the output
+    /// accumulates weights instead of unit counts.
+    pub fn tensor_bincount(
+        &mut self,
+        input: TensorNodeId,
+        weights: Option<TensorNodeId>,
+        minlength: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = self.tensor_values(input)?;
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "bincount: input must be 1-dimensional",
+                },
+            )));
+        }
+
+        let weight_vals = if let Some(w) = weights {
+            let wv = self.tensor_values(w)?;
+            let w_shape = self.tensor_shape(w)?;
+            if w_shape.len() != 1 || w_shape[0] != input_shape[0] {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "bincount: weights must be 1-D with same length as input",
+                    },
+                )));
+            }
+            Some(wv)
+        } else {
+            None
+        };
+
+        // Find max value to determine output size
+        let mut max_val: Option<i64> = None;
+        for &v in &vals {
+            let iv = v as i64;
+            if iv < 0 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "bincount: input must be non-negative",
+                    },
+                )));
+            }
+            max_val = Some(max_val.map_or(iv, |cur| cur.max(iv)));
+        }
+
+        let out_len = match max_val {
+            Some(m) => (m as usize + 1).max(minlength),
+            None => minlength, // empty input
+        };
+        let mut counts = vec![0.0f64; out_len];
+
+        for (i, &v) in vals.iter().enumerate() {
+            let idx = v as usize;
+            if let Some(ref wv) = weight_vals {
+                counts[idx] += wv[i];
+            } else {
+                counts[idx] += 1.0;
+            }
+        }
+
+        self.tensor_variable(counts, vec![out_len], false)
+    }
+
+    /// Compute the histogram of a tensor.
+    ///
+    /// Equivalent to `torch.histc(input, bins=100, min=0, max=0)`.
+    /// Divides the range `[min, max]` into `bins` equal-width bins and counts
+    /// elements falling into each bin. If `min == max`, the range is set to
+    /// `[input.min(), input.max()]`. Values outside the range are clamped to
+    /// the first/last bin.
+    pub fn tensor_histc(
+        &mut self,
+        input: TensorNodeId,
+        bins: usize,
+        min_val: f64,
+        max_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if bins == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "histc: bins must be > 0",
+                },
+            )));
+        }
+
+        let vals = self.tensor_values(input)?;
+
+        let (lo, hi) = if (min_val - max_val).abs() < f64::EPSILON {
+            // Auto-range from data
+            let mut data_min = f64::INFINITY;
+            let mut data_max = f64::NEG_INFINITY;
+            for &v in &vals {
+                if v < data_min {
+                    data_min = v;
+                }
+                if v > data_max {
+                    data_max = v;
+                }
+            }
+            if data_min == data_max {
+                (data_min - 0.5, data_max + 0.5)
+            } else {
+                (data_min, data_max)
+            }
+        } else {
+            (min_val, max_val)
+        };
+
+        let mut counts = vec![0.0f64; bins];
+        let bin_width = (hi - lo) / bins as f64;
+
+        for &v in &vals {
+            let bin = if v <= lo {
+                0
+            } else if v >= hi {
+                bins - 1
+            } else {
+                let b = ((v - lo) / bin_width) as usize;
+                b.min(bins - 1)
+            };
+            counts[bin] += 1.0;
+        }
+
+        self.tensor_variable(counts, vec![bins], false)
+    }
+
+    /// Create a block diagonal matrix from provided 2-D tensors.
+    ///
+    /// Equivalent to `torch.block_diag(*tensors)`. Each tensor is placed
+    /// along the diagonal of the output matrix, with zeros elsewhere.
+    /// 1-D tensors are treated as (1, N) matrices.
+    pub fn tensor_block_diag(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        if tensors.is_empty() {
+            return self.tensor_variable(vec![], vec![0, 0], false);
+        }
+
+        // Collect shapes, treating 1-D as (1, N)
+        let mut blocks: Vec<(Vec<f64>, usize, usize)> = Vec::with_capacity(tensors.len());
+        for &t in tensors {
+            let vals = self.tensor_values(t)?;
+            let shape = self.tensor_shape(t)?;
+            let (rows, cols) = match shape.len() {
+                1 => (1, shape[0]),
+                2 => (shape[0], shape[1]),
+                _ => {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "block_diag: all tensors must be 1-D or 2-D",
+                        },
+                    )));
+                }
+            };
+            blocks.push((vals, rows, cols));
+        }
+
+        let total_rows: usize = blocks.iter().map(|(_, r, _)| *r).sum();
+        let total_cols: usize = blocks.iter().map(|(_, _, c)| *c).sum();
+        let mut data = vec![0.0f64; total_rows * total_cols];
+
+        let mut row_offset = 0;
+        let mut col_offset = 0;
+        for (vals, rows, cols) in &blocks {
+            for r in 0..*rows {
+                for c in 0..*cols {
+                    data[(row_offset + r) * total_cols + col_offset + c] = vals[r * cols + c];
+                }
+            }
+            row_offset += rows;
+            col_offset += cols;
+        }
+
+        self.tensor_variable(data, vec![total_rows, total_cols], false)
+    }
+
+    /// Compute batched pairwise distance between two sets of vectors.
+    ///
+    /// Equivalent to `torch.cdist(x1, x2, p=2.0)`.
+    /// x1: (B, P, M) or (P, M), x2: (B, R, M) or (R, M).
+    /// Returns: (B, P, R) or (P, R) matrix of Lp distances.
+    pub fn tensor_cdist(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let x1_vals = self.tensor_values(x1)?;
+        let x1_shape = self.tensor_shape(x1)?;
+        let x2_vals = self.tensor_values(x2)?;
+        let x2_shape = self.tensor_shape(x2)?;
+
+        let (batch, p_dim, m1, r_dim, m2, batched) = match (x1_shape.len(), x2_shape.len()) {
+            (2, 2) => (1, x1_shape[0], x1_shape[1], x2_shape[0], x2_shape[1], false),
+            (3, 3) => {
+                if x1_shape[0] != x2_shape[0] {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "cdist: batch dimensions must match",
+                        },
+                    )));
+                }
+                (
+                    x1_shape[0],
+                    x1_shape[1],
+                    x1_shape[2],
+                    x2_shape[1],
+                    x2_shape[2],
+                    true,
+                )
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "cdist: inputs must be 2-D or 3-D with matching batch",
+                    },
+                )));
+            }
+        };
+
+        if m1 != m2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "cdist: last dimension (feature dim) must match",
+                },
+            )));
+        }
+        let m = m1;
+
+        let mut result = vec![0.0f64; batch * p_dim * r_dim];
+
+        for b in 0..batch {
+            let x1_base = b * p_dim * m;
+            let x2_base = b * r_dim * m;
+            let out_base = b * p_dim * r_dim;
+
+            for i in 0..p_dim {
+                for j in 0..r_dim {
+                    let mut dist = 0.0f64;
+                    if p == f64::INFINITY {
+                        for k in 0..m {
+                            let diff =
+                                (x1_vals[x1_base + i * m + k] - x2_vals[x2_base + j * m + k]).abs();
+                            if diff > dist {
+                                dist = diff;
+                            }
+                        }
+                    } else if p == 0.0 {
+                        for k in 0..m {
+                            let diff =
+                                (x1_vals[x1_base + i * m + k] - x2_vals[x2_base + j * m + k]).abs();
+                            if diff > f64::EPSILON {
+                                dist += 1.0;
+                            }
+                        }
+                    } else {
+                        for k in 0..m {
+                            let diff =
+                                (x1_vals[x1_base + i * m + k] - x2_vals[x2_base + j * m + k]).abs();
+                            dist += diff.powf(p);
+                        }
+                        dist = dist.powf(1.0 / p);
+                    }
+                    result[out_base + i * r_dim + j] = dist;
+                }
+            }
+        }
+
+        let out_shape = if batched {
+            vec![batch, p_dim, r_dim]
+        } else {
+            vec![p_dim, r_dim]
+        };
+        self.tensor_variable(result, out_shape, false)
+    }
+
+    /// Compute pairwise distance between all pairs of row vectors in a 2-D tensor.
+    ///
+    /// Equivalent to `torch.nn.functional.pdist(input, p=2)`.
+    /// Input: (N, M) tensor. Returns: 1-D tensor of N*(N-1)/2 distances.
+    pub fn tensor_pdist(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pdist: input must be 2-D",
+                },
+            )));
+        }
+        let n = shape[0];
+        let m = shape[1];
+        let out_len = n * (n - 1) / 2;
+        let mut result = Vec::with_capacity(out_len);
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let mut dist = 0.0f64;
+                if p == f64::INFINITY {
+                    for k in 0..m {
+                        let diff = (vals[i * m + k] - vals[j * m + k]).abs();
+                        if diff > dist {
+                            dist = diff;
+                        }
+                    }
+                } else if p == 0.0 {
+                    for k in 0..m {
+                        let diff = (vals[i * m + k] - vals[j * m + k]).abs();
+                        if diff > f64::EPSILON {
+                            dist += 1.0;
+                        }
+                    }
+                } else {
+                    for k in 0..m {
+                        let diff = (vals[i * m + k] - vals[j * m + k]).abs();
+                        dist += diff.powf(p);
+                    }
+                    dist = dist.powf(1.0 / p);
+                }
+                result.push(dist);
+            }
+        }
+
+        self.tensor_variable(result, vec![out_len], false)
+    }
+
     pub fn tensor_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.trace(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
@@ -14269,6 +14606,246 @@ mod tests {
         let c_vals = s.tensor_values(counts.unwrap()).unwrap();
         // Group sizes: 2, 2, 1
         assert_eq!(c_vals, vec![2.0, 2.0, 1.0]);
+    }
+
+    // ── bincount tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn bincount_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 1.0, 3.0, 2.0, 1.0], vec![6], false)
+            .unwrap();
+        let out = s.tensor_bincount(t, None, 0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // counts: [1, 3, 1, 1] for values 0..3
+        assert_eq!(vals, vec![1.0, 3.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn bincount_with_minlength() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0, 1.0], vec![2], false).unwrap();
+        let out = s.tensor_bincount(t, None, 5).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals.len(), 5);
+        assert_eq!(vals, vec![1.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn bincount_with_weights() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 1.0, 2.0], vec![4], false)
+            .unwrap();
+        let w = s
+            .tensor_variable(vec![0.5, 1.0, 0.25, 2.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_bincount(t, Some(w), 0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 0.5).abs() < 1e-12);
+        assert!((vals[1] - 1.25).abs() < 1e-12);
+        assert!((vals[2] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bincount_empty() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![], vec![0], false).unwrap();
+        let out = s.tensor_bincount(t, None, 0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn bincount_rejects_negative() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0, -1.0], vec![2], false).unwrap();
+        assert!(s.tensor_bincount(t, None, 0).is_err());
+    }
+
+    #[test]
+    fn bincount_rejects_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 2.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        assert!(s.tensor_bincount(t, None, 0).is_err());
+    }
+
+    // ── histc tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn histc_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 2.0, 1.0, 3.0, 4.0, 5.0], vec![6], false)
+            .unwrap();
+        let out = s.tensor_histc(t, 5, 1.0, 5.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals.len(), 5);
+        // bins: [1,1.8), [1.8,2.6), [2.6,3.4), [3.4,4.2), [4.2,5]
+        assert!((vals[0] - 2.0).abs() < 1e-12); // 1.0, 1.0
+        assert!((vals[1] - 1.0).abs() < 1e-12); // 2.0
+        assert!((vals[2] - 1.0).abs() < 1e-12); // 3.0
+        assert!((vals[3] - 1.0).abs() < 1e-12); // 4.0
+        assert!((vals[4] - 1.0).abs() < 1e-12); // 5.0
+    }
+
+    #[test]
+    fn histc_auto_range() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 2.0, 3.0], vec![4], false)
+            .unwrap();
+        // min==max triggers auto-range
+        let out = s.tensor_histc(t, 3, 0.0, 0.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals.len(), 3);
+        let total: f64 = vals.iter().sum();
+        assert!((total - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn histc_single_value() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![5.0, 5.0, 5.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_histc(t, 4, 0.0, 0.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        let total: f64 = vals.iter().sum();
+        assert!((total - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn histc_clamp_outliers() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![-10.0, 0.5, 1.5, 100.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_histc(t, 2, 0.0, 2.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // -10 clamps to bin 0, 100 clamps to bin 1
+        assert!((vals[0] - 2.0).abs() < 1e-12); // -10, 0.5
+        assert!((vals[1] - 2.0).abs() < 1e-12); // 1.5, 100
+    }
+
+    // ── block_diag tests ───────────────────────────────────────────────
+
+    #[test]
+    fn block_diag_two_matrices() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![5.0, 6.0, 7.0, 8.0, 9.0, 10.0], vec![2, 3], false)
+            .unwrap();
+        let out = s.tensor_block_diag(&[a, b]).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![4, 5]);
+        let vals = s.tensor_values(out).unwrap();
+        #[rustfmt::skip]
+        let expected = vec![
+            1.0, 2.0, 0.0, 0.0, 0.0,
+            3.0, 4.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 5.0, 6.0, 7.0,
+            0.0, 0.0, 8.0, 9.0, 10.0,
+        ];
+        assert_eq!(vals, expected);
+    }
+
+    #[test]
+    fn block_diag_with_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s.tensor_variable(vec![4.0], vec![1, 1], false).unwrap();
+        let out = s.tensor_block_diag(&[a, b]).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        // 1-D [3] treated as (1,3), plus (1,1) = (2, 4)
+        assert_eq!(shape, vec![2, 4]);
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 4.0]);
+    }
+
+    #[test]
+    fn block_diag_empty() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let out = s.tensor_block_diag(&[]).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![0, 0]);
+    }
+
+    // ── cdist tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn cdist_l2_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s
+            .tensor_variable(vec![0.0, 0.0, 1.0, 0.0], vec![2, 2], false)
+            .unwrap();
+        let x2 = s
+            .tensor_variable(vec![0.0, 1.0, 1.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let out = s.tensor_cdist(x1, x2, 2.0).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![2, 2]);
+        let vals = s.tensor_values(out).unwrap();
+        // d((0,0),(0,1)) = 1.0
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        // d((0,0),(1,1)) = sqrt(2)
+        assert!((vals[1] - 2.0f64.sqrt()).abs() < 1e-10);
+        // d((1,0),(0,1)) = sqrt(2)
+        assert!((vals[2] - 2.0f64.sqrt()).abs() < 1e-10);
+        // d((1,0),(1,1)) = 1.0
+        assert!((vals[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cdist_linf() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s
+            .tensor_variable(vec![0.0, 0.0], vec![1, 2], false)
+            .unwrap();
+        let x2 = s
+            .tensor_variable(vec![3.0, 4.0], vec![1, 2], false)
+            .unwrap();
+        let out = s.tensor_cdist(x1, x2, f64::INFINITY).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 4.0).abs() < 1e-10); // max(3, 4) = 4
+    }
+
+    // ── pdist tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn pdist_l2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 3 points in 2D
+        let t = s
+            .tensor_variable(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0], vec![3, 2], false)
+            .unwrap();
+        let out = s.tensor_pdist(t, 2.0).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![3]); // 3*(3-1)/2 = 3
+        let vals = s.tensor_values(out).unwrap();
+        // d(0,1) = 1.0, d(0,2) = 1.0, d(1,2) = sqrt(2)
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 1.0).abs() < 1e-10);
+        assert!((vals[2] - 2.0f64.sqrt()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pdist_l1() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 0.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let out = s.tensor_pdist(t, 1.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 7.0).abs() < 1e-10); // |3|+|4| = 7
     }
 
     // ── matrix_power / matrix_exp tests (bd-2drq.10) ──────────────────

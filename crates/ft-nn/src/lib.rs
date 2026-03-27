@@ -820,6 +820,460 @@ impl Module for Linear {
     }
 }
 
+/// Bilinear transformation module: `y_k = x1^T W_k x2 + b_k`.
+///
+/// Equivalent to `torch.nn.Bilinear(in1_features, in2_features, out_features)`.
+/// Weight has shape `[out_features, in1_features, in2_features]`.
+/// Bias has shape `[out_features]`.
+///
+/// Note: the `forward` method takes only `input` (`x1`). The second input `x2`
+/// must be provided via `forward_bilinear`.
+pub struct Bilinear {
+    weight: TensorNodeId,
+    bias: Option<TensorNodeId>,
+    in1_features: usize,
+    in2_features: usize,
+    out_features: usize,
+}
+
+impl Bilinear {
+    /// Create a new Bilinear layer with uniform initialization.
+    pub fn new(
+        session: &mut FrankenTorchSession,
+        in1_features: usize,
+        in2_features: usize,
+        out_features: usize,
+        use_bias: bool,
+    ) -> Result<Self, AutogradError> {
+        let bound = 1.0 / (in1_features as f64).sqrt();
+        let total = out_features * in1_features * in2_features;
+
+        let weight_rand = session.rand(vec![total], false)?;
+        let scale = session.full(vec![total], 2.0 * bound, false)?;
+        let w_scaled = session.tensor_mul(weight_rand, scale)?;
+        let shift = session.full(vec![total], bound, false)?;
+        let w_shifted = session.tensor_sub(w_scaled, shift)?;
+
+        let w_vals = session.tensor_values(w_shifted)?;
+        let weight = session.tensor_variable(
+            w_vals,
+            vec![out_features, in1_features, in2_features],
+            true,
+        )?;
+
+        let bias = if use_bias {
+            let b_rand = session.rand(vec![out_features], false)?;
+            let b_scale = session.full(vec![out_features], 2.0 * bound, false)?;
+            let b_scaled = session.tensor_mul(b_rand, b_scale)?;
+            let b_shift = session.full(vec![out_features], bound, false)?;
+            let b_shifted = session.tensor_sub(b_scaled, b_shift)?;
+            let b_vals = session.tensor_values(b_shifted)?;
+            Some(session.tensor_variable(b_vals, vec![out_features], true)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            weight,
+            bias,
+            in1_features,
+            in2_features,
+            out_features,
+        })
+    }
+
+    /// Compute bilinear forward: `y_k = x1^T W_k x2 + b_k`.
+    ///
+    /// `x1` has shape `[*, in1_features]`, `x2` has shape `[*, in2_features]`.
+    /// Output has shape `[*, out_features]`.
+    pub fn forward_bilinear(
+        &self,
+        session: &mut FrankenTorchSession,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let x1_vals = session.tensor_values(x1)?;
+        let x1_shape = session.tensor_shape(x1)?;
+        let x2_vals = session.tensor_values(x2)?;
+        let x2_shape = session.tensor_shape(x2)?;
+        let w_vals = session.tensor_values(self.weight)?;
+
+        let in1 = self.in1_features;
+        let in2 = self.in2_features;
+        let out = self.out_features;
+
+        // Handle batched inputs
+        let batch = if x1_shape.len() == 1 {
+            1
+        } else {
+            x1_shape[..x1_shape.len() - 1].iter().product()
+        };
+
+        let x1_last = *x1_shape.last().unwrap_or(&0);
+        let x2_last = *x2_shape.last().unwrap_or(&0);
+
+        if x1_last != in1 || x2_last != in2 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "bilinear: input feature dimensions mismatch",
+                },
+            )));
+        }
+
+        // y[b, k] = sum_i sum_j x1[b, i] * W[k, i, j] * x2[b, j]
+        let mut result = vec![0.0f64; batch * out];
+        for b in 0..batch {
+            for k in 0..out {
+                let mut val = 0.0f64;
+                for i in 0..in1 {
+                    for j in 0..in2 {
+                        val += x1_vals[b * in1 + i]
+                            * w_vals[k * in1 * in2 + i * in2 + j]
+                            * x2_vals[b * in2 + j];
+                    }
+                }
+                result[b * out + k] = val;
+            }
+        }
+
+        let out_shape = if x1_shape.len() == 1 {
+            vec![out]
+        } else {
+            let mut s = x1_shape[..x1_shape.len() - 1].to_vec();
+            s.push(out);
+            s
+        };
+
+        let result_node = session.tensor_variable(result, out_shape.clone(), false)?;
+
+        if let Some(bias) = self.bias {
+            let expanded_bias = session.tensor_expand(bias, out_shape)?;
+            session.tensor_add(result_node, expanded_bias)
+        } else {
+            Ok(result_node)
+        }
+    }
+
+    /// Access the weight parameter.
+    #[must_use]
+    pub fn weight(&self) -> TensorNodeId {
+        self.weight
+    }
+
+    /// Access the bias parameter.
+    #[must_use]
+    pub fn bias(&self) -> Option<TensorNodeId> {
+        self.bias
+    }
+}
+
+impl Module for Bilinear {
+    fn forward(
+        &self,
+        _session: &mut FrankenTorchSession,
+        _input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        Err(AutogradError::Dispatch(DispatchError::Key(
+            DispatchKeyError::IncompatibleSet {
+                reason: "bilinear: use forward_bilinear(session, x1, x2) instead of forward()",
+            },
+        )))
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        let mut params = vec![self.weight];
+        if let Some(bias) = self.bias {
+            params.push(bias);
+        }
+        params
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        let mut params = vec![("weight", self.weight)];
+        if let Some(bias) = self.bias {
+            params.push(("bias", bias));
+        }
+        params
+    }
+}
+
+/// Extracts sliding local blocks from a batched input tensor (im2col).
+///
+/// Equivalent to `torch.nn.Unfold(kernel_size, dilation=1, padding=0, stride=1)`.
+/// Input shape: `[N, C, H, W]` (4-D batched image tensor).
+/// Output shape: `[N, C * kH * kW, L]` where `L` is the number of valid positions.
+pub struct Unfold {
+    kernel_h: usize,
+    kernel_w: usize,
+    dilation_h: usize,
+    dilation_w: usize,
+    padding_h: usize,
+    padding_w: usize,
+    stride_h: usize,
+    stride_w: usize,
+}
+
+impl Unfold {
+    /// Create a new Unfold module.
+    ///
+    /// `kernel_size`: (height, width) of the sliding window.
+    /// `dilation`, `padding`, `stride`: optional, default to (1,1), (0,0), (1,1).
+    #[must_use]
+    pub fn new(kernel_size: (usize, usize)) -> Self {
+        Self {
+            kernel_h: kernel_size.0,
+            kernel_w: kernel_size.1,
+            dilation_h: 1,
+            dilation_w: 1,
+            padding_h: 0,
+            padding_w: 0,
+            stride_h: 1,
+            stride_w: 1,
+        }
+    }
+
+    /// Set dilation.
+    #[must_use]
+    pub fn dilation(mut self, dilation: (usize, usize)) -> Self {
+        self.dilation_h = dilation.0;
+        self.dilation_w = dilation.1;
+        self
+    }
+
+    /// Set padding.
+    #[must_use]
+    pub fn padding(mut self, padding: (usize, usize)) -> Self {
+        self.padding_h = padding.0;
+        self.padding_w = padding.1;
+        self
+    }
+
+    /// Set stride.
+    #[must_use]
+    pub fn stride(mut self, stride: (usize, usize)) -> Self {
+        self.stride_h = stride.0;
+        self.stride_w = stride.1;
+        self
+    }
+
+    fn output_positions(&self, h: usize, w: usize) -> (usize, usize) {
+        let eff_kh = self.dilation_h * (self.kernel_h - 1) + 1;
+        let eff_kw = self.dilation_w * (self.kernel_w - 1) + 1;
+        let out_h = (h + 2 * self.padding_h).saturating_sub(eff_kh) / self.stride_h + 1;
+        let out_w = (w + 2 * self.padding_w).saturating_sub(eff_kw) / self.stride_w + 1;
+        (out_h, out_w)
+    }
+}
+
+impl Module for Unfold {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "unfold: input must be 4-D [N, C, H, W]",
+                },
+            )));
+        }
+        let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let (out_h, out_w) = self.output_positions(h, w);
+        let l = out_h * out_w;
+        let block_size = c * self.kernel_h * self.kernel_w;
+
+        let mut output = vec![0.0f64; n * block_size * l];
+
+        for batch in 0..n {
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    let col_idx = oh * out_w + ow;
+                    for ci in 0..c {
+                        for kh in 0..self.kernel_h {
+                            for kw in 0..self.kernel_w {
+                                let ih = oh * self.stride_h + kh * self.dilation_h;
+                                let iw = ow * self.stride_w + kw * self.dilation_w;
+                                let row =
+                                    ci * self.kernel_h * self.kernel_w + kh * self.kernel_w + kw;
+                                let val = if ih >= self.padding_h
+                                    && ih < h + self.padding_h
+                                    && iw >= self.padding_w
+                                    && iw < w + self.padding_w
+                                {
+                                    let src_h = ih - self.padding_h;
+                                    let src_w = iw - self.padding_w;
+                                    vals[batch * c * h * w + ci * h * w + src_h * w + src_w]
+                                } else {
+                                    0.0
+                                };
+                                output[batch * block_size * l + row * l + col_idx] = val;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        session.tensor_variable(output, vec![n, block_size, l], false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Combines an array of sliding local blocks into a large containing tensor (col2im).
+///
+/// Equivalent to `torch.nn.Fold(output_size, kernel_size, dilation=1, padding=0, stride=1)`.
+/// Input shape: `[N, C * kH * kW, L]`.
+/// Output shape: `[N, C, output_h, output_w]`.
+///
+/// Overlapping blocks are summed (this is the transpose of `Unfold`).
+pub struct Fold {
+    output_h: usize,
+    output_w: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    dilation_h: usize,
+    dilation_w: usize,
+    padding_h: usize,
+    padding_w: usize,
+    stride_h: usize,
+    stride_w: usize,
+}
+
+impl Fold {
+    /// Create a new Fold module.
+    ///
+    /// `output_size`: target (H, W). `kernel_size`: (kH, kW).
+    #[must_use]
+    pub fn new(output_size: (usize, usize), kernel_size: (usize, usize)) -> Self {
+        Self {
+            output_h: output_size.0,
+            output_w: output_size.1,
+            kernel_h: kernel_size.0,
+            kernel_w: kernel_size.1,
+            dilation_h: 1,
+            dilation_w: 1,
+            padding_h: 0,
+            padding_w: 0,
+            stride_h: 1,
+            stride_w: 1,
+        }
+    }
+
+    /// Set dilation.
+    #[must_use]
+    pub fn dilation(mut self, dilation: (usize, usize)) -> Self {
+        self.dilation_h = dilation.0;
+        self.dilation_w = dilation.1;
+        self
+    }
+
+    /// Set padding.
+    #[must_use]
+    pub fn padding(mut self, padding: (usize, usize)) -> Self {
+        self.padding_h = padding.0;
+        self.padding_w = padding.1;
+        self
+    }
+
+    /// Set stride.
+    #[must_use]
+    pub fn stride(mut self, stride: (usize, usize)) -> Self {
+        self.stride_h = stride.0;
+        self.stride_w = stride.1;
+        self
+    }
+
+    fn output_positions(&self) -> (usize, usize) {
+        let eff_kh = self.dilation_h * (self.kernel_h - 1) + 1;
+        let eff_kw = self.dilation_w * (self.kernel_w - 1) + 1;
+        let out_h = (self.output_h + 2 * self.padding_h).saturating_sub(eff_kh) / self.stride_h + 1;
+        let out_w = (self.output_w + 2 * self.padding_w).saturating_sub(eff_kw) / self.stride_w + 1;
+        (out_h, out_w)
+    }
+}
+
+impl Module for Fold {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 3 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "fold: input must be 3-D [N, C*kH*kW, L]",
+                },
+            )));
+        }
+        let (n, block_size, l) = (shape[0], shape[1], shape[2]);
+        let (out_h, out_w) = self.output_positions();
+        let expected_l = out_h * out_w;
+        if l != expected_l {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "fold: L does not match output_size/kernel/stride/padding",
+                },
+            )));
+        }
+
+        let c = block_size / (self.kernel_h * self.kernel_w);
+        if c * self.kernel_h * self.kernel_w != block_size {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "fold: block_size must be divisible by kH*kW",
+                },
+            )));
+        }
+
+        let h = self.output_h;
+        let w = self.output_w;
+        let mut output = vec![0.0f64; n * c * h * w];
+
+        for batch in 0..n {
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    let col_idx = oh * out_w + ow;
+                    for ci in 0..c {
+                        for kh in 0..self.kernel_h {
+                            for kw in 0..self.kernel_w {
+                                let ih = oh * self.stride_h + kh * self.dilation_h;
+                                let iw = ow * self.stride_w + kw * self.dilation_w;
+                                if ih >= self.padding_h
+                                    && ih < h + self.padding_h
+                                    && iw >= self.padding_w
+                                    && iw < w + self.padding_w
+                                {
+                                    let dst_h = ih - self.padding_h;
+                                    let dst_w = iw - self.padding_w;
+                                    let row = ci * self.kernel_h * self.kernel_w
+                                        + kh * self.kernel_w
+                                        + kw;
+                                    output[batch * c * h * w + ci * h * w + dst_h * w + dst_w] +=
+                                        vals[batch * block_size * l + row * l + col_idx];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        session.tensor_variable(output, vec![n, c, h, w], false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 /// ReLU activation module.
 pub struct ReLU;
 
@@ -9867,6 +10321,167 @@ impl Module for ModuleDict {
     }
 }
 
+// ── Parameter Containers ───────────────────────────────────────────────
+
+/// A list of parameters (tensors), indexed by position.
+///
+/// Equivalent to `torch.nn.ParameterList`. Unlike `ModuleList`, this holds
+/// raw parameter tensors rather than sub-modules. All parameters are
+/// registered as trainable and appear in `parameters()` / `state_dict()`.
+pub struct ParameterList {
+    params: Vec<TensorNodeId>,
+}
+
+impl ParameterList {
+    /// Create a new `ParameterList` from the given parameter tensors.
+    #[must_use]
+    pub fn new(params: Vec<TensorNodeId>) -> Self {
+        Self { params }
+    }
+
+    /// Append a parameter.
+    pub fn append(&mut self, param: TensorNodeId) {
+        self.params.push(param);
+    }
+
+    /// Number of parameters.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.params.len()
+    }
+
+    /// Whether the list is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.params.is_empty()
+    }
+
+    /// Get a parameter by index.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<TensorNodeId> {
+        self.params.get(index).copied()
+    }
+}
+
+impl Default for ParameterList {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl Module for ParameterList {
+    fn forward(
+        &self,
+        _session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // ParameterList is a container, not a computation — forward is passthrough
+        Ok(input)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        self.params.clone()
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        // Parameters are returned via named_parameter_slots_own with dynamic names
+        Vec::new()
+    }
+
+    fn named_parameter_slots_own(&self) -> Vec<(String, Option<TensorNodeId>)> {
+        self.params
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| (i.to_string(), Some(p)))
+            .collect()
+    }
+}
+
+/// A dictionary of named parameters (tensors), looked up by key.
+///
+/// Equivalent to `torch.nn.ParameterDict`. All parameters are registered
+/// as trainable and appear in `parameters()` / `state_dict()`.
+pub struct ParameterDict {
+    entries: Vec<(String, TensorNodeId)>,
+}
+
+impl ParameterDict {
+    /// Create a new empty `ParameterDict`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Insert or replace a named parameter.
+    pub fn insert(&mut self, name: String, param: TensorNodeId) {
+        if let Some(entry) = self.entries.iter_mut().find(|(k, _)| *k == name) {
+            entry.1 = param;
+        } else {
+            self.entries.push((name, param));
+        }
+    }
+
+    /// Get a parameter by name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<TensorNodeId> {
+        self.entries
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| *v)
+    }
+
+    /// Number of parameters.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the dict is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Iterator over (name, param) pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, TensorNodeId)> {
+        self.entries.iter().map(|(k, v)| (k.as_str(), *v))
+    }
+}
+
+impl Default for ParameterDict {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Module for ParameterDict {
+    fn forward(
+        &self,
+        _session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // ParameterDict is a container, not a computation — forward is passthrough
+        Ok(input)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        self.entries.iter().map(|(_, v)| *v).collect()
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        Vec::new()
+    }
+
+    fn named_parameter_slots_own(&self) -> Vec<(String, Option<TensorNodeId>)> {
+        self.entries
+            .iter()
+            .map(|(k, v)| (k.clone(), Some(*v)))
+            .collect()
+    }
+}
+
 // ── Padding Modules ────────────────────────────────────────────────────
 
 /// Constant padding for 1D inputs (3D tensors `[N, C, W]`).
@@ -13402,6 +14017,301 @@ mod tests {
 
         let names: Vec<&str> = dict.iter().map(|(name, _)| name).collect();
         assert_eq!(names, vec!["first", "second", "third"]);
+    }
+
+    // ── Bilinear Tests ──────────────────────────────────────────────
+
+    #[test]
+    fn bilinear_forward_basic() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Simple 2x3 -> 1 bilinear with known weights
+        let _bilinear = Bilinear::new(&mut session, 2, 3, 1, false).unwrap();
+
+        // Override weight to identity-like for predictability
+        let w = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], vec![1, 2, 3], true)
+            .unwrap();
+        let bilinear = Bilinear {
+            weight: w,
+            bias: None,
+            in1_features: 2,
+            in2_features: 3,
+            out_features: 1,
+        };
+
+        let x1 = session
+            .tensor_variable(vec![2.0, 3.0], vec![2], false)
+            .unwrap();
+        let x2 = session
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false)
+            .unwrap();
+        let out = bilinear.forward_bilinear(&mut session, x1, x2).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        // y = x1[0]*W[0,0,0]*x2[0] + x1[0]*W[0,0,1]*x2[1] + ...
+        // = 2*1*4 + 2*0*5 + 2*0*6 + 3*0*4 + 3*1*5 + 3*0*6 = 8 + 15 = 23
+        assert!((vals[0] - 23.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn bilinear_with_bias() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![1, 2, 2], true)
+            .unwrap();
+        let b = session.tensor_variable(vec![10.0], vec![1], true).unwrap();
+        let bilinear = Bilinear {
+            weight: w,
+            bias: Some(b),
+            in1_features: 2,
+            in2_features: 2,
+            out_features: 1,
+        };
+
+        let x1 = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .unwrap();
+        let x2 = session
+            .tensor_variable(vec![3.0, 4.0], vec![2], false)
+            .unwrap();
+        let out = bilinear.forward_bilinear(&mut session, x1, x2).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        // 1*1*3 + 1*0*4 + 2*0*3 + 2*1*4 = 3 + 8 = 11 + bias(10) = 21
+        assert!((vals[0] - 21.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn bilinear_batched() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![1, 2, 2], true)
+            .unwrap();
+        let bilinear = Bilinear {
+            weight: w,
+            bias: None,
+            in1_features: 2,
+            in2_features: 2,
+            out_features: 1,
+        };
+
+        // Batch of 2
+        let x1 = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let x2 = session
+            .tensor_variable(vec![2.0, 3.0, 4.0, 5.0], vec![2, 2], false)
+            .unwrap();
+        let out = bilinear.forward_bilinear(&mut session, x1, x2).unwrap();
+        let shape = session.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![2, 1]);
+        let vals = session.tensor_values(out).unwrap();
+        // batch 0: 1*1*2 + 1*0*3 + 0*0*2 + 0*1*3 = 2
+        // batch 1: 0*1*4 + 0*0*5 + 1*0*4 + 1*1*5 = 5
+        assert!((vals[0] - 2.0).abs() < 1e-10);
+        assert!((vals[1] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn bilinear_parameters_count() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bilinear = Bilinear::new(&mut session, 4, 3, 2, true).unwrap();
+        // weight + bias = 2 params
+        assert_eq!(bilinear.parameters().len(), 2);
+        let named = bilinear.named_parameters_own();
+        assert_eq!(named.len(), 2);
+        assert_eq!(named[0].0, "weight");
+        assert_eq!(named[1].0, "bias");
+    }
+
+    // ── Unfold / Fold Tests ──────────────────────────────────────────
+
+    #[test]
+    fn unfold_basic_2x2_kernel() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Input: [1, 1, 3, 3] — single channel 3x3 image
+        #[rustfmt::skip]
+        let data = vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ];
+        let input = session
+            .tensor_variable(data, vec![1, 1, 3, 3], false)
+            .unwrap();
+        let unfold = Unfold::new((2, 2));
+        let out = unfold.forward(&mut session, input).unwrap();
+        let shape = session.tensor_shape(out).unwrap();
+        // C*kH*kW = 1*2*2 = 4, L = (3-2+1)*(3-2+1) = 4
+        assert_eq!(shape, vec![1, 4, 4]);
+        let vals = session.tensor_values(out).unwrap();
+        // Each column is a flattened 2x2 patch
+        // col0: [1,2,4,5], col1: [2,3,5,6], col2: [4,5,7,8], col3: [5,6,8,9]
+        assert!((vals[0] - 1.0).abs() < 1e-12); // row0, col0
+        assert!((vals[1] - 2.0).abs() < 1e-12); // row0, col1
+        assert!((vals[2] - 4.0).abs() < 1e-12); // row0, col2
+        assert!((vals[3] - 5.0).abs() < 1e-12); // row0, col3
+    }
+
+    #[test]
+    fn unfold_with_padding() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let input = session
+            .tensor_variable(data, vec![1, 1, 2, 2], false)
+            .unwrap();
+        let unfold = Unfold::new((2, 2)).padding((1, 1));
+        let out = unfold.forward(&mut session, input).unwrap();
+        let shape = session.tensor_shape(out).unwrap();
+        // With padding=1: output positions = (2+2-2)/1+1 = 3 per dim, L = 9
+        assert_eq!(shape[0], 1);
+        assert_eq!(shape[1], 4); // C*kH*kW
+        assert_eq!(shape[2], 9); // L = 3*3
+    }
+
+    #[test]
+    fn fold_unfold_roundtrip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let data = vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ];
+        let input = session
+            .tensor_variable(data.clone(), vec![1, 1, 3, 3], false)
+            .unwrap();
+
+        // Unfold then fold with 1x1 kernel should be identity
+        let unfold = Unfold::new((1, 1));
+        let unfolded = unfold.forward(&mut session, input).unwrap();
+
+        let fold = Fold::new((3, 3), (1, 1));
+        let folded = fold.forward(&mut session, unfolded).unwrap();
+        let shape = session.tensor_shape(folded).unwrap();
+        assert_eq!(shape, vec![1, 1, 3, 3]);
+        let vals = session.tensor_values(folded).unwrap();
+        for (i, (&got, &expected)) in vals.iter().zip(data.iter()).enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "mismatch at {i}: got {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn unfold_rejects_non_4d() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let unfold = Unfold::new((2, 2));
+        assert!(unfold.forward(&mut session, input).is_err());
+    }
+
+    // ── ParameterList / ParameterDict Tests ──────────────────────────
+
+    #[test]
+    fn parameter_list_collects_params() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let p1 = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], true)
+            .unwrap();
+        let p2 = session.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        let pl = ParameterList::new(vec![p1, p2]);
+        assert_eq!(pl.len(), 2);
+        assert!(!pl.is_empty());
+        let params = pl.parameters();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], p1);
+        assert_eq!(params[1], p2);
+    }
+
+    #[test]
+    fn parameter_list_append() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut pl = ParameterList::default();
+        assert!(pl.is_empty());
+        let p = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        pl.append(p);
+        assert_eq!(pl.len(), 1);
+        assert_eq!(pl.get(0), Some(p));
+        assert_eq!(pl.get(1), None);
+    }
+
+    #[test]
+    fn parameter_list_forward_passthrough() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let p = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let pl = ParameterList::new(vec![p]);
+        let input = session
+            .tensor_variable(vec![5.0, 6.0], vec![2], false)
+            .unwrap();
+        let out = pl.forward(&mut session, input).unwrap();
+        // forward is passthrough
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn parameter_list_named_slots() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let p1 = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let p2 = session.tensor_variable(vec![2.0], vec![1], true).unwrap();
+        let pl = ParameterList::new(vec![p1, p2]);
+        let slots = pl.named_parameter_slots_own();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].0, "0");
+        assert_eq!(slots[1].0, "1");
+    }
+
+    #[test]
+    fn parameter_dict_insert_and_get() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut pd = ParameterDict::new();
+        let p1 = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], true)
+            .unwrap();
+        let p2 = session.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        pd.insert("weight".to_string(), p1);
+        pd.insert("bias".to_string(), p2);
+        assert_eq!(pd.len(), 2);
+        assert_eq!(pd.get("weight"), Some(p1));
+        assert_eq!(pd.get("bias"), Some(p2));
+        assert_eq!(pd.get("nonexistent"), None);
+    }
+
+    #[test]
+    fn parameter_dict_replace() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut pd = ParameterDict::new();
+        let p1 = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let p2 = session.tensor_variable(vec![2.0], vec![1], true).unwrap();
+        pd.insert("w".to_string(), p1);
+        pd.insert("w".to_string(), p2);
+        assert_eq!(pd.len(), 1);
+        assert_eq!(pd.get("w"), Some(p2));
+    }
+
+    #[test]
+    fn parameter_dict_collects_all_params() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut pd = ParameterDict::new();
+        let p1 = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let p2 = session.tensor_variable(vec![2.0], vec![1], true).unwrap();
+        pd.insert("a".to_string(), p1);
+        pd.insert("b".to_string(), p2);
+        let params = pd.parameters();
+        assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn parameter_dict_iter_in_order() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut pd = ParameterDict::new();
+        let p1 = session.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let p2 = session.tensor_variable(vec![2.0], vec![1], true).unwrap();
+        pd.insert("first".to_string(), p1);
+        pd.insert("second".to_string(), p2);
+        let names: Vec<&str> = pd.iter().map(|(k, _)| k).collect();
+        assert_eq!(names, vec!["first", "second"]);
     }
 
     // ── Padding Module Tests ───────────────────────────────────────────

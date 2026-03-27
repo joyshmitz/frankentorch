@@ -1,4 +1,7 @@
 #![forbid(unsafe_code)]
+// Fixture case structs have fields (contract_ids, e2e_scenarios) that are
+// deserialized from JSON for schema compliance but not read in Rust code.
+#![allow(dead_code)]
 
 mod logging;
 
