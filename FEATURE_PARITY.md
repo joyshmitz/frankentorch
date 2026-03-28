@@ -56,13 +56,13 @@ norm (global p-norm), norm_dim (per-dim p-norm) — supports L0, L1, L2, Lp, Lin
 softmax, log_softmax (per-dim, numerically stable)
 
 ### Functional API
-functional_normalize, functional_dropout, functional_embedding, functional_linear
+functional_normalize, functional_dropout, functional_embedding, functional_linear, scaled_dot_product_attention
 
 ### Shape Operations
 reshape, view, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk, unbind
 
 ### Matrix Operations
-matmul, addmm, addmv (with backward)
+matmul, addmm, addmv, bmm, baddbmm, addbmm (with backward)
 
 ### Interpolation
 lerp (linear interpolation, with backward)

@@ -16809,9 +16809,6 @@ mod tests {
         assert!((vals[1] - 21.0).abs() < 1e-10);
     }
 
-    // ── tensordot / kron tests (bd-2klp.8) ────────────────────────────
-
-    #[test]
     // ── baddbmm / addbmm tests ──────────────────────────────────────
 
     #[test]
@@ -16887,13 +16884,25 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Q, K, V: [1, 2, 4] (batch=1, seq=2, d=4)
         let q = s
-            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], vec![1, 2, 4], false)
+            .tensor_variable(
+                vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                vec![1, 2, 4],
+                false,
+            )
             .unwrap();
         let k = s
-            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], vec![1, 2, 4], false)
+            .tensor_variable(
+                vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                vec![1, 2, 4],
+                false,
+            )
             .unwrap();
         let v = s
-            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], vec![1, 2, 4], false)
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                vec![1, 2, 4],
+                false,
+            )
             .unwrap();
         let out = s
             .scaled_dot_product_attention(q, k, v, None, 0.0, false)
