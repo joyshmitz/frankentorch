@@ -26,6 +26,7 @@ This matrix tracks execution progress, not allowable scope reduction. Release re
 | Loss functions | parity_green | mse_loss, l1_loss, bce_loss, smooth_l1_loss, huber_loss, cross_entropy_loss, nll_loss, cosine_embedding_loss (composed from autograd ops); nn modules: MSELoss, L1Loss, CrossEntropyLoss, NLLLoss, BCELoss, BCEWithLogitsLoss, SmoothL1Loss, HuberLoss, CosineEmbeddingLoss, KLDivLoss |
 | Shape operations | parity_green | reshape, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk |
 | Advanced reductions | parity_green | argmax, argmin, max_dim, min_dim (with backward), softmax, log_softmax, sum_dim, mean_dim, prod_dim, var_dim, std_dim |
+| Functional API (`torch.nn.functional`-style session ops) | parity_green | session-level normalize, dropout, embedding, and linear helpers available in `ft-api` and covered by targeted tests |
 | Neural network modules (ft-nn) | parity_green | Module trait, LossModule trait, Linear, Bilinear, Conv1d, Conv2d, ConvTranspose1d, ReLU, Sigmoid, Tanh, GELU, SiLU, LeakyReLU, ELU, Mish, Softplus, Sequential, ModuleList, ModuleDict, ParameterList, ParameterDict, Dropout, LayerNorm, BatchNorm1d, BatchNorm2d, GroupNorm, InstanceNorm1d, InstanceNorm2d, Embedding, MultiheadAttention, Softmax, LogSoftmax, Flatten, Identity, Unfold, Fold, AvgPool1d, MaxPool1d, MaxPool2d, AdaptiveAvgPool2d, Upsample1d, Upsample2d, ConstantPad1d, ConstantPad2d, ZeroPad2d, RNNCell, LSTMCell, GRUCell, MSELoss, L1Loss, CrossEntropyLoss, NLLLoss, BCELoss, BCEWithLogitsLoss, SmoothL1Loss, HuberLoss, KLDivLoss |
 | Optimizers (ft-optim) | parity_green | Optimizer trait, SGD (momentum, weight_decay, nesterov), Adam (bias correction, weight_decay), AdamW, RMSprop, Adagrad, RAdam, SparseAdam |
 | Advanced indexing | parity_green | index_select, gather, scatter, masked_fill (with backward for index_select, gather) |
@@ -53,6 +54,9 @@ norm (global p-norm), norm_dim (per-dim p-norm) — supports L0, L1, L2, Lp, Lin
 
 ### Normalization
 softmax, log_softmax (per-dim, numerically stable)
+
+### Functional API
+functional_normalize, functional_dropout, functional_embedding, functional_linear
 
 ### Shape Operations
 reshape, view, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk, unbind
