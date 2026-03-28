@@ -17,7 +17,7 @@ Deterministic Autograd Contract (DAC): replayable gradient graph execution with 
 
 Legacy oracle:
 
-- typical local checkout when present: /dp/frankentorch/legacy_pytorch_code/pytorch
+- typical local mirror when present: `legacy_pytorch_code/pytorch` (relative to the repo root)
 - upstream: https://github.com/pytorch/pytorch
 
 ## 1. Product Thesis

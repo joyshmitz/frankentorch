@@ -219,7 +219,7 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 ### Legacy Behavioral Oracle
 
-- Typical local checkout when present: `/dp/frankentorch/legacy_pytorch_code/pytorch`
+- Typical local mirror when present: `legacy_pytorch_code/pytorch` (relative to the repo root)
 - Upstream: https://github.com/pytorch/pytorch
 
 The PyTorch codebase serves as the behavioral oracle for conformance testing. Some local worktrees may omit the mirrored checkout, but FrankenTorch must still preserve PyTorch-observable tensor semantics, autograd contracts, and scoped optimizer behaviors.

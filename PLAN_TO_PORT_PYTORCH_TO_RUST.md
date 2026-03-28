@@ -12,7 +12,7 @@ This project follows the spec-first `porting-to-rust` method:
 
 ## 2. Legacy Oracle
 
-- Typical local mirror when present: `/dp/frankentorch/legacy_pytorch_code/pytorch`
+- Typical local mirror when present: `legacy_pytorch_code/pytorch` (relative to the repo root)
 - Upstream oracle: `pytorch/pytorch`
 
 ## 3. Parity-Complete Target Surface

@@ -1265,6 +1265,150 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Batch matrix multiply with add: `out = beta * input + alpha * (batch1 @ batch2)`.
+    ///
+    /// Equivalent to `torch.baddbmm(input, batch1, batch2, beta=1, alpha=1)`.
+    /// `batch1`: `[B, n, m]`, `batch2`: `[B, m, p]`, `input`: broadcastable to `[B, n, p]`.
+    pub fn tensor_baddbmm(
+        &mut self,
+        input: TensorNodeId,
+        batch1: TensorNodeId,
+        batch2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let bmm_result = self.tensor_bmm(batch1, batch2)?;
+        let out_shape = self.tensor_shape(bmm_result)?;
+
+        // Scale bmm result by alpha
+        let alpha_tensor = self.full(out_shape.clone(), alpha, false)?;
+        let scaled_bmm = self.tensor_mul(bmm_result, alpha_tensor)?;
+
+        // Scale input by beta and add
+        let input_expanded = self.tensor_expand(input, out_shape.clone())?;
+        let beta_tensor = self.full(out_shape, beta, false)?;
+        let scaled_input = self.tensor_mul(input_expanded, beta_tensor)?;
+
+        self.tensor_add(scaled_input, scaled_bmm)
+    }
+
+    /// Batch matrix multiply reduced to 2D with add: `out = beta * M + alpha * sum_b(batch1[b] @ batch2[b])`.
+    ///
+    /// Equivalent to `torch.addbmm(M, batch1, batch2, beta=1, alpha=1)`.
+    /// Sums the batch matrix products and adds to `M`.
+    pub fn tensor_addbmm(
+        &mut self,
+        input: TensorNodeId,
+        batch1: TensorNodeId,
+        batch2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let bmm_result = self.tensor_bmm(batch1, batch2)?;
+        // Sum over batch dimension (dim 0)
+        let summed = self.tensor_sum_dim(bmm_result, 0)?;
+        let out_shape = self.tensor_shape(summed)?;
+
+        let alpha_tensor = self.full(out_shape.clone(), alpha, false)?;
+        let scaled = self.tensor_mul(summed, alpha_tensor)?;
+
+        let input_expanded = self.tensor_expand(input, out_shape.clone())?;
+        let beta_tensor = self.full(out_shape, beta, false)?;
+        let scaled_input = self.tensor_mul(input_expanded, beta_tensor)?;
+
+        self.tensor_add(scaled_input, scaled)
+    }
+
+    /// Scaled dot-product attention (PyTorch 2.0+).
+    ///
+    /// Equivalent to `torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask, dropout_p, is_causal)`.
+    ///
+    /// Computes: `softmax(Q @ K^T / sqrt(d_k) + mask) @ V`
+    ///
+    /// `query`: `[*, L, E]`, `key`: `[*, S, E]`, `value`: `[*, S, Ev]`.
+    /// Returns: `[*, L, Ev]`.
+    pub fn scaled_dot_product_attention(
+        &mut self,
+        query: TensorNodeId,
+        key: TensorNodeId,
+        value: TensorNodeId,
+        attn_mask: Option<TensorNodeId>,
+        dropout_p: f64,
+        is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let q_shape = self.tensor_shape(query)?;
+        let k_shape = self.tensor_shape(key)?;
+
+        if q_shape.len() < 2 || k_shape.len() < 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scaled_dot_product_attention: Q/K must be at least 2-D",
+                },
+            )));
+        }
+
+        let d_k = *q_shape.last().unwrap();
+        let scale = 1.0 / (d_k as f64).sqrt();
+
+        // Q @ K^T — use bmm for 3D batched inputs, matmul for 2D
+        let ndim = k_shape.len();
+        let key_t = self.tensor_transpose(key, ndim - 2, ndim - 1)?;
+        let attn_weights = if ndim >= 3 {
+            self.tensor_bmm(query, key_t)?
+        } else {
+            self.tensor_matmul(query, key_t)?
+        };
+
+        // Scale
+        let aw_shape = self.tensor_shape(attn_weights)?;
+        let softmax_dim = aw_shape.len() - 1;
+        let scale_tensor = self.full(aw_shape.clone(), scale, false)?;
+        let scaled = self.tensor_mul(attn_weights, scale_tensor)?;
+
+        // Apply causal mask if requested
+        let masked = if is_causal {
+            let l = aw_shape[aw_shape.len() - 2];
+            let s = aw_shape[aw_shape.len() - 1];
+            let total: usize = aw_shape.iter().product();
+            let batch_count = total / (l * s);
+            let mut mask_data = Vec::with_capacity(total);
+            for _ in 0..batch_count {
+                for i in 0..l {
+                    for j in 0..s {
+                        if j > i {
+                            mask_data.push(f64::NEG_INFINITY);
+                        } else {
+                            mask_data.push(0.0);
+                        }
+                    }
+                }
+            }
+            let causal_mask = self.tensor_variable(mask_data, aw_shape, false)?;
+            self.tensor_add(scaled, causal_mask)?
+        } else if let Some(mask) = attn_mask {
+            self.tensor_add(scaled, mask)?
+        } else {
+            scaled
+        };
+
+        // Softmax along last dim
+        let softmaxed = self.tensor_softmax(masked, softmax_dim)?;
+
+        // Apply dropout
+        let dropped = if dropout_p > 0.0 {
+            self.functional_dropout(softmaxed, dropout_p, true)?
+        } else {
+            softmaxed
+        };
+
+        // attn_weights @ V
+        if ndim >= 3 {
+            self.tensor_bmm(dropped, value)
+        } else {
+            self.tensor_matmul(dropped, value)
+        }
+    }
+
     /// Tensor contraction over specified dimensions (generalised matrix multiply).
     ///
     /// `dims` is the number of trailing dimensions of `a` to contract with
@@ -16666,6 +16810,137 @@ mod tests {
     }
 
     // ── tensordot / kron tests (bd-2klp.8) ────────────────────────────
+
+    #[test]
+    // ── baddbmm / addbmm tests ──────────────────────────────────────
+
+    #[test]
+    fn baddbmm_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // batch1: [1, 2, 3], batch2: [1, 3, 2]
+        let batch1 = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], vec![1, 2, 3], false)
+            .unwrap();
+        let batch2 = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 3, 2], false)
+            .unwrap();
+        let input = s.zeros(vec![1, 2, 2], false).unwrap();
+        let out = s.tensor_baddbmm(input, batch1, batch2, 0.0, 1.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // Identity-like batch1 @ batch2 = [[1,2],[3,4]]
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 2.0).abs() < 1e-10);
+        assert!((vals[2] - 3.0).abs() < 1e-10);
+        assert!((vals[3] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn baddbmm_with_beta_alpha() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let batch1 = s
+            .tensor_variable(vec![1.0, 1.0, 1.0, 1.0], vec![1, 2, 2], false)
+            .unwrap();
+        let batch2 = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![1, 2, 2], false)
+            .unwrap();
+        let input = s.ones(vec![1, 2, 2], false).unwrap();
+        // out = 2.0 * ones + 3.0 * (ones @ I) = 2 + 3*ones = 5
+        let out = s.tensor_baddbmm(input, batch1, batch2, 2.0, 3.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        for &v in &vals {
+            assert!((v - 5.0).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn addbmm_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Two batch matrices, each identity-ish
+        let batch1 = s
+            .tensor_variable(
+                vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0],
+                vec![2, 2, 2],
+                false,
+            )
+            .unwrap();
+        let batch2 = s
+            .tensor_variable(
+                vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+                vec![2, 2, 2],
+                false,
+            )
+            .unwrap();
+        let input = s.zeros(vec![2, 2], false).unwrap();
+        // sum of bmm: I + 2*I = 3*I
+        let out = s.tensor_addbmm(input, batch1, batch2, 0.0, 1.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 3.0).abs() < 1e-10);
+        assert!(vals[1].abs() < 1e-10);
+        assert!(vals[2].abs() < 1e-10);
+        assert!((vals[3] - 3.0).abs() < 1e-10);
+    }
+
+    // ── scaled_dot_product_attention tests ──────────────────────────
+
+    #[test]
+    fn sdpa_basic_no_mask() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Q, K, V: [1, 2, 4] (batch=1, seq=2, d=4)
+        let q = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], vec![1, 2, 4], false)
+            .unwrap();
+        let k = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0], vec![1, 2, 4], false)
+            .unwrap();
+        let v = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], vec![1, 2, 4], false)
+            .unwrap();
+        let out = s
+            .scaled_dot_product_attention(q, k, v, None, 0.0, false)
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn sdpa_causal_mask() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // With causal mask, position 0 only attends to itself
+        let q = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![1, 2, 2], false)
+            .unwrap();
+        let k = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![1, 2, 2], false)
+            .unwrap();
+        let v = s
+            .tensor_variable(vec![10.0, 20.0, 30.0, 40.0], vec![1, 2, 2], false)
+            .unwrap();
+        let out = s
+            .scaled_dot_product_attention(q, k, v, None, 0.0, true)
+            .unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // Position 0 with causal mask: only sees position 0
+        // softmax(score[0,0]) = 1.0, so output = V[0] = [10, 20]
+        assert!((vals[0] - 10.0).abs() < 1e-6);
+        assert!((vals[1] - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sdpa_output_shape_matches() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Q: [2, 3, 8], K: [2, 5, 8], V: [2, 5, 6]
+        // Output should be [2, 3, 6]
+        let q = s.randn(vec![2, 3, 8], false).unwrap();
+        let k = s.randn(vec![2, 5, 8], false).unwrap();
+        let v = s.randn(vec![2, 5, 6], false).unwrap();
+        let out = s
+            .scaled_dot_product_attention(q, k, v, None, 0.0, false)
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![2, 3, 6]);
+    }
+
+    // ── tensordot / kron tests ────────────────────────────────────────
 
     #[test]
     fn tensordot_dims1_matches_matmul() {
