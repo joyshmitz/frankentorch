@@ -3341,6 +3341,14 @@ impl FrankenTorchSession {
         p: f64,
         training: bool,
     ) -> Result<TensorNodeId, AutogradError> {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "dropout: probability p must be in [0, 1]",
+                },
+            )));
+        }
+
         if !training || p == 0.0 {
             return Ok(input);
         }
@@ -3393,6 +3401,20 @@ impl FrankenTorchSession {
 
         let mut result = Vec::with_capacity(indices.len() * emb_dim);
         for &idx_f in &indices {
+            if idx_f < 0.0 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "embedding: indices must be non-negative",
+                    },
+                )));
+            }
+            if idx_f.fract() != 0.0 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "embedding: indices must be integer-valued",
+                    },
+                )));
+            }
             let idx = idx_f as usize;
             if idx >= num_emb {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -16726,6 +16748,24 @@ mod tests {
     }
 
     #[test]
+    fn functional_dropout_rejects_probability_below_zero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        assert!(s.functional_dropout(t, -0.1, true).is_err());
+    }
+
+    #[test]
+    fn functional_dropout_rejects_probability_above_one() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        assert!(s.functional_dropout(t, 1.1, true).is_err());
+    }
+
+    #[test]
     fn functional_embedding_lookup() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Weight: 3 embeddings of dim 2
@@ -16769,6 +16809,26 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
             .unwrap();
         let indices = s.tensor_variable(vec![5.0], vec![1], false).unwrap();
+        assert!(s.functional_embedding(indices, weight).is_err());
+    }
+
+    #[test]
+    fn functional_embedding_rejects_negative_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let weight = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let indices = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        assert!(s.functional_embedding(indices, weight).is_err());
+    }
+
+    #[test]
+    fn functional_embedding_rejects_fractional_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let weight = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let indices = s.tensor_variable(vec![0.5], vec![1], false).unwrap();
         assert!(s.functional_embedding(indices, weight).is_err());
     }
 
