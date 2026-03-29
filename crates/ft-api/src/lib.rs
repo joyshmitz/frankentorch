@@ -2260,6 +2260,13 @@ impl FrankenTorchSession {
         // Find max value to determine output size
         let mut max_val: Option<i64> = None;
         for &v in &vals {
+            if v != v.floor() {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "bincount: input must contain integer values",
+                    },
+                )));
+            }
             let iv = v as i64;
             if iv < 0 {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -3642,6 +3649,13 @@ impl FrankenTorchSession {
 
         for o in 0..outer {
             for (si, &idx_f) in idx_vals.iter().enumerate() {
+                if idx_f < 0.0 || idx_f != idx_f.floor() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "index_add: index values must be non-negative integers",
+                        },
+                    )));
+                }
                 let idx = idx_f as usize;
                 if idx >= dim_size || si >= src_dim_size {
                     continue;
@@ -3691,6 +3705,13 @@ impl FrankenTorchSession {
 
         for o in 0..outer {
             for (si, &idx_f) in idx_vals.iter().enumerate() {
+                if idx_f < 0.0 || idx_f != idx_f.floor() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "index_copy: index values must be non-negative integers",
+                        },
+                    )));
+                }
                 let idx = idx_f as usize;
                 if idx >= dim_size || si >= src_dim_size {
                     continue;
@@ -3737,6 +3758,13 @@ impl FrankenTorchSession {
 
         for o in 0..outer {
             for &idx_f in &idx_vals {
+                if idx_f < 0.0 || idx_f != idx_f.floor() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "index_fill: index values must be non-negative integers",
+                        },
+                    )));
+                }
                 let idx = idx_f as usize;
                 if idx >= dim_size {
                     continue;
@@ -6331,6 +6359,117 @@ impl FrankenTorchSession {
         let result = ft_kernel_cpu::slogdet_contiguous_f64(&values, &meta)
             .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
         Ok((result.sign, result.logabsdet))
+    }
+
+    /// Compute the Moore-Penrose pseudoinverse via SVD.
+    ///
+    /// Equivalent to `torch.linalg.pinv(input)`.
+    /// For a matrix A with SVD `A = U @ diag(S) @ V^T`, the pseudoinverse is
+    /// `A+ = V @ diag(1/S) @ U^T` (with small singular values zeroed).
+    pub fn tensor_linalg_pinv(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pinv: input must be 2-D",
+                },
+            )));
+        }
+        let m = shape[0];
+        let n = shape[1];
+
+        // SVD: A = U @ diag(S) @ Vh
+        let (u_id, s_id, vh_id) = self.tensor_linalg_svd(input, false)?;
+        let s_vals = self.tensor_values(s_id)?;
+
+        // Threshold: singular values below eps * max(S) * max(m,n) are treated as zero
+        let max_s = s_vals.iter().cloned().fold(0.0f64, f64::max);
+        let eps = f64::EPSILON * (m.max(n) as f64) * max_s;
+
+        let k = s_vals.len();
+        let s_inv: Vec<f64> = s_vals
+            .iter()
+            .map(|&s| if s > eps { 1.0 / s } else { 0.0 })
+            .collect();
+
+        // Build pinv = Vh^T @ diag(s_inv) @ U^T
+        // Vh is [k, n], Vh^T is [n, k]
+        let vh_t = self.tensor_transpose(vh_id, 0, 1)?;
+        // U is [m, k], U^T is [k, m]
+        let u_t = self.tensor_transpose(u_id, 0, 1)?;
+
+        // Scale columns of Vh^T by s_inv: Vh^T @ diag(s_inv) = element-wise multiply
+        let s_inv_tensor = self.tensor_variable(s_inv, vec![1, k], false)?;
+        let s_inv_expanded = self.tensor_expand(s_inv_tensor, vec![n, k])?;
+        let vh_t_scaled = self.tensor_mul(vh_t, s_inv_expanded)?;
+
+        // Final: vh_t_scaled @ u_t = [n, k] @ [k, m] = [n, m]
+        self.tensor_matmul(vh_t_scaled, u_t)
+    }
+
+    /// Return the k-th smallest element of a 1-D tensor.
+    ///
+    /// Equivalent to `torch.kthvalue(input, k)`.
+    /// Returns `(value, index)` where value is the k-th smallest element
+    /// and index is its position in the input (1-indexed k, 0-indexed index).
+    pub fn tensor_kthvalue(
+        &mut self,
+        input: TensorNodeId,
+        k: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let vals = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "kthvalue: input must be 1-D",
+                },
+            )));
+        }
+        if k == 0 || k > vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "kthvalue: k must be in [1, input.size(0)]",
+                },
+            )));
+        }
+
+        // Sort indices by value
+        let mut indices: Vec<usize> = (0..vals.len()).collect();
+        indices.sort_by(|&a, &b| vals[a].total_cmp(&vals[b]));
+
+        let idx = indices[k - 1];
+        let value = self.tensor_variable(vec![vals[idx]], vec![1], false)?;
+        let index = self.tensor_variable(vec![idx as f64], vec![1], false)?;
+        Ok((value, index))
+    }
+
+    /// Compute vector norm along a dimension.
+    ///
+    /// Equivalent to `torch.linalg.vector_norm(input, ord=2, dim=None)`.
+    /// Supports ord: 0, 1, 2, inf, -inf, and any positive float.
+    pub fn tensor_linalg_vector_norm(
+        &mut self,
+        input: TensorNodeId,
+        ord: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let vals = self.tensor_values(input)?;
+
+        let norm = if ord == f64::INFINITY {
+            vals.iter().map(|v| v.abs()).fold(0.0f64, f64::max)
+        } else if ord == f64::NEG_INFINITY {
+            vals.iter().map(|v| v.abs()).fold(f64::INFINITY, f64::min)
+        } else if ord == 0.0 {
+            vals.iter().filter(|&&v| v != 0.0).count() as f64
+        } else {
+            let sum: f64 = vals.iter().map(|v| v.abs().powf(ord)).sum();
+            sum.powf(1.0 / ord)
+        };
+
+        self.tensor_variable(vec![norm], vec![1], false)
     }
 
     /// Compute the QR decomposition: `A = Q @ R`.
@@ -15484,6 +15623,13 @@ mod tests {
     }
 
     #[test]
+    fn bincount_rejects_fractional() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0, 1.5], vec![2], false).unwrap();
+        assert!(s.tensor_bincount(t, None, 0).is_err());
+    }
+
+    #[test]
     fn bincount_rejects_2d() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = s
@@ -15957,6 +16103,117 @@ mod tests {
         assert!(vals[1].abs() < 1e-10);
         assert!(vals[2].abs() < 1e-10);
         assert!((vals[3] - 1.0).abs() < 1e-10);
+    }
+
+    // ── pinv / kthvalue / vector_norm tests ───────────────────────────
+
+    #[test]
+    fn pinv_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.eye(3, false).unwrap();
+        let pinv = s.tensor_linalg_pinv(a).unwrap();
+        let vals = s.tensor_values(pinv).unwrap();
+        // pinv(I) = I
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!(vals[1].abs() < 1e-10);
+        assert!((vals[4] - 1.0).abs() < 1e-10);
+        assert!((vals[8] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pinv_roundtrip() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let pinv = s.tensor_linalg_pinv(a).unwrap();
+        let pinv_shape = s.tensor_shape(pinv).unwrap();
+        // pinv of [2, 3] should be [3, 2]
+        assert_eq!(pinv_shape, vec![3, 2]);
+        // A @ A+ @ A ≈ A (pseudoinverse property)
+        let a_pinv = s.tensor_matmul(a, pinv).unwrap();
+        let a_pinv_a = s.tensor_matmul(a_pinv, a).unwrap();
+        let a_vals = s.tensor_values(a).unwrap();
+        let result = s.tensor_values(a_pinv_a).unwrap();
+        for (i, (&got, &exp)) in result.iter().zip(a_vals.iter()).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-8,
+                "pinv roundtrip mismatch at {i}: got {got}, expected {exp}"
+            );
+        }
+    }
+
+    #[test]
+    fn kthvalue_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![5.0, 1.0, 3.0, 2.0, 4.0], vec![5], false)
+            .unwrap();
+        let (val_id, idx_id) = s.tensor_kthvalue(t, 3).unwrap();
+        let val = s.tensor_values(val_id).unwrap()[0];
+        let idx = s.tensor_values(idx_id).unwrap()[0];
+        assert!((val - 3.0).abs() < 1e-10); // 3rd smallest is 3.0
+        assert!((idx - 2.0).abs() < 1e-10); // index 2 in original
+    }
+
+    #[test]
+    fn kthvalue_first_and_last() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![10.0, 20.0, 30.0], vec![3], false)
+            .unwrap();
+        let (min_val, _) = s.tensor_kthvalue(t, 1).unwrap();
+        let (max_val, _) = s.tensor_kthvalue(t, 3).unwrap();
+        assert!((s.tensor_values(min_val).unwrap()[0] - 10.0).abs() < 1e-10);
+        assert!((s.tensor_values(max_val).unwrap()[0] - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn kthvalue_rejects_invalid_k() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(s.tensor_kthvalue(t, 0).is_err());
+        assert!(s.tensor_kthvalue(t, 3).is_err());
+    }
+
+    #[test]
+    fn vector_norm_l2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![3.0, 4.0], vec![2], false).unwrap();
+        let norm = s.tensor_linalg_vector_norm(t, 2.0).unwrap();
+        let val = s.tensor_values(norm).unwrap()[0];
+        assert!((val - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_l1() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![-3.0, 4.0], vec![2], false).unwrap();
+        let norm = s.tensor_linalg_vector_norm(t, 1.0).unwrap();
+        let val = s.tensor_values(norm).unwrap()[0];
+        assert!((val - 7.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_inf() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![-3.0, 4.0, -1.0], vec![3], false)
+            .unwrap();
+        let norm = s.tensor_linalg_vector_norm(t, f64::INFINITY).unwrap();
+        let val = s.tensor_values(norm).unwrap()[0];
+        assert!((val - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_l0() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 0.0, 3.0, 0.0], vec![5], false)
+            .unwrap();
+        let norm = s.tensor_linalg_vector_norm(t, 0.0).unwrap();
+        let val = s.tensor_values(norm).unwrap()[0];
+        assert!((val - 2.0).abs() < 1e-10); // 2 nonzero elements
     }
 
     // ── Eigendecomposition tests (bd-2drq.7) ──────────────────────────
@@ -16676,6 +16933,38 @@ mod tests {
         let out = s.tensor_index_fill(input, 0, index, 0.0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![0.0, 2.0, 0.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn index_add_rejects_negative_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        let src = s.tensor_variable(vec![10.0], vec![1], false).unwrap();
+        assert!(s.tensor_index_add(input, 0, index, src).is_err());
+    }
+
+    #[test]
+    fn index_copy_rejects_fractional_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![1.5], vec![1], false).unwrap();
+        let src = s.tensor_variable(vec![99.0], vec![1], false).unwrap();
+        assert!(s.tensor_index_copy(input, 0, index, src).is_err());
+    }
+
+    #[test]
+    fn index_fill_rejects_negative_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![-2.0], vec![1], false).unwrap();
+        assert!(s.tensor_index_fill(input, 0, index, 0.0).is_err());
     }
 
     // ── functional API tests ─────────────────────────────────────────

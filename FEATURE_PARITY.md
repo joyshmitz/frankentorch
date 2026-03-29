@@ -83,7 +83,10 @@ mse_loss, l1_loss, bce_loss, smooth_l1_loss, huber_loss, cross_entropy_loss, nll
 index_select, gather, scatter, scatter_add, masked_fill, index_add, index_copy, index_fill, index_put
 
 ### Sorting & Selection
-sort, topk, argsort
+sort, topk, argsort, kthvalue
+
+### Linear Algebra
+svd, qr, cholesky, cholesky_solve, det, slogdet, inv, pinverse, solve, eigh, matrix_power, matrix_exp, linalg_vector_norm
 
 ### Statistical / Histogram Operations
 bincount (with weights, minlength), histc (with auto-range, clamping)
