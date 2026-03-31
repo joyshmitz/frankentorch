@@ -3573,6 +3573,135 @@ impl LRScheduler for ConstantLR {
     }
 }
 
+// ── CyclicLR Scheduler ─────────────────────────────────────────────────
+
+/// Cyclically varies the learning rate between `base_lr` and `max_lr`.
+///
+/// Equivalent to `torch.optim.lr_scheduler.CyclicLR`.
+///
+/// Supports three scaling modes:
+/// - `triangular`: linear scaling
+/// - `triangular2`: halve the range each cycle
+/// - `exp_range`: scale by `gamma^iterations`
+#[derive(Clone, Debug)]
+pub enum CyclicLRMode {
+    Triangular,
+    Triangular2,
+    ExpRange { gamma: f64 },
+}
+
+pub struct CyclicLR {
+    base_lr: f64,
+    max_lr: f64,
+    step_size_up: usize,
+    step_size_down: usize,
+    mode: CyclicLRMode,
+    last_epoch: i64,
+    last_lr: f64,
+    iteration: usize,
+}
+
+impl CyclicLR {
+    /// Create a new CyclicLR scheduler.
+    ///
+    /// * `base_lr` - Lower learning rate boundary.
+    /// * `max_lr` - Upper learning rate boundary.
+    /// * `step_size_up` - Number of iterations in the increasing half of a cycle.
+    pub fn new(optimizer: &dyn Optimizer, base_lr: f64, max_lr: f64, step_size_up: usize) -> Self {
+        let _ = optimizer;
+        Self {
+            base_lr,
+            max_lr,
+            step_size_up,
+            step_size_down: step_size_up,
+            mode: CyclicLRMode::Triangular,
+            last_epoch: -1,
+            last_lr: base_lr,
+            iteration: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn step_size_down(mut self, size: usize) -> Self {
+        self.step_size_down = size;
+        self
+    }
+
+    #[must_use]
+    pub fn mode(mut self, mode: CyclicLRMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    fn compute_lr(&self, iteration: usize) -> f64 {
+        // PyTorch-compatible CyclicLR formula:
+        // cycle = floor(1 + iteration / (step_size_up + step_size_down))
+        // x = 1 - abs(iteration / step_size_up - 2 * cycle + 1)
+        // x is clamped to [0, 1]
+        let total_size = self.step_size_up + self.step_size_down;
+        let cycle = 1 + iteration / total_size;
+        let x = (iteration as f64 / self.step_size_up as f64) - 2.0 * cycle as f64 + 1.0;
+        let scale_x = (1.0 - x.abs()).max(0.0);
+
+        let scale_fn = match &self.mode {
+            CyclicLRMode::Triangular => 1.0,
+            CyclicLRMode::Triangular2 => 1.0 / (2.0_f64.powi((cycle - 1) as i32)),
+            CyclicLRMode::ExpRange { gamma } => gamma.powi(iteration as i32),
+        };
+
+        self.base_lr + (self.max_lr - self.base_lr) * scale_x * scale_fn
+    }
+}
+
+impl LRScheduler for CyclicLR {
+    fn step(&mut self, optimizer: &mut dyn Optimizer, epoch: Option<i64>) {
+        self.last_epoch = epoch.unwrap_or(self.last_epoch + 1);
+        let lr = self.compute_lr(self.iteration);
+        optimizer.set_lr(lr);
+        self.last_lr = lr;
+        self.iteration += 1;
+    }
+
+    fn get_lr(&self) -> Vec<f64> {
+        vec![self.compute_lr(self.iteration)]
+    }
+
+    fn get_last_lr(&self) -> Vec<f64> {
+        vec![self.last_lr]
+    }
+
+    fn state_dict(&self) -> SchedulerState {
+        SchedulerState {
+            last_epoch: self.last_epoch,
+            last_lrs: vec![self.last_lr],
+            extra: vec![
+                ("base_lr".to_owned(), self.base_lr),
+                ("max_lr".to_owned(), self.max_lr),
+                ("step_size_up".to_owned(), self.step_size_up as f64),
+                ("step_size_down".to_owned(), self.step_size_down as f64),
+                ("iteration".to_owned(), self.iteration as f64),
+            ],
+        }
+    }
+
+    fn load_state_dict(&mut self, state: SchedulerState) {
+        self.last_epoch = state.last_epoch;
+        if let Some(&lr) = state.last_lrs.first() {
+            self.last_lr = lr;
+        }
+        for (key, val) in &state.extra {
+            match key.as_str() {
+                "base_lr" => self.base_lr = *val,
+                "max_lr" => self.max_lr = *val,
+                "step_size_up" => self.step_size_up = *val as usize,
+                "step_size_down" => self.step_size_down = *val as usize,
+                "iteration" => self.iteration = *val as usize,
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Adamax optimizer — variant of Adam using the infinity norm (Kingma & Ba, 2014).
 ///
 /// Instead of the L2 norm of the second moment (v), Adamax uses the L∞ norm,
@@ -8535,5 +8664,138 @@ mod tests {
         let loss_sum = session.tensor_sum(loss).expect("sum");
         let report = session.tensor_backward(loss_sum).expect("backward");
         assert!(opt.step(&mut session, &report).is_err());
+    }
+
+    // ── CyclicLR Tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn cyclic_lr_triangular_monotonic_increase() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = CyclicLR::new(&opt, 0.001, 0.01, 10);
+
+        // The LR should increase over the first half-cycle
+        let mut prev_lr = 0.0;
+        for i in 0..10 {
+            scheduler.step(&mut opt, None);
+            let lr = opt.get_lr();
+            assert!(
+                lr >= prev_lr || i == 0,
+                "lr should be non-decreasing in up phase, step {i}: prev={prev_lr}, cur={lr}"
+            );
+            prev_lr = lr;
+        }
+        // After step_size_up steps, lr should be at or near max
+        assert!(
+            opt.get_lr() > 0.005,
+            "after up phase, lr should be near max, got {}",
+            opt.get_lr()
+        );
+    }
+
+    #[test]
+    fn cyclic_lr_triangular_cycle_symmetry() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SGD::new(vec![x], 0.1);
+        // step_size_up=5, step_size_down=5 → cycle_len=10
+        let mut scheduler = CyclicLR::new(&opt, 0.0, 1.0, 5);
+
+        // Record all LRs for two full cycles (10 steps each)
+        let mut lrs = Vec::new();
+        for _ in 0..20 {
+            scheduler.step(&mut opt, None);
+            lrs.push(opt.get_lr());
+        }
+
+        // Second cycle should repeat the first
+        for i in 0..10 {
+            assert!(
+                (lrs[i] - lrs[i + 10]).abs() < 1e-10,
+                "cycle should repeat: step {i}: {}, step {}: {}",
+                lrs[i],
+                i + 10,
+                lrs[i + 10]
+            );
+        }
+    }
+
+    #[test]
+    fn cyclic_lr_triangular2_decays() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = CyclicLR::new(&opt, 0.0, 1.0, 5).mode(CyclicLRMode::Triangular2);
+
+        // Track max LR per cycle. Each cycle's max should be half the previous.
+        let mut max_per_cycle = Vec::new();
+        for cycle in 0..3 {
+            let mut cycle_max = 0.0_f64;
+            for _ in 0..10 {
+                scheduler.step(&mut opt, None);
+                cycle_max = cycle_max.max(opt.get_lr());
+            }
+            max_per_cycle.push(cycle_max);
+            if cycle > 0 {
+                let ratio = max_per_cycle[cycle] / max_per_cycle[cycle - 1];
+                assert!(
+                    (ratio - 0.5).abs() < 0.1,
+                    "triangular2 should roughly halve: cycle {} max={}, cycle {} max={}",
+                    cycle - 1,
+                    max_per_cycle[cycle - 1],
+                    cycle,
+                    max_per_cycle[cycle]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cyclic_lr_state_dict_roundtrip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = CyclicLR::new(&opt, 0.001, 0.01, 5);
+
+        for _ in 0..3 {
+            scheduler.step(&mut opt, None);
+        }
+
+        let state = scheduler.state_dict();
+        let mut scheduler2 = CyclicLR::new(&opt, 0.001, 0.01, 5);
+        scheduler2.load_state_dict(state);
+
+        assert_eq!(scheduler.get_last_lr(), scheduler2.get_last_lr());
+    }
+
+    #[test]
+    fn cyclic_lr_get_lr_and_get_last_lr() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = CyclicLR::new(&opt, 0.001, 1.0, 10);
+
+        // Step a few times to get past base_lr
+        for _ in 0..3 {
+            scheduler.step(&mut opt, None);
+        }
+        let last = scheduler.get_last_lr();
+        assert_eq!(last.len(), 1);
+        assert!(
+            last[0] > 0.001,
+            "lr should be above base after several steps, got {}",
+            last[0]
+        );
     }
 }

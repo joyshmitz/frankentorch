@@ -6984,8 +6984,7 @@ impl FrankenTorchSession {
             EvidenceKind::Dispatch,
             format!(
                 "nan_to_num input={} out={} nan={nan} posinf={posinf_val} neginf={neginf_val}",
-                input.0,
-                out.0
+                input.0, out.0
             ),
         );
         Ok(out)
@@ -7022,18 +7021,43 @@ impl FrankenTorchSession {
         a: TensorNodeId,
         b: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        // log2(2^a + 2^b) = logaddexp(a*ln2, b*ln2) / ln2
-        // We use element-wise multiplication with broadcast scalar tensors
-        let ln2 = std::f64::consts::LN_2;
-        let inv_ln2 = 1.0 / ln2;
+        // Direct computation: log2(2^a + 2^b)
+        // = max(a,b) + log2(2^(a-max) + 2^(b-max))
+        // = max(a,b) + log2(exp2(a-max) + exp2(b-max))
+        let (a_vals, a_meta) = {
+            let t = self.tensor_tape.tensor(a)?;
+            (t.storage().to_vec(), t.meta().clone())
+        };
+        let b_vals = {
+            let t = self.tensor_tape.tensor(b)?;
+            t.storage().to_vec()
+        };
 
-        let ln2_t = self.tensor_variable(vec![ln2], vec![1], false)?;
-        let inv_ln2_t = self.tensor_variable(vec![inv_ln2], vec![1], false)?;
+        if a_vals.len() != b_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "logaddexp2: inputs must have the same number of elements",
+                },
+            )));
+        }
 
-        let a_nat = self.tensor_mul(a, ln2_t)?;
-        let b_nat = self.tensor_mul(b, ln2_t)?;
-        let result_nat = self.tensor_logaddexp(a_nat, b_nat)?;
-        self.tensor_mul(result_nat, inv_ln2_t)
+        let values: Vec<f64> = a_vals
+            .iter()
+            .zip(b_vals.iter())
+            .map(|(&ai, &bi)| {
+                let m = ai.max(bi);
+                m + (2.0_f64.powf(ai - m) + 2.0_f64.powf(bi - m)).log2()
+            })
+            .collect();
+
+        let out = self
+            .tensor_tape
+            .leaf(values, a_meta.shape().to_vec(), false)?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("logaddexp2 a={} b={} out={}", a.0, b.0, out.0),
+        );
+        Ok(out)
     }
 
     // ── xlogy ───────────────────────────────────────────────────────────
@@ -7136,10 +7160,7 @@ impl FrankenTorchSession {
         let out = self.tensor_tape.leaf(result, shape.to_vec(), false)?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
-            format!(
-                "logcumsumexp input={} dim={dim} out={}",
-                input.0, out.0
-            ),
+            format!("logcumsumexp input={} dim={dim} out={}", input.0, out.0),
         );
         Ok(out)
     }
@@ -7177,7 +7198,7 @@ impl FrankenTorchSession {
         }
 
         // Normalize k to [0, 4)
-        let k = ((k % 4) + 4) % 4;
+        let k = k.rem_euclid(4);
 
         match k {
             0 => {
@@ -19681,13 +19702,11 @@ mod tests {
     fn nan_to_num_replaces_inf() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s
-            .tensor_variable(
-                vec![f64::INFINITY, f64::NEG_INFINITY, 2.0],
-                vec![3],
-                false,
-            )
+            .tensor_variable(vec![f64::INFINITY, f64::NEG_INFINITY, 2.0], vec![3], false)
             .unwrap();
-        let out = s.tensor_nan_to_num(x, 0.0, Some(100.0), Some(-100.0)).unwrap();
+        let out = s
+            .tensor_nan_to_num(x, 0.0, Some(100.0), Some(-100.0))
+            .unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, &[100.0, -100.0, 2.0]);
     }
@@ -19763,7 +19782,7 @@ mod tests {
         let b = s.tensor_variable(vec![10.0], vec![1], false).unwrap();
         let out = s.tensor_logaddexp(a, b).unwrap();
         let vals = s.tensor_values(out).unwrap();
-        let expected = (1.0_f64.exp() + 10.0_f64.exp()).ln();
+        let expected = (0.0_f64.exp() + 10.0_f64.exp()).ln();
         assert!((vals[0] - expected).abs() < 1e-8);
     }
 
@@ -19777,9 +19796,17 @@ mod tests {
         let out = s.tensor_logaddexp2(a, b).unwrap();
         let vals = s.tensor_values(out).unwrap();
         // log2(2^1 + 2^1) = log2(4) = 2
-        assert!((vals[0] - 2.0).abs() < 1e-8, "expected 2.0, got {}", vals[0]);
+        assert!(
+            (vals[0] - 2.0).abs() < 1e-8,
+            "expected 2.0, got {}",
+            vals[0]
+        );
         // log2(2^3 + 2^3) = log2(16) = 4
-        assert!((vals[1] - 4.0).abs() < 1e-8, "expected 4.0, got {}", vals[1]);
+        assert!(
+            (vals[1] - 4.0).abs() < 1e-8,
+            "expected 4.0, got {}",
+            vals[1]
+        );
     }
 
     #[test]
@@ -19929,7 +19956,7 @@ mod tests {
     fn pixel_shuffle_preserves_numel() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // (1, 8, 2, 3) -> (1, 2, 4, 6) with r=2
-        let n = 1 * 8 * 2 * 3;
+        let n = 8 * 2 * 3;
         let vals: Vec<f64> = (0..n).map(|i| i as f64).collect();
         let x = s
             .tensor_variable(vals.clone(), vec![1, 8, 2, 3], false)
@@ -20033,18 +20060,14 @@ mod tests {
     #[test]
     fn logcumsumexp_dim_out_of_range() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s
-            .tensor_variable(vec![1.0, 2.0], vec![2], false)
-            .unwrap();
+        let x = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
         assert!(s.tensor_logcumsumexp(x, 1).is_err());
     }
 
     #[test]
     fn logcumsumexp_single_element() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s
-            .tensor_variable(vec![42.0], vec![1], false)
-            .unwrap();
+        let x = s.tensor_variable(vec![42.0], vec![1], false).unwrap();
         let out = s.tensor_logcumsumexp(x, 0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert!((vals[0] - 42.0).abs() < 1e-10);
