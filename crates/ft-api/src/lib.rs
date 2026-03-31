@@ -6940,6 +6940,365 @@ impl FrankenTorchSession {
         );
         Ok(())
     }
+
+    // ── nan_to_num ──────────────────────────────────────────────────────
+    /// Replace NaN, positive infinity, and negative infinity with specified values.
+    ///
+    /// Equivalent to `torch.nan_to_num(input, nan=0.0, posinf=None, neginf=None)`.
+    /// When `posinf`/`neginf` are `None`, they default to the largest/smallest
+    /// finite representable value for f64.
+    pub fn tensor_nan_to_num(
+        &mut self,
+        input: TensorNodeId,
+        nan: f64,
+        posinf: Option<f64>,
+        neginf: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let posinf_val = posinf.unwrap_or(f64::MAX);
+        let neginf_val = neginf.unwrap_or(f64::MIN);
+
+        let (storage, meta) = {
+            let tensor = self.tensor_tape.tensor(input)?;
+            (tensor.storage().to_vec(), tensor.meta().clone())
+        };
+
+        let values: Vec<f64> = storage
+            .iter()
+            .map(|&v| {
+                if v.is_nan() {
+                    nan
+                } else if v == f64::INFINITY {
+                    posinf_val
+                } else if v == f64::NEG_INFINITY {
+                    neginf_val
+                } else {
+                    v
+                }
+            })
+            .collect();
+
+        let out = self
+            .tensor_tape
+            .leaf(values, meta.shape().to_vec(), false)?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "nan_to_num input={} out={} nan={nan} posinf={posinf_val} neginf={neginf_val}",
+                input.0,
+                out.0
+            ),
+        );
+        Ok(out)
+    }
+
+    // ── logaddexp ───────────────────────────────────────────────────────
+    /// Numerically stable `log(exp(a) + exp(b))`.
+    ///
+    /// Equivalent to `torch.logaddexp(input, other)`.
+    /// Autograd-tracked: composed from existing tracked ops.
+    pub fn tensor_logaddexp(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // max(a, b) + log(exp(a - max(a,b)) + exp(b - max(a,b)))
+        // = max(a,b) + log1p(exp(-|a - b|))
+        let m = self.tensor_max(a, b)?;
+        let a_shifted = self.tensor_sub(a, m)?;
+        let b_shifted = self.tensor_sub(b, m)?;
+        let exp_a = self.tensor_exp(a_shifted)?;
+        let exp_b = self.tensor_exp(b_shifted)?;
+        let sum_exp = self.tensor_add(exp_a, exp_b)?;
+        let log_sum = self.tensor_log(sum_exp)?;
+        self.tensor_add(m, log_sum)
+    }
+
+    // ── logaddexp2 ──────────────────────────────────────────────────────
+    /// Numerically stable `log2(2^a + 2^b)`.
+    ///
+    /// Equivalent to `torch.logaddexp2(input, other)`.
+    pub fn tensor_logaddexp2(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // log2(2^a + 2^b) = logaddexp(a*ln2, b*ln2) / ln2
+        // We use element-wise multiplication with broadcast scalar tensors
+        let ln2 = std::f64::consts::LN_2;
+        let inv_ln2 = 1.0 / ln2;
+
+        let ln2_t = self.tensor_variable(vec![ln2], vec![1], false)?;
+        let inv_ln2_t = self.tensor_variable(vec![inv_ln2], vec![1], false)?;
+
+        let a_nat = self.tensor_mul(a, ln2_t)?;
+        let b_nat = self.tensor_mul(b, ln2_t)?;
+        let result_nat = self.tensor_logaddexp(a_nat, b_nat)?;
+        self.tensor_mul(result_nat, inv_ln2_t)
+    }
+
+    // ── xlogy ───────────────────────────────────────────────────────────
+    /// Compute `x * log(y)` with the convention that `0 * log(y) = 0`.
+    ///
+    /// Equivalent to `torch.xlogy(input, other)` / `torch.special.xlogy`.
+    pub fn tensor_xlogy(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (x_vals, x_meta) = {
+            let tensor = self.tensor_tape.tensor(x)?;
+            (tensor.storage().to_vec(), tensor.meta().clone())
+        };
+        let y_vals = {
+            let tensor = self.tensor_tape.tensor(y)?;
+            tensor.storage().to_vec()
+        };
+
+        if x_vals.len() != y_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "xlogy: input and other must have the same number of elements",
+                },
+            )));
+        }
+
+        let values: Vec<f64> = x_vals
+            .iter()
+            .zip(y_vals.iter())
+            .map(|(&xi, &yi)| if xi == 0.0 { 0.0 } else { xi * yi.ln() })
+            .collect();
+
+        let out = self
+            .tensor_tape
+            .leaf(values, x_meta.shape().to_vec(), false)?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("xlogy x={} y={} out={}", x.0, y.0, out.0),
+        );
+        Ok(out)
+    }
+
+    // ── logcumsumexp ─────────────────────────────────────────────────────
+    /// Numerically stable cumulative log-sum-exp along a dimension.
+    ///
+    /// Equivalent to `torch.logcumsumexp(input, dim)`.
+    /// Computes `log(cumsum(exp(input), dim))` in a numerically stable way.
+    pub fn tensor_logcumsumexp(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (storage, meta) = {
+            let tensor = self.tensor_tape.tensor(input)?;
+            (tensor.storage().to_vec(), tensor.meta().clone())
+        };
+
+        let shape = meta.shape();
+        let ndim = shape.len();
+
+        if dim >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "logcumsumexp: dimension out of range",
+                },
+            )));
+        }
+
+        let mut result = vec![0.0_f64; storage.len()];
+
+        // Compute strides for iteration
+        let outer_size: usize = shape[..dim].iter().product();
+        let dim_size = shape[dim];
+        let inner_size: usize = shape[dim + 1..].iter().product();
+
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut running_max = f64::NEG_INFINITY;
+                let mut running_sum = 0.0_f64;
+
+                for d in 0..dim_size {
+                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                    let val = storage[idx];
+
+                    if val > running_max {
+                        // Rescale running_sum to new max
+                        running_sum = running_sum * (running_max - val).exp() + 1.0;
+                        running_max = val;
+                    } else {
+                        running_sum += (val - running_max).exp();
+                    }
+
+                    result[idx] = running_max + running_sum.ln();
+                }
+            }
+        }
+
+        let out = self.tensor_tape.leaf(result, shape.to_vec(), false)?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "logcumsumexp input={} dim={dim} out={}",
+                input.0, out.0
+            ),
+        );
+        Ok(out)
+    }
+
+    // ── rot90 ───────────────────────────────────────────────────────────
+    /// Rotate a tensor by 90 degrees in the plane specified by `dims`.
+    ///
+    /// Equivalent to `torch.rot90(input, k, dims)`.
+    /// `k` is the number of times to rotate (may be negative).
+    /// `dims` must be a pair `[d0, d1]` specifying the rotation plane.
+    pub fn tensor_rot90(
+        &mut self,
+        input: TensorNodeId,
+        k: i32,
+        dims: [usize; 2],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let ndim = {
+            let tensor = self.tensor_tape.tensor(input)?;
+            tensor.meta().shape().len()
+        };
+
+        if dims[0] == dims[1] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "rot90: dims must specify two different dimensions",
+                },
+            )));
+        }
+        if dims[0] >= ndim || dims[1] >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "rot90: dimension index out of range",
+                },
+            )));
+        }
+
+        // Normalize k to [0, 4)
+        let k = ((k % 4) + 4) % 4;
+
+        match k {
+            0 => {
+                // No rotation — return a clone
+                let vals = {
+                    let t = self.tensor_tape.tensor(input)?;
+                    t.storage().to_vec()
+                };
+                let shape = {
+                    let t = self.tensor_tape.tensor(input)?;
+                    t.meta().shape().to_vec()
+                };
+                self.tensor_tape.leaf(vals, shape, false)
+            }
+            1 => {
+                // 90° rotation: flip(transpose(input, d0, d1), d0)
+                let transposed = self.tensor_transpose(input, dims[0], dims[1])?;
+                self.tensor_flip(transposed, &[dims[0]])
+            }
+            2 => {
+                // 180° rotation: flip along both dims
+                let flipped = self.tensor_flip(input, &[dims[0]])?;
+                self.tensor_flip(flipped, &[dims[1]])
+            }
+            3 => {
+                // 270° rotation: flip(transpose(input, d0, d1), d1)
+                let transposed = self.tensor_transpose(input, dims[0], dims[1])?;
+                self.tensor_flip(transposed, &[dims[1]])
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    // ── pixel_shuffle ───────────────────────────────────────────────────
+    /// Rearrange elements from channels into spatial dimensions.
+    ///
+    /// Equivalent to `torch.nn.functional.pixel_shuffle(input, upscale_factor)`.
+    /// Input shape: `(N, C * r^2, H, W)` → Output: `(N, C, H*r, W*r)`
+    pub fn tensor_pixel_shuffle(
+        &mut self,
+        input: TensorNodeId,
+        upscale_factor: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = {
+            let t = self.tensor_tape.tensor(input)?;
+            t.meta().shape().to_vec()
+        };
+
+        if shape.len() != 4 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pixel_shuffle: input must be a 4-D tensor (N, C, H, W)",
+                },
+            )));
+        }
+
+        let (batch, channels, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let r = upscale_factor;
+
+        if channels % (r * r) != 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pixel_shuffle: channels must be divisible by upscale_factor^2",
+                },
+            )));
+        }
+
+        let oc = channels / (r * r);
+
+        // reshape to (N, C, r, r, H, W)
+        let reshaped = self.tensor_reshape(input, vec![batch, oc, r, r, h, w])?;
+        // permute to (N, C, H, r, W, r)
+        let permuted = self.tensor_permute(reshaped, vec![0, 1, 4, 2, 5, 3])?;
+        // reshape to (N, C, H*r, W*r)
+        self.tensor_reshape(permuted, vec![batch, oc, h * r, w * r])
+    }
+
+    // ── pixel_unshuffle ─────────────────────────────────────────────────
+    /// Reverse of pixel_shuffle: rearrange spatial dimensions into channels.
+    ///
+    /// Equivalent to `torch.nn.functional.pixel_unshuffle(input, downscale_factor)`.
+    /// Input shape: `(N, C, H*r, W*r)` → Output: `(N, C * r^2, H, W)`
+    pub fn tensor_pixel_unshuffle(
+        &mut self,
+        input: TensorNodeId,
+        downscale_factor: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = {
+            let t = self.tensor_tape.tensor(input)?;
+            t.meta().shape().to_vec()
+        };
+
+        if shape.len() != 4 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pixel_unshuffle: input must be a 4-D tensor (N, C, H, W)",
+                },
+            )));
+        }
+
+        let (batch, channels, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let r = downscale_factor;
+
+        if h % r != 0 || w % r != 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pixel_unshuffle: H and W must be divisible by downscale_factor",
+                },
+            )));
+        }
+
+        let oh = h / r;
+        let ow = w / r;
+
+        // reshape to (N, C, H/r, r, W/r, r)
+        let reshaped = self.tensor_reshape(input, vec![batch, channels, oh, r, ow, r])?;
+        // permute to (N, C, r, r, H/r, W/r)
+        let permuted = self.tensor_permute(reshaped, vec![0, 1, 3, 5, 2, 4])?;
+        // reshape to (N, C*r*r, H/r, W/r)
+        self.tensor_reshape(permuted, vec![batch, channels * r * r, oh, ow])
+    }
 }
 
 pub use ft_autograd::{
@@ -19303,5 +19662,391 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .unwrap();
         assert!(s.tensor_view(x, vec![2, 2]).is_err());
+    }
+
+    // ── nan_to_num tests ────────────────────────────────────────────────
+
+    #[test]
+    fn nan_to_num_replaces_nan() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, f64::NAN, 3.0, f64::NAN], vec![4], false)
+            .unwrap();
+        let out = s.tensor_nan_to_num(x, 0.0, None, None).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[1.0, 0.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn nan_to_num_replaces_inf() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![f64::INFINITY, f64::NEG_INFINITY, 2.0],
+                vec![3],
+                false,
+            )
+            .unwrap();
+        let out = s.tensor_nan_to_num(x, 0.0, Some(100.0), Some(-100.0)).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[100.0, -100.0, 2.0]);
+    }
+
+    #[test]
+    fn nan_to_num_custom_nan_value() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![f64::NAN, 1.0], vec![2], false)
+            .unwrap();
+        let out = s.tensor_nan_to_num(x, -999.0, None, None).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[-999.0, 1.0]);
+    }
+
+    #[test]
+    fn nan_to_num_defaults_inf_to_max() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![f64::INFINITY], vec![1], false)
+            .unwrap();
+        let out = s.tensor_nan_to_num(x, 0.0, None, None).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[f64::MAX]);
+    }
+
+    #[test]
+    fn nan_to_num_all_finite_passthrough() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_nan_to_num(x, 0.0, None, None).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[1.0, 2.0, 3.0]);
+    }
+
+    // ── logaddexp tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn logaddexp_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let out = s.tensor_logaddexp(a, b).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // log(exp(1) + exp(1)) = 1 + log(2) ≈ 1.6931
+        assert!((vals[0] - (1.0_f64 + 2.0_f64.ln())).abs() < 1e-10);
+        // log(exp(2) + exp(2)) = 2 + log(2) ≈ 2.6931
+        assert!((vals[1] - (2.0_f64 + 2.0_f64.ln())).abs() < 1e-10);
+    }
+
+    #[test]
+    fn logaddexp_large_values_stability() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // With large values, naive exp would overflow
+        let a = s.tensor_variable(vec![1000.0], vec![1], false).unwrap();
+        let b = s.tensor_variable(vec![1000.0], vec![1], false).unwrap();
+        let out = s.tensor_logaddexp(a, b).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        let expected = 1000.0 + 2.0_f64.ln();
+        assert!(
+            (vals[0] - expected).abs() < 1e-8,
+            "expected {expected}, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn logaddexp_asymmetric() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let b = s.tensor_variable(vec![10.0], vec![1], false).unwrap();
+        let out = s.tensor_logaddexp(a, b).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        let expected = (1.0_f64.exp() + 10.0_f64.exp()).ln();
+        assert!((vals[0] - expected).abs() < 1e-8);
+    }
+
+    // ── logaddexp2 tests ────────────────────────────────────────────────
+
+    #[test]
+    fn logaddexp2_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 3.0], vec![2], false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 3.0], vec![2], false).unwrap();
+        let out = s.tensor_logaddexp2(a, b).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // log2(2^1 + 2^1) = log2(4) = 2
+        assert!((vals[0] - 2.0).abs() < 1e-8, "expected 2.0, got {}", vals[0]);
+        // log2(2^3 + 2^3) = log2(16) = 4
+        assert!((vals[1] - 4.0).abs() < 1e-8, "expected 4.0, got {}", vals[1]);
+    }
+
+    #[test]
+    fn logaddexp2_asymmetric() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let b = s.tensor_variable(vec![4.0], vec![1], false).unwrap();
+        let out = s.tensor_logaddexp2(a, b).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // log2(2^0 + 2^4) = log2(1 + 16) = log2(17)
+        let expected = 17.0_f64.log2();
+        assert!((vals[0] - expected).abs() < 1e-8);
+    }
+
+    // ── xlogy tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn xlogy_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 3.0], vec![2], false).unwrap();
+        let y = s
+            .tensor_variable(vec![std::f64::consts::E, 10.0], vec![2], false)
+            .unwrap();
+        let out = s.tensor_xlogy(x, y).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // 2 * log(e) = 2 * 1 = 2
+        assert!((vals[0] - 2.0).abs() < 1e-10);
+        // 3 * log(10) ≈ 6.9077
+        assert!((vals[1] - 3.0 * 10.0_f64.ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn xlogy_zero_times_log_is_zero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let y = s
+            .tensor_variable(vec![0.0, f64::INFINITY], vec![2], false)
+            .unwrap();
+        let out = s.tensor_xlogy(x, y).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals[0], 0.0, "0 * log(0) should be 0");
+        assert_eq!(vals[1], 0.0, "0 * log(inf) should be 0");
+    }
+
+    #[test]
+    fn xlogy_shape_mismatch_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let y = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        assert!(s.tensor_xlogy(x, y).is_err());
+    }
+
+    // ── rot90 tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn rot90_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let out = s.tensor_rot90(x, 0, [0, 1]).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn rot90_360_returns_original() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let out = s.tensor_rot90(x, 4, [0, 1]).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        let orig = s.tensor_values(x).unwrap();
+        assert_eq!(vals, orig);
+    }
+
+    #[test]
+    fn rot90_negative_k() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        // k=-1 is same as k=3
+        let out_neg = s.tensor_rot90(x, -1, [0, 1]).unwrap();
+        let out_pos = s.tensor_rot90(x, 3, [0, 1]).unwrap();
+        assert_eq!(
+            s.tensor_values(out_neg).unwrap(),
+            s.tensor_values(out_pos).unwrap()
+        );
+    }
+
+    #[test]
+    fn rot90_same_dims_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        assert!(s.tensor_rot90(x, 1, [0, 0]).is_err());
+    }
+
+    #[test]
+    fn rot90_invalid_dim_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        assert!(s.tensor_rot90(x, 1, [0, 5]).is_err());
+    }
+
+    // ── pixel_shuffle tests ─────────────────────────────────────────────
+
+    #[test]
+    fn pixel_shuffle_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // (1, 4, 1, 1) -> (1, 1, 2, 2)  with r=2
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 4, 1, 1], false)
+            .unwrap();
+        let out = s.tensor_pixel_shuffle(x, 2).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, &[1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn pixel_shuffle_channel_count_mismatch_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 3 channels not divisible by r^2=4
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3, 1, 1], false)
+            .unwrap();
+        assert!(s.tensor_pixel_shuffle(x, 2).is_err());
+    }
+
+    #[test]
+    fn pixel_shuffle_3d_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3, 1], false)
+            .unwrap();
+        assert!(s.tensor_pixel_shuffle(x, 1).is_err());
+    }
+
+    #[test]
+    fn pixel_shuffle_preserves_numel() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // (1, 8, 2, 3) -> (1, 2, 4, 6) with r=2
+        let n = 1 * 8 * 2 * 3;
+        let vals: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let x = s
+            .tensor_variable(vals.clone(), vec![1, 8, 2, 3], false)
+            .unwrap();
+        let out = s.tensor_pixel_shuffle(x, 2).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, &[1, 2, 4, 6]);
+        assert_eq!(s.tensor_values(out).unwrap().len(), n);
+    }
+
+    // ── pixel_unshuffle tests ───────────────────────────────────────────
+
+    #[test]
+    fn pixel_unshuffle_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // (1, 1, 2, 2) -> (1, 4, 1, 1) with r=2
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let out = s.tensor_pixel_unshuffle(x, 2).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, &[1, 4, 1, 1]);
+    }
+
+    #[test]
+    fn pixel_unshuffle_not_divisible_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // H=3 not divisible by r=2
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 1, 3, 2], false)
+            .unwrap();
+        assert!(s.tensor_pixel_unshuffle(x, 2).is_err());
+    }
+
+    #[test]
+    fn pixel_shuffle_unshuffle_roundtrip() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let vals: Vec<f64> = (0..48).map(|i| i as f64).collect();
+        // (1, 12, 2, 2) -> pixel_shuffle(r=2) -> (1, 3, 4, 4) -> pixel_unshuffle(r=2) -> (1, 12, 2, 2)
+        let x = s.tensor_variable(vals, vec![1, 12, 2, 2], false).unwrap();
+        let shuffled = s.tensor_pixel_shuffle(x, 2).unwrap();
+        let shape_mid = s.tensor_shape(shuffled).unwrap();
+        assert_eq!(shape_mid, &[1, 3, 4, 4]);
+        let unshuffled = s.tensor_pixel_unshuffle(shuffled, 2).unwrap();
+        let shape_final = s.tensor_shape(unshuffled).unwrap();
+        assert_eq!(shape_final, &[1, 12, 2, 2]);
+    }
+
+    // ── logcumsumexp tests ──────────────────────────────────────────────
+
+    #[test]
+    fn logcumsumexp_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_logcumsumexp(x, 0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // cumsum of exp in log space:
+        // idx 0: log(exp(1)) = 1
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        // idx 1: log(exp(1) + exp(2))
+        let expected1 = (1.0_f64.exp() + 2.0_f64.exp()).ln();
+        assert!((vals[1] - expected1).abs() < 1e-10);
+        // idx 2: log(exp(1) + exp(2) + exp(3))
+        let expected2 = (1.0_f64.exp() + 2.0_f64.exp() + 3.0_f64.exp()).ln();
+        assert!((vals[2] - expected2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn logcumsumexp_large_values_stability() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1000.0, 1000.0, 1000.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_logcumsumexp(x, 0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // All values should be finite and close to 1000 + log(k)
+        assert!((vals[0] - 1000.0).abs() < 1e-8);
+        assert!((vals[1] - (1000.0 + 2.0_f64.ln())).abs() < 1e-8);
+        assert!((vals[2] - (1000.0 + 3.0_f64.ln())).abs() < 1e-8);
+    }
+
+    #[test]
+    fn logcumsumexp_dim1_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // shape (2, 3), apply along dim=1
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let out = s.tensor_logcumsumexp(x, 1).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, &[2, 3]);
+        // First row: logcumsumexp([1, 2, 3])
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        // Second row starts with just 4.0
+        assert!((vals[3] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn logcumsumexp_dim_out_of_range() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .unwrap();
+        assert!(s.tensor_logcumsumexp(x, 1).is_err());
+    }
+
+    #[test]
+    fn logcumsumexp_single_element() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![42.0], vec![1], false)
+            .unwrap();
+        let out = s.tensor_logcumsumexp(x, 0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 42.0).abs() < 1e-10);
     }
 }

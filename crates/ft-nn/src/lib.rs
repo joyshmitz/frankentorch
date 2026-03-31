@@ -11687,6 +11687,202 @@ impl Module for CircularPad2d {
     }
 }
 
+// ── PixelShuffle / PixelUnshuffle Modules ──────────────────────────────
+
+/// Rearranges elements from channels into spatial dimensions.
+///
+/// Equivalent to `torch.nn.PixelShuffle(upscale_factor)`.
+/// Input: `(N, C * r^2, H, W)` → Output: `(N, C, H*r, W*r)`.
+pub struct PixelShuffle {
+    upscale_factor: usize,
+}
+
+impl PixelShuffle {
+    #[must_use]
+    pub fn new(upscale_factor: usize) -> Self {
+        Self { upscale_factor }
+    }
+}
+
+impl Module for PixelShuffle {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_pixel_shuffle(input, self.upscale_factor)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Reverses the effect of PixelShuffle: rearranges spatial dimensions into channels.
+///
+/// Equivalent to `torch.nn.PixelUnshuffle(downscale_factor)`.
+/// Input: `(N, C, H*r, W*r)` → Output: `(N, C * r^2, H, W)`.
+pub struct PixelUnshuffle {
+    downscale_factor: usize,
+}
+
+impl PixelUnshuffle {
+    #[must_use]
+    pub fn new(downscale_factor: usize) -> Self {
+        Self { downscale_factor }
+    }
+}
+
+impl Module for PixelUnshuffle {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_pixel_unshuffle(input, self.downscale_factor)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+// ── CosineSimilarity Module ────────────────────────────────────────────
+
+/// Computes cosine similarity between two input tensors along a dimension.
+///
+/// Equivalent to `torch.nn.CosineSimilarity(dim, eps)`.
+pub struct CosineSimilarity {
+    dim: usize,
+    eps: f64,
+}
+
+impl CosineSimilarity {
+    #[must_use]
+    pub fn new(dim: usize) -> Self {
+        Self { dim, eps: 1e-8 }
+    }
+
+    #[must_use]
+    pub fn with_eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+}
+
+impl Module for CosineSimilarity {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let norm = session.tensor_norm_dim(input, 2.0, self.dim)?;
+        let denom = session.tensor_clamp_min(norm, self.eps)?;
+        session.tensor_div(input, denom)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+impl CosineSimilarity {
+    /// Compute cosine similarity between two tensors (the primary use case).
+    pub fn forward_pair(
+        &self,
+        session: &mut FrankenTorchSession,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // dot = sum(x1 * x2, dim)
+        let prod = session.tensor_mul(x1, x2)?;
+        let dot = session.tensor_sum_dim(prod, self.dim)?;
+
+        // norms
+        let norm1 = session.tensor_norm_dim(x1, 2.0, self.dim)?;
+        let norm2 = session.tensor_norm_dim(x2, 2.0, self.dim)?;
+        let norm_prod = session.tensor_mul(norm1, norm2)?;
+        let denom = session.tensor_clamp_min(norm_prod, self.eps)?;
+
+        session.tensor_div(dot, denom)
+    }
+}
+
+// ── PairwiseDistance Module ─────────────────────────────────────────────
+
+/// Computes the pairwise distance between two input tensors using the Lp norm.
+///
+/// Equivalent to `torch.nn.PairwiseDistance(p, eps, keepdim)`.
+pub struct PairwiseDistance {
+    p: f64,
+    eps: f64,
+    keepdim: bool,
+}
+
+impl PairwiseDistance {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            p: 2.0,
+            eps: 1e-6,
+            keepdim: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_p(mut self, p: f64) -> Self {
+        self.p = p;
+        self
+    }
+
+    #[must_use]
+    pub fn with_eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    #[must_use]
+    pub fn with_keepdim(mut self, keepdim: bool) -> Self {
+        self.keepdim = keepdim;
+        self
+    }
+
+    /// Compute pairwise distance between two tensors.
+    pub fn forward_pair(
+        &self,
+        session: &mut FrankenTorchSession,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = session.tensor_sub(x1, x2)?;
+        let shape = session.tensor_shape(diff)?;
+        let last_dim = shape.len().saturating_sub(1);
+        session.tensor_norm_dim(diff, self.p, last_dim)
+    }
+}
+
+impl Default for PairwiseDistance {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Module for PairwiseDistance {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = session.tensor_shape(input)?;
+        let last_dim = shape.len().saturating_sub(1);
+        session.tensor_norm_dim(input, self.p, last_dim)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ft_api::FrankenTorchSession;
@@ -20034,6 +20230,169 @@ mod tests {
         assert!(
             val > 4.0,
             "wrong predictions should have high loss, got {val}"
+        );
+    }
+
+    // ── PixelShuffle / PixelUnshuffle Module Tests ──────────────────────
+
+    #[test]
+    fn pixel_shuffle_module_basic() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ps = PixelShuffle::new(2);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 4, 1, 1], false)
+            .unwrap();
+        let out = ps.forward(&mut session, input).unwrap();
+        assert_eq!(session.tensor_shape(out).unwrap(), &[1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn pixel_shuffle_module_no_params() {
+        let ps = PixelShuffle::new(3);
+        assert!(ps.parameters().is_empty());
+    }
+
+    #[test]
+    fn pixel_unshuffle_module_basic() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pus = PixelUnshuffle::new(2);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let out = pus.forward(&mut session, input).unwrap();
+        assert_eq!(session.tensor_shape(out).unwrap(), &[1, 4, 1, 1]);
+    }
+
+    #[test]
+    fn pixel_shuffle_unshuffle_module_roundtrip() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ps = PixelShuffle::new(2);
+        let pus = PixelUnshuffle::new(2);
+        let vals: Vec<f64> = (0..16).map(|i| i as f64).collect();
+        let input = session
+            .tensor_variable(vals, vec![1, 4, 2, 2], false)
+            .unwrap();
+        let shuffled = ps.forward(&mut session, input).unwrap();
+        assert_eq!(session.tensor_shape(shuffled).unwrap(), &[1, 1, 4, 4]);
+        let unshuffled = pus.forward(&mut session, shuffled).unwrap();
+        assert_eq!(session.tensor_shape(unshuffled).unwrap(), &[1, 4, 2, 2]);
+    }
+
+    // ── CosineSimilarity Module Tests ───────────────────────────────────
+
+    #[test]
+    fn cosine_similarity_identical_vectors() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let cs = CosineSimilarity::new(1);
+        let x1 = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .unwrap();
+        let x2 = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .unwrap();
+        let out = cs.forward_pair(&mut session, x1, x2).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!(
+            (vals[0] - 1.0).abs() < 1e-6,
+            "identical vectors should have cosine similarity 1.0, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal_vectors() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let cs = CosineSimilarity::new(1);
+        let x1 = session
+            .tensor_variable(vec![1.0, 0.0], vec![1, 2], false)
+            .unwrap();
+        let x2 = session
+            .tensor_variable(vec![0.0, 1.0], vec![1, 2], false)
+            .unwrap();
+        let out = cs.forward_pair(&mut session, x1, x2).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!(
+            vals[0].abs() < 1e-6,
+            "orthogonal vectors should have cosine similarity 0, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn cosine_similarity_opposite_vectors() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let cs = CosineSimilarity::new(1);
+        let x1 = session
+            .tensor_variable(vec![1.0, 1.0], vec![1, 2], false)
+            .unwrap();
+        let x2 = session
+            .tensor_variable(vec![-1.0, -1.0], vec![1, 2], false)
+            .unwrap();
+        let out = cs.forward_pair(&mut session, x1, x2).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!(
+            (vals[0] + 1.0).abs() < 1e-6,
+            "opposite vectors should have cosine similarity -1.0, got {}",
+            vals[0]
+        );
+    }
+
+    // ── PairwiseDistance Module Tests ────────────────────────────────────
+
+    #[test]
+    fn pairwise_distance_identical() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pd = PairwiseDistance::new();
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .unwrap();
+        let y = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .unwrap();
+        let out = pd.forward_pair(&mut session, x, y).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!(
+            vals[0].abs() < 1e-6,
+            "distance between identical vectors should be 0, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn pairwise_distance_known_l2() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pd = PairwiseDistance::new().with_p(2.0);
+        let x = session
+            .tensor_variable(vec![0.0, 0.0], vec![1, 2], false)
+            .unwrap();
+        let y = session
+            .tensor_variable(vec![3.0, 4.0], vec![1, 2], false)
+            .unwrap();
+        let out = pd.forward_pair(&mut session, x, y).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!(
+            (vals[0] - 5.0).abs() < 1e-6,
+            "L2 distance should be 5.0, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn pairwise_distance_l1() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pd = PairwiseDistance::new().with_p(1.0);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
+        let y = session
+            .tensor_variable(vec![4.0, 6.0], vec![1, 2], false)
+            .unwrap();
+        let out = pd.forward_pair(&mut session, x, y).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!(
+            (vals[0] - 7.0).abs() < 1e-6,
+            "L1 distance should be 7.0, got {}",
+            vals[0]
         );
     }
 }

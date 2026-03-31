@@ -706,9 +706,8 @@ pub fn load_state_dict_from_bytes(
                 }
                 let mut values = Vec::with_capacity(numel);
                 for _ in 0..numel {
-                    let bytes: [u8; 8] = data[pos..pos + 8].try_into().unwrap();
+                    let bytes = read_fixed_bytes::<8>(data, &mut pos, "truncated f64 data")?;
                     values.push(f64::from_le_bytes(bytes));
-                    pos += 8;
                 }
                 DenseTensor::from_storage(meta, values)?
             }
@@ -721,9 +720,8 @@ pub fn load_state_dict_from_bytes(
                 }
                 let mut values = Vec::with_capacity(numel);
                 for _ in 0..numel {
-                    let bytes: [u8; 4] = data[pos..pos + 4].try_into().unwrap();
+                    let bytes = read_fixed_bytes::<4>(data, &mut pos, "truncated f32 data")?;
                     values.push(f32::from_le_bytes(bytes));
-                    pos += 4;
                 }
                 DenseTensor::from_storage_f32(meta, values)?
             }
@@ -741,25 +739,34 @@ pub fn load_state_dict_from_bytes(
 }
 
 fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, TensorIOError> {
-    if *pos + 4 > data.len() {
-        return Err(TensorIOError::Corrupt {
-            reason: "truncated u32".to_string(),
-        });
-    }
-    let bytes: [u8; 4] = data[*pos..*pos + 4].try_into().unwrap();
-    *pos += 4;
+    let bytes = read_fixed_bytes::<4>(data, pos, "truncated u32")?;
     Ok(u32::from_le_bytes(bytes))
 }
 
 fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, TensorIOError> {
-    if *pos + 8 > data.len() {
+    let bytes = read_fixed_bytes::<8>(data, pos, "truncated u64")?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_fixed_bytes<const N: usize>(
+    data: &[u8],
+    pos: &mut usize,
+    truncated_reason: &'static str,
+) -> Result<[u8; N], TensorIOError> {
+    if *pos + N > data.len() {
         return Err(TensorIOError::Corrupt {
-            reason: "truncated u64".to_string(),
+            reason: truncated_reason.to_string(),
         });
     }
-    let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
-    *pos += 8;
-    Ok(u64::from_le_bytes(bytes))
+    let bytes = bytes_to_array::<N>(&data[*pos..*pos + N], truncated_reason)?;
+    *pos += N;
+    Ok(bytes)
+}
+
+fn bytes_to_array<const N: usize>(data: &[u8], reason: &str) -> Result<[u8; N], TensorIOError> {
+    data.try_into().map_err(|_| TensorIOError::Corrupt {
+        reason: reason.to_string(),
+    })
 }
 
 // ── SafeTensors Format Support ──────────────────────────────────────────
@@ -925,7 +932,10 @@ pub fn load_safetensors_from_bytes(
                 let numel = shape.iter().product::<usize>();
                 let mut values = Vec::with_capacity(numel);
                 for chunk in raw_data.chunks_exact(8) {
-                    let bytes: [u8; 8] = chunk.try_into().unwrap();
+                    let bytes = bytes_to_array::<8>(
+                        chunk,
+                        &format!("invalid f64 payload width in SafeTensors tensor '{name}'"),
+                    )?;
                     values.push(f64::from_le_bytes(bytes));
                 }
                 let meta = TensorMeta::from_shape(shape, DType::F64, Device::Cpu);
@@ -935,7 +945,10 @@ pub fn load_safetensors_from_bytes(
                 let numel = shape.iter().product::<usize>();
                 let mut values = Vec::with_capacity(numel);
                 for chunk in raw_data.chunks_exact(4) {
-                    let bytes: [u8; 4] = chunk.try_into().unwrap();
+                    let bytes = bytes_to_array::<4>(
+                        chunk,
+                        &format!("invalid f32 payload width in SafeTensors tensor '{name}'"),
+                    )?;
                     values.push(f32::from_le_bytes(bytes));
                 }
                 let meta = TensorMeta::from_shape(shape, DType::F32, Device::Cpu);
@@ -945,7 +958,10 @@ pub fn load_safetensors_from_bytes(
                 let numel = shape.iter().product::<usize>();
                 let mut values = Vec::with_capacity(numel);
                 for chunk in raw_data.chunks_exact(2) {
-                    let bytes: [u8; 2] = chunk.try_into().unwrap();
+                    let bytes = bytes_to_array::<2>(
+                        chunk,
+                        &format!("invalid f16 payload width in SafeTensors tensor '{name}'"),
+                    )?;
                     values.push(ft_core::Float16::from_le_bytes(bytes));
                 }
                 let meta = TensorMeta::from_shape(shape, DType::F16, Device::Cpu);
@@ -955,7 +971,10 @@ pub fn load_safetensors_from_bytes(
                 let numel = shape.iter().product::<usize>();
                 let mut values = Vec::with_capacity(numel);
                 for chunk in raw_data.chunks_exact(2) {
-                    let bytes: [u8; 2] = chunk.try_into().unwrap();
+                    let bytes = bytes_to_array::<2>(
+                        chunk,
+                        &format!("invalid bf16 payload width in SafeTensors tensor '{name}'"),
+                    )?;
                     values.push(ft_core::BFloat16::from_le_bytes(bytes));
                 }
                 let meta = TensorMeta::from_shape(shape, DType::BF16, Device::Cpu);
@@ -1086,6 +1105,32 @@ mod tests {
         log.insert("shrink_trace".to_string(), "none".to_string());
         log.insert("reason_code".to_string(), reason_code.to_string());
         log
+    }
+
+    #[test]
+    fn bytes_to_array_reports_corrupt_for_short_slice() {
+        let err = super::bytes_to_array::<4>(&[1, 2, 3], "short slice")
+            .expect_err("short slice should be rejected");
+        assert_eq!(
+            err,
+            super::TensorIOError::Corrupt {
+                reason: "short slice".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn read_fixed_bytes_reports_corrupt_for_truncated_input() {
+        let mut pos = 0;
+        let err = super::read_fixed_bytes::<8>(&[1, 2, 3, 4], &mut pos, "truncated bytes")
+            .expect_err("truncated bytes should be rejected");
+        assert_eq!(
+            err,
+            super::TensorIOError::Corrupt {
+                reason: "truncated bytes".to_string(),
+            }
+        );
+        assert_eq!(pos, 0);
     }
 
     fn assert_log_contract(log: &BTreeMap<String, String>) {
