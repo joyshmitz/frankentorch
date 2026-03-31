@@ -114,7 +114,7 @@ tensor_pad (constant padding, PyTorch F.pad convention)
 - `crates/ft-conformance/fixtures/serialization_cases.json`
 
 Modes tested for all listed families: strict + hardened.
-2358 tests passing across workspace.
+2444 tests passing across workspace.
 
 ## Gap Policy
 
