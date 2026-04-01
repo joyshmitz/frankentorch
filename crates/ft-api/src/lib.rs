@@ -81,6 +81,94 @@ pub struct FrankenTorchSession {
     grad_enabled_stack: Vec<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StftOptions {
+    pub hop_length: Option<usize>,
+    pub win_length: Option<usize>,
+    pub window: Option<TensorNodeId>,
+    pub center: bool,
+    pub normalized: bool,
+    pub onesided: bool,
+}
+
+impl Default for StftOptions {
+    fn default() -> Self {
+        Self {
+            hop_length: None,
+            win_length: None,
+            window: None,
+            center: true,
+            normalized: false,
+            onesided: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IstftOptions {
+    pub hop_length: Option<usize>,
+    pub win_length: Option<usize>,
+    pub window: Option<TensorNodeId>,
+    pub center: bool,
+    pub normalized: bool,
+    pub onesided: bool,
+    pub length: Option<usize>,
+}
+
+impl Default for IstftOptions {
+    fn default() -> Self {
+        Self {
+            hop_length: None,
+            win_length: None,
+            window: None,
+            center: true,
+            normalized: false,
+            onesided: true,
+            length: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridSampleMode {
+    Bilinear,
+    Nearest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridSamplePaddingMode {
+    Zeros,
+    Border,
+    Reflection,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IstftReconstructPlan<'a> {
+    freq_bins: usize,
+    frames: usize,
+    n_fft: usize,
+    hop_length: usize,
+    window_values: &'a [f64],
+    window_pad: usize,
+    center: bool,
+    normalized: bool,
+    onesided: bool,
+    length: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GridSamplePlan {
+    batch: usize,
+    channels: usize,
+    in_h: usize,
+    in_w: usize,
+    out_h: usize,
+    out_w: usize,
+    mode: GridSampleMode,
+    padding_mode: GridSamplePaddingMode,
+    align_corners: bool,
+}
+
 impl FrankenTorchSession {
     #[must_use]
     pub fn new(mode: ExecutionMode) -> Self {
@@ -676,6 +764,535 @@ impl FrankenTorchSession {
             format!("conj input={} out={}", input.0, out.0),
         );
         Ok(out)
+    }
+
+    /// Construct a complex tensor from separate real and imaginary tensors.
+    pub fn tensor_complex(
+        &mut self,
+        real: TensorNodeId,
+        imag: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let real_tensor = self.tensor_tape.tensor(real)?;
+        let imag_tensor = self.tensor_tape.tensor(imag)?;
+        let real_meta = real_tensor.meta().clone();
+        let imag_meta = imag_tensor.meta().clone();
+
+        if self.tensor_tape.tensor_requires_grad(real)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "complex: autograd for complex-valued outputs is not supported",
+                },
+            )));
+        }
+        if self.tensor_tape.tensor_requires_grad(imag)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "complex: autograd for complex-valued outputs is not supported",
+                },
+            )));
+        }
+        if real_meta.shape() != imag_meta.shape() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "complex: real and imag must have identical shapes",
+                },
+            )));
+        }
+
+        let (output_meta, output_storage) =
+            match (real_tensor.typed_storage(), imag_tensor.typed_storage()) {
+                (TensorStorage::F32(real_values), TensorStorage::F32(imag_values)) => (
+                    TensorMeta::from_shape(
+                        real_meta.shape().to_vec(),
+                        DType::Complex64,
+                        real_meta.device(),
+                    ),
+                    TensorStorage::Complex64(Arc::new(
+                        real_values
+                            .iter()
+                            .zip(imag_values.iter())
+                            .map(|(&re, &im)| ft_core::Complex64::new(re, im))
+                            .collect(),
+                    )),
+                ),
+                (TensorStorage::F64(real_values), TensorStorage::F64(imag_values)) => (
+                    TensorMeta::from_shape(
+                        real_meta.shape().to_vec(),
+                        DType::Complex128,
+                        real_meta.device(),
+                    ),
+                    TensorStorage::Complex128(Arc::new(
+                        real_values
+                            .iter()
+                            .zip(imag_values.iter())
+                            .map(|(&re, &im)| ft_core::Complex128::new(re, im))
+                            .collect(),
+                    )),
+                ),
+                (TensorStorage::F64(real_values), TensorStorage::F32(imag_values)) => (
+                    TensorMeta::from_shape(
+                        real_meta.shape().to_vec(),
+                        DType::Complex128,
+                        real_meta.device(),
+                    ),
+                    TensorStorage::Complex128(Arc::new(
+                        real_values
+                            .iter()
+                            .zip(imag_values.iter())
+                            .map(|(&re, &im)| ft_core::Complex128::new(re, f64::from(im)))
+                            .collect(),
+                    )),
+                ),
+                (TensorStorage::F32(real_values), TensorStorage::F64(imag_values)) => (
+                    TensorMeta::from_shape(
+                        real_meta.shape().to_vec(),
+                        DType::Complex128,
+                        real_meta.device(),
+                    ),
+                    TensorStorage::Complex128(Arc::new(
+                        real_values
+                            .iter()
+                            .zip(imag_values.iter())
+                            .map(|(&re, &im)| ft_core::Complex128::new(f64::from(re), im))
+                            .collect(),
+                    )),
+                ),
+                _ => {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "complex: real and imag must be float32 or float64 tensors",
+                        },
+                    )));
+                }
+            };
+
+        let out = self.tensor_tape.leaf_tensor(
+            DenseTensor::from_typed_storage(output_meta, output_storage)?,
+            false,
+        );
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("complex real={} imag={} out={}", real.0, imag.0, out.0),
+        );
+        Ok(out)
+    }
+
+    /// Return a real-valued view of a complex tensor with trailing dimension 2.
+    pub fn tensor_view_as_real(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let tensor = self.tensor_tape.tensor(input)?;
+        let meta = tensor.meta().clone();
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "view_as_real: autograd for complex-valued inputs is not supported",
+                },
+            )));
+        }
+
+        let mut output_shape = meta.shape().to_vec();
+        output_shape.push(2);
+        let (output_meta, output_storage) = match tensor.typed_storage() {
+            TensorStorage::Complex64(values) => (
+                TensorMeta::from_shape(output_shape, DType::F32, meta.device()),
+                TensorStorage::F32(Arc::new(values.iter().flat_map(|z| [z.re, z.im]).collect())),
+            ),
+            TensorStorage::Complex128(values) => (
+                TensorMeta::from_shape(output_shape, DType::F64, meta.device()),
+                TensorStorage::F64(Arc::new(values.iter().flat_map(|z| [z.re, z.im]).collect())),
+            ),
+            _ => {
+                return Err(AutogradError::DenseTensor(
+                    ft_core::DenseTensorError::UnsupportedDType(meta.dtype()),
+                ));
+            }
+        };
+
+        let out = self.tensor_tape.leaf_tensor(
+            DenseTensor::from_typed_storage(output_meta, output_storage)?,
+            false,
+        );
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("view_as_real input={} out={}", input.0, out.0),
+        );
+        Ok(out)
+    }
+
+    /// Return a complex-valued view from a real tensor whose trailing dimension is 2.
+    pub fn tensor_view_as_complex(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let tensor = self.tensor_tape.tensor(input)?;
+        let meta = tensor.meta().clone();
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "view_as_complex: autograd for complex-valued outputs is not supported",
+                },
+            )));
+        }
+
+        let shape = meta.shape().to_vec();
+        let Some((&last_dim, leading_dims)) = shape.split_last() else {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "view_as_complex: input must have at least one dimension",
+                },
+            )));
+        };
+        if last_dim != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "view_as_complex: last dimension must have size 2",
+                },
+            )));
+        }
+
+        let output_shape = leading_dims.to_vec();
+        let (output_meta, output_storage) = match tensor.typed_storage() {
+            TensorStorage::F32(values) => (
+                TensorMeta::from_shape(output_shape, DType::Complex64, meta.device()),
+                TensorStorage::Complex64(Arc::new(
+                    values
+                        .chunks_exact(2)
+                        .map(|pair| ft_core::Complex64::new(pair[0], pair[1]))
+                        .collect(),
+                )),
+            ),
+            TensorStorage::F64(values) => (
+                TensorMeta::from_shape(output_shape, DType::Complex128, meta.device()),
+                TensorStorage::Complex128(Arc::new(
+                    values
+                        .chunks_exact(2)
+                        .map(|pair| ft_core::Complex128::new(pair[0], pair[1]))
+                        .collect(),
+                )),
+            ),
+            _ => {
+                return Err(AutogradError::DenseTensor(
+                    ft_core::DenseTensorError::UnsupportedDType(meta.dtype()),
+                ));
+            }
+        };
+
+        let out = self.tensor_tape.leaf_tensor(
+            DenseTensor::from_typed_storage(output_meta, output_storage)?,
+            false,
+        );
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("view_as_complex input={} out={}", input.0, out.0),
+        );
+        Ok(out)
+    }
+
+    /// Generate a Hann window of the requested length.
+    pub fn hann_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if window_length == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "hann_window: window_length must be > 0",
+                },
+            )));
+        }
+        let denom = if periodic {
+            window_length as f64
+        } else if window_length == 1 {
+            1.0
+        } else {
+            (window_length - 1) as f64
+        };
+        let values: Vec<f64> = (0..window_length)
+            .map(|n| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * n as f64 / denom).cos())
+            .collect();
+        self.tensor_variable(values, vec![window_length], requires_grad)
+    }
+
+    /// Short-time Fourier transform for 1-D real signals.
+    pub fn tensor_stft(
+        &mut self,
+        input: TensorNodeId,
+        n_fft: usize,
+        options: StftOptions,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if n_fft == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "stft: n_fft must be > 0",
+                },
+            )));
+        }
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "stft: autograd is not supported",
+                },
+            )));
+        }
+
+        let input_tensor = self.tensor_tape.tensor(input)?;
+        let input_meta = input_tensor.meta().clone();
+        if input_meta.shape().len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "stft: only 1-D real input is currently supported",
+                },
+            )));
+        }
+
+        let hop_length = options.hop_length.unwrap_or(n_fft / 4).max(1);
+        let win_length = options.win_length.unwrap_or(n_fft);
+        if win_length == 0 || win_length > n_fft {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "stft: win_length must be in 1..=n_fft",
+                },
+            )));
+        }
+
+        let (signal, base_dtype) = match input_tensor.typed_storage() {
+            TensorStorage::F32(values) => (
+                values.iter().map(|&v| f64::from(v)).collect::<Vec<_>>(),
+                DType::F32,
+            ),
+            TensorStorage::F64(values) => (values.as_ref().clone(), DType::F64),
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "stft: input must be float32 or float64",
+                    },
+                )));
+            }
+        };
+        let window_values = self.stft_window_values(options.window, win_length)?;
+
+        let pad = if options.center { n_fft / 2 } else { 0 };
+        let mut padded = vec![0.0; signal.len() + 2 * pad];
+        padded[pad..pad + signal.len()].copy_from_slice(&signal);
+        if padded.len() < n_fft {
+            padded.resize(n_fft, 0.0);
+        }
+
+        let frames = (padded.len() - n_fft) / hop_length + 1;
+        let freq_bins = if options.onesided {
+            n_fft / 2 + 1
+        } else {
+            n_fft
+        };
+        let scale = if options.normalized {
+            1.0 / (n_fft as f64).sqrt()
+        } else {
+            1.0
+        };
+        let window_pad = (n_fft - win_length) / 2;
+
+        match base_dtype {
+            DType::F32 => {
+                let mut spectrogram = vec![ft_core::Complex64::new(0.0, 0.0); freq_bins * frames];
+                for frame_idx in 0..frames {
+                    let start = frame_idx * hop_length;
+                    let mut frame = vec![0.0; n_fft];
+                    for i in 0..win_length {
+                        frame[window_pad + i] = padded[start + i] * window_values[i];
+                    }
+                    for k in 0..freq_bins {
+                        let mut re = 0.0;
+                        let mut im = 0.0;
+                        for (n, &sample) in frame.iter().enumerate() {
+                            let angle =
+                                2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
+                            re += sample * angle.cos();
+                            im -= sample * angle.sin();
+                        }
+                        spectrogram[k * frames + frame_idx] =
+                            ft_core::Complex64::new((re * scale) as f32, (im * scale) as f32);
+                    }
+                }
+                let out = self.tensor_tape.leaf_tensor(
+                    DenseTensor::from_typed_storage(
+                        TensorMeta::from_shape(
+                            vec![freq_bins, frames],
+                            DType::Complex64,
+                            input_meta.device(),
+                        ),
+                        TensorStorage::Complex64(Arc::new(spectrogram)),
+                    )?,
+                    false,
+                );
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!("stft input={} out={} n_fft={n_fft}", input.0, out.0),
+                );
+                Ok(out)
+            }
+            DType::F64 => {
+                let mut spectrogram = vec![ft_core::Complex128::new(0.0, 0.0); freq_bins * frames];
+                for frame_idx in 0..frames {
+                    let start = frame_idx * hop_length;
+                    let mut frame = vec![0.0; n_fft];
+                    for i in 0..win_length {
+                        frame[window_pad + i] = padded[start + i] * window_values[i];
+                    }
+                    for k in 0..freq_bins {
+                        let mut re = 0.0;
+                        let mut im = 0.0;
+                        for (n, &sample) in frame.iter().enumerate() {
+                            let angle =
+                                2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
+                            re += sample * angle.cos();
+                            im -= sample * angle.sin();
+                        }
+                        spectrogram[k * frames + frame_idx] =
+                            ft_core::Complex128::new(re * scale, im * scale);
+                    }
+                }
+                let out = self.tensor_tape.leaf_tensor(
+                    DenseTensor::from_typed_storage(
+                        TensorMeta::from_shape(
+                            vec![freq_bins, frames],
+                            DType::Complex128,
+                            input_meta.device(),
+                        ),
+                        TensorStorage::Complex128(Arc::new(spectrogram)),
+                    )?,
+                    false,
+                );
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!("stft input={} out={} n_fft={n_fft}", input.0, out.0),
+                );
+                Ok(out)
+            }
+            _ => unreachable!("base_dtype validated above"),
+        }
+    }
+
+    /// Inverse short-time Fourier transform for 2-D complex spectrograms.
+    pub fn tensor_istft(
+        &mut self,
+        input: TensorNodeId,
+        n_fft: usize,
+        options: IstftOptions,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if n_fft == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "istft: n_fft must be > 0",
+                },
+            )));
+        }
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "istft: autograd is not supported",
+                },
+            )));
+        }
+
+        let input_tensor = self.tensor_tape.tensor(input)?;
+        let input_meta = input_tensor.meta().clone();
+        if input_meta.shape().len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "istft: only 2-D spectrogram input [freq, frames] is currently supported",
+                },
+            )));
+        }
+
+        let hop_length = options.hop_length.unwrap_or(n_fft / 4).max(1);
+        let win_length = options.win_length.unwrap_or(n_fft);
+        if win_length == 0 || win_length > n_fft {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "istft: win_length must be in 1..=n_fft",
+                },
+            )));
+        }
+        let window_values = self.stft_window_values(options.window, win_length)?;
+        let window_pad = (n_fft - win_length) / 2;
+
+        let shape = input_meta.shape().to_vec();
+        let (freq_bins, frames) = (shape[0], shape[1]);
+        let expected_bins = if options.onesided {
+            n_fft / 2 + 1
+        } else {
+            n_fft
+        };
+        if freq_bins != expected_bins {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "istft: spectrogram frequency dimension does not match n_fft/onesided configuration",
+                },
+            )));
+        }
+
+        let plan = IstftReconstructPlan {
+            freq_bins,
+            frames,
+            n_fft,
+            hop_length,
+            window_values: &window_values,
+            window_pad,
+            center: options.center,
+            normalized: options.normalized,
+            onesided: options.onesided,
+            length: options.length,
+        };
+
+        match input_tensor.typed_storage() {
+            TensorStorage::Complex64(values) => {
+                let signal = self.istft_reconstruct_f64(
+                    values
+                        .iter()
+                        .map(|z| ft_core::Complex128::new(f64::from(z.re), f64::from(z.im)))
+                        .collect(),
+                    plan,
+                );
+                let out = self.tensor_tape.leaf_tensor(
+                    DenseTensor::from_typed_storage(
+                        TensorMeta::from_shape(vec![signal.len()], DType::F32, input_meta.device()),
+                        TensorStorage::F32(Arc::new(
+                            signal.into_iter().map(|v| v as f32).collect(),
+                        )),
+                    )?,
+                    false,
+                );
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!("istft input={} out={} n_fft={n_fft}", input.0, out.0),
+                );
+                Ok(out)
+            }
+            TensorStorage::Complex128(values) => {
+                let signal = self.istft_reconstruct_f64(values.as_ref().clone(), plan);
+                let out = self.tensor_tape.leaf_tensor(
+                    DenseTensor::from_typed_storage(
+                        TensorMeta::from_shape(vec![signal.len()], DType::F64, input_meta.device()),
+                        TensorStorage::F64(Arc::new(signal)),
+                    )?,
+                    false,
+                );
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!("istft input={} out={} n_fft={n_fft}", input.0, out.0),
+                );
+                Ok(out)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "istft: input must be complex64 or complex128",
+                },
+            ))),
+        }
     }
 
     pub fn zeros_f32(
@@ -3680,6 +4297,255 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    fn stft_window_values(
+        &self,
+        window: Option<TensorNodeId>,
+        win_length: usize,
+    ) -> Result<Vec<f64>, AutogradError> {
+        match window {
+            Some(window_node) => {
+                if self.tensor_tape.tensor_requires_grad(window_node)? {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "stft/istft: autograd for window tensors is not supported",
+                        },
+                    )));
+                }
+                let window_tensor = self.tensor_tape.tensor(window_node)?;
+                if window_tensor.meta().shape() != [win_length] {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "stft/istft: window must be 1-D with length win_length",
+                        },
+                    )));
+                }
+                match window_tensor.typed_storage() {
+                    TensorStorage::F32(values) => {
+                        Ok(values.iter().map(|&v| f64::from(v)).collect::<Vec<_>>())
+                    }
+                    TensorStorage::F64(values) => Ok(values.as_ref().clone()),
+                    _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "stft/istft: window must be float32 or float64",
+                        },
+                    ))),
+                }
+            }
+            None => Ok(vec![1.0; win_length]),
+        }
+    }
+
+    fn affine_grid_axis_coordinate(index: usize, size: usize, align_corners: bool) -> f64 {
+        if size <= 1 {
+            0.0
+        } else if align_corners {
+            -1.0 + 2.0 * index as f64 / (size - 1) as f64
+        } else {
+            -1.0 + (2.0 * index as f64 + 1.0) / size as f64
+        }
+    }
+
+    fn grid_sampler_unnormalize(coord: f64, size: usize, align_corners: bool) -> f64 {
+        if align_corners {
+            ((coord + 1.0) * (size.saturating_sub(1)) as f64) / 2.0
+        } else {
+            ((coord + 1.0) * size as f64 - 1.0) / 2.0
+        }
+    }
+
+    fn grid_sampler_reflect(coord: f64, size: usize, align_corners: bool) -> f64 {
+        if size <= 1 {
+            return 0.0;
+        }
+        let (low, high) = if align_corners {
+            (0.0, (size - 1) as f64)
+        } else {
+            (-0.5, size as f64 - 0.5)
+        };
+        let span = high - low;
+        if span == 0.0 {
+            return 0.0;
+        }
+        let period = 2.0 * span;
+        let mut shifted = (coord - low).rem_euclid(period);
+        if shifted > span {
+            shifted = period - shifted;
+        }
+        (low + shifted).clamp(0.0, (size - 1) as f64)
+    }
+
+    fn grid_sample_f64(input: &[f64], grid: &[f64], plan: GridSamplePlan) -> Vec<f64> {
+        let mut output = vec![0.0; plan.batch * plan.channels * plan.out_h * plan.out_w];
+
+        let sample_value = |n: usize, c: usize, y: isize, x: isize| -> f64 {
+            if y < 0 || y >= plan.in_h as isize || x < 0 || x >= plan.in_w as isize {
+                0.0
+            } else {
+                let idx =
+                    ((n * plan.channels + c) * plan.in_h + y as usize) * plan.in_w + x as usize;
+                input[idx]
+            }
+        };
+
+        for n in 0..plan.batch {
+            for h in 0..plan.out_h {
+                for w in 0..plan.out_w {
+                    let grid_base = ((n * plan.out_h + h) * plan.out_w + w) * 2;
+                    let mut x = grid[grid_base];
+                    let mut y = grid[grid_base + 1];
+                    if x.is_nan() {
+                        x = -1.0;
+                    }
+                    if y.is_nan() {
+                        y = -1.0;
+                    }
+
+                    let mut ix = Self::grid_sampler_unnormalize(x, plan.in_w, plan.align_corners);
+                    let mut iy = Self::grid_sampler_unnormalize(y, plan.in_h, plan.align_corners);
+                    match plan.padding_mode {
+                        GridSamplePaddingMode::Zeros => {}
+                        GridSamplePaddingMode::Border => {
+                            ix = ix.clamp(0.0, (plan.in_w.saturating_sub(1)) as f64);
+                            iy = iy.clamp(0.0, (plan.in_h.saturating_sub(1)) as f64);
+                        }
+                        GridSamplePaddingMode::Reflection => {
+                            ix = Self::grid_sampler_reflect(ix, plan.in_w, plan.align_corners);
+                            iy = Self::grid_sampler_reflect(iy, plan.in_h, plan.align_corners);
+                        }
+                    }
+
+                    for c in 0..plan.channels {
+                        let value = match plan.mode {
+                            GridSampleMode::Nearest => {
+                                let nearest_x = ix.round() as isize;
+                                let nearest_y = iy.round() as isize;
+                                match plan.padding_mode {
+                                    GridSamplePaddingMode::Zeros => {
+                                        sample_value(n, c, nearest_y, nearest_x)
+                                    }
+                                    GridSamplePaddingMode::Border
+                                    | GridSamplePaddingMode::Reflection => sample_value(
+                                        n,
+                                        c,
+                                        nearest_y.clamp(0, plan.in_h as isize - 1),
+                                        nearest_x.clamp(0, plan.in_w as isize - 1),
+                                    ),
+                                }
+                            }
+                            GridSampleMode::Bilinear => {
+                                let x0 = ix.floor();
+                                let y0 = iy.floor();
+                                let x1 = x0 + 1.0;
+                                let y1 = y0 + 1.0;
+                                let wx1 = ix - x0;
+                                let wy1 = iy - y0;
+                                let wx0 = 1.0 - wx1;
+                                let wy0 = 1.0 - wy1;
+                                let v00 = sample_value(n, c, y0 as isize, x0 as isize);
+                                let v01 = sample_value(n, c, y0 as isize, x1 as isize);
+                                let v10 = sample_value(n, c, y1 as isize, x0 as isize);
+                                let v11 = sample_value(n, c, y1 as isize, x1 as isize);
+                                v00 * wx0 * wy0
+                                    + v01 * wx1 * wy0
+                                    + v10 * wx0 * wy1
+                                    + v11 * wx1 * wy1
+                            }
+                        };
+                        let out_idx = ((n * plan.channels + c) * plan.out_h + h) * plan.out_w + w;
+                        output[out_idx] = value;
+                    }
+                }
+            }
+        }
+
+        output
+    }
+
+    fn istft_reconstruct_f64(
+        &self,
+        spectrogram: Vec<ft_core::Complex128>,
+        plan: IstftReconstructPlan<'_>,
+    ) -> Vec<f64> {
+        let output_len = if plan.frames == 0 {
+            0
+        } else {
+            plan.n_fft + plan.hop_length * (plan.frames - 1)
+        };
+        let mut signal = vec![0.0; output_len];
+        let mut envelope = vec![0.0; output_len];
+        let scale = if plan.normalized {
+            1.0 / (plan.n_fft as f64).sqrt()
+        } else {
+            1.0 / plan.n_fft as f64
+        };
+
+        for frame_idx in 0..plan.frames {
+            let mut full_spectrum = vec![ft_core::Complex128::new(0.0, 0.0); plan.n_fft];
+            if plan.onesided {
+                for k in 0..plan.freq_bins {
+                    full_spectrum[k] = spectrogram[k * plan.frames + frame_idx];
+                }
+                let upper = if plan.n_fft.is_multiple_of(2) {
+                    plan.freq_bins.saturating_sub(1)
+                } else {
+                    plan.freq_bins
+                };
+                for k in 1..upper {
+                    full_spectrum[plan.n_fft - k] = full_spectrum[k].conj();
+                }
+            } else {
+                for k in 0..plan.n_fft {
+                    full_spectrum[k] = spectrogram[k * plan.frames + frame_idx];
+                }
+            }
+
+            let mut frame_time = vec![0.0; plan.n_fft];
+            for (n, sample) in frame_time.iter_mut().enumerate() {
+                let mut value = ft_core::Complex128::new(0.0, 0.0);
+                for (k, coeff) in full_spectrum.iter().enumerate() {
+                    let angle =
+                        2.0 * std::f64::consts::PI * k as f64 * n as f64 / plan.n_fft as f64;
+                    let twiddle = ft_core::Complex128::new(angle.cos(), angle.sin());
+                    value += *coeff * twiddle;
+                }
+                *sample = value.re * scale;
+            }
+
+            let start = frame_idx * plan.hop_length;
+            for i in 0..plan.window_values.len() {
+                let sample = frame_time[plan.window_pad + i] * plan.window_values[i];
+                signal[start + i] += sample;
+                envelope[start + i] += plan.window_values[i] * plan.window_values[i];
+            }
+        }
+
+        for (sample, norm) in signal.iter_mut().zip(envelope.iter()) {
+            if *norm > 1e-12 {
+                *sample /= *norm;
+            }
+        }
+
+        let mut trimmed = if plan.center {
+            let pad = plan.n_fft / 2;
+            if signal.len() >= 2 * pad {
+                signal[pad..signal.len() - pad].to_vec()
+            } else {
+                Vec::new()
+            }
+        } else {
+            signal
+        };
+
+        if let Some(target_len) = plan.length {
+            match trimmed.len().cmp(&target_len) {
+                std::cmp::Ordering::Greater => trimmed.truncate(target_len),
+                std::cmp::Ordering::Less => trimmed.resize(target_len, 0.0),
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+        trimmed
+    }
+
     pub fn tensor_index_select(
         &mut self,
         input: TensorNodeId,
@@ -4107,6 +4973,259 @@ impl FrankenTorchSession {
             results.push(expanded);
         }
         Ok(results)
+    }
+
+    /// Generates a normalized 2-D sampling grid from affine transforms.
+    pub fn tensor_affine_grid(
+        &mut self,
+        theta: TensorNodeId,
+        output_size: Vec<usize>,
+        align_corners: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(theta)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "affine_grid: autograd is not supported",
+                },
+            )));
+        }
+        if output_size.len() != 4 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "affine_grid: only 2-D output_size [N, C, H, W] is supported",
+                },
+            )));
+        }
+
+        let theta_tensor = self.tensor_tape.tensor(theta)?;
+        let theta_meta = theta_tensor.meta().clone();
+        if theta_meta.shape().len() != 3 || theta_meta.shape()[1] != 2 || theta_meta.shape()[2] != 3
+        {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "affine_grid: theta must have shape [N, 2, 3]",
+                },
+            )));
+        }
+
+        let batch = output_size[0];
+        let out_h = output_size[2];
+        let out_w = output_size[3];
+        if theta_meta.shape()[0] != batch {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "affine_grid: theta batch must match output_size batch",
+                },
+            )));
+        }
+
+        let output_shape = vec![batch, out_h, out_w, 2];
+        let numel =
+            Self::checked_shape_numel(&output_shape, "affine_grid output shape volume overflow")?;
+
+        match theta_tensor.typed_storage() {
+            TensorStorage::F32(values) => {
+                let mut grid = Vec::with_capacity(numel);
+                for n in 0..batch {
+                    let base = n * 6;
+                    let t00 = f64::from(values[base]);
+                    let t01 = f64::from(values[base + 1]);
+                    let t02 = f64::from(values[base + 2]);
+                    let t10 = f64::from(values[base + 3]);
+                    let t11 = f64::from(values[base + 4]);
+                    let t12 = f64::from(values[base + 5]);
+                    for h in 0..out_h {
+                        let y = Self::affine_grid_axis_coordinate(h, out_h, align_corners);
+                        for w in 0..out_w {
+                            let x = Self::affine_grid_axis_coordinate(w, out_w, align_corners);
+                            grid.push((t00 * x + t01 * y + t02) as f32);
+                            grid.push((t10 * x + t11 * y + t12) as f32);
+                        }
+                    }
+                }
+                let out = self.tensor_tape.leaf_tensor(
+                    DenseTensor::from_typed_storage(
+                        TensorMeta::from_shape(output_shape, DType::F32, theta_meta.device()),
+                        TensorStorage::F32(Arc::new(grid)),
+                    )?,
+                    false,
+                );
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!(
+                        "affine_grid theta={} out={} align_corners={align_corners}",
+                        theta.0, out.0
+                    ),
+                );
+                Ok(out)
+            }
+            TensorStorage::F64(values) => {
+                let mut grid = Vec::with_capacity(numel);
+                for n in 0..batch {
+                    let base = n * 6;
+                    let t00 = values[base];
+                    let t01 = values[base + 1];
+                    let t02 = values[base + 2];
+                    let t10 = values[base + 3];
+                    let t11 = values[base + 4];
+                    let t12 = values[base + 5];
+                    for h in 0..out_h {
+                        let y = Self::affine_grid_axis_coordinate(h, out_h, align_corners);
+                        for w in 0..out_w {
+                            let x = Self::affine_grid_axis_coordinate(w, out_w, align_corners);
+                            grid.push(t00 * x + t01 * y + t02);
+                            grid.push(t10 * x + t11 * y + t12);
+                        }
+                    }
+                }
+                let out = self.tensor_tape.leaf_tensor(
+                    DenseTensor::from_typed_storage(
+                        TensorMeta::from_shape(output_shape, DType::F64, theta_meta.device()),
+                        TensorStorage::F64(Arc::new(grid)),
+                    )?,
+                    false,
+                );
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!(
+                        "affine_grid theta={} out={} align_corners={align_corners}",
+                        theta.0, out.0
+                    ),
+                );
+                Ok(out)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "affine_grid: theta must be float32 or float64",
+                },
+            ))),
+        }
+    }
+
+    /// Samples a 4-D `NCHW` input using a normalized 2-D grid.
+    pub fn tensor_grid_sample(
+        &mut self,
+        input: TensorNodeId,
+        grid: TensorNodeId,
+        mode: GridSampleMode,
+        padding_mode: GridSamplePaddingMode,
+        align_corners: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(input)?
+            || self.tensor_tape.tensor_requires_grad(grid)?
+        {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "grid_sample: autograd is not supported",
+                },
+            )));
+        }
+
+        let input_tensor = self.tensor_tape.tensor(input)?;
+        let grid_tensor = self.tensor_tape.tensor(grid)?;
+        let input_meta = input_tensor.meta().clone();
+        let grid_meta = grid_tensor.meta().clone();
+
+        if input_meta.shape().len() != 4 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "grid_sample: only 4-D input [N, C, H, W] is supported",
+                },
+            )));
+        }
+        if grid_meta.shape().len() != 4 || grid_meta.shape()[3] != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "grid_sample: grid must have shape [N, H, W, 2]",
+                },
+            )));
+        }
+
+        let batch = input_meta.shape()[0];
+        let channels = input_meta.shape()[1];
+        let in_h = input_meta.shape()[2];
+        let in_w = input_meta.shape()[3];
+        let out_batch = grid_meta.shape()[0];
+        let out_h = grid_meta.shape()[1];
+        let out_w = grid_meta.shape()[2];
+        if batch != out_batch {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "grid_sample: input and grid batch dimensions must match",
+                },
+            )));
+        }
+
+        let grid_values = match grid_tensor.typed_storage() {
+            TensorStorage::F32(values) => values.iter().map(|&v| f64::from(v)).collect::<Vec<_>>(),
+            TensorStorage::F64(values) => values.as_ref().clone(),
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "grid_sample: grid must be float32 or float64",
+                    },
+                )));
+            }
+        };
+
+        let output_shape = vec![batch, channels, out_h, out_w];
+        let plan = GridSamplePlan {
+            batch,
+            channels,
+            in_h,
+            in_w,
+            out_h,
+            out_w,
+            mode,
+            padding_mode,
+            align_corners,
+        };
+        match input_tensor.typed_storage() {
+            TensorStorage::F32(values) => {
+                let input_values = values.iter().map(|&v| f64::from(v)).collect::<Vec<_>>();
+                let output = Self::grid_sample_f64(&input_values, &grid_values, plan);
+                let out = self.tensor_tape.leaf_tensor(
+                    DenseTensor::from_typed_storage(
+                        TensorMeta::from_shape(output_shape, DType::F32, input_meta.device()),
+                        TensorStorage::F32(Arc::new(
+                            output.into_iter().map(|v| v as f32).collect(),
+                        )),
+                    )?,
+                    false,
+                );
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!(
+                        "grid_sample input={} grid={} out={} mode={mode:?} padding={padding_mode:?} align_corners={align_corners}",
+                        input.0, grid.0, out.0
+                    ),
+                );
+                Ok(out)
+            }
+            TensorStorage::F64(values) => {
+                let output = Self::grid_sample_f64(values.as_ref(), &grid_values, plan);
+                let out = self.tensor_tape.leaf_tensor(
+                    DenseTensor::from_typed_storage(
+                        TensorMeta::from_shape(output_shape, DType::F64, input_meta.device()),
+                        TensorStorage::F64(Arc::new(output)),
+                    )?,
+                    false,
+                );
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!(
+                        "grid_sample input={} grid={} out={} mode={mode:?} padding={padding_mode:?} align_corners={align_corners}",
+                        input.0, grid.0, out.0
+                    ),
+                );
+                Ok(out)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "grid_sample: input must be float32 or float64",
+                },
+            ))),
+        }
     }
 
     pub fn tensor_diagonal(
@@ -7733,7 +8852,9 @@ mod tests {
     };
     use ft_runtime::EvidenceKind;
 
-    use super::FrankenTorchSession;
+    use super::{
+        FrankenTorchSession, GridSampleMode, GridSamplePaddingMode, IstftOptions, StftOptions,
+    };
 
     #[test]
     fn session_add_backward_records_evidence() {
@@ -20068,6 +21189,451 @@ mod tests {
         ));
         assert!(s.tensor_imag(input).is_err());
         assert!(s.tensor_conj(input).is_err());
+    }
+
+    #[test]
+    fn tensor_complex_constructs_complex64_from_f32_parts() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let real = s
+            .tensor_variable_f32(vec![1.0, -2.5], vec![2], false)
+            .unwrap();
+        let imag = s
+            .tensor_variable_f32(vec![0.5, 4.0], vec![2], false)
+            .unwrap();
+
+        let out = s.tensor_complex(real, imag).unwrap();
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::Complex64);
+
+        let out_tensor = s.tensor_tape.tensor(out).unwrap();
+        let TensorStorage::Complex64(values) = out_tensor.typed_storage() else {
+            unreachable!("tensor_complex should produce Complex64 storage");
+        };
+        assert_eq!(values[0], Complex64::new(1.0, 0.5));
+        assert_eq!(values[1], Complex64::new(-2.5, 4.0));
+    }
+
+    #[test]
+    fn tensor_complex_mixed_precision_promotes_to_complex128() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let real = s.tensor_variable(vec![1.0, -2.5], vec![2], false).unwrap();
+        let imag = s
+            .tensor_variable_f32(vec![0.5, 4.0], vec![2], false)
+            .unwrap();
+
+        let out = s.tensor_complex(real, imag).unwrap();
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::Complex128);
+
+        let out_tensor = s.tensor_tape.tensor(out).unwrap();
+        let TensorStorage::Complex128(values) = out_tensor.typed_storage() else {
+            unreachable!("tensor_complex should promote to Complex128 storage");
+        };
+        assert_eq!(values[0], Complex128::new(1.0, 0.5));
+        assert_eq!(values[1], Complex128::new(-2.5, 4.0));
+    }
+
+    #[test]
+    fn tensor_complex_rejects_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let real = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let imag = s
+            .tensor_variable(vec![3.0, 4.0], vec![1, 2], false)
+            .unwrap();
+
+        assert!(s.tensor_complex(real, imag).is_err());
+    }
+
+    #[test]
+    fn tensor_complex_fail_closed_for_grad_inputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let real = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let imag = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+
+        assert!(s.tensor_complex(real, imag).is_err());
+        assert!(s.tensor_complex(imag, real).is_err());
+    }
+
+    #[test]
+    fn tensor_view_as_real_and_complex_roundtrip_complex128() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![2], DType::Complex128, Device::Cpu),
+            TensorStorage::Complex128(Arc::new(vec![
+                Complex128::new(1.5, -2.0),
+                Complex128::new(-3.0, 4.5),
+            ])),
+        )
+        .unwrap();
+        let input = s.tensor_variable_from_storage(tensor, false);
+
+        let real_view = s.tensor_view_as_real(input).unwrap();
+        assert_eq!(s.tensor_dtype(real_view).unwrap(), DType::F64);
+        assert_eq!(s.tensor_shape(real_view).unwrap(), vec![2, 2]);
+        assert_eq!(
+            s.tensor_values(real_view).unwrap(),
+            vec![1.5, -2.0, -3.0, 4.5]
+        );
+
+        let complex_view = s.tensor_view_as_complex(real_view).unwrap();
+        assert_eq!(s.tensor_dtype(complex_view).unwrap(), DType::Complex128);
+
+        let out_tensor = s.tensor_tape.tensor(complex_view).unwrap();
+        let TensorStorage::Complex128(values) = out_tensor.typed_storage() else {
+            unreachable!("view_as_complex should reconstruct Complex128 storage");
+        };
+        assert_eq!(values[0], Complex128::new(1.5, -2.0));
+        assert_eq!(values[1], Complex128::new(-3.0, 4.5));
+    }
+
+    #[test]
+    fn tensor_view_as_real_and_complex_roundtrip_complex64() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![2], DType::Complex64, Device::Cpu),
+            TensorStorage::Complex64(Arc::new(vec![
+                Complex64::new(2.5, -1.25),
+                Complex64::new(-0.5, 3.0),
+            ])),
+        )
+        .unwrap();
+        let input = s.tensor_variable_from_storage(tensor, false);
+
+        let real_view = s.tensor_view_as_real(input).unwrap();
+        assert_eq!(s.tensor_dtype(real_view).unwrap(), DType::F32);
+        assert_eq!(s.tensor_shape(real_view).unwrap(), vec![2, 2]);
+        assert_eq!(
+            s.tensor_values_f32(real_view).unwrap(),
+            vec![2.5f32, -1.25, -0.5, 3.0]
+        );
+
+        let complex_view = s.tensor_view_as_complex(real_view).unwrap();
+        assert_eq!(s.tensor_dtype(complex_view).unwrap(), DType::Complex64);
+
+        let out_tensor = s.tensor_tape.tensor(complex_view).unwrap();
+        let TensorStorage::Complex64(values) = out_tensor.typed_storage() else {
+            unreachable!("view_as_complex should reconstruct Complex64 storage");
+        };
+        assert_eq!(values[0], Complex64::new(2.5, -1.25));
+        assert_eq!(values[1], Complex64::new(-0.5, 3.0));
+    }
+
+    #[test]
+    fn tensor_view_as_real_rejects_non_complex_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+
+        assert!(s.tensor_view_as_real(input).is_err());
+    }
+
+    #[test]
+    fn tensor_view_as_complex_rejects_bad_last_dim() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+
+        assert!(s.tensor_view_as_complex(input).is_err());
+    }
+
+    #[test]
+    fn tensor_view_as_complex_rejects_non_float_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![1, 2], DType::Complex128, Device::Cpu),
+            TensorStorage::Complex128(Arc::new(vec![
+                Complex128::new(1.0, 2.0),
+                Complex128::new(3.0, 4.0),
+            ])),
+        )
+        .unwrap();
+        let input = s.tensor_variable_from_storage(tensor, false);
+
+        assert!(s.tensor_view_as_complex(input).is_err());
+    }
+
+    #[test]
+    fn tensor_view_ops_fail_closed_for_grad_inputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let complex_tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![1], DType::Complex128, Device::Cpu),
+            TensorStorage::Complex128(Arc::new(vec![Complex128::new(1.0, 2.0)])),
+        )
+        .unwrap();
+        let complex_input = s.tensor_variable_from_storage(complex_tensor, true);
+        assert!(s.tensor_view_as_real(complex_input).is_err());
+
+        let real_input = s.tensor_variable(vec![1.0, 2.0], vec![1, 2], true).unwrap();
+        assert!(s.tensor_view_as_complex(real_input).is_err());
+    }
+
+    #[test]
+    fn hann_window_non_periodic_matches_expected_values() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.hann_window(4, false, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        assert!((vals[0] - 0.0).abs() < 1e-10);
+        assert!((vals[1] - 0.75).abs() < 1e-10);
+        assert!((vals[2] - 0.75).abs() < 1e-10);
+        assert!((vals[3] - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn tensor_stft_rectangular_window_known_values() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0], vec![6], false)
+            .unwrap();
+
+        let spec = s
+            .tensor_stft(
+                input,
+                4,
+                StftOptions {
+                    hop_length: Some(2),
+                    win_length: Some(4),
+                    center: false,
+                    ..StftOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(s.tensor_dtype(spec).unwrap(), DType::Complex128);
+        assert_eq!(s.tensor_shape(spec).unwrap(), vec![3, 2]);
+
+        let spec_tensor = s.tensor_tape.tensor(spec).unwrap();
+        let TensorStorage::Complex128(values) = spec_tensor.typed_storage() else {
+            unreachable!("stft should produce Complex128 storage for f64 input");
+        };
+        assert_eq!(values[0], Complex128::new(10.0, 0.0));
+        assert!((values[1] - Complex128::new(7.0, 0.0)).norm() < 1e-10);
+        assert!((values[2] - Complex128::new(-2.0, 2.0)).norm() < 1e-10);
+        assert!((values[3] - Complex128::new(3.0, -4.0)).norm() < 1e-10);
+        assert!((values[4] - Complex128::new(-2.0, 0.0)).norm() < 1e-10);
+        assert!((values[5] - Complex128::new(-1.0, 0.0)).norm() < 1e-10);
+    }
+
+    #[test]
+    fn tensor_istft_roundtrip_no_overlap() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .unwrap();
+
+        let spec = s
+            .tensor_stft(
+                input,
+                4,
+                StftOptions {
+                    hop_length: Some(4),
+                    win_length: Some(4),
+                    center: false,
+                    ..StftOptions::default()
+                },
+            )
+            .unwrap();
+        let reconstructed = s
+            .tensor_istft(
+                spec,
+                4,
+                IstftOptions {
+                    hop_length: Some(4),
+                    win_length: Some(4),
+                    center: false,
+                    length: Some(4),
+                    ..IstftOptions::default()
+                },
+            )
+            .unwrap();
+        let vals = s.tensor_values(reconstructed).unwrap();
+        assert_eq!(vals.len(), 4);
+        for (got, want) in vals.iter().zip([1.0, 2.0, 3.0, 4.0]) {
+            assert!((got - want).abs() < 1e-8, "expected {want}, got {got}");
+        }
+    }
+
+    #[test]
+    fn tensor_stft_fail_closed_for_grad_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
+        assert!(
+            s.tensor_stft(
+                input,
+                4,
+                StftOptions {
+                    hop_length: Some(4),
+                    win_length: Some(4),
+                    center: false,
+                    ..StftOptions::default()
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn tensor_istft_fail_closed_for_grad_window() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .unwrap();
+        let spec = s
+            .tensor_stft(
+                input,
+                4,
+                StftOptions {
+                    hop_length: Some(4),
+                    win_length: Some(4),
+                    center: false,
+                    ..StftOptions::default()
+                },
+            )
+            .unwrap();
+        let window = s.hann_window(4, false, true).unwrap();
+        assert!(
+            s.tensor_istft(
+                spec,
+                4,
+                IstftOptions {
+                    hop_length: Some(4),
+                    win_length: Some(4),
+                    window: Some(window),
+                    center: false,
+                    length: Some(4),
+                    ..IstftOptions::default()
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn tensor_stft_rejects_non_1d_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        assert!(
+            s.tensor_stft(
+                input,
+                4,
+                StftOptions {
+                    hop_length: Some(4),
+                    win_length: Some(4),
+                    center: false,
+                    ..StftOptions::default()
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn tensor_affine_grid_identity_align_corners_true() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let theta = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], vec![1, 2, 3], false)
+            .unwrap();
+        let grid = s.tensor_affine_grid(theta, vec![1, 1, 2, 3], true).unwrap();
+        let vals = s.tensor_values(grid).unwrap();
+        assert_eq!(s.tensor_shape(grid).unwrap(), vec![1, 2, 3, 2]);
+        assert_eq!(
+            vals,
+            vec![
+                -1.0, -1.0, 0.0, -1.0, 1.0, -1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn tensor_grid_sample_nearest_identity_matches_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let theta = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], vec![1, 2, 3], false)
+            .unwrap();
+        let grid = s.tensor_affine_grid(theta, vec![1, 1, 2, 2], true).unwrap();
+        let output = s
+            .tensor_grid_sample(
+                input,
+                grid,
+                GridSampleMode::Nearest,
+                GridSamplePaddingMode::Zeros,
+                true,
+            )
+            .unwrap();
+        assert_eq!(s.tensor_values(output).unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn tensor_grid_sample_bilinear_center_averages_neighbors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let grid = s
+            .tensor_variable(vec![0.0, 0.0], vec![1, 1, 1, 2], false)
+            .unwrap();
+        let output = s
+            .tensor_grid_sample(
+                input,
+                grid,
+                GridSampleMode::Bilinear,
+                GridSamplePaddingMode::Zeros,
+                true,
+            )
+            .unwrap();
+        let vals = s.tensor_values(output).unwrap();
+        assert_eq!(vals.len(), 1);
+        assert!((vals[0] - 2.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn tensor_grid_sample_border_padding_clamps_coordinates() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let grid = s
+            .tensor_variable(vec![2.0, 2.0], vec![1, 1, 1, 2], false)
+            .unwrap();
+        let output = s
+            .tensor_grid_sample(
+                input,
+                grid,
+                GridSampleMode::Nearest,
+                GridSamplePaddingMode::Border,
+                true,
+            )
+            .unwrap();
+        assert_eq!(s.tensor_values(output).unwrap(), vec![4.0]);
+    }
+
+    #[test]
+    fn tensor_affine_grid_and_grid_sample_fail_closed_for_grad_inputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let theta = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], vec![1, 2, 3], true)
+            .unwrap();
+        assert!(s.tensor_affine_grid(theta, vec![1, 1, 2, 2], true).is_err());
+
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
+            .unwrap();
+        let grid = s
+            .tensor_variable(vec![0.0, 0.0], vec![1, 1, 1, 2], false)
+            .unwrap();
+        assert!(
+            s.tensor_grid_sample(
+                input,
+                grid,
+                GridSampleMode::Nearest,
+                GridSamplePaddingMode::Zeros,
+                true,
+            )
+            .is_err()
+        );
     }
 
     #[test]
