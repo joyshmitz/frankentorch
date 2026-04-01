@@ -10934,7 +10934,7 @@ impl LossModule for MultiLabelMarginLoss {
         let y = session.tensor_values(target)?;
         let shape = session.tensor_shape(input)?;
 
-        if shape.len() < 1 {
+        if shape.is_empty() {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
                     reason: "MultiLabelMarginLoss: input must be at least 1-D",

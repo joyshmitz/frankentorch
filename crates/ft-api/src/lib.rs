@@ -4228,6 +4228,602 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Apply a 1D convolution: `y = conv1d(input, weight, bias)`.
+    ///
+    /// Equivalent to `torch.nn.functional.conv1d(input, weight, bias, stride, padding)`.
+    /// `input`: `[N, C_in, L]`, `weight`: `[C_out, C_in, K]`, `bias` (optional): `[C_out]`.
+    pub fn functional_conv1d(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if stride == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "conv1d: stride must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        let weight_shape = self.tensor_shape(weight)?;
+        if input_shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "conv1d: input must be 3-D [N, C_in, L]",
+            ));
+        }
+        if weight_shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "conv1d: weight must be 3-D [C_out, C_in, K]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let in_channels = input_shape[1];
+        let input_len = input_shape[2];
+        let out_channels = weight_shape[0];
+        let weight_in_channels = weight_shape[1];
+        let kernel_size = weight_shape[2];
+
+        if kernel_size == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "conv1d: kernel size must be greater than zero",
+            ));
+        }
+        if in_channels != weight_in_channels {
+            return Err(Self::incompatible_tensor_args(
+                "conv1d: input channels do not match weight",
+            ));
+        }
+
+        if let Some(bias) = bias {
+            let bias_shape = self.tensor_shape(bias)?;
+            if bias_shape != vec![out_channels] {
+                return Err(Self::incompatible_tensor_args(
+                    "conv1d: bias must have shape [C_out]",
+                ));
+            }
+        }
+
+        let padded = if padding > 0 {
+            self.tensor_pad(input, &[padding, padding], 0.0)?
+        } else {
+            input
+        };
+        let padded_len = input_len + 2 * padding;
+        if padded_len < kernel_size {
+            return Err(Self::incompatible_tensor_args(
+                "conv1d: input too short for kernel size and padding",
+            ));
+        }
+
+        let output_len = (padded_len - kernel_size) / stride + 1;
+        let patch_width = in_channels * kernel_size;
+        let mut patches = Vec::with_capacity(output_len);
+        for out_index in 0..output_len {
+            let start = out_index * stride;
+            let patch = self.tensor_narrow(padded, 2, start, kernel_size)?;
+            let flat = self.tensor_reshape(patch, vec![batch_size, 1, patch_width])?;
+            patches.push(flat);
+        }
+
+        let unfolded = self.tensor_cat(&patches, 1)?;
+        let weight_flat = self.tensor_reshape(weight, vec![out_channels, patch_width])?;
+        let weight_t = self.tensor_transpose(weight_flat, 0, 1)?;
+        let weight_us = self.tensor_unsqueeze(weight_t, 0)?;
+        let weight_expanded =
+            self.tensor_expand(weight_us, vec![batch_size, patch_width, out_channels])?;
+        let output = self.tensor_bmm(unfolded, weight_expanded)?;
+        let output = self.tensor_transpose(output, 1, 2)?;
+
+        match bias {
+            Some(bias) => {
+                let bias = self.tensor_reshape(bias, vec![1, out_channels, 1])?;
+                let bias = self.tensor_expand(bias, vec![batch_size, out_channels, output_len])?;
+                self.tensor_add(output, bias)
+            }
+            None => Ok(output),
+        }
+    }
+
+    /// Apply a 2D convolution: `y = conv2d(input, weight, bias)`.
+    ///
+    /// Equivalent to `torch.nn.functional.conv2d(input, weight, bias, stride, padding)`.
+    /// `input`: `[N, C_in, H, W]`, `weight`: `[C_out, C_in, K_h, K_w]`.
+    pub fn functional_conv2d(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (stride_h, stride_w) = stride;
+        let (padding_h, padding_w) = padding;
+        if stride_h == 0 || stride_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "conv2d: stride dimensions must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        let weight_shape = self.tensor_shape(weight)?;
+        if input_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "conv2d: input must be 4-D [N, C_in, H, W]",
+            ));
+        }
+        if weight_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "conv2d: weight must be 4-D [C_out, C_in, K_h, K_w]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let in_channels = input_shape[1];
+        let input_h = input_shape[2];
+        let input_w = input_shape[3];
+        let out_channels = weight_shape[0];
+        let weight_in_channels = weight_shape[1];
+        let kernel_h = weight_shape[2];
+        let kernel_w = weight_shape[3];
+
+        if kernel_h == 0 || kernel_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "conv2d: kernel dimensions must be greater than zero",
+            ));
+        }
+        if in_channels != weight_in_channels {
+            return Err(Self::incompatible_tensor_args(
+                "conv2d: input channels do not match weight",
+            ));
+        }
+
+        if let Some(bias) = bias {
+            let bias_shape = self.tensor_shape(bias)?;
+            if bias_shape != vec![out_channels] {
+                return Err(Self::incompatible_tensor_args(
+                    "conv2d: bias must have shape [C_out]",
+                ));
+            }
+        }
+
+        let padded = if padding_h > 0 || padding_w > 0 {
+            self.tensor_pad(input, &[padding_w, padding_w, padding_h, padding_h], 0.0)?
+        } else {
+            input
+        };
+        let padded_h = input_h + 2 * padding_h;
+        let padded_w = input_w + 2 * padding_w;
+        if padded_h < kernel_h || padded_w < kernel_w {
+            return Err(Self::incompatible_tensor_args(
+                "conv2d: input too small for kernel size and padding",
+            ));
+        }
+
+        let output_h = (padded_h - kernel_h) / stride_h + 1;
+        let output_w = (padded_w - kernel_w) / stride_w + 1;
+        let patch_width = in_channels * kernel_h * kernel_w;
+        let mut patches = Vec::with_capacity(output_h * output_w);
+        for out_h in 0..output_h {
+            let row_start = out_h * stride_h;
+            let row_slice = self.tensor_narrow(padded, 2, row_start, kernel_h)?;
+            for out_w in 0..output_w {
+                let col_start = out_w * stride_w;
+                let patch = self.tensor_narrow(row_slice, 3, col_start, kernel_w)?;
+                let flat = self.tensor_reshape(patch, vec![batch_size, 1, patch_width])?;
+                patches.push(flat);
+            }
+        }
+
+        let unfolded = self.tensor_cat(&patches, 1)?;
+        let weight_flat = self.tensor_reshape(weight, vec![out_channels, patch_width])?;
+        let weight_t = self.tensor_transpose(weight_flat, 0, 1)?;
+        let weight_us = self.tensor_unsqueeze(weight_t, 0)?;
+        let weight_expanded =
+            self.tensor_expand(weight_us, vec![batch_size, patch_width, out_channels])?;
+        let output = self.tensor_bmm(unfolded, weight_expanded)?;
+        let output = self.tensor_transpose(output, 1, 2)?;
+        let output =
+            self.tensor_reshape(output, vec![batch_size, out_channels, output_h, output_w])?;
+
+        match bias {
+            Some(bias) => {
+                let bias = self.tensor_reshape(bias, vec![1, out_channels, 1, 1])?;
+                let bias =
+                    self.tensor_expand(bias, vec![batch_size, out_channels, output_h, output_w])?;
+                self.tensor_add(output, bias)
+            }
+            None => Ok(output),
+        }
+    }
+
+    /// Apply 1D average pooling over `[N, C, L]`.
+    pub fn functional_avg_pool1d(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: usize,
+        stride: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let stride = if stride == 0 { kernel_size } else { stride };
+        if kernel_size == 0 || stride == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "avg_pool1d: kernel_size and stride must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "avg_pool1d: input must be 3-D [N, C, L]",
+            ));
+        }
+        let output_len =
+            Self::validate_pool1d_output_len(input_shape[2], kernel_size, stride, "avg_pool1d")?;
+
+        let mut slices = Vec::with_capacity(output_len);
+        for out_index in 0..output_len {
+            let start = out_index * stride;
+            let patch = self.tensor_narrow(input, 2, start, kernel_size)?;
+            let avg = self.tensor_mean_dim(patch, 2)?;
+            let avg = self.tensor_unsqueeze(avg, 2)?;
+            slices.push(avg);
+        }
+        self.tensor_cat(&slices, 2)
+    }
+
+    /// Apply 1D max pooling over `[N, C, L]`.
+    pub fn functional_max_pool1d(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: usize,
+        stride: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let stride = if stride == 0 { kernel_size } else { stride };
+        if kernel_size == 0 || stride == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "max_pool1d: kernel_size and stride must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "max_pool1d: input must be 3-D [N, C, L]",
+            ));
+        }
+        let output_len =
+            Self::validate_pool1d_output_len(input_shape[2], kernel_size, stride, "max_pool1d")?;
+
+        let mut slices = Vec::with_capacity(output_len);
+        for out_index in 0..output_len {
+            let start = out_index * stride;
+            let patch = self.tensor_narrow(input, 2, start, kernel_size)?;
+            let (max_vals, _) = self.tensor_max_dim(patch, 2)?;
+            let max_vals = self.tensor_unsqueeze(max_vals, 2)?;
+            slices.push(max_vals);
+        }
+        self.tensor_cat(&slices, 2)
+    }
+
+    /// Apply 2D max pooling over `[N, C, H, W]`.
+    pub fn functional_max_pool2d(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (kernel_h, kernel_w) = kernel_size;
+        let stride_h = if stride.0 == 0 { kernel_h } else { stride.0 };
+        let stride_w = if stride.1 == 0 { kernel_w } else { stride.1 };
+        if kernel_h == 0 || kernel_w == 0 || stride_h == 0 || stride_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "max_pool2d: kernel_size and stride dimensions must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "max_pool2d: input must be 4-D [N, C, H, W]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let channels = input_shape[1];
+        let input_h = input_shape[2];
+        let input_w = input_shape[3];
+        if input_h < kernel_h || input_w < kernel_w {
+            return Err(Self::incompatible_tensor_args(
+                "max_pool2d: input smaller than kernel size",
+            ));
+        }
+
+        let output_h = (input_h - kernel_h) / stride_h + 1;
+        let output_w = (input_w - kernel_w) / stride_w + 1;
+        let flat_width = kernel_h * kernel_w;
+        let flattened_channels = batch_size * channels;
+        let mut patches = Vec::with_capacity(output_h * output_w);
+        for out_h in 0..output_h {
+            let row_start = out_h * stride_h;
+            let row_slice = self.tensor_narrow(input, 2, row_start, kernel_h)?;
+            for out_w in 0..output_w {
+                let col_start = out_w * stride_w;
+                let patch = self.tensor_narrow(row_slice, 3, col_start, kernel_w)?;
+                let flat = self.tensor_reshape(patch, vec![flattened_channels, flat_width])?;
+                let (max_vals, _) = self.tensor_max_dim(flat, 1)?;
+                let max_vals = self.tensor_reshape(max_vals, vec![batch_size, channels, 1])?;
+                patches.push(max_vals);
+            }
+        }
+
+        let pooled = self.tensor_cat(&patches, 2)?;
+        self.tensor_reshape(pooled, vec![batch_size, channels, output_h, output_w])
+    }
+
+    /// Apply 2D average pooling over `[N, C, H, W]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn functional_avg_pool2d(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+        ceil_mode: bool,
+        count_include_pad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (kernel_h, kernel_w) = kernel_size;
+        let stride_h = if stride.0 == 0 { kernel_h } else { stride.0 };
+        let stride_w = if stride.1 == 0 { kernel_w } else { stride.1 };
+        let (padding_h, padding_w) = padding;
+        if kernel_h == 0 || kernel_w == 0 || stride_h == 0 || stride_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "avg_pool2d: kernel_size and stride dimensions must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "avg_pool2d: input must be 4-D [N, C, H, W]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let channels = input_shape[1];
+        let input_h = input_shape[2];
+        let input_w = input_shape[3];
+        let padded = if padding_h > 0 || padding_w > 0 {
+            self.tensor_pad(input, &[padding_w, padding_w, padding_h, padding_h], 0.0)?
+        } else {
+            input
+        };
+        let padded_h = input_h + 2 * padding_h;
+        let padded_w = input_w + 2 * padding_w;
+        if padded_h < kernel_h || padded_w < kernel_w {
+            return Err(Self::incompatible_tensor_args(
+                "avg_pool2d: input smaller than kernel size after padding",
+            ));
+        }
+
+        let output_h = if ceil_mode {
+            (padded_h - kernel_h).div_ceil(stride_h) + 1
+        } else {
+            (padded_h - kernel_h) / stride_h + 1
+        };
+        let output_w = if ceil_mode {
+            (padded_w - kernel_w).div_ceil(stride_w) + 1
+        } else {
+            (padded_w - kernel_w) / stride_w + 1
+        };
+
+        let flattened_channels = batch_size * channels;
+        let full_kernel_area = (kernel_h * kernel_w) as f64;
+        let mut patches = Vec::with_capacity(output_h * output_w);
+        for out_h in 0..output_h {
+            let row_start = out_h * stride_h;
+            let row_end = (row_start + kernel_h).min(padded_h);
+            let row_len = row_end - row_start;
+            let row_slice = self.tensor_narrow(padded, 2, row_start, row_len)?;
+            for out_w in 0..output_w {
+                let col_start = out_w * stride_w;
+                let col_end = (col_start + kernel_w).min(padded_w);
+                let col_len = col_end - col_start;
+                let patch = self.tensor_narrow(row_slice, 3, col_start, col_len)?;
+                let flat =
+                    self.tensor_reshape(patch, vec![flattened_channels, row_len * col_len])?;
+                let sum = self.tensor_sum_dim(flat, 1)?;
+                let divisor = if count_include_pad || (padding_h == 0 && padding_w == 0) {
+                    self.full(vec![flattened_channels], full_kernel_area, false)?
+                } else {
+                    self.full(vec![flattened_channels], (row_len * col_len) as f64, false)?
+                };
+                let avg = self.tensor_div(sum, divisor)?;
+                let avg = self.tensor_reshape(avg, vec![batch_size, channels, 1])?;
+                patches.push(avg);
+            }
+        }
+
+        let pooled = self.tensor_cat(&patches, 2)?;
+        self.tensor_reshape(pooled, vec![batch_size, channels, output_h, output_w])
+    }
+
+    /// Apply layer normalization over the trailing `normalized_shape` dimensions.
+    pub fn functional_layer_norm(
+        &mut self,
+        input: TensorNodeId,
+        normalized_shape: Vec<usize>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if normalized_shape.is_empty() {
+            return Err(Self::incompatible_tensor_args(
+                "layer_norm: normalized_shape must be non-empty",
+            ));
+        }
+        let input_shape = self.tensor_shape(input)?;
+        let ndim = input_shape.len();
+        let normalized_ndim = normalized_shape.len();
+        if ndim < normalized_ndim {
+            return Err(Self::incompatible_tensor_args(
+                "layer_norm: input has fewer dimensions than normalized_shape",
+            ));
+        }
+
+        let normalized_numel: usize = normalized_shape.iter().product();
+        if normalized_numel == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "layer_norm: normalized_shape must not contain zero dimensions",
+            ));
+        }
+
+        let start = ndim - normalized_ndim;
+        for (offset, &expected) in normalized_shape.iter().enumerate() {
+            if input_shape[start + offset] != expected {
+                return Err(Self::incompatible_tensor_args(
+                    "layer_norm: input trailing dimensions do not match normalized_shape",
+                ));
+            }
+        }
+
+        self.validate_optional_affine(weight, bias, &normalized_shape, "layer_norm")?;
+
+        let batch_numel: usize = if start == 0 {
+            1
+        } else {
+            input_shape[..start].iter().product()
+        };
+        let flat = self.tensor_reshape(input, vec![batch_numel, normalized_numel])?;
+        let mean = self.tensor_mean_dim(flat, 1)?;
+        let mean = self.tensor_unsqueeze(mean, 1)?;
+        let mean = self.tensor_expand(mean, vec![batch_numel, normalized_numel])?;
+        let diff = self.tensor_sub(flat, mean)?;
+        let diff_sq = self.tensor_mul(diff, diff)?;
+        let var = self.tensor_mean_dim(diff_sq, 1)?;
+        let var = self.tensor_unsqueeze(var, 1)?;
+        let var = self.tensor_expand(var, vec![batch_numel, normalized_numel])?;
+        let eps_t = self.full(vec![batch_numel, normalized_numel], eps, false)?;
+        let std = self.tensor_add(var, eps_t)?;
+        let std = self.tensor_sqrt(std)?;
+        let normalized = self.tensor_div(diff, std)?;
+        let mut output = self.tensor_reshape(normalized, input_shape.clone())?;
+
+        if let Some(weight) = weight {
+            let mut affine_shape = vec![1usize; start];
+            affine_shape.extend_from_slice(&normalized_shape);
+            let weight = self.tensor_reshape(weight, affine_shape)?;
+            let weight = self.tensor_expand(weight, input_shape.clone())?;
+            output = self.tensor_mul(weight, output)?;
+        }
+        if let Some(bias) = bias {
+            let mut affine_shape = vec![1usize; start];
+            affine_shape.extend_from_slice(&normalized_shape);
+            let bias = self.tensor_reshape(bias, affine_shape)?;
+            let bias = self.tensor_expand(bias, input_shape)?;
+            output = self.tensor_add(output, bias)?;
+        }
+
+        Ok(output)
+    }
+
+    /// Apply group normalization over channel groups.
+    pub fn functional_group_norm(
+        &mut self,
+        input: TensorNodeId,
+        num_groups: usize,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if num_groups == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "group_norm: num_groups must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() < 2 {
+            return Err(Self::incompatible_tensor_args(
+                "group_norm: input must have at least 2 dimensions [N, C, ...]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let channels = input_shape[1];
+        if channels == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "group_norm: channel dimension must be greater than zero",
+            ));
+        }
+        if !channels.is_multiple_of(num_groups) {
+            return Err(Self::incompatible_tensor_args(
+                "group_norm: channels must be divisible by num_groups",
+            ));
+        }
+
+        self.validate_optional_affine(weight, bias, &[channels], "group_norm")?;
+
+        let channels_per_group = channels / num_groups;
+        let spatial: usize = if input_shape.len() > 2 {
+            input_shape[2..].iter().product()
+        } else {
+            1
+        };
+        let group_numel = channels_per_group * spatial;
+        let reshaped = self.tensor_reshape(input, vec![batch_size, num_groups, group_numel])?;
+        let mean = self.tensor_mean_dim(reshaped, 2)?;
+        let mean = self.tensor_unsqueeze(mean, 2)?;
+        let mean = self.tensor_expand(mean, vec![batch_size, num_groups, group_numel])?;
+        let diff = self.tensor_sub(reshaped, mean)?;
+        let diff_sq = self.tensor_mul(diff, diff)?;
+        let var = self.tensor_mean_dim(diff_sq, 2)?;
+        let var = self.tensor_unsqueeze(var, 2)?;
+        let var = self.tensor_expand(var, vec![batch_size, num_groups, group_numel])?;
+        let eps_t = self.full(vec![batch_size, num_groups, group_numel], eps, false)?;
+        let std = self.tensor_add(var, eps_t)?;
+        let std = self.tensor_sqrt(std)?;
+        let normalized = self.tensor_div(diff, std)?;
+        let normalized = self.tensor_reshape(normalized, input_shape.clone())?;
+
+        self.apply_optional_affine(normalized, &input_shape, 1, weight, bias)
+    }
+
+    /// Apply instance normalization over `[N, C, L]`.
+    pub fn functional_instance_norm1d(
+        &mut self,
+        input: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "instance_norm1d: input must be 3-D [N, C, L]",
+            ));
+        }
+        self.functional_group_norm(input, input_shape[1], weight, bias, eps)
+    }
+
+    /// Apply instance normalization over `[N, C, H, W]`.
+    pub fn functional_instance_norm2d(
+        &mut self,
+        input: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "instance_norm2d: input must be 4-D [N, C, H, W]",
+            ));
+        }
+        self.functional_group_norm(input, input_shape[1], weight, bias, eps)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
@@ -6294,6 +6890,87 @@ impl FrankenTorchSession {
                 event.decision.fallback_used
             ),
         );
+    }
+
+    fn incompatible_tensor_args(reason: &'static str) -> AutogradError {
+        AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+            ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
+        ))
+    }
+
+    fn validate_pool1d_output_len(
+        input_len: usize,
+        kernel_size: usize,
+        stride: usize,
+        op_name: &'static str,
+    ) -> Result<usize, AutogradError> {
+        if input_len < kernel_size {
+            let reason = match op_name {
+                "avg_pool1d" => "avg_pool1d: input length smaller than kernel_size",
+                "max_pool1d" => "max_pool1d: input length smaller than kernel_size",
+                _ => "pool1d: input length smaller than kernel_size",
+            };
+            return Err(Self::incompatible_tensor_args(reason));
+        }
+        Ok((input_len - kernel_size) / stride + 1)
+    }
+
+    fn validate_optional_affine(
+        &self,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        expected_shape: &[usize],
+        op_name: &'static str,
+    ) -> Result<(), AutogradError> {
+        if let Some(weight) = weight {
+            let weight_shape = self.tensor_shape(weight)?;
+            if weight_shape != expected_shape {
+                let reason = match op_name {
+                    "layer_norm" => "layer_norm: weight must match normalized_shape",
+                    "group_norm" => "group_norm: weight must have shape [C]",
+                    _ => "functional_norm: weight has incompatible shape",
+                };
+                return Err(Self::incompatible_tensor_args(reason));
+            }
+        }
+        if let Some(bias) = bias {
+            let bias_shape = self.tensor_shape(bias)?;
+            if bias_shape != expected_shape {
+                let reason = match op_name {
+                    "layer_norm" => "layer_norm: bias must match normalized_shape",
+                    "group_norm" => "group_norm: bias must have shape [C]",
+                    _ => "functional_norm: bias has incompatible shape",
+                };
+                return Err(Self::incompatible_tensor_args(reason));
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_optional_affine(
+        &mut self,
+        input: TensorNodeId,
+        input_shape: &[usize],
+        channel_dim: usize,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut output = input;
+        if let Some(weight) = weight {
+            let mut affine_shape = vec![1usize; input_shape.len()];
+            affine_shape[channel_dim] = input_shape[channel_dim];
+            let weight = self.tensor_reshape(weight, affine_shape)?;
+            let weight = self.tensor_expand(weight, input_shape.to_vec())?;
+            output = self.tensor_mul(weight, output)?;
+        }
+        if let Some(bias) = bias {
+            let mut affine_shape = vec![1usize; input_shape.len()];
+            affine_shape[channel_dim] = input_shape[channel_dim];
+            let bias = self.tensor_reshape(bias, affine_shape)?;
+            let bias = self.tensor_expand(bias, input_shape.to_vec())?;
+            output = self.tensor_add(output, bias)?;
+        }
+        Ok(output)
     }
 
     // ── Utility Methods ─────────────────────────────────────────────────
@@ -19129,6 +19806,143 @@ mod tests {
         // [1,1] @ I + [10,20] = [11, 21]
         assert!((vals[0] - 11.0).abs() < 1e-10);
         assert!((vals[1] - 21.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn functional_conv1d_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, -1.0], vec![1, 1, 2], false)
+            .unwrap();
+        let out = s.functional_conv1d(input, weight, None, 1, 0).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 3]);
+        assert_eq!(vals, vec![-1.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn functional_conv2d_with_bias() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let bias = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let out = s
+            .functional_conv2d(input, weight, Some(bias), (1, 1), (0, 0))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 1, 1]);
+        assert_eq!(vals, vec![6.0]);
+    }
+
+    #[test]
+    fn functional_avg_pool1d_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 3.0, 5.0, 7.0], vec![1, 1, 4], false)
+            .unwrap();
+        let out = s.functional_avg_pool1d(input, 2, 2).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 2]);
+        assert_eq!(vals, vec![2.0, 6.0]);
+    }
+
+    #[test]
+    fn functional_avg_pool2d_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let out = s
+            .functional_avg_pool2d(input, (2, 2), (2, 2), (0, 0), false, true)
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 1, 1]);
+        assert_eq!(vals, vec![2.5]);
+    }
+
+    #[test]
+    fn functional_max_pool2d_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 4.0, 2.0, 3.0, 0.0, 5.0], vec![1, 1, 2, 3], false)
+            .unwrap();
+        let out = s.functional_max_pool2d(input, (2, 2), (1, 1)).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 1, 2]);
+        assert_eq!(vals, vec![4.0, 5.0]);
+    }
+
+    #[test]
+    fn functional_layer_norm_applies_affine() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 3.0, 2.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let weight = s.tensor_variable(vec![2.0, 3.0], vec![2], false).unwrap();
+        let bias = s.tensor_variable(vec![10.0, 20.0], vec![2], false).unwrap();
+        let out = s
+            .functional_layer_norm(input, vec![2], Some(weight), Some(bias), 0.0)
+            .unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![8.0, 23.0, 8.0, 23.0]);
+    }
+
+    #[test]
+    fn functional_group_norm_applies_affine() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 3.0, 2.0, 4.0], vec![1, 2, 2], false)
+            .unwrap();
+        let weight = s.tensor_variable(vec![2.0, 3.0], vec![2], false).unwrap();
+        let bias = s.tensor_variable(vec![10.0, 20.0], vec![2], false).unwrap();
+        let out = s
+            .functional_group_norm(input, 2, Some(weight), Some(bias), 0.0)
+            .unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![8.0, 12.0, 17.0, 23.0]);
+    }
+
+    #[test]
+    fn functional_instance_norm2d_matches_group_norm() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 3.0, 2.0, 4.0], vec![1, 2, 1, 2], false)
+            .unwrap();
+        let instance = s
+            .functional_instance_norm2d(input, None, None, 0.0)
+            .unwrap();
+        let group = s.functional_group_norm(input, 2, None, None, 0.0).unwrap();
+        assert_eq!(
+            s.tensor_values(instance).unwrap(),
+            s.tensor_values(group).unwrap()
+        );
+    }
+
+    #[test]
+    fn functional_layer_norm_rejects_mismatched_affine_shape() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        assert!(
+            s.functional_layer_norm(input, vec![2], Some(weight), None, 1e-5)
+                .is_err()
+        );
     }
 
     // ── baddbmm / addbmm tests ──────────────────────────────────────
