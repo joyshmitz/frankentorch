@@ -9520,6 +9520,276 @@ impl FrankenTorchSession {
         self.tensor_reshape(permuted, vec![batch, channels * r * r, oh, ow])
     }
 
+    // ── logsumexp ────────────────────────────────────────────────────────
+    /// Numerically stable log-sum-exp reduction along a dimension.
+    ///
+    /// Equivalent to `torch.logsumexp(input, dim)`.
+    pub fn tensor_logsumexp(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (storage, meta) = {
+            let t = self.tensor_tape.tensor(input)?;
+            (t.storage().to_vec(), t.meta().clone())
+        };
+        let shape = meta.shape();
+        let ndim = shape.len();
+        if dim >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "logsumexp: dimension out of range",
+                },
+            )));
+        }
+        let outer_size: usize = shape[..dim].iter().product();
+        let dim_size = shape[dim];
+        let inner_size: usize = shape[dim + 1..].iter().product();
+        let mut result = Vec::with_capacity(outer_size * inner_size);
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut max_val = f64::NEG_INFINITY;
+                for d in 0..dim_size {
+                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                    if storage[idx] > max_val {
+                        max_val = storage[idx];
+                    }
+                }
+                let mut sum_exp = 0.0;
+                for d in 0..dim_size {
+                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                    sum_exp += (storage[idx] - max_val).exp();
+                }
+                result.push(max_val + sum_exp.ln());
+            }
+        }
+        let mut out_shape: Vec<usize> = shape.to_vec();
+        out_shape.remove(dim);
+        if out_shape.is_empty() {
+            out_shape.push(1);
+        }
+        let out = self.tensor_tape.leaf(result, out_shape, false)?;
+        Ok(out)
+    }
+
+    /// Compute the p-norm distance between two tensors.
+    ///
+    /// Equivalent to `torch.dist(input, other, p)`.
+    pub fn tensor_dist(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(a, b)?;
+        self.tensor_norm(diff, p)
+    }
+
+    /// Move a dimension from `source` to `destination`.
+    ///
+    /// Equivalent to `torch.movedim(input, source, destination)`.
+    pub fn tensor_movedim(
+        &mut self,
+        input: TensorNodeId,
+        source: usize,
+        destination: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let ndim = self.tensor_shape(input)?.len();
+        if source >= ndim || destination >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "movedim: dimension out of range",
+                },
+            )));
+        }
+        if source == destination {
+            return Ok(input);
+        }
+        let mut perm: Vec<usize> = (0..ndim).collect();
+        perm.remove(source);
+        perm.insert(destination, source);
+        self.tensor_permute(input, perm)
+    }
+
+    /// Compute both min and max along a dimension. Returns `(min, max)`.
+    ///
+    /// Equivalent to `torch.aminmax(input, dim)`.
+    pub fn tensor_aminmax(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let (vals, shape) = {
+            let (v, m) = self.tensor_values_meta(input)?;
+            (v, m.shape().to_vec())
+        };
+        if dim >= shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "aminmax: dimension out of range",
+                },
+            )));
+        }
+        let outer_size: usize = shape[..dim].iter().product();
+        let dim_size = shape[dim];
+        let inner_size: usize = shape[dim + 1..].iter().product();
+        let mut mins = Vec::with_capacity(outer_size * inner_size);
+        let mut maxs = Vec::with_capacity(outer_size * inner_size);
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let (mut mn, mut mx) = (f64::INFINITY, f64::NEG_INFINITY);
+                for d in 0..dim_size {
+                    let v = vals[outer * dim_size * inner_size + d * inner_size + inner];
+                    if v < mn {
+                        mn = v;
+                    }
+                    if v > mx {
+                        mx = v;
+                    }
+                }
+                mins.push(mn);
+                maxs.push(mx);
+            }
+        }
+        let mut out_shape = shape;
+        out_shape.remove(dim);
+        if out_shape.is_empty() {
+            out_shape.push(1);
+        }
+        let min_out = self.tensor_tape.leaf(mins, out_shape.clone(), false)?;
+        let max_out = self.tensor_tape.leaf(maxs, out_shape, false)?;
+        Ok((min_out, max_out))
+    }
+
+    /// Extract sliding windows from a tensor along a dimension.
+    ///
+    /// Equivalent to `torch.Tensor.unfold(dimension, size, step)`.
+    pub fn tensor_unfold(
+        &mut self,
+        input: TensorNodeId,
+        dimension: usize,
+        size: usize,
+        step: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, shape) = {
+            let (v, m) = self.tensor_values_meta(input)?;
+            (v, m.shape().to_vec())
+        };
+        let ndim = shape.len();
+        if dimension >= ndim || size > shape[dimension] || step == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "unfold: invalid dimension, size, or step",
+                },
+            )));
+        }
+        let n_windows = (shape[dimension] - size) / step + 1;
+        let mut strides = vec![1usize; ndim];
+        for d in (0..ndim - 1).rev() {
+            strides[d] = strides[d + 1] * shape[d + 1];
+        }
+        let mut out_shape = shape.clone();
+        out_shape[dimension] = n_windows;
+        out_shape.push(size);
+        let out_ndim = out_shape.len();
+        let mut out_strides = vec![1usize; out_ndim];
+        for d in (0..out_ndim - 1).rev() {
+            out_strides[d] = out_strides[d + 1] * out_shape[d + 1];
+        }
+        let out_numel: usize = out_shape.iter().product();
+        let mut result = vec![0.0; out_numel];
+        for (flat_out, slot) in result.iter_mut().enumerate().take(out_numel) {
+            let mut remaining = flat_out;
+            let mut coords = vec![0usize; out_ndim];
+            for d in 0..out_ndim {
+                coords[d] = remaining / out_strides[d];
+                remaining %= out_strides[d];
+            }
+            let mut in_flat = 0;
+            for d in 0..ndim {
+                let c = if d == dimension {
+                    coords[dimension] * step + coords[out_ndim - 1]
+                } else {
+                    coords[d]
+                };
+                in_flat += c * strides[d];
+            }
+            *slot = vals[in_flat];
+        }
+        self.tensor_tape.leaf(result, out_shape, false)
+    }
+
+    /// Renormalize sub-tensors so their p-norm <= maxnorm.
+    ///
+    /// Equivalent to `torch.renorm(input, p, dim, maxnorm)`.
+    pub fn tensor_renorm(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        dim: usize,
+        maxnorm: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, shape) = {
+            let (v, m) = self.tensor_values_meta(input)?;
+            (v, m.shape().to_vec())
+        };
+        if dim >= shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "renorm: dimension out of range",
+                },
+            )));
+        }
+        let dim_size = shape[dim];
+        let outer_size: usize = shape[..dim].iter().product();
+        let inner_size: usize = shape[dim + 1..].iter().product();
+        let mut result = vals.clone();
+        for d in 0..dim_size {
+            let mut norm = 0.0_f64;
+            for outer in 0..outer_size {
+                for inner in 0..inner_size {
+                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                    norm += vals[idx].abs().powf(p);
+                }
+            }
+            norm = norm.powf(1.0 / p);
+            if norm > maxnorm {
+                let scale = maxnorm / norm;
+                for outer in 0..outer_size {
+                    for inner in 0..inner_size {
+                        let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                        result[idx] *= scale;
+                    }
+                }
+            }
+        }
+        self.tensor_tape.leaf(result, shape, false)
+    }
+
+    /// Test if each element is in a set of test values. Returns 0.0/1.0 mask.
+    ///
+    /// Equivalent to `torch.isin(elements, test_elements)`.
+    pub fn tensor_isin(
+        &mut self,
+        elements: TensorNodeId,
+        test_elements: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let elem_vals = self.tensor_values(elements)?;
+        let test_vals = self.tensor_values(test_elements)?;
+        let shape = self.tensor_shape(elements)?;
+        let result: Vec<f64> = elem_vals
+            .iter()
+            .map(|&e| {
+                if test_vals.iter().any(|&t| (e - t).abs() < f64::EPSILON) {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        self.tensor_tape.leaf(result, shape, false)
+    }
+
     // ── hstack ──────────────────────────────────────────────────────────
     /// Horizontally stack tensors (along dim 1 for 2D+, dim 0 for 1D).
     ///
@@ -9822,9 +10092,8 @@ impl FrankenTorchSession {
                         0.0
                     } else {
                         // Index into result for the previous element
-                        let prev_idx = outer * out_dim_size * inner_size
-                            + (d - 1) * inner_size
-                            + inner;
+                        let prev_idx =
+                            outer * out_dim_size * inner_size + (d - 1) * inner_size + inner;
                         result[prev_idx]
                     };
                     result.push(prev_sum + 0.5 * (y_vals[idx0] + y_vals[idx1]) * dx);
@@ -9965,10 +10234,7 @@ impl FrankenTorchSession {
     /// Flip tensor in the left/right direction (along dim 1).
     ///
     /// Equivalent to `torch.fliplr(input)`. Input must be >= 2-D.
-    pub fn tensor_fliplr(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_fliplr(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let ndim = self.tensor_shape(input)?.len();
         if ndim < 2 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -9984,10 +10250,7 @@ impl FrankenTorchSession {
     /// Flip tensor in the up/down direction (along dim 0).
     ///
     /// Equivalent to `torch.flipud(input)`. Input must be >= 1-D.
-    pub fn tensor_flipud(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_flipud(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let ndim = self.tensor_shape(input)?.len();
         if ndim < 1 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -10015,13 +10278,13 @@ impl FrankenTorchSession {
         let size = n + abs_offset;
 
         let mut result = vec![0.0; size * size];
-        for i in 0..n {
+        for (i, value) in vals.iter().enumerate().take(n) {
             let (row, col) = if offset >= 0 {
                 (i, i + abs_offset)
             } else {
                 (i + abs_offset, i)
             };
-            result[row * size + col] = vals[i];
+            result[row * size + col] = *value;
         }
 
         let out = self.tensor_tape.leaf(result, vec![size, size], false)?;
@@ -24170,20 +24433,33 @@ mod tests {
         let sx = s.tensor_sum(x).unwrap();
         let sy = s.tensor_sum(y).unwrap();
         let loss = s.tensor_add(sx, sy).unwrap();
-        let report = s.tensor_backward(loss).unwrap();
+        let _report = s.tensor_backward(loss).unwrap();
 
         // Set large gradients manually
-        s.tensor_set_accumulated_gradient(x, vec![3.0, 4.0]).unwrap();
-        s.tensor_set_accumulated_gradient(y, vec![0.0, 0.0]).unwrap();
+        s.tensor_set_accumulated_gradient(x, vec![3.0, 4.0])
+            .unwrap();
+        s.tensor_set_accumulated_gradient(y, vec![0.0, 0.0])
+            .unwrap();
 
         // L2 norm = sqrt(9+16) = 5.0, clip to max_norm=2.5
         let total_norm = s.clip_grad_norm_(&[x, y], 2.5, 2.0).unwrap();
-        assert!((total_norm - 5.0).abs() < 1e-8, "total norm should be 5.0, got {total_norm}");
+        assert!(
+            (total_norm - 5.0).abs() < 1e-8,
+            "total norm should be 5.0, got {total_norm}"
+        );
 
         let grad_x = s.tensor_accumulated_gradient(x).unwrap().unwrap();
         // Scaled by 2.5/(5.0+1e-6) ≈ 0.5
-        assert!((grad_x[0] - 1.5).abs() < 1e-4, "grad should be ~1.5, got {}", grad_x[0]);
-        assert!((grad_x[1] - 2.0).abs() < 1e-4, "grad should be ~2.0, got {}", grad_x[1]);
+        assert!(
+            (grad_x[0] - 1.5).abs() < 1e-4,
+            "grad should be ~1.5, got {}",
+            grad_x[0]
+        );
+        assert!(
+            (grad_x[1] - 2.0).abs() < 1e-4,
+            "grad should be ~2.0, got {}",
+            grad_x[1]
+        );
     }
 
     #[test]
@@ -24209,7 +24485,8 @@ mod tests {
         let loss = s.tensor_sum(x).unwrap();
         let _report = s.tensor_backward(loss).unwrap();
 
-        s.tensor_set_accumulated_gradient(x, vec![10.0, -20.0]).unwrap();
+        s.tensor_set_accumulated_gradient(x, vec![10.0, -20.0])
+            .unwrap();
 
         let total_norm = s.clip_grad_norm_(&[x], 5.0, f64::INFINITY).unwrap();
         assert!((total_norm - 20.0).abs() < 1e-8, "inf norm should be 20.0");
@@ -24224,7 +24501,8 @@ mod tests {
         let loss = s.tensor_sum(x).unwrap();
         let _report = s.tensor_backward(loss).unwrap();
 
-        s.tensor_set_accumulated_gradient(x, vec![10.0, -20.0]).unwrap();
+        s.tensor_set_accumulated_gradient(x, vec![10.0, -20.0])
+            .unwrap();
         s.clip_grad_value_(&[x], 5.0).unwrap();
 
         let grad = s.tensor_accumulated_gradient(x).unwrap().unwrap();
@@ -24320,10 +24598,18 @@ mod tests {
     #[test]
     fn scatter_reduce_sum() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = s.tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false).unwrap();
-        let index = s.tensor_variable(vec![0.0, 1.0, 0.0], vec![3], false).unwrap();
-        let src = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
-        let out = s.tensor_scatter_reduce(input, 0, index, src, "sum").unwrap();
+        let input = s
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false)
+            .unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 1.0, 0.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let out = s
+            .tensor_scatter_reduce(input, 0, index, src, "sum")
+            .unwrap();
         let vals = s.tensor_values(out).unwrap();
         // index 0 gets 1.0 + 3.0 = 4.0, index 1 gets 2.0
         assert_eq!(vals, &[4.0, 2.0, 0.0]);
@@ -24333,9 +24619,15 @@ mod tests {
     fn scatter_reduce_amax() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
-        let index = s.tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false).unwrap();
-        let src = s.tensor_variable(vec![5.0, 3.0, 7.0], vec![3], false).unwrap();
-        let out = s.tensor_scatter_reduce(input, 0, index, src, "amax").unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![5.0, 3.0, 7.0], vec![3], false)
+            .unwrap();
+        let out = s
+            .tensor_scatter_reduce(input, 0, index, src, "amax")
+            .unwrap();
         let vals = s.tensor_values(out).unwrap();
         // index 0 gets max(0, 5, 3) = 5, index 1 gets max(0, 7) = 7
         assert_eq!(vals, &[5.0, 7.0]);
@@ -24345,8 +24637,12 @@ mod tests {
     fn scatter_reduce_mean() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s.tensor_variable(vec![2.0, 6.0], vec![2], false).unwrap();
-        let index = s.tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false).unwrap();
-        let src = s.tensor_variable(vec![4.0, 8.0, 10.0], vec![3], false).unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![4.0, 8.0, 10.0], vec![3], false)
+            .unwrap();
         let out = s
             .tensor_scatter_reduce(input, 0, index, src, "mean")
             .unwrap();
@@ -24358,8 +24654,12 @@ mod tests {
     fn scatter_reduce_prod() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s.tensor_variable(vec![2.0, 3.0], vec![2], false).unwrap();
-        let index = s.tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false).unwrap();
-        let src = s.tensor_variable(vec![4.0, 5.0, 7.0], vec![3], false).unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![4.0, 5.0, 7.0], vec![3], false)
+            .unwrap();
         let out = s
             .tensor_scatter_reduce(input, 0, index, src, "prod")
             .unwrap();
@@ -24371,8 +24671,12 @@ mod tests {
     fn scatter_reduce_amin() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s.tensor_variable(vec![9.0, 8.0], vec![2], false).unwrap();
-        let index = s.tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false).unwrap();
-        let src = s.tensor_variable(vec![5.0, 7.0, 3.0], vec![3], false).unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![5.0, 7.0, 3.0], vec![3], false)
+            .unwrap();
         let out = s
             .tensor_scatter_reduce(input, 0, index, src, "amin")
             .unwrap();
@@ -24386,7 +24690,10 @@ mod tests {
         let input = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
         let index = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
         let src = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
-        assert!(s.tensor_scatter_reduce(input, 0, index, src, "invalid").is_err());
+        assert!(
+            s.tensor_scatter_reduce(input, 0, index, src, "invalid")
+                .is_err()
+        );
     }
 
     // ── fliplr / flipud / diagflat tests ────────────────────────────────
@@ -24423,7 +24730,9 @@ mod tests {
     #[test]
     fn flipud_1d() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
         let out = s.tensor_flipud(x).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, &[3.0, 2.0, 1.0]);
@@ -24432,15 +24741,14 @@ mod tests {
     #[test]
     fn diagflat_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
         let out = s.tensor_diagflat(x, 0).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, &[3, 3]);
         let vals = s.tensor_values(out).unwrap();
-        assert_eq!(
-            vals,
-            &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0]
-        );
+        assert_eq!(vals, &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0]);
     }
 
     #[test]
@@ -24473,10 +24781,16 @@ mod tests {
     fn trapezoid_uniform_spacing() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // y = [1, 2, 3], uniform dx=1 → ∫ = 0.5*(1+2)*1 + 0.5*(2+3)*1 = 1.5 + 2.5 = 4.0
-        let y = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let y = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
         let out = s.tensor_trapezoid(y, None, 0).unwrap();
         let vals = s.tensor_values(out).unwrap();
-        assert!((vals[0] - 4.0).abs() < 1e-10, "expected 4.0, got {}", vals[0]);
+        assert!(
+            (vals[0] - 4.0).abs() < 1e-10,
+            "expected 4.0, got {}",
+            vals[0]
+        );
     }
 
     #[test]
@@ -24504,7 +24818,9 @@ mod tests {
     #[test]
     fn cumulative_trapezoid_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let y = s.tensor_variable(vec![0.0, 1.0, 3.0], vec![3], false).unwrap();
+        let y = s
+            .tensor_variable(vec![0.0, 1.0, 3.0], vec![3], false)
+            .unwrap();
         let out = s.tensor_cumulative_trapezoid(y, None, 0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         let shape = s.tensor_shape(out).unwrap();
@@ -24522,7 +24838,9 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s.tensor_variable(vec![0.0; 6], vec![2, 3], false).unwrap();
         let v1 = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
-        let v2 = s.tensor_variable(vec![3.0, 4.0, 5.0], vec![3], false).unwrap();
+        let v2 = s
+            .tensor_variable(vec![3.0, 4.0, 5.0], vec![3], false)
+            .unwrap();
         let out = s.tensor_addr(input, v1, v2, 0.0, 1.0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         // outer product: [[3,4,5],[6,8,10]]
@@ -24549,8 +24867,12 @@ mod tests {
     #[test]
     fn inner_1d_dot() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
-        let b = s.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false)
+            .unwrap();
         let out = s.tensor_inner(a, b).unwrap();
         let vals = s.tensor_values(out).unwrap();
         // 1*4 + 2*5 + 3*6 = 32
@@ -24579,7 +24901,9 @@ mod tests {
     fn inner_length_mismatch_errors() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
-        let b = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let b = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
         assert!(s.tensor_inner(a, b).is_err());
     }
 
@@ -24598,8 +24922,12 @@ mod tests {
     #[test]
     fn hstack_2d() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0], vec![2, 1], false).unwrap();
-        let b = s.tensor_variable(vec![3.0, 4.0], vec![2, 1], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0], vec![2, 1], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![3.0, 4.0], vec![2, 1], false)
+            .unwrap();
         let out = s.tensor_hstack(&[a, b]).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, &[2, 2]);
@@ -24620,8 +24948,12 @@ mod tests {
     #[test]
     fn vstack_2d() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0], vec![1, 2], false).unwrap();
-        let b = s.tensor_variable(vec![3.0, 4.0], vec![1, 2], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![3.0, 4.0], vec![1, 2], false)
+            .unwrap();
         let out = s.tensor_vstack(&[a, b]).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, &[2, 2]);
@@ -24640,8 +24972,12 @@ mod tests {
     #[test]
     fn column_stack_1d() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
-        let b = s.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false)
+            .unwrap();
         let out = s.tensor_column_stack(&[a, b]).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, &[3, 2]);
@@ -24691,5 +25027,117 @@ mod tests {
         let out = s.tensor_row_stack(&[a, b]).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, &[2, 2]);
+    }
+
+    #[test]
+    fn logsumexp_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_logsumexp(x, 0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        let expected = (1.0_f64.exp() + 2.0_f64.exp() + 3.0_f64.exp()).ln();
+        assert!((vals[0] - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn logsumexp_large_stable() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1000.0, 1000.0], vec![2], false)
+            .unwrap();
+        let out = s.tensor_logsumexp(x, 0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - (1000.0 + 2.0_f64.ln())).abs() < 1e-8);
+    }
+
+    #[test]
+    fn dist_l2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let b = s.tensor_variable(vec![3.0, 4.0], vec![2], false).unwrap();
+        let out = s.tensor_dist(a, b, 2.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn movedim_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let out = s.tensor_movedim(x, 0, 1).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), &[3, 2]);
+    }
+
+    #[test]
+    fn aminmax_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![3.0, 1.0, 4.0, 1.0, 5.0], vec![5], false)
+            .unwrap();
+        let (mins, maxs) = s.tensor_aminmax(x, 0).unwrap();
+        assert_eq!(s.tensor_values(mins).unwrap()[0], 1.0);
+        assert_eq!(s.tensor_values(maxs).unwrap()[0], 5.0);
+    }
+
+    #[test]
+    fn aminmax_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 5.0, 3.0, 2.0], vec![2, 2], false)
+            .unwrap();
+        let (mins, maxs) = s.tensor_aminmax(x, 1).unwrap();
+        assert_eq!(s.tensor_values(mins).unwrap(), &[1.0, 2.0]);
+        assert_eq!(s.tensor_values(maxs).unwrap(), &[5.0, 3.0]);
+    }
+
+    #[test]
+    fn unfold_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], false)
+            .unwrap();
+        let out = s.tensor_unfold(x, 0, 3, 1).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), &[3, 3]);
+        assert_eq!(
+            s.tensor_values(out).unwrap(),
+            &[1.0, 2.0, 3.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0]
+        );
+    }
+
+    #[test]
+    fn unfold_step2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_unfold(x, 0, 2, 2).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), &[2, 2]);
+    }
+
+    #[test]
+    fn renorm_clips() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![3.0, 4.0, 1.0, 0.0], vec![2, 2], false)
+            .unwrap();
+        let out = s.tensor_renorm(x, 2.0, 0, 2.5).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 1.5).abs() < 1e-10);
+        assert!((vals[2] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn isin_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let elements = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .unwrap();
+        let test = s.tensor_variable(vec![2.0, 4.0], vec![2], false).unwrap();
+        let out = s.tensor_isin(elements, test).unwrap();
+        assert_eq!(s.tensor_values(out).unwrap(), &[0.0, 1.0, 0.0, 1.0]);
     }
 }

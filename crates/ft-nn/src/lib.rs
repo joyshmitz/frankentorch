@@ -21018,7 +21018,7 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let bn = BatchNorm3d::new(&mut session, 2, 1e-5, 0.1).unwrap();
         // [N=1, C=2, D=2, H=3, W=3]
-        let n = 1 * 2 * 2 * 3 * 3;
+        let n = 2 * 2 * 3 * 3;
         let input = session
             .tensor_variable(vec![1.0; n], vec![1, 2, 2, 3, 3], false)
             .unwrap();
@@ -21061,9 +21061,7 @@ mod tests {
     fn hardswish_module_positive() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let m = Hardswish;
-        let input = session
-            .tensor_variable(vec![5.0], vec![1], false)
-            .unwrap();
+        let input = session.tensor_variable(vec![5.0], vec![1], false).unwrap();
         let out = m.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(out).unwrap();
         // hardswish(5) = 5 (saturated)
@@ -21074,9 +21072,7 @@ mod tests {
     fn hardswish_module_negative() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let m = Hardswish;
-        let input = session
-            .tensor_variable(vec![-5.0], vec![1], false)
-            .unwrap();
+        let input = session.tensor_variable(vec![-5.0], vec![1], false).unwrap();
         let out = m.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(out).unwrap();
         // hardswish(-5) = 0
@@ -21106,9 +21102,7 @@ mod tests {
     fn log_sigmoid_module() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let m = LogSigmoid;
-        let input = session
-            .tensor_variable(vec![0.0], vec![1], false)
-            .unwrap();
+        let input = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
         let out = m.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(out).unwrap();
         // log(sigmoid(0)) = log(0.5) ≈ -0.6931
@@ -21141,7 +21135,11 @@ mod tests {
         let out = m.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(out).unwrap();
         // slope = (0.1 + 0.3) / 2 = 0.2
-        assert!((vals[0] - (-2.0)).abs() < 1e-10, "expected -2.0, got {}", vals[0]);
+        assert!(
+            (vals[0] - (-2.0)).abs() < 1e-10,
+            "expected -2.0, got {}",
+            vals[0]
+        );
     }
 
     #[test]
