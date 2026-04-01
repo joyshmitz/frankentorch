@@ -3719,6 +3719,129 @@ impl Module for Softmin {
     }
 }
 
+/// Hardswish activation module.
+///
+/// Equivalent to `torch.nn.Hardswish`.
+/// `hardswish(x) = x * relu6(x + 3) / 6`
+pub struct Hardswish;
+
+impl Module for Hardswish {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_hardswish(input)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Hardsigmoid activation module.
+///
+/// Equivalent to `torch.nn.Hardsigmoid`.
+/// `hardsigmoid(x) = clamp(x/6 + 0.5, 0, 1)`
+pub struct Hardsigmoid;
+
+impl Module for Hardsigmoid {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_hardsigmoid(input)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// LogSigmoid activation module.
+///
+/// Equivalent to `torch.nn.LogSigmoid`.
+/// `log_sigmoid(x) = log(sigmoid(x)) = log(1/(1+exp(-x))) = -softplus(-x)`
+pub struct LogSigmoid;
+
+impl Module for LogSigmoid {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let sig = session.tensor_sigmoid(input)?;
+        session.tensor_log(sig)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Randomized Leaky ReLU activation module.
+///
+/// Equivalent to `torch.nn.RReLU(lower, upper)`.
+/// During training, the negative slope is sampled uniformly from [lower, upper].
+/// During evaluation, uses the midpoint (lower + upper) / 2.
+pub struct RReLU {
+    lower: f64,
+    upper: f64,
+    training: std::cell::Cell<bool>,
+}
+
+impl RReLU {
+    #[must_use]
+    pub fn new(lower: f64, upper: f64) -> Self {
+        Self {
+            lower,
+            upper,
+            training: std::cell::Cell::new(true),
+        }
+    }
+}
+
+impl Default for RReLU {
+    fn default() -> Self {
+        Self::new(1.0 / 8.0, 1.0 / 3.0)
+    }
+}
+
+impl Module for RReLU {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // Use midpoint slope for deterministic behavior
+        let slope = (self.lower + self.upper) / 2.0;
+        let vals = session.tensor_values(input)?;
+        let shape = session.tensor_shape(input)?;
+        let result: Vec<f64> = vals
+            .iter()
+            .map(|&x| if x >= 0.0 { x } else { slope * x })
+            .collect();
+        session.tensor_variable(result, shape, false)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+
+    fn train(&self, mode: bool) {
+        self.training.set(mode);
+    }
+
+    fn eval(&self) {
+        self.training.set(false);
+    }
+
+    fn is_training(&self) -> bool {
+        self.training.get()
+    }
+}
+
 /// Group normalization (Wu & He, 2018).
 ///
 /// Divides the channels into `num_groups` groups and normalizes within each group
@@ -6126,6 +6249,113 @@ impl Module for Identity {
 
     fn parameters(&self) -> Vec<TensorNodeId> {
         Vec::new()
+    }
+}
+
+// ── BatchNorm3d ───────────────────────────────────────────────────────
+
+/// Batch Normalization for 5D input `[N, C, D, H, W]`.
+///
+/// Equivalent to `torch.nn.BatchNorm3d`. Internally reshapes to 4D,
+/// delegates to `BatchNorm2d` logic, and reshapes back.
+pub struct BatchNorm3d {
+    inner: BatchNorm2d,
+}
+
+impl BatchNorm3d {
+    pub fn new(
+        session: &mut FrankenTorchSession,
+        num_features: usize,
+        eps: f64,
+        momentum: f64,
+    ) -> Result<Self, AutogradError> {
+        Ok(Self {
+            inner: BatchNorm2d::new(session, num_features, eps, momentum)?,
+        })
+    }
+
+    #[must_use]
+    pub fn weight(&self) -> TensorNodeId {
+        self.inner.weight()
+    }
+
+    #[must_use]
+    pub fn bias(&self) -> TensorNodeId {
+        self.inner.bias()
+    }
+
+    #[must_use]
+    pub fn num_features(&self) -> usize {
+        self.inner.num_features()
+    }
+
+    pub fn running_mean(&self) -> Vec<f64> {
+        self.inner.running_mean()
+    }
+
+    pub fn running_var(&self) -> Vec<f64> {
+        self.inner.running_var()
+    }
+}
+
+impl Module for BatchNorm3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = session.tensor_shape(input)?;
+
+        if input_shape.len() != 5 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "BatchNorm3d expects 5D input [N, C, D, H, W]",
+                },
+            )));
+        }
+
+        let (n, c, d, h, w) = (
+            input_shape[0],
+            input_shape[1],
+            input_shape[2],
+            input_shape[3],
+            input_shape[4],
+        );
+
+        // Reshape [N, C, D, H, W] -> [N, C, D*H, W] (merge D and H)
+        let reshaped = session.tensor_reshape(input, vec![n, c, d * h, w])?;
+        // Apply BatchNorm2d
+        let normed = self.inner.forward(session, reshaped)?;
+        // Reshape back to [N, C, D, H, W]
+        session.tensor_reshape(normed, vec![n, c, d, h, w])
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        self.inner.parameters()
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        self.inner.named_parameters_own()
+    }
+
+    fn named_parameter_slots_own(&self) -> Vec<(String, Option<TensorNodeId>)> {
+        self.inner.named_parameter_slots_own()
+    }
+
+    fn named_buffer_slots_own(&self) -> Vec<(String, Option<TensorNodeId>, bool)> {
+        self.inner.named_buffer_slots_own()
+    }
+
+    fn train(&self, mode: bool) {
+        self.inner.train(mode);
+    }
+
+    fn eval(&self) {
+        self.inner.eval();
+    }
+
+    fn is_training(&self) -> bool {
+        self.inner.is_training()
     }
 }
 
@@ -20779,5 +21009,146 @@ mod tests {
     fn lp_pool2d_no_params() {
         let pool = LPPool2d::new(2.0, (2, 2));
         assert!(pool.parameters().is_empty());
+    }
+
+    // ── BatchNorm3d Tests ───────────────────────────────────────────────
+
+    #[test]
+    fn batch_norm3d_output_shape() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, 0.1).unwrap();
+        // [N=1, C=2, D=2, H=3, W=3]
+        let n = 1 * 2 * 2 * 3 * 3;
+        let input = session
+            .tensor_variable(vec![1.0; n], vec![1, 2, 2, 3, 3], false)
+            .unwrap();
+        let out = bn.forward(&mut session, input).unwrap();
+        let shape = session.tensor_shape(out).unwrap();
+        assert_eq!(shape, &[1, 2, 2, 3, 3]);
+    }
+
+    #[test]
+    fn batch_norm3d_has_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn = BatchNorm3d::new(&mut session, 4, 1e-5, 0.1).unwrap();
+        let params = bn.parameters();
+        assert!(params.len() >= 2, "should have weight and bias params");
+    }
+
+    #[test]
+    fn batch_norm3d_eval_mode() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, 0.1).unwrap();
+        bn.eval();
+        assert!(!bn.is_training());
+        bn.train(true);
+        assert!(bn.is_training());
+    }
+
+    #[test]
+    fn batch_norm3d_rejects_4d() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, 0.1).unwrap();
+        let input = session
+            .tensor_variable(vec![1.0; 8], vec![1, 2, 2, 2], false)
+            .unwrap();
+        assert!(bn.forward(&mut session, input).is_err());
+    }
+
+    // ── Activation Module Tests ─────────────────────────────────────────
+
+    #[test]
+    fn hardswish_module_positive() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = Hardswish;
+        let input = session
+            .tensor_variable(vec![5.0], vec![1], false)
+            .unwrap();
+        let out = m.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        // hardswish(5) = 5 (saturated)
+        assert!((vals[0] - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hardswish_module_negative() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = Hardswish;
+        let input = session
+            .tensor_variable(vec![-5.0], vec![1], false)
+            .unwrap();
+        let out = m.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        // hardswish(-5) = 0
+        assert!(vals[0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn hardswish_no_params() {
+        assert!(Hardswish.parameters().is_empty());
+    }
+
+    #[test]
+    fn hardsigmoid_module() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = Hardsigmoid;
+        let input = session
+            .tensor_variable(vec![0.0, 10.0, -10.0], vec![3], false)
+            .unwrap();
+        let out = m.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert!((vals[0] - 0.5).abs() < 1e-6, "hardsigmoid(0) ≈ 0.5");
+        assert!((vals[1] - 1.0).abs() < 1e-6, "hardsigmoid(10) = 1.0");
+        assert!(vals[2].abs() < 1e-6, "hardsigmoid(-10) = 0.0");
+    }
+
+    #[test]
+    fn log_sigmoid_module() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = LogSigmoid;
+        let input = session
+            .tensor_variable(vec![0.0], vec![1], false)
+            .unwrap();
+        let out = m.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        // log(sigmoid(0)) = log(0.5) ≈ -0.6931
+        assert!(
+            (vals[0] - 0.5_f64.ln()).abs() < 1e-6,
+            "log_sigmoid(0) should be ln(0.5), got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn rrelu_module_positive_passthrough() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = RReLU::default();
+        let input = session
+            .tensor_variable(vec![2.0, 3.0], vec![2], false)
+            .unwrap();
+        let out = m.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        assert_eq!(vals, &[2.0, 3.0], "positive values pass through");
+    }
+
+    #[test]
+    fn rrelu_module_negative_scaled() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = RReLU::new(0.1, 0.3);
+        let input = session
+            .tensor_variable(vec![-10.0], vec![1], false)
+            .unwrap();
+        let out = m.forward(&mut session, input).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        // slope = (0.1 + 0.3) / 2 = 0.2
+        assert!((vals[0] - (-2.0)).abs() < 1e-10, "expected -2.0, got {}", vals[0]);
+    }
+
+    #[test]
+    fn rrelu_module_train_eval() {
+        let m = RReLU::default();
+        assert!(m.is_training());
+        m.eval();
+        assert!(!m.is_training());
     }
 }

@@ -27,8 +27,8 @@ This matrix tracks execution progress, not allowable scope reduction. Release re
 | Shape operations | parity_green | reshape, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk |
 | Advanced reductions | parity_green | argmax, argmin, max_dim, min_dim (with backward), softmax, log_softmax, sum_dim, mean_dim, prod_dim, var_dim, std_dim |
 | Functional API (`torch.nn.functional`-style session ops) | parity_green | session-level normalize, dropout, embedding, and linear helpers available in `ft-api` and covered by targeted tests |
-| Neural network modules (ft-nn) | parity_green | Module trait, LossModule trait, Linear, Bilinear, Conv1d, Conv2d, ConvTranspose1d, ReLU, Sigmoid, Tanh, GELU, SiLU, LeakyReLU, ELU, Mish, Softplus, Sequential, ModuleList, ModuleDict, ParameterList, ParameterDict, Dropout, LayerNorm, BatchNorm1d, BatchNorm2d, GroupNorm, InstanceNorm1d, InstanceNorm2d, Embedding, MultiheadAttention, Softmax, LogSoftmax, Flatten, Identity, Unfold, Fold, AvgPool1d, MaxPool1d, MaxPool2d, AdaptiveAvgPool2d, LPPool1d, LPPool2d, Upsample1d, Upsample2d, ConstantPad1d, ConstantPad2d, ZeroPad2d, RNNCell, LSTMCell, GRUCell, PixelShuffle, PixelUnshuffle, CosineSimilarity, PairwiseDistance, MultiLabelMarginLoss, MSELoss, L1Loss, CrossEntropyLoss, NLLLoss, BCELoss, BCEWithLogitsLoss, SmoothL1Loss, HuberLoss, KLDivLoss |
-| Optimizers (ft-optim) | parity_green | Optimizer trait, SGD (momentum, weight_decay, nesterov), Adam (bias correction, weight_decay), AdamW, RMSprop, Adagrad, RAdam, SparseAdam; CyclicLR scheduler |
+| Neural network modules (ft-nn) | parity_green | Module trait, LossModule trait, Linear, Bilinear, Conv1d, Conv2d, ConvTranspose1d, ReLU, Sigmoid, Tanh, GELU, SiLU, LeakyReLU, ELU, Mish, Softplus, Sequential, ModuleList, ModuleDict, ParameterList, ParameterDict, Dropout, LayerNorm, BatchNorm1d, BatchNorm2d, BatchNorm3d, GroupNorm, InstanceNorm1d, InstanceNorm2d, Embedding, MultiheadAttention, Softmax, LogSoftmax, Flatten, Identity, Unfold, Fold, AvgPool1d, MaxPool1d, MaxPool2d, AdaptiveAvgPool2d, LPPool1d, LPPool2d, Upsample1d, Upsample2d, ConstantPad1d, ConstantPad2d, ZeroPad2d, RNNCell, LSTMCell, GRUCell, PixelShuffle, PixelUnshuffle, CosineSimilarity, PairwiseDistance, Hardswish, Hardsigmoid, LogSigmoid, RReLU, MultiLabelMarginLoss, MSELoss, L1Loss, CrossEntropyLoss, NLLLoss, BCELoss, BCEWithLogitsLoss, SmoothL1Loss, HuberLoss, KLDivLoss |
+| Optimizers (ft-optim) | parity_green | Optimizer trait, SGD (momentum, weight_decay, nesterov), Adam (bias correction, weight_decay), AdamW, RMSprop, Adagrad, RAdam, SparseAdam; CyclicLR scheduler; clip_grad_norm_, clip_grad_value_ |
 | Advanced indexing | parity_green | index_select, gather, scatter, masked_fill (with backward for index_select, gather) |
 | Full PyTorch drop-in surface | in_progress | aggregate parity-closure tracker; no intentional feature omissions permitted at release |
 
@@ -56,16 +56,31 @@ norm (global p-norm), norm_dim (per-dim p-norm) — supports L0, L1, L2, Lp, Lin
 softmax, log_softmax (per-dim, numerically stable)
 
 ### Functional API
-functional_normalize, functional_dropout, functional_embedding, functional_linear, scaled_dot_product_attention, pixel_shuffle, pixel_unshuffle
+functional_normalize, functional_dropout, functional_embedding, functional_linear, scaled_dot_product_attention, pixel_shuffle, pixel_unshuffle, functional_conv1d, functional_conv2d, functional_avg_pool1d, functional_avg_pool2d, functional_max_pool1d, functional_max_pool2d, functional_layer_norm, functional_group_norm, functional_instance_norm1d, functional_instance_norm2d
+
+### Complex Number Operations
+tensor_real, tensor_imag, tensor_conj, tensor_complex, tensor_view_as_real, tensor_view_as_complex
+
+### Spectral Operations
+hann_window, tensor_stft, tensor_istft
+
+### Spatial Transforms
+tensor_affine_grid, tensor_grid_sample (bilinear/nearest, zeros/border/reflection padding)
 
 ### Shape Operations
-reshape, view, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk, unbind
+reshape, view, squeeze, unsqueeze, transpose, permute, cat, stack, flatten, unflatten, narrow, expand, split, chunk, unbind, hstack, vstack, dstack, column_stack, row_stack, hsplit, vsplit, dsplit
 
 ### Matrix Operations
 matmul, addmm, addmv, bmm, baddbmm, addbmm (with backward)
 
 ### Interpolation
 lerp (linear interpolation, with backward)
+
+### Numerical Integration
+trapezoid, cumulative_trapezoid (trapezoidal rule along dimension)
+
+### Inner/Outer Products
+inner (generalized inner product), addr (rank-1 update: beta*M + alpha*v1⊗v2), outer
 
 ### Grid/Creation Operations
 meshgrid, diagonal (with offset support), one_hot
@@ -80,7 +95,7 @@ tensor_add_, tensor_sub_, tensor_mul_, tensor_div_, tensor_zero_, tensor_fill_, 
 mse_loss, l1_loss, bce_loss, smooth_l1_loss, huber_loss, cross_entropy_loss, nll_loss, cosine_embedding_loss
 
 ### Advanced Indexing
-index_select, gather, scatter, scatter_add, masked_fill, index_add, index_copy, index_fill, index_put
+index_select, gather, scatter, scatter_add, scatter_reduce (sum/prod/mean/amax/amin), masked_fill, masked_select, index_add, index_copy, index_fill, index_put, select, take_along_dim
 
 ### Sorting & Selection
 sort, topk, argsort, kthvalue
@@ -92,7 +107,7 @@ svd, qr, cholesky, cholesky_solve, det, slogdet, inv, pinverse, solve, eigh, mat
 bincount (with weights, minlength), histc (with auto-range, clamping)
 
 ### Structured Matrix Operations
-block_diag (from 1-D or 2-D tensors)
+block_diag (from 1-D or 2-D tensors), diagflat (with offset support)
 
 ### Distance Operations
 cdist (batched pairwise Lp distance, L0/L2/Linf), pdist (within-tensor pairwise Lp distance)
@@ -101,7 +116,7 @@ cdist (batched pairwise Lp distance, L0/L2/Linf), pdist (within-tensor pairwise 
 nan_to_num, logaddexp, logaddexp2, xlogy, logcumsumexp
 
 ### Rotation / Rearrangement
-rot90, pixel_shuffle, pixel_unshuffle, tile
+rot90, pixel_shuffle, pixel_unshuffle, tile, fliplr, flipud
 
 ### Statistical Operations
 cov (covariance matrix), corrcoef (Pearson correlation), mode (most frequent value), quantile (with interpolation)
@@ -117,7 +132,7 @@ tensor_pad (constant padding, PyTorch F.pad convention)
 - `crates/ft-conformance/fixtures/serialization_cases.json`
 
 Modes tested for all listed families: strict + hardened.
-2469 tests passing across workspace.
+2555 tests passing across workspace.
 
 ## Gap Policy
 
