@@ -4637,6 +4637,305 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Apply 3D convolution.
+    ///
+    /// Equivalent to `torch.nn.functional.conv3d(input, weight, bias, stride, padding)`.
+    /// Input: `[N, C_in, D, H, W]`, Weight: `[C_out, C_in, K_d, K_h, K_w]`.
+    pub fn functional_conv3d(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (stride_d, stride_h, stride_w) = stride;
+        let (padding_d, padding_h, padding_w) = padding;
+        if stride_d == 0 || stride_h == 0 || stride_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "conv3d: stride dimensions must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        let weight_shape = self.tensor_shape(weight)?;
+        if input_shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "conv3d: input must be 5-D [N, C_in, D, H, W]",
+            ));
+        }
+        if weight_shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "conv3d: weight must be 5-D [C_out, C_in, K_d, K_h, K_w]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let in_channels = input_shape[1];
+        let input_d = input_shape[2];
+        let input_h = input_shape[3];
+        let input_w = input_shape[4];
+        let out_channels = weight_shape[0];
+        let kernel_d = weight_shape[2];
+        let kernel_h = weight_shape[3];
+        let kernel_w = weight_shape[4];
+
+        if in_channels != weight_shape[1] {
+            return Err(Self::incompatible_tensor_args(
+                "conv3d: input channels do not match weight",
+            ));
+        }
+
+        let input_vals = self.tensor_values(input)?;
+        let weight_vals = self.tensor_values(weight)?;
+
+        let padded_d = input_d + 2 * padding_d;
+        let padded_h = input_h + 2 * padding_h;
+        let padded_w = input_w + 2 * padding_w;
+        let output_d = (padded_d - kernel_d) / stride_d + 1;
+        let output_h = (padded_h - kernel_h) / stride_h + 1;
+        let output_w = (padded_w - kernel_w) / stride_w + 1;
+
+        let mut output = vec![0.0; batch_size * out_channels * output_d * output_h * output_w];
+
+        for n in 0..batch_size {
+            for oc in 0..out_channels {
+                for od in 0..output_d {
+                    for oh in 0..output_h {
+                        for ow in 0..output_w {
+                            let mut sum = 0.0;
+                            for ic in 0..in_channels {
+                                for kd in 0..kernel_d {
+                                    for kh in 0..kernel_h {
+                                        for kw in 0..kernel_w {
+                                            let id = od * stride_d + kd;
+                                            let ih = oh * stride_h + kh;
+                                            let iw = ow * stride_w + kw;
+                                            let id_orig = id as isize - padding_d as isize;
+                                            let ih_orig = ih as isize - padding_h as isize;
+                                            let iw_orig = iw as isize - padding_w as isize;
+                                            if (0..input_d as isize).contains(&id_orig)
+                                                && (0..input_h as isize).contains(&ih_orig)
+                                                && (0..input_w as isize).contains(&iw_orig)
+                                            {
+                                                let in_idx = ((n * in_channels + ic) * input_d + id_orig as usize) * input_h * input_w
+                                                    + ih_orig as usize * input_w
+                                                    + iw_orig as usize;
+                                                let w_idx = ((oc * in_channels + ic) * kernel_d + kd) * kernel_h * kernel_w
+                                                    + kh * kernel_w
+                                                    + kw;
+                                                sum += input_vals[in_idx] * weight_vals[w_idx];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            let out_idx = ((n * out_channels + oc) * output_d + od) * output_h * output_w
+                                + oh * output_w
+                                + ow;
+                            output[out_idx] = sum;
+                        }
+                    }
+                }
+            }
+        }
+
+        let out_node = self.tensor_variable(
+            output,
+            vec![batch_size, out_channels, output_d, output_h, output_w],
+            false,
+        )?;
+
+        match bias {
+            Some(bias) => {
+                let bias = self.tensor_reshape(bias, vec![1, out_channels, 1, 1, 1])?;
+                let bias = self.tensor_expand(
+                    bias,
+                    vec![batch_size, out_channels, output_d, output_h, output_w],
+                )?;
+                self.tensor_add(out_node, bias)
+            }
+            None => Ok(out_node),
+        }
+    }
+
+    /// Apply 1D transposed convolution.
+    ///
+    /// Equivalent to `torch.nn.functional.conv_transpose1d(input, weight, bias, stride, padding, output_padding)`.
+    /// Input: `[N, C_in, L]`, Weight: `[C_in, C_out, K]`.
+    pub fn functional_conv_transpose1d(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if stride == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "conv_transpose1d: stride must be > 0",
+            ));
+        }
+        let input_shape = self.tensor_shape(input)?;
+        let weight_shape = self.tensor_shape(weight)?;
+        if input_shape.len() != 3 || weight_shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "conv_transpose1d: input must be 3-D [N, C_in, L], weight 3-D [C_in, C_out, K]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let in_channels = input_shape[1];
+        let input_l = input_shape[2];
+        let out_channels = weight_shape[1];
+        let kernel_l = weight_shape[2];
+
+        if in_channels != weight_shape[0] {
+            return Err(Self::incompatible_tensor_args(
+                "conv_transpose1d: input channels do not match weight",
+            ));
+        }
+
+        let input_vals = self.tensor_values(input)?;
+        let weight_vals = self.tensor_values(weight)?;
+
+        let output_l = (input_l - 1) * stride - 2 * padding + kernel_l + output_padding;
+        let mut output = vec![0.0; batch_size * out_channels * output_l];
+
+        for n in 0..batch_size {
+            for ic in 0..in_channels {
+                for il in 0..input_l {
+                    let in_val = input_vals[(n * in_channels + ic) * input_l + il];
+                    for oc in 0..out_channels {
+                        for k in 0..kernel_l {
+                            let ol = il * stride + k;
+                            if ol >= padding && ol - padding < output_l {
+                                let w_idx = (ic * out_channels + oc) * kernel_l + k;
+                                let out_idx = (n * out_channels + oc) * output_l + (ol - padding);
+                                output[out_idx] += in_val * weight_vals[w_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let out_node = self.tensor_variable(output, vec![batch_size, out_channels, output_l], false)?;
+
+        match bias {
+            Some(bias) => {
+                let bias = self.tensor_reshape(bias, vec![1, out_channels, 1])?;
+                let bias = self.tensor_expand(bias, vec![batch_size, out_channels, output_l])?;
+                self.tensor_add(out_node, bias)
+            }
+            None => Ok(out_node),
+        }
+    }
+
+    /// Apply 2D transposed convolution.
+    ///
+    /// Equivalent to `torch.nn.functional.conv_transpose2d(input, weight, bias, stride, padding, output_padding)`.
+    /// Input: `[N, C_in, H, W]`, Weight: `[C_in, C_out, K_h, K_w]`.
+    pub fn functional_conv_transpose2d(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (stride_h, stride_w) = stride;
+        let (padding_h, padding_w) = padding;
+        let (output_padding_h, output_padding_w) = output_padding;
+        if stride_h == 0 || stride_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "conv_transpose2d: stride must be > 0",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        let weight_shape = self.tensor_shape(weight)?;
+        if input_shape.len() != 4 || weight_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "conv_transpose2d: input 4-D [N,C_in,H,W], weight 4-D [C_in,C_out,K_h,K_w]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let in_channels = input_shape[1];
+        let input_h = input_shape[2];
+        let input_w = input_shape[3];
+        let out_channels = weight_shape[1];
+        let kernel_h = weight_shape[2];
+        let kernel_w = weight_shape[3];
+
+        if in_channels != weight_shape[0] {
+            return Err(Self::incompatible_tensor_args(
+                "conv_transpose2d: input channels do not match weight",
+            ));
+        }
+
+        let input_vals = self.tensor_values(input)?;
+        let weight_vals = self.tensor_values(weight)?;
+
+        let output_h = (input_h - 1) * stride_h - 2 * padding_h + kernel_h + output_padding_h;
+        let output_w = (input_w - 1) * stride_w - 2 * padding_w + kernel_w + output_padding_w;
+        let mut output = vec![0.0; batch_size * out_channels * output_h * output_w];
+
+        for n in 0..batch_size {
+            for ic in 0..in_channels {
+                for ih in 0..input_h {
+                    for iw in 0..input_w {
+                        let in_val = input_vals
+                            [((n * in_channels + ic) * input_h + ih) * input_w + iw];
+                        for oc in 0..out_channels {
+                            for kh in 0..kernel_h {
+                                for kw in 0..kernel_w {
+                                    let oh = ih * stride_h + kh;
+                                    let ow = iw * stride_w + kw;
+                                    if oh >= padding_h
+                                        && ow >= padding_w
+                                        && oh - padding_h < output_h
+                                        && ow - padding_w < output_w
+                                    {
+                                        let w_idx = ((ic * out_channels + oc) * kernel_h + kh)
+                                            * kernel_w
+                                            + kw;
+                                        let out_idx = ((n * out_channels + oc) * output_h
+                                            + (oh - padding_h))
+                                            * output_w
+                                            + (ow - padding_w);
+                                        output[out_idx] += in_val * weight_vals[w_idx];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let out_node = self.tensor_variable(
+            output,
+            vec![batch_size, out_channels, output_h, output_w],
+            false,
+        )?;
+
+        match bias {
+            Some(bias) => {
+                let bias = self.tensor_reshape(bias, vec![1, out_channels, 1, 1])?;
+                let bias = self.tensor_expand(
+                    bias,
+                    vec![batch_size, out_channels, output_h, output_w],
+                )?;
+                self.tensor_add(out_node, bias)
+            }
+            None => Ok(out_node),
+        }
+    }
+
     /// Apply 1D average pooling over `[N, C, L]`.
     pub fn functional_avg_pool1d(
         &mut self,
@@ -4845,6 +5144,146 @@ impl FrankenTorchSession {
 
         let pooled = self.tensor_cat(&patches, 2)?;
         self.tensor_reshape(pooled, vec![batch_size, channels, output_h, output_w])
+    }
+
+    /// Adaptive average pooling for 1-D input `[N, C, L]`.
+    ///
+    /// Equivalent to `torch.nn.functional.adaptive_avg_pool1d(input, output_size)`.
+    pub fn functional_adaptive_avg_pool1d(
+        &mut self,
+        input: TensorNodeId,
+        output_size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (storage, meta) = {
+            let tensor = self.tensor_tape.tensor(input)?;
+            (tensor.storage().to_vec(), tensor.meta().clone())
+        };
+        let shape = meta.shape();
+        if shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "adaptive_avg_pool1d: input must be 3-D [N, C, L]",
+            ));
+        }
+        let (n, c, l_in) = (shape[0], shape[1], shape[2]);
+        let l_out = output_size;
+        let mut output = Vec::with_capacity(n * c * l_out);
+
+        for b in 0..n {
+            for ch in 0..c {
+                let base = (b * c + ch) * l_in;
+                for ol in 0..l_out {
+                    let start = (ol * l_in) / l_out;
+                    let end = ((ol + 1) * l_in) / l_out;
+                    let count = end - start;
+                    let sum: f64 = (start..end).map(|i| storage[base + i]).sum();
+                    output.push(sum / count as f64);
+                }
+            }
+        }
+
+        self.tensor_variable(output, vec![n, c, l_out], false)
+    }
+
+    /// Adaptive average pooling for 2-D input `[N, C, H, W]`.
+    ///
+    /// Equivalent to `torch.nn.functional.adaptive_avg_pool2d(input, output_size)`.
+    pub fn functional_adaptive_avg_pool2d(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (storage, meta) = {
+            let tensor = self.tensor_tape.tensor(input)?;
+            (tensor.storage().to_vec(), tensor.meta().clone())
+        };
+        let shape = meta.shape();
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "adaptive_avg_pool2d: input must be 4-D [N, C, H, W]",
+            ));
+        }
+        let (n, c, h_in, w_in) = (shape[0], shape[1], shape[2], shape[3]);
+        let (h_out, w_out) = output_size;
+        let mut output = Vec::with_capacity(n * c * h_out * w_out);
+
+        for b in 0..n {
+            for ch in 0..c {
+                let base = (b * c + ch) * h_in * w_in;
+                for oh in 0..h_out {
+                    let h_start = (oh * h_in) / h_out;
+                    let h_end = ((oh + 1) * h_in) / h_out;
+                    for ow in 0..w_out {
+                        let w_start = (ow * w_in) / w_out;
+                        let w_end = ((ow + 1) * w_in) / w_out;
+                        let count = (h_end - h_start) * (w_end - w_start);
+                        let mut sum = 0.0;
+                        for h in h_start..h_end {
+                            for w in w_start..w_end {
+                                sum += storage[base + h * w_in + w];
+                            }
+                        }
+                        output.push(sum / count as f64);
+                    }
+                }
+            }
+        }
+
+        self.tensor_variable(output, vec![n, c, h_out, w_out], false)
+    }
+
+    /// Adaptive average pooling for 3-D input `[N, C, D, H, W]`.
+    ///
+    /// Equivalent to `torch.nn.functional.adaptive_avg_pool3d(input, output_size)`.
+    pub fn functional_adaptive_avg_pool3d(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (storage, meta) = {
+            let tensor = self.tensor_tape.tensor(input)?;
+            (tensor.storage().to_vec(), tensor.meta().clone())
+        };
+        let shape = meta.shape();
+        if shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "adaptive_avg_pool3d: input must be 5-D [N, C, D, H, W]",
+            ));
+        }
+        let (n, c, d_in, h_in, w_in) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+        let (d_out, h_out, w_out) = output_size;
+        let mut output = Vec::with_capacity(n * c * d_out * h_out * w_out);
+
+        for b in 0..n {
+            for ch in 0..c {
+                let base = (b * c + ch) * d_in * h_in * w_in;
+                for od in 0..d_out {
+                    let d_start = (od * d_in) / d_out;
+                    let d_end = ((od + 1) * d_in) / d_out;
+                    for oh in 0..h_out {
+                        let h_start = (oh * h_in) / h_out;
+                        let h_end = ((oh + 1) * h_in) / h_out;
+                        for ow in 0..w_out {
+                            let w_start = (ow * w_in) / w_out;
+                            let w_end = ((ow + 1) * w_in) / w_out;
+                            let count =
+                                (d_end - d_start) * (h_end - h_start) * (w_end - w_start);
+                            let mut sum = 0.0;
+                            for d in d_start..d_end {
+                                for h in h_start..h_end {
+                                    for w in w_start..w_end {
+                                        sum += storage
+                                            [base + d * h_in * w_in + h * w_in + w];
+                                    }
+                                }
+                            }
+                            output.push(sum / count as f64);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.tensor_variable(output, vec![n, c, d_out, h_out, w_out], false)
     }
 
     /// Apply layer normalization over the trailing `normalized_shape` dimensions.
@@ -23033,6 +23472,186 @@ mod tests {
         let loss = s.multilabel_soft_margin_loss(input, target).unwrap();
         let val = s.tensor_values(loss).unwrap()[0];
         assert!(val < 0.01, "well-classified should have low loss: {val}");
+    }
+
+    // ── conv3d and conv_transpose tests ────────────────────────────────
+
+    #[test]
+    fn conv3d_identity_kernel() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 1x1x1 kernel with weight=1 should act as identity
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], vec![1, 1, 2, 2, 2], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1, 1], false)
+            .unwrap();
+        let out = s
+            .functional_conv3d(input, weight, None, (1, 1, 1), (0, 0, 0))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 2, 2, 2]);
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn conv3d_with_padding() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [1, 1, 2, 2, 2] with 3x3x3 kernel, padding 1 -> same size
+        let input = s
+            .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0 / 27.0; 27], vec![1, 1, 3, 3, 3], false)
+            .unwrap();
+        let out = s
+            .functional_conv3d(input, weight, None, (1, 1, 1), (1, 1, 1))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 2, 2, 2]);
+    }
+
+    #[test]
+    fn conv_transpose1d_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [1, 1, 2] with kernel size 3, stride 1 -> [1, 1, 4]
+        let input = s
+            .tensor_variable(vec![1.0, 1.0], vec![1, 1, 2], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, 1.0, 1.0], vec![1, 1, 3], false)
+            .unwrap();
+        let out = s
+            .functional_conv_transpose1d(input, weight, None, 1, 0, 0)
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 4]);
+        let vals = s.tensor_values(out).unwrap();
+        // Transposed conv with [1,1,1] kernel on [1,1]:
+        // out[0] = 1*1 = 1, out[1] = 1*1+1*1 = 2, out[2] = 1*1+1*1 = 2, out[3] = 1*1 = 1
+        assert_eq!(vals, vec![1.0, 2.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn conv_transpose2d_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [1, 1, 1, 1] with 2x2 kernel, stride 1 -> [1, 1, 2, 2]
+        let input = s
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let out = s
+            .functional_conv_transpose2d(input, weight, None, (1, 1), (0, 0), (0, 0))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 2, 2]);
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn conv_transpose2d_stride2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [1, 1, 2, 2] with 2x2 kernel, stride 2 -> [1, 1, 4, 4]
+        let input = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, 1.0, 1.0, 1.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let out = s
+            .functional_conv_transpose2d(input, weight, None, (2, 2), (0, 0), (0, 0))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 4, 4]);
+        let vals = s.tensor_values(out).unwrap();
+        // Only top-left input is 1, so output has the kernel at top-left
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 1.0).abs() < 1e-10);
+        assert!((vals[4] - 1.0).abs() < 1e-10);
+        assert!((vals[5] - 1.0).abs() < 1e-10);
+    }
+
+    // ── adaptive pooling tests ────────────────────────────────────────
+
+    #[test]
+    fn adaptive_avg_pool1d_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [1, 1, 6] -> [1, 1, 3]: average pairs
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 1, 6], false)
+            .unwrap();
+        let out = s.functional_adaptive_avg_pool1d(input, 3).unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 3]);
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 1.5).abs() < 1e-10); // avg(1,2)
+        assert!((vals[1] - 3.5).abs() < 1e-10); // avg(3,4)
+        assert!((vals[2] - 5.5).abs() < 1e-10); // avg(5,6)
+    }
+
+    #[test]
+    fn adaptive_avg_pool1d_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Same size -> identity
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false)
+            .unwrap();
+        let out = s.functional_adaptive_avg_pool1d(input, 3).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn adaptive_avg_pool2d_global() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [1, 1, 2, 2] -> [1, 1, 1, 1]: global average pooling
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let out = s
+            .functional_adaptive_avg_pool2d(input, (1, 1))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 1, 1]);
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 2.5).abs() < 1e-10); // mean(1,2,3,4)
+    }
+
+    #[test]
+    fn adaptive_avg_pool2d_upsample_shape() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [1, 2, 4, 4] -> [1, 2, 2, 2]
+        let input = s
+            .tensor_variable(vec![1.0; 32], vec![1, 2, 4, 4], false)
+            .unwrap();
+        let out = s
+            .functional_adaptive_avg_pool2d(input, (2, 2))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 2, 2, 2]);
+        let vals = s.tensor_values(out).unwrap();
+        // All ones -> all ones
+        assert!(vals.iter().all(|&v| (v - 1.0).abs() < 1e-10));
+    }
+
+    #[test]
+    fn adaptive_avg_pool3d_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [1, 1, 2, 2, 2] -> [1, 1, 1, 1, 1]: global pooling
+        let input = s
+            .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], false)
+            .unwrap();
+        let out = s
+            .functional_adaptive_avg_pool3d(input, (1, 1, 1))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 1, 1, 1]);
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
     }
 
     // ── tensor creation op tests ──────────────────────────────────────

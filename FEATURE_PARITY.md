@@ -158,6 +158,7 @@ polar (magnitude+phase to complex), cartesian_prod (Cartesian product of 1-D ten
 - `crates/ft-conformance/fixtures/autograd_scheduler_cases.json`
 - `crates/ft-conformance/fixtures/serialization_cases.json`
 - `crates/ft-conformance/fixtures/tensor_init_cases.json`
+- `crates/ft-conformance/fixtures/tensor_random_cases.json`
 
 Modes tested for all listed families: strict + hardened.
 Latest workspace evidence refreshed via remote validation:

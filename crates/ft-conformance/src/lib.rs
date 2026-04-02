@@ -169,6 +169,22 @@ impl TensorInitCaseReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct TensorRandomCaseReport {
+    pub name: String,
+    pub mode: ExecutionMode,
+    pub output_ok: bool,
+    pub shape_ok: bool,
+    pub forensic_log: StructuredCaseLog,
+}
+
+impl TensorRandomCaseReport {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.output_ok && self.shape_ok
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TensorEinsumCaseReport {
     pub name: String,
     pub mode: ExecutionMode,
@@ -650,6 +666,11 @@ struct TensorInitFixtureFile {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct TensorRandomFixtureFile {
+    cases: Vec<TensorRandomCase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct TensorFactoryCase {
     name: String,
     op: String,
@@ -708,6 +729,42 @@ struct TensorInitCase {
     expected_output: Vec<f64>,
     #[serde(default)]
     expected_shape: Option<Vec<usize>>,
+    #[serde(default)]
+    tolerance: Option<f64>,
+    #[serde(default)]
+    contract_ids: Vec<String>,
+    #[serde(default)]
+    e2e_scenarios: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorRandomCase {
+    name: String,
+    op: String,
+    #[serde(default)]
+    shape: Option<Vec<usize>>,
+    #[serde(default)]
+    template: Option<Vec<f64>>,
+    #[serde(default)]
+    template_shape: Option<Vec<usize>>,
+    #[serde(default)]
+    low: Option<i64>,
+    #[serde(default)]
+    high: Option<i64>,
+    #[serde(default)]
+    n: Option<usize>,
+    #[serde(default)]
+    input: Option<Vec<f64>>,
+    #[serde(default)]
+    input_shape: Option<Vec<usize>>,
+    #[serde(default)]
+    num_samples: Option<usize>,
+    #[serde(default)]
+    replacement: Option<bool>,
+    #[serde(default)]
+    p: Option<f64>,
+    expected_output: Vec<f64>,
+    expected_shape: Vec<usize>,
     #[serde(default)]
     tolerance: Option<f64>,
     #[serde(default)]
@@ -1127,6 +1184,7 @@ impl_fixture_metadata!(
     TensorSearchsortedCase,
     TensorFactoryCase,
     TensorInitCase,
+    TensorRandomCase,
     TensorEinsumCase,
     TensorReductionCase,
     TensorLossCase,
@@ -1509,6 +1567,10 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
         .map_or((0, 0), |(_, cases)| {
             summarize_passes(cases.iter().map(TensorInitCaseReport::passed))
         });
+    let (tensor_random_total, tensor_random_passed) = run_tensor_random_conformance(config, mode)
+        .map_or((0, 0), |(_, cases)| {
+            summarize_passes(cases.iter().map(TensorRandomCaseReport::passed))
+        });
     let (tensor_meta_total, tensor_meta_passed) = run_tensor_meta_conformance(config, mode)
         .map_or((0, 0), |(_, cases)| {
             summarize_passes(cases.iter().map(TensorMetaCaseReport::passed))
@@ -1546,6 +1608,7 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
         cases_total: scalar_total
             + tensor_binary_total
             + tensor_init_total
+            + tensor_random_total
             + tensor_meta_total
             + dispatch_total
             + op_schema_total
@@ -1556,6 +1619,7 @@ pub fn run_smoke(config: &HarnessConfig) -> HarnessReport {
         cases_passed: scalar_passed
             + tensor_binary_passed
             + tensor_init_passed
+            + tensor_random_passed
             + tensor_meta_passed
             + dispatch_passed
             + op_schema_passed
@@ -1739,6 +1803,34 @@ pub fn run_tensor_init_conformance(
 
     let report = HarnessReport {
         suite: "tensor_init",
+        oracle_present: config.oracle_root.exists(),
+        fixture_count: 1,
+        strict_mode: mode == ExecutionMode::Strict,
+        cases_total,
+        cases_passed,
+    };
+
+    Ok((report, case_reports))
+}
+
+pub fn run_tensor_random_conformance(
+    config: &HarnessConfig,
+    mode: ExecutionMode,
+) -> Result<(HarnessReport, Vec<TensorRandomCaseReport>), String> {
+    let fixture_path = config.fixture_root.join("tensor_random_cases.json");
+    let fixture: TensorRandomFixtureFile = load_fixture(&fixture_path)?;
+
+    let mut case_reports = Vec::with_capacity(fixture.cases.len());
+    for case in &fixture.cases {
+        validate_fixture_metadata(case.name.as_str(), case)?;
+        case_reports.push(run_tensor_random_case(case, mode)?);
+    }
+
+    let (cases_total, cases_passed) =
+        summarize_passes(case_reports.iter().map(TensorRandomCaseReport::passed));
+
+    let report = HarnessReport {
+        suite: "tensor_random",
         oracle_present: config.oracle_root.exists(),
         fixture_count: 1,
         strict_mode: mode == ExecutionMode::Strict,
@@ -5217,6 +5309,213 @@ fn run_tensor_init_case(
             ],
             format!(
                 "cargo test -p ft-conformance tensor_init_conformance -- --nocapture # mode={}",
+                mode_label(mode)
+            ),
+            outcome,
+            reason_code,
+        )
+        .with_extra_fields(extra_fields),
+    })
+}
+
+fn run_tensor_random_case(
+    case: &TensorRandomCase,
+    mode: ExecutionMode,
+) -> Result<TensorRandomCaseReport, String> {
+    let mut session = FrankenTorchSession::new(mode);
+
+    let out =
+        match case.op.as_str() {
+            "rand" => {
+                let shape = case
+                    .shape
+                    .clone()
+                    .ok_or_else(|| format!("rand case '{}' missing shape", case.name))?;
+                session.rand(shape, false)
+            }
+            "randn" => {
+                let shape = case
+                    .shape
+                    .clone()
+                    .ok_or_else(|| format!("randn case '{}' missing shape", case.name))?;
+                session.randn(shape, false)
+            }
+            "rand_like" => {
+                let template = case
+                    .template
+                    .clone()
+                    .ok_or_else(|| format!("rand_like case '{}' missing template", case.name))?;
+                let template_shape = case.template_shape.clone().ok_or_else(|| {
+                    format!("rand_like case '{}' missing template_shape", case.name)
+                })?;
+                let template_node = session
+                    .tensor_variable(template, template_shape, false)
+                    .map_err(|error| {
+                        format!(
+                            "rand_like template build failed for '{}': {error}",
+                            case.name
+                        )
+                    })?;
+                session.rand_like(template_node, false)
+            }
+            "randn_like" => {
+                let template = case
+                    .template
+                    .clone()
+                    .ok_or_else(|| format!("randn_like case '{}' missing template", case.name))?;
+                let template_shape = case.template_shape.clone().ok_or_else(|| {
+                    format!("randn_like case '{}' missing template_shape", case.name)
+                })?;
+                let template_node = session
+                    .tensor_variable(template, template_shape, false)
+                    .map_err(|error| {
+                        format!(
+                            "randn_like template build failed for '{}': {error}",
+                            case.name
+                        )
+                    })?;
+                session.randn_like(template_node, false)
+            }
+            "randint" => {
+                let low = case
+                    .low
+                    .ok_or_else(|| format!("randint case '{}' missing low", case.name))?;
+                let high = case
+                    .high
+                    .ok_or_else(|| format!("randint case '{}' missing high", case.name))?;
+                let shape = case
+                    .shape
+                    .clone()
+                    .ok_or_else(|| format!("randint case '{}' missing shape", case.name))?;
+                session.randint(low, high, shape)
+            }
+            "randperm" => {
+                let n = case
+                    .n
+                    .ok_or_else(|| format!("randperm case '{}' missing n", case.name))?;
+                session.randperm(n)
+            }
+            "multinomial" => {
+                let input = case
+                    .input
+                    .clone()
+                    .ok_or_else(|| format!("multinomial case '{}' missing input", case.name))?;
+                let input_shape = case.input_shape.clone().ok_or_else(|| {
+                    format!("multinomial case '{}' missing input_shape", case.name)
+                })?;
+                let input_node =
+                    session
+                        .tensor_variable(input, input_shape, false)
+                        .map_err(|error| {
+                            format!(
+                                "multinomial input build failed for '{}': {error}",
+                                case.name
+                            )
+                        })?;
+                let num_samples = case.num_samples.ok_or_else(|| {
+                    format!("multinomial case '{}' missing num_samples", case.name)
+                })?;
+                let replacement = case.replacement.unwrap_or(false);
+                session.multinomial(input_node, num_samples, replacement)
+            }
+            "bernoulli" => {
+                let input = case
+                    .input
+                    .clone()
+                    .ok_or_else(|| format!("bernoulli case '{}' missing input", case.name))?;
+                let input_shape = case
+                    .input_shape
+                    .clone()
+                    .ok_or_else(|| format!("bernoulli case '{}' missing input_shape", case.name))?;
+                let input_node =
+                    session
+                        .tensor_variable(input, input_shape, false)
+                        .map_err(|error| {
+                            format!("bernoulli input build failed for '{}': {error}", case.name)
+                        })?;
+                session.bernoulli(input_node)
+            }
+            "bernoulli_p" => {
+                let shape = case
+                    .shape
+                    .clone()
+                    .ok_or_else(|| format!("bernoulli_p case '{}' missing shape", case.name))?;
+                let p = case
+                    .p
+                    .ok_or_else(|| format!("bernoulli_p case '{}' missing p", case.name))?;
+                session.bernoulli_p(shape, p)
+            }
+            "poisson" => {
+                let input = case
+                    .input
+                    .clone()
+                    .ok_or_else(|| format!("poisson case '{}' missing input", case.name))?;
+                let input_shape = case
+                    .input_shape
+                    .clone()
+                    .ok_or_else(|| format!("poisson case '{}' missing input_shape", case.name))?;
+                let input_node =
+                    session
+                        .tensor_variable(input, input_shape, false)
+                        .map_err(|error| {
+                            format!("poisson input build failed for '{}': {error}", case.name)
+                        })?;
+                session.poisson(input_node)
+            }
+            _ => return Err(format!("unsupported random op '{}'", case.op)),
+        }
+        .map_err(|error| format!("tensor random '{}' failed: {error}", case.name))?;
+
+    let actual_output = session
+        .tensor_values(out)
+        .map_err(|error| format!("tensor value read failed for '{}': {error}", case.name))?;
+    let actual_shape = session
+        .tensor_shape(out)
+        .map_err(|error| format!("tensor shape read failed for '{}': {error}", case.name))?;
+
+    let tolerance = case.tolerance.unwrap_or(1e-12);
+    let output_ok = vec_within(
+        actual_output.as_slice(),
+        case.expected_output.as_slice(),
+        tolerance,
+    );
+    let shape_ok = actual_shape == case.expected_shape;
+
+    let outcome = if output_ok && shape_ok {
+        "pass"
+    } else {
+        "fail"
+    };
+    let reason_code = if outcome == "pass" {
+        "tensor_random_parity_ok"
+    } else {
+        "tensor_random_mismatch"
+    };
+
+    let mut extra_fields = std::collections::BTreeMap::new();
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
+    extra_fields.insert(
+        "runtime_evidence".to_string(),
+        runtime_evidence_field(session.evidence()),
+    );
+
+    Ok(TensorRandomCaseReport {
+        name: case.name.clone(),
+        mode,
+        output_ok,
+        shape_ok,
+        forensic_log: StructuredCaseLog::new(
+            "tensor_random",
+            "tensor_random_cases.json",
+            "FT-P2C-001",
+            case.name.as_str(),
+            mode,
+            vec![
+                "crates/ft-conformance/fixtures/tensor_random_cases.json".to_string(),
+                "artifacts/phase2c/FT-P2C-001/parity_report.json".to_string(),
+            ],
+            format!(
+                "cargo test -p ft-conformance tensor_random_conformance -- --nocapture # mode={}",
                 mode_label(mode)
             ),
             outcome,

@@ -16,6 +16,7 @@ repo root. Harness runs may override that default with `FT_LEGACY_ORACLE_ROOT`.
 - `nn_state_cases.json`: NN module/state contract first-wave fixture family (registration, state export, mode propagation, load strictness split, prefix normalization, hooks) for packet `FT-P2C-008`.
 - `optimizer_cases.json`: SGD/Adam optimizer update parity fixtures (including momentum/nesterov/weight-decay branches) for packet `FT-P2C-009`.
 - `tensor_init_cases.json`: session-level `torch.nn.init` parity fixtures covering deterministic fills plus seeded uniform/normal/Xavier/Kaiming/sparse and structured eye/dirac initialization.
+- `tensor_random_cases.json`: deterministic seeded random-op fixtures covering rand/randn, *_like variants, randint/randperm, multinomial, Bernoulli, and Poisson sampling.
 - `tensor_advanced_cases.json`: advanced tensor semantics including flip/roll/repeat/pad plus statistical parity surfaces such as cov/corrcoef/mode/quantile.
 
 Related adversarial/fuzz manifest (versioned):
