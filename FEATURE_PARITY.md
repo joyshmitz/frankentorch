@@ -56,7 +56,7 @@ norm (global p-norm), norm_dim (per-dim p-norm) — supports L0, L1, L2, Lp, Lin
 softmax, log_softmax (per-dim, numerically stable)
 
 ### Functional API
-functional_normalize, functional_dropout, functional_embedding, functional_linear, scaled_dot_product_attention, pixel_shuffle, pixel_unshuffle, functional_conv1d, functional_conv2d, functional_avg_pool1d, functional_avg_pool2d, functional_max_pool1d, functional_max_pool2d, functional_layer_norm, functional_group_norm, functional_instance_norm1d, functional_instance_norm2d
+functional_normalize, functional_dropout, functional_embedding, functional_linear, scaled_dot_product_attention, pixel_shuffle, pixel_unshuffle, functional_conv1d, functional_conv2d, functional_conv3d, functional_conv_transpose1d, functional_conv_transpose2d, functional_avg_pool1d, functional_avg_pool2d, functional_max_pool1d, functional_max_pool2d, functional_adaptive_avg_pool1d, functional_adaptive_avg_pool2d, functional_adaptive_avg_pool3d, functional_layer_norm, functional_group_norm, functional_instance_norm1d, functional_instance_norm2d
 
 ### Complex Number Operations
 tensor_real, tensor_imag, tensor_conj, tensor_complex, tensor_view_as_real, tensor_view_as_complex
@@ -153,12 +153,34 @@ polar (magnitude+phase to complex), cartesian_prod (Cartesian product of 1-D ten
 
 ## Current Green Scope
 
+- `crates/ft-conformance/fixtures/op_schema_cases.json`
 - `crates/ft-conformance/fixtures/scalar_autograd_cases.json`
 - `crates/ft-conformance/fixtures/dispatch_key_cases.json`
 - `crates/ft-conformance/fixtures/autograd_scheduler_cases.json`
 - `crates/ft-conformance/fixtures/serialization_cases.json`
+- `crates/ft-conformance/fixtures/nn_state_cases.json`
+- `crates/ft-conformance/fixtures/optimizer_cases.json`
+- `crates/ft-conformance/fixtures/tensor_binary_cases.json`
+- `crates/ft-conformance/fixtures/tensor_unary_cases.json`
+- `crates/ft-conformance/fixtures/tensor_comparison_cases.json`
+- `crates/ft-conformance/fixtures/tensor_factory_cases.json`
 - `crates/ft-conformance/fixtures/tensor_init_cases.json`
 - `crates/ft-conformance/fixtures/tensor_random_cases.json`
+- `crates/ft-conformance/fixtures/tensor_einsum_cases.json`
+- `crates/ft-conformance/fixtures/tensor_searchsorted_cases.json`
+- `crates/ft-conformance/fixtures/tensor_reduction_cases.json`
+- `crates/ft-conformance/fixtures/tensor_loss_cases.json`
+- `crates/ft-conformance/fixtures/tensor_linalg_cases.json`
+- `crates/ft-conformance/fixtures/tensor_normalize_cases.json`
+- `crates/ft-conformance/fixtures/tensor_elementwise_cmp_cases.json`
+- `crates/ft-conformance/fixtures/tensor_shape_cases.json`
+- `crates/ft-conformance/fixtures/tensor_inplace_cases.json`
+- `crates/ft-conformance/fixtures/tensor_advanced_cases.json`
+- `crates/ft-conformance/fixtures/tensor_sort_cases.json`
+- `crates/ft-conformance/fixtures/tensor_indexing_cases.json`
+- `crates/ft-conformance/fixtures/tensor_scan_cases.json`
+- `crates/ft-conformance/fixtures/tensor_join_cases.json`
+- `crates/ft-conformance/fixtures/tensor_meta_cases.json`
 
 Modes tested for all listed families: strict + hardened.
 Latest workspace evidence refreshed via remote validation:

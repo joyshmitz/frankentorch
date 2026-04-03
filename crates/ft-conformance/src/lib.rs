@@ -5983,7 +5983,7 @@ fn run_tensor_linalg_case(
                 "matmul" => session.tensor_matmul(lhs, rhs),
                 "dot" => session.tensor_dot(lhs, rhs),
                 "outer" => session.tensor_outer(lhs, rhs),
-                _ => unreachable!(),
+                _ => unreachable!("tensor_linalg conformance only supports matmul/dot/outer ops"),
             }
             .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
@@ -6399,7 +6399,7 @@ fn run_tensor_inplace_case(
                 "sub_" => session.tensor_sub_(target, other),
                 "mul_" => session.tensor_mul_(target, other),
                 "div_" => session.tensor_div_(target, other),
-                _ => unreachable!(),
+                _ => unreachable!("binary in-place conformance only supports add_/sub_/mul_/div_"),
             }
         }
         "zero_" => session.tensor_zero_(target),

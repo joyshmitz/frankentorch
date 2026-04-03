@@ -1,9 +1,13 @@
-use std::path::Path;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use ft_api::FrankenTorchSession;
 use ft_conformance::{
     HarnessConfig, run_autograd_scheduler_conformance, run_dispatch_conformance,
-    run_optimizer_conformance, run_scalar_conformance, run_serialization_conformance, run_smoke,
+    run_nn_state_conformance, run_op_schema_conformance, run_optimizer_conformance,
+    run_scalar_conformance, run_serialization_conformance, run_smoke,
     run_tensor_advanced_conformance, run_tensor_comparison_conformance,
     run_tensor_einsum_conformance, run_tensor_elementwise_cmp_conformance,
     run_tensor_factory_conformance, run_tensor_indexing_conformance, run_tensor_init_conformance,
@@ -27,6 +31,182 @@ fn smoke_report_is_stable() {
 
     let fixture_path = cfg.fixture_root.join("smoke_case.json");
     assert!(Path::new(&fixture_path).exists());
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForbiddenMacroUse {
+    path: PathBuf,
+    line: usize,
+    macro_name: &'static str,
+}
+
+fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(root).expect("crate tree should be readable");
+    for entry in entries {
+        let entry = entry.expect("directory entry should be readable");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+fn strip_strings_and_line_comments(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if in_char {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        if ch == '/' && chars.peek() == Some(&'/') {
+            break;
+        }
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+        if ch == '\'' {
+            in_char = true;
+            continue;
+        }
+        out.push(ch);
+    }
+
+    out
+}
+
+fn count_char(haystack: &str, needle: char) -> usize {
+    haystack.chars().filter(|&ch| ch == needle).count()
+}
+
+fn scan_forbidden_macros(path: &Path) -> Vec<ForbiddenMacroUse> {
+    let content = fs::read_to_string(path).expect("source file should be readable");
+    let mut findings = Vec::new();
+    let mut brace_depth = 0usize;
+    let mut cfg_test_pending = false;
+    let mut skipped_block_depth: Option<usize> = None;
+
+    for (index, raw_line) in content.lines().enumerate() {
+        let line_number = index + 1;
+        let code = strip_strings_and_line_comments(raw_line);
+        let trimmed = code.trim();
+        let opens = count_char(&code, '{');
+        let closes = count_char(&code, '}');
+
+        if let Some(skip_depth) = skipped_block_depth {
+            brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
+            if brace_depth < skip_depth {
+                skipped_block_depth = None;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("#[cfg(test)]") {
+            cfg_test_pending = true;
+            brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
+            continue;
+        }
+
+        if cfg_test_pending && !trimmed.is_empty() {
+            if trimmed.starts_with("#[") {
+                brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
+                continue;
+            }
+            if trimmed.contains('{') {
+                let next_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
+                skipped_block_depth = Some(next_depth);
+                brace_depth = next_depth;
+                cfg_test_pending = false;
+                if brace_depth < skipped_block_depth.expect("skip depth just set") {
+                    skipped_block_depth = None;
+                }
+                continue;
+            }
+            cfg_test_pending = false;
+        }
+
+        for (macro_name, needle) in [
+            ("todo!", "todo!"),
+            ("unimplemented!", "unimplemented!"),
+            ("panic!", "panic!("),
+        ] {
+            if trimmed.contains(needle) {
+                findings.push(ForbiddenMacroUse {
+                    path: path.to_path_buf(),
+                    line: line_number,
+                    macro_name,
+                });
+            }
+        }
+
+        brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
+    }
+
+    findings
+}
+
+#[test]
+fn production_code_contains_no_forbidden_stub_or_panic_macros() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("ft-conformance should live under the workspace root")
+        .parent()
+        .expect("workspace root should have a parent");
+    let crates_root = repo_root.join("crates");
+
+    let mut rs_files = Vec::new();
+    collect_rs_files(&crates_root, &mut rs_files);
+
+    let mut findings = Vec::new();
+    for path in rs_files {
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+        {
+            continue;
+        }
+        findings.extend(scan_forbidden_macros(&path));
+    }
+
+    assert!(
+        findings.is_empty(),
+        "forbidden production macros found:\n{}",
+        findings
+            .iter()
+            .map(|finding| format!(
+                "{}:{} uses {}",
+                finding.path.display(),
+                finding.line,
+                finding.macro_name
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 #[test]
@@ -82,6 +262,30 @@ fn serialization_fixture_executes_in_both_modes() {
         .expect("strict serialization should run");
     let (hardened_report, _) = run_serialization_conformance(&cfg, ExecutionMode::Hardened)
         .expect("hardened serialization should run");
+
+    assert_eq!(strict_report.cases_total, strict_report.cases_passed);
+    assert_eq!(hardened_report.cases_total, hardened_report.cases_passed);
+}
+
+#[test]
+fn op_schema_fixture_executes_in_both_modes() {
+    let cfg = HarnessConfig::default_paths();
+    let (strict_report, _) = run_op_schema_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict op_schema should run");
+    let (hardened_report, _) = run_op_schema_conformance(&cfg, ExecutionMode::Hardened)
+        .expect("hardened op_schema should run");
+
+    assert_eq!(strict_report.cases_total, strict_report.cases_passed);
+    assert_eq!(hardened_report.cases_total, hardened_report.cases_passed);
+}
+
+#[test]
+fn nn_state_fixture_executes_in_both_modes() {
+    let cfg = HarnessConfig::default_paths();
+    let (strict_report, _) =
+        run_nn_state_conformance(&cfg, ExecutionMode::Strict).expect("strict nn_state should run");
+    let (hardened_report, _) = run_nn_state_conformance(&cfg, ExecutionMode::Hardened)
+        .expect("hardened nn_state should run");
 
     assert_eq!(strict_report.cases_total, strict_report.cases_passed);
     assert_eq!(hardened_report.cases_total, hardened_report.cases_passed);

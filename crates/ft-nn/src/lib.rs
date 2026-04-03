@@ -9,9 +9,16 @@ use ft_dispatch::{DispatchError, DispatchKeyError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleRegistrationError {
-    InvalidName { kind: &'static str },
-    NameConflict { name: String },
-    Unsupported { operation: &'static str },
+    InvalidName {
+        kind: &'static str,
+    },
+    NameConflict {
+        name: String,
+    },
+    Unsupported {
+        module_type: &'static str,
+        operation: &'static str,
+    },
 }
 
 impl std::fmt::Display for ModuleRegistrationError {
@@ -24,8 +31,11 @@ impl std::fmt::Display for ModuleRegistrationError {
                     "registration name '{name}' conflicts with existing state"
                 )
             }
-            Self::Unsupported { operation } => {
-                write!(f, "module does not support '{operation}'")
+            Self::Unsupported {
+                module_type,
+                operation,
+            } => {
+                write!(f, "{module_type} does not support '{operation}'")
             }
         }
     }
@@ -222,6 +232,7 @@ pub trait Module {
         _parameter: Option<TensorNodeId>,
     ) -> Result<(), ModuleRegistrationError> {
         Err(ModuleRegistrationError::Unsupported {
+            module_type: std::any::type_name::<Self>(),
             operation: "register_parameter",
         })
     }
@@ -234,6 +245,7 @@ pub trait Module {
         _persistent: bool,
     ) -> Result<(), ModuleRegistrationError> {
         Err(ModuleRegistrationError::Unsupported {
+            module_type: std::any::type_name::<Self>(),
             operation: "register_buffer",
         })
     }
@@ -12417,8 +12429,7 @@ pub fn pack_padded_sequence(
     }
 
     // Sort sequences by length (descending)
-    let mut indexed_lengths: Vec<(usize, usize)> =
-        lengths.iter().copied().enumerate().collect();
+    let mut indexed_lengths: Vec<(usize, usize)> = lengths.iter().copied().enumerate().collect();
 
     if enforce_sorted {
         // Verify already sorted descending
@@ -12990,6 +13001,22 @@ mod tests {
 
     use super::*;
 
+    struct DummyLeafModule;
+
+    impl Module for DummyLeafModule {
+        fn forward(
+            &self,
+            _session: &mut FrankenTorchSession,
+            input: TensorNodeId,
+        ) -> Result<TensorNodeId, AutogradError> {
+            Ok(input)
+        }
+
+        fn parameters(&self) -> Vec<TensorNodeId> {
+            Vec::new()
+        }
+    }
+
     fn dense_values_f64(tensor: &DenseTensor) -> Vec<f64> {
         match tensor.meta().dtype() {
             DType::F64 => tensor
@@ -13004,6 +13031,41 @@ mod tests {
                 .collect(),
             other => panic!("unsupported dtype in test helper: {other:?}"),
         }
+    }
+
+    #[test]
+    fn default_registration_errors_include_module_type_context() {
+        let mut module = DummyLeafModule;
+
+        let parameter_error = module
+            .register_parameter("extra", None)
+            .expect_err("default leaf modules should reject parameter registration");
+        assert!(matches!(
+            parameter_error,
+            ModuleRegistrationError::Unsupported {
+                module_type: "ft_nn::tests::DummyLeafModule",
+                operation: "register_parameter",
+            }
+        ));
+        assert_eq!(
+            parameter_error.to_string(),
+            "ft_nn::tests::DummyLeafModule does not support 'register_parameter'"
+        );
+
+        let buffer_error = module
+            .register_buffer("cache", None, false)
+            .expect_err("default leaf modules should reject buffer registration");
+        assert!(matches!(
+            buffer_error,
+            ModuleRegistrationError::Unsupported {
+                module_type: "ft_nn::tests::DummyLeafModule",
+                operation: "register_buffer",
+            }
+        ));
+        assert_eq!(
+            buffer_error.to_string(),
+            "ft_nn::tests::DummyLeafModule does not support 'register_buffer'"
+        );
     }
 
     #[test]
@@ -21815,8 +21877,7 @@ mod tests {
         let packed = pack_padded_sequence(&mut s, input, &[3, 1], true, false).unwrap();
         assert_eq!(packed.batch_sizes, vec![2, 1, 1]);
 
-        let (unpacked, lengths) =
-            pad_packed_sequence(&mut s, &packed, true, 0.0, None).unwrap();
+        let (unpacked, lengths) = pad_packed_sequence(&mut s, &packed, true, 0.0, None).unwrap();
         let vals = s.tensor_values(unpacked).unwrap();
         assert_eq!(s.tensor_shape(unpacked).unwrap(), vec![2, 3]);
         assert_eq!(lengths, vec![3, 1]);
@@ -21829,13 +21890,9 @@ mod tests {
     #[test]
     fn pack_padded_enforce_sorted_rejects_unsorted() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = s
-            .tensor_variable(vec![0.0; 6], vec![3, 2], false)
-            .unwrap();
+        let input = s.tensor_variable(vec![0.0; 6], vec![3, 2], false).unwrap();
         // lengths [1, 3] are NOT sorted descending
-        assert!(
-            pack_padded_sequence(&mut s, input, &[1, 3], false, true).is_err()
-        );
+        assert!(pack_padded_sequence(&mut s, input, &[1, 3], false, true).is_err());
     }
 
     #[test]
@@ -21844,9 +21901,7 @@ mod tests {
         let seq1 = s
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .unwrap();
-        let seq2 = s
-            .tensor_variable(vec![4.0, 5.0], vec![2], false)
-            .unwrap();
+        let seq2 = s.tensor_variable(vec![4.0, 5.0], vec![2], false).unwrap();
         let seq3 = s.tensor_variable(vec![6.0], vec![1], false).unwrap();
 
         let padded = pad_sequence(&mut s, &[seq1, seq2, seq3], true, 0.0).unwrap();
@@ -21862,9 +21917,7 @@ mod tests {
     #[test]
     fn pad_sequence_time_first() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let seq1 = s
-            .tensor_variable(vec![1.0, 2.0], vec![2], false)
-            .unwrap();
+        let seq1 = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
         let seq2 = s
             .tensor_variable(vec![3.0, 4.0, 5.0], vec![3], false)
             .unwrap();

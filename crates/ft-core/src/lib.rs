@@ -714,6 +714,7 @@ pub enum DenseTensorError {
     Meta(TensorMetaError),
     UnsupportedDType(DType),
     UnsupportedLayout,
+    UnsupportedStorageAccess { dtype: DType },
     StorageSpanOverflow { storage_offset: usize, numel: usize },
     InsufficientStorage { needed: usize, actual: usize },
 }
@@ -729,6 +730,10 @@ impl fmt::Display for DenseTensorError {
             Self::UnsupportedLayout => {
                 write!(f, "dense tensor requires contiguous layout")
             }
+            Self::UnsupportedStorageAccess { dtype } => write!(
+                f,
+                "raw f64 storage access is unsupported for tensor dtype {dtype:?}; use typed_storage() or contiguous_values_as_f64()"
+            ),
             Self::StorageSpanOverflow {
                 storage_offset,
                 numel,
@@ -963,15 +968,16 @@ impl DenseTensor {
         &self.storage
     }
 
-    /// Returns the raw f64 storage slice. Panics on non-f64 tensors.
-    #[must_use]
-    pub fn storage(&self) -> &[f64] {
+    /// Returns the raw f64 storage slice.
+    ///
+    /// This is only available for `F64` tensors. Callers that need a dtype-agnostic
+    /// path should use `typed_storage()` or `contiguous_values_as_f64()`.
+    pub fn storage(&self) -> Result<&[f64], DenseTensorError> {
         match &self.storage {
-            TensorStorage::F64(v) => v.as_slice(),
-            other => panic!(
-                "called storage() on {:?} DenseTensor; use typed_storage() or contiguous_values_as_f64()",
-                other.dtype()
-            ),
+            TensorStorage::F64(v) => Ok(v.as_slice()),
+            other => Err(DenseTensorError::UnsupportedStorageAccess {
+                dtype: other.dtype(),
+            }),
         }
     }
 
@@ -1925,7 +1931,26 @@ mod tests {
         let vals = vec![10.0, 20.0, 30.0, 40.0];
         let dt = DenseTensor::from_contiguous_values(vals.clone(), vec![4], Device::Cpu)
             .expect("create dense tensor");
-        assert_eq!(dt.storage(), &[10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(
+            dt.storage().expect("f64 storage should be accessible"),
+            &[10.0, 20.0, 30.0, 40.0]
+        );
+    }
+
+    #[test]
+    fn dense_tensor_storage_accessor_rejects_non_f64_dtype() {
+        let dt = DenseTensor::from_storage_f32(
+            TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu),
+            vec![1.0f32, 2.0],
+        )
+        .expect("create f32 dense tensor");
+        let err = dt
+            .storage()
+            .expect_err("raw f64 storage access should reject f32 tensors");
+        assert!(matches!(
+            err,
+            DenseTensorError::UnsupportedStorageAccess { dtype: DType::F32 }
+        ));
     }
 
     #[test]
@@ -1937,7 +1962,10 @@ mod tests {
         dt.update_contiguous_values(&[4.0, 5.0, 6.0])
             .expect("replace with same-length storage should succeed");
         assert_eq!(dt.version(), 1);
-        assert_eq!(dt.storage(), &[4.0, 5.0, 6.0]);
+        assert_eq!(
+            dt.storage().expect("f64 storage should be accessible"),
+            &[4.0, 5.0, 6.0]
+        );
     }
 
     #[test]

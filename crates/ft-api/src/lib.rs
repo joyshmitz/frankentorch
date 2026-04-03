@@ -4718,10 +4718,16 @@ impl FrankenTorchSession {
                                                 && (0..input_h as isize).contains(&ih_orig)
                                                 && (0..input_w as isize).contains(&iw_orig)
                                             {
-                                                let in_idx = ((n * in_channels + ic) * input_d + id_orig as usize) * input_h * input_w
+                                                let in_idx = ((n * in_channels + ic) * input_d
+                                                    + id_orig as usize)
+                                                    * input_h
+                                                    * input_w
                                                     + ih_orig as usize * input_w
                                                     + iw_orig as usize;
-                                                let w_idx = ((oc * in_channels + ic) * kernel_d + kd) * kernel_h * kernel_w
+                                                let w_idx = ((oc * in_channels + ic) * kernel_d
+                                                    + kd)
+                                                    * kernel_h
+                                                    * kernel_w
                                                     + kh * kernel_w
                                                     + kw;
                                                 sum += input_vals[in_idx] * weight_vals[w_idx];
@@ -4730,9 +4736,10 @@ impl FrankenTorchSession {
                                     }
                                 }
                             }
-                            let out_idx = ((n * out_channels + oc) * output_d + od) * output_h * output_w
-                                + oh * output_w
-                                + ow;
+                            let out_idx =
+                                ((n * out_channels + oc) * output_d + od) * output_h * output_w
+                                    + oh * output_w
+                                    + ow;
                             output[out_idx] = sum;
                         }
                     }
@@ -4821,7 +4828,8 @@ impl FrankenTorchSession {
             }
         }
 
-        let out_node = self.tensor_variable(output, vec![batch_size, out_channels, output_l], false)?;
+        let out_node =
+            self.tensor_variable(output, vec![batch_size, out_channels, output_l], false)?;
 
         match bias {
             Some(bias) => {
@@ -4888,8 +4896,8 @@ impl FrankenTorchSession {
             for ic in 0..in_channels {
                 for ih in 0..input_h {
                     for iw in 0..input_w {
-                        let in_val = input_vals
-                            [((n * in_channels + ic) * input_h + ih) * input_w + iw];
+                        let in_val =
+                            input_vals[((n * in_channels + ic) * input_h + ih) * input_w + iw];
                         for oc in 0..out_channels {
                             for kh in 0..kernel_h {
                                 for kw in 0..kernel_w {
@@ -4926,10 +4934,8 @@ impl FrankenTorchSession {
         match bias {
             Some(bias) => {
                 let bias = self.tensor_reshape(bias, vec![1, out_channels, 1, 1])?;
-                let bias = self.tensor_expand(
-                    bias,
-                    vec![batch_size, out_channels, output_h, output_w],
-                )?;
+                let bias =
+                    self.tensor_expand(bias, vec![batch_size, out_channels, output_h, output_w])?;
                 self.tensor_add(out_node, bias)
             }
             None => Ok(out_node),
@@ -5156,7 +5162,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
         let shape = meta.shape();
         if shape.len() != 3 {
@@ -5194,7 +5200,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
         let shape = meta.shape();
         if shape.len() != 4 {
@@ -5241,7 +5247,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
         let shape = meta.shape();
         if shape.len() != 5 {
@@ -5265,14 +5271,12 @@ impl FrankenTorchSession {
                         for ow in 0..w_out {
                             let w_start = (ow * w_in) / w_out;
                             let w_end = ((ow + 1) * w_in) / w_out;
-                            let count =
-                                (d_end - d_start) * (h_end - h_start) * (w_end - w_start);
+                            let count = (d_end - d_start) * (h_end - h_start) * (w_end - w_start);
                             let mut sum = 0.0;
                             for d in d_start..d_end {
                                 for h in h_start..h_end {
                                     for w in w_start..w_end {
-                                        sum += storage
-                                            [base + d * h_in * w_in + h * w_in + w];
+                                        sum += storage[base + d * h_in * w_in + h * w_in + w];
                                     }
                                 }
                             }
@@ -7549,9 +7553,9 @@ impl FrankenTorchSession {
             let lhs_tensor = self.tensor_tape.tensor(lhs)?;
             let rhs_tensor = self.tensor_tape.tensor(rhs)?;
             (
-                lhs_tensor.storage().to_vec(),
+                lhs_tensor.storage()?.to_vec(),
                 lhs_tensor.meta().clone(),
-                rhs_tensor.storage().to_vec(),
+                rhs_tensor.storage()?.to_vec(),
                 rhs_tensor.meta().clone(),
             )
         };
@@ -7597,7 +7601,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let outcome = dispatch_tensor_unary_contiguous_f64(op, self.mode(), &storage, &meta, false)
@@ -8431,7 +8435,8 @@ impl FrankenTorchSession {
                 if full {
                     // Stirling approximation for log(target!)
                     if tgt > 1.0 {
-                        loss += tgt * tgt.ln() - tgt + 0.5 * (2.0 * std::f64::consts::PI * tgt).ln();
+                        loss +=
+                            tgt * tgt.ln() - tgt + 0.5 * (2.0 * std::f64::consts::PI * tgt).ln();
                     }
                 }
                 loss
@@ -9178,7 +9183,7 @@ impl FrankenTorchSession {
 
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
         let shape = meta.shape();
         let ndim = shape.len();
@@ -10575,7 +10580,7 @@ impl FrankenTorchSession {
 
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let values: Vec<f64> = storage
@@ -10642,11 +10647,11 @@ impl FrankenTorchSession {
         // = max(a,b) + log2(exp2(a-max) + exp2(b-max))
         let (a_vals, a_meta) = {
             let t = self.tensor_tape.tensor(a)?;
-            (t.storage().to_vec(), t.meta().clone())
+            (t.storage()?.to_vec(), t.meta().clone())
         };
         let b_vals = {
             let t = self.tensor_tape.tensor(b)?;
-            t.storage().to_vec()
+            t.storage()?.to_vec()
         };
 
         if a_vals.len() != b_vals.len() {
@@ -10687,11 +10692,11 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (x_vals, x_meta) = {
             let tensor = self.tensor_tape.tensor(x)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
         let y_vals = {
             let tensor = self.tensor_tape.tensor(y)?;
-            tensor.storage().to_vec()
+            tensor.storage()?.to_vec()
         };
 
         if x_vals.len() != y_vals.len() {
@@ -10739,7 +10744,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let values: Vec<f64> = storage
@@ -10771,7 +10776,7 @@ impl FrankenTorchSession {
     pub fn tensor_erfinv(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let values: Vec<f64> = storage.iter().map(|&x| erfinv_approx(x)).collect();
@@ -10792,7 +10797,7 @@ impl FrankenTorchSession {
     pub fn tensor_gammaln(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let values: Vec<f64> = storage.iter().map(|&x| lgamma_approx(x)).collect();
@@ -10813,7 +10818,7 @@ impl FrankenTorchSession {
     pub fn tensor_digamma(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let values: Vec<f64> = storage.iter().map(|&x| digamma_approx(x)).collect();
@@ -10843,7 +10848,7 @@ impl FrankenTorchSession {
 
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let values: Vec<f64> = storage.iter().map(|&x| polygamma_approx(n, x)).collect();
@@ -10869,7 +10874,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let log_pi = std::f64::consts::PI.ln();
@@ -10906,11 +10911,11 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (x_vals, x_meta) = {
             let tensor = self.tensor_tape.tensor(x)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
         let y_vals = {
             let tensor = self.tensor_tape.tensor(y)?;
-            tensor.storage().to_vec()
+            tensor.storage()?.to_vec()
         };
 
         if x_vals.len() != y_vals.len() {
@@ -10948,7 +10953,7 @@ impl FrankenTorchSession {
     pub fn tensor_entr(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let values: Vec<f64> = storage
@@ -10986,7 +10991,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
 
         let shape = meta.shape();
@@ -11077,7 +11082,7 @@ impl FrankenTorchSession {
                 // No rotation — return a clone
                 let vals = {
                     let t = self.tensor_tape.tensor(input)?;
-                    t.storage().to_vec()
+                    t.storage()?.to_vec()
                 };
                 let shape = {
                     let t = self.tensor_tape.tensor(input)?;
@@ -11100,7 +11105,7 @@ impl FrankenTorchSession {
                 let transposed = self.tensor_transpose(input, dims[0], dims[1])?;
                 self.tensor_flip(transposed, &[dims[1]])
             }
-            _ => unreachable!(),
+            _ => unreachable!("k is normalized with rem_euclid(4), so only 0..=3 are possible"),
         }
     }
 
@@ -11216,7 +11221,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage().to_vec(), tensor.meta().clone())
+            (tensor.storage()?.to_vec(), tensor.meta().clone())
         };
         let shape = meta.shape();
         let ndim = shape.len();
@@ -11275,11 +11280,41 @@ impl FrankenTorchSession {
         let align = align_corners.unwrap_or(false);
 
         match mode {
-            "nearest" => self.interpolate_nearest(&storage, batch, channels, &in_spatial, &out_spatial),
-            "linear" if spatial_dims == 1 => self.interpolate_linear_1d(&storage, batch, channels, in_spatial[0], out_spatial[0], align),
-            "bilinear" if spatial_dims == 2 => self.interpolate_bilinear(&storage, batch, channels, &in_spatial, &out_spatial, align),
-            "bicubic" if spatial_dims == 2 => self.interpolate_bicubic(&storage, batch, channels, &in_spatial, &out_spatial, align),
-            "trilinear" if spatial_dims == 3 => self.interpolate_trilinear(&storage, batch, channels, &in_spatial, &out_spatial, align),
+            "nearest" => {
+                self.interpolate_nearest(&storage, batch, channels, &in_spatial, &out_spatial)
+            }
+            "linear" if spatial_dims == 1 => self.interpolate_linear_1d(
+                &storage,
+                batch,
+                channels,
+                in_spatial[0],
+                out_spatial[0],
+                align,
+            ),
+            "bilinear" if spatial_dims == 2 => self.interpolate_bilinear(
+                &storage,
+                batch,
+                channels,
+                &in_spatial,
+                &out_spatial,
+                align,
+            ),
+            "bicubic" if spatial_dims == 2 => self.interpolate_bicubic(
+                &storage,
+                batch,
+                channels,
+                &in_spatial,
+                &out_spatial,
+                align,
+            ),
+            "trilinear" if spatial_dims == 3 => self.interpolate_trilinear(
+                &storage,
+                batch,
+                channels,
+                &in_spatial,
+                &out_spatial,
+                align,
+            ),
             _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "interpolate: unsupported mode for given input dimensionality",
@@ -11308,7 +11343,8 @@ impl FrankenTorchSession {
                 match spatial_dims {
                     1 => {
                         for oi in 0..out_spatial[0] {
-                            let ii = (oi as f64 * in_spatial[0] as f64 / out_spatial[0] as f64).floor() as usize;
+                            let ii = (oi as f64 * in_spatial[0] as f64 / out_spatial[0] as f64)
+                                .floor() as usize;
                             values.push(storage[base + ii.min(in_spatial[0] - 1)]);
                         }
                     }
@@ -11316,9 +11352,11 @@ impl FrankenTorchSession {
                         let (ih, iw) = (in_spatial[0], in_spatial[1]);
                         let (oh, ow) = (out_spatial[0], out_spatial[1]);
                         for oy in 0..oh {
-                            let iy = ((oy as f64 * ih as f64 / oh as f64).floor() as usize).min(ih - 1);
+                            let iy =
+                                ((oy as f64 * ih as f64 / oh as f64).floor() as usize).min(ih - 1);
                             for ox in 0..ow {
-                                let ix = ((ox as f64 * iw as f64 / ow as f64).floor() as usize).min(iw - 1);
+                                let ix = ((ox as f64 * iw as f64 / ow as f64).floor() as usize)
+                                    .min(iw - 1);
                                 values.push(storage[base + iy * iw + ix]);
                             }
                         }
@@ -11327,17 +11365,22 @@ impl FrankenTorchSession {
                         let (id, ih, iw) = (in_spatial[0], in_spatial[1], in_spatial[2]);
                         let (od, oh, ow) = (out_spatial[0], out_spatial[1], out_spatial[2]);
                         for oz in 0..od {
-                            let iz = ((oz as f64 * id as f64 / od as f64).floor() as usize).min(id - 1);
+                            let iz =
+                                ((oz as f64 * id as f64 / od as f64).floor() as usize).min(id - 1);
                             for oy in 0..oh {
-                                let iy = ((oy as f64 * ih as f64 / oh as f64).floor() as usize).min(ih - 1);
+                                let iy = ((oy as f64 * ih as f64 / oh as f64).floor() as usize)
+                                    .min(ih - 1);
                                 for ox in 0..ow {
-                                    let ix = ((ox as f64 * iw as f64 / ow as f64).floor() as usize).min(iw - 1);
+                                    let ix = ((ox as f64 * iw as f64 / ow as f64).floor() as usize)
+                                        .min(iw - 1);
                                     values.push(storage[base + iz * ih * iw + iy * iw + ix]);
                                 }
                             }
                         }
                     }
-                    _ => unreachable!(),
+                    _ => unreachable!(
+                        "nearest interpolation only supports 1-D, 2-D, or 3-D spatial inputs"
+                    ),
                 }
             }
         }
@@ -11776,7 +11819,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, meta) = {
             let t = self.tensor_tape.tensor(input)?;
-            (t.storage().to_vec(), t.meta().clone())
+            (t.storage()?.to_vec(), t.meta().clone())
         };
         let shape = meta.shape();
         let ndim = shape.len();
@@ -23187,9 +23230,10 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0; 4], vec![1, 1, 2, 2], false)
             .unwrap();
-        assert!(s
-            .tensor_interpolate(input, Some(vec![4, 4]), None, "linear", None)
-            .is_err());
+        assert!(
+            s.tensor_interpolate(input, Some(vec![4, 4]), None, "linear", None)
+                .is_err()
+        );
     }
 
     #[test]
@@ -23198,15 +23242,16 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0; 4], vec![1, 1, 2, 2], false)
             .unwrap();
-        assert!(s
-            .tensor_interpolate(
+        assert!(
+            s.tensor_interpolate(
                 input,
                 Some(vec![4, 4]),
                 Some(vec![2.0, 2.0]),
                 "nearest",
                 None
             )
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]
@@ -23233,9 +23278,7 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false)
             .unwrap();
-        let out = s
-            .tensor_pad_mode(input, &[2, 2], "reflect", 0.0)
-            .unwrap();
+        let out = s.tensor_pad_mode(input, &[2, 2], "reflect", 0.0).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, vec![1, 1, 8]);
         let vals = s.tensor_values(out).unwrap();
@@ -23249,9 +23292,7 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false)
             .unwrap();
-        let out = s
-            .tensor_pad_mode(input, &[2, 2], "replicate", 0.0)
-            .unwrap();
+        let out = s.tensor_pad_mode(input, &[2, 2], "replicate", 0.0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         // Replicate: [1, 1, 1, 2, 3, 4, 4, 4]
         assert_eq!(vals, vec![1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0]);
@@ -23263,9 +23304,7 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], false)
             .unwrap();
-        let out = s
-            .tensor_pad_mode(input, &[2, 2], "circular", 0.0)
-            .unwrap();
+        let out = s.tensor_pad_mode(input, &[2, 2], "circular", 0.0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         // Circular: [3, 4, 1, 2, 3, 4, 1, 2]
         assert_eq!(vals, vec![3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0]);
@@ -23324,9 +23363,7 @@ mod tests {
         let input2 = s
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false)
             .unwrap();
-        let b = s
-            .tensor_pad_mode(input2, &[1, 1], "constant", 0.0)
-            .unwrap();
+        let b = s.tensor_pad_mode(input2, &[1, 1], "constant", 0.0).unwrap();
         assert_eq!(s.tensor_values(a).unwrap(), s.tensor_values(b).unwrap());
     }
 
@@ -23336,12 +23373,8 @@ mod tests {
     fn focal_loss_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // With gamma=0, alpha=0.5: both classes equally weighted
-        let input = s
-            .tensor_variable(vec![0.0, 0.0], vec![2], false)
-            .unwrap();
-        let target = s
-            .tensor_variable(vec![1.0, 0.0], vec![2], false)
-            .unwrap();
+        let input = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let target = s.tensor_variable(vec![1.0, 0.0], vec![2], false).unwrap();
         let loss = s.focal_loss(input, target, 0.5, 0.0).unwrap();
         let val = s.tensor_values(loss).unwrap()[0];
         // sigmoid(0)=0.5, -0.5*log(0.5) = 0.5*0.693 = 0.347 for each, mean=0.347
@@ -23352,21 +23385,13 @@ mod tests {
     fn focal_loss_gamma_reduces_easy_examples() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // High confidence correct prediction: sigmoid(5) ≈ 0.993
-        let input = s
-            .tensor_variable(vec![5.0], vec![1], false)
-            .unwrap();
-        let target = s
-            .tensor_variable(vec![1.0], vec![1], false)
-            .unwrap();
+        let input = s.tensor_variable(vec![5.0], vec![1], false).unwrap();
+        let target = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
         let loss_g0 = s.focal_loss(input, target, 0.5, 0.0).unwrap();
         let val_g0 = s.tensor_values(loss_g0).unwrap()[0];
 
-        let input2 = s
-            .tensor_variable(vec![5.0], vec![1], false)
-            .unwrap();
-        let target2 = s
-            .tensor_variable(vec![1.0], vec![1], false)
-            .unwrap();
+        let input2 = s.tensor_variable(vec![5.0], vec![1], false).unwrap();
+        let target2 = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
         let loss_g2 = s.focal_loss(input2, target2, 0.5, 2.0).unwrap();
         let val_g2 = s.tensor_values(loss_g2).unwrap()[0];
 
@@ -23380,47 +23405,43 @@ mod tests {
     fn poisson_nll_loss_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // log_input=true: loss = exp(input) - target * input
-        let input = s
-            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+        let input = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let target = s.tensor_variable(vec![1.0, 1.0], vec![2], false).unwrap();
+        let loss = s
+            .poisson_nll_loss(input, target, true, false, 1e-8)
             .unwrap();
-        let target = s
-            .tensor_variable(vec![1.0, 1.0], vec![2], false)
-            .unwrap();
-        let loss = s.poisson_nll_loss(input, target, true, false, 1e-8).unwrap();
         let val = s.tensor_values(loss).unwrap()[0];
         // mean((e^1 - 1*1) + (e^2 - 1*2)) / 2 = ((e-1) + (e^2-2)) / 2
         let expected = ((std::f64::consts::E - 1.0) + (std::f64::consts::E.powi(2) - 2.0)) / 2.0;
-        assert!((val - expected).abs() < 1e-8, "poisson_nll={val}, expected={expected}");
+        assert!(
+            (val - expected).abs() < 1e-8,
+            "poisson_nll={val}, expected={expected}"
+        );
     }
 
     #[test]
     fn gaussian_nll_loss_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Perfect prediction with variance 1: loss = 0.5 * log(1) + 0 = 0
-        let input = s
-            .tensor_variable(vec![1.0], vec![1], false)
+        let input = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let target = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let var = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let loss = s
+            .gaussian_nll_loss(input, target, var, false, 1e-6)
             .unwrap();
-        let target = s
-            .tensor_variable(vec![1.0], vec![1], false)
-            .unwrap();
-        let var = s
-            .tensor_variable(vec![1.0], vec![1], false)
-            .unwrap();
-        let loss = s.gaussian_nll_loss(input, target, var, false, 1e-6).unwrap();
         let val = s.tensor_values(loss).unwrap()[0];
-        assert!(val.abs() < 1e-8, "perfect prediction should have ~0 loss, got {val}");
+        assert!(
+            val.abs() < 1e-8,
+            "perfect prediction should have ~0 loss, got {val}"
+        );
     }
 
     #[test]
     fn soft_margin_loss_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Correctly classified: target=1, input=large positive -> low loss
-        let input = s
-            .tensor_variable(vec![5.0, -5.0], vec![2], false)
-            .unwrap();
-        let target = s
-            .tensor_variable(vec![1.0, -1.0], vec![2], false)
-            .unwrap();
+        let input = s.tensor_variable(vec![5.0, -5.0], vec![2], false).unwrap();
+        let target = s.tensor_variable(vec![1.0, -1.0], vec![2], false).unwrap();
         let loss = s.soft_margin_loss(input, target).unwrap();
         let val = s.tensor_values(loss).unwrap()[0];
         // log(1 + exp(-5)) ≈ 0.0067 for both, mean ≈ 0.0067
@@ -23434,13 +23455,14 @@ mod tests {
         let input = s
             .tensor_variable(vec![3.0, 1.0, 0.0], vec![1, 3], false)
             .unwrap();
-        let target = s
-            .tensor_variable(vec![0.0], vec![1], false)
-            .unwrap();
+        let target = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
         let loss = s.multi_margin_loss(input, target, 1.0, 1.0).unwrap();
         let val = s.tensor_values(loss).unwrap()[0];
         // max(0, 1-3+1) + max(0, 1-3+0) = 0 + 0 = 0
-        assert!(val.abs() < 1e-10, "correct prediction should give 0 loss: {val}");
+        assert!(
+            val.abs() < 1e-10,
+            "correct prediction should give 0 loss: {val}"
+        );
     }
 
     #[test]
@@ -23450,9 +23472,7 @@ mod tests {
         let input = s
             .tensor_variable(vec![0.0, 3.0], vec![1, 2], false)
             .unwrap();
-        let target = s
-            .tensor_variable(vec![0.0], vec![1], false)
-            .unwrap();
+        let target = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
         let loss = s.multi_margin_loss(input, target, 1.0, 1.0).unwrap();
         let val = s.tensor_values(loss).unwrap()[0];
         // max(0, 1-0+3) = 4, / 2 classes = 2
@@ -23481,7 +23501,11 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // 1x1x1 kernel with weight=1 should act as identity
         let input = s
-            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], vec![1, 1, 2, 2, 2], false)
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                vec![1, 1, 2, 2, 2],
+                false,
+            )
             .unwrap();
         let weight = s
             .tensor_variable(vec![1.0], vec![1, 1, 1, 1, 1], false)
@@ -23606,15 +23630,30 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_avg_pool1d_rejects_non_f64_storage() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![1, 1, 4], false)
+            .unwrap();
+        let err = s
+            .functional_adaptive_avg_pool1d(input, 2)
+            .expect_err("non-f64 adaptive avg pool should return a structured error");
+        assert!(matches!(
+            err,
+            AutogradError::DenseTensor(ft_core::DenseTensorError::UnsupportedStorageAccess {
+                dtype: DType::F32
+            })
+        ));
+    }
+
+    #[test]
     fn adaptive_avg_pool2d_global() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 2, 2] -> [1, 1, 1, 1]: global average pooling
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
             .unwrap();
-        let out = s
-            .functional_adaptive_avg_pool2d(input, (1, 1))
-            .unwrap();
+        let out = s.functional_adaptive_avg_pool2d(input, (1, 1)).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, vec![1, 1, 1, 1]);
         let vals = s.tensor_values(out).unwrap();
@@ -23628,9 +23667,7 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0; 32], vec![1, 2, 4, 4], false)
             .unwrap();
-        let out = s
-            .functional_adaptive_avg_pool2d(input, (2, 2))
-            .unwrap();
+        let out = s.functional_adaptive_avg_pool2d(input, (2, 2)).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, vec![1, 2, 2, 2]);
         let vals = s.tensor_values(out).unwrap();
@@ -23645,9 +23682,7 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], false)
             .unwrap();
-        let out = s
-            .functional_adaptive_avg_pool3d(input, (1, 1, 1))
-            .unwrap();
+        let out = s.functional_adaptive_avg_pool3d(input, (1, 1, 1)).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, vec![1, 1, 1, 1, 1]);
         let vals = s.tensor_values(out).unwrap();
@@ -23680,9 +23715,7 @@ mod tests {
     #[test]
     fn cartesian_prod_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s
-            .tensor_variable(vec![1.0, 2.0], vec![2], false)
-            .unwrap();
+        let a = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
         let b = s
             .tensor_variable(vec![3.0, 4.0, 5.0], vec![3], false)
             .unwrap();
@@ -23724,9 +23757,7 @@ mod tests {
     #[test]
     fn combinations_with_replacement() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = s
-            .tensor_variable(vec![1.0, 2.0], vec![2], false)
-            .unwrap();
+        let input = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
         let result = s.tensor_combinations(input, 2, true).unwrap();
         let shape = s.tensor_shape(result).unwrap();
         assert_eq!(shape, vec![3, 2]); // (1,1), (1,2), (2,2)
@@ -23737,9 +23768,7 @@ mod tests {
     #[test]
     fn combinations_empty() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = s
-            .tensor_variable(vec![1.0], vec![1], false)
-            .unwrap();
+        let input = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
         let result = s.tensor_combinations(input, 2, false).unwrap();
         let shape = s.tensor_shape(result).unwrap();
         assert_eq!(shape, vec![0, 2]); // C(1,2) = 0

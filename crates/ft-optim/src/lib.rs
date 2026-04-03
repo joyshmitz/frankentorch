@@ -108,7 +108,11 @@ pub trait Optimizer {
     }
 
     /// Set momentum for optimizers that expose it.
-    fn set_momentum(&mut self, _momentum: f64) {}
+    fn set_momentum(&mut self, _momentum: f64) -> Result<(), AutogradError> {
+        Err(optimizer_hparam_error(
+            "this optimizer does not support momentum",
+        ))
+    }
 }
 
 /// Stochastic Gradient Descent optimizer with optional momentum and weight decay.
@@ -196,8 +200,9 @@ impl Optimizer for SGD {
         Some(self.momentum)
     }
 
-    fn set_momentum(&mut self, momentum: f64) {
+    fn set_momentum(&mut self, momentum: f64) -> Result<(), AutogradError> {
         self.momentum = momentum;
+        Ok(())
     }
 
     fn step(
@@ -3323,8 +3328,15 @@ impl LRScheduler for OneCycleLR {
         optimizer.set_lr(new_lr);
 
         if let Some(momentum) = new_momentum {
-            optimizer.set_momentum(momentum);
-            self.last_momentum = Some(momentum);
+            match optimizer.set_momentum(momentum) {
+                Ok(()) => self.last_momentum = Some(momentum),
+                Err(error) => {
+                    eprintln!(
+                        "OneCycleLR: failed to set momentum to {momentum:.6e} at step {new_epoch}: {error}"
+                    );
+                    self.last_momentum = optimizer.get_momentum();
+                }
+            }
         } else {
             self.last_momentum = optimizer.get_momentum();
         }
@@ -4811,6 +4823,32 @@ mod tests {
 
         let x_val_1 = session.tensor_values(x).expect("values")[0];
         assert!(x_val_1 < 4.0, "x should decrease after first step");
+    }
+
+    #[test]
+    fn sgd_set_momentum_updates_value() {
+        let mut optimizer = SGD::new(vec![], 0.1).momentum(0.2);
+
+        optimizer
+            .set_momentum(0.85)
+            .expect("sgd should allow momentum updates");
+
+        assert_eq!(optimizer.get_momentum(), Some(0.85));
+    }
+
+    #[test]
+    fn unsupported_optimizer_set_momentum_returns_error() {
+        let mut optimizer = Adagrad::new(vec![], 0.1);
+
+        let error = optimizer
+            .set_momentum(0.9)
+            .expect_err("adagrad should reject momentum updates");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("does not support momentum"),
+            "expected unsupported momentum error, got: {message}"
+        );
     }
 
     #[test]
