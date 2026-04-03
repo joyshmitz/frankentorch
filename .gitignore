@@ -21,7 +21,6 @@ __pycache__/
 
 # Local agent/tool caches
 .bv/
-.beads/
 perf.data
 perf.data.*
 frankentorch_illustration.png

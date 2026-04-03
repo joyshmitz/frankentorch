@@ -163,11 +163,24 @@ impl DurabilityEnvelope {
     }
 }
 
+/// Returns the unbounded asupersync budget for structured-concurrency regions.
+///
+/// This is the appropriate default when a FrankenTorch caller wants runtime
+/// integration without imposing a cancellation budget from the helper itself,
+/// such as offline inference or batch-oriented orchestration.
+///
+/// Requires the `asupersync-integration` feature.
 #[cfg(feature = "asupersync-integration")]
 pub fn asupersync_infinite_budget() -> asupersync::types::Budget {
     asupersync::types::Budget::INFINITE
 }
 
+/// Returns the baseline FrankenTUI style used by the optional dashboard hooks.
+///
+/// Consumers can use this as a known-good starting point before applying their
+/// own panel, border, or palette customizations for runtime dashboards.
+///
+/// Requires the `frankentui-integration` feature.
 #[cfg(feature = "frankentui-integration")]
 pub fn frankentui_default_style() -> ftui::Style {
     ftui::Style::default()
@@ -185,6 +198,11 @@ mod tests {
     use ft_serialize::{DecodeMode, decode_checkpoint};
 
     use super::{DurabilityEnvelope, EvidenceKind, RuntimeContext, ScrubStatus};
+
+    // Feature-gated integration tests. Run with:
+    //   cargo test -p ft-runtime --features asupersync-integration
+    //   cargo test -p ft-runtime --features frankentui-integration
+    //   cargo test -p ft-runtime --all-features
 
     #[test]
     fn ledger_records_policy_and_custom_events() {
@@ -341,5 +359,19 @@ mod tests {
                 "timestamps should be monotonically non-decreasing"
             );
         }
+    }
+
+    #[cfg(feature = "asupersync-integration")]
+    #[test]
+    fn asupersync_infinite_budget_returns_infinite() {
+        let budget = super::asupersync_infinite_budget();
+        let _ = budget;
+    }
+
+    #[cfg(feature = "frankentui-integration")]
+    #[test]
+    fn frankentui_default_style_returns_valid_style() {
+        let style = super::frankentui_default_style();
+        let _ = style;
     }
 }
