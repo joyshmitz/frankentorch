@@ -92,7 +92,7 @@ rand (uniform [0,1)), randn (normal), rand_like, randn_like, randint, randperm, 
 tensor_add_, tensor_sub_, tensor_mul_, tensor_div_, tensor_zero_, tensor_fill_, tensor_mul_scalar_, tensor_add_scalar_
 
 ### Loss Functions
-mse_loss, l1_loss, bce_loss, bce_with_logits_loss, smooth_l1_loss, huber_loss, cross_entropy_loss, nll_loss, cosine_embedding_loss, focal_loss, poisson_nll_loss, gaussian_nll_loss, soft_margin_loss, multi_margin_loss, multilabel_soft_margin_loss
+mse_loss, l1_loss, bce_loss, bce_with_logits_loss, smooth_l1_loss, huber_loss, cross_entropy_loss (with label_smoothing), nll_loss, cosine_embedding_loss, focal_loss, poisson_nll_loss, gaussian_nll_loss, soft_margin_loss, multi_margin_loss, multilabel_soft_margin_loss
 
 ### Advanced Indexing
 index_select, gather, scatter, scatter_add, scatter_reduce (sum/prod/mean/amax/amin), masked_fill, masked_select, masked_scatter, index_add, index_copy, index_fill, index_put, select, take_along_dim
@@ -150,6 +150,12 @@ PackedSequence, pack_padded_sequence, pad_packed_sequence, pad_sequence
 
 ### Tensor Creation
 polar (magnitude+phase to complex), cartesian_prod (Cartesian product of 1-D tensors), combinations (r-length combinations)
+
+### Weight Normalization (torch.nn.utils)
+weight_norm_decompose, weight_norm_reconstruct, spectral_norm
+
+### Dataset Utilities (torch.utils.data)
+Subset (Arc-based), random_split (deterministic seeded)
 
 ## Current Green Scope
 

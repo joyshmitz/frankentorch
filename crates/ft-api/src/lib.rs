@@ -9082,6 +9082,23 @@ impl FrankenTorchSession {
         logits: TensorNodeId,
         targets: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        self.cross_entropy_loss_with_smoothing(logits, targets, 0.0)
+    }
+
+    /// Cross-entropy loss with optional label smoothing.
+    ///
+    /// When `label_smoothing > 0`, the target distribution is smoothed:
+    /// `y_smooth = (1 - s) * one_hot(target) + s / num_classes`
+    ///
+    /// Mathematically: `loss = (1 - s) * nll_loss + s * (-mean(log_probs))`
+    ///
+    /// Equivalent to PyTorch's `F.cross_entropy(logits, targets, label_smoothing=s)`.
+    pub fn cross_entropy_loss_with_smoothing(
+        &mut self,
+        logits: TensorNodeId,
+        targets: TensorNodeId,
+        label_smoothing: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(logits)?;
         if shape.is_empty() {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
@@ -9090,7 +9107,24 @@ impl FrankenTorchSession {
         }
         let last_dim = shape.len() - 1;
         let log_probs = self.tensor_log_softmax(logits, last_dim)?;
-        self.nll_loss(log_probs, targets)
+
+        if label_smoothing == 0.0 {
+            return self.nll_loss(log_probs, targets);
+        }
+
+        // Smoothed cross-entropy:
+        // loss = (1 - s) * nll_loss(log_probs, targets) + s * (-mean(log_probs))
+        let nll = self.nll_loss(log_probs, targets)?;
+        let uniform_loss = {
+            let neg_log_probs = self.tensor_neg(log_probs)?;
+            self.tensor_mean(neg_log_probs)?
+        };
+
+        let nll_vals = self.tensor_values(nll)?;
+        let uniform_vals = self.tensor_values(uniform_loss)?;
+        let blended =
+            (1.0 - label_smoothing) * nll_vals[0] + label_smoothing * uniform_vals[0];
+        self.tensor_variable(vec![blended], vec![1], false)
     }
 
     /// Return indices that would sort the tensor along a dimension.
@@ -18429,6 +18463,86 @@ mod tests {
                 ft_kernel_cpu::KernelError::InvalidDimension { dim: 0, ndim: 0 }
             ))
         ));
+    }
+
+    #[test]
+    fn cross_entropy_label_smoothing_zero_matches_unsmoothed() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let logits = s
+            .tensor_variable(vec![2.0, 1.0, 0.1], vec![1, 3], false)
+            .unwrap();
+        let targets = s
+            .tensor_variable(vec![0.0], vec![1], false)
+            .unwrap();
+        let loss_plain = s.cross_entropy_loss(logits, targets).unwrap();
+
+        let logits2 = s
+            .tensor_variable(vec![2.0, 1.0, 0.1], vec![1, 3], false)
+            .unwrap();
+        let targets2 = s
+            .tensor_variable(vec![0.0], vec![1], false)
+            .unwrap();
+        let loss_smooth = s
+            .cross_entropy_loss_with_smoothing(logits2, targets2, 0.0)
+            .unwrap();
+
+        let v1 = s.tensor_values(loss_plain).unwrap()[0];
+        let v2 = s.tensor_values(loss_smooth).unwrap()[0];
+        assert!(
+            (v1 - v2).abs() < 1e-10,
+            "smoothing=0 should match plain: {v1} vs {v2}"
+        );
+    }
+
+    #[test]
+    fn cross_entropy_label_smoothing_increases_loss() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Confident correct prediction: loss should increase with smoothing
+        let logits = s
+            .tensor_variable(vec![10.0, 0.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let targets = s
+            .tensor_variable(vec![0.0], vec![1], false)
+            .unwrap();
+        let loss_0 = s.cross_entropy_loss(logits, targets).unwrap();
+
+        let logits2 = s
+            .tensor_variable(vec![10.0, 0.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let targets2 = s
+            .tensor_variable(vec![0.0], vec![1], false)
+            .unwrap();
+        let loss_s = s
+            .cross_entropy_loss_with_smoothing(logits2, targets2, 0.1)
+            .unwrap();
+
+        let v0 = s.tensor_values(loss_0).unwrap()[0];
+        let vs = s.tensor_values(loss_s).unwrap()[0];
+        assert!(
+            vs > v0,
+            "label smoothing should increase loss for confident predictions: {v0} vs {vs}"
+        );
+    }
+
+    #[test]
+    fn cross_entropy_label_smoothing_full_uniform() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // smoothing=1.0: loss = -mean(log_probs) regardless of target
+        let logits = s
+            .tensor_variable(vec![1.0, 1.0, 1.0], vec![1, 3], false)
+            .unwrap();
+        let targets = s
+            .tensor_variable(vec![0.0], vec![1], false)
+            .unwrap();
+        let loss = s
+            .cross_entropy_loss_with_smoothing(logits, targets, 1.0)
+            .unwrap();
+        let val = s.tensor_values(loss).unwrap()[0];
+        // Uniform logits: -mean(log(1/3)) = log(3) ≈ 1.099
+        assert!(
+            (val - 3.0_f64.ln()).abs() < 0.01,
+            "full smoothing = uniform loss = log(3), got {val}"
+        );
     }
 
     // ---- kernel where tests ----

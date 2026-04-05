@@ -12687,6 +12687,103 @@ pub fn pad_sequence(
     session.tensor_variable(output, out_shape, false)
 }
 
+// ── torch.nn.utils.weight_norm / spectral_norm ────────────────────────────
+
+/// Apply weight normalization to a parameter tensor.
+///
+/// Equivalent to `torch.nn.utils.weight_norm(module, name, dim)`.
+/// Decomposes a weight tensor `w` into magnitude `g` and direction `v`:
+/// `w = g * (v / ||v||)` where the norm is computed over all dimensions except `dim`.
+///
+/// Returns `(g, v)` — the magnitude scalar and direction tensor.
+pub fn weight_norm_decompose(
+    session: &mut FrankenTorchSession,
+    weight: TensorNodeId,
+    dim: usize,
+) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+    let shape = session.tensor_shape(weight)?;
+    if dim >= shape.len() {
+        return Err(AutogradError::Dispatch(DispatchError::Key(
+            DispatchKeyError::IncompatibleSet {
+                reason: "weight_norm: dim out of range",
+            },
+        )));
+    }
+
+    let values = session.tensor_values(weight)?;
+    let numel: usize = shape.iter().product();
+    let dim_size = shape[dim];
+    let inner: usize = shape[dim + 1..].iter().product::<usize>().max(1);
+
+    let mut norms = vec![0.0; dim_size];
+    for (i, &v) in values.iter().enumerate().take(numel) {
+        let dim_idx = (i / inner) % dim_size;
+        norms[dim_idx] += v * v;
+    }
+    for n in &mut norms {
+        *n = n.sqrt().max(1e-12);
+    }
+
+    let g = session.tensor_variable(norms, vec![dim_size], true)?;
+    let v = session.tensor_variable(values, shape, true)?;
+    Ok((g, v))
+}
+
+/// Reconstruct a weight tensor from weight_norm components.
+///
+/// Given `g` (magnitude) and `v` (direction), computes `w = g * v / ||v||`.
+pub fn weight_norm_reconstruct(
+    session: &mut FrankenTorchSession,
+    g: TensorNodeId,
+    v: TensorNodeId,
+    dim: usize,
+) -> Result<TensorNodeId, AutogradError> {
+    let v_shape = session.tensor_shape(v)?;
+    let v_values = session.tensor_values(v)?;
+    let g_values = session.tensor_values(g)?;
+    let numel: usize = v_shape.iter().product();
+    let dim_size = v_shape[dim];
+    let inner: usize = v_shape[dim + 1..].iter().product::<usize>().max(1);
+
+    let mut norms = vec![0.0; dim_size];
+    for (i, &val) in v_values.iter().enumerate().take(numel) {
+        let dim_idx = (i / inner) % dim_size;
+        norms[dim_idx] += val * val;
+    }
+    for n in &mut norms {
+        *n = n.sqrt().max(1e-12);
+    }
+
+    let mut w_values = vec![0.0; numel];
+    for i in 0..numel {
+        let dim_idx = (i / inner) % dim_size;
+        w_values[i] = g_values[dim_idx] * v_values[i] / norms[dim_idx];
+    }
+
+    session.tensor_variable(w_values, v_shape, false)
+}
+
+/// Compute the spectral norm of a weight matrix (largest singular value).
+///
+/// Equivalent to the core computation in `torch.nn.utils.spectral_norm`.
+pub fn spectral_norm(
+    session: &mut FrankenTorchSession,
+    weight: TensorNodeId,
+) -> Result<f64, AutogradError> {
+    let shape = session.tensor_shape(weight)?;
+    let numel: usize = shape.iter().product();
+    if numel == 0 {
+        return Ok(0.0);
+    }
+
+    let rows = shape[0];
+    let cols = numel / rows;
+    let w2d = session.tensor_reshape(weight, vec![rows, cols])?;
+    let sv = session.tensor_linalg_svdvals(w2d)?;
+    let sv_vals = session.tensor_values(sv)?;
+    Ok(sv_vals.first().copied().unwrap_or(0.0))
+}
+
 // ── torch.nn.init — Parameter initialization functions ─────────────────────
 
 /// Fill tensor with a constant value. Equivalent to `torch.nn.init.constant_`.
@@ -22212,5 +22309,75 @@ mod tests {
         let leaky_gain = calculate_gain("leaky_relu", Some(0.2));
         let expected = (2.0_f64 / (1.0 + 0.04)).sqrt();
         assert!((leaky_gain - expected).abs() < 1e-12);
+    }
+
+    // ── weight_norm / spectral_norm tests ──────────────────────────────
+
+    #[test]
+    fn weight_norm_decompose_and_reconstruct() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 2x3 weight matrix
+        let w = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .unwrap();
+        let (g, v) = weight_norm_decompose(&mut s, w, 0).unwrap();
+
+        let g_shape = s.tensor_shape(g).unwrap();
+        assert_eq!(g_shape, vec![2], "g should have one element per dim-0 slice");
+
+        // Reconstruct and verify it matches the original
+        let w_reconstructed = weight_norm_reconstruct(&mut s, g, v, 0).unwrap();
+        let orig = s.tensor_values(w).unwrap();
+        let recon = s.tensor_values(w_reconstructed).unwrap();
+        for (i, (&a, &b)) in orig.iter().zip(recon.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-10,
+                "weight_norm roundtrip mismatch at {i}: {a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn weight_norm_g_is_row_norms() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Identity-like: row norms should be 1.0
+        let w = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], true)
+            .unwrap();
+        let (g, _v) = weight_norm_decompose(&mut s, w, 0).unwrap();
+        let g_vals = s.tensor_values(g).unwrap();
+        assert!((g_vals[0] - 1.0).abs() < 1e-10);
+        assert!((g_vals[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn weight_norm_rejects_bad_dim() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = s
+            .tensor_variable(vec![1.0; 6], vec![2, 3], true)
+            .unwrap();
+        assert!(weight_norm_decompose(&mut s, w, 5).is_err());
+    }
+
+    #[test]
+    fn spectral_norm_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Identity matrix: spectral norm = 1.0
+        let w = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let sn = spectral_norm(&mut s, w).unwrap();
+        assert!((sn - 1.0).abs() < 1e-8, "spectral_norm(I) = 1.0, got {sn}");
+    }
+
+    #[test]
+    fn spectral_norm_scaled() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 3*I: spectral norm = 3.0
+        let w = s
+            .tensor_variable(vec![3.0, 0.0, 0.0, 3.0], vec![2, 2], false)
+            .unwrap();
+        let sn = spectral_norm(&mut s, w).unwrap();
+        assert!((sn - 3.0).abs() < 1e-8, "spectral_norm(3I) = 3.0, got {sn}");
     }
 }

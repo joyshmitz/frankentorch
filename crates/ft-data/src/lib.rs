@@ -64,6 +64,7 @@ pub trait Dataset {
 ///
 /// Each sample is a `DataItem` containing one or more named tensors.
 /// This is equivalent to PyTorch's `TensorDataset`.
+#[derive(Clone)]
 pub struct TensorDataset {
     items: Vec<DataItem>,
 }
@@ -320,7 +321,7 @@ impl WeightedRandomSampler {
         }
 
         // Build cumulative distribution
-        let total: f64 = self.weights.iter().sum();
+        let total: f64 = self.weights.iter().map(|&w| sanitize_weight(w)).sum();
         if total <= 0.0 {
             // All-zero weights: uniform sampling
             let mut rng = SimpleRng::new(self.seed);
@@ -332,7 +333,7 @@ impl WeightedRandomSampler {
         let mut cumulative = Vec::with_capacity(self.weights.len());
         let mut running = 0.0;
         for &w in &self.weights {
-            running += w.max(0.0);
+            running += sanitize_weight(w);
             cumulative.push(running / total);
         }
 
@@ -349,6 +350,14 @@ impl WeightedRandomSampler {
             result.push(idx);
         }
         result
+    }
+}
+
+fn sanitize_weight(weight: f64) -> f64 {
+    if weight.is_finite() {
+        weight.max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -590,6 +599,14 @@ fn collate(
 
         // Validate all samples have matching shapes for this tensor
         let sample_numel: usize = first_shape.iter().product();
+        let first_values_len = samples[0].tensors[tensor_idx].1.len();
+        if first_values_len != sample_numel {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "DataLoader: sample values length does not match declared tensor shape",
+                },
+            )));
+        }
         for sample in samples.iter().skip(1) {
             if sample.tensors.len() != num_tensors {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -598,11 +615,25 @@ fn collate(
                     },
                 )));
             }
-            let (_, _, ref s_shape) = sample.tensors[tensor_idx];
+            let (ref s_name, ref s_vals, ref s_shape) = sample.tensors[tensor_idx];
+            if s_name != name {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "DataLoader: tensor names differ across samples in batch",
+                    },
+                )));
+            }
             if s_shape != first_shape {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
                         reason: "DataLoader: tensor shapes differ across samples in batch",
+                    },
+                )));
+            }
+            if s_vals.len() != sample_numel {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "DataLoader: sample values length does not match declared tensor shape",
                     },
                 )));
             }
@@ -781,6 +812,81 @@ impl<D: Dataset> Dataset for TransformDataset<D> {
         let item = self.inner.get(index);
         self.transform.apply(item)
     }
+}
+
+// ── Subset and random_split ─────────────────────────────────────────────
+
+/// A dataset wrapping a subset of another dataset by index.
+///
+/// Equivalent to `torch.utils.data.Subset`.
+pub struct Subset<D: Dataset> {
+    dataset: std::sync::Arc<D>,
+    indices: Vec<usize>,
+}
+
+impl<D: Dataset> Subset<D> {
+    /// Create a subset from an Arc-wrapped dataset and indices.
+    pub fn new(dataset: std::sync::Arc<D>, indices: Vec<usize>) -> Self {
+        Self { dataset, indices }
+    }
+
+    /// Return the indices used by this subset.
+    pub fn indices(&self) -> &[usize] {
+        &self.indices
+    }
+}
+
+impl<D: Dataset> Dataset for Subset<D> {
+    fn len(&self) -> usize {
+        self.indices.len()
+    }
+
+    fn get(&self, index: usize) -> DataItem {
+        self.dataset.get(self.indices[index])
+    }
+}
+
+/// Split a dataset into non-overlapping subsets of given lengths.
+///
+/// Equivalent to `torch.utils.data.random_split(dataset, lengths)`.
+///
+/// Uses a deterministic Fisher-Yates shuffle seeded by `seed`.
+/// The underlying dataset is shared via `Arc` (no data cloning).
+pub fn random_split<D: Dataset>(
+    dataset: D,
+    lengths: &[usize],
+    seed: u64,
+) -> Vec<Subset<D>> {
+    let n = dataset.len();
+    let total: usize = lengths.iter().sum();
+    assert!(
+        total <= n,
+        "random_split: sum of lengths ({total}) exceeds dataset size ({n})",
+    );
+
+    let shared = std::sync::Arc::new(dataset);
+
+    // Generate random permutation with LCG
+    let mut indices: Vec<usize> = (0..n).collect();
+    let mut rng_state = seed;
+    for i in (1..indices.len()).rev() {
+        rng_state = rng_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let j = (rng_state >> 33) as usize % (i + 1);
+        indices.swap(i, j);
+    }
+
+    let mut subsets = Vec::with_capacity(lengths.len());
+    let mut offset = 0;
+    for &len in lengths {
+        subsets.push(Subset::new(
+            std::sync::Arc::clone(&shared),
+            indices[offset..offset + len].to_vec(),
+        ));
+        offset += len;
+    }
+    subsets
 }
 
 #[cfg(test)]
@@ -1158,6 +1264,30 @@ mod tests {
     }
 
     #[test]
+    fn weighted_random_sampler_ignores_negative_weights() {
+        let weights = vec![-10.0, 5.0, 0.0];
+        let s = WeightedRandomSampler::new(weights, 50).with_seed(7);
+        let indices = s.indices();
+        assert_eq!(indices.len(), 50);
+        assert!(
+            indices.iter().all(|&i| i == 1),
+            "negative weights should be treated as zero and the only positive-weight index should dominate"
+        );
+    }
+
+    #[test]
+    fn weighted_random_sampler_ignores_nan_weights() {
+        let weights = vec![f64::NAN, 5.0, 0.0];
+        let s = WeightedRandomSampler::new(weights, 50).with_seed(7);
+        let indices = s.indices();
+        assert_eq!(indices.len(), 50);
+        assert!(
+            indices.iter().all(|&i| i == 1),
+            "non-finite weights should be treated as zero and the only finite positive-weight index should dominate"
+        );
+    }
+
+    #[test]
     fn batch_sampler_sequential() {
         let seq = SequentialSampler::new(10);
         let bs = BatchSampler::from_sequential(&seq, 3, false);
@@ -1334,5 +1464,102 @@ mod tests {
         let result = t.apply(item);
         // "input" not affected because name doesn't match
         assert_eq!(result.tensors[0].1, vec![5.0]);
+    }
+
+    #[test]
+    fn dataloader_rejects_mismatched_tensor_names() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = TensorDataset::new(vec![
+            DataItem::single("input", vec![1.0, 2.0], vec![2]),
+            DataItem::single("features", vec![3.0, 4.0], vec![2]),
+        ]);
+        let config = DataLoaderConfig::new(2);
+        let mut loader = DataLoader::new(&ds, config);
+
+        let message = loader
+            .next_batch(&mut session)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        assert!(
+            message.contains("tensor names differ"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn dataloader_rejects_shape_value_length_mismatch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = TensorDataset::new(vec![
+            DataItem::single("input", vec![1.0], vec![2]),
+            DataItem::single("input", vec![3.0, 4.0], vec![2]),
+        ]);
+        let config = DataLoaderConfig::new(2);
+        let mut loader = DataLoader::new(&ds, config);
+
+        let message = loader
+            .next_batch(&mut session)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        assert!(
+            message.contains("values length does not match declared tensor shape"),
+            "unexpected error: {message}"
+        );
+    }
+
+    // ── Subset and random_split tests ──────────────────────────────────
+
+    #[test]
+    fn subset_basic() {
+        let ds = std::sync::Arc::new(make_dataset(10, 2));
+        let subset = Subset::new(ds, vec![0, 3, 7]);
+        assert_eq!(subset.len(), 3);
+        assert_eq!(subset.indices(), &[0, 3, 7]);
+        let item = subset.get(1); // index 1 in subset = index 3 in original
+        assert!(!item.tensors.is_empty());
+    }
+
+    #[test]
+    fn random_split_lengths_sum() {
+        let ds = make_dataset(100, 2);
+        let splits = random_split(ds, &[70, 20, 10], 42);
+        assert_eq!(splits.len(), 3);
+        assert_eq!(splits[0].len(), 70);
+        assert_eq!(splits[1].len(), 20);
+        assert_eq!(splits[2].len(), 10);
+    }
+
+    #[test]
+    fn random_split_no_overlap() {
+        let ds = make_dataset(20, 1);
+        let splits = random_split(ds, &[10, 10], 123);
+        let mut all_indices: Vec<usize> = Vec::new();
+        all_indices.extend_from_slice(splits[0].indices());
+        all_indices.extend_from_slice(splits[1].indices());
+        all_indices.sort_unstable();
+        all_indices.dedup();
+        assert_eq!(
+            all_indices.len(),
+            20,
+            "splits should have no overlapping indices"
+        );
+    }
+
+    #[test]
+    fn random_split_deterministic() {
+        let ds1 = make_dataset(50, 1);
+        let ds2 = make_dataset(50, 1);
+        let splits1 = random_split(ds1, &[30, 20], 42);
+        let splits2 = random_split(ds2, &[30, 20], 42);
+        assert_eq!(splits1[0].indices(), splits2[0].indices());
+        assert_eq!(splits1[1].indices(), splits2[1].indices());
+    }
+
+    #[test]
+    #[should_panic(expected = "sum of lengths")]
+    fn random_split_rejects_too_large() {
+        let ds = make_dataset(5, 1);
+        random_split(ds, &[3, 4], 0);
     }
 }
