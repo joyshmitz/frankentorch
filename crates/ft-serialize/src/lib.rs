@@ -477,7 +477,6 @@ fn bounded(input: &str, max_len: usize) -> String {
 // ── Tensor State Dict Save/Load ─────────────────────────────────────────
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::Path;
 
 use ft_core::{DType, DenseTensor, DenseTensorError, Device, TensorMeta};
@@ -664,8 +663,14 @@ pub fn load_state_dict_from_bytes(
         });
     }
 
-    // Number of tensors
+    // Number of tensors — bound by remaining bytes (each tensor needs ≥17 bytes of header)
     let num_tensors = read_u64(data, &mut pos)? as usize;
+    let remaining = data.len().saturating_sub(pos);
+    if num_tensors > remaining {
+        return Err(TensorIOError::Corrupt {
+            reason: format!("claimed {num_tensors} tensors but only {remaining} bytes remain"),
+        });
+    }
 
     let mut result = BTreeMap::new();
     for _ in 0..num_tensors {
@@ -699,13 +704,19 @@ pub fn load_state_dict_from_bytes(
         let dtype = tag_to_dtype(data[pos])?;
         pos += 1;
 
-        // Values
-        let numel: usize = shape.iter().product();
+        // Values — use checked arithmetic to reject adversarial shapes
+        let numel: usize = shape.iter().try_fold(1usize, |acc, &dim| {
+            acc.checked_mul(dim).ok_or_else(|| TensorIOError::Corrupt {
+                reason: format!("shape overflow in native state dict tensor '{key}'"),
+            })
+        })?;
         let meta = TensorMeta::from_shape(shape, dtype, Device::Cpu);
 
         let tensor = match dtype {
             DType::F64 => {
-                let needed = numel * 8;
+                let needed = numel.checked_mul(8).ok_or_else(|| TensorIOError::Corrupt {
+                    reason: format!("byte count overflow for f64 tensor '{key}'"),
+                })?;
                 if pos + needed > data.len() {
                     return Err(TensorIOError::Corrupt {
                         reason: "truncated f64 data".to_string(),
@@ -719,7 +730,9 @@ pub fn load_state_dict_from_bytes(
                 DenseTensor::from_storage(meta, values)?
             }
             DType::F32 => {
-                let needed = numel * 4;
+                let needed = numel.checked_mul(4).ok_or_else(|| TensorIOError::Corrupt {
+                    reason: format!("byte count overflow for f32 tensor '{key}'"),
+                })?;
                 if pos + needed > data.len() {
                     return Err(TensorIOError::Corrupt {
                         reason: "truncated f32 data".to_string(),
@@ -945,7 +958,7 @@ pub fn load_safetensors_from_bytes(
 
         let tensor = match dtype {
             DType::F64 => {
-                let numel = shape.iter().product::<usize>();
+                let numel = validate_safetensors_byte_width(&name, shape.as_slice(), raw_data, 8)?;
                 let mut values = Vec::with_capacity(numel);
                 for chunk in raw_data.chunks_exact(8) {
                     let bytes = bytes_to_array::<8>(
@@ -958,7 +971,7 @@ pub fn load_safetensors_from_bytes(
                 DenseTensor::from_storage(meta, values)?
             }
             DType::F32 => {
-                let numel = shape.iter().product::<usize>();
+                let numel = validate_safetensors_byte_width(&name, shape.as_slice(), raw_data, 4)?;
                 let mut values = Vec::with_capacity(numel);
                 for chunk in raw_data.chunks_exact(4) {
                     let bytes = bytes_to_array::<4>(
@@ -971,7 +984,7 @@ pub fn load_safetensors_from_bytes(
                 DenseTensor::from_storage_f32(meta, values)?
             }
             DType::F16 => {
-                let numel = shape.iter().product::<usize>();
+                let numel = validate_safetensors_byte_width(&name, shape.as_slice(), raw_data, 2)?;
                 let mut values = Vec::with_capacity(numel);
                 for chunk in raw_data.chunks_exact(2) {
                     let bytes = bytes_to_array::<2>(
@@ -984,7 +997,7 @@ pub fn load_safetensors_from_bytes(
                 DenseTensor::from_storage_f16(meta, values)?
             }
             DType::BF16 => {
-                let numel = shape.iter().product::<usize>();
+                let numel = validate_safetensors_byte_width(&name, shape.as_slice(), raw_data, 2)?;
                 let mut values = Vec::with_capacity(numel);
                 for chunk in raw_data.chunks_exact(2) {
                     let bytes = bytes_to_array::<2>(
@@ -1009,6 +1022,36 @@ pub fn load_safetensors_from_bytes(
     Ok(result)
 }
 
+fn validate_safetensors_byte_width(
+    name: &str,
+    shape: &[usize],
+    raw_data: &[u8],
+    element_width: usize,
+) -> Result<usize, TensorIOError> {
+    let numel = shape.iter().try_fold(1usize, |acc, &dim| {
+        acc.checked_mul(dim).ok_or_else(|| TensorIOError::Corrupt {
+            reason: format!("shape overflow in SafeTensors tensor '{name}'"),
+        })
+    })?;
+    let expected_bytes =
+        numel
+            .checked_mul(element_width)
+            .ok_or_else(|| TensorIOError::Corrupt {
+                reason: format!("byte width overflow in SafeTensors tensor '{name}'"),
+            })?;
+
+    if raw_data.len() != expected_bytes {
+        return Err(TensorIOError::Corrupt {
+            reason: format!(
+                "invalid payload width in SafeTensors tensor '{name}': expected={expected_bytes} actual={}",
+                raw_data.len()
+            ),
+        });
+    }
+
+    Ok(numel)
+}
+
 /// Load SafeTensors metadata (the string-to-string map) from a file.
 pub fn load_safetensors_metadata<P: AsRef<Path>>(
     path: P,
@@ -1031,8 +1074,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CheckpointMode, DecodeMode, SerializeError, SnapshotEntry, decode_checkpoint,
-        decode_snapshot, encode_checkpoint, encode_snapshot, generate_raptorq_sidecar,
+        decode_checkpoint, decode_snapshot, encode_checkpoint, encode_snapshot,
+        generate_raptorq_sidecar, CheckpointMode, DecodeMode, SerializeError, SnapshotEntry,
     };
 
     fn det_seed(parts: &[u64]) -> u64 {
@@ -1757,7 +1800,7 @@ mod tests {
 
     // ── Tensor State Dict Save/Load Tests ──────────────────────────────
 
-    use super::{TensorIOError, load_state_dict, load_state_dict_from_bytes, save_state_dict};
+    use super::{load_state_dict, load_state_dict_from_bytes, save_state_dict, TensorIOError};
     use ft_core::{DType, DenseTensor, Device, TensorMeta};
 
     fn make_f64_tensor(values: Vec<f64>, shape: Vec<usize>) -> DenseTensor {
@@ -2204,5 +2247,147 @@ mod tests {
     fn safetensors_corrupt_bytes() {
         let result = load_safetensors_from_bytes(b"not a safetensors file");
         assert!(result.is_err());
+    }
+
+    fn malformed_safetensors_bytes(dtype: &str, shape: &[usize], raw_payload: &[u8]) -> Vec<u8> {
+        let header = json!({
+            "bad": {
+                "dtype": dtype,
+                "shape": shape,
+                "data_offsets": [0, raw_payload.len()],
+            }
+        });
+        let header_bytes = serde_json::to_vec(&header).expect("header must encode");
+        let mut bytes = Vec::with_capacity(8 + header_bytes.len() + raw_payload.len());
+        bytes.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header_bytes);
+        bytes.extend_from_slice(raw_payload);
+        bytes
+    }
+
+    #[test]
+    fn safetensors_rejects_f32_payload_with_extra_trailing_byte() {
+        let bytes = malformed_safetensors_bytes("F32", &[1], &[0, 0, 128, 63, 255]);
+
+        let err = load_safetensors_from_bytes(&bytes).expect_err("invalid width must fail");
+        let msg = err.to_string();
+
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(
+            msg.contains("invalid payload width") || msg.contains("safetensors"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn safetensors_rejects_f16_payload_with_odd_byte_count() {
+        let bytes = malformed_safetensors_bytes("F16", &[1], &[0, 60, 1]);
+
+        let err = load_safetensors_from_bytes(&bytes).expect_err("invalid width must fail");
+        let msg = err.to_string();
+
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(
+            msg.contains("invalid payload width") || msg.contains("safetensors"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // ── frankentorch-u0p: Audit edge cases ───────────────────────��─────
+
+    #[test]
+    fn native_format_rejects_shape_overflow() {
+        // Craft a file with shape dimensions that overflow when multiplied:
+        // shape = [usize::MAX, 2] => product overflows
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&1u64.to_le_bytes()); // num_tensors = 1
+                                                     // key: "x"
+        data.extend_from_slice(&1u64.to_le_bytes());
+        data.push(b'x');
+        // ndim = 2
+        data.extend_from_slice(&2u64.to_le_bytes());
+        // shape[0] = usize::MAX, shape[1] = 2
+        data.extend_from_slice(&(usize::MAX as u64).to_le_bytes());
+        data.extend_from_slice(&2u64.to_le_bytes());
+        // dtype tag = 0 (F64)
+        data.push(0);
+
+        let err = load_state_dict_from_bytes(&data).expect_err("shape overflow must fail");
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(err.to_string().contains("shape overflow"));
+    }
+
+    #[test]
+    fn native_format_rejects_excessive_tensor_count() {
+        // Craft a file claiming billions of tensors with only a few bytes remaining
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&u64::MAX.to_le_bytes()); // absurd num_tensors
+
+        let err = load_state_dict_from_bytes(&data).expect_err("excessive count must fail");
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(err.to_string().contains("tensors but only"));
+    }
+
+    #[test]
+    fn native_format_rejects_byte_count_overflow_f64() {
+        // Craft a shape that doesn't overflow itself but numel * 8 does
+        // shape = [usize::MAX / 4] => numel = usize::MAX/4, numel * 8 overflows
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&1u64.to_le_bytes()); // num_tensors = 1
+                                                     // key: "y"
+        data.extend_from_slice(&1u64.to_le_bytes());
+        data.push(b'y');
+        // ndim = 1
+        data.extend_from_slice(&1u64.to_le_bytes());
+        // shape[0] = usize::MAX / 4 (won't overflow in shape product but numel*8 will)
+        let big_dim = usize::MAX / 4;
+        data.extend_from_slice(&(big_dim as u64).to_le_bytes());
+        // dtype tag = 0 (F64)
+        data.push(0);
+
+        let err = load_state_dict_from_bytes(&data).expect_err("byte overflow must fail");
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(err.to_string().contains("overflow"));
+    }
+
+    #[test]
+    fn native_format_round_trip_zero_element_tensor() {
+        let dir = std::env::temp_dir().join("ft_test_zero_elem");
+        let _ = std::fs::remove_file(&dir);
+        let mut sd = BTreeMap::new();
+        sd.insert("empty".to_string(), make_f64_tensor(vec![], vec![0]));
+
+        save_state_dict(&sd, &dir).unwrap();
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded["empty"].meta().shape(), &[0]);
+        assert!(loaded["empty"].contiguous_values().unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_format_round_trip_high_dimensional_tensor() {
+        let dir = std::env::temp_dir().join("ft_test_high_dim");
+        let _ = std::fs::remove_file(&dir);
+        let mut sd = BTreeMap::new();
+        // 5D tensor: [1, 1, 1, 1, 2]
+        sd.insert(
+            "deep".to_string(),
+            make_f64_tensor(vec![7.0, 8.0], vec![1, 1, 1, 1, 2]),
+        );
+
+        save_state_dict(&sd, &dir).unwrap();
+        let loaded = load_state_dict(&dir).unwrap();
+        let _ = std::fs::remove_file(&dir);
+
+        assert_eq!(loaded["deep"].meta().shape(), &[1, 1, 1, 1, 2]);
+        assert_eq!(loaded["deep"].contiguous_values().unwrap(), &[7.0, 8.0]);
     }
 }
