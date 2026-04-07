@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 mod logging;
+pub mod perf_slo;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -12682,8 +12683,8 @@ json.loads(sys.stdin.read())
                     let (x_vals, x_shape) = &inputs[0];
                     let (w_vals, w_shape) = &inputs[1];
                     let (b_vals, b_shape) = &inputs[2];
-                    assert_eq!(w_shape.as_slice(), &[1]);
-                    assert_eq!(b_shape.as_slice(), &[1]);
+                    assert_eq!(*w_shape, &[1]);
+                    assert_eq!(*b_shape, &[1]);
                     ctx.save_for_backward(x_vals.to_vec(), x_shape.to_vec());
                     ctx.save_for_backward(w_vals.to_vec(), w_shape.to_vec());
                     let output = x_vals.iter().map(|x| x * w_vals[0] + b_vals[0]).collect();
@@ -12697,11 +12698,13 @@ json.loads(sys.stdin.read())
                     let grad_input = ctx.needs_input_grad()[0]
                         .then(|| grad_output.iter().map(|g| g * weight_value).collect());
                     let grad_weight = ctx.needs_input_grad()[1].then(|| {
-                        vec![grad_output
-                            .iter()
-                            .zip(x_vals.iter())
-                            .map(|(g, x)| g * x)
-                            .sum()]
+                        vec![
+                            grad_output
+                                .iter()
+                                .zip(x_vals.iter())
+                                .map(|(g, x)| g * x)
+                                .sum(),
+                        ]
                     });
                     let grad_bias =
                         ctx.needs_input_grad()[2].then(|| vec![grad_output.iter().sum()]);
@@ -12729,7 +12732,9 @@ json.loads(sys.stdin.read())
         let mut optimizer = Adam::new(vec![weight, bias], 0.05);
 
         let initial_pred = custom_affine(&mut session, input, weight, bias).expect("initial pred");
-        let initial_loss = session.mse_loss(initial_pred, targets).expect("initial loss");
+        let initial_loss = session
+            .mse_loss(initial_pred, targets)
+            .expect("initial loss");
         let initial_loss_val = session.tensor_values(initial_loss).expect("loss values")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
@@ -12754,7 +12759,10 @@ json.loads(sys.stdin.read())
         let eval_loss = session.mse_loss(eval_pred, targets).expect("eval loss");
         let eval_loss_val = session.tensor_values(eval_loss).expect("eval loss values")[0];
 
-        assert!(saw_loss_improvement, "custom layer training never improved the loss");
+        assert!(
+            saw_loss_improvement,
+            "custom layer training never improved the loss"
+        );
         assert!(
             eval_loss_val < initial_loss_val * 0.01,
             "custom layer should reduce loss substantially: initial={initial_loss_val}, final={eval_loss_val}"

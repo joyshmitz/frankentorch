@@ -260,6 +260,127 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Gradient checkpointing: trades compute for memory.
+    ///
+    /// Runs `function` on `inputs` without saving intermediate activations.
+    /// During backward, the function is re-executed with gradients enabled
+    /// to recompute activations and then compute gradients normally.
+    ///
+    /// Equivalent to `torch.utils.checkpoint.checkpoint(function, *inputs)`.
+    ///
+    /// The function must be deterministic — re-execution must produce identical
+    /// activations for correct gradient computation.
+    pub fn checkpoint<F>(
+        &mut self,
+        inputs: &[TensorNodeId],
+        function: F,
+    ) -> Result<TensorNodeId, AutogradError>
+    where
+        F: Fn(&mut FrankenTorchSession, &[TensorNodeId]) -> Result<TensorNodeId, AutogradError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        // Capture input values and shapes for save_for_backward
+        let mut input_snapshots: Vec<(Vec<f64>, Vec<usize>)> = Vec::with_capacity(inputs.len());
+        for &inp in inputs {
+            let vals = self.tensor_values(inp)?;
+            let shape = self.tensor_shape(inp)?;
+            input_snapshots.push((vals, shape));
+        }
+        let n_inputs = inputs.len();
+
+        // Forward: run in no_grad to avoid saving intermediates
+        let output = self.with_no_grad(|s| function(s, inputs))?;
+
+        // Get the output values and shape
+        let output_values = self.tensor_values(output)?;
+        let output_shape = self.tensor_shape(output)?;
+
+        // Use tensor_apply_function to register a node on the autograd tape
+        // that will re-execute the function during backward
+        let function_arc = std::sync::Arc::new(function);
+
+        self.tensor_apply_function(
+            inputs,
+            // Forward function: just return the already-computed output
+            move |ctx, input_refs| {
+                // Save all input values for backward recomputation
+                for (vals, shape) in input_refs {
+                    ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                }
+                Ok((output_values, output_shape))
+            },
+            // Backward function: re-run the forward with grad enabled, then backward
+            move |ctx, grad_outputs| {
+                let upstream_grad = grad_outputs[0];
+
+                // Reconstruct inputs from saved tensors
+                let mut recomp_session = FrankenTorchSession::new(ft_core::ExecutionMode::Strict);
+
+                let mut recomp_inputs = Vec::with_capacity(n_inputs);
+                for i in 0..n_inputs {
+                    let saved_vals = &ctx.saved_tensors()[i];
+                    let saved_shape = &ctx.saved_shapes()[i];
+                    let inp = recomp_session
+                        .tensor_variable(saved_vals.to_vec(), saved_shape.to_vec(), true)
+                        .map_err(|_| {
+                            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                    reason: "checkpoint: failed to reconstruct input",
+                                },
+                            ))
+                        })?;
+                    recomp_inputs.push(inp);
+                }
+
+                // Re-run the function with grad enabled
+                let recomp_output =
+                    function_arc(&mut recomp_session, &recomp_inputs).map_err(|_| {
+                        AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "checkpoint: recomputation failed during backward",
+                            },
+                        ))
+                    })?;
+
+                // Apply upstream gradient and run backward
+                let recomp_report =
+                    recomp_session.tensor_backward(recomp_output).map_err(|_| {
+                        AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "checkpoint: backward during recomputation failed",
+                            },
+                        ))
+                    })?;
+
+                // Extract gradients for each input, scaled by upstream gradient
+                let mut input_grads = Vec::with_capacity(n_inputs);
+                for inp_id in &recomp_inputs {
+                    if let Some(grad) = recomp_report.gradient(*inp_id) {
+                        // Scale by upstream gradient (chain rule)
+                        let scaled: Vec<f64> = grad
+                            .iter()
+                            .enumerate()
+                            .map(|(j, &g)| {
+                                g * if j < upstream_grad.len() {
+                                    upstream_grad[j]
+                                } else {
+                                    1.0
+                                }
+                            })
+                            .collect();
+                        input_grads.push(Some(scaled));
+                    } else {
+                        input_grads.push(None);
+                    }
+                }
+
+                Ok(input_grads)
+            },
+        )
+    }
+
     fn sync_grad_enabled(&mut self) {
         let enabled = self.is_grad_enabled();
         self.tape.set_grad_enabled(enabled);
@@ -26451,7 +26572,9 @@ mod tests {
     #[test]
     fn custom_function_inside_no_grad_does_not_record_on_tape() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(vec![1.0, -2.0, 3.0], vec![3], true).unwrap();
+        let x = s
+            .tensor_variable(vec![1.0, -2.0, 3.0], vec![3], true)
+            .unwrap();
 
         s.no_grad_enter();
         let y = s
@@ -29228,5 +29351,98 @@ mod tests {
         let mask = s.tensor_variable(vec![1.0, 1.0], vec![2], false).unwrap();
         let source = s.tensor_variable(vec![10.0], vec![1], false).unwrap();
         assert!(s.tensor_masked_scatter(input, mask, source).is_err());
+    }
+
+    // ── frankentorch-plj: Gradient checkpointing tests ────────────────
+
+    #[test]
+    fn checkpoint_produces_correct_forward_output() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+
+        let out = s
+            .checkpoint(&[x], |sess, inputs| {
+                // f(x) = sum(x + x) = sum(2x)
+                let doubled = sess.tensor_add(inputs[0], inputs[0])?;
+                sess.tensor_sum(doubled)
+            })
+            .unwrap();
+
+        let val = s.tensor_values(out).unwrap();
+        // sum([1+1, 2+2, 3+3]) = sum([2, 4, 6]) = 12
+        assert!(
+            (val[0] - 12.0).abs() < 1e-10,
+            "expected 12.0, got {}",
+            val[0]
+        );
+    }
+
+    #[test]
+    fn checkpoint_gradients_match_non_checkpointed() {
+        // Compute gradients two ways: with and without checkpointing
+        // They must be identical for the same function
+
+        // Without checkpoint: f(x) = sum(x + x)
+        let mut s1 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s1
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let doubled1 = s1.tensor_add(x1, x1).unwrap();
+        let out1 = s1.tensor_sum(doubled1).unwrap();
+        let report1 = s1.tensor_backward(out1).unwrap();
+        let grad_no_ckpt = report1.gradient(x1).expect("grad without checkpoint");
+
+        // With checkpoint: same function
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x2 = s2
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let out2 = s2
+            .checkpoint(&[x2], |sess, inputs| {
+                let doubled = sess.tensor_add(inputs[0], inputs[0])?;
+                sess.tensor_sum(doubled)
+            })
+            .unwrap();
+        let report2 = s2.tensor_backward(out2).unwrap();
+        let grad_ckpt = report2.gradient(x2).expect("grad with checkpoint");
+
+        assert_eq!(
+            grad_no_ckpt.len(),
+            grad_ckpt.len(),
+            "gradient lengths must match"
+        );
+        for (i, (&a, &b)) in grad_no_ckpt.iter().zip(grad_ckpt.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-10,
+                "gradient[{i}] mismatch: no_ckpt={a} ckpt={b}"
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_with_multiple_inputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0], vec![2], true).unwrap();
+        let b = s.tensor_variable(vec![3.0, 4.0], vec![2], true).unwrap();
+
+        let out = s
+            .checkpoint(&[a, b], |sess, inputs| {
+                let sum = sess.tensor_add(inputs[0], inputs[1])?;
+                sess.tensor_sum(sum)
+            })
+            .unwrap();
+
+        let val = s.tensor_values(out).unwrap();
+        // sum([1+3, 2+4]) = sum([4, 6]) = 10
+        assert!((val[0] - 10.0).abs() < 1e-10);
+
+        let report = s.tensor_backward(out).unwrap();
+        let ga = report.gradient(a).expect("grad_a");
+        let gb = report.gradient(b).expect("grad_b");
+        // d(sum(a+b))/da = [1, 1], d(sum(a+b))/db = [1, 1]
+        assert_eq!(ga, &[1.0, 1.0]);
+        assert_eq!(gb, &[1.0, 1.0]);
     }
 }

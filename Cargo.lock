@@ -16,6 +16,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocation-counter"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -294,10 +300,13 @@ dependencies = [
 name = "ft-conformance"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "ft-api",
  "ft-autograd",
  "ft-core",
+ "ft-data",
  "ft-dispatch",
+ "ft-nn",
  "ft-optim",
  "ft-runtime",
  "ft-serialize",
@@ -346,6 +355,7 @@ name = "ft-kernel-cpu"
 version = "0.1.0"
 dependencies = [
  "ft-core",
+ "proptest",
 ]
 
 [[package]]
