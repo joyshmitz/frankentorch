@@ -474,6 +474,8 @@ pub struct DataLoader<'a, D: Dataset> {
     config: DataLoaderConfig,
     indices: Vec<usize>,
     position: usize,
+    auto_shuffle: bool,
+    pending_shuffle: bool,
     /// Simple LCG state for shuffling (deterministic, no external deps).
     rng_state: u64,
 }
@@ -483,11 +485,14 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
     pub fn new(dataset: &'a D, config: DataLoaderConfig) -> Self {
         let n = dataset.len();
         let indices: Vec<usize> = (0..n).collect();
+        let auto_shuffle = config.shuffle;
         Self {
             dataset,
             config,
             indices,
             position: 0,
+            auto_shuffle,
+            pending_shuffle: auto_shuffle,
             rng_state: 0xDEAD_BEEF_CAFE_1234,
         }
     }
@@ -499,6 +504,8 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
             config,
             indices,
             position: 0,
+            auto_shuffle: false,
+            pending_shuffle: false,
             rng_state: 0xDEAD_BEEF_CAFE_1234,
         }
     }
@@ -506,6 +513,9 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
     /// Set the random seed for shuffling.
     pub fn seed(mut self, seed: u64) -> Self {
         self.rng_state = seed;
+        if self.auto_shuffle && self.position == 0 {
+            self.pending_shuffle = true;
+        }
         self
     }
 
@@ -513,8 +523,8 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
     /// If shuffle is enabled, re-shuffles the indices.
     pub fn reset(&mut self) {
         self.position = 0;
-        if self.config.shuffle {
-            self.shuffle_indices();
+        if self.auto_shuffle {
+            self.pending_shuffle = true;
         }
     }
 
@@ -539,6 +549,10 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
         &mut self,
         session: &mut FrankenTorchSession,
     ) -> Result<Option<Batch>, AutogradError> {
+        if self.pending_shuffle {
+            self.shuffle_indices();
+            self.pending_shuffle = false;
+        }
         let n = self.indices.len();
         if self.position >= n || self.config.batch_size == 0 {
             return Ok(None);
@@ -1042,6 +1056,28 @@ mod tests {
         assert_ne!(
             vals1, vals2,
             "shuffled epochs should produce different orders"
+        );
+    }
+
+    #[test]
+    fn dataloader_shuffle_applies_on_first_epoch_without_reset() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = make_dataset(8, 1);
+        let config = DataLoaderConfig::new(8).with_shuffle(true);
+
+        let mut loader_a = DataLoader::new(&ds, config).seed(42);
+        let mut loader_b =
+            DataLoader::new(&ds, DataLoaderConfig::new(8).with_shuffle(true)).seed(42);
+
+        let batch_a = loader_a.next_batch(&mut session).unwrap().unwrap();
+        let vals_a = session.tensor_values(batch_a.input().unwrap()).unwrap();
+        let batch_b = loader_b.next_batch(&mut session).unwrap().unwrap();
+        let vals_b = session.tensor_values(batch_b.input().unwrap()).unwrap();
+
+        assert_ne!(vals_a, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(
+            vals_a, vals_b,
+            "same seed should control first-epoch shuffle"
         );
     }
 

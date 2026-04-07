@@ -6106,7 +6106,14 @@ impl FrankenTorchSession {
                     )));
                 }
                 let idx = idx_f as usize;
-                if idx >= dim_size || si >= src_dim_size {
+                if idx >= dim_size {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "index_add: index value out of range",
+                        },
+                    )));
+                }
+                if si >= src_dim_size {
                     continue;
                 }
                 for i in 0..inner {
@@ -6162,7 +6169,14 @@ impl FrankenTorchSession {
                     )));
                 }
                 let idx = idx_f as usize;
-                if idx >= dim_size || si >= src_dim_size {
+                if idx >= dim_size {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "index_copy: index value out of range",
+                        },
+                    )));
+                }
+                if si >= src_dim_size {
                     continue;
                 }
                 for i in 0..inner {
@@ -6216,7 +6230,11 @@ impl FrankenTorchSession {
                 }
                 let idx = idx_f as usize;
                 if idx >= dim_size {
-                    continue;
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "index_fill: index value out of range",
+                        },
+                    )));
                 }
                 for i in 0..inner {
                     let offset = o * dim_size * inner + idx * inner + i;
@@ -8538,7 +8556,17 @@ impl FrankenTorchSession {
         let mut total_loss = 0.0;
 
         for (i, &tgt) in target_vals.iter().enumerate().take(batch) {
-            let y = tgt as usize;
+            let y = Self::exact_nonnegative_index_to_usize(
+                tgt,
+                "multi_margin_loss targets must be finite non-negative integer indices",
+            )?;
+            if y >= classes {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "multi_margin_loss target index out of bounds",
+                    },
+                )));
+            }
             let base = i * classes;
             let score_y = input_vals[base + y];
             let mut sample_loss = 0.0;
@@ -23590,6 +23618,36 @@ mod tests {
     }
 
     #[test]
+    fn multi_margin_loss_rejects_fractional_target() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![3.0, 1.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let target = s.tensor_variable(vec![0.5], vec![1], false).unwrap();
+        assert!(s.multi_margin_loss(input, target, 1.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn multi_margin_loss_rejects_negative_target() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![3.0, 1.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let target = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        assert!(s.multi_margin_loss(input, target, 1.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn multi_margin_loss_rejects_out_of_range_target() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![3.0, 1.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let target = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        assert!(s.multi_margin_loss(input, target, 1.0, 1.0).is_err());
+    }
+
+    #[test]
     fn multilabel_soft_margin_loss_all_correct() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Large positive logits for target=1, large negative for target=0
@@ -24196,6 +24254,17 @@ mod tests {
     }
 
     #[test]
+    fn index_add_rejects_out_of_range_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        let src = s.tensor_variable(vec![10.0], vec![1], false).unwrap();
+        assert!(s.tensor_index_add(input, 0, index, src).is_err());
+    }
+
+    #[test]
     fn index_copy_rejects_fractional_index() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
@@ -24220,6 +24289,17 @@ mod tests {
     }
 
     #[test]
+    fn index_copy_rejects_out_of_range_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        let src = s.tensor_variable(vec![99.0], vec![1], false).unwrap();
+        assert!(s.tensor_index_copy(input, 0, index, src).is_err());
+    }
+
+    #[test]
     fn index_fill_rejects_negative_index() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
@@ -24238,6 +24318,16 @@ mod tests {
         let index = s
             .tensor_variable(vec![f64::INFINITY], vec![1], false)
             .unwrap();
+        assert!(s.tensor_index_fill(input, 0, index, 0.0).is_err());
+    }
+
+    #[test]
+    fn index_fill_rejects_out_of_range_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
         assert!(s.tensor_index_fill(input, 0, index, 0.0).is_err());
     }
 
