@@ -18692,4 +18692,96 @@ mod tests {
         let tensor_b = tape.tensor(b).unwrap();
         assert!(tensor_a.shares_storage_with(tensor_b));
     }
+
+    // ── frankentorch-igu: Property-based tests for tensor autograd ─────
+
+    proptest! {
+        #[test]
+        fn prop_tensor_add_gradient_is_ones(
+            x0 in -10.0f64..10.0,
+            x1 in -10.0f64..10.0,
+            y0 in -10.0f64..10.0,
+            y1 in -10.0f64..10.0,
+        ) {
+            // d(sum(x+y))/dx = 1, d(sum(x+y))/dy = 1 for each element
+            let mode = ExecutionMode::Strict;
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(vec![x0, x1], vec![2], true).unwrap();
+            let y = tape.leaf(vec![y0, y1], vec![2], true).unwrap();
+            let (s, _) = tape.add(x, y, mode).unwrap();
+            let (out, _) = tape.sum(s, mode).unwrap();
+            let report = tape.backward(out).unwrap();
+            let gx = report.gradient(x).expect("grad_x");
+            let gy = report.gradient(y).expect("grad_y");
+            prop_assert_eq!(gx, &[1.0, 1.0]);
+            prop_assert_eq!(gy, &[1.0, 1.0]);
+        }
+
+        #[test]
+        fn prop_tensor_mul_gradient_is_cross(
+            x_val in -10.0f64..10.0,
+            y_val in -10.0f64..10.0,
+        ) {
+            // d(sum(x*y))/dx = y, d(sum(x*y))/dy = x
+            let mode = ExecutionMode::Strict;
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(vec![x_val], vec![1], true).unwrap();
+            let y = tape.leaf(vec![y_val], vec![1], true).unwrap();
+            let (prod, _) = tape.mul(x, y, mode).unwrap();
+            let (out, _) = tape.sum(prod, mode).unwrap();
+            let report = tape.backward(out).unwrap();
+            let gx = report.gradient(x).expect("grad_x");
+            let gy = report.gradient(y).expect("grad_y");
+            let eps = 1e-10;
+            prop_assert!((gx[0] - y_val).abs() < eps, "d(x*y)/dx should be y={y_val}, got {}", gx[0]);
+            prop_assert!((gy[0] - x_val).abs() < eps, "d(x*y)/dy should be x={x_val}, got {}", gy[0]);
+        }
+
+        #[test]
+        fn prop_tensor_backward_deterministic(
+            a0 in -5.0f64..5.0,
+            a1 in -5.0f64..5.0,
+            b0 in -5.0f64..5.0,
+            b1 in -5.0f64..5.0,
+        ) {
+            // Running backward twice on identical graphs should produce identical gradients
+            let mode = ExecutionMode::Strict;
+            let build_and_backward = || {
+                let mut tape = TensorTape::new();
+                let a = tape.leaf(vec![a0, a1], vec![2], true).unwrap();
+                let b = tape.leaf(vec![b0, b1], vec![2], true).unwrap();
+                let (c, _) = tape.add(a, b, mode).unwrap();
+                let (d, _) = tape.mul(c, a, mode).unwrap();
+                let (out, _) = tape.sum(d, mode).unwrap();
+                let report = tape.backward(out).unwrap();
+                (report.gradient(a).unwrap().to_vec(), report.gradient(b).unwrap().to_vec())
+            };
+            let (ga1, gb1) = build_and_backward();
+            let (ga2, gb2) = build_and_backward();
+            prop_assert_eq!(&ga1, &ga2, "gradient of a must be deterministic");
+            prop_assert_eq!(&gb1, &gb2, "gradient of b must be deterministic");
+        }
+
+        #[test]
+        fn prop_tensor_relu_gradient_matches_indicator(
+            vals in proptest::collection::vec(-10.0f64..10.0, 1..8),
+        ) {
+            // d(relu(x))/dx = 1 if x > 0, 0 if x <= 0
+            let mode = ExecutionMode::Strict;
+            let n = vals.len();
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(vals.clone(), vec![n], true).unwrap();
+            let (r, _) = tape.relu(x, mode).unwrap();
+            let (out, _) = tape.sum(r, mode).unwrap();
+            let report = tape.backward(out).unwrap();
+            let gx = report.gradient(x).expect("grad_x");
+            for (i, (&v, &g)) in vals.iter().zip(gx.iter()).enumerate() {
+                let expected = if v > 0.0 { 1.0 } else { 0.0 };
+                prop_assert!(
+                    (g - expected).abs() < 1e-10,
+                    "relu grad at index {i}: input={v}, expected={expected}, got={g}"
+                );
+            }
+        }
+    }
 }

@@ -9962,4 +9962,75 @@ mod tests {
         assert_eq!(result[1], Complex128::new(2.0, 5.0));
         assert_eq!(result[2], Complex128::new(3.0, 6.0));
     }
+
+    // ── frankentorch-igu: Property-based kernel tests ─────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn prop_unary_neg_is_self_inverse(
+            vals in proptest::collection::vec(-100.0f64..100.0, 1..32),
+        ) {
+            let n = vals.len();
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            let negated = super::neg_tensor_contiguous_f64(&vals, &meta).unwrap();
+            let restored = super::neg_tensor_contiguous_f64(&negated, &meta).unwrap();
+            for (i, (&orig, &rest)) in vals.iter().zip(restored.iter()).enumerate() {
+                prop_assert!(
+                    (orig - rest).abs() < 1e-12,
+                    "neg(neg(x)) != x at index {i}: orig={orig}, restored={rest}"
+                );
+            }
+        }
+
+        #[test]
+        fn prop_exp_log_round_trip(
+            vals in proptest::collection::vec(0.01f64..50.0, 1..16),
+        ) {
+            // log(exp(x)) == x for positive x
+            let n = vals.len();
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            let exped = super::exp_tensor_contiguous_f64(&vals, &meta).unwrap();
+            let logged = super::log_tensor_contiguous_f64(&exped, &meta).unwrap();
+            for (i, (&orig, &rest)) in vals.iter().zip(logged.iter()).enumerate() {
+                prop_assert!(
+                    (orig - rest).abs() < 1e-8,
+                    "log(exp(x)) != x at index {i}: x={orig}, result={rest}"
+                );
+            }
+        }
+
+        #[test]
+        fn prop_sum_reduction_matches_naive(
+            vals in proptest::collection::vec(-50.0f64..50.0, 1..64),
+        ) {
+            let n = vals.len();
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            let kernel_sum = super::sum_tensor_contiguous_f64(&vals, &meta).unwrap();
+            let naive_sum: f64 = vals.iter().sum();
+            prop_assert!(
+                (kernel_sum - naive_sum).abs() < 1e-8,
+                "kernel sum={kernel_sum} != naive sum={naive_sum}"
+            );
+        }
+
+        #[test]
+        fn prop_softmax_sums_to_one(
+            vals in proptest::collection::vec(-10.0f64..10.0, 2..16),
+        ) {
+            let n = vals.len();
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            let sm = super::softmax_dim_tensor_contiguous_f64(&vals, &meta, 0).unwrap();
+            let total: f64 = sm.iter().sum();
+            prop_assert!(
+                (total - 1.0).abs() < 1e-10,
+                "softmax should sum to 1.0, got {total}"
+            );
+            // All elements should be positive
+            for (i, &v) in sm.iter().enumerate() {
+                prop_assert!(v >= 0.0, "softmax[{i}] = {v} should be non-negative");
+            }
+        }
+    }
 }
