@@ -727,6 +727,19 @@ git push                # Push to remote
 - Use descriptive titles and set appropriate priority/type
 - Always `br sync --flush-only && git add .beads/` before ending session
 
+### Tracker Recovery Safety Note
+
+Temporary rule until `beads_rust` resolves the import-path `blocked_issues_cache` page-leak bug
+tracked in `Dicklesworthstone/beads_rust#224`:
+
+- if you are inspecting a freshly vacuumed recovery DB, use `--no-auto-import`
+- safe commands on that recovered DB: `br info --json`, `br doctor`, `br sync --status --json`,
+  `br list --json --no-auto-import`, `br ready --json --no-auto-import`
+- avoid `br sync --import-only --json` and plain auto-importing commands such as bare `br list`,
+  `br ready`, `br show`, or `br update` on that vacuumed recovery DB
+- see `artifacts/beads_recovery/FRANKENTORCH_XSP_IMPORT_PATH_REPORT_20260407.md` for the full
+  repro, workaround, and escalation link
+
 <!-- end-bv-agent-instructions -->
 
 ## Landing the Plane (Session Completion)

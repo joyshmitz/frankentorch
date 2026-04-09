@@ -105,10 +105,52 @@ Until the upstream bug is fixed:
 - prefer `br doctor` or `br info` for non-mutating diagnostics on recovered DBs
 - assume any command that auto-imports can reintroduce the warning
 
+## Local recovery playbook
+
+Use this when a tracker recovery session starts from a freshly vacuumed `.beads/beads.db`.
+
+### Safe inspection commands
+
+- `br info --json`
+- `br doctor`
+- `br sync --status --json`
+- `br list --json --no-auto-import`
+- `br ready --json --no-auto-import`
+
+### Commands to avoid on the vacuumed recovery DB
+
+- `br sync --import-only --json`
+- plain `br list --json`
+- plain `br ready --json`
+- plain `br show <id> --json`
+- plain `br update <id> --status ... --json`
+- any other command path that auto-imports before operating
+
+### Recovery-session rule
+
+If you need to inspect a known-good vacuumed recovery DB before the upstream fix lands, stay on
+`--no-auto-import` variants and treat the import path as destructive to structural cleanliness even
+when logical issue data remains usable.
+
+## Upstream escalation
+
+The issue is now escalated upstream in `beads_rust`:
+
+- `Dicklesworthstone/beads_rust#224`
+- https://github.com/Dicklesworthstone/beads_rust/issues/224
+
+The upstream report includes:
+
+- the minimal reproducer from the clean vacuumed baseline
+- before/after rootpage movement for `blocked_issues_cache`
+- exact `integrity_check` failure output
+- the current local workaround (`--no-auto-import` on recovered DBs)
+
 ## Remaining work
 
-This investigation isolated the failing class of operations, but it did not fix the upstream
-writer/import implementation in `beads_rust` / frankensqlite. A follow-up bead should track:
+This investigation isolated the failing class of operations and escalated it upstream, but it did
+not fix the underlying writer/import implementation in `beads_rust` / frankensqlite. Remaining
+follow-up should track:
 
-- upstream escalation / fix
-- a local safe-workflow note for future tracker recovery sessions
+- validating the upstream fix against the archived xsp probe matrix
+- removing the temporary `--no-auto-import` recovery restriction once the fix is confirmed
