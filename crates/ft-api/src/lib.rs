@@ -79,6 +79,9 @@ pub struct FrankenTorchSession {
     runtime: RuntimeContext,
     rng: Xoshiro256PlusPlus,
     grad_enabled_stack: Vec<bool>,
+    /// Autocast stack: each entry is either None (autocast disabled) or
+    /// Some(target_dtype). The top of the stack determines current state.
+    autocast_stack: Vec<Option<DType>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +181,7 @@ impl FrankenTorchSession {
             runtime: RuntimeContext::new(mode),
             rng: Xoshiro256PlusPlus::new(42),
             grad_enabled_stack: vec![true],
+            autocast_stack: vec![None],
         }
     }
 
@@ -244,6 +248,75 @@ impl FrankenTorchSession {
             Ok(result) => result,
             Err(payload) => std::panic::resume_unwind(payload),
         }
+    }
+
+    /// Returns the currently active autocast dtype, if any.
+    ///
+    /// Equivalent to checking `torch.is_autocast_enabled()` + `torch.get_autocast_dtype()`.
+    #[must_use]
+    pub fn autocast_dtype(&self) -> Option<DType> {
+        *self.autocast_stack.last().unwrap_or(&None)
+    }
+
+    /// Returns true if autocast is currently active.
+    #[must_use]
+    pub fn is_autocast_enabled(&self) -> bool {
+        self.autocast_dtype().is_some()
+    }
+
+    /// Enter an autocast context with the given target dtype.
+    ///
+    /// Subsequent ops marked autocast-eligible (matmul, linear, conv) will
+    /// have their inputs cast to `dtype` before computation. This mirrors
+    /// `torch.autocast(device_type, dtype)` from `torch.amp`.
+    pub fn autocast_enter(&mut self, dtype: DType) {
+        self.autocast_stack.push(Some(dtype));
+    }
+
+    /// Exit the current autocast context, restoring the previous state.
+    pub fn autocast_exit(&mut self) {
+        if self.autocast_stack.len() > 1 {
+            self.autocast_stack.pop();
+        }
+    }
+
+    /// Execute a closure with autocast enabled (panic-safe RAII equivalent).
+    ///
+    /// Equivalent to `with torch.autocast(device, dtype): ...` in PyTorch.
+    pub fn with_autocast<F, R>(&mut self, dtype: DType, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.autocast_enter(dtype);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.autocast_exit();
+        match result {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// Cast a tensor to the autocast target dtype if autocast is active and
+    /// the source is a higher-precision float. Returns the tensor unchanged
+    /// otherwise. Used internally by autocast-eligible ops.
+    pub fn maybe_autocast(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        if let Some(target) = self.autocast_dtype() {
+            let current = self.tensor_dtype(input)?;
+            // Only down-cast from higher-precision floats to lower-precision floats.
+            // Note: F16/BF16 paths are gated until tape-level conversion lands.
+            let should_cast = matches!(
+                (current, target),
+                (DType::F64, DType::F32 | DType::F16 | DType::BF16)
+                    | (DType::F32, DType::F16 | DType::BF16)
+            );
+            // Skip if the target dtype isn't supported by the conversion path yet
+            let target_supported = matches!(target, DType::F32 | DType::F64);
+            let should_cast = should_cast && target_supported;
+            if should_cast {
+                return self.tensor_to_dtype(input, target);
+            }
+        }
+        Ok(input)
     }
 
     /// Execute a closure with gradient tracking enabled (panic-safe RAII equivalent).
@@ -29444,5 +29517,100 @@ mod tests {
         // d(sum(a+b))/da = [1, 1], d(sum(a+b))/db = [1, 1]
         assert_eq!(ga, &[1.0, 1.0]);
         assert_eq!(gb, &[1.0, 1.0]);
+    }
+
+    // ── frankentorch-iha: Mixed precision / autocast tests ────────────
+
+    #[test]
+    fn autocast_disabled_by_default() {
+        let s = FrankenTorchSession::new(ExecutionMode::Strict);
+        assert!(!s.is_autocast_enabled());
+        assert_eq!(s.autocast_dtype(), None);
+    }
+
+    #[test]
+    fn autocast_enter_exit_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        s.autocast_enter(DType::F16);
+        assert!(s.is_autocast_enabled());
+        assert_eq!(s.autocast_dtype(), Some(DType::F16));
+        s.autocast_exit();
+        assert!(!s.is_autocast_enabled());
+    }
+
+    #[test]
+    fn autocast_nesting_restores_outer_state() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        s.autocast_enter(DType::F16);
+        s.autocast_enter(DType::BF16);
+        assert_eq!(s.autocast_dtype(), Some(DType::BF16));
+        s.autocast_exit();
+        assert_eq!(s.autocast_dtype(), Some(DType::F16));
+        s.autocast_exit();
+        assert_eq!(s.autocast_dtype(), None);
+    }
+
+    #[test]
+    fn with_autocast_closure_api() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let result = s.with_autocast(DType::F16, |sess| {
+            assert!(sess.is_autocast_enabled());
+            assert_eq!(sess.autocast_dtype(), Some(DType::F16));
+            42
+        });
+        assert_eq!(result, 42);
+        assert!(!s.is_autocast_enabled());
+    }
+
+    #[test]
+    fn with_autocast_restores_state_after_panic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            s.with_autocast(DType::F16, |sess| {
+                assert!(sess.is_autocast_enabled());
+                std::panic::resume_unwind(Box::new("boom"));
+            });
+        }));
+        assert!(unwind.is_err());
+        assert!(
+            !s.is_autocast_enabled(),
+            "autocast must be restored after panic"
+        );
+    }
+
+    #[test]
+    fn maybe_autocast_passthrough_when_disabled() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let cast = s.maybe_autocast(x).unwrap();
+        // No autocast active, should return same node
+        assert_eq!(cast, x);
+    }
+
+    #[test]
+    fn maybe_autocast_downcasts_f64_to_f32_when_active() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let cast = s.with_autocast(DType::F32, |sess| sess.maybe_autocast(x).unwrap());
+        // Should be a different node now (the F32-cast version)
+        assert_ne!(cast, x);
+        assert_eq!(s.tensor_dtype(cast).unwrap(), DType::F32);
+    }
+
+    #[test]
+    fn maybe_autocast_does_not_upcast_lower_precision() {
+        // F32 input with F64 target — autocast only down-casts, never up-casts
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let f64_in = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let f32_in = s.tensor_to_dtype(f64_in, DType::F32).unwrap();
+        let cast = s.with_autocast(DType::F64, |sess| sess.maybe_autocast(f32_in).unwrap());
+        // F32 -> F64 is an UPCAST, autocast should leave it alone
+        assert_eq!(cast, f32_in);
     }
 }

@@ -1075,6 +1075,40 @@ impl TensorBackwardReport {
     pub fn gradient_node(&self, node: TensorNodeId) -> Option<TensorNodeId> {
         self.gradient_nodes.get(node.0).and_then(|entry| *entry)
     }
+
+    /// Iterate over (node_index, gradient) pairs.
+    ///
+    /// Useful for inspecting gradients across all nodes — for example,
+    /// for overflow detection in mixed-precision gradient scaling.
+    pub fn tensor_gradients_iter(&self) -> impl Iterator<Item = (usize, Option<&[f64]>)> {
+        self.gradients
+            .iter()
+            .enumerate()
+            .map(|(i, opt)| (i, opt.as_deref()))
+    }
+
+    /// Return a clone of this report with all gradients multiplied by `factor`.
+    ///
+    /// Used by mixed-precision GradScaler to unscale gradients before
+    /// the optimizer step. The cloned report shares structural fields
+    /// (steps, telemetry) by clone but has independently scaled gradient buffers.
+    #[must_use]
+    pub fn scaled_clone(&self, factor: f64) -> Self {
+        let scaled_gradients: Vec<Option<Vec<f64>>> = self
+            .gradients
+            .iter()
+            .map(|opt| {
+                opt.as_ref()
+                    .map(|grad| grad.iter().map(|&g| g * factor).collect())
+            })
+            .collect();
+        Self {
+            gradients: scaled_gradients,
+            gradient_nodes: self.gradient_nodes.clone(),
+            steps: self.steps.clone(),
+            telemetry: self.telemetry.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -7510,6 +7544,25 @@ impl TensorTape {
             .collect();
         let (output_values, output_shape) = forward_fn(&mut ctx, &refs)?;
 
+        // If gradients are disabled (no_grad context) or no input requires grad,
+        // produce a plain Leaf node — recording a CustomFunction op would create a
+        // dangling backward edge with no computable gradient. This matches PyTorch's
+        // behavior where ops created inside torch.no_grad() produce non-gradient tensors.
+        let inputs_owned = inputs.to_vec();
+        let out = TensorNodeId(self.nodes.len());
+
+        if !any_requires_grad || !self.grad_enabled {
+            self.nodes.push(TensorNode {
+                tensor: DenseTensor::from_storage(
+                    ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
+                    output_values,
+                )?,
+                requires_grad: false,
+                op: TensorNodeOp::Leaf,
+            });
+            return Ok(out);
+        }
+
         let function_id = self.next_custom_function_id;
         self.next_custom_function_id += 1;
 
@@ -7522,8 +7575,6 @@ impl TensorTape {
             },
         );
 
-        let inputs_owned = inputs.to_vec();
-        let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
             tensor: DenseTensor::from_storage(
                 ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),

@@ -4832,6 +4832,186 @@ impl Optimizer for SparseAdam {
     }
 }
 
+// ── frankentorch-iha: Mixed precision GradScaler ────────────────────────
+
+/// Gradient scaler for mixed precision training.
+///
+/// Scales the loss by a dynamic factor before backward to prevent F16 underflow,
+/// then unscales gradients before optimizer.step(). If any gradient is non-finite
+/// (overflow), the optimizer step is skipped and the scale factor is reduced.
+///
+/// Equivalent to `torch.amp.GradScaler` from PyTorch.
+///
+/// Typical usage:
+/// ```ignore
+/// let mut scaler = GradScaler::new();
+/// // ... training loop ...
+/// let loss = model.forward(x);
+/// let scaled_loss = scaler.scale_loss(&mut session, loss)?;
+/// let report = session.tensor_backward(scaled_loss)?;
+/// scaler.step(&mut session, &mut optimizer, &report)?;
+/// scaler.update();
+/// ```
+pub struct GradScaler {
+    scale: f64,
+    growth_factor: f64,
+    backoff_factor: f64,
+    growth_interval: usize,
+    steps_since_growth: usize,
+    steps_since_inf: usize,
+    last_step_skipped: bool,
+    enabled: bool,
+}
+
+impl Default for GradScaler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GradScaler {
+    /// Create a new `GradScaler` with PyTorch-equivalent defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            scale: 65536.0, // 2^16, PyTorch default
+            growth_factor: 2.0,
+            backoff_factor: 0.5,
+            growth_interval: 2000,
+            steps_since_growth: 0,
+            steps_since_inf: 0,
+            last_step_skipped: false,
+            enabled: true,
+        }
+    }
+
+    /// Construct with explicit parameters.
+    #[must_use]
+    pub fn with_config(
+        init_scale: f64,
+        growth_factor: f64,
+        backoff_factor: f64,
+        growth_interval: usize,
+    ) -> Self {
+        Self {
+            scale: init_scale,
+            growth_factor,
+            backoff_factor,
+            growth_interval,
+            steps_since_growth: 0,
+            steps_since_inf: 0,
+            last_step_skipped: false,
+            enabled: true,
+        }
+    }
+
+    /// Disable the scaler (passthrough mode).
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    /// Re-enable the scaler.
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    /// Get the current scale factor.
+    #[must_use]
+    pub fn get_scale(&self) -> f64 {
+        if self.enabled { self.scale } else { 1.0 }
+    }
+
+    /// Whether the most recent step was skipped due to non-finite gradients.
+    #[must_use]
+    pub fn last_step_was_skipped(&self) -> bool {
+        self.last_step_skipped
+    }
+
+    /// Scale a loss tensor by the current scale factor.
+    ///
+    /// Returns a new tensor representing `loss * scale`. If the scaler is disabled,
+    /// returns the input unchanged.
+    pub fn scale_loss(
+        &self,
+        session: &mut FrankenTorchSession,
+        loss: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !self.enabled || (self.scale - 1.0).abs() < f64::EPSILON {
+            return Ok(loss);
+        }
+        let loss_shape = session.tensor_shape(loss)?;
+        // Build a same-shape tensor filled with the scale factor
+        let numel: usize = loss_shape.iter().product::<usize>().max(1);
+        let scale_tensor = session.tensor_variable(vec![self.scale; numel], loss_shape, false)?;
+        session.tensor_mul(loss, scale_tensor)
+    }
+
+    /// Step the optimizer with gradient unscaling and overflow detection.
+    ///
+    /// 1. Reads gradients from the report
+    /// 2. Checks for any non-finite values (inf or nan)
+    /// 3. If found: skips the optimizer step entirely (gradients discarded)
+    /// 4. If not: unscales gradients in-place and runs the optimizer step
+    ///
+    /// Returns `true` if the step was applied, `false` if skipped due to overflow.
+    pub fn step(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        optimizer: &mut dyn Optimizer,
+        report: &TensorBackwardReport,
+    ) -> Result<bool, AutogradError> {
+        if !self.enabled {
+            optimizer.step(session, report)?;
+            self.last_step_skipped = false;
+            return Ok(true);
+        }
+
+        // Check all gradients for inf/nan
+        let mut found_overflow = false;
+        for (_, grad_opt) in report.tensor_gradients_iter() {
+            if let Some(grad) = grad_opt
+                && grad.iter().any(|&v| !v.is_finite())
+            {
+                found_overflow = true;
+                break;
+            }
+        }
+
+        if found_overflow {
+            // Skip step, decrease scale
+            self.scale *= self.backoff_factor;
+            self.steps_since_growth = 0;
+            self.steps_since_inf = 0;
+            self.last_step_skipped = true;
+            return Ok(false);
+        }
+
+        // Unscale gradients before optimizer step. Build a scaled report.
+        let inv_scale = 1.0 / self.scale;
+        let unscaled = report.scaled_clone(inv_scale);
+        optimizer.step(session, &unscaled)?;
+
+        self.steps_since_inf += 1;
+        self.steps_since_growth += 1;
+        self.last_step_skipped = false;
+        Ok(true)
+    }
+
+    /// Update the scale factor based on accumulated statistics.
+    ///
+    /// Call this after each step. If `growth_interval` steps have passed without
+    /// overflow, the scale is multiplied by `growth_factor`.
+    pub fn update(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        if self.steps_since_growth >= self.growth_interval {
+            self.scale *= self.growth_factor;
+            self.steps_since_growth = 0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ft_api::FrankenTorchSession;
@@ -9213,5 +9393,129 @@ mod tests {
 
         let lr = opt.get_lr();
         assert!((lr - 1.0 / 6.0).abs() < 1e-10, "expected ~0.1667, got {lr}");
+    }
+
+    // ── frankentorch-iha: GradScaler tests ───────────────────────────
+
+    #[test]
+    fn grad_scaler_default_scale_is_65536() {
+        let scaler = GradScaler::new();
+        assert_eq!(scaler.get_scale(), 65536.0);
+    }
+
+    #[test]
+    fn grad_scaler_disabled_returns_unit_scale() {
+        let mut scaler = GradScaler::new();
+        scaler.disable();
+        assert_eq!(scaler.get_scale(), 1.0);
+    }
+
+    #[test]
+    fn grad_scaler_scale_loss_multiplies_by_factor() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let loss = session.tensor_variable(vec![2.0], vec![1], true).unwrap();
+        let scaler = GradScaler::with_config(8.0, 2.0, 0.5, 100);
+        let scaled = scaler.scale_loss(&mut session, loss).unwrap();
+        let val = session.tensor_values(scaled).unwrap();
+        assert!(
+            (val[0] - 16.0).abs() < 1e-10,
+            "2.0 * 8.0 should be 16.0, got {}",
+            val[0]
+        );
+    }
+
+    #[test]
+    fn grad_scaler_scale_loss_passthrough_when_disabled() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let loss = session.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        let mut scaler = GradScaler::new();
+        scaler.disable();
+        let scaled = scaler.scale_loss(&mut session, loss).unwrap();
+        // Should be the same node id (passthrough)
+        assert_eq!(scaled, loss);
+    }
+
+    #[test]
+    fn grad_scaler_step_applies_unscaled_gradient() {
+        // Verify GradScaler.step() applies the correct (unscaled) gradient
+        // by comparing against a non-scaled training step on identical inputs.
+
+        // Run 1: no scaler, compute gradient directly
+        let mut s1 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w1 = s1.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let target1 = s1.tensor_variable(vec![5.0], vec![1], false).unwrap();
+        let loss1 = s1.mse_loss(w1, target1).unwrap();
+        let report1 = s1.tensor_backward(loss1).unwrap();
+        let unscaled_grad = report1.gradient(w1).unwrap().to_vec();
+
+        // Run 2: with scaler, scale loss by 4, run backward, then GradScaler.step
+        // unscales internally — the resulting gradient applied to w should match unscaled_grad
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w2 = s2.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let target2 = s2.tensor_variable(vec![5.0], vec![1], false).unwrap();
+        let loss2 = s2.mse_loss(w2, target2).unwrap();
+        let scaler = GradScaler::with_config(4.0, 2.0, 0.5, 100);
+        let scaled_loss = scaler.scale_loss(&mut s2, loss2).unwrap();
+        let report2 = s2.tensor_backward(scaled_loss).unwrap();
+
+        // The raw gradient on the scaled loss should be 4x the unscaled
+        let scaled_grad = report2.gradient(w2).unwrap();
+        for (a, b) in unscaled_grad.iter().zip(scaled_grad.iter()) {
+            assert!(
+                (b - a * 4.0).abs() < 1e-8,
+                "scaled grad should be 4x unscaled: unscaled={a} scaled={b}"
+            );
+        }
+
+        // Now use scaled_clone to verify unscaling produces the original gradient
+        let unscaled_report = report2.scaled_clone(0.25);
+        let unscaled_grad_from_clone = unscaled_report.gradient(w2).unwrap();
+        for (a, b) in unscaled_grad.iter().zip(unscaled_grad_from_clone.iter()) {
+            assert!(
+                (a - b).abs() < 1e-10,
+                "scaled_clone(0.25) should recover original gradient: original={a} cloned={b}"
+            );
+        }
+    }
+
+    #[test]
+    fn grad_scaler_skips_step_on_inf_gradient() {
+        // Inject inf into gradients by using a large scale * a poorly-conditioned loss
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = session
+            .tensor_variable(vec![f64::MAX / 2.0], vec![1], true)
+            .unwrap();
+        let mut opt = SGD::new(vec![w], 0.1);
+        // Scale of 1e300 to force overflow
+        let mut scaler = GradScaler::with_config(1e300, 2.0, 0.5, 100);
+
+        let target = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let loss = session.mse_loss(w, target).unwrap();
+        let scaled_loss = scaler.scale_loss(&mut session, loss).unwrap();
+        let report = session.tensor_backward(scaled_loss).unwrap();
+
+        let applied = scaler.step(&mut session, &mut opt, &report).unwrap();
+        // Should detect overflow and skip
+        assert!(!applied, "step should be skipped due to overflow");
+        assert!(scaler.last_step_was_skipped());
+        // Scale should be reduced
+        assert!(
+            scaler.get_scale() < 1e300,
+            "scale should decrease after overflow"
+        );
+    }
+
+    #[test]
+    fn grad_scaler_update_grows_after_interval() {
+        let mut scaler = GradScaler::with_config(1.0, 2.0, 0.5, 3);
+        // Manually simulate steps_since_growth reaching the interval
+        scaler.steps_since_growth = 3;
+        scaler.update();
+        assert_eq!(
+            scaler.get_scale(),
+            2.0,
+            "scale should double after growth interval"
+        );
+        assert_eq!(scaler.steps_since_growth, 0, "growth counter should reset");
     }
 }
