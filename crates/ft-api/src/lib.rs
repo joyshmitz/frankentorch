@@ -2370,8 +2370,22 @@ impl FrankenTorchSession {
                 },
             )));
         }
+        if !(0.0..=1.0).contains(&dropout_p) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scaled_dot_product_attention: dropout_p must be in [0, 1]",
+                },
+            )));
+        }
 
         let d_k = *q_shape.last().unwrap();
+        if d_k == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scaled_dot_product_attention: head dimension must be non-zero",
+                },
+            )));
+        }
         let scale = 1.0 / (d_k as f64).sqrt();
 
         // Q @ K^T — use bmm for 3D batched inputs, matmul for 2D
@@ -2393,6 +2407,13 @@ impl FrankenTorchSession {
         let masked = if is_causal {
             let l = aw_shape[aw_shape.len() - 2];
             let s = aw_shape[aw_shape.len() - 1];
+            if l == 0 || s == 0 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "scaled_dot_product_attention: sequence length must be non-zero",
+                    },
+                )));
+            }
             let total: usize = aw_shape.iter().product();
             let batch_count = total / (l * s);
             let mut mask_data = Vec::with_capacity(total);
@@ -12800,6 +12821,7 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.inner(input, other)` for 1-D inputs.
     /// For higher-dimensional inputs, contracts over the last dimension.
+    /// Inputs must be at least 1-D.
     pub fn tensor_inner(
         &mut self,
         a: TensorNodeId,
@@ -13270,6 +13292,7 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.mode(input)`.
     /// Returns `(values, indices)` as a pair of tensors.
+    /// Input must have at least one dimension and a non-zero last dimension.
     pub fn tensor_mode(
         &mut self,
         input: TensorNodeId,
@@ -25403,6 +25426,32 @@ mod tests {
             .unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, vec![2, 3, 6]);
+    }
+
+    #[test]
+    fn sdpa_rejects_negative_dropout() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let q = s.randn(vec![1, 2, 4], false).unwrap();
+        let k = s.randn(vec![1, 2, 4], false).unwrap();
+        let v = s.randn(vec![1, 2, 4], false).unwrap();
+        assert!(
+            s.scaled_dot_product_attention(q, k, v, None, -0.1, false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn sdpa_rejects_zero_head_dim() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let q = s.tensor_variable(Vec::new(), vec![1, 2, 0], false).unwrap();
+        let k = s.tensor_variable(Vec::new(), vec![1, 2, 0], false).unwrap();
+        let v = s
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2, 1], false)
+            .unwrap();
+        assert!(
+            s.scaled_dot_product_attention(q, k, v, None, 0.0, false)
+                .is_err()
+        );
     }
 
     // ── tensordot / kron tests ────────────────────────────────────────
