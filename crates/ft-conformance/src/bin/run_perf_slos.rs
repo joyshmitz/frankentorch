@@ -878,7 +878,14 @@ fn measure_checkpoint_roundtrip(
     }
 
     let state_dict = build_state_dict(config.checkpoint_total_bytes, config.checkpoint_chunks)?;
-    let path = std::env::temp_dir().join(format!(
+    let scratch_root = checkpoint_scratch_dir()?;
+    fs::create_dir_all(scratch_root.as_path()).map_err(|error| {
+        format!(
+            "failed to create checkpoint scratch directory {}: {error}",
+            scratch_root.display()
+        )
+    })?;
+    let path = scratch_root.join(format!(
         "frankentorch_perf_slo_{}_{}.ftsv",
         std::process::id(),
         config.checkpoint_total_bytes
@@ -957,6 +964,16 @@ fn run_checkpoint_iteration(
     });
     outcome?;
     Ok((save_elapsed, load_elapsed, info))
+}
+
+fn checkpoint_scratch_dir() -> Result<PathBuf, String> {
+    if let Some(raw) = std::env::var_os("FRANKENTORCH_PERF_SCRATCH_DIR") {
+        return Ok(PathBuf::from(raw));
+    }
+
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("failed to resolve current directory for perf scratch: {error}"))?;
+    Ok(cwd.join("artifacts/phase2c/performance/.scratch"))
 }
 
 fn measure_training_step_memory(
