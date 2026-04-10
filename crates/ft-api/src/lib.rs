@@ -24,6 +24,11 @@ use ft_dispatch::{
 };
 use ft_runtime::{EvidenceEntry, EvidenceKind, RuntimeContext};
 
+const INPLACE_FLOAT_REASON: &str = "in-place mutation only supported for float32/float64 tensors";
+const INIT_FLOAT_REASON: &str = "initialization only supported for float32/float64 tensors";
+const PARAM_UPDATE_FLOAT_REASON: &str =
+    "parameter update only supported for float32/float64 tensors";
+
 /// Deterministic xoshiro256++ PRNG for reproducible random tensor generation.
 #[derive(Debug, Clone)]
 struct Xoshiro256PlusPlus {
@@ -7154,14 +7159,36 @@ impl FrankenTorchSession {
         other: TensorNodeId,
     ) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_binary_compatibility(target, other)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let other_vals = self.tensor_tape.values(other)?;
-        let new_values: Vec<f64> = target_vals
-            .iter()
-            .zip(other_vals.iter())
-            .map(|(a, b)| a - b)
-            .collect();
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        match self.tensor_tape.dtype(target)? {
+            DType::F64 => {
+                let target_vals = self.tensor_tape.values(target)?;
+                let other_vals = self.tensor_tape.values(other)?;
+                let new_values: Vec<f64> = target_vals
+                    .iter()
+                    .zip(other_vals.iter())
+                    .map(|(a, b)| a - b)
+                    .collect();
+                self.tensor_tape.update_tensor_values(target, new_values)?;
+            }
+            DType::F32 => {
+                let target_vals = self.tensor_tape.values_f32(target)?;
+                let other_vals = self.tensor_tape.values_f32(other)?;
+                let new_values: Vec<f32> = target_vals
+                    .iter()
+                    .zip(other_vals.iter())
+                    .map(|(a, b)| a - b)
+                    .collect();
+                self.tensor_tape
+                    .update_tensor_values_f32(target, new_values)?;
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: INPLACE_FLOAT_REASON,
+                    },
+                )));
+            }
+        }
         self.record_tensor_in_place_operation("sub_", target, Some(format!("other={}", other.0)));
         Ok(())
     }
@@ -7173,14 +7200,36 @@ impl FrankenTorchSession {
         other: TensorNodeId,
     ) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_binary_compatibility(target, other)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let other_vals = self.tensor_tape.values(other)?;
-        let new_values: Vec<f64> = target_vals
-            .iter()
-            .zip(other_vals.iter())
-            .map(|(a, b)| a + b)
-            .collect();
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        match self.tensor_tape.dtype(target)? {
+            DType::F64 => {
+                let target_vals = self.tensor_tape.values(target)?;
+                let other_vals = self.tensor_tape.values(other)?;
+                let new_values: Vec<f64> = target_vals
+                    .iter()
+                    .zip(other_vals.iter())
+                    .map(|(a, b)| a + b)
+                    .collect();
+                self.tensor_tape.update_tensor_values(target, new_values)?;
+            }
+            DType::F32 => {
+                let target_vals = self.tensor_tape.values_f32(target)?;
+                let other_vals = self.tensor_tape.values_f32(other)?;
+                let new_values: Vec<f32> = target_vals
+                    .iter()
+                    .zip(other_vals.iter())
+                    .map(|(a, b)| a + b)
+                    .collect();
+                self.tensor_tape
+                    .update_tensor_values_f32(target, new_values)?;
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: INPLACE_FLOAT_REASON,
+                    },
+                )));
+            }
+        }
         self.record_tensor_in_place_operation("add_", target, Some(format!("other={}", other.0)));
         Ok(())
     }
@@ -7192,14 +7241,36 @@ impl FrankenTorchSession {
         other: TensorNodeId,
     ) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_binary_compatibility(target, other)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let other_vals = self.tensor_tape.values(other)?;
-        let new_values: Vec<f64> = target_vals
-            .iter()
-            .zip(other_vals.iter())
-            .map(|(a, b)| a * b)
-            .collect();
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        match self.tensor_tape.dtype(target)? {
+            DType::F64 => {
+                let target_vals = self.tensor_tape.values(target)?;
+                let other_vals = self.tensor_tape.values(other)?;
+                let new_values: Vec<f64> = target_vals
+                    .iter()
+                    .zip(other_vals.iter())
+                    .map(|(a, b)| a * b)
+                    .collect();
+                self.tensor_tape.update_tensor_values(target, new_values)?;
+            }
+            DType::F32 => {
+                let target_vals = self.tensor_tape.values_f32(target)?;
+                let other_vals = self.tensor_tape.values_f32(other)?;
+                let new_values: Vec<f32> = target_vals
+                    .iter()
+                    .zip(other_vals.iter())
+                    .map(|(a, b)| a * b)
+                    .collect();
+                self.tensor_tape
+                    .update_tensor_values_f32(target, new_values)?;
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: INPLACE_FLOAT_REASON,
+                    },
+                )));
+            }
+        }
         self.record_tensor_in_place_operation("mul_", target, Some(format!("other={}", other.0)));
         Ok(())
     }
@@ -7211,14 +7282,36 @@ impl FrankenTorchSession {
         other: TensorNodeId,
     ) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_binary_compatibility(target, other)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let other_vals = self.tensor_tape.values(other)?;
-        let new_values: Vec<f64> = target_vals
-            .iter()
-            .zip(other_vals.iter())
-            .map(|(a, b)| a / b)
-            .collect();
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        match self.tensor_tape.dtype(target)? {
+            DType::F64 => {
+                let target_vals = self.tensor_tape.values(target)?;
+                let other_vals = self.tensor_tape.values(other)?;
+                let new_values: Vec<f64> = target_vals
+                    .iter()
+                    .zip(other_vals.iter())
+                    .map(|(a, b)| a / b)
+                    .collect();
+                self.tensor_tape.update_tensor_values(target, new_values)?;
+            }
+            DType::F32 => {
+                let target_vals = self.tensor_tape.values_f32(target)?;
+                let other_vals = self.tensor_tape.values_f32(other)?;
+                let new_values: Vec<f32> = target_vals
+                    .iter()
+                    .zip(other_vals.iter())
+                    .map(|(a, b)| a / b)
+                    .collect();
+                self.tensor_tape
+                    .update_tensor_values_f32(target, new_values)?;
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: INPLACE_FLOAT_REASON,
+                    },
+                )));
+            }
+        }
         self.record_tensor_in_place_operation("div_", target, Some(format!("other={}", other.0)));
         Ok(())
     }
@@ -7226,9 +7319,8 @@ impl FrankenTorchSession {
     /// In-place zero: target = zeros.
     pub fn tensor_zero_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_target(target)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let new_values = vec![0.0; target_vals.len()];
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        let numel = self.tensor_numel(target)?;
+        self.update_tensor_values_for_float(target, vec![0.0; numel], INPLACE_FLOAT_REASON)?;
         self.record_tensor_in_place_operation("zero_", target, None);
         Ok(())
     }
@@ -7240,9 +7332,8 @@ impl FrankenTorchSession {
         fill_value: f64,
     ) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_target(target)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let new_values = vec![fill_value; target_vals.len()];
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        let numel = self.tensor_numel(target)?;
+        self.update_tensor_values_for_float(target, vec![fill_value; numel], INPLACE_FLOAT_REASON)?;
         self.record_tensor_in_place_operation(
             "fill_",
             target,
@@ -7258,9 +7349,27 @@ impl FrankenTorchSession {
         scalar: f64,
     ) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_target(target)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let new_values: Vec<f64> = target_vals.iter().map(|v| v * scalar).collect();
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        match self.tensor_tape.dtype(target)? {
+            DType::F64 => {
+                let target_vals = self.tensor_tape.values(target)?;
+                let new_values: Vec<f64> = target_vals.iter().map(|v| v * scalar).collect();
+                self.tensor_tape.update_tensor_values(target, new_values)?;
+            }
+            DType::F32 => {
+                let target_vals = self.tensor_tape.values_f32(target)?;
+                let scalar32 = scalar as f32;
+                let new_values: Vec<f32> = target_vals.iter().map(|v| v * scalar32).collect();
+                self.tensor_tape
+                    .update_tensor_values_f32(target, new_values)?;
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: INPLACE_FLOAT_REASON,
+                    },
+                )));
+            }
+        }
         self.record_tensor_in_place_operation(
             "mul_scalar_",
             target,
@@ -7276,9 +7385,27 @@ impl FrankenTorchSession {
         scalar: f64,
     ) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_target(target)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let new_values: Vec<f64> = target_vals.iter().map(|v| v + scalar).collect();
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        match self.tensor_tape.dtype(target)? {
+            DType::F64 => {
+                let target_vals = self.tensor_tape.values(target)?;
+                let new_values: Vec<f64> = target_vals.iter().map(|v| v + scalar).collect();
+                self.tensor_tape.update_tensor_values(target, new_values)?;
+            }
+            DType::F32 => {
+                let target_vals = self.tensor_tape.values_f32(target)?;
+                let scalar32 = scalar as f32;
+                let new_values: Vec<f32> = target_vals.iter().map(|v| v + scalar32).collect();
+                self.tensor_tape
+                    .update_tensor_values_f32(target, new_values)?;
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: INPLACE_FLOAT_REASON,
+                    },
+                )));
+            }
+        }
         self.record_tensor_in_place_operation(
             "add_scalar_",
             target,
@@ -7465,7 +7592,7 @@ impl FrankenTorchSession {
         param: TensorNodeId,
         new_values: Vec<f64>,
     ) -> Result<(), AutogradError> {
-        self.tensor_tape.update_tensor_values(param, new_values)
+        self.update_tensor_values_for_float(param, new_values, PARAM_UPDATE_FLOAT_REASON)
     }
 
     // ── Gradient Clipping Utilities ────────────────────────────────────
@@ -7662,6 +7789,25 @@ impl FrankenTorchSession {
         Ok(converted)
     }
 
+    fn update_tensor_values_for_float(
+        &mut self,
+        target: TensorNodeId,
+        values: Vec<f64>,
+        reason: &'static str,
+    ) -> Result<(), AutogradError> {
+        match self.tensor_tape.dtype(target)? {
+            DType::F64 => self.tensor_tape.update_tensor_values(target, values),
+            DType::F32 => {
+                let values_f32: Vec<f32> = values.iter().map(|&v| v as f32).collect();
+                self.tensor_tape
+                    .update_tensor_values_f32(target, values_f32)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
+            ))),
+        }
+    }
+
     fn validate_tensor_in_place_binary_compatibility(
         &self,
         target: TensorNodeId,
@@ -7722,9 +7868,29 @@ impl FrankenTorchSession {
         F: Fn(f64) -> f64,
     {
         self.validate_tensor_in_place_target(target)?;
-        let target_vals = self.tensor_tape.values(target)?;
-        let new_values: Vec<f64> = target_vals.into_iter().map(transform).collect();
-        self.tensor_tape.update_tensor_values(target, new_values)?;
+        match self.tensor_tape.dtype(target)? {
+            DType::F64 => {
+                let target_vals = self.tensor_tape.values(target)?;
+                let new_values: Vec<f64> = target_vals.into_iter().map(transform).collect();
+                self.tensor_tape.update_tensor_values(target, new_values)?;
+            }
+            DType::F32 => {
+                let target_vals = self.tensor_tape.values_f32(target)?;
+                let new_values: Vec<f32> = target_vals
+                    .into_iter()
+                    .map(|v| transform(v as f64) as f32)
+                    .collect();
+                self.tensor_tape
+                    .update_tensor_values_f32(target, new_values)?;
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: INPLACE_FLOAT_REASON,
+                    },
+                )));
+            }
+        }
         self.record_tensor_in_place_operation(op, target, extra);
         Ok(())
     }
@@ -10696,7 +10862,7 @@ impl FrankenTorchSession {
         let values: Vec<f64> = (0..numel)
             .map(|_| a + (b - a) * self.rng.next_f64())
             .collect();
-        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation(
             "init_uniform_",
             tensor,
@@ -10716,7 +10882,7 @@ impl FrankenTorchSession {
         let values: Vec<f64> = (0..numel)
             .map(|_| mean + std * self.rng.next_normal())
             .collect();
-        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation(
             "init_normal_",
             tensor,
@@ -10729,7 +10895,7 @@ impl FrankenTorchSession {
     pub fn init_constant_(&mut self, tensor: TensorNodeId, val: f64) -> Result<(), AutogradError> {
         let numel = self.tensor_numel(tensor)?;
         let values = vec![val; numel];
-        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation("init_constant_", tensor, Some(format!("val={val}")));
         Ok(())
     }
@@ -10762,7 +10928,7 @@ impl FrankenTorchSession {
         for i in 0..min_dim {
             values[i * cols + i] = 1.0;
         }
-        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation("init_eye_", tensor, None);
         Ok(())
     }
@@ -10818,7 +10984,7 @@ impl FrankenTorchSession {
                 }
             }
         }
-        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation(
             "init_dirac_",
             tensor,
@@ -10988,7 +11154,7 @@ impl FrankenTorchSession {
         // Apply gain and reshape to original tensor shape
         let numel: usize = shape.iter().product();
         let scaled: Vec<f64> = final_values[..numel].iter().map(|&v| v * gain).collect();
-        self.tensor_tape.update_tensor_values(tensor, scaled)?;
+        self.update_tensor_values_for_float(tensor, scaled, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation(
             "init_orthogonal_",
             tensor,
@@ -11049,7 +11215,7 @@ impl FrankenTorchSession {
             }
         }
 
-        self.tensor_tape.update_tensor_values(tensor, values)?;
+        self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation(
             "init_sparse_",
             tensor,
@@ -18164,6 +18330,19 @@ mod tests {
     }
 
     #[test]
+    fn tensor_add_in_place_f32() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable_f32(vec![10.0f32, 20.0, 30.0], vec![3], false)
+            .unwrap();
+        s.tensor_add_(a, b).unwrap();
+        assert_eq!(s.tensor_values_f32(a).unwrap(), vec![11.0f32, 22.0, 33.0]);
+    }
+
+    #[test]
     fn tensor_add_in_place_rejects_device_mismatch() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let target = s
@@ -18401,6 +18580,19 @@ mod tests {
             &signed,
             |s: &mut FrankenTorchSession, t: TId| s.tensor_clamp(t, -0.3, 0.9),
             |s: &mut FrankenTorchSession, t: TId| s.tensor_clamp_(t, -0.3, 0.9),
+        );
+    }
+
+    #[test]
+    fn tensor_relu_in_place_f32() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable_f32(vec![-1.0f32, 0.5, 0.0], vec![3], false)
+            .expect("target");
+        s.tensor_relu_(t).expect("relu_ f32");
+        assert_eq!(
+            s.tensor_values_f32(t).expect("values"),
+            vec![0.0f32, 0.5, 0.0]
         );
     }
 
@@ -22240,6 +22432,16 @@ mod tests {
         let t = s.tensor_variable(vec![0.0; 6], vec![2, 3], true).unwrap();
         s.init_constant_(t, 42.0).unwrap();
         assert_eq!(s.tensor_values(t).unwrap(), vec![42.0; 6]);
+    }
+
+    #[test]
+    fn init_constant_fills_exact_f32() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable_f32(vec![0.0f32; 4], vec![2, 2], true)
+            .unwrap();
+        s.init_constant_(t, 2.5).unwrap();
+        assert_eq!(s.tensor_values_f32(t).unwrap(), vec![2.5f32; 4]);
     }
 
     #[test]

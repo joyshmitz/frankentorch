@@ -13503,6 +13503,18 @@ impl TensorTape {
             .update_contiguous_values(&new_values)
             .map_err(AutogradError::DenseTensor)
     }
+
+    /// Replace the storage values of a float32 tensor node in-place (version is bumped).
+    pub fn update_tensor_values_f32(
+        &mut self,
+        id: TensorNodeId,
+        new_values: Vec<f32>,
+    ) -> Result<(), AutogradError> {
+        let node = self.node_mut(id)?;
+        node.tensor
+            .update_contiguous_values_f32(&new_values)
+            .map_err(AutogradError::DenseTensor)
+    }
 }
 
 #[cfg(test)]
@@ -17036,6 +17048,17 @@ mod tests {
             .update_tensor_values(bogus, vec![1.0, 2.0])
             .expect_err("update_tensor_values with unknown node must fail");
         assert!(matches!(err, AutogradError::UnknownTensorNode(id) if id == bogus));
+    }
+
+    #[test]
+    fn update_tensor_values_f32_updates_tensor() {
+        let mut tape = TensorTape::new();
+        let node = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], false)
+            .expect("leaf_f32");
+        tape.update_tensor_values_f32(node, vec![4.0f32, 5.0, 6.0])
+            .expect("update f32 values");
+        assert_eq!(tape.values_f32(node).unwrap(), vec![4.0f32, 5.0, 6.0]);
     }
 
     // ---- Graph consumption tests (bd-3dpn.2) ----
