@@ -13,8 +13,9 @@ use ft_autograd::{
     UnaryOperationEvent,
 };
 use ft_core::{
-    DType, DenseI64Tensor, DenseTensor, ExecutionMode, SparseCOOTensor, SparseCSRTensor,
-    SparseTensorError, TensorCompatError, TensorMeta, TensorStorage,
+    BFloat16, Complex64, Complex128, DType, DenseI64Tensor, DenseTensor, ExecutionMode, Float16,
+    SparseCOOTensor, SparseCSRTensor, SparseTensorError, TensorCompatError, TensorMeta,
+    TensorStorage,
 };
 use ft_dispatch::{
     ComparisonDispatchDecision, ComparisonOp, UnaryDispatchDecision, UnaryOp,
@@ -2126,9 +2127,7 @@ impl FrankenTorchSession {
         other: TensorNodeId,
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let meta = self.tensor_tape.tensor_meta(other)?.clone();
-        let shape = meta.shape().to_vec();
-        self.empty(shape, requires_grad)
+        self.full_like(other, 0.0, requires_grad)
     }
 
     /// Create a tensor with the same shape as `other`, filled with `fill_value`.
@@ -2142,8 +2141,45 @@ impl FrankenTorchSession {
         let shape = meta.shape().to_vec();
         let numel =
             Self::checked_shape_numel(&shape, "tensor factory shape volume overflow in full_like")?;
-        let values = vec![fill_value; numel];
-        let tensor = DenseTensor::from_contiguous_values(values, shape, meta.device())?;
+        let tensor = match meta.dtype() {
+            DType::F64 => {
+                DenseTensor::from_contiguous_values(vec![fill_value; numel], shape, meta.device())?
+            }
+            DType::F32 => DenseTensor::from_contiguous_values_f32(
+                vec![fill_value as f32; numel],
+                shape,
+                meta.device(),
+            )?,
+            DType::F16 => {
+                let value = Float16::from_f32(fill_value as f32);
+                DenseTensor::from_contiguous_values_f16(vec![value; numel], shape, meta.device())?
+            }
+            DType::BF16 => {
+                let value = BFloat16::from_f32(fill_value as f32);
+                DenseTensor::from_contiguous_values_bf16(vec![value; numel], shape, meta.device())?
+            }
+            DType::Complex64 => {
+                let value = Complex64::new(fill_value as f32, 0.0);
+                DenseTensor::from_typed_storage(
+                    meta.clone(),
+                    TensorStorage::Complex64(Arc::new(vec![value; numel])),
+                )?
+            }
+            DType::Complex128 => {
+                let value = Complex128::new(fill_value, 0.0);
+                DenseTensor::from_typed_storage(
+                    meta.clone(),
+                    TensorStorage::Complex128(Arc::new(vec![value; numel])),
+                )?
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "full_like: unsupported dtype",
+                    },
+                )));
+            }
+        };
         Ok(self.tensor_tape.leaf_tensor(tensor, requires_grad))
     }
 
@@ -2421,8 +2457,18 @@ impl FrankenTorchSession {
                     },
                 )));
             }
-            let total: usize = aw_shape.iter().product();
-            let batch_count = total / (l * s);
+            let total = Self::checked_shape_numel(
+                &aw_shape,
+                "scaled_dot_product_attention: attention shape volume overflow",
+            )?;
+            let Some(batch_area) = l.checked_mul(s) else {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "scaled_dot_product_attention: attention shape volume overflow",
+                    },
+                )));
+            };
+            let batch_count = total / batch_area;
             let mut mask_data = Vec::with_capacity(total);
             for _ in 0..batch_count {
                 for i in 0..l {
@@ -19770,6 +19816,18 @@ mod tests {
     }
 
     #[test]
+    fn session_full_like_preserves_f32_dtype() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0], vec![3], false)
+            .expect("t");
+        let f = session.full_like(t, 1.25, false).expect("full_like");
+        assert_eq!(session.tensor_dtype(f).expect("dtype"), DType::F32);
+        let vals = session.tensor_values_f32(f).expect("vals");
+        assert_eq!(vals, vec![1.25f32, 1.25, 1.25]);
+    }
+
+    #[test]
     fn session_zeros_like() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = session
@@ -19789,6 +19847,18 @@ mod tests {
         let o = session.ones_like(t, false).expect("ones_like");
         let vals = session.tensor_values(o).expect("vals");
         assert_eq!(vals, vec![1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn session_empty_like_preserves_f32_dtype() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("t");
+        let e = session.empty_like(t, false).expect("empty_like");
+        assert_eq!(session.tensor_dtype(e).expect("dtype"), DType::F32);
+        let vals = session.tensor_values_f32(e).expect("vals");
+        assert_eq!(vals, vec![0.0f32, 0.0, 0.0, 0.0]);
     }
 
     #[test]
