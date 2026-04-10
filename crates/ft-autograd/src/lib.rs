@@ -2952,10 +2952,13 @@ impl Tape {
         rhs: NodeId,
         mode: ExecutionMode,
     ) -> Result<(NodeId, OperationEvent), AutogradError> {
-        if matches!(op, BinaryOp::MatMul) {
+        if matches!(
+            op,
+            BinaryOp::MatMul | BinaryOp::Dot | BinaryOp::Outer | BinaryOp::Bmm
+        ) {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
-                    reason: "matmul is unsupported for scalar tensors",
+                    reason: "scalar binary op does not support matmul/dot/outer/bmm",
                 },
             )));
         }
@@ -2972,25 +2975,29 @@ impl Tape {
         };
 
         let out = NodeId(self.nodes.len());
+        let node_op = match op {
+            BinaryOp::Add => NodeOp::Add { lhs, rhs },
+            BinaryOp::Sub => NodeOp::Sub { lhs, rhs },
+            BinaryOp::Div => NodeOp::Div { lhs, rhs },
+            BinaryOp::Mul => NodeOp::Mul { lhs, rhs },
+            BinaryOp::Min => NodeOp::Min { lhs, rhs },
+            BinaryOp::Max => NodeOp::Max { lhs, rhs },
+            BinaryOp::Atan2 => NodeOp::Atan2 { lhs, rhs },
+            BinaryOp::Fmod => NodeOp::Fmod { lhs, rhs },
+            BinaryOp::Remainder => NodeOp::Remainder { lhs, rhs },
+            _ => {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "scalar binary op does not support matmul/dot/outer/bmm",
+                    },
+                )));
+            }
+        };
+
         self.nodes.push(Node {
             tensor: outcome.tensor,
             requires_grad,
-            op: match op {
-                BinaryOp::Add => NodeOp::Add { lhs, rhs },
-                BinaryOp::Sub => NodeOp::Sub { lhs, rhs },
-                BinaryOp::Div => NodeOp::Div { lhs, rhs },
-                BinaryOp::Mul => NodeOp::Mul { lhs, rhs },
-                BinaryOp::Min => NodeOp::Min { lhs, rhs },
-                BinaryOp::Max => NodeOp::Max { lhs, rhs },
-                BinaryOp::Atan2 => NodeOp::Atan2 { lhs, rhs },
-                BinaryOp::Fmod => NodeOp::Fmod { lhs, rhs },
-                BinaryOp::Remainder => NodeOp::Remainder { lhs, rhs },
-                BinaryOp::MatMul | BinaryOp::Dot | BinaryOp::Outer | BinaryOp::Bmm => {
-                    unreachable!(
-                        "scalar matmul/dot/outer/bmm should be rejected before node creation"
-                    )
-                }
-            },
+            op: node_op,
         });
 
         Ok((
@@ -18572,12 +18579,12 @@ mod tests {
                 assert_eq!(data.len(), 4);
                 assert_eq!(data.as_slice(), &[1.0f32, 2.0, 3.0, 4.0]);
             }
-            other => {
-                panic!(
-                    "f32 leaf should produce F32 storage, got {:?}",
-                    other.dtype()
-                );
-            }
+            other => assert_eq!(
+                other.dtype(),
+                DType::F32,
+                "f32 leaf should produce F32 storage, got {:?}",
+                other.dtype()
+            ),
         }
     }
 
@@ -18593,12 +18600,12 @@ mod tests {
             ft_core::TensorStorage::F32(data) => {
                 assert_eq!(data.as_slice(), &[6.0f32]);
             }
-            other => {
-                panic!(
-                    "f32 sum should produce F32 storage, got {:?}",
-                    other.dtype()
-                );
-            }
+            other => assert_eq!(
+                other.dtype(),
+                DType::F32,
+                "f32 sum should produce F32 storage, got {:?}",
+                other.dtype()
+            ),
         }
     }
 

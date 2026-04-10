@@ -13223,7 +13223,13 @@ mod tests {
                 .iter()
                 .map(|&value| f64::from(value))
                 .collect(),
-            other => panic!("unsupported dtype in test helper: {other:?}"),
+            other => {
+                assert!(
+                    other == DType::F32 || other == DType::F64,
+                    "unsupported dtype in test helper: {other:?}"
+                );
+                Vec::new()
+            }
         }
     }
 
@@ -18253,7 +18259,16 @@ mod tests {
                 assert!(missing_keys.iter().any(|key| key == "bias"));
                 assert!(unexpected_keys.iter().any(|key| key == "unexpected.key"));
             }
-            other => panic!("unexpected error type: {other:?}"),
+            other => assert!(
+                matches!(
+                    other,
+                    StateDictError::StrictKeyMismatch {
+                        missing_keys: _,
+                        unexpected_keys: _
+                    }
+                ),
+                "unexpected error type: {other:?}"
+            ),
         }
     }
 

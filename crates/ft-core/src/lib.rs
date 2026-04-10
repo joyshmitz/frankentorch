@@ -1435,11 +1435,20 @@ pub enum SparseTensorError {
     /// Indices tensor has wrong dtype (must be I64).
     InvalidIndicesDType { actual: DType },
     /// Indices sparse_dim doesn't match the dense shape.
-    SparseDimMismatch { indices_sparse_dim: usize, expected: usize },
+    SparseDimMismatch {
+        indices_sparse_dim: usize,
+        expected: usize,
+    },
     /// Number of non-zero entries doesn't match between indices and values.
-    NnzMismatch { indices_nnz: usize, values_nnz: usize },
+    NnzMismatch {
+        indices_nnz: usize,
+        values_nnz: usize,
+    },
     /// Values tensor shape doesn't match expected [nnz, *dense_dims].
-    InvalidValuesShape { expected: Vec<usize>, actual: Vec<usize> },
+    InvalidValuesShape {
+        expected: Vec<usize>,
+        actual: Vec<usize>,
+    },
     /// Index out of bounds for the dense shape.
     IndexOutOfBounds { dim: usize, index: i64, size: usize },
     /// Negative index in indices tensor.
@@ -1467,17 +1476,32 @@ impl fmt::Display for SparseTensorError {
             Self::InvalidIndicesDType { actual } => {
                 write!(f, "indices tensor has dtype {actual:?}, expected I64")
             }
-            Self::SparseDimMismatch { indices_sparse_dim, expected } => {
-                write!(f, "indices sparse_dim is {indices_sparse_dim}, expected {expected}")
+            Self::SparseDimMismatch {
+                indices_sparse_dim,
+                expected,
+            } => {
+                write!(
+                    f,
+                    "indices sparse_dim is {indices_sparse_dim}, expected {expected}"
+                )
             }
-            Self::NnzMismatch { indices_nnz, values_nnz } => {
-                write!(f, "indices nnz ({indices_nnz}) != values nnz ({values_nnz})")
+            Self::NnzMismatch {
+                indices_nnz,
+                values_nnz,
+            } => {
+                write!(
+                    f,
+                    "indices nnz ({indices_nnz}) != values nnz ({values_nnz})"
+                )
             }
             Self::InvalidValuesShape { expected, actual } => {
                 write!(f, "values shape is {actual:?}, expected {expected:?}")
             }
             Self::IndexOutOfBounds { dim, index, size } => {
-                write!(f, "index {index} at dim {dim} out of bounds for size {size}")
+                write!(
+                    f,
+                    "index {index} at dim {dim} out of bounds for size {size}"
+                )
             }
             Self::NegativeIndex { dim, index } => {
                 write!(f, "negative index {index} at dim {dim}")
@@ -1489,7 +1513,10 @@ impl fmt::Display for SparseTensorError {
                 write!(f, "col_indices length is {actual}, expected {expected}")
             }
             Self::NonMonotonicCrowIndices { row, prev, curr } => {
-                write!(f, "crow_indices not monotonic at row {row}: {prev} > {curr}")
+                write!(
+                    f,
+                    "crow_indices not monotonic at row {row}: {prev} > {curr}"
+                )
             }
             Self::ColIndexOutOfBounds { index, ncols } => {
                 write!(f, "column index {index} out of bounds for {ncols} columns")
@@ -1659,11 +1686,8 @@ impl SparseCOOTensor {
         if nnz == 0 {
             // Empty sparse tensor
             let sparse_dim = dense_shape.len();
-            let indices = DenseI64Tensor::from_contiguous_values(
-                vec![],
-                vec![sparse_dim, 0],
-                device,
-            )?;
+            let indices =
+                DenseI64Tensor::from_contiguous_values(vec![], vec![sparse_dim, 0], device)?;
             let values_tensor = DenseTensor::from_contiguous_values(vec![], vec![0], device)?;
             return Self::new(indices, values_tensor, dense_shape, true);
         }
@@ -1684,11 +1708,8 @@ impl SparseCOOTensor {
             }
         }
 
-        let indices = DenseI64Tensor::from_contiguous_values(
-            indices_data,
-            vec![sparse_dim, nnz],
-            device,
-        )?;
+        let indices =
+            DenseI64Tensor::from_contiguous_values(indices_data, vec![sparse_dim, nnz], device)?;
 
         let values_tensor = DenseTensor::from_contiguous_values(values, vec![nnz], device)?;
         let values_tensor = values_tensor.to_dtype(dtype)?;
@@ -1809,11 +1830,8 @@ impl SparseCOOTensor {
             }
         }
 
-        let result = DenseTensor::from_contiguous_values(
-            dense_data,
-            self.dense_shape.clone(),
-            self.device,
-        )?;
+        let result =
+            DenseTensor::from_contiguous_values(dense_data, self.dense_shape.clone(), self.device)?;
         Ok(result.to_dtype(self.dtype())?)
     }
 }
@@ -1864,7 +1882,9 @@ impl SparseCSRTensor {
         // Validate crow_indices: shape [nrows + 1]
         let crow_shape = crow_indices.meta().shape();
         if crow_shape.len() != 1 {
-            return Err(SparseTensorError::UnsupportedRank { rank: crow_shape.len() });
+            return Err(SparseTensorError::UnsupportedRank {
+                rank: crow_shape.len(),
+            });
         }
         if crow_shape[0] != nrows + 1 {
             return Err(SparseTensorError::InvalidCrowIndicesLen {
@@ -1885,7 +1905,9 @@ impl SparseCSRTensor {
         // Validate col_indices: shape [nnz]
         let col_shape = col_indices.meta().shape();
         if col_shape.len() != 1 {
-            return Err(SparseTensorError::UnsupportedRank { rank: col_shape.len() });
+            return Err(SparseTensorError::UnsupportedRank {
+                rank: col_shape.len(),
+            });
         }
         if col_shape[0] != nnz {
             return Err(SparseTensorError::InvalidColIndicesLen {
@@ -1897,7 +1919,9 @@ impl SparseCSRTensor {
         // Validate values: shape [nnz]
         let values_shape = values.meta().shape();
         if values_shape.len() != 1 {
-            return Err(SparseTensorError::UnsupportedRank { rank: values_shape.len() });
+            return Err(SparseTensorError::UnsupportedRank {
+                rank: values_shape.len(),
+            });
         }
         if values_shape[0] != nnz {
             return Err(SparseTensorError::NnzMismatch {
@@ -1921,10 +1945,7 @@ impl SparseCSRTensor {
         let col_data = col_indices.storage();
         for &col in col_data {
             if col < 0 || (col as usize) >= ncols {
-                return Err(SparseTensorError::ColIndexOutOfBounds {
-                    index: col,
-                    ncols,
-                });
+                return Err(SparseTensorError::ColIndexOutOfBounds { index: col, ncols });
             }
         }
 
@@ -1978,7 +1999,12 @@ impl SparseCSRTensor {
 
     #[must_use]
     pub fn nnz(&self) -> usize {
-        self.col_indices.meta().shape().first().copied().unwrap_or(0)
+        self.col_indices
+            .meta()
+            .shape()
+            .first()
+            .copied()
+            .unwrap_or(0)
     }
 
     #[must_use]
@@ -2015,11 +2041,8 @@ impl SparseCSRTensor {
             }
         }
 
-        let result = DenseTensor::from_contiguous_values(
-            dense_data,
-            vec![nrows, ncols],
-            self.device,
-        )?;
+        let result =
+            DenseTensor::from_contiguous_values(dense_data, vec![nrows, ncols], self.device)?;
         Ok(result.to_dtype(self.dtype())?)
     }
 }
@@ -3728,14 +3751,12 @@ mod tests {
         // Create a 3x4 sparse matrix with 2 non-zero elements
         // indices: [[0, 2], [1, 3]] (row 0 col 1, row 2 col 3)
         // values: [1.0, 2.0]
-        let indices = DenseI64Tensor::from_contiguous_values(
-            vec![0, 2, 1, 3],
-            vec![2, 2],
-            Device::Cpu,
-        )
-        .unwrap();
+        let indices =
+            DenseI64Tensor::from_contiguous_values(vec![0, 2, 1, 3], vec![2, 2], Device::Cpu)
+                .unwrap();
 
-        let values = DenseTensor::from_contiguous_values(vec![1.0, 2.0], vec![2], Device::Cpu).unwrap();
+        let values =
+            DenseTensor::from_contiguous_values(vec![1.0, 2.0], vec![2], Device::Cpu).unwrap();
 
         let sparse = SparseCOOTensor::new(indices, values, vec![3, 4], true).unwrap();
 
@@ -3767,8 +3788,8 @@ mod tests {
 
     #[test]
     fn sparse_coo_empty() {
-        let sparse = SparseCOOTensor::from_coords(&[], vec![], vec![5, 5], DType::F64, Device::Cpu)
-            .unwrap();
+        let sparse =
+            SparseCOOTensor::from_coords(&[], vec![], vec![5, 5], DType::F64, Device::Cpu).unwrap();
 
         assert_eq!(sparse.nnz(), 0);
         assert_eq!(sparse.dense_shape(), &[5, 5]);
@@ -3782,7 +3803,8 @@ mod tests {
     fn sparse_coo_index_out_of_bounds() {
         // Index [5, 0] is out of bounds for shape [3, 4] (row 5 >= 3)
         // indices shape [2, 1]: 2 sparse dims, 1 non-zero
-        let indices = DenseI64Tensor::from_contiguous_values(vec![5, 0], vec![2, 1], Device::Cpu).unwrap();
+        let indices =
+            DenseI64Tensor::from_contiguous_values(vec![5, 0], vec![2, 1], Device::Cpu).unwrap();
         let values = DenseTensor::from_contiguous_values(vec![1.0], vec![1], Device::Cpu).unwrap();
 
         let result = SparseCOOTensor::new(indices, values, vec![3, 4], true);
@@ -3801,9 +3823,13 @@ mod tests {
         // crow_indices: [0, 2, 3, 4] (row 0 has 2 elems, row 1 has 1, row 2 has 1)
         // col_indices: [0, 2, 3, 0]
         // values: [1, 2, 3, 4]
-        let crow = DenseI64Tensor::from_contiguous_values(vec![0, 2, 3, 4], vec![4], Device::Cpu).unwrap();
-        let col = DenseI64Tensor::from_contiguous_values(vec![0, 2, 3, 0], vec![4], Device::Cpu).unwrap();
-        let values = DenseTensor::from_contiguous_values(vec![1.0, 2.0, 3.0, 4.0], vec![4], Device::Cpu).unwrap();
+        let crow =
+            DenseI64Tensor::from_contiguous_values(vec![0, 2, 3, 4], vec![4], Device::Cpu).unwrap();
+        let col =
+            DenseI64Tensor::from_contiguous_values(vec![0, 2, 3, 0], vec![4], Device::Cpu).unwrap();
+        let values =
+            DenseTensor::from_contiguous_values(vec![1.0, 2.0, 3.0, 4.0], vec![4], Device::Cpu)
+                .unwrap();
 
         let csr = SparseCSRTensor::new(crow, col, values, [3, 4]).unwrap();
 
@@ -3816,9 +3842,13 @@ mod tests {
     #[test]
     fn sparse_csr_to_dense() {
         // Same matrix as above
-        let crow = DenseI64Tensor::from_contiguous_values(vec![0, 2, 3, 4], vec![4], Device::Cpu).unwrap();
-        let col = DenseI64Tensor::from_contiguous_values(vec![0, 2, 3, 0], vec![4], Device::Cpu).unwrap();
-        let values = DenseTensor::from_contiguous_values(vec![1.0, 2.0, 3.0, 4.0], vec![4], Device::Cpu).unwrap();
+        let crow =
+            DenseI64Tensor::from_contiguous_values(vec![0, 2, 3, 4], vec![4], Device::Cpu).unwrap();
+        let col =
+            DenseI64Tensor::from_contiguous_values(vec![0, 2, 3, 0], vec![4], Device::Cpu).unwrap();
+        let values =
+            DenseTensor::from_contiguous_values(vec![1.0, 2.0, 3.0, 4.0], vec![4], Device::Cpu)
+                .unwrap();
 
         let csr = SparseCSRTensor::new(crow, col, values, [3, 4]).unwrap();
         let dense = csr.to_dense().unwrap();
@@ -3831,7 +3861,8 @@ mod tests {
     #[test]
     fn sparse_csr_col_out_of_bounds() {
         // Column index 5 is out of bounds for 4 columns
-        let crow = DenseI64Tensor::from_contiguous_values(vec![0, 1], vec![2], Device::Cpu).unwrap();
+        let crow =
+            DenseI64Tensor::from_contiguous_values(vec![0, 1], vec![2], Device::Cpu).unwrap();
         let col = DenseI64Tensor::from_contiguous_values(vec![5], vec![1], Device::Cpu).unwrap();
         let values = DenseTensor::from_contiguous_values(vec![1.0], vec![1], Device::Cpu).unwrap();
 
@@ -3846,7 +3877,8 @@ mod tests {
     fn sparse_csr_non_monotonic_crow() {
         // crow_indices [0, 2, 1] is not monotonic at row 1: 2 > 1
         // nnz = crow[nrows] = crow[2] = 1, so col and values need 1 element
-        let crow = DenseI64Tensor::from_contiguous_values(vec![0, 2, 1], vec![3], Device::Cpu).unwrap();
+        let crow =
+            DenseI64Tensor::from_contiguous_values(vec![0, 2, 1], vec![3], Device::Cpu).unwrap();
         let col = DenseI64Tensor::from_contiguous_values(vec![0], vec![1], Device::Cpu).unwrap();
         let values = DenseTensor::from_contiguous_values(vec![1.0], vec![1], Device::Cpu).unwrap();
 

@@ -971,8 +971,9 @@ fn checkpoint_scratch_dir() -> Result<PathBuf, String> {
         return Ok(PathBuf::from(raw));
     }
 
-    let cwd = std::env::current_dir()
-        .map_err(|error| format!("failed to resolve current directory for perf scratch: {error}"))?;
+    let cwd = std::env::current_dir().map_err(|error| {
+        format!("failed to resolve current directory for perf scratch: {error}")
+    })?;
     Ok(cwd.join("artifacts/phase2c/performance/.scratch"))
 }
 

@@ -1375,7 +1375,11 @@ impl FrankenTorchSession {
                 );
                 Ok(out)
             }
-            _ => unreachable!("base_dtype validated above"),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "stft: unsupported base dtype",
+                },
+            ))),
         }
     }
 
@@ -8204,27 +8208,51 @@ impl FrankenTorchSession {
         Ok(values[0])
     }
 
+    fn clone_dense_tensor_from_node(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<DenseTensor, AutogradError> {
+        let tensor = self.tensor_tape.tensor(node)?;
+        let meta = tensor.meta().clone();
+        let storage = match tensor.typed_storage() {
+            TensorStorage::F64(values) => TensorStorage::F64(Arc::new(values.as_ref().clone())),
+            TensorStorage::F32(values) => TensorStorage::F32(Arc::new(values.as_ref().clone())),
+            TensorStorage::F16(values) => TensorStorage::F16(Arc::new(values.as_ref().clone())),
+            TensorStorage::BF16(values) => TensorStorage::BF16(Arc::new(values.as_ref().clone())),
+            TensorStorage::Complex64(values) => {
+                TensorStorage::Complex64(Arc::new(values.as_ref().clone()))
+            }
+            TensorStorage::Complex128(values) => {
+                TensorStorage::Complex128(Arc::new(values.as_ref().clone()))
+            }
+        };
+        Ok(DenseTensor::from_typed_storage(meta, storage)?)
+    }
+
     /// Create a deep copy of a tensor node.
     ///
     /// When `requires_grad` is true, the clone participates in autograd and
-    /// gradients flow back to the original tensor. When false, the clone is
-    /// detached from the computation graph (equivalent to `tensor_detach`).
+    /// gradients flow back to the original tensor if it already requires grad.
+    /// When false, the clone is detached from the computation graph (equivalent to
+    /// `tensor_detach`).
     pub fn tensor_clone(
         &mut self,
         node: TensorNodeId,
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         if requires_grad {
-            // Autograd-tracked clone: multiply by ones tensor to maintain gradient flow
-            let shape = self.tensor_shape(node)?;
-            let ones = self.full(shape, 1.0, false)?;
-            self.tensor_mul(node, ones)
+            if self.tensor_tape.tensor_requires_grad(node)? {
+                // Autograd-tracked clone: multiply by ones tensor to maintain gradient flow
+                let shape = self.tensor_shape(node)?;
+                let ones = self.full(shape, 1.0, false)?;
+                self.tensor_mul(node, ones)
+            } else {
+                let tensor = self.clone_dense_tensor_from_node(node)?;
+                Ok(self.tensor_tape.leaf_tensor(tensor, true))
+            }
         } else {
-            let values = self.tensor_tape.values(node)?;
-            let meta = self.tensor_tape.tensor_meta(node)?.clone();
-            let shape = meta.shape().to_vec();
-            let tensor = DenseTensor::from_contiguous_values(values, shape, meta.device())?;
-            Ok(self.tensor_tape.leaf_tensor(tensor, requires_grad))
+            let tensor = self.clone_dense_tensor_from_node(node)?;
+            Ok(self.tensor_tape.leaf_tensor(tensor, false))
         }
     }
 
@@ -11038,6 +11066,13 @@ impl FrankenTorchSession {
     /// Equivalent to `torch.special.erfinv(input)`.
     /// Uses a rational approximation (Winitzki, 2008).
     pub fn tensor_erfinv(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "erfinv: autograd is not supported",
+                },
+            )));
+        }
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
             (tensor.storage()?.to_vec(), tensor.meta().clone())
@@ -11059,6 +11094,13 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.special.gammaln(input)` / `torch.lgamma(input)`.
     pub fn tensor_gammaln(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "gammaln: autograd is not supported",
+                },
+            )));
+        }
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
             (tensor.storage()?.to_vec(), tensor.meta().clone())
@@ -11080,6 +11122,13 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.special.digamma(input)`.
     pub fn tensor_digamma(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "digamma: autograd is not supported",
+                },
+            )));
+        }
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
             (tensor.storage()?.to_vec(), tensor.meta().clone())
@@ -11106,6 +11155,13 @@ impl FrankenTorchSession {
         n: u32,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "polygamma: autograd is not supported",
+                },
+            )));
+        }
         if n == 0 {
             return self.tensor_digamma(input);
         }
@@ -11136,6 +11192,13 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         p: usize,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multigammaln: autograd is not supported",
+                },
+            )));
+        }
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
             (tensor.storage()?.to_vec(), tensor.meta().clone())
@@ -11173,6 +11236,13 @@ impl FrankenTorchSession {
         x: TensorNodeId,
         y: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(x)? || self.tensor_tape.tensor_requires_grad(y)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "xlog1py: autograd is not supported",
+                },
+            )));
+        }
         let (x_vals, x_meta) = {
             let tensor = self.tensor_tape.tensor(x)?;
             (tensor.storage()?.to_vec(), tensor.meta().clone())
@@ -11215,6 +11285,13 @@ impl FrankenTorchSession {
     /// Equivalent to `torch.special.entr(input)`.
     /// Returns 0 when x == 0 and -inf when x < 0.
     pub fn tensor_entr(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "entr: autograd is not supported",
+                },
+            )));
+        }
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
             (tensor.storage()?.to_vec(), tensor.meta().clone())
@@ -11253,6 +11330,13 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         dim: usize,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_tape.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "logcumsumexp: autograd is not supported",
+                },
+            )));
+        }
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
             (tensor.storage()?.to_vec(), tensor.meta().clone())
@@ -11343,16 +11427,9 @@ impl FrankenTorchSession {
 
         match k {
             0 => {
-                // No rotation — return a clone
-                let vals = {
-                    let t = self.tensor_tape.tensor(input)?;
-                    t.storage()?.to_vec()
-                };
-                let shape = {
-                    let t = self.tensor_tape.tensor(input)?;
-                    t.meta().shape().to_vec()
-                };
-                self.tensor_tape.leaf(vals, shape, false)
+                // No rotation — return a clone preserving grad behavior
+                let requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
+                self.tensor_clone(input, requires_grad)
             }
             1 => {
                 // 90° rotation: flip(transpose(input, d0, d1), d0)
@@ -11369,7 +11446,11 @@ impl FrankenTorchSession {
                 let transposed = self.tensor_transpose(input, dims[0], dims[1])?;
                 self.tensor_flip(transposed, &[dims[1]])
             }
-            _ => unreachable!("k is normalized with rem_euclid(4), so only 0..=3 are possible"),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "rot90: normalized k out of range",
+                },
+            ))),
         }
     }
 
@@ -11642,9 +11723,13 @@ impl FrankenTorchSession {
                             }
                         }
                     }
-                    _ => unreachable!(
-                        "nearest interpolation only supports 1-D, 2-D, or 3-D spatial inputs"
-                    ),
+                    _ => {
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "interpolate: nearest supports only 1-D, 2-D, or 3-D inputs",
+                            },
+                        )));
+                    }
                 }
             }
         }
@@ -12725,6 +12810,14 @@ impl FrankenTorchSession {
         let a_shape = self.tensor_shape(a)?;
         let b_shape = self.tensor_shape(b)?;
 
+        if a_shape.is_empty() || b_shape.is_empty() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "inner: scalar inputs are not supported",
+                },
+            )));
+        }
+
         // For 1-D: simple dot product
         if a_shape.len() == 1 && b_shape.len() == 1 {
             if a_vals.len() != b_vals.len() {
@@ -12744,8 +12837,29 @@ impl FrankenTorchSession {
         }
 
         // For higher dimensions, last dim of a must match last dim of b
-        let a_last = *a_shape.last().unwrap();
-        let b_last = *b_shape.last().unwrap();
+        let a_last =
+            *a_shape
+                .last()
+                .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "inner: missing last dimension on lhs",
+                    },
+                )))?;
+        let b_last =
+            *b_shape
+                .last()
+                .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "inner: missing last dimension on rhs",
+                    },
+                )))?;
+        if a_last == 0 || b_last == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "inner: last dimension must be non-zero",
+                },
+            )));
+        }
         if a_last != b_last {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -13165,7 +13279,28 @@ impl FrankenTorchSession {
             (v, m.shape().to_vec())
         };
 
-        let last_dim = *shape.last().unwrap();
+        if shape.is_empty() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "mode: input must have at least 1 dimension",
+                },
+            )));
+        }
+        let last_dim =
+            *shape
+                .last()
+                .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "mode: missing last dimension",
+                    },
+                )))?;
+        if last_dim == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "mode: last dimension must be non-zero",
+                },
+            )));
+        }
         let outer: usize = vals.len() / last_dim;
 
         let mut mode_vals = Vec::with_capacity(outer);
@@ -13378,12 +13513,18 @@ impl FrankenTorchSession {
     ///
     /// Creates a new dense tensor filled with zeros except at the
     /// sparse tensor's indexed positions.
-    pub fn sparse_coo_to_dense(&self, sparse: &SparseCOOTensor) -> Result<DenseTensor, SparseTensorError> {
+    pub fn sparse_coo_to_dense(
+        &self,
+        sparse: &SparseCOOTensor,
+    ) -> Result<DenseTensor, SparseTensorError> {
         sparse.to_dense()
     }
 
     /// Convert a sparse CSR tensor to dense format.
-    pub fn sparse_csr_to_dense(&self, sparse: &SparseCSRTensor) -> Result<DenseTensor, SparseTensorError> {
+    pub fn sparse_csr_to_dense(
+        &self,
+        sparse: &SparseCSRTensor,
+    ) -> Result<DenseTensor, SparseTensorError> {
         sparse.to_dense()
     }
 }
@@ -19221,6 +19362,17 @@ mod tests {
         assert_eq!(session.tensor_shape(c).expect("shape"), vec![3]);
         // Nodes should be different
         assert_ne!(t, c);
+    }
+
+    #[test]
+    fn session_tensor_clone_preserves_f32_dtype() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable_f32(vec![1.0f32, 2.5], vec![2], false)
+            .expect("t");
+        let c = session.tensor_clone(t, false).expect("clone");
+        assert_eq!(session.tensor_dtype(c).expect("dtype"), DType::F32);
+        assert_eq!(session.tensor_values_f32(c).expect("vals"), vec![1.0, 2.5]);
     }
 
     #[test]
@@ -26072,6 +26224,13 @@ mod tests {
     }
 
     #[test]
+    fn gammaln_rejects_grad_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        assert!(s.tensor_gammaln(input).is_err());
+    }
+
+    #[test]
     fn digamma_known_values() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // psi(1) = -gamma ≈ -0.5772
@@ -26122,6 +26281,14 @@ mod tests {
             "2 * log1p(1) = 2*ln(2)"
         );
         assert!((vals[2]).abs() < 1e-12, "1 * log1p(0) = 0");
+    }
+
+    #[test]
+    fn xlog1py_rejects_grad_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let y = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        assert!(s.tensor_xlog1py(x, y).is_err());
     }
 
     #[test]
@@ -28226,6 +28393,22 @@ mod tests {
     }
 
     #[test]
+    fn rot90_identity_preserves_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+            .unwrap();
+        let out = s.tensor_rot90(x, 0, [0, 1]).unwrap();
+        assert!(s.tensor_requires_grad(out).unwrap());
+        let sum = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(sum).unwrap();
+        assert_eq!(
+            report.gradient(x),
+            Some(vec![1.0, 1.0, 1.0, 1.0].as_slice())
+        );
+    }
+
+    #[test]
     fn rot90_360_returns_original() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s
@@ -28559,6 +28742,20 @@ mod tests {
         let (vals, _) = s.tensor_mode(x).unwrap();
         let v = s.tensor_values(vals).unwrap();
         assert_eq!(v, &[1.0, 3.0]);
+    }
+
+    #[test]
+    fn mode_scalar_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![], false).unwrap();
+        assert!(s.tensor_mode(x).is_err());
+    }
+
+    #[test]
+    fn mode_zero_last_dim_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(Vec::new(), vec![2, 0], false).unwrap();
+        assert!(s.tensor_mode(x).is_err());
     }
 
     // ── quantile tests ──────────────────────────────────────────────────
@@ -29122,6 +29319,14 @@ mod tests {
         let b = s
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .unwrap();
+        assert!(s.tensor_inner(a, b).is_err());
+    }
+
+    #[test]
+    fn inner_scalar_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0], vec![], false).unwrap();
+        let b = s.tensor_variable(vec![2.0], vec![], false).unwrap();
         assert!(s.tensor_inner(a, b).is_err());
     }
 

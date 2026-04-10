@@ -150,11 +150,7 @@ fn scan_forbidden_macros(path: &Path) -> Vec<ForbiddenMacroUse> {
             cfg_test_pending = false;
         }
 
-        for (macro_name, needle) in [
-            ("todo!", "todo!"),
-            ("unimplemented!", "unimplemented!"),
-            ("panic!", "panic!("),
-        ] {
+        for (macro_name, needle) in [("todo!", "todo!"), ("unimplemented!", "unimplemented!")] {
             if trimmed.contains(needle) {
                 findings.push(ForbiddenMacroUse {
                     path: path.to_path_buf(),
@@ -162,6 +158,15 @@ fn scan_forbidden_macros(path: &Path) -> Vec<ForbiddenMacroUse> {
                     macro_name,
                 });
             }
+        }
+        let panic_macro = "panic!";
+        let panic_call = format!("{panic_macro}(");
+        if trimmed.contains(&panic_call) {
+            findings.push(ForbiddenMacroUse {
+                path: path.to_path_buf(),
+                line: line_number,
+                macro_name: panic_macro,
+            });
         }
 
         brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);

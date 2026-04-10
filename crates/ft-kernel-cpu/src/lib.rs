@@ -6604,8 +6604,8 @@ pub fn sparse_coo_matmul_dense_f64(
     // Indices layout: [sparse_dim, nnz], so indices_storage[dim * nnz + i]
     for nz_idx in 0..nnz {
         // Get row and column from indices tensor [2, nnz]
-        let row = indices_storage[0 * nnz + nz_idx] as usize;
-        let col = indices_storage[1 * nnz + nz_idx] as usize;
+        let row = indices_storage[nz_idx] as usize;
+        let col = indices_storage[nnz + nz_idx] as usize;
 
         // Get the sparse value
         let sparse_val = values_f64[nz_idx];
@@ -6769,12 +6769,11 @@ mod tests {
         reciprocal_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64,
         scatter_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sign_scalar,
         sign_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64, sinh_scalar,
-        sinh_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64,
-        sparse_coo_add, sparse_coo_coalesce, sparse_coo_matmul_dense_f64,
-        sqrt_scalar, sqrt_tensor_contiguous_f64, stack_tensor_contiguous_f64,
-        std_dim_tensor_contiguous_f64, sub_scalar, sub_tensor_contiguous_f64,
-        sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
-        tanh_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
+        sinh_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64, sparse_coo_add,
+        sparse_coo_coalesce, sparse_coo_matmul_dense_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
+        stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64, sub_scalar,
+        sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64,
+        tanh_scalar, tanh_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
         var_dim_tensor_contiguous_f64,
     };
 
