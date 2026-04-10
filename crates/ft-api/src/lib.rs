@@ -2360,6 +2360,13 @@ impl FrankenTorchSession {
         dropout_p: f64,
         is_causal: bool,
     ) -> Result<TensorNodeId, AutogradError> {
+        if is_causal && attn_mask.is_some() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scaled_dot_product_attention: attn_mask cannot be combined with is_causal",
+                },
+            )));
+        }
         let q_shape = self.tensor_shape(query)?;
         let k_shape = self.tensor_shape(key)?;
 
@@ -25450,6 +25457,19 @@ mod tests {
             .unwrap();
         assert!(
             s.scaled_dot_product_attention(q, k, v, None, 0.0, false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn sdpa_rejects_mask_with_causal() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let q = s.randn(vec![1, 2, 4], false).unwrap();
+        let k = s.randn(vec![1, 2, 4], false).unwrap();
+        let v = s.randn(vec![1, 2, 4], false).unwrap();
+        let mask = s.zeros(vec![1, 2, 2], false).unwrap();
+        assert!(
+            s.scaled_dot_product_attention(q, k, v, Some(mask), 0.0, true)
                 .is_err()
         );
     }
