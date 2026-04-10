@@ -2024,7 +2024,18 @@ impl FrankenTorchSession {
         num_samples: usize,
         replacement: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = self.tensor_values(input)?;
+        let input_tensor = self.tensor_tape.tensor(input)?;
+        let input_dtype = input_tensor.meta().dtype();
+        if !input_dtype.is_floating_point() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multinomial: input must be a real floating-point tensor",
+                },
+            )));
+        }
+        let vals = input_tensor
+            .contiguous_values_as_f64()
+            .map_err(AutogradError::DenseTensor)?;
         let shape = self.tensor_shape(input)?;
 
         let (batch, num_categories) = match shape.len() {
@@ -26246,6 +26257,20 @@ mod tests {
         }
         // Without replacement, indices should be distinct
         assert_ne!(vals[0], vals[1]);
+    }
+
+    #[test]
+    fn multinomial_accepts_f32_weights() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = s
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let samples = s.multinomial(w, 2, false).unwrap();
+        let vals = s.tensor_values(samples).unwrap();
+        assert_eq!(vals.len(), 2);
+        for &v in &vals {
+            assert!((0.0..3.0).contains(&v));
+        }
     }
 
     #[test]
