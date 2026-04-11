@@ -663,12 +663,16 @@ pub fn load_state_dict_from_bytes(
         });
     }
 
-    // Number of tensors — bound by remaining bytes (each tensor needs ≥17 bytes of header)
+    // Number of tensors — bound by remaining bytes (each tensor needs ≥21 bytes minimum)
     let num_tensors = read_usize(data, &mut pos, "tensor count")?;
     let remaining = data.len().saturating_sub(pos);
-    if num_tensors > remaining {
+    let min_tensor_bytes = 21usize;
+    let max_possible = remaining / min_tensor_bytes;
+    if num_tensors > max_possible {
         return Err(TensorIOError::Corrupt {
-            reason: format!("claimed {num_tensors} tensors but only {remaining} bytes remain"),
+            reason: format!(
+                "claimed {num_tensors} tensors but only {remaining} bytes remain (min {min_tensor_bytes} per tensor)"
+            ),
         });
     }
 
@@ -2038,8 +2042,8 @@ mod tests {
         data.extend_from_slice(b"FTSV");
         data.extend_from_slice(&1u32.to_le_bytes()); // version
         data.extend_from_slice(&1u64.to_le_bytes()); // num_tensors = 1
-        data.extend_from_slice(&1u64.to_le_bytes()); // key_len = 1
-        data.push(b'x'); // key
+        data.extend_from_slice(&5u64.to_le_bytes()); // key_len = 5
+        data.extend_from_slice(b"abcde"); // key
         data.extend_from_slice(&2u64.to_le_bytes()); // ndim = 2 (but no dims follow)
 
         let err = load_state_dict_from_bytes(&data).expect_err("truncated shape dims must fail");
@@ -2070,6 +2074,19 @@ mod tests {
         let err = load_state_dict_from_bytes(&bytes).expect_err("trailing bytes must fail");
         assert!(matches!(err, TensorIOError::Corrupt { .. }));
         assert!(err.to_string().contains("trailing bytes"));
+    }
+
+    #[test]
+    fn load_state_dict_rejects_impossible_tensor_count() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&2u64.to_le_bytes()); // num_tensors = 2
+        data.extend_from_slice(&[0u8; 20]); // fewer than 2 * 21 bytes remaining
+
+        let err = load_state_dict_from_bytes(&data).expect_err("impossible tensor count must fail");
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(err.to_string().contains("claimed 2 tensors"));
     }
 
     #[test]
