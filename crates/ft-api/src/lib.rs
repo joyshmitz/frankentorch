@@ -9438,7 +9438,18 @@ impl FrankenTorchSession {
     /// NaN values are treated as non-zero (PyTorch behavior).
     /// The result is a non-differentiable leaf tensor.
     pub fn tensor_nonzero(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        let values = self.tensor_values(input)?;
+        let dtype = self.tensor_dtype(input)?;
+        let (values_f64, values_f32) = match dtype {
+            DType::F64 => (Some(self.tensor_values(input)?), None),
+            DType::F32 => (None, Some(self.tensor_values_f32(input)?)),
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "nonzero requires f32 or f64 tensors",
+                    },
+                )));
+            }
+        };
         let shape = self.tensor_shape(input)?;
         let ndim = shape.len();
 
@@ -9450,13 +9461,26 @@ impl FrankenTorchSession {
 
         let mut indices = Vec::new();
         let numel: usize = shape.iter().product();
-        for (flat_idx, &val) in values.iter().enumerate().take(numel) {
-            if val != 0.0 || val.is_nan() {
-                let mut remaining = flat_idx;
-                for &s in &strides {
-                    let dim_idx = remaining / s;
-                    remaining %= s;
-                    indices.push(dim_idx as f64);
+        if let Some(values) = values_f64 {
+            for (flat_idx, &val) in values.iter().enumerate().take(numel) {
+                if val != 0.0 || val.is_nan() {
+                    let mut remaining = flat_idx;
+                    for &s in &strides {
+                        let dim_idx = remaining / s;
+                        remaining %= s;
+                        indices.push(dim_idx as f64);
+                    }
+                }
+            }
+        } else if let Some(values) = values_f32 {
+            for (flat_idx, &val) in values.iter().enumerate().take(numel) {
+                if val != 0.0 || val.is_nan() {
+                    let mut remaining = flat_idx;
+                    for &s in &strides {
+                        let dim_idx = remaining / s;
+                        remaining %= s;
+                        indices.push(dim_idx as f64);
+                    }
                 }
             }
         }
@@ -9474,7 +9498,18 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<Vec<TensorNodeId>, AutogradError> {
-        let values = self.tensor_values(input)?;
+        let dtype = self.tensor_dtype(input)?;
+        let (values_f64, values_f32) = match dtype {
+            DType::F64 => (Some(self.tensor_values(input)?), None),
+            DType::F32 => (None, Some(self.tensor_values_f32(input)?)),
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "nonzero requires f32 or f64 tensors",
+                    },
+                )));
+            }
+        };
         let shape = self.tensor_shape(input)?;
         let ndim = shape.len();
 
@@ -9485,13 +9520,26 @@ impl FrankenTorchSession {
 
         let mut per_dim_indices: Vec<Vec<f64>> = vec![Vec::new(); ndim];
         let numel: usize = shape.iter().product();
-        for (flat_idx, &val) in values.iter().enumerate().take(numel) {
-            if val != 0.0 || val.is_nan() {
-                let mut remaining = flat_idx;
-                for (d, &s) in strides.iter().enumerate() {
-                    let dim_idx = remaining / s;
-                    remaining %= s;
-                    per_dim_indices[d].push(dim_idx as f64);
+        if let Some(values) = values_f64 {
+            for (flat_idx, &val) in values.iter().enumerate().take(numel) {
+                if val != 0.0 || val.is_nan() {
+                    let mut remaining = flat_idx;
+                    for (d, &s) in strides.iter().enumerate() {
+                        let dim_idx = remaining / s;
+                        remaining %= s;
+                        per_dim_indices[d].push(dim_idx as f64);
+                    }
+                }
+            }
+        } else if let Some(values) = values_f32 {
+            for (flat_idx, &val) in values.iter().enumerate().take(numel) {
+                if val != 0.0 || val.is_nan() {
+                    let mut remaining = flat_idx;
+                    for (d, &s) in strides.iter().enumerate() {
+                        let dim_idx = remaining / s;
+                        remaining %= s;
+                        per_dim_indices[d].push(dim_idx as f64);
+                    }
                 }
             }
         }
@@ -9512,8 +9560,24 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = self.tensor_values(input)?;
-        let count = vals.iter().filter(|&&v| v != 0.0).count() as f64;
+        let dtype = self.tensor_dtype(input)?;
+        let count = match dtype {
+            DType::F64 => {
+                let vals = self.tensor_values(input)?;
+                vals.iter().filter(|&&v| v != 0.0).count() as f64
+            }
+            DType::F32 => {
+                let vals = self.tensor_values_f32(input)?;
+                vals.iter().filter(|&&v| v != 0.0).count() as f64
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "count_nonzero requires f32 or f64 tensors",
+                    },
+                )));
+            }
+        };
         self.tensor_variable(vec![count], vec![1], false)
     }
 
@@ -9529,32 +9593,69 @@ impl FrankenTorchSession {
         if n == 0 {
             return Ok(input);
         }
-        let mut current = input;
-        for _ in 0..n {
-            let vals = self.tensor_values(current)?;
-            let shape = self.tensor_shape(current)?;
-            if vals.is_empty() || vals.len() < 2 {
-                return self.tensor_variable(vec![], vec![0], false);
-            }
-            // Flatten diff for 1-D; for multi-dim diff along last axis
-            let last_dim = *shape.last().unwrap_or(&0);
-            if last_dim < 2 {
-                return self.tensor_variable(vec![], vec![0], false);
-            }
-            let batch: usize = vals.len() / last_dim;
-            let new_last = last_dim - 1;
-            let mut result = Vec::with_capacity(batch * new_last);
-            for b in 0..batch {
-                let base = b * last_dim;
-                for i in 0..new_last {
-                    result.push(vals[base + i + 1] - vals[base + i]);
+        let dtype = self.tensor_dtype(input)?;
+        match dtype {
+            DType::F64 => {
+                let mut current = input;
+                for _ in 0..n {
+                    let vals = self.tensor_values(current)?;
+                    let shape = self.tensor_shape(current)?;
+                    if vals.is_empty() || vals.len() < 2 {
+                        return self.tensor_variable(vec![], vec![0], false);
+                    }
+                    // Flatten diff for 1-D; for multi-dim diff along last axis
+                    let last_dim = *shape.last().unwrap_or(&0);
+                    if last_dim < 2 {
+                        return self.tensor_variable(vec![], vec![0], false);
+                    }
+                    let batch: usize = vals.len() / last_dim;
+                    let new_last = last_dim - 1;
+                    let mut result = Vec::with_capacity(batch * new_last);
+                    for b in 0..batch {
+                        let base = b * last_dim;
+                        for i in 0..new_last {
+                            result.push(vals[base + i + 1] - vals[base + i]);
+                        }
+                    }
+                    let mut new_shape = shape.clone();
+                    *new_shape.last_mut().unwrap() = new_last;
+                    current = self.tensor_variable(result, new_shape, false)?;
                 }
+                Ok(current)
             }
-            let mut new_shape = shape.clone();
-            *new_shape.last_mut().unwrap() = new_last;
-            current = self.tensor_variable(result, new_shape, false)?;
+            DType::F32 => {
+                let mut current = input;
+                for _ in 0..n {
+                    let vals = self.tensor_values_f32(current)?;
+                    let shape = self.tensor_shape(current)?;
+                    if vals.is_empty() || vals.len() < 2 {
+                        return self.tensor_variable_f32(vec![], vec![0], false);
+                    }
+                    let last_dim = *shape.last().unwrap_or(&0);
+                    if last_dim < 2 {
+                        return self.tensor_variable_f32(vec![], vec![0], false);
+                    }
+                    let batch: usize = vals.len() / last_dim;
+                    let new_last = last_dim - 1;
+                    let mut result = Vec::with_capacity(batch * new_last);
+                    for b in 0..batch {
+                        let base = b * last_dim;
+                        for i in 0..new_last {
+                            result.push(vals[base + i + 1] - vals[base + i]);
+                        }
+                    }
+                    let mut new_shape = shape.clone();
+                    *new_shape.last_mut().unwrap() = new_last;
+                    current = self.tensor_variable_f32(result, new_shape, false)?;
+                }
+                Ok(current)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "diff requires f32 or f64 tensors",
+                },
+            ))),
         }
-        Ok(current)
     }
 
     /// Cumulative maximum along flattened tensor.
@@ -23456,6 +23557,17 @@ mod tests {
         assert!(vals[0].abs() < 1e-10);
     }
 
+    #[test]
+    fn count_nonzero_f32() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable_f32(vec![0.0f32, 1.0, f32::NAN], vec![3], false)
+            .unwrap();
+        let out = s.tensor_count_nonzero(t).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 2.0).abs() < 1e-10);
+    }
+
     // ── diff tests ─────────────────────────────────────────────────────
 
     #[test]
@@ -23467,6 +23579,17 @@ mod tests {
         let out = s.tensor_diff(t, 1).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn diff_basic_f32() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable_f32(vec![1.0f32, 2.5, 2.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_diff(t, 1).unwrap();
+        let vals = s.tensor_values_f32(out).unwrap();
+        assert_eq!(vals, vec![1.5f32, -0.5]);
     }
 
     #[test]
@@ -27878,6 +28001,17 @@ mod tests {
         let nz = s.tensor_nonzero(x).unwrap();
         let vals = s.tensor_values(nz).unwrap();
         assert_eq!(vals, vec![1.0]); // index 1 (NaN is nonzero)
+    }
+
+    #[test]
+    fn nonzero_f32_supports_nan() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![0.0f32, f32::NAN, 2.0], vec![3], false)
+            .unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let vals = s.tensor_values(nz).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0]);
     }
 
     #[test]
