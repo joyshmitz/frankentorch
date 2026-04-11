@@ -3391,9 +3391,15 @@ impl FrankenTorchSession {
         }
         let k = shape[0];
         let abs_offset = offset.unsigned_abs() as usize;
-        let n = k + abs_offset;
+        let n = Self::checked_add(k, abs_offset, "diag_embed: output size overflow")?;
         let vals = self.tensor_values(input)?;
-        let mut result = vec![0.0f64; n * n];
+        let numel = Self::checked_mul(n, n, "diag_embed: output size overflow")?;
+        let _ = Self::checked_mul(
+            numel,
+            std::mem::size_of::<f64>(),
+            "diag_embed: output size overflow",
+        )?;
+        let mut result = vec![0.0f64; numel];
         for (i, &v) in vals.iter().enumerate().take(k) {
             let (row, col) = if offset >= 0 {
                 (i, i + abs_offset)
@@ -3750,12 +3756,30 @@ impl FrankenTorchSession {
                     )));
                 }
             };
+            let expected = Self::checked_mul(rows, cols, "block_diag: block size overflow")?;
+            if vals.len() != expected {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "block_diag: values length does not match shape",
+                    },
+                )));
+            }
             blocks.push((vals, rows, cols));
         }
 
-        let total_rows: usize = blocks.iter().map(|(_, r, _)| *r).sum();
-        let total_cols: usize = blocks.iter().map(|(_, _, c)| *c).sum();
-        let mut data = vec![0.0f64; total_rows * total_cols];
+        let total_rows = blocks.iter().try_fold(0usize, |acc, (_, r, _)| {
+            Self::checked_add(acc, *r, "block_diag: output size overflow")
+        })?;
+        let total_cols = blocks.iter().try_fold(0usize, |acc, (_, _, c)| {
+            Self::checked_add(acc, *c, "block_diag: output size overflow")
+        })?;
+        let numel = Self::checked_mul(total_rows, total_cols, "block_diag: output size overflow")?;
+        let _ = Self::checked_mul(
+            numel,
+            std::mem::size_of::<f64>(),
+            "block_diag: output size overflow",
+        )?;
+        let mut data = vec![0.0f64; numel];
 
         let mut row_offset = 0;
         let mut col_offset = 0;
@@ -3794,7 +3818,20 @@ impl FrankenTorchSession {
         }
         let rows = shape[0];
         let cols = n.unwrap_or(rows);
-        let mut data = vec![0.0f64; rows * cols];
+        if cols > i32::MAX as usize {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "vander: N too large",
+                },
+            )));
+        }
+        let numel = Self::checked_mul(rows, cols, "vander: output size overflow")?;
+        let _ = Self::checked_mul(
+            numel,
+            std::mem::size_of::<f64>(),
+            "vander: output size overflow",
+        )?;
+        let mut data = vec![0.0f64; numel];
 
         for i in 0..rows {
             for j in 0..cols {
@@ -14438,9 +14475,15 @@ impl FrankenTorchSession {
         let vals = self.tensor_values(input)?;
         let n = vals.len();
         let abs_offset = offset.unsigned_abs() as usize;
-        let size = n + abs_offset;
+        let size = Self::checked_add(n, abs_offset, "diagflat: output size overflow")?;
 
-        let mut result = vec![0.0; size * size];
+        let numel = Self::checked_mul(size, size, "diagflat: output size overflow")?;
+        let _ = Self::checked_mul(
+            numel,
+            std::mem::size_of::<f64>(),
+            "diagflat: output size overflow",
+        )?;
+        let mut result = vec![0.0; numel];
         for (i, value) in vals.iter().enumerate().take(n) {
             let (row, col) = if offset >= 0 {
                 (i, i + abs_offset)
@@ -24770,6 +24813,14 @@ mod tests {
         assert_eq!(&vals[0..4], &[8.0, 4.0, 2.0, 1.0]);
     }
 
+    #[test]
+    fn vander_rejects_too_large_n() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        let big = i32::MAX as usize + 1;
+        assert!(s.tensor_vander(t, Some(big), false).is_err());
+    }
+
     // ── cdist tests ────────────────────────────────────────────────────
 
     #[test]
@@ -31541,6 +31592,13 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         // Sub-diagonal: [0,0; 5,0]
         assert_eq!(vals, &[0.0, 0.0, 5.0, 0.0]);
+    }
+
+    #[test]
+    fn diagflat_rejects_size_overflow() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        assert!(s.tensor_diagflat(x, i64::MAX).is_err());
     }
 
     // ── trapezoid tests ─────────────────────────────────────────────────
