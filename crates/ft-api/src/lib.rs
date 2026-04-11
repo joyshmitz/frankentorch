@@ -14014,10 +14014,9 @@ impl FrankenTorchSession {
         src: TensorNodeId,
         reduce: &str,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_vals = self.tensor_values(input)?;
         let input_shape = self.tensor_shape(input)?;
-        let idx_vals = self.tensor_values(index)?;
-        let src_vals = self.tensor_values(src)?;
+        let idx_shape = self.tensor_shape(index)?;
+        let src_shape = self.tensor_shape(src)?;
 
         if dim >= input_shape.len() {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -14028,18 +14027,51 @@ impl FrankenTorchSession {
         }
 
         let ndim = input_shape.len();
-        let mut result = input_vals.clone();
+        if idx_shape.len() != ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scatter_reduce: index rank must match input rank",
+                },
+            )));
+        }
+        for d in 0..ndim {
+            if d != dim && idx_shape[d] != input_shape[d] {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "scatter_reduce: index shape must match input shape except at dim",
+                    },
+                )));
+            }
+        }
+        if src_shape != idx_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scatter_reduce: src shape must match index shape",
+                },
+            )));
+        }
+        if !matches!(reduce, "sum" | "prod" | "mean" | "amax" | "amin") {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scatter_reduce: unsupported reduce operation",
+                },
+            )));
+        }
+
+        let input_dtype = self.tensor_tape.dtype(input)?;
+        let src_dtype = self.tensor_tape.dtype(src)?;
+        if src_dtype != input_dtype {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scatter_reduce requires input and src to have matching dtypes",
+                },
+            )));
+        }
 
         // Validate all index values are in range (supports negative wrapping)
+        let idx_vals = self.tensor_values(index)?;
         Self::validate_index_tensor_values(&input_shape, dim, &idx_vals)?;
         let dim_size = input_shape[dim];
-
-        // For counting (mean reduction)
-        let mut counts: Vec<usize> = if reduce == "mean" {
-            vec![0; result.len()]
-        } else {
-            Vec::new()
-        };
 
         // Compute strides
         let mut strides = vec![1usize; ndim];
@@ -14047,7 +14079,6 @@ impl FrankenTorchSession {
             strides[d] = strides[d + 1] * input_shape[d + 1];
         }
 
-        let idx_shape = self.tensor_shape(index)?;
         let mut idx_strides = vec![1usize; ndim];
         for d in (0..ndim - 1).rev() {
             idx_strides[d] = idx_strides[d + 1] * idx_shape[d + 1];
@@ -14055,69 +14086,177 @@ impl FrankenTorchSession {
 
         let total_idx: usize = idx_shape.iter().product();
 
-        for flat_i in 0..total_idx {
-            // Convert flat index to multi-dimensional
-            let mut remaining = flat_i;
-            let mut coords = vec![0usize; ndim];
-            for d in 0..ndim {
-                coords[d] = remaining / idx_strides[d];
-                remaining %= idx_strides[d];
-            }
-
-            // Normalize negative indices (already validated by validate_index_tensor_values)
-            let raw_idx = idx_vals[flat_i] as isize;
-            let target_dim_idx = if raw_idx < 0 {
-                (raw_idx + dim_size as isize) as usize
-            } else {
-                raw_idx as usize
-            };
-
-            // Compute output flat index
-            coords[dim] = target_dim_idx;
-            let out_flat: usize = coords
-                .iter()
-                .zip(strides.iter())
-                .map(|(&c, &s)| c * s)
-                .sum();
-            let sv = src_vals[flat_i];
-
-            match reduce {
-                "sum" => result[out_flat] += sv,
-                "prod" => result[out_flat] *= sv,
-                "mean" => {
-                    result[out_flat] += sv;
-                    counts[out_flat] += 1;
-                }
-                "amax" => {
-                    if sv > result[out_flat] {
-                        result[out_flat] = sv;
-                    }
-                }
-                "amin" => {
-                    if sv < result[out_flat] {
-                        result[out_flat] = sv;
-                    }
-                }
-                _ => {
+        let out = match input_dtype {
+            DType::F64 => {
+                let input_vals = self.tensor_tape.values(input)?;
+                let src_vals = self.tensor_tape.values(src)?;
+                if src_vals.len() < total_idx {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                         ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "scatter_reduce: unsupported reduce operation",
+                            reason: "scatter_reduce: src storage too small for index shape",
                         },
                     )));
                 }
-            }
-        }
+                let mut result = input_vals.clone();
+                let mut counts: Vec<usize> = if reduce == "mean" {
+                    vec![0; result.len()]
+                } else {
+                    Vec::new()
+                };
 
-        // Finalize mean reduction
-        if reduce == "mean" {
-            for (i, &c) in counts.iter().enumerate() {
-                if c > 0 {
-                    result[i] /= (c + 1) as f64; // +1 for original value
+                for flat_i in 0..total_idx {
+                    // Convert flat index to multi-dimensional
+                    let mut remaining = flat_i;
+                    let mut coords = vec![0usize; ndim];
+                    for d in 0..ndim {
+                        coords[d] = remaining / idx_strides[d];
+                        remaining %= idx_strides[d];
+                    }
+
+                    // Normalize negative indices (already validated by validate_index_tensor_values)
+                    let raw_idx = idx_vals[flat_i] as isize;
+                    let target_dim_idx = if raw_idx < 0 {
+                        (raw_idx + dim_size as isize) as usize
+                    } else {
+                        raw_idx as usize
+                    };
+
+                    // Compute output flat index
+                    coords[dim] = target_dim_idx;
+                    let out_flat: usize = coords
+                        .iter()
+                        .zip(strides.iter())
+                        .map(|(&c, &s)| c * s)
+                        .sum();
+                    let sv = src_vals[flat_i];
+
+                    match reduce {
+                        "sum" => result[out_flat] += sv,
+                        "prod" => result[out_flat] *= sv,
+                        "mean" => {
+                            result[out_flat] += sv;
+                            counts[out_flat] += 1;
+                        }
+                        "amax" => {
+                            if sv > result[out_flat] {
+                                result[out_flat] = sv;
+                            }
+                        }
+                        "amin" => {
+                            if sv < result[out_flat] {
+                                result[out_flat] = sv;
+                            }
+                        }
+                        _ => {
+                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                    reason: "scatter_reduce: unsupported reduce operation",
+                                },
+                            )));
+                        }
+                    }
                 }
-            }
-        }
 
-        let out = self.tensor_tape.leaf(result, input_shape, false)?;
+                // Finalize mean reduction
+                if reduce == "mean" {
+                    for (i, &c) in counts.iter().enumerate() {
+                        if c > 0 {
+                            result[i] /= (c + 1) as f64; // +1 for original value
+                        }
+                    }
+                }
+
+                self.tensor_variable(result, input_shape.clone(), false)?
+            }
+            DType::F32 => {
+                let input_vals = self.tensor_tape.values_f32(input)?;
+                let src_vals = self.tensor_tape.values_f32(src)?;
+                if src_vals.len() < total_idx {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "scatter_reduce: src storage too small for index shape",
+                        },
+                    )));
+                }
+                let mut result = input_vals.clone();
+                let mut counts: Vec<usize> = if reduce == "mean" {
+                    vec![0; result.len()]
+                } else {
+                    Vec::new()
+                };
+
+                for flat_i in 0..total_idx {
+                    // Convert flat index to multi-dimensional
+                    let mut remaining = flat_i;
+                    let mut coords = vec![0usize; ndim];
+                    for d in 0..ndim {
+                        coords[d] = remaining / idx_strides[d];
+                        remaining %= idx_strides[d];
+                    }
+
+                    // Normalize negative indices (already validated by validate_index_tensor_values)
+                    let raw_idx = idx_vals[flat_i] as isize;
+                    let target_dim_idx = if raw_idx < 0 {
+                        (raw_idx + dim_size as isize) as usize
+                    } else {
+                        raw_idx as usize
+                    };
+
+                    // Compute output flat index
+                    coords[dim] = target_dim_idx;
+                    let out_flat: usize = coords
+                        .iter()
+                        .zip(strides.iter())
+                        .map(|(&c, &s)| c * s)
+                        .sum();
+                    let sv = src_vals[flat_i];
+
+                    match reduce {
+                        "sum" => result[out_flat] += sv,
+                        "prod" => result[out_flat] *= sv,
+                        "mean" => {
+                            result[out_flat] += sv;
+                            counts[out_flat] += 1;
+                        }
+                        "amax" => {
+                            if sv > result[out_flat] {
+                                result[out_flat] = sv;
+                            }
+                        }
+                        "amin" => {
+                            if sv < result[out_flat] {
+                                result[out_flat] = sv;
+                            }
+                        }
+                        _ => {
+                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                    reason: "scatter_reduce: unsupported reduce operation",
+                                },
+                            )));
+                        }
+                    }
+                }
+
+                // Finalize mean reduction
+                if reduce == "mean" {
+                    for (i, &c) in counts.iter().enumerate() {
+                        if c > 0 {
+                            result[i] /= (c + 1) as f32; // +1 for original value
+                        }
+                    }
+                }
+
+                self.tensor_variable_f32(result, input_shape.clone(), false)?
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "scatter_reduce requires f32 or f64 tensors",
+                    },
+                )));
+            }
+        };
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!(
@@ -30667,6 +30806,89 @@ mod tests {
             err.to_string().contains("out of bounds"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn scatter_reduce_rejects_rank_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.0, 0.0, 0.0, 0.0], vec![2, 2], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![0.0, 1.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(
+            s.tensor_scatter_reduce(input, 1, index, src, "sum")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn scatter_reduce_rejects_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0], vec![3, 2], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false)
+            .unwrap();
+        assert!(
+            s.tensor_scatter_reduce(input, 1, index, src, "sum")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn scatter_reduce_rejects_src_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 1.0, 0.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![9.0, 8.0, 7.0, 6.0, 5.0, 4.0], vec![2, 3], false)
+            .unwrap();
+        assert!(
+            s.tensor_scatter_reduce(input, 1, index, src, "sum")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn scatter_reduce_rejects_dtype_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable_f32(vec![1.0f32, 2.0], vec![2], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![0.0, 1.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(
+            s.tensor_scatter_reduce(input, 0, index, src, "sum")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn scatter_reduce_f32_preserves_dtype() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable_f32(vec![0.0f32, 0.0, 0.0], vec![3], false)
+            .unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 1.0, 0.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let out = s
+            .tensor_scatter_reduce(input, 0, index, src, "sum")
+            .unwrap();
+        let vals = s.tensor_values_f32(out).unwrap();
+        assert_eq!(vals, &[4.0f32, 2.0, 0.0]);
     }
 
     // ── fliplr / flipud / diagflat tests ────────────────────────────────
