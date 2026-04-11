@@ -2245,6 +2245,7 @@ pub fn cat_tensor_contiguous_f64(
         return Err(KernelError::InvalidDimension { dim, ndim });
     }
     // Validate shapes match except along cat dim
+    let mut total_cat_size = 0usize;
     for (data, meta) in inputs {
         ensure_unary_layout_and_storage(data, meta)?;
         let shape = meta.shape();
@@ -2262,11 +2263,16 @@ pub fn cat_tensor_contiguous_f64(
                 });
             }
         }
+        total_cat_size =
+            total_cat_size
+                .checked_add(shape[dim])
+                .ok_or(KernelError::ShapeOverflow {
+                    context: "cat shape sum overflow",
+                })?;
     }
 
     let (outer_size, inner_size, _) =
         checked_dim_loop_sizes(first_shape, dim, "cat shape volume overflow")?;
-    let total_cat_size: usize = inputs.iter().map(|(_, m)| m.shape()[dim]).sum();
     let out_numel = checked_mul(
         checked_mul(
             outer_size,
@@ -2831,10 +2837,13 @@ pub fn index_put_tensor_contiguous_f64(
     }
 
     // Compute the "suffix" size: product of non-indexed dimensions
-    let suffix_size: usize = shape[num_indexed_dims..].iter().product();
+    let suffix_size = checked_shape_numel(
+        &shape[num_indexed_dims..],
+        "index_put suffix shape overflow",
+    )?;
 
     // values must have n_indices * suffix_size elements (or be broadcastable scalar)
-    let values_needed = n_indices * suffix_size;
+    let values_needed = checked_mul(n_indices, suffix_size, "index_put values shape overflow")?;
     let scalar_broadcast = values.len() == 1 && values_needed > 1;
     if !scalar_broadcast && values.len() < values_needed {
         return Err(KernelError::InsufficientStorage {
@@ -2854,7 +2863,8 @@ pub fn index_put_tensor_contiguous_f64(
     // Compute strides for the indexed dimensions
     let mut indexed_strides = vec![0usize; num_indexed_dims];
     for d in 0..num_indexed_dims {
-        indexed_strides[d] = shape[d + 1..].iter().product();
+        indexed_strides[d] =
+            checked_shape_numel(&shape[d + 1..], "index_put stride shape overflow")?;
     }
 
     for i in 0..n_indices {
@@ -5675,6 +5685,7 @@ pub fn cat_tensor_contiguous_f32(
     if dim >= ndim {
         return Err(KernelError::InvalidDimension { dim, ndim });
     }
+    let mut total_cat_size = 0usize;
     for (data, meta) in inputs {
         ensure_unary_layout_and_storage_f32(data, meta)?;
         let shape = meta.shape();
@@ -5692,9 +5703,14 @@ pub fn cat_tensor_contiguous_f32(
                 });
             }
         }
+        total_cat_size =
+            total_cat_size
+                .checked_add(shape[dim])
+                .ok_or(KernelError::ShapeOverflow {
+                    context: "cat_f32 shape sum overflow",
+                })?;
     }
     let (outer_size, inner_size, _) = checked_dim_loop_sizes(first_shape, dim, "cat_f32 overflow")?;
-    let total_cat_size: usize = inputs.iter().map(|(_, m)| m.shape()[dim]).sum();
     let out_numel = checked_mul(
         checked_mul(outer_size, total_cat_size, "cat_f32 overflow")?,
         inner_size,
