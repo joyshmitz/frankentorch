@@ -1481,6 +1481,8 @@ pub enum SparseTensorError {
     InvalidColIndicesLen { expected: usize, actual: usize },
     /// CSR crow_indices values are not monotonically increasing.
     NonMonotonicCrowIndices { row: usize, prev: i64, curr: i64 },
+    /// CSR crow_indices contains an invalid value.
+    InvalidCrowIndexValue { index: usize, value: i64 },
     /// CSR column index out of bounds.
     ColIndexOutOfBounds { index: i64, ncols: usize },
     /// Dense tensor error during conversion.
@@ -1539,6 +1541,9 @@ impl fmt::Display for SparseTensorError {
                     f,
                     "crow_indices not monotonic at row {row}: {prev} > {curr}"
                 )
+            }
+            Self::InvalidCrowIndexValue { index, value } => {
+                write!(f, "crow_indices[{index}] has invalid value {value}")
             }
             Self::ColIndexOutOfBounds { index, ncols } => {
                 write!(f, "column index {index} out of bounds for {ncols} columns")
@@ -1908,21 +1913,33 @@ impl SparseCSRTensor {
                 rank: crow_shape.len(),
             });
         }
-        if crow_shape[0] != nrows + 1 {
+        let expected_crow_len = nrows.checked_add(1).ok_or_else(|| {
+            SparseTensorError::DenseTensor(DenseTensorError::ShapeOverflow {
+                shape: vec![nrows, ncols],
+            })
+        })?;
+        if crow_shape[0] != expected_crow_len {
             return Err(SparseTensorError::InvalidCrowIndicesLen {
-                expected: nrows + 1,
+                expected: expected_crow_len,
                 actual: crow_shape[0],
             });
         }
 
         let crow_data = crow_indices.storage();
 
-        // First element should be 0
-        let nnz = if nrows > 0 {
-            crow_data[nrows] as usize
-        } else {
-            0
-        };
+        if crow_data[0] != 0 {
+            return Err(SparseTensorError::InvalidCrowIndexValue {
+                index: 0,
+                value: crow_data[0],
+            });
+        }
+
+        let nnz = usize::try_from(crow_data[nrows]).map_err(|_| {
+            SparseTensorError::InvalidCrowIndexValue {
+                index: nrows,
+                value: crow_data[nrows],
+            }
+        })?;
 
         // Validate col_indices: shape [nnz]
         let col_shape = col_indices.meta().shape();
@@ -1952,13 +1969,17 @@ impl SparseCSRTensor {
             });
         }
 
-        // Validate crow_indices is monotonically increasing
-        for i in 0..nrows {
-            if crow_data[i] > crow_data[i + 1] {
+        // Validate crow_indices is monotonically increasing and within bounds.
+        for i in 0..=nrows {
+            let value = crow_data[i];
+            if value < 0 {
+                return Err(SparseTensorError::InvalidCrowIndexValue { index: i, value });
+            }
+            if i > 0 && crow_data[i - 1] > value {
                 return Err(SparseTensorError::NonMonotonicCrowIndices {
-                    row: i,
-                    prev: crow_data[i],
-                    curr: crow_data[i + 1],
+                    row: i - 1,
+                    prev: crow_data[i - 1],
+                    curr: value,
                 });
             }
         }
@@ -3941,6 +3962,34 @@ mod tests {
         assert!(matches!(
             result,
             Err(SparseTensorError::NonMonotonicCrowIndices { .. })
+        ));
+    }
+
+    #[test]
+    fn sparse_csr_rejects_nonzero_crow_start() {
+        let crow =
+            DenseI64Tensor::from_contiguous_values(vec![1, 1], vec![2], Device::Cpu).unwrap();
+        let col = DenseI64Tensor::from_contiguous_values(vec![0], vec![1], Device::Cpu).unwrap();
+        let values = DenseTensor::from_contiguous_values(vec![1.0], vec![1], Device::Cpu).unwrap();
+
+        let result = SparseCSRTensor::new(crow, col, values, [1, 3]);
+        assert!(matches!(
+            result,
+            Err(SparseTensorError::InvalidCrowIndexValue { .. })
+        ));
+    }
+
+    #[test]
+    fn sparse_csr_rejects_negative_crow_tail() {
+        let crow =
+            DenseI64Tensor::from_contiguous_values(vec![0, -1], vec![2], Device::Cpu).unwrap();
+        let col = DenseI64Tensor::from_contiguous_values(vec![], vec![0], Device::Cpu).unwrap();
+        let values = DenseTensor::from_contiguous_values(vec![], vec![0], Device::Cpu).unwrap();
+
+        let result = SparseCSRTensor::new(crow, col, values, [1, 3]);
+        assert!(matches!(
+            result,
+            Err(SparseTensorError::InvalidCrowIndexValue { .. })
         ));
     }
 }
