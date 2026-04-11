@@ -6573,6 +6573,15 @@ impl FrankenTorchSession {
         src: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
+        let index_shape = self.tensor_shape(index)?;
+        if index_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_add: index tensor must be 1D",
+                },
+            )));
+        }
+        let index_len = index_shape[0];
         let idx_vals = self.tensor_values(index)?;
         let src_shape = self.tensor_shape(src)?;
         let input_dtype = self.tensor_tape.dtype(input)?;
@@ -6583,6 +6592,22 @@ impl FrankenTorchSession {
                     reason: "index_add requires input and src to have matching dtypes",
                 },
             )));
+        }
+        if src_shape.len() != shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_add: src rank must match input rank",
+                },
+            )));
+        }
+        for (dim_idx, &size) in shape.iter().enumerate() {
+            if dim_idx != dim && src_shape[dim_idx] != size {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index_add: src shape must match input shape except at dim",
+                    },
+                )));
+            }
         }
 
         let ndim = shape.len();
@@ -6597,7 +6622,14 @@ impl FrankenTorchSession {
         let dim_size = shape[dim];
         let outer: usize = shape[..dim].iter().product();
         let inner: usize = shape[dim + 1..].iter().product();
-        let src_dim_size = src_shape.get(dim).copied().unwrap_or(1);
+        let src_dim_size = src_shape[dim];
+        if src_dim_size != index_len {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_add: src dimension must match index length",
+                },
+            )));
+        }
 
         match input_dtype {
             DType::F64 => {
@@ -6687,6 +6719,15 @@ impl FrankenTorchSession {
         src: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
+        let index_shape = self.tensor_shape(index)?;
+        if index_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_copy: index tensor must be 1D",
+                },
+            )));
+        }
+        let index_len = index_shape[0];
         let idx_vals = self.tensor_values(index)?;
         let src_shape = self.tensor_shape(src)?;
         let input_dtype = self.tensor_tape.dtype(input)?;
@@ -6697,6 +6738,22 @@ impl FrankenTorchSession {
                     reason: "index_copy requires input and src to have matching dtypes",
                 },
             )));
+        }
+        if src_shape.len() != shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_copy: src rank must match input rank",
+                },
+            )));
+        }
+        for (dim_idx, &size) in shape.iter().enumerate() {
+            if dim_idx != dim && src_shape[dim_idx] != size {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index_copy: src shape must match input shape except at dim",
+                    },
+                )));
+            }
         }
 
         let ndim = shape.len();
@@ -6711,7 +6768,14 @@ impl FrankenTorchSession {
         let dim_size = shape[dim];
         let outer: usize = shape[..dim].iter().product();
         let inner: usize = shape[dim + 1..].iter().product();
-        let src_dim_size = src_shape.get(dim).copied().unwrap_or(1);
+        let src_dim_size = src_shape[dim];
+        if src_dim_size != index_len {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_copy: src dimension must match index length",
+                },
+            )));
+        }
 
         match input_dtype {
             DType::F64 => {
@@ -6801,6 +6865,14 @@ impl FrankenTorchSession {
         value: f64,
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
+        let index_shape = self.tensor_shape(index)?;
+        if index_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_fill: index tensor must be 1D",
+                },
+            )));
+        }
         let idx_vals = self.tensor_values(index)?;
         let input_dtype = self.tensor_tape.dtype(input)?;
 
@@ -25909,6 +25981,32 @@ mod tests {
     }
 
     #[test]
+    fn index_add_rejects_non_1d_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.0, 0.0, 0.0, 0.0], vec![4], false)
+            .unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 1.0], vec![1, 2], false)
+            .unwrap();
+        let src = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(s.tensor_index_add(input, 0, index, src).is_err());
+    }
+
+    #[test]
+    fn index_add_rejects_src_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.0, 0.0, 0.0, 0.0], vec![2, 2], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![0.0, 1.0], vec![2], false).unwrap();
+        let src = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        assert!(s.tensor_index_add(input, 0, index, src).is_err());
+    }
+
+    #[test]
     fn index_copy_1d() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
@@ -25946,6 +26044,32 @@ mod tests {
     }
 
     #[test]
+    fn index_copy_rejects_non_1d_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 1.0], vec![1, 2], false)
+            .unwrap();
+        let src = s.tensor_variable(vec![9.0, 8.0], vec![2], false).unwrap();
+        assert!(s.tensor_index_copy(input, 0, index, src).is_err());
+    }
+
+    #[test]
+    fn index_copy_rejects_src_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![0.0, 1.0], vec![2], false).unwrap();
+        let src = s
+            .tensor_variable(vec![9.0, 8.0, 7.0, 6.0, 5.0, 4.0], vec![2, 3], false)
+            .unwrap();
+        assert!(s.tensor_index_copy(input, 0, index, src).is_err());
+    }
+
+    #[test]
     fn index_fill_1d() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
@@ -25957,6 +26081,18 @@ mod tests {
         let out = s.tensor_index_fill(input, 0, index, 0.0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![0.0, 2.0, 0.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn index_fill_rejects_non_1d_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 1.0], vec![1, 2], false)
+            .unwrap();
+        assert!(s.tensor_index_fill(input, 0, index, 0.0).is_err());
     }
 
     #[test]
