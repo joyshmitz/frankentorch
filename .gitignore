@@ -99,3 +99,16 @@ storage.sqlite3.bak
 storage.sqlite3.corrupt-*
 storage.sqlite3-shm.corrupt-*
 storage.sqlite3-wal.corrupt-*
+
+# NTM session state
+.ntm/
+
+# Beads ephemeral DB artifacts (bad/rebuild/vacuum snapshots)
+.beads/beads.db.bad_*
+.beads/beads.db.rebuild_*
+.beads/beads.db.vacuum_*
+.beads/beads.db.rebuild_c*
+.beads/beads.db.vacuum_c*
+
+# Beads recovery scratch databases and probe directories
+artifacts/beads_recovery/
