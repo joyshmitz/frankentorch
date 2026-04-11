@@ -6630,6 +6630,34 @@ impl FrankenTorchSession {
                 },
             )));
         }
+        let dim_size_i = isize::try_from(dim_size).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_add: index dimension out of range for platform isize",
+                },
+            ))
+        })?;
+        let normalize_index = |idx_f: f64| -> Result<usize, AutogradError> {
+            let idx_i = Self::exact_integer_index_to_isize(
+                idx_f,
+                "index_add: index values must be finite integers",
+            )?;
+            if idx_i < -dim_size_i || idx_i >= dim_size_i {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index_add: index value out of range",
+                    },
+                )));
+            }
+            let wrapped = if idx_i < 0 { idx_i + dim_size_i } else { idx_i };
+            usize::try_from(wrapped).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index_add: index value out of range",
+                    },
+                ))
+            })
+        };
 
         match input_dtype {
             DType::F64 => {
@@ -6637,21 +6665,7 @@ impl FrankenTorchSession {
                 let src_vals = self.tensor_tape.values(src)?;
                 for o in 0..outer {
                     for (si, &idx_f) in idx_vals.iter().enumerate() {
-                        if !idx_f.is_finite() || idx_f < 0.0 || idx_f != idx_f.floor() {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_add: index values must be finite non-negative integers",
-                                },
-                            )));
-                        }
-                        let idx = idx_f as usize;
-                        if idx >= dim_size {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_add: index value out of range",
-                                },
-                            )));
-                        }
+                        let idx = normalize_index(idx_f)?;
                         if si >= src_dim_size {
                             continue;
                         }
@@ -6671,21 +6685,7 @@ impl FrankenTorchSession {
                 let src_vals = self.tensor_tape.values_f32(src)?;
                 for o in 0..outer {
                     for (si, &idx_f) in idx_vals.iter().enumerate() {
-                        if !idx_f.is_finite() || idx_f < 0.0 || idx_f != idx_f.floor() {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_add: index values must be finite non-negative integers",
-                                },
-                            )));
-                        }
-                        let idx = idx_f as usize;
-                        if idx >= dim_size {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_add: index value out of range",
-                                },
-                            )));
-                        }
+                        let idx = normalize_index(idx_f)?;
                         if si >= src_dim_size {
                             continue;
                         }
@@ -6776,6 +6776,34 @@ impl FrankenTorchSession {
                 },
             )));
         }
+        let dim_size_i = isize::try_from(dim_size).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_copy: index dimension out of range for platform isize",
+                },
+            ))
+        })?;
+        let normalize_index = |idx_f: f64| -> Result<usize, AutogradError> {
+            let idx_i = Self::exact_integer_index_to_isize(
+                idx_f,
+                "index_copy: index values must be finite integers",
+            )?;
+            if idx_i < -dim_size_i || idx_i >= dim_size_i {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index_copy: index value out of range",
+                    },
+                )));
+            }
+            let wrapped = if idx_i < 0 { idx_i + dim_size_i } else { idx_i };
+            usize::try_from(wrapped).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index_copy: index value out of range",
+                    },
+                ))
+            })
+        };
 
         match input_dtype {
             DType::F64 => {
@@ -6783,21 +6811,7 @@ impl FrankenTorchSession {
                 let src_vals = self.tensor_tape.values(src)?;
                 for o in 0..outer {
                     for (si, &idx_f) in idx_vals.iter().enumerate() {
-                        if !idx_f.is_finite() || idx_f < 0.0 || idx_f != idx_f.floor() {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_copy: index values must be finite non-negative integers",
-                                },
-                            )));
-                        }
-                        let idx = idx_f as usize;
-                        if idx >= dim_size {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_copy: index value out of range",
-                                },
-                            )));
-                        }
+                        let idx = normalize_index(idx_f)?;
                         if si >= src_dim_size {
                             continue;
                         }
@@ -6817,21 +6831,7 @@ impl FrankenTorchSession {
                 let src_vals = self.tensor_tape.values_f32(src)?;
                 for o in 0..outer {
                     for (si, &idx_f) in idx_vals.iter().enumerate() {
-                        if !idx_f.is_finite() || idx_f < 0.0 || idx_f != idx_f.floor() {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_copy: index values must be finite non-negative integers",
-                                },
-                            )));
-                        }
-                        let idx = idx_f as usize;
-                        if idx >= dim_size {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_copy: index value out of range",
-                                },
-                            )));
-                        }
+                        let idx = normalize_index(idx_f)?;
                         if si >= src_dim_size {
                             continue;
                         }
@@ -6888,27 +6888,41 @@ impl FrankenTorchSession {
         let dim_size = shape[dim];
         let outer: usize = shape[..dim].iter().product();
         let inner: usize = shape[dim + 1..].iter().product();
+        let dim_size_i = isize::try_from(dim_size).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_fill: index dimension out of range for platform isize",
+                },
+            ))
+        })?;
+        let normalize_index = |idx_f: f64| -> Result<usize, AutogradError> {
+            let idx_i = Self::exact_integer_index_to_isize(
+                idx_f,
+                "index_fill: index values must be finite integers",
+            )?;
+            if idx_i < -dim_size_i || idx_i >= dim_size_i {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index_fill: index value out of range",
+                    },
+                )));
+            }
+            let wrapped = if idx_i < 0 { idx_i + dim_size_i } else { idx_i };
+            usize::try_from(wrapped).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "index_fill: index value out of range",
+                    },
+                ))
+            })
+        };
 
         match input_dtype {
             DType::F64 => {
                 let mut result = self.tensor_tape.values(input)?;
                 for o in 0..outer {
                     for &idx_f in &idx_vals {
-                        if !idx_f.is_finite() || idx_f < 0.0 || idx_f != idx_f.floor() {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_fill: index values must be finite non-negative integers",
-                                },
-                            )));
-                        }
-                        let idx = idx_f as usize;
-                        if idx >= dim_size {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_fill: index value out of range",
-                                },
-                            )));
-                        }
+                        let idx = normalize_index(idx_f)?;
                         for i in 0..inner {
                             let offset = o * dim_size * inner + idx * inner + i;
                             if offset < result.len() {
@@ -6924,21 +6938,7 @@ impl FrankenTorchSession {
                 let fill_value = value as f32;
                 for o in 0..outer {
                     for &idx_f in &idx_vals {
-                        if !idx_f.is_finite() || idx_f < 0.0 || idx_f != idx_f.floor() {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_fill: index values must be finite non-negative integers",
-                                },
-                            )));
-                        }
-                        let idx = idx_f as usize;
-                        if idx >= dim_size {
-                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "index_fill: index value out of range",
-                                },
-                            )));
-                        }
+                        let idx = normalize_index(idx_f)?;
                         for i in 0..inner {
                             let offset = o * dim_size * inner + idx * inner + i;
                             if offset < result.len() {
@@ -26110,12 +26110,25 @@ mod tests {
     }
 
     #[test]
-    fn index_add_rejects_negative_index() {
+    fn index_add_allows_negative_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![-1.0, -3.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0], vec![2], false).unwrap();
+        let out = s.tensor_index_add(input, 0, index, src).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![21.0, 2.0, 13.0]);
+    }
+
+    #[test]
+    fn index_add_rejects_out_of_range_negative_index() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
             .tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false)
             .unwrap();
-        let index = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        let index = s.tensor_variable(vec![-4.0], vec![1], false).unwrap();
         let src = s.tensor_variable(vec![10.0], vec![1], false).unwrap();
         assert!(s.tensor_index_add(input, 0, index, src).is_err());
     }
@@ -26180,12 +26193,48 @@ mod tests {
     }
 
     #[test]
-    fn index_fill_rejects_negative_index() {
+    fn index_copy_allows_negative_index() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .unwrap();
-        let index = s.tensor_variable(vec![-2.0], vec![1], false).unwrap();
+        let index = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        let src = s.tensor_variable(vec![9.0], vec![1], false).unwrap();
+        let out = s.tensor_index_copy(input, 0, index, src).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 9.0]);
+    }
+
+    #[test]
+    fn index_copy_rejects_out_of_range_negative_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![-4.0], vec![1], false).unwrap();
+        let src = s.tensor_variable(vec![99.0], vec![1], false).unwrap();
+        assert!(s.tensor_index_copy(input, 0, index, src).is_err());
+    }
+
+    #[test]
+    fn index_fill_allows_negative_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        let out = s.tensor_index_fill(input, 0, index, 0.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn index_fill_rejects_out_of_range_negative_index() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![-4.0], vec![1], false).unwrap();
         assert!(s.tensor_index_fill(input, 0, index, 0.0).is_err());
     }
 
