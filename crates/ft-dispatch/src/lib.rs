@@ -63,6 +63,7 @@ use ft_kernel_cpu::{
     elu_tensor_contiguous_f32,
     elu_tensor_contiguous_f64,
     eq_scalar,
+    eq_tensor_contiguous_f32,
     eq_tensor_contiguous_f64,
     erf_scalar,
     erf_tensor_contiguous_f32,
@@ -86,11 +87,13 @@ use ft_kernel_cpu::{
     frac_tensor_contiguous_f32,
     frac_tensor_contiguous_f64,
     ge_scalar,
+    ge_tensor_contiguous_f32,
     ge_tensor_contiguous_f64,
     gelu_scalar,
     gelu_tensor_contiguous_f32,
     gelu_tensor_contiguous_f64,
     gt_scalar,
+    gt_tensor_contiguous_f32,
     gt_tensor_contiguous_f64,
     hardsigmoid_scalar,
     hardsigmoid_tensor_contiguous_f32,
@@ -111,6 +114,7 @@ use ft_kernel_cpu::{
     isnan_tensor_contiguous_f32,
     isnan_tensor_contiguous_f64,
     le_scalar,
+    le_tensor_contiguous_f32,
     le_tensor_contiguous_f64,
     leaky_relu_scalar,
     leaky_relu_tensor_contiguous_f32,
@@ -132,6 +136,7 @@ use ft_kernel_cpu::{
     log10_tensor_contiguous_f32,
     log10_tensor_contiguous_f64,
     lt_scalar,
+    lt_tensor_contiguous_f32,
     lt_tensor_contiguous_f64,
     matmul_tensor_contiguous_f32,
     matmul_tensor_contiguous_f64,
@@ -152,6 +157,7 @@ use ft_kernel_cpu::{
     mul_tensor_contiguous_f32,
     mul_tensor_contiguous_f64,
     ne_scalar,
+    ne_tensor_contiguous_f32,
     ne_tensor_contiguous_f64,
     neg_scalar,
     neg_tensor_contiguous_f32,
@@ -760,6 +766,12 @@ pub struct ComparisonDispatchOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TensorComparisonDispatchOutcome {
     pub values: Vec<f64>,
+    pub decision: ComparisonDispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorComparisonDispatchOutcomeF32 {
+    pub values: Vec<f32>,
     pub decision: ComparisonDispatchDecision,
 }
 
@@ -3109,6 +3121,91 @@ pub fn dispatch_tensor_comparison_contiguous_f64(
     };
 
     Ok(TensorComparisonDispatchOutcome {
+        values,
+        decision: ComparisonDispatchDecision {
+            op,
+            mode,
+            kernel,
+            selected_key,
+            backend_key,
+            keyset_bits: keyset.bits(),
+            fallback_used,
+        },
+    })
+}
+
+pub fn dispatch_tensor_comparison_contiguous_f32(
+    op: ComparisonOp,
+    mode: ExecutionMode,
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    requires_grad: bool,
+) -> Result<TensorComparisonDispatchOutcomeF32, DispatchError> {
+    let keyset = dispatch_keyset_for_tensor_meta(lhs_meta, rhs_meta, requires_grad);
+    let (selected_key, backend_key, effective_key, fallback_used) =
+        resolve_dispatch_keys(mode, keyset)?;
+
+    let (values, kernel) = match effective_key {
+        DispatchKey::AutogradCPU => match op {
+            ComparisonOp::Eq => (
+                eq_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "autograd_cpu::eq_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Ne => (
+                ne_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "autograd_cpu::ne_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Lt => (
+                lt_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "autograd_cpu::lt_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Gt => (
+                gt_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "autograd_cpu::gt_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Le => (
+                le_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "autograd_cpu::le_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Ge => (
+                ge_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "autograd_cpu::ge_tensor_contiguous_f32",
+            ),
+        },
+        DispatchKey::CPU => match op {
+            ComparisonOp::Eq => (
+                eq_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "cpu::eq_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Ne => (
+                ne_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "cpu::ne_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Lt => (
+                lt_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "cpu::lt_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Gt => (
+                gt_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "cpu::gt_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Le => (
+                le_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "cpu::le_tensor_contiguous_f32",
+            ),
+            ComparisonOp::Ge => (
+                ge_tensor_contiguous_f32(lhs, rhs, lhs_meta, rhs_meta)?,
+                "cpu::ge_tensor_contiguous_f32",
+            ),
+        },
+        _ => Err(DispatchKeyError::IncompatibleSet {
+            reason: "resolved dispatch key is unsupported for contiguous tensor comparison ops",
+        })?,
+    };
+
+    Ok(TensorComparisonDispatchOutcomeF32 {
         values,
         decision: ComparisonDispatchDecision {
             op,

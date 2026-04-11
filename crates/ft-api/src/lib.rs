@@ -19,7 +19,8 @@ use ft_core::{
 };
 use ft_dispatch::{
     ComparisonDispatchDecision, ComparisonOp, UnaryDispatchDecision, UnaryOp,
-    dispatch_scalar_comparison, dispatch_scalar_unary, dispatch_tensor_comparison_contiguous_f64,
+    dispatch_scalar_comparison, dispatch_scalar_unary, dispatch_tensor_comparison_contiguous_f32,
+    dispatch_tensor_comparison_contiguous_f64, dispatch_tensor_unary_contiguous_f32,
     dispatch_tensor_unary_contiguous_f64,
 };
 use ft_runtime::{EvidenceEntry, EvidenceKind, RuntimeContext};
@@ -8145,33 +8146,87 @@ impl FrankenTorchSession {
         lhs: TensorNodeId,
         rhs: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (lhs_storage, lhs_meta, rhs_storage, rhs_meta) = {
+        let (lhs_meta, rhs_meta) = {
             let lhs_tensor = self.tensor_tape.tensor(lhs)?;
             let rhs_tensor = self.tensor_tape.tensor(rhs)?;
-            (
-                lhs_tensor.storage()?.to_vec(),
-                lhs_tensor.meta().clone(),
-                rhs_tensor.storage()?.to_vec(),
-                rhs_tensor.meta().clone(),
-            )
+            (lhs_tensor.meta().clone(), rhs_tensor.meta().clone())
         };
 
-        let outcome = dispatch_tensor_comparison_contiguous_f64(
-            op,
-            self.mode(),
-            &lhs_storage,
-            &rhs_storage,
-            &lhs_meta,
-            &rhs_meta,
-            false,
-        )
-        .map_err(AutogradError::Dispatch)?;
+        match (lhs_meta.dtype(), rhs_meta.dtype()) {
+            (DType::F64, DType::F64) => {
+                let (lhs_storage, rhs_storage) = {
+                    let lhs_tensor = self.tensor_tape.tensor(lhs)?;
+                    let rhs_tensor = self.tensor_tape.tensor(rhs)?;
+                    (
+                        lhs_tensor.storage()?.to_vec(),
+                        rhs_tensor.storage()?.to_vec(),
+                    )
+                };
+                let outcome = dispatch_tensor_comparison_contiguous_f64(
+                    op,
+                    self.mode(),
+                    &lhs_storage,
+                    &rhs_storage,
+                    &lhs_meta,
+                    &rhs_meta,
+                    false,
+                )
+                .map_err(AutogradError::Dispatch)?;
 
-        let out = self
-            .tensor_tape
-            .leaf(outcome.values, lhs_meta.shape().to_vec(), false)?;
-        self.record_comparison_operation(op, &outcome.decision);
-        Ok(out)
+                let out =
+                    self.tensor_tape
+                        .leaf(outcome.values, lhs_meta.shape().to_vec(), false)?;
+                self.record_comparison_operation(op, &outcome.decision);
+                Ok(out)
+            }
+            (DType::F32, DType::F32) => {
+                let (lhs_storage, rhs_storage) = {
+                    let lhs_tensor = self.tensor_tape.tensor(lhs)?;
+                    let rhs_tensor = self.tensor_tape.tensor(rhs)?;
+                    let lhs_vals =
+                        lhs_tensor
+                            .typed_storage()
+                            .as_f32()
+                            .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                    reason: "tensor comparison requires f32 storage",
+                                },
+                            )))?;
+                    let rhs_vals =
+                        rhs_tensor
+                            .typed_storage()
+                            .as_f32()
+                            .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                    reason: "tensor comparison requires f32 storage",
+                                },
+                            )))?;
+                    (lhs_vals.to_vec(), rhs_vals.to_vec())
+                };
+
+                let outcome = dispatch_tensor_comparison_contiguous_f32(
+                    op,
+                    self.mode(),
+                    &lhs_storage,
+                    &rhs_storage,
+                    &lhs_meta,
+                    &rhs_meta,
+                    false,
+                )
+                .map_err(AutogradError::Dispatch)?;
+
+                let out =
+                    self.tensor_tape
+                        .leaf_f32(outcome.values, lhs_meta.shape().to_vec(), false)?;
+                self.record_comparison_operation(op, &outcome.decision);
+                Ok(out)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor comparison requires matching f32 or f64 dtypes",
+                },
+            ))),
+        }
     }
 
     fn scalar_float_classify(
@@ -8195,19 +8250,56 @@ impl FrankenTorchSession {
         op: UnaryOp,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (storage, meta) = {
+        let (meta, dtype) = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage()?.to_vec(), tensor.meta().clone())
+            (tensor.meta().clone(), tensor.meta().dtype())
         };
 
-        let outcome = dispatch_tensor_unary_contiguous_f64(op, self.mode(), &storage, &meta, false)
-            .map_err(AutogradError::Dispatch)?;
+        match dtype {
+            DType::F64 => {
+                let storage = {
+                    let tensor = self.tensor_tape.tensor(input)?;
+                    tensor.storage()?.to_vec()
+                };
+                let outcome =
+                    dispatch_tensor_unary_contiguous_f64(op, self.mode(), &storage, &meta, false)
+                        .map_err(AutogradError::Dispatch)?;
 
-        let out = self
-            .tensor_tape
-            .leaf(outcome.values, meta.shape().to_vec(), false)?;
-        self.record_float_classify_operation(op, &outcome.decision);
-        Ok(out)
+                let out = self
+                    .tensor_tape
+                    .leaf(outcome.values, meta.shape().to_vec(), false)?;
+                self.record_float_classify_operation(op, &outcome.decision);
+                Ok(out)
+            }
+            DType::F32 => {
+                let storage = {
+                    let tensor = self.tensor_tape.tensor(input)?;
+                    let vals = tensor
+                        .typed_storage()
+                        .as_f32()
+                        .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "float classify requires f32 storage",
+                            },
+                        )))?;
+                    vals.to_vec()
+                };
+                let outcome =
+                    dispatch_tensor_unary_contiguous_f32(op, self.mode(), &storage, &meta, false)
+                        .map_err(AutogradError::Dispatch)?;
+
+                let out =
+                    self.tensor_tape
+                        .leaf_f32(outcome.values, meta.shape().to_vec(), false)?;
+                self.record_float_classify_operation(op, &outcome.decision);
+                Ok(out)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "float classify requires f32 or f64 tensors",
+                },
+            ))),
+        }
     }
 
     fn record_float_classify_operation(&mut self, op: UnaryOp, decision: &UnaryDispatchDecision) {
@@ -15405,6 +15497,22 @@ mod tests {
     }
 
     #[test]
+    fn session_tensor_eq_f32_returns_expected_values() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable_f32(vec![1.0f32, 2.0, 3.0], vec![3], false)
+            .expect("tensor variable should succeed");
+        let y = session
+            .tensor_variable_f32(vec![1.0f32, 5.0, 3.0], vec![3], false)
+            .expect("tensor variable should succeed");
+        let z = session.tensor_eq(x, y).expect("tensor eq should succeed");
+        assert_eq!(
+            session.tensor_values_f32(z).expect("values should resolve"),
+            vec![1.0f32, 0.0, 1.0]
+        );
+    }
+
+    #[test]
     fn session_tensor_equal_returns_expected_values() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = session
@@ -21197,6 +21305,17 @@ mod tests {
         let y = session.tensor_isnan(x).expect("isnan");
         let vals = session.tensor_values(y).expect("vals");
         assert_eq!(vals, &[0.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn session_tensor_isnan_f32() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable_f32(vec![1.0f32, f32::NAN, 3.0, f32::INFINITY], vec![4], false)
+            .expect("x");
+        let y = session.tensor_isnan(x).expect("isnan");
+        let vals = session.tensor_values_f32(y).expect("vals");
+        assert_eq!(vals, &[0.0f32, 1.0, 0.0, 0.0]);
     }
 
     #[test]
