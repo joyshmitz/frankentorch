@@ -6867,7 +6867,8 @@ mod tests {
         sinh_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64, sparse_coo_add,
         sparse_coo_coalesce, sparse_coo_matmul_dense_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
         stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64, sub_scalar,
-        sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64,
+        sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f32, sum_dim_tensor_contiguous_f64,
+        sum_tensor_contiguous_f64,
         tanh_scalar, tanh_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
         var_dim_tensor_contiguous_f64,
     };
