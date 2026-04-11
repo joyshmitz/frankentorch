@@ -2558,7 +2558,11 @@ impl FrankenTorchSession {
             )));
         }
 
-        let d_k = *q_shape.last().unwrap();
+        let d_k = q_shape.last().copied().ok_or(AutogradError::Dispatch(
+            ft_dispatch::DispatchError::Key(ft_dispatch::DispatchKeyError::IncompatibleSet {
+                reason: "scaled_dot_product_attention: missing head dimension",
+            }),
+        ))?;
         if d_k == 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -2987,7 +2991,7 @@ impl FrankenTorchSession {
         if output_idx.is_empty() && contract_dims.len() == input_idx.len() {
             // Sum all elements
             let shape = self.tensor_shape(current)?;
-            let total: usize = shape.iter().product();
+            let total = Self::checked_shape_numel(&shape, "einsum: input shape volume overflow")?;
             let flat = self.tensor_reshape(current, vec![total])?;
             return self.tensor_sum_dim(flat, 0);
         }
@@ -3040,6 +3044,12 @@ impl FrankenTorchSession {
         rhs: TensorNodeId,
         _dim_sizes: &std::collections::HashMap<char, usize>,
     ) -> Result<TensorNodeId, AutogradError> {
+        let make_err = |reason: &'static str| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
+            ))
+        };
+
         // Categorize indices:
         // - batch: appear in both inputs AND in output
         // - contract: appear in both inputs but NOT in output
@@ -3074,56 +3084,75 @@ impl FrankenTorchSession {
         }
 
         // Helpers to locate a subscript char's axis in the original index lists.
-        // These chars are categorized FROM lhs_idx/rhs_idx, so lookups always succeed.
-        let lhs_pos = |ch: &char| -> usize {
+        // These chars are categorized FROM lhs_idx/rhs_idx, but return an error
+        // if invariants are violated to avoid panics.
+        let lhs_pos = |ch: &char| -> Result<usize, AutogradError> {
             lhs_idx
                 .iter()
                 .position(|c| c == ch)
-                .expect("einsum: subscript char must exist in lhs indices")
+                .ok_or_else(|| make_err("einsum: subscript char not found in lhs indices"))
         };
-        let rhs_pos = |ch: &char| -> usize {
+        let rhs_pos = |ch: &char| -> Result<usize, AutogradError> {
             rhs_idx
                 .iter()
                 .position(|c| c == ch)
-                .expect("einsum: subscript char must exist in rhs indices")
+                .ok_or_else(|| make_err("einsum: subscript char not found in rhs indices"))
         };
 
         // Build permutation for lhs: [batch..., free_lhs..., contract...]
-        let lhs_perm: Vec<usize> = batch_chars
+        let mut lhs_perm =
+            Vec::with_capacity(batch_chars.len() + free_lhs_chars.len() + contract_chars.len());
+        for ch in batch_chars
             .iter()
             .chain(free_lhs_chars.iter())
             .chain(contract_chars.iter())
-            .map(&lhs_pos)
-            .collect();
+        {
+            lhs_perm.push(lhs_pos(ch)?);
+        }
 
         // Build permutation for rhs: [batch..., contract..., free_rhs...]
-        let rhs_perm: Vec<usize> = batch_chars
+        let mut rhs_perm =
+            Vec::with_capacity(batch_chars.len() + contract_chars.len() + free_rhs_chars.len());
+        for ch in batch_chars
             .iter()
             .chain(contract_chars.iter())
             .chain(free_rhs_chars.iter())
-            .map(&rhs_pos)
-            .collect();
+        {
+            rhs_perm.push(rhs_pos(ch)?);
+        }
 
         let lhs_shape = self.tensor_shape(lhs)?;
         let rhs_shape = self.tensor_shape(rhs)?;
 
         // Compute dimension sizes after permutation
-        let batch_size: usize = batch_chars
-            .iter()
-            .map(|ch| lhs_shape[lhs_pos(ch)])
-            .product();
-        let free_lhs_size: usize = free_lhs_chars
-            .iter()
-            .map(|ch| lhs_shape[lhs_pos(ch)])
-            .product();
-        let contract_size: usize = contract_chars
-            .iter()
-            .map(|ch| lhs_shape[lhs_pos(ch)])
-            .product();
-        let free_rhs_size: usize = free_rhs_chars
-            .iter()
-            .map(|ch| rhs_shape[rhs_pos(ch)])
-            .product();
+        let mut batch_size: usize = 1;
+        for ch in &batch_chars {
+            let dim = lhs_shape[lhs_pos(ch)?];
+            batch_size = batch_size
+                .checked_mul(dim)
+                .ok_or_else(|| make_err("einsum: batch size overflow"))?;
+        }
+        let mut free_lhs_size: usize = 1;
+        for ch in &free_lhs_chars {
+            let dim = lhs_shape[lhs_pos(ch)?];
+            free_lhs_size = free_lhs_size
+                .checked_mul(dim)
+                .ok_or_else(|| make_err("einsum: free lhs size overflow"))?;
+        }
+        let mut contract_size: usize = 1;
+        for ch in &contract_chars {
+            let dim = lhs_shape[lhs_pos(ch)?];
+            contract_size = contract_size
+                .checked_mul(dim)
+                .ok_or_else(|| make_err("einsum: contract size overflow"))?;
+        }
+        let mut free_rhs_size: usize = 1;
+        for ch in &free_rhs_chars {
+            let dim = rhs_shape[rhs_pos(ch)?];
+            free_rhs_size = free_rhs_size
+                .checked_mul(dim)
+                .ok_or_else(|| make_err("einsum: free rhs size overflow"))?;
+        }
 
         // Permute tensors
         let mut lhs_p = lhs;
@@ -3147,9 +3176,9 @@ impl FrankenTorchSession {
             let mut out_shape: Vec<usize> = Vec::new();
             for &ch in output_idx {
                 if free_lhs_chars.contains(&ch) {
-                    out_shape.push(lhs_shape[lhs_pos(&ch)]);
+                    out_shape.push(lhs_shape[lhs_pos(&ch)?]);
                 } else if free_rhs_chars.contains(&ch) {
-                    out_shape.push(rhs_shape[rhs_pos(&ch)]);
+                    out_shape.push(rhs_shape[rhs_pos(&ch)?]);
                 }
             }
             if out_shape.is_empty() {
@@ -3168,9 +3197,9 @@ impl FrankenTorchSession {
             let mut out_shape: Vec<usize> = Vec::new();
             for &ch in output_idx {
                 if batch_chars.contains(&ch) || free_lhs_chars.contains(&ch) {
-                    out_shape.push(lhs_shape[lhs_pos(&ch)]);
+                    out_shape.push(lhs_shape[lhs_pos(&ch)?]);
                 } else if free_rhs_chars.contains(&ch) {
-                    out_shape.push(rhs_shape[rhs_pos(&ch)]);
+                    out_shape.push(rhs_shape[rhs_pos(&ch)?]);
                 }
             }
             if out_shape.is_empty() {
@@ -3204,9 +3233,9 @@ impl FrankenTorchSession {
                 || free_lhs_chars.contains(&ch)
                 || contract_chars.contains(&ch)
             {
-                out_shape.push(lhs_shape[lhs_pos(&ch)]);
+                out_shape.push(lhs_shape[lhs_pos(&ch)?]);
             } else if free_rhs_chars.contains(&ch) {
-                out_shape.push(rhs_shape[rhs_pos(&ch)]);
+                out_shape.push(rhs_shape[rhs_pos(&ch)?]);
             }
         }
 
@@ -3423,14 +3452,21 @@ impl FrankenTorchSession {
         let mut counts: Vec<f64> = Vec::new();
 
         for &v in &vals {
-            if unique_vals.is_empty()
-                || !((unique_vals.last().unwrap() - v).abs() < f64::EPSILON
-                    || (unique_vals.last().unwrap().is_nan() && v.is_nan()))
-            {
+            let is_duplicate = match unique_vals.last() {
+                Some(last) => (last - v).abs() < f64::EPSILON || (last.is_nan() && v.is_nan()),
+                None => false,
+            };
+            if !is_duplicate {
                 unique_vals.push(v);
                 counts.push(1.0);
+            } else if let Some(count) = counts.last_mut() {
+                *count += 1.0;
             } else {
-                *counts.last_mut().unwrap() += 1.0;
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "unique_consecutive: internal count state missing",
+                    },
+                )));
             }
             inverse_indices.push(unique_vals.len() - 1);
         }
@@ -9909,7 +9945,15 @@ impl FrankenTorchSession {
                         }
                     }
                     let mut new_shape = shape.clone();
-                    *new_shape.last_mut().unwrap() = new_last;
+                    if let Some(last) = new_shape.last_mut() {
+                        *last = new_last;
+                    } else {
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "diff: input must have at least one dimension",
+                            },
+                        )));
+                    }
                     current = self.tensor_variable(result, new_shape, false)?;
                 }
                 Ok(current)
@@ -9936,7 +9980,15 @@ impl FrankenTorchSession {
                         }
                     }
                     let mut new_shape = shape.clone();
-                    *new_shape.last_mut().unwrap() = new_last;
+                    if let Some(last) = new_shape.last_mut() {
+                        *last = new_last;
+                    } else {
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "diff: input must have at least one dimension",
+                            },
+                        )));
+                    }
                     current = self.tensor_variable_f32(result, new_shape, false)?;
                 }
                 Ok(current)
