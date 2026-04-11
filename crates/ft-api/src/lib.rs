@@ -3585,13 +3585,42 @@ impl FrankenTorchSession {
                     },
                 )));
             }
+            let iv_u = iv as u128;
+            if iv_u > usize::MAX as u128 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "bincount: input value too large",
+                    },
+                )));
+            }
             max_val = Some(max_val.map_or(iv, |cur| cur.max(iv)));
         }
 
         let out_len = match max_val {
-            Some(m) => (m as usize + 1).max(minlength),
+            Some(m) => {
+                let m_usize = usize::try_from(m).map_err(|_| {
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "bincount: input value too large",
+                        },
+                    ))
+                })?;
+                let base = m_usize.checked_add(1).ok_or({
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "bincount: output size overflow",
+                        },
+                    ))
+                })?;
+                base.max(minlength)
+            }
             None => minlength, // empty input
         };
+        let _ = Self::checked_mul(
+            out_len,
+            std::mem::size_of::<f64>(),
+            "bincount output size overflow",
+        )?;
         let mut counts = vec![0.0f64; out_len];
 
         for (i, &v) in vals.iter().enumerate() {
@@ -3631,6 +3660,13 @@ impl FrankenTorchSession {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "histc: min and max must be finite",
+                },
+            )));
+        }
+        if min_val > max_val {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "histc: min must be <= max",
                 },
             )));
         }
@@ -24407,6 +24443,14 @@ mod tests {
     }
 
     #[test]
+    fn bincount_rejects_too_large() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let huge = (usize::MAX as f64) * 2.0;
+        let t = s.tensor_variable(vec![huge], vec![1], false).unwrap();
+        assert!(s.tensor_bincount(t, None, 0).is_err());
+    }
+
+    #[test]
     fn bincount_rejects_2d() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = s
@@ -24487,6 +24531,13 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = s.tensor_variable(vec![0.0, 1.0], vec![2], false).unwrap();
         assert!(s.tensor_histc(t, 2, 0.0, f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn histc_rejects_min_greater_than_max() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        assert!(s.tensor_histc(t, 2, 2.0, 1.0).is_err());
     }
 
     // ── count_nonzero tests ──────────────────────────────────────────
