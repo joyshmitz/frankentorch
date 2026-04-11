@@ -28,6 +28,12 @@ fn checked_mul(lhs: usize, rhs: usize, reason: &'static str) -> Result<usize, Au
         )))
 }
 
+fn transform_config_error(reason: &'static str) -> AutogradError {
+    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+        ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
+    ))
+}
+
 // ── Data Item ────────────────────────────────────────────────────────────
 
 /// A single data sample returned by a `Dataset`.
@@ -751,6 +757,7 @@ impl Transform for Compose {
 ///
 /// Equivalent to `torchvision.transforms.Normalize(mean, std)`.
 /// Applied per-channel: `output[c] = (input[c] - mean[c]) / std[c]`.
+#[derive(Debug)]
 pub struct NormalizeTransform {
     /// Name of the tensor to normalize (e.g., "input").
     tensor_name: String,
@@ -761,12 +768,27 @@ pub struct NormalizeTransform {
 }
 
 impl NormalizeTransform {
-    pub fn new(tensor_name: &str, mean: Vec<f64>, std: Vec<f64>) -> Self {
-        Self {
+    pub fn new(tensor_name: &str, mean: Vec<f64>, std: Vec<f64>) -> Result<Self, AutogradError> {
+        if mean.len() != std.len() {
+            return Err(transform_config_error(
+                "NormalizeTransform requires mean/std lengths to match",
+            ));
+        }
+        if mean.iter().any(|value| !value.is_finite()) {
+            return Err(transform_config_error(
+                "NormalizeTransform requires finite mean values",
+            ));
+        }
+        if std.iter().any(|value| !value.is_finite() || *value <= 0.0) {
+            return Err(transform_config_error(
+                "NormalizeTransform requires finite std values > 0",
+            ));
+        }
+        Ok(Self {
             tensor_name: tensor_name.to_string(),
             mean,
             std,
-        }
+        })
     }
 }
 
@@ -775,6 +797,9 @@ impl Transform for NormalizeTransform {
         for (name, values, _shape) in &mut item.tensors {
             if name == &self.tensor_name && !self.mean.is_empty() {
                 let channels = self.mean.len();
+                if values.len() % channels != 0 {
+                    continue;
+                }
                 let channel_size = values.len() / channels;
                 for c in 0..channels {
                     let m = self.mean[c];
@@ -1470,7 +1495,8 @@ mod tests {
     #[test]
     fn normalize_transform() {
         let item = DataItem::single("input", vec![10.0, 20.0, 30.0, 40.0], vec![2, 2]);
-        let t = NormalizeTransform::new("input", vec![10.0, 30.0], vec![10.0, 10.0]);
+        let t = NormalizeTransform::new("input", vec![10.0, 30.0], vec![10.0, 10.0])
+            .expect("transform");
         let result = t.apply(item);
         let vals = &result.tensors[0].1;
         // Channel 0: (10-10)/10=0, (20-10)/10=1
@@ -1479,6 +1505,44 @@ mod tests {
         // Channel 1: (30-30)/10=0, (40-30)/10=1
         assert!((vals[2] - 0.0).abs() < 1e-10);
         assert!((vals[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn normalize_transform_rejects_mismatched_stats() {
+        let err =
+            NormalizeTransform::new("input", vec![0.0, 1.0], vec![1.0]).expect_err("mismatch");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet { .. }
+            ))
+        ));
+        if let AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+            ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
+        )) = err
+        {
+            assert_eq!(
+                reason,
+                "NormalizeTransform requires mean/std lengths to match"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_transform_rejects_non_positive_std() {
+        let err = NormalizeTransform::new("input", vec![0.0], vec![0.0]).expect_err("zero std");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet { .. }
+            ))
+        ));
+        if let AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+            ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
+        )) = err
+        {
+            assert_eq!(reason, "NormalizeTransform requires finite std values > 0");
+        }
     }
 
     #[test]
@@ -1533,7 +1597,7 @@ mod tests {
     #[test]
     fn normalize_wrong_name_passthrough() {
         let item = DataItem::single("input", vec![5.0], vec![1]);
-        let t = NormalizeTransform::new("other", vec![0.0], vec![1.0]);
+        let t = NormalizeTransform::new("other", vec![0.0], vec![1.0]).expect("transform");
         let result = t.apply(item);
         // "input" not affected because name doesn't match
         assert_eq!(result.tensors[0].1, vec![5.0]);
