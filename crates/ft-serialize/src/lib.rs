@@ -664,7 +664,7 @@ pub fn load_state_dict_from_bytes(
     }
 
     // Number of tensors — bound by remaining bytes (each tensor needs ≥17 bytes of header)
-    let num_tensors = read_u64(data, &mut pos)? as usize;
+    let num_tensors = read_usize(data, &mut pos, "tensor count")?;
     let remaining = data.len().saturating_sub(pos);
     if num_tensors > remaining {
         return Err(TensorIOError::Corrupt {
@@ -675,24 +675,39 @@ pub fn load_state_dict_from_bytes(
     let mut result = BTreeMap::new();
     for _ in 0..num_tensors {
         // Key
-        let key_len = read_u64(data, &mut pos)? as usize;
-        if pos + key_len > data.len() {
+        let key_len = read_usize(data, &mut pos, "key length")?;
+        let key_end = pos
+            .checked_add(key_len)
+            .ok_or_else(|| TensorIOError::Corrupt {
+                reason: "key length overflow".to_string(),
+            })?;
+        if key_end > data.len() {
             return Err(TensorIOError::Corrupt {
                 reason: "truncated key data".to_string(),
             });
         }
-        let key = String::from_utf8(data[pos..pos + key_len].to_vec()).map_err(|_| {
-            TensorIOError::Corrupt {
+        let key =
+            String::from_utf8(data[pos..key_end].to_vec()).map_err(|_| TensorIOError::Corrupt {
                 reason: "invalid UTF-8 in key".to_string(),
-            }
-        })?;
-        pos += key_len;
+            })?;
+        pos = key_end;
 
         // Shape
-        let ndim = read_u64(data, &mut pos)? as usize;
+        let ndim = read_usize(data, &mut pos, "ndim")?;
+        let remaining = data.len().saturating_sub(pos);
+        let max_ndim = remaining / 8;
+        if ndim > max_ndim {
+            return Err(TensorIOError::Corrupt {
+                reason: format!("truncated shape data for tensor '{key}'"),
+            });
+        }
         let mut shape = Vec::with_capacity(ndim);
         for _ in 0..ndim {
-            shape.push(read_u64(data, &mut pos)? as usize);
+            let dim = read_u64(data, &mut pos)?;
+            let dim = usize::try_from(dim).map_err(|_| TensorIOError::Corrupt {
+                reason: format!("shape dimension exceeds usize for tensor '{key}'"),
+            })?;
+            shape.push(dim);
         }
 
         // DType
@@ -717,7 +732,12 @@ pub fn load_state_dict_from_bytes(
                 let needed = numel.checked_mul(8).ok_or_else(|| TensorIOError::Corrupt {
                     reason: format!("byte count overflow for f64 tensor '{key}'"),
                 })?;
-                if pos + needed > data.len() {
+                let end = pos
+                    .checked_add(needed)
+                    .ok_or_else(|| TensorIOError::Corrupt {
+                        reason: format!("byte count overflow for f64 tensor '{key}'"),
+                    })?;
+                if end > data.len() {
                     return Err(TensorIOError::Corrupt {
                         reason: "truncated f64 data".to_string(),
                     });
@@ -733,7 +753,12 @@ pub fn load_state_dict_from_bytes(
                 let needed = numel.checked_mul(4).ok_or_else(|| TensorIOError::Corrupt {
                     reason: format!("byte count overflow for f32 tensor '{key}'"),
                 })?;
-                if pos + needed > data.len() {
+                let end = pos
+                    .checked_add(needed)
+                    .ok_or_else(|| TensorIOError::Corrupt {
+                        reason: format!("byte count overflow for f32 tensor '{key}'"),
+                    })?;
+                if end > data.len() {
                     return Err(TensorIOError::Corrupt {
                         reason: "truncated f32 data".to_string(),
                     });
@@ -777,18 +802,28 @@ fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, TensorIOError> {
     Ok(u64::from_le_bytes(bytes))
 }
 
+fn read_usize(data: &[u8], pos: &mut usize, context: &str) -> Result<usize, TensorIOError> {
+    let value = read_u64(data, pos)?;
+    usize::try_from(value).map_err(|_| TensorIOError::Corrupt {
+        reason: format!("{context} exceeds usize"),
+    })
+}
+
 fn read_fixed_bytes<const N: usize>(
     data: &[u8],
     pos: &mut usize,
     truncated_reason: &'static str,
 ) -> Result<[u8; N], TensorIOError> {
-    if *pos + N > data.len() {
+    let end = pos.checked_add(N).ok_or_else(|| TensorIOError::Corrupt {
+        reason: truncated_reason.to_string(),
+    })?;
+    if end > data.len() {
         return Err(TensorIOError::Corrupt {
             reason: truncated_reason.to_string(),
         });
     }
-    let bytes = bytes_to_array::<N>(&data[*pos..*pos + N], truncated_reason)?;
-    *pos += N;
+    let bytes = bytes_to_array::<N>(&data[*pos..end], truncated_reason)?;
+    *pos = end;
     Ok(bytes)
 }
 
@@ -1995,6 +2030,21 @@ mod tests {
         let data = b"FTSV";
         let result = load_state_dict_from_bytes(data);
         assert!(matches!(result, Err(TensorIOError::Corrupt { .. })));
+    }
+
+    #[test]
+    fn native_format_rejects_truncated_shape_dims() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&1u64.to_le_bytes()); // num_tensors = 1
+        data.extend_from_slice(&1u64.to_le_bytes()); // key_len = 1
+        data.push(b'x'); // key
+        data.extend_from_slice(&2u64.to_le_bytes()); // ndim = 2 (but no dims follow)
+
+        let err = load_state_dict_from_bytes(&data).expect_err("truncated shape dims must fail");
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(err.to_string().contains("truncated shape data"));
     }
 
     #[test]
