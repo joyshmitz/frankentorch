@@ -39,7 +39,7 @@ serde_json = "1.0.139"
 safetensors = "0.7"
 allocation-counter = "0.8.1"
 
-asupersync = { version = "0.2.0", default-features = false, features = ["test-internals"] }
+asupersync = { version = "0.3.0", default-features = false, features = ["test-internals"] }
 ftui = { version = "0.2.0", default-features = false }
 
 [workspace.lints.rust]
