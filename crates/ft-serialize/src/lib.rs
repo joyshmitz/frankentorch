@@ -1516,6 +1516,37 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_strict_json_contract_snapshot() {
+        let entries = vec![
+            SnapshotEntry {
+                node_id: 7,
+                value: -0.5,
+                grad: Some(1.25),
+            },
+            SnapshotEntry {
+                node_id: 3,
+                value: 1.0,
+                grad: None,
+            },
+            SnapshotEntry {
+                node_id: 7,
+                value: 2.0,
+                grad: Some(-3.5),
+            },
+        ];
+
+        let encoded =
+            encode_checkpoint(&entries, CheckpointMode::Strict).expect("strict encode should work");
+        let pretty = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(&encoded)
+                .expect("strict checkpoint JSON must parse"),
+        )
+        .expect("pretty checkpoint JSON should serialize");
+
+        insta::assert_snapshot!("strict_checkpoint_json_contract", pretty);
+    }
+
+    #[test]
     fn strict_decode_canonicalizes_entry_order() {
         let entries = vec![
             SnapshotEntry {
