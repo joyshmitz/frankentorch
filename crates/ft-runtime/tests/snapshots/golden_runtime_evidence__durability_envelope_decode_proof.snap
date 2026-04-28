@@ -1,0 +1,13 @@
+---
+source: crates/ft-runtime/tests/golden_runtime_evidence.rs
+expression: rendered
+---
+artifact_id="phase2c-runtime-ledger-v1"
+artifact_type="runtime_evidence_ledger"
+source_hash="blake3:ledger-source"
+k=64
+repair_symbols=8
+overhead_ratio=0.125
+scrub_status=Recovered
+decode_proofs:
+0: reason="single-symbol repair"; proof_hash="blake3:proof-a"

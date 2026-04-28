@@ -1,0 +1,8 @@
+---
+source: crates/ft-runtime/tests/golden_runtime_evidence.rs
+expression: rendered
+---
+0: kind=Policy; summary="mode initialized to Strict"
+1: kind=Dispatch; summary="schema route op=matmul dtype=F32 device=Cpu"
+2: kind=Policy; summary="mode switched to Hardened"
+3: kind=Backward; summary="backward graph nodes=4 edges=3 deterministic=true"

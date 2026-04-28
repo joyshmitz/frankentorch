@@ -16,6 +16,7 @@ ftui = { workspace = true, optional = true }
 
 [dev-dependencies]
 ft-serialize = { workspace = true }
+insta = "1.43.1"
 
 [lints]
 workspace = true
