@@ -12896,6 +12896,261 @@ json.loads(sys.stdin.read())
     }
 
     #[test]
+    fn torch_atan2_ieee754_subprocess_conformance() {
+        // Subprocess-based diff test: FrankenTorch's atan2 (which calls
+        // Rust's f64::atan2, which calls the platform libm atan2) MUST
+        // match Python's math.atan2 bit-for-bit on every IEEE 754
+        // boundary point. Both wrap the same C99 atan2 family, so any
+        // bit-level disagreement signals a real semantic drift.
+        //
+        // PyTorch's torch.atan2 also wraps libm atan2, so this oracle
+        // doubles as the upstream PyTorch parity check (no torch import
+        // required — the spec is the C99 atan2 contract that PyTorch
+        // contracts against).
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        // Skip cleanly if python3 is unavailable (e.g. minimal CI runner).
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!(
+                "torch_atan2_ieee754_subprocess_conformance: python3 not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Boundary matrix — every distinct IEEE 754 atan2 case the C99
+        // spec calls out, plus a handful of generic quadrant points and
+        // subnormals to catch silent breakage in the smooth interior.
+        let pairs: Vec<(f64, f64)> = vec![
+            // Generic quadrants.
+            (1.0, 1.0),
+            (1.0, -1.0),
+            (-1.0, -1.0),
+            (-1.0, 1.0),
+            (3.0, 4.0),
+            (-3.0, 4.0),
+            (3.0, -4.0),
+            (-3.0, -4.0),
+            (1e-300, 1e-300),
+            (1e300, 1e300),
+            (1e-300, -1e-300),
+            (-1e300, 1e300),
+            // Axis crossings.
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (-0.0, 1.0),
+            (-0.0, -1.0),
+            (1.0, -0.0),
+            (-1.0, -0.0),
+            // Signed-zero matrix (atan2 must preserve the sign of y).
+            (0.0, 0.0),
+            (-0.0, 0.0),
+            (0.0, -0.0),
+            (-0.0, -0.0),
+            // Subnormals near zero.
+            (f64::MIN_POSITIVE, f64::MIN_POSITIVE),
+            (-f64::MIN_POSITIVE, f64::MIN_POSITIVE),
+            (f64::MIN_POSITIVE, -f64::MIN_POSITIVE),
+            (5e-324, 5e-324),
+            // Infinities — full 2x2 matrix.
+            (f64::INFINITY, f64::INFINITY),
+            (f64::INFINITY, f64::NEG_INFINITY),
+            (f64::NEG_INFINITY, f64::INFINITY),
+            (f64::NEG_INFINITY, f64::NEG_INFINITY),
+            // Infinity vs finite.
+            (f64::INFINITY, 1.0),
+            (f64::NEG_INFINITY, 1.0),
+            (f64::INFINITY, -1.0),
+            (f64::NEG_INFINITY, -1.0),
+            (1.0, f64::INFINITY),
+            (1.0, f64::NEG_INFINITY),
+            (-1.0, f64::INFINITY),
+            (-1.0, f64::NEG_INFINITY),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, 0.0),
+            (0.0, f64::INFINITY),
+            (0.0, f64::NEG_INFINITY),
+            // NaN — propagates from either side.
+            (f64::NAN, 1.0),
+            (1.0, f64::NAN),
+            (f64::NAN, f64::NAN),
+            (f64::NAN, f64::INFINITY),
+            (f64::INFINITY, f64::NAN),
+            (f64::NAN, 0.0),
+            (0.0, f64::NAN),
+            // A few more interior points — keep the matrix > 50.
+            (2.0, 2.0),
+            (-2.0, 0.5),
+            (0.5, -2.0),
+            (1e10, 1e-10),
+            (1e-10, 1e10),
+            (-1e10, -1e-10),
+        ];
+        assert!(
+            pairs.len() >= 50,
+            "atan2 conformance matrix must have at least 50 inputs, got {}",
+            pairs.len()
+        );
+
+        // Build the JSON payload. f64 -> JSON via to_bits so non-finite
+        // values survive the JSON round-trip (NaN / ±inf are not valid
+        // JSON literals).
+        let pair_bits: Vec<[String; 2]> = pairs
+            .iter()
+            .map(|(y, x)| [y.to_bits().to_string(), x.to_bits().to_string()])
+            .collect();
+        let payload = json!({ "pairs": pair_bits });
+
+        // Python oracle: receive bit-encoded pairs, decode to f64 via
+        // struct.unpack, call math.atan2 (libm wrapper), emit each
+        // result back as the u64 bit pattern of the f64.
+        let script = r#"
+import json, math, struct, sys
+
+req = json.loads(sys.stdin.read())
+out = []
+for y_bits_s, x_bits_s in req["pairs"]:
+    y_bits = int(y_bits_s)
+    x_bits = int(x_bits_s)
+    y = struct.unpack("<d", struct.pack("<Q", y_bits))[0]
+    x = struct.unpack("<d", struct.pack("<Q", x_bits))[0]
+    r = math.atan2(y, x)
+    r_bits = struct.unpack("<Q", struct.pack("<d", r))[0]
+    out.append(str(r_bits))
+print(json.dumps({"results": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_atan2_ieee754_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("results")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include results array");
+        assert_eq!(
+            results.len(),
+            pairs.len(),
+            "oracle returned {} results for {} inputs",
+            results.len(),
+            pairs.len()
+        );
+
+        // Run Rust-side atan2 through the FrankenTorch public API for
+        // f64 scalars and the tensor path, plus compare to f64::atan2
+        // directly. All three must match the libm oracle bit-for-bit.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let mut mismatches = Vec::<String>::new();
+        for (i, (y, x)) in pairs.iter().enumerate() {
+            let oracle_bits: u64 = results[i]
+                .as_str()
+                .expect("each result must be a string")
+                .parse()
+                .expect("oracle result must be u64-bit-pattern");
+            let oracle = f64::from_bits(oracle_bits);
+
+            // Rust f64 path.
+            let rust_direct = y.atan2(*x);
+            // FrankenTorch scalar API.
+            let y_var = session.variable(*y, false);
+            let x_var = session.variable(*x, false);
+            let ft_scalar = session.atan2(y_var, x_var).expect("session.atan2");
+            let ft_scalar_val = session.value(ft_scalar).expect("value");
+
+            let bit_eq = |a: f64, b: f64| -> bool {
+                if a.is_nan() && b.is_nan() {
+                    // Any NaN bit pattern is acceptable — libm and
+                    // platform Rust may legitimately differ in NaN
+                    // payloads, and IEEE 754 does not require a unique
+                    // canonical NaN encoding.
+                    true
+                } else {
+                    a.to_bits() == b.to_bits()
+                }
+            };
+
+            if !bit_eq(rust_direct, oracle) {
+                mismatches.push(format!(
+                    "rust f64::atan2({y:?}, {x:?}) = {rust_direct:?} (bits 0x{:016x}) but libm/python returned {oracle:?} (bits 0x{:016x})",
+                    rust_direct.to_bits(),
+                    oracle_bits
+                ));
+            }
+            if !bit_eq(ft_scalar_val, oracle) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::atan2({y:?}, {x:?}) = {ft_scalar_val:?} (bits 0x{:016x}) but libm/python returned {oracle:?} (bits 0x{:016x})",
+                    ft_scalar_val.to_bits(),
+                    oracle_bits
+                ));
+            }
+        }
+
+        // Also exercise the tensor batch path on the finite, non-NaN
+        // subset (the public tensor API rejects non-finite NaN inputs
+        // through some surrounding ops; keep the bit-equality scope to
+        // values both sides are guaranteed to handle uniformly).
+        let finite_pairs: Vec<(f64, f64, f64)> = pairs
+            .iter()
+            .enumerate()
+            .filter(|(_, (y, x))| y.is_finite() && x.is_finite())
+            .map(|(i, (y, x))| {
+                let oracle_bits: u64 = results[i]
+                    .as_str()
+                    .expect("string")
+                    .parse()
+                    .expect("u64");
+                (*y, *x, f64::from_bits(oracle_bits))
+            })
+            .collect();
+        let ys: Vec<f64> = finite_pairs.iter().map(|(y, _, _)| *y).collect();
+        let xs: Vec<f64> = finite_pairs.iter().map(|(_, x, _)| *x).collect();
+        let oracles: Vec<f64> = finite_pairs.iter().map(|(_, _, r)| *r).collect();
+        let n = finite_pairs.len();
+        let y_t = session.tensor_variable(ys, vec![n], false).expect("y_t");
+        let x_t = session.tensor_variable(xs, vec![n], false).expect("x_t");
+        let r_t = session.tensor_atan2(y_t, x_t).expect("tensor_atan2");
+        let r_vals = session.tensor_values(r_t).expect("r_vals");
+        for (i, (got, want)) in r_vals.iter().zip(oracles.iter()).enumerate() {
+            if got.to_bits() != want.to_bits() {
+                mismatches.push(format!(
+                    "tensor_atan2 finite[{i}] (y={}, x={}) = {got:?} (bits 0x{:016x}) but oracle {want:?} (bits 0x{:016x})",
+                    finite_pairs[i].0,
+                    finite_pairs[i].1,
+                    got.to_bits(),
+                    want.to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "atan2 IEEE 754 conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_fmod_remainder_sign_matrix_conformance() {
         // Lock down the full sign matrix for fmod (truncating, sign of
         // dividend) vs remainder (flooring, sign of divisor) — these
