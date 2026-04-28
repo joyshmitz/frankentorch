@@ -361,9 +361,17 @@ impl WeightedRandomSampler {
         if self.weights.is_empty() {
             return Vec::new();
         }
+        if self.num_samples == 0 {
+            return Vec::new();
+        }
 
-        // Build cumulative distribution
-        let total: f64 = self.weights.iter().map(|&w| sanitize_weight(w)).sum();
+        let mut cumulative = Vec::with_capacity(self.weights.len());
+        let mut total = 0.0;
+        for &w in &self.weights {
+            total += sanitize_weight(w);
+            cumulative.push(total);
+        }
+
         if total <= 0.0 {
             // All-zero weights: uniform sampling
             let mut rng = SimpleRng::new(self.seed);
@@ -372,11 +380,8 @@ impl WeightedRandomSampler {
                 .collect();
         }
 
-        let mut cumulative = Vec::with_capacity(self.weights.len());
-        let mut running = 0.0;
-        for &w in &self.weights {
-            running += sanitize_weight(w);
-            cumulative.push(running / total);
+        for threshold in &mut cumulative {
+            *threshold /= total;
         }
 
         let mut rng = SimpleRng::new(self.seed);
@@ -1815,6 +1820,17 @@ mod tests {
         assert!(
             indices.iter().all(|&i| i == 1),
             "infinity weight should be sanitized to zero"
+        );
+    }
+
+    #[test]
+    fn weighted_random_sampler_preserves_mixed_weight_sequence() {
+        let s = WeightedRandomSampler::new(vec![1.0, f64::NAN, -5.0, 3.0, f64::INFINITY, 2.0], 16)
+            .with_seed(123);
+
+        assert_eq!(
+            s.indices(),
+            vec![3, 3, 0, 3, 3, 5, 3, 5, 3, 0, 3, 3, 0, 3, 3, 5]
         );
     }
 
