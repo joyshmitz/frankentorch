@@ -4668,7 +4668,12 @@ fn run_scalar_case(case: &ScalarCase, mode: ExecutionMode) -> Result<CaseReport,
         "sub" => session.sub(lhs, rhs),
         "div" => session.div(lhs, rhs),
         "mul" => session.mul(lhs, rhs),
-        _ => return Err(format!("unsupported operation '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported operation '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|error| format!("operation '{}' failed: {error}", case.name))?;
 
@@ -4764,7 +4769,12 @@ fn run_tensor_binary_case(
         "dot" => session.tensor_dot(lhs, rhs),
         "min" => session.tensor_min(lhs, rhs),
         "max" => session.tensor_max(lhs, rhs),
-        _ => return Err(format!("unsupported tensor operation '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported tensor operation '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|error| format!("tensor operation '{}' failed: {error}", case.name))?;
 
@@ -4888,7 +4898,12 @@ fn run_tensor_unary_case(
         "rsqrt" => session.tensor_rsqrt(input),
         "square" => session.tensor_square(input),
         "reciprocal" => session.tensor_reciprocal(input),
-        _ => return Err(format!("unsupported tensor unary operation '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported tensor unary operation '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|error| format!("tensor unary '{}' failed: {error}", case.name))?;
 
@@ -4978,7 +4993,12 @@ fn run_tensor_comparison_case(
                 .tensor_allclose(lhs, rhs, rtol, atol, equal_nan)
                 .map_err(|error| format!("tensor_allclose failed for '{}': {error}", case.name))?
         }
-        _ => return Err(format!("unsupported comparison op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported comparison op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     };
 
     let result_ok = actual_result == case.expected;
@@ -5095,7 +5115,12 @@ fn run_tensor_factory_case(
                 .ok_or_else(|| format!("missing n for eye in '{}'", case.name))?;
             session.eye(n, false)
         }
-        _ => return Err(format!("unsupported factory op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported factory op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|error| format!("tensor factory '{}' failed: {error}", case.name))?;
 
@@ -5254,7 +5279,12 @@ fn run_tensor_init_case(
                 .ok_or_else(|| format!("sparse_ case '{}' missing std", case.name))?;
             session.init_sparse_(target, sparsity, std)
         }
-        _ => return Err(format!("unsupported init op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported init op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|error| format!("tensor init '{}' failed: {error}", case.name))?;
 
@@ -5465,7 +5495,12 @@ fn run_tensor_random_case(
                         })?;
                 session.poisson(input_node)
             }
-            _ => return Err(format!("unsupported random op '{}'", case.op)),
+            _ => {
+                return Err(format!(
+                    "unsupported random op '{}'",
+                    bounded_parse_token(&case.op)
+                ));
+            }
         }
         .map_err(|error| format!("tensor random '{}' failed: {error}", case.name))?;
 
@@ -5739,7 +5774,12 @@ fn run_tensor_reduction_case(
                 .ok_or_else(|| format!("missing dim for std_dim in '{}'", case.name))?;
             session.tensor_std_dim(input, dim)
         }
-        _ => return Err(format!("unsupported reduction op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported reduction op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|error| format!("tensor reduction '{}' failed: {error}", case.name))?;
 
@@ -5838,7 +5878,12 @@ fn run_tensor_loss_case(
             let delta = case.delta.unwrap_or(1.0);
             session.huber_loss(pred, target, delta)
         }
-        _ => return Err(format!("unsupported loss op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported loss op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|error| format!("loss '{}' failed: {error}", case.name))?;
 
@@ -6015,7 +6060,12 @@ fn run_tensor_linalg_case(
                     && actual_shape == *expected_shape
             }
         }
-        _ => return Err(format!("unsupported linalg op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported linalg op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     };
 
     let passed = output_ok;
@@ -6093,7 +6143,12 @@ fn run_tensor_normalize_case(
                 .ok_or_else(|| format!("cumsum case '{}' missing dim", case.name))?;
             session.tensor_cumsum(input, dim)
         }
-        _ => return Err(format!("unsupported normalize op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported normalize op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
@@ -6182,7 +6237,12 @@ fn run_tensor_elementwise_cmp_case(
         "gt" => session.tensor_gt(lhs, rhs),
         "le" => session.tensor_le(lhs, rhs),
         "ge" => session.tensor_ge(lhs, rhs),
-        _ => return Err(format!("unsupported elementwise cmp op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported elementwise cmp op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
@@ -6320,7 +6380,12 @@ fn run_tensor_shape_case(
                     .map_err(|e| format!("invalid length for '{}': {e}", case.name))?;
                 session.tensor_narrow(input, dim, start, length)
             }
-            _ => return Err(format!("unsupported shape op '{}'", case.op)),
+            _ => {
+                return Err(format!(
+                    "unsupported shape op '{}'",
+                    bounded_parse_token(&case.op)
+                ));
+            }
         }
         .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
@@ -6413,7 +6478,12 @@ fn run_tensor_inplace_case(
             session.tensor_fill_(target, fill_value)
         }
         "neg_" => session.tensor_neg_(target),
-        _ => return Err(format!("unsupported inplace op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported inplace op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
@@ -6563,7 +6633,12 @@ fn run_tensor_advanced_case(
                 None,
             )
         }
-        _ => return Err(format!("unsupported advanced op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported advanced op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     };
 
     let actual_output = session
@@ -6668,7 +6743,12 @@ fn run_tensor_sort_case(
                 .map_err(|e| format!("argsort failed for '{}': {e}", case.name))?;
             (out, None, true)
         }
-        _ => return Err(format!("unsupported sort op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported sort op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     };
 
     let actual_output = session
@@ -6903,7 +6983,12 @@ fn run_tensor_indexing_case(
                 .map_err(|e| format!("y tensor build failed for '{}': {e}", case.name))?;
             session.tensor_where(condition, x, y)
         }
-        _ => return Err(format!("unsupported indexing op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported indexing op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
@@ -6976,7 +7061,12 @@ fn run_tensor_scan_case(
     let out = match case.op.as_str() {
         "cumsum" => session.tensor_cumsum(input, case.dim),
         "cumprod" => session.tensor_cumprod(input, case.dim),
-        _ => return Err(format!("unsupported scan op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported scan op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
@@ -7079,7 +7169,12 @@ fn run_tensor_join_case(
     let out = match case.op.as_str() {
         "cat" => session.tensor_cat(&input_ids, case.dim),
         "stack" => session.tensor_stack(&input_ids, case.dim),
-        _ => return Err(format!("unsupported join op '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported join op '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|e| format!("{} failed for '{}': {e}", case.op, case.name))?;
 
@@ -8617,7 +8712,12 @@ fn evaluate_scalar_with_session(
         "sub" => session.sub(lhs, rhs),
         "div" => session.div(lhs, rhs),
         "mul" => session.mul(lhs, rhs),
-        _ => return Err(format!("unsupported operation '{}'", case.op)),
+        _ => {
+            return Err(format!(
+                "unsupported operation '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
     }
     .map_err(|error| format!("operation '{}' failed: {error}", case.name))?;
 
