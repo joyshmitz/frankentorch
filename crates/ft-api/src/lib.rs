@@ -2734,8 +2734,8 @@ impl FrankenTorchSession {
 
     /// Kronecker product of two tensors.
     ///
-    /// For 2D inputs A (m x n) and B (p x q), result is (m*p x n*q).
-    /// For 1D inputs a (m,) and b (n,), result is (m*n,).
+    /// If the inputs have different ranks, the lower-rank input is left-padded
+    /// with singleton dimensions before multiplying each aligned dimension.
     pub fn tensor_kron(
         &mut self,
         a: TensorNodeId,
@@ -2744,72 +2744,76 @@ impl FrankenTorchSession {
         let a_shape = self.tensor_shape(a)?;
         let b_shape = self.tensor_shape(b)?;
 
-        match (a_shape.len(), b_shape.len()) {
-            (1, 1) => {
-                // 1D kron: outer product then flatten
-                let outer = self.tensor_outer(a, b)?;
-                let total = a_shape[0]
-                    .checked_mul(b_shape[0])
-                    .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "kron: output shape overflow",
-                        },
-                    )))?;
-                self.tensor_reshape(outer, vec![total])
+        if a_shape.len() == 1 && b_shape.len() == 1 {
+            let outer = self.tensor_outer(a, b)?;
+            let total = Self::checked_mul(a_shape[0], b_shape[0], "kron: output shape overflow")?;
+            return self.tensor_reshape(outer, vec![total]);
+        }
+
+        let rank = a_shape.len().max(b_shape.len());
+        let mut a_aligned = vec![1usize; rank - a_shape.len()];
+        a_aligned.extend_from_slice(&a_shape);
+        let mut b_aligned = vec![1usize; rank - b_shape.len()];
+        b_aligned.extend_from_slice(&b_shape);
+
+        let mut out_shape = Vec::with_capacity(rank);
+        for (&a_dim, &b_dim) in a_aligned.iter().zip(&b_aligned) {
+            out_shape.push(Self::checked_mul(
+                a_dim,
+                b_dim,
+                "kron: output shape overflow",
+            )?);
+        }
+        let total = Self::checked_shape_numel(&out_shape, "kron: output shape volume overflow")?;
+
+        let a_vals = self.tensor_values(a)?;
+        let b_vals = self.tensor_values(b)?;
+        if total == 0 {
+            return self.tensor_variable(Vec::new(), out_shape, false);
+        }
+
+        let decode_coords = |mut index: usize, shape: &[usize]| {
+            let mut coords = vec![0usize; shape.len()];
+            for dim in (0..shape.len()).rev() {
+                let size = shape[dim];
+                coords[dim] = index % size;
+                index /= size;
             }
-            (2, 2) => {
-                // 2D kron: for each (i,j) in A, place A[i,j]*B as block
-                let (ma, na) = (a_shape[0], a_shape[1]);
-                let (mb, nb) = (b_shape[0], b_shape[1]);
-                let a_vals = self.tensor_values(a)?;
-                let b_vals = self.tensor_values(b)?;
-                let out_rows = ma.checked_mul(mb).ok_or(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "kron: output row shape overflow",
-                        },
-                    ),
-                ))?;
-                let out_cols = na.checked_mul(nb).ok_or(AutogradError::Dispatch(
-                    ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "kron: output col shape overflow",
-                        },
-                    ),
-                ))?;
-                let total = out_rows
-                    .checked_mul(out_cols)
-                    .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "kron: output shape volume overflow",
-                        },
-                    )))?;
-                let mut result = vec![0.0f64; total];
-                for ia in 0..ma {
-                    for ja in 0..na {
-                        let a_val = a_vals[ia * na + ja];
-                        for ib in 0..mb {
-                            for jb in 0..nb {
-                                let out_row = ia * mb + ib;
-                                let out_col = ja * nb + jb;
-                                result[out_row * out_cols + out_col] = a_val * b_vals[ib * nb + jb];
-                            }
-                        }
-                    }
+            coords
+        };
+
+        let mut result = vec![0.0f64; total];
+        for (a_linear, &a_val) in a_vals.iter().enumerate() {
+            let a_coords = decode_coords(a_linear, &a_aligned);
+            for (b_linear, &b_val) in b_vals.iter().enumerate() {
+                let b_coords = decode_coords(b_linear, &b_aligned);
+                let mut out_linear = 0usize;
+                for dim in 0..rank {
+                    let scaled_a = Self::checked_mul(
+                        a_coords[dim],
+                        b_aligned[dim],
+                        "kron: output coordinate overflow",
+                    )?;
+                    let out_coord = Self::checked_add(
+                        scaled_a,
+                        b_coords[dim],
+                        "kron: output coordinate overflow",
+                    )?;
+                    out_linear = Self::checked_add(
+                        Self::checked_mul(
+                            out_linear,
+                            out_shape[dim],
+                            "kron: output index overflow",
+                        )?,
+                        out_coord,
+                        "kron: output index overflow",
+                    )?;
                 }
-                self.tensor_variable(result, vec![out_rows, out_cols], false)
-            }
-            _ => {
-                // General case: pad shorter tensor dimensions to match
-                // For simplicity, only support 1D and 2D for now
-                Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
-                    ft_kernel_cpu::KernelError::ShapeMismatch {
-                        lhs: a_shape,
-                        rhs: b_shape,
-                    },
-                )))
+                result[out_linear] = a_val * b_val;
             }
         }
+
+        self.tensor_variable(result, out_shape, false)
     }
 
     /// Einstein summation.
@@ -27878,6 +27882,45 @@ mod tests {
         for (i, (&v, &e)) in vals.iter().zip(expected.iter()).enumerate() {
             assert!((v - e).abs() < 1e-10, "kron[{i}] = {v}, expected {e}");
         }
+    }
+
+    #[test]
+    fn kron_left_pads_lower_rank_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let b = s
+            .tensor_variable(vec![3.0, 4.0, 5.0, 6.0], vec![2, 2], false)
+            .unwrap();
+
+        let k = s.tensor_kron(a, b).unwrap();
+
+        assert_eq!(s.tensor_shape(k).unwrap(), vec![2, 4]);
+        assert_eq!(
+            s.tensor_values(k).unwrap(),
+            vec![3.0, 4.0, 6.0, 8.0, 5.0, 6.0, 10.0, 12.0]
+        );
+    }
+
+    #[test]
+    fn kron_3d_uses_aligned_coordinate_formula() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 1, 2], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![10.0, 20.0, 30.0, 40.0], vec![1, 2, 2], false)
+            .unwrap();
+
+        let k = s.tensor_kron(a, b).unwrap();
+
+        assert_eq!(s.tensor_shape(k).unwrap(), vec![2, 2, 4]);
+        assert_eq!(
+            s.tensor_values(k).unwrap(),
+            vec![
+                10.0, 20.0, 20.0, 40.0, 30.0, 40.0, 60.0, 80.0, 30.0, 60.0, 40.0, 80.0, 90.0,
+                120.0, 120.0, 160.0,
+            ]
+        );
     }
 
     #[test]
