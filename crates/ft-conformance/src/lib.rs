@@ -1510,6 +1510,7 @@ const MAX_LEGACY_ORACLE_STDOUT_BYTES: usize = 1_048_576;
 const MAX_LEGACY_ORACLE_STDERR_BYTES: usize = 262_144;
 const MAX_LEGACY_ORACLE_OUTPUT_LINE_BYTES: usize = 65_536;
 const MAX_LEGACY_ORACLE_WAIT_MILLIS: u64 = 30_000;
+const CONFORMANCE_PARSE_DIAGNOSTIC_BYTES: usize = 128;
 const LEGACY_ORACLE_RAW_DIAGNOSTIC_BYTES: usize = 256;
 const LEGACY_ORACLE_STDERR_DIAGNOSTIC_BYTES: usize = 256;
 
@@ -9881,7 +9882,10 @@ fn parse_binary_op(op: &str) -> Result<BinaryOp, String> {
         "div" => Ok(BinaryOp::Div),
         "mul" => Ok(BinaryOp::Mul),
         "matmul" => Ok(BinaryOp::MatMul),
-        _ => Err(format!("unsupported binary op '{op}'")),
+        _ => Err(format!(
+            "unsupported binary op '{}'",
+            bounded_parse_token(op)
+        )),
     }
 }
 
@@ -9889,7 +9893,7 @@ fn parse_dtype(raw: &str) -> Result<DType, String> {
     match raw {
         "F64" => Ok(DType::F64),
         "F32" => Ok(DType::F32),
-        _ => Err(format!("unsupported dtype '{raw}'")),
+        _ => Err(format!("unsupported dtype '{}'", bounded_parse_token(raw))),
     }
 }
 
@@ -9897,7 +9901,7 @@ fn parse_device(raw: &str) -> Result<Device, String> {
     match raw {
         "Cpu" | "CPU" => Ok(Device::Cpu),
         "Cuda" | "CUDA" => Ok(Device::Cuda),
-        _ => Err(format!("unsupported device '{raw}'")),
+        _ => Err(format!("unsupported device '{}'", bounded_parse_token(raw))),
     }
 }
 
@@ -9916,11 +9920,15 @@ fn parse_dispatch_key(raw: &str) -> Option<DispatchKey> {
 fn parse_keyset(keys: &[String]) -> Result<DispatchKeySet, String> {
     let mut parsed = Vec::with_capacity(keys.len());
     for key in keys {
-        let parsed_key =
-            parse_dispatch_key(key).ok_or_else(|| format!("unknown dispatch key '{key}'"))?;
+        let parsed_key = parse_dispatch_key(key)
+            .ok_or_else(|| format!("unknown dispatch key '{}'", bounded_parse_token(key)))?;
         parsed.push(parsed_key);
     }
     Ok(DispatchKeySet::from_keys(parsed.as_slice()))
+}
+
+fn bounded_parse_token(raw: &str) -> String {
+    bounded_diagnostic(raw, CONFORMANCE_PARSE_DIAGNOSTIC_BYTES)
 }
 
 fn op_schema_evidence_refs() -> Vec<String> {
@@ -12362,6 +12370,36 @@ mod tests {
             parsed.get("torch_version").and_then(Value::as_str),
             Some("2.6.0")
         );
+    }
+
+    #[test]
+    fn parser_rejection_diagnostics_bound_oversized_tokens() {
+        let oversized = "x".repeat(super::CONFORMANCE_PARSE_DIAGNOSTIC_BYTES + 4096);
+        let absent = "x".repeat(super::CONFORMANCE_PARSE_DIAGNOSTIC_BYTES + 1);
+        let keyset = [oversized.clone()];
+        let errors = [
+            super::parse_binary_op(&oversized).expect_err("oversized op must fail"),
+            super::parse_dtype(&oversized).expect_err("oversized dtype must fail"),
+            super::parse_device(&oversized).expect_err("oversized device must fail"),
+            super::parse_keyset(&keyset).expect_err("oversized dispatch key must fail"),
+        ];
+
+        for error in errors {
+            assert!(
+                error.contains("..."),
+                "bounded parser diagnostic should mark truncation: {error}"
+            );
+            assert!(
+                !error.contains(&absent),
+                "parser diagnostic leaked the full rejected token: len={}",
+                error.len()
+            );
+            assert!(
+                error.len() < super::CONFORMANCE_PARSE_DIAGNOSTIC_BYTES + 96,
+                "parser diagnostic is not bounded tightly enough: len={}",
+                error.len()
+            );
+        }
     }
 
     #[test]
