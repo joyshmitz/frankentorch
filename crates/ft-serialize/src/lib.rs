@@ -2559,6 +2559,73 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_corpus_safetensors_does_not_panic() {
+        // The /fuzz/corpus/ft_serialize_safetensors/ directory ships a set of
+        // hand-built seed inputs that the cargo-fuzz target uses to bootstrap
+        // coverage. Verify here (in the unit-test harness) that every seed
+        // either parses cleanly or returns a graceful Err — never panics —
+        // so a future change that introduces a panic on a corpus input is
+        // caught at `cargo test` time long before the fuzzer runs.
+        let mut corpus_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        corpus_dir.pop(); // crates/
+        corpus_dir.pop(); // workspace root
+        corpus_dir.push("fuzz");
+        corpus_dir.push("corpus");
+        corpus_dir.push("ft_serialize_safetensors");
+        if !corpus_dir.exists() {
+            // Workspace layout could change; skip rather than fail the suite
+            // when running outside a checkout that includes the fuzz corpus.
+            return;
+        }
+        let mut entries: Vec<_> = std::fs::read_dir(&corpus_dir)
+            .expect("read corpus dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect();
+        entries.sort();
+        assert!(
+            !entries.is_empty(),
+            "safetensors fuzz corpus must contain at least one seed"
+        );
+        for path in &entries {
+            let bytes = std::fs::read(path).expect("read corpus seed");
+            // Discard the result; we only care that the call returns and
+            // doesn't unwind. Both Ok and Err are acceptable outcomes.
+            let _ = super::load_safetensors_from_bytes(&bytes);
+        }
+    }
+
+    #[test]
+    fn fuzz_corpus_state_dict_does_not_panic() {
+        // Companion guard for the native FTSV state-dict fuzz corpus.
+        let mut corpus_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        corpus_dir.pop(); // crates/
+        corpus_dir.pop(); // workspace root
+        corpus_dir.push("fuzz");
+        corpus_dir.push("corpus");
+        corpus_dir.push("ft_serialize_state_dict");
+        if !corpus_dir.exists() {
+            return;
+        }
+        let mut entries: Vec<_> = std::fs::read_dir(&corpus_dir)
+            .expect("read corpus dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect();
+        entries.sort();
+        assert!(
+            !entries.is_empty(),
+            "state-dict fuzz corpus must contain at least one seed"
+        );
+        for path in &entries {
+            let bytes = std::fs::read(path).expect("read corpus seed");
+            let _ = super::load_state_dict_from_bytes(&bytes);
+        }
+    }
+
+    #[test]
     fn safetensors_multiple_tensors() {
         let path = std::env::temp_dir().join("ft_test_st_multi.safetensors");
         let _ = std::fs::remove_file(&path);
