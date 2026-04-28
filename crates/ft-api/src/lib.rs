@@ -10281,10 +10281,12 @@ impl FrankenTorchSession {
         }
 
         let mut indices = Vec::new();
+        let mut num_nonzero = 0usize;
         let numel = Self::checked_shape_numel(&shape, "nonzero: shape volume overflow")?;
         if let Some(values) = values_f64 {
             for (flat_idx, &val) in values.iter().enumerate().take(numel) {
                 if val != 0.0 || val.is_nan() {
+                    num_nonzero += 1;
                     let mut remaining = flat_idx;
                     for &s in &strides {
                         let dim_idx = remaining / s;
@@ -10296,6 +10298,7 @@ impl FrankenTorchSession {
         } else if let Some(values) = values_f32 {
             for (flat_idx, &val) in values.iter().enumerate().take(numel) {
                 if val != 0.0 || val.is_nan() {
+                    num_nonzero += 1;
                     let mut remaining = flat_idx;
                     for &s in &strides {
                         let dim_idx = remaining / s;
@@ -10306,7 +10309,10 @@ impl FrankenTorchSession {
             }
         }
 
-        let num_nonzero = indices.len().checked_div(ndim).unwrap_or(0);
+        // For 0-d inputs the stride loop pushes nothing, so we cannot
+        // recover `num_nonzero` from `indices.len() / ndim` (0/0). Track
+        // it explicitly: a non-zero scalar is shape [1, 0] and a zero
+        // scalar is shape [0, 0], matching `torch.nonzero` semantics.
         let out_shape = vec![num_nonzero, ndim];
         self.tensor_tape.leaf(indices, out_shape, false)
     }
@@ -29510,6 +29516,38 @@ mod tests {
         assert_eq!(shape, vec![3, 1]);
         let vals = s.tensor_values(nz).unwrap();
         assert_eq!(vals, vec![0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn nonzero_scalar_nonzero_returns_shape_1_by_0() {
+        // PyTorch parity: torch.nonzero(torch.tensor(5.0)) -> shape [1, 0].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![5.0], vec![], false).unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let shape = s.tensor_shape(nz).unwrap();
+        assert_eq!(shape, vec![1, 0]);
+        let vals = s.tensor_values(nz).unwrap();
+        assert!(vals.is_empty(), "scalar nonzero indices have ndim=0 columns");
+    }
+
+    #[test]
+    fn nonzero_scalar_zero_returns_shape_0_by_0() {
+        // PyTorch parity: torch.nonzero(torch.tensor(0.0)) -> shape [0, 0].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0], vec![], false).unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let shape = s.tensor_shape(nz).unwrap();
+        assert_eq!(shape, vec![0, 0]);
+    }
+
+    #[test]
+    fn nonzero_scalar_nan_is_nonzero() {
+        // PyTorch parity: NaN treated as nonzero, even at rank 0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![f64::NAN], vec![], false).unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let shape = s.tensor_shape(nz).unwrap();
+        assert_eq!(shape, vec![1, 0]);
     }
 
     #[test]
