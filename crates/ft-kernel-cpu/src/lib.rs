@@ -151,8 +151,12 @@ pub fn ceil_scalar(input: &ScalarTensor) -> ScalarTensor {
     input.with_value(input.value().ceil())
 }
 
+fn round_ties_even_f64(value: f64) -> f64 {
+    value.round_ties_even()
+}
+
 pub fn round_scalar(input: &ScalarTensor) -> ScalarTensor {
-    input.with_value(input.value().round())
+    input.with_value(round_ties_even_f64(input.value()))
 }
 
 pub fn log2_scalar(input: &ScalarTensor) -> ScalarTensor {
@@ -824,7 +828,7 @@ pub fn round_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.round())
+    unary_contiguous_f64(input, meta, round_ties_even_f64)
 }
 
 pub fn log2_tensor_contiguous_f64(
@@ -4754,6 +4758,10 @@ fn mish_value_f32(x: f32) -> f32 {
     x * softplus_value_f32(x).tanh()
 }
 
+fn round_ties_even_f32(value: f32) -> f32 {
+    value.round_ties_even()
+}
+
 // ── Macro-generated simple f32 unary kernels ────────────────────────────
 
 macro_rules! define_unary_f32 {
@@ -4783,7 +4791,7 @@ define_unary_f32!(cos_tensor_contiguous_f32, f32::cos);
 define_unary_f32!(tan_tensor_contiguous_f32, f32::tan);
 define_unary_f32!(floor_tensor_contiguous_f32, f32::floor);
 define_unary_f32!(ceil_tensor_contiguous_f32, f32::ceil);
-define_unary_f32!(round_tensor_contiguous_f32, f32::round);
+define_unary_f32!(round_tensor_contiguous_f32, round_ties_even_f32);
 define_unary_f32!(log2_tensor_contiguous_f32, f32::log2);
 define_unary_f32!(log10_tensor_contiguous_f32, f32::log10);
 define_unary_f32!(log1p_tensor_contiguous_f32, f32::ln_1p);
@@ -9056,6 +9064,48 @@ mod tests {
         let input = vec![1.1, 2.9, -0.5, -2.1];
         let out = ceil_tensor_contiguous_f64(&input, &meta).expect("ceil should succeed");
         assert_eq!(out, vec![2.0, 3.0, 0.0, -2.0]);
+    }
+
+    #[test]
+    fn round_scalar_ties_to_even() {
+        let cases = [
+            (-2.5, -2.0),
+            (-1.5, -2.0),
+            (0.5, 0.0),
+            (1.5, 2.0),
+            (2.5, 2.0),
+        ];
+
+        for (input, expected) in cases {
+            let input = ScalarTensor::new(input, DType::F64, Device::Cpu);
+            let out = super::round_scalar(&input);
+            assert_eq!(out.value(), expected);
+        }
+
+        let neg_zero = ScalarTensor::new(-0.5, DType::F64, Device::Cpu);
+        assert!(super::round_scalar(&neg_zero).value().is_sign_negative());
+    }
+
+    #[test]
+    fn round_tensor_contiguous_f64_ties_to_even() {
+        let meta = TensorMeta::from_shape(vec![6], DType::F64, Device::Cpu);
+        let input = vec![-2.5, -1.5, -0.5, 0.5, 1.5, 2.5];
+
+        let out = super::round_tensor_contiguous_f64(&input, &meta).expect("round should succeed");
+
+        assert_eq!(out, vec![-2.0, -2.0, -0.0, 0.0, 2.0, 2.0]);
+        assert!(out[2].is_sign_negative());
+    }
+
+    #[test]
+    fn round_tensor_contiguous_f32_ties_to_even() {
+        let meta = TensorMeta::from_shape(vec![6], DType::F32, Device::Cpu);
+        let input = vec![-2.5_f32, -1.5, -0.5, 0.5, 1.5, 2.5];
+
+        let out = super::round_tensor_contiguous_f32(&input, &meta).expect("round should succeed");
+
+        assert_eq!(out, vec![-2.0, -2.0, -0.0, 0.0, 2.0, 2.0]);
+        assert!(out[2].is_sign_negative());
     }
 
     // ---- log2 ----
