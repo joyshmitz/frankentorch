@@ -492,12 +492,18 @@ fn bounded(input: &str, max_len: usize) -> String {
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ft_core::{DType, DenseTensor, DenseTensorError, Device, TensorMeta};
+use ft_core::{
+    BFloat16, DType, DenseTensor, DenseTensorError, Device, Float16, TensorMeta, TensorStorage,
+};
 
 /// Magic bytes identifying a FrankenTorch state dict file.
 const FT_MAGIC: &[u8; 4] = b"FTSV";
 /// Current format version.
 const FT_STATE_FORMAT_VERSION: u32 = 1;
+const FT_DTYPE_TAG_F64: u8 = 0;
+const FT_DTYPE_TAG_F32: u8 = 1;
+const FT_DTYPE_TAG_F16: u8 = 2;
+const FT_DTYPE_TAG_BF16: u8 = 3;
 
 /// Errors from tensor state dict save/load operations.
 #[derive(Debug, Clone, PartialEq)]
@@ -546,22 +552,62 @@ fn io_err(path: &str, e: std::io::Error) -> TensorIOError {
     }
 }
 
-fn dtype_to_tag(dtype: DType) -> u8 {
+fn dtype_to_tag(dtype: DType) -> Option<u8> {
     match dtype {
-        DType::F64 => 0,
-        DType::F32 => 1,
-        _ => 255, // unsupported for now
+        DType::F64 => Some(FT_DTYPE_TAG_F64),
+        DType::F32 => Some(FT_DTYPE_TAG_F32),
+        DType::F16 => Some(FT_DTYPE_TAG_F16),
+        DType::BF16 => Some(FT_DTYPE_TAG_BF16),
+        _ => None,
     }
 }
 
 fn tag_to_dtype(tag: u8) -> Result<DType, TensorIOError> {
     match tag {
-        0 => Ok(DType::F64),
-        1 => Ok(DType::F32),
+        FT_DTYPE_TAG_F64 => Ok(DType::F64),
+        FT_DTYPE_TAG_F32 => Ok(DType::F32),
+        FT_DTYPE_TAG_F16 => Ok(DType::F16),
+        FT_DTYPE_TAG_BF16 => Ok(DType::BF16),
         _ => Err(TensorIOError::Corrupt {
             reason: format!("unknown dtype tag: {tag}"),
         }),
     }
+}
+
+fn contiguous_native_storage_bounds(
+    tensor: &DenseTensor,
+    key: &str,
+) -> Result<(usize, usize), TensorIOError> {
+    let meta = tensor.meta();
+    if !meta.is_contiguous() {
+        return Err(TensorIOError::TensorError(
+            DenseTensorError::UnsupportedLayout,
+        ));
+    }
+
+    let numel = meta.numel();
+    if numel == usize::MAX {
+        return Err(TensorIOError::Corrupt {
+            reason: format!("shape overflow in native state dict tensor '{key}'"),
+        });
+    }
+
+    let start = meta.storage_offset();
+    let end = start
+        .checked_add(numel)
+        .ok_or_else(|| TensorIOError::Corrupt {
+            reason: format!("storage span overflow in native state dict tensor '{key}'"),
+        })?;
+    let storage_len = tensor.typed_storage().len();
+    if end > storage_len {
+        return Err(TensorIOError::Corrupt {
+            reason: format!(
+                "storage span out of range for native state dict tensor '{key}': end={end} len={storage_len}"
+            ),
+        });
+    }
+
+    Ok((start, end))
 }
 
 /// Save a state dict (map of named tensors) to a file in FrankenTorch native format.
@@ -592,15 +638,9 @@ fn encode_state_dict_to_bytes(
 
     for (key, tensor) in state_dict {
         let meta = tensor.meta();
-        let dtype_tag = match meta.dtype() {
-            DType::F64 => dtype_to_tag(DType::F64),
-            DType::F32 => dtype_to_tag(DType::F32),
-            other => {
-                return Err(TensorIOError::Corrupt {
-                    reason: format!("unsupported dtype for save: {other:?}"),
-                });
-            }
-        };
+        let dtype_tag = dtype_to_tag(meta.dtype()).ok_or_else(|| TensorIOError::Corrupt {
+            reason: format!("unsupported dtype for save: {:?}", meta.dtype()),
+        })?;
 
         // Key
         let key_bytes = key.as_bytes();
@@ -633,6 +673,28 @@ fn encode_state_dict_to_bytes(
                     .map_err(TensorIOError::TensorError)?;
                 for &v in values {
                     encoded.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            DType::F16 => {
+                let (start, end) = contiguous_native_storage_bounds(tensor, key)?;
+                let TensorStorage::F16(values) = tensor.typed_storage() else {
+                    return Err(TensorIOError::Corrupt {
+                        reason: format!("tensor storage does not match dtype for '{key}'"),
+                    });
+                };
+                for value in &values[start..end] {
+                    encoded.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            DType::BF16 => {
+                let (start, end) = contiguous_native_storage_bounds(tensor, key)?;
+                let TensorStorage::BF16(values) = tensor.typed_storage() else {
+                    return Err(TensorIOError::Corrupt {
+                        reason: format!("tensor storage does not match dtype for '{key}'"),
+                    });
+                };
+                for value in &values[start..end] {
+                    encoded.extend_from_slice(&value.to_le_bytes());
                 }
             }
             other => {
@@ -787,6 +849,48 @@ pub fn load_state_dict_from_bytes(
                 }
                 DenseTensor::from_storage_f32(meta, values)?
             }
+            DType::F16 => {
+                let needed = numel.checked_mul(2).ok_or_else(|| TensorIOError::Corrupt {
+                    reason: format!("byte count overflow for f16 tensor '{key}'"),
+                })?;
+                let end = pos
+                    .checked_add(needed)
+                    .ok_or_else(|| TensorIOError::Corrupt {
+                        reason: format!("byte count overflow for f16 tensor '{key}'"),
+                    })?;
+                if end > data.len() {
+                    return Err(TensorIOError::Corrupt {
+                        reason: "truncated f16 data".to_string(),
+                    });
+                }
+                let mut values = Vec::with_capacity(numel);
+                for _ in 0..numel {
+                    let bytes = read_fixed_bytes::<2>(data, &mut pos, "truncated f16 data")?;
+                    values.push(Float16::from_le_bytes(bytes));
+                }
+                DenseTensor::from_storage_f16(meta, values)?
+            }
+            DType::BF16 => {
+                let needed = numel.checked_mul(2).ok_or_else(|| TensorIOError::Corrupt {
+                    reason: format!("byte count overflow for bf16 tensor '{key}'"),
+                })?;
+                let end = pos
+                    .checked_add(needed)
+                    .ok_or_else(|| TensorIOError::Corrupt {
+                        reason: format!("byte count overflow for bf16 tensor '{key}'"),
+                    })?;
+                if end > data.len() {
+                    return Err(TensorIOError::Corrupt {
+                        reason: "truncated bf16 data".to_string(),
+                    });
+                }
+                let mut values = Vec::with_capacity(numel);
+                for _ in 0..numel {
+                    let bytes = read_fixed_bytes::<2>(data, &mut pos, "truncated bf16 data")?;
+                    values.push(BFloat16::from_le_bytes(bytes));
+                }
+                DenseTensor::from_storage_bf16(meta, values)?
+            }
             _ => {
                 return Err(TensorIOError::Corrupt {
                     reason: format!("unsupported dtype in file: {dtype:?}"),
@@ -854,7 +958,6 @@ fn bytes_to_array<const N: usize>(data: &[u8], reason: &str) -> Result<[u8; N], 
 
 use std::borrow::Cow;
 
-use ft_core::TensorStorage;
 use safetensors::tensor::{self as st_tensor, Dtype as StDtype, SafeTensors};
 
 /// Convert FrankenTorch DType to SafeTensors Dtype.
@@ -1958,7 +2061,7 @@ mod tests {
     // ── Tensor State Dict Save/Load Tests ──────────────────────────────
 
     use super::{TensorIOError, load_state_dict, load_state_dict_from_bytes, save_state_dict};
-    use ft_core::{DType, DenseTensor, Device, TensorMeta};
+    use ft_core::{BFloat16, DType, DenseTensor, Device, Float16, TensorMeta};
 
     fn make_f64_tensor(values: Vec<f64>, shape: Vec<usize>) -> DenseTensor {
         DenseTensor::from_contiguous_values(values, shape, Device::Cpu).unwrap()
@@ -2069,6 +2172,50 @@ mod tests {
     }
 
     #[test]
+    fn save_load_f16_tensor() {
+        let mut sd = BTreeMap::new();
+        let vals: Vec<Float16> = vec![1.5f32, -2.0, 0.25]
+            .into_iter()
+            .map(Float16::from_f32)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![3], DType::F16, Device::Cpu);
+        let tensor = DenseTensor::from_storage_f16(meta, vals.clone()).unwrap();
+        sd.insert("half".to_string(), tensor);
+
+        let bytes = super::encode_state_dict_to_bytes(&sd).unwrap();
+        let loaded = load_state_dict_from_bytes(&bytes).unwrap();
+
+        assert_eq!(loaded["half"].meta().dtype(), DType::F16);
+        assert_eq!(loaded["half"].meta().shape(), &[3]);
+        assert_eq!(
+            loaded["half"].typed_storage().as_f16().unwrap(),
+            vals.as_slice()
+        );
+    }
+
+    #[test]
+    fn save_load_bf16_tensor() {
+        let mut sd = BTreeMap::new();
+        let vals: Vec<BFloat16> = vec![1.5f32, -2.0, 0.25]
+            .into_iter()
+            .map(BFloat16::from_f32)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![3], DType::BF16, Device::Cpu);
+        let tensor = DenseTensor::from_storage_bf16(meta, vals.clone()).unwrap();
+        sd.insert("bfloat".to_string(), tensor);
+
+        let bytes = super::encode_state_dict_to_bytes(&sd).unwrap();
+        let loaded = load_state_dict_from_bytes(&bytes).unwrap();
+
+        assert_eq!(loaded["bfloat"].meta().dtype(), DType::BF16);
+        assert_eq!(loaded["bfloat"].meta().shape(), &[3]);
+        assert_eq!(
+            loaded["bfloat"].typed_storage().as_bf16().unwrap(),
+            vals.as_slice()
+        );
+    }
+
+    #[test]
     fn load_invalid_magic() {
         let data = b"NOPE0000";
         let result = load_state_dict_from_bytes(data);
@@ -2141,17 +2288,12 @@ mod tests {
         let original = b"sentinel-state";
         std::fs::write(&path, original).unwrap();
 
-        let meta = TensorMeta::from_shape(vec![2], DType::F16, Device::Cpu);
-        let tensor = DenseTensor::from_storage_f16(
-            meta,
-            vec![
-                ft_core::Float16::from_f32(1.0),
-                ft_core::Float16::from_f32(2.0),
-            ],
-        )
-        .unwrap();
+        let tensor = DenseTensor::from_contiguous_values_f32(vec![1.0, 2.0], vec![2], Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::Complex64)
+            .unwrap();
         let mut sd = BTreeMap::new();
-        sd.insert("half".to_string(), tensor);
+        sd.insert("complex".to_string(), tensor);
 
         let err = save_state_dict(&sd, &path).expect_err("unsupported dtype must fail");
         let persisted = std::fs::read(&path).unwrap();
