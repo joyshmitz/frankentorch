@@ -115,7 +115,7 @@ sort, topk, argsort, kthvalue
 svd, qr, cholesky, cholesky_solve, cholesky_inverse, det, slogdet, inv, pinverse, solve, eigh, matrix_power, matrix_exp, linalg_vector_norm, triangular_solve, matrix_norm (fro/1/-1/inf/-inf), lstsq, cond, matrix_rank
 
 ### Statistical / Histogram Operations
-bincount (with weights, minlength), histc (with auto-range, clamping)
+bincount (with weights, minlength), histc (with auto-range; out-of-range values dropped per torch.histc / numpy.histogram semantics)
 
 ### Structured Matrix Operations
 block_diag (from 1-D or 2-D tensors), diagflat (with offset support)

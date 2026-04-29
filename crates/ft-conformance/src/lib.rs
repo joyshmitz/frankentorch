@@ -16363,6 +16363,199 @@ print(json.dumps({"results": out}))
     }
 
     #[test]
+    fn torch_digamma_scipy_subprocess_conformance() {
+        // Lock FrankenTorch's hand-rolled digamma_approx against
+        // scipy.special.digamma — the canonical reference torch.digamma
+        // wraps internally. The implementation uses recurrence to shift
+        // the argument up to x >= 8 followed by an asymptotic Bernoulli
+        // expansion (B_2 .. B_10). Tighter than the existing 1e-6
+        // unit-test tolerance — the digamma_approx body should be
+        // within ~1e-12 of scipy across the smooth interior.
+        //
+        // Sister harness to torch_erfinv_scipy_subprocess_conformance:
+        // same scipy oracle, same fail-loud assertion structure.
+        // Files closure for frankentorch-b5of (the "torch.special
+        // functions lack subprocess conformance" tracking bead) for
+        // the digamma slice; the remaining slices (polygamma, logit,
+        // xlog1py, entr, multigammaln) follow the same pattern.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let scipy_available = Command::new("python3")
+            .arg("-c")
+            .arg("from scipy import special; import json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !scipy_available {
+            eprintln!(
+                "torch_digamma_scipy_subprocess_conformance: python3/scipy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // digamma is defined on R \ {0, -1, -2, ...}. Cover the
+        // smooth interior (small/large x), the recurrence boundary
+        // (x just below 8 where the shift loop kicks in), the
+        // negative-x reflection-formula path, and a few transcendental
+        // constants.
+        let inputs: Vec<f64> = vec![
+            // Standard interior (positive x).
+            0.5,
+            1.0,
+            1.5,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            7.0,
+            7.999_999_999,
+            8.0,
+            8.000_000_001,
+            10.0,
+            50.0,
+            100.0,
+            1000.0,
+            // Tiny-positive (close to the pole at 0).
+            0.001,
+            0.01,
+            0.1,
+            // Negative x, non-integer (reflection formula).
+            -0.5,
+            -0.7,
+            -1.5,
+            -2.5,
+            -10.5,
+            // Boundary near non-positive integers.
+            -0.999_999,
+            -1.000_001,
+            -1.999_999,
+            -2.000_001,
+            // Transcendental constants.
+            std::f64::consts::E,
+            std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+            // Out-of-domain: should produce NaN bit-identically.
+            0.0,
+            -0.0,
+            -1.0,
+            -2.0,
+            -10.0,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NAN,
+        ];
+        assert!(
+            inputs.len() >= 38,
+            "digamma conformance must have >= 38 inputs, got {}",
+            inputs.len()
+        );
+
+        let input_bits: Vec<String> = inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({ "inputs": input_bits });
+
+        // Python oracle: scipy.special.digamma. scipy returns NaN for
+        // non-positive integer poles and inf for some boundary cases —
+        // we just round-trip the bit pattern so any divergence is
+        // visible in the comparison.
+        let script = r#"
+import json, struct, sys
+from scipy import special
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for x_bits_s in req["inputs"]:
+    x = from_bits(x_bits_s)
+    try:
+        y = float(special.digamma(x))
+    except Exception:
+        y = float("nan")
+    out.append(to_bits(y))
+print(json.dumps({"digamma": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_digamma_scipy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("digamma")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include digamma array");
+        assert_eq!(results.len(), inputs.len());
+
+        // Tolerance: digamma_approx uses recurrence to shift x >= 8
+        // then a 10-term Bernoulli asymptotic expansion. Across the
+        // smooth interior we expect ~1e-12 relative error or better.
+        // The reflection-formula path for negative x adds a tan(πx)
+        // step which can amplify near the poles — bump the bound to
+        // 64 ULPs which still catches the kind of loose-precision
+        // regression the hand-rolled approximation would introduce
+        // (e.g. dropping a Bernoulli term or flipping a sign).
+        const MAX_ULPS: u64 = 64;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() || b.is_infinite() || a.is_nan() || b.is_nan() {
+                return false;
+            }
+            if a.is_sign_negative() != b.is_sign_negative() {
+                return false;
+            }
+            a.to_bits().abs_diff(b.to_bits()) <= MAX_ULPS
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in inputs.iter().enumerate() {
+            let want = f64::from_bits(results[i].as_str().unwrap().parse::<u64>().unwrap());
+            let xt = session
+                .tensor_variable(vec![*x], vec![1], false)
+                .expect("xt");
+            let got_id = session.tensor_digamma(xt).expect("tensor_digamma");
+            let got = session.tensor_values(got_id).expect("got")[0];
+            if !approx_eq(got, want) {
+                mismatches.push(format!(
+                    "tensor_digamma({x:?}) = {got:?} (bits 0x{:016x}) but scipy returned {want:?} (bits 0x{:016x}) — > {MAX_ULPS} ULP apart",
+                    got.to_bits(),
+                    want.to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "digamma scipy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
