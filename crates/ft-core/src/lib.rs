@@ -1676,7 +1676,7 @@ impl SparseCOOTensor {
         }
 
         // Validate indices are within bounds even when not coalesced.
-        let indices_values = indices.storage();
+        let indices_values = indices.contiguous_values()?;
         for d in 0..sparse_dim {
             let dim_size = dense_shape[d];
             for i in 0..nnz {
@@ -1822,7 +1822,7 @@ impl SparseCOOTensor {
             )?);
         }
 
-        let indices_data = self.indices.storage();
+        let indices_data = self.indices.contiguous_values()?;
         let values_data = self.values.contiguous_values_as_f64()?;
         let strides = contiguous_strides(&self.dense_shape);
 
@@ -1937,7 +1937,7 @@ impl SparseCSRTensor {
             });
         }
 
-        let crow_data = crow_indices.storage();
+        let crow_data = crow_indices.contiguous_values()?;
 
         if crow_data[0] != 0 {
             return Err(SparseTensorError::InvalidCrowIndexValue {
@@ -2011,7 +2011,7 @@ impl SparseCSRTensor {
         }
 
         // Validate col_indices are in bounds
-        let col_data = col_indices.storage();
+        let col_data = col_indices.contiguous_values()?;
         for &col in col_data {
             if col < 0 || (col as usize) >= ncols {
                 return Err(SparseTensorError::ColIndexOutOfBounds { index: col, ncols });
@@ -2099,8 +2099,8 @@ impl SparseCSRTensor {
             })?;
         let mut dense_data = vec![0.0f64; numel];
 
-        let crow_data = self.crow_indices.storage();
-        let col_data = self.col_indices.storage();
+        let crow_data = self.crow_indices.contiguous_values()?;
+        let col_data = self.col_indices.contiguous_values()?;
         let values_data = self.values.contiguous_values_as_f64()?;
 
         for row in 0..nrows {
@@ -3887,6 +3887,21 @@ mod tests {
     }
 
     #[test]
+    fn sparse_coo_respects_index_tensor_storage_offset() {
+        let indices_meta =
+            TensorMeta::from_shape(vec![2, 1], DType::I64, Device::Cpu).with_storage_offset(2);
+        let indices = DenseI64Tensor::from_storage(indices_meta, vec![99, 99, 1, 2]).unwrap();
+        let values = DenseTensor::from_contiguous_values(vec![7.0], vec![1], Device::Cpu).unwrap();
+
+        let sparse = SparseCOOTensor::new(indices, values, vec![3, 4], false).unwrap();
+        let dense = sparse.to_dense().unwrap();
+
+        let mut expected = vec![0.0; 12];
+        expected[6] = 7.0;
+        assert_eq!(dense.contiguous_values().unwrap(), expected.as_slice());
+    }
+
+    #[test]
     fn sparse_coo_to_dense_sums_duplicate_indices() {
         // Duplicate entry at (0, 1) should accumulate.
         let coords = vec![vec![0, 1], vec![0, 1]];
@@ -4016,6 +4031,24 @@ mod tests {
         let expected = vec![1.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0, 0.0];
         let actual = dense.contiguous_values().unwrap();
         assert_eq!(actual, expected.as_slice());
+    }
+
+    #[test]
+    fn sparse_csr_respects_index_tensor_storage_offsets() {
+        let crow_meta =
+            TensorMeta::from_shape(vec![3], DType::I64, Device::Cpu).with_storage_offset(1);
+        let crow = DenseI64Tensor::from_storage(crow_meta, vec![99, 0, 1, 1]).unwrap();
+        let col_meta =
+            TensorMeta::from_shape(vec![1], DType::I64, Device::Cpu).with_storage_offset(1);
+        let col = DenseI64Tensor::from_storage(col_meta, vec![99, 2]).unwrap();
+        let values = DenseTensor::from_contiguous_values(vec![7.0], vec![1], Device::Cpu).unwrap();
+
+        let csr = SparseCSRTensor::new(crow, col, values, [2, 4]).unwrap();
+        let dense = csr.to_dense().unwrap();
+
+        let mut expected = vec![0.0; 8];
+        expected[2] = 7.0;
+        assert_eq!(dense.contiguous_values().unwrap(), expected.as_slice());
     }
 
     #[test]
