@@ -17284,6 +17284,189 @@ print(json.dumps({"logit": out}))
     }
 
     #[test]
+    fn torch_multigammaln_scipy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_multigammaln against
+        // scipy.special.multigammaln. The multivariate log-gamma is
+        //     Γ_p(a) = π^{p(p-1)/4} * Π_{i=1..p} Γ(a - (i-1)/2)
+        // so
+        //     log Γ_p(a) = p(p-1)/4 * log(π) + Σ_{i=1..p} lgamma(a - (i-1)/2)
+        // which is what FrankenTorch's tensor_multigammaln implements
+        // (sum of lgamma_approx terms + a closed-form constant). The
+        // domain is a > (p-1)/2 — values below the largest pole at
+        // a = (p-1)/2 hit a non-positive-integer pole in one of the
+        // lgamma terms and scipy returns NaN (or the inf path).
+        //
+        // Sister harness to torch_logit_scipy_subprocess_conformance —
+        // same scipy oracle, same fail-loud structure. Last slice of
+        // frankentorch-b5of (along with digamma, polygamma, xlog1py,
+        // entr, logit). Files closure for the umbrella bead.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let scipy_available = Command::new("python3")
+            .arg("-c")
+            .arg("from scipy import special; import json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !scipy_available {
+            eprintln!(
+                "torch_multigammaln_scipy_subprocess_conformance: python3/scipy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // (a, p) cases. For each p we sample a above the domain
+        // boundary (p-1)/2. p=1 reduces to lgamma so we cover the
+        // standard lgamma test points; p=2..6 exercises the sum
+        // terms. Skip cases at or below the pole — scipy returns NaN
+        // and bit-pattern matching on NaN is exercised by the
+        // dedicated digamma harness.
+        let cases: Vec<(f64, usize)> = vec![
+            // p == 1: identical to lgamma.
+            (0.5, 1),
+            (1.0, 1),
+            (1.5, 1),
+            (2.0, 1),
+            (2.5, 1),
+            (3.0, 1),
+            (10.0, 1),
+            (100.0, 1),
+            // p == 2: sum of two lgamma terms; domain a > 0.5.
+            (1.0, 2),
+            (1.5, 2),
+            (2.5, 2),
+            (5.0, 2),
+            (10.0, 2),
+            (100.0, 2),
+            // p == 3: domain a > 1.
+            (1.5, 3),
+            (2.5, 3),
+            (5.0, 3),
+            (10.0, 3),
+            (50.0, 3),
+            // p == 5: domain a > 2.
+            (3.0, 5),
+            (10.0, 5),
+            (50.0, 5),
+            // p == 6: domain a > 2.5.
+            (3.0, 6),
+            (10.0, 6),
+            (100.0, 6),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(a, p)| {
+                json!({"a_bits": a.to_bits().to_string(), "p": *p as u64})
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+from scipy import special
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    a = from_bits(case["a_bits"])
+    p = int(case["p"])
+    try:
+        v = float(special.multigammaln(a, p))
+    except Exception:
+        v = float("nan")
+    out.append(to_bits(v))
+print(json.dumps({"multigammaln": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_multigammaln_scipy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("multigammaln")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include multigammaln array");
+        assert_eq!(results.len(), cases.len());
+
+        // tensor_multigammaln sums up to p lgamma_approx terms.
+        // Each lgamma_approx is libm-quality (~1 ULP), so the sum
+        // accumulates ~p ULPs of error, plus the closed-form
+        // p(p-1)/4 * log(π) constant has ~1 ULP of its own. For
+        // p <= 6 and a in [0.5, 100] the total absolute error is
+        // bounded by ~few * 1e-13. Use a relative tolerance of 1e-12
+        // so we catch sign flips / off-by-one in the sum without
+        // tripping on the floating-point noise floor.
+        const REL_TOL: f64 = 1e-12;
+        const ABS_FLOOR: f64 = 1e-13;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() || b.is_infinite() || a.is_nan() || b.is_nan() {
+                return false;
+            }
+            if a.is_sign_negative() != b.is_sign_negative() && a != 0.0 && b != 0.0 {
+                return false;
+            }
+            let diff = (a - b).abs();
+            if diff <= ABS_FLOOR {
+                return true;
+            }
+            let scale = a.abs().max(b.abs());
+            diff <= REL_TOL * scale
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (a, p)) in cases.iter().enumerate() {
+            let want = f64::from_bits(results[i].as_str().unwrap().parse::<u64>().unwrap());
+            let xt = session
+                .tensor_variable(vec![*a], vec![1], false)
+                .expect("xt");
+            let got_id = session
+                .tensor_multigammaln(xt, *p)
+                .expect("tensor_multigammaln");
+            let got = session.tensor_values(got_id).expect("got")[0];
+            if !approx_eq(got, want) {
+                mismatches.push(format!(
+                    "tensor_multigammaln(a={a:?}, p={p}) = {got:?} (bits 0x{:016x}) but scipy returned {want:?} (bits 0x{:016x}) — abs diff {:e}",
+                    got.to_bits(),
+                    want.to_bits(),
+                    (got - want).abs()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "multigammaln scipy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_linalg_det_numpy_subprocess_conformance() {
         // Lock FrankenTorch's tensor_linalg_det against
         // numpy.linalg.det. Both compute the determinant via an LU
