@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+ft-core = { path = "../crates/ft-core" }
 ft-dispatch = { path = "../crates/ft-dispatch" }
 ft-serialize = { path = "../crates/ft-serialize" }
 libfuzzer-sys = "0.4.7"
@@ -29,6 +30,13 @@ bench = false
 [[bin]]
 name = "ft_dispatch_schema_parser"
 path = "fuzz_targets/ft_dispatch_schema_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ft_core_sparse_tensors"
+path = "fuzz_targets/ft_core_sparse_tensors.rs"
 test = false
 doc = false
 bench = false
