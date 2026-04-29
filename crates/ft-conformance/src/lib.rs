@@ -13736,20 +13736,8 @@ for x_bits_s in req["inputs"]:
 print(json.dumps({"expm1": expm1_out, "log1p": log1p_out}))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                // Match the skip-on-oracle-error pattern used by the
-                // atan2 sibling test (rather than the panic! pow test
-                // uses) — UBS flags panic! in library code as critical
-                // and we want this harness to be both useful and
-                // policy-clean.
-                eprintln!(
-                    "torch_expm1_log1p_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch_expm1_log1p_libm_subprocess_conformance oracle invocation");
 
         let expm1_results = response
             .get("expm1")
@@ -14017,15 +14005,8 @@ for x_bits_s in req["inputs"]:
 print(json.dumps({"erf": erf_out, "erfc": erfc_out}))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_erf_erfc_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch_erf_erfc_libm_subprocess_conformance oracle invocation");
 
         let erf_results = response
             .get("erf")
@@ -14290,15 +14271,8 @@ for x_bits_s in req["inputs"]:
 print(json.dumps({"lgamma": out}))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_lgamma_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch_lgamma_libm_subprocess_conformance oracle invocation");
 
         let lgamma_results = response
             .get("lgamma")
@@ -14508,15 +14482,8 @@ for x_bits_s in req["inputs"]:
 print(json.dumps({"erfinv": out}))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_erfinv_scipy_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch_erfinv_scipy_subprocess_conformance oracle invocation");
 
         let oracle_results = response
             .get("erfinv")
@@ -15752,15 +15719,8 @@ for x_bits_s in req["inputs"]:
 print(json.dumps({"gelu": gelu_out}))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_gelu_exact_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch_gelu_exact_libm_subprocess_conformance oracle invocation");
 
         let gelu_results = response
             .get("gelu")
@@ -16002,15 +15962,8 @@ for x_bits_s in req["inputs"]:
 print(json.dumps({"softplus": sp_out}))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_softplus_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch_softplus_libm_subprocess_conformance oracle invocation");
 
         let sp_results = response
             .get("softplus")
