@@ -12602,14 +12602,7 @@ impl FrankenTorchSession {
             .chain(b_vals.iter())
             .any(|value| !value.is_finite())
         {
-            let values = a_vals
-                .iter()
-                .zip(b_vals.iter())
-                .map(|(&ai, &bi)| Self::stable_logaddexp_value(ai, bi))
-                .collect::<Vec<_>>();
-            let out = self
-                .tensor_tape
-                .leaf(values, a_meta.shape().to_vec(), false)?;
+            let out = self.tensor_logaddexp_custom(a, b, false)?;
             self.runtime.ledger_mut().record(
                 EvidenceKind::Dispatch,
                 format!("logaddexp a={} b={} out={} nonfinite=true", a.0, b.0, out.0),
@@ -12641,16 +12634,16 @@ impl FrankenTorchSession {
         // Direct computation: log2(2^a + 2^b)
         // = max(a,b) + log2(2^(a-max) + 2^(b-max))
         // = max(a,b) + log2(exp2(a-max) + exp2(b-max))
-        let (a_vals, a_meta) = {
+        let a_shape = {
             let t = self.tensor_tape.tensor(a)?;
-            (t.storage()?.to_vec(), t.meta().clone())
+            t.meta().shape().to_vec()
         };
-        let (b_vals, b_shape) = {
+        let b_shape = {
             let t = self.tensor_tape.tensor(b)?;
-            (t.storage()?.to_vec(), t.meta().shape().to_vec())
+            t.meta().shape().to_vec()
         };
 
-        if a_meta.shape() != b_shape.as_slice() {
+        if a_shape != b_shape {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "logaddexp2: inputs must have the same shape",
@@ -12658,15 +12651,7 @@ impl FrankenTorchSession {
             )));
         }
 
-        let values: Vec<f64> = a_vals
-            .iter()
-            .zip(b_vals.iter())
-            .map(|(&ai, &bi)| Self::stable_logaddexp2_value(ai, bi))
-            .collect();
-
-        let out = self
-            .tensor_tape
-            .leaf(values, a_meta.shape().to_vec(), false)?;
+        let out = self.tensor_logaddexp_custom(a, b, true)?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("logaddexp2 a={} b={} out={}", a.0, b.0, out.0),
@@ -12694,6 +12679,78 @@ impl FrankenTorchSession {
             return m;
         }
         m + (2.0_f64.powf(a - m) + 2.0_f64.powf(b - m)).log2()
+    }
+
+    fn logaddexp_backward_weight(input: f64, output: f64, base2: bool) -> f64 {
+        if base2 {
+            2.0_f64.powf(input - output)
+        } else {
+            (input - output).exp()
+        }
+    }
+
+    fn tensor_logaddexp_custom(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        base2: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_apply_function(
+            &[a, b],
+            move |ctx, inputs| {
+                let (a_vals, a_shape) = inputs[0];
+                let (b_vals, b_shape) = inputs[1];
+                if a_shape != b_shape {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "logaddexp: inputs must have the same shape",
+                        },
+                    )));
+                }
+                ctx.save_for_backward(a_vals.to_vec(), a_shape.to_vec());
+                ctx.save_for_backward(b_vals.to_vec(), b_shape.to_vec());
+                let values = a_vals
+                    .iter()
+                    .zip(b_vals.iter())
+                    .map(|(&ai, &bi)| {
+                        if base2 {
+                            Self::stable_logaddexp2_value(ai, bi)
+                        } else {
+                            Self::stable_logaddexp_value(ai, bi)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                Ok((values, a_shape.to_vec()))
+            },
+            move |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let a_vals = &ctx.saved_tensors()[0];
+                let b_vals = &ctx.saved_tensors()[1];
+                if grad_out.len() != a_vals.len() || a_vals.len() != b_vals.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "logaddexp backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+                let mut grad_a = Vec::with_capacity(a_vals.len());
+                let mut grad_b = Vec::with_capacity(b_vals.len());
+                for ((&ai, &bi), &go) in a_vals.iter().zip(b_vals.iter()).zip(grad_out.iter()) {
+                    let out = if base2 {
+                        Self::stable_logaddexp2_value(ai, bi)
+                    } else {
+                        Self::stable_logaddexp_value(ai, bi)
+                    };
+                    grad_a.push(go * Self::logaddexp_backward_weight(ai, out, base2));
+                    grad_b.push(go * Self::logaddexp_backward_weight(bi, out, base2));
+                }
+                let needs_grad = ctx.needs_input_grad();
+                Ok(vec![
+                    needs_grad[0].then_some(grad_a),
+                    needs_grad[1].then_some(grad_b),
+                ])
+            },
+        )
     }
 
     // ── xlogy ───────────────────────────────────────────────────────────
@@ -31052,6 +31109,26 @@ mod tests {
         assert!((vals[0] - expected).abs() < 1e-8);
     }
 
+    #[test]
+    fn logaddexp_nonfinite_preserves_autograd_edge() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![f64::INFINITY, 1.0], vec![2], true)
+            .unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0], vec![2], true).unwrap();
+        let out = s.tensor_logaddexp(a, b).unwrap();
+        assert!(s.tensor_requires_grad(out).unwrap());
+        let summed = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(summed).unwrap();
+        let grad_a = report.gradient(a).unwrap();
+        let grad_b = report.gradient(b).unwrap();
+        assert!(grad_a[0].is_nan());
+        assert_eq!(grad_b[0], 0.0);
+        let finite_out = (1.0_f64.exp() + 2.0_f64.exp()).ln();
+        assert!((grad_a[1] - (1.0 - finite_out).exp()).abs() < 1e-12);
+        assert!((grad_b[1] - (2.0 - finite_out).exp()).abs() < 1e-12);
+    }
+
     // ── logaddexp2 tests ────────────────────────────────────────────────
 
     #[test]
@@ -31085,6 +31162,26 @@ mod tests {
         // log2(2^0 + 2^4) = log2(1 + 16) = log2(17)
         let expected = 17.0_f64.log2();
         assert!((vals[0] - expected).abs() < 1e-8);
+    }
+
+    #[test]
+    fn logaddexp2_preserves_autograd_edge() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![f64::INFINITY, 1.0], vec![2], true)
+            .unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0], vec![2], true).unwrap();
+        let out = s.tensor_logaddexp2(a, b).unwrap();
+        assert!(s.tensor_requires_grad(out).unwrap());
+        let summed = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(summed).unwrap();
+        let grad_a = report.gradient(a).unwrap();
+        let grad_b = report.gradient(b).unwrap();
+        assert!(grad_a[0].is_nan());
+        assert_eq!(grad_b[0], 0.0);
+        let finite_out = (2.0_f64.powf(1.0) + 2.0_f64.powf(2.0)).log2();
+        assert!((grad_a[1] - 2.0_f64.powf(1.0 - finite_out)).abs() < 1e-12);
+        assert!((grad_b[1] - 2.0_f64.powf(2.0 - finite_out)).abs() < 1e-12);
     }
 
     // ── xlogy tests ─────────────────────────────────────────────────────
