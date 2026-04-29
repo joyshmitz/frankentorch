@@ -3670,23 +3670,49 @@ impl Module for CELU {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        // Compose CELU through autograd primitives so the backward
+        // pass actually flows through the input. The previous body
+        // extracted tensor_values and rebuilt a requires_grad=false
+        // leaf, severing the tape — same severed-autograd pattern
+        // recently fixed for SELU / Threshold / Hardtanh / Unfold /
+        // Fold and the index_* / scatter_* family.
+        //
         // CELU(x) = max(0, x) + min(0, alpha * (exp(x/alpha) - 1))
+        // is equivalent to
+        //     where(x >= 0, x, alpha * (exp(x/alpha) - 1))
+        // which composes through tensor_where, tensor_div / tensor_mul
+        // by a constant alpha tensor, tensor_exp, and tensor_sub —
+        // all autograd-aware.
+        //
+        // Backward correctness (chain rule through the composition):
+        //   x >= 0: grad_x = grad_out * 1 (via the `x` branch of where)
+        //                    + grad_out * 0 * d(neg)/dx (the neg branch
+        //                                                is masked out)
+        //                  = grad_out                        ← analytic
+        //   x <  0: grad_x = grad_out * 0           (`x` branch masked)
+        //                    + grad_out * 1 * (alpha * (1/alpha) *
+        //                                      exp(x/alpha))
+        //                  = grad_out * exp(x/alpha)         ← analytic
+        // The continuity at x=0 is preserved because both branches
+        // give the same derivative there.
+        if self.alpha == 0.0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "CELU: alpha must be non-zero",
+                },
+            )));
+        }
         let input_shape = session.tensor_shape(input)?;
-        let input_vals = session.tensor_values(input)?;
-        let alpha = self.alpha;
-
-        let output: Vec<f64> = input_vals
-            .iter()
-            .map(|&x| {
-                if x >= 0.0 {
-                    x
-                } else {
-                    alpha * ((x / alpha).exp() - 1.0)
-                }
-            })
-            .collect();
-
-        session.tensor_variable(output, input_shape, false)
+        let alpha_tensor = session.full(input_shape.clone(), self.alpha, false)?;
+        let scaled = session.tensor_div(input, alpha_tensor)?;
+        let exp_scaled = session.tensor_exp(scaled)?;
+        let ones = session.full(input_shape.clone(), 1.0, false)?;
+        let exp_minus_one = session.tensor_sub(exp_scaled, ones)?;
+        let alpha_factor = session.full(input_shape.clone(), self.alpha, false)?;
+        let neg_branch = session.tensor_mul(alpha_factor, exp_minus_one)?;
+        let zeros = session.full(input_shape, 0.0, false)?;
+        let mask = session.tensor_ge(input, zeros)?;
+        session.tensor_where(mask, input, neg_branch)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -22099,6 +22125,80 @@ mod tests {
         for &v in &vals {
             assert!(v.abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn celu_propagates_gradients() {
+        // Regression test for frankentorch-vidc: CELU::forward used to
+        // extract values and rebuild a fresh requires_grad=false leaf,
+        // so backward through the module silently zeroed the gradient
+        // flowing into the input. After the tensor_where + tensor_div
+        // / tensor_mul / tensor_exp / tensor_sub composition fix,
+        // gradients flow correctly.
+        //
+        // Analytical derivative for CELU with arbitrary alpha:
+        //   x >= 0:  d CELU/dx = 1
+        //   x <  0:  d CELU/dx = exp(x / alpha)
+        //
+        // sum-loss gradient on a length-N input is exactly that
+        // derivative element-wise.
+        const ALPHA: f64 = 2.0;
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let celu = CELU::new(ALPHA);
+        let input = session
+            .tensor_variable(
+                vec![3.0, -1.5, 0.0, 0.5, -0.25],
+                vec![5],
+                true,
+            )
+            .unwrap();
+        let out = celu.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient must be tracked through CELU");
+
+        let expect = |x: f64| -> f64 {
+            if x >= 0.0 {
+                1.0
+            } else {
+                (x / ALPHA).exp()
+            }
+        };
+        let expected = [
+            expect(3.0),
+            expect(-1.5),
+            expect(0.0),
+            expect(0.5),
+            expect(-0.25),
+        ];
+        for (i, (g, e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-10,
+                "CELU grad[{i}] = {g}, expected {e} (analytical d CELU/dx for alpha={ALPHA})"
+            );
+        }
+    }
+
+    #[test]
+    fn celu_rejects_zero_alpha() {
+        // The composition divides by alpha; alpha == 0 would silently
+        // produce NaN/inf outputs. PyTorch's nn.CELU also rejects
+        // alpha=0. Lock that contract.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let celu = CELU::new(0.0);
+        let input = session
+            .tensor_variable(vec![1.0, -1.0], vec![2], false)
+            .unwrap();
+        let err = celu.forward(&mut session, input).expect_err(
+            "CELU::forward must reject alpha=0",
+        );
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("alpha"),
+            "rejection message should mention alpha, got {msg}"
+        );
     }
 
     #[test]
