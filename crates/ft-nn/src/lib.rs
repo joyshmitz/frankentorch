@@ -3678,21 +3678,34 @@ impl Module for SELU {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = session.tensor_values(input)?;
-        let shape = session.tensor_shape(input)?;
+        // PyTorch SELU constants (matches torch.nn.functional.selu).
         const ALPHA: f64 = 1.6732632423543772;
         const SCALE: f64 = 1.0507009873554805;
-        let out: Vec<f64> = vals
-            .iter()
-            .map(|&x| {
-                if x >= 0.0 {
-                    SCALE * x
-                } else {
-                    SCALE * ALPHA * (x.exp() - 1.0)
-                }
-            })
-            .collect();
-        session.tensor_variable(out, shape, false)
+
+        // Compose SELU through autograd primitives so the backward
+        // pass actually flows through the input. The previous
+        // implementation read `tensor_values` and rebuilt a fresh
+        // leaf with `requires_grad=false`, which severed the tape and
+        // silently zeroed gradients for any upstream parameter.
+        //
+        // SELU(x) = scale * (alpha * elu(x; alpha=1) + (1 - alpha) * relu(x))
+        //
+        // Verification:
+        //   x >= 0:  alpha*x + (1 - alpha)*x = x       → scale * x
+        //   x <  0:  alpha*(e^x - 1) + (1 - alpha)*0   → scale * alpha * (e^x - 1)
+        //
+        // Both match torch.nn.functional.selu's piecewise definition,
+        // and tensor_elu / tensor_relu both have full autograd support.
+        let shape = session.tensor_shape(input)?;
+        let elu_x = session.tensor_elu(input)?;
+        let relu_x = session.tensor_relu(input)?;
+        let alpha_t = session.full(shape.clone(), ALPHA, false)?;
+        let one_minus_alpha_t = session.full(shape.clone(), 1.0 - ALPHA, false)?;
+        let scale_t = session.full(shape, SCALE, false)?;
+        let alpha_elu = session.tensor_mul(alpha_t, elu_x)?;
+        let omalpha_relu = session.tensor_mul(one_minus_alpha_t, relu_x)?;
+        let blended = session.tensor_add(alpha_elu, omalpha_relu)?;
+        session.tensor_mul(scale_t, blended)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -19217,6 +19230,49 @@ mod tests {
         assert!(vals[1] < 0.0);
         // Zero: 0
         assert!(vals[2].abs() < 1e-10);
+    }
+
+    #[test]
+    fn selu_propagates_gradients() {
+        // Regression test: SELU used to read tensor_values and rebuild
+        // a fresh leaf with requires_grad=false, severing the autograd
+        // tape so any backward through it silently zeroed gradients.
+        // Now SELU composes through tensor_elu / tensor_relu so the
+        // backward path matches the analytical derivative.
+        //
+        // Analytical derivative:
+        //   x >  0:  scale = 1.0507009873554805
+        //   x <  0:  scale * alpha * exp(x) = scale * alpha * exp(x)
+        //
+        // We sum the SELU output to get a scalar loss, then check
+        // that grad w.r.t. the input matches the analytical formula
+        // element-wise.
+        const ALPHA: f64 = 1.6732632423543772;
+        const SCALE: f64 = 1.0507009873554805;
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let selu = SELU;
+        let input = session
+            .tensor_variable(vec![2.0, -1.5, 0.5, -0.25], vec![4], true)
+            .unwrap();
+        let out = selu.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient must be tracked through SELU");
+
+        let expect = |x: f64| -> f64 {
+            if x > 0.0 {
+                SCALE
+            } else {
+                SCALE * ALPHA * x.exp()
+            }
+        };
+        let expected = [expect(2.0), expect(-1.5), expect(0.5), expect(-0.25)];
+        for (i, (g, e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!((g - e).abs() < 1e-10, "SELU grad[{i}] = {g}, expected {e}");
+        }
     }
 
     #[test]
