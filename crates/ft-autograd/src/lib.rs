@@ -12173,20 +12173,43 @@ impl TensorTape {
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
                     // Gather incoming at the same positions to recover
-                    // dL/d(values). values has flat shape [n_indices *
-                    // suffix_size] in the order the forward iterated.
-                    let values_numel = n_indices.saturating_mul(suffix_size);
-                    let mut values_grad = Vec::with_capacity(values_numel);
+                    // dL/d(values). The forward allows a one-element
+                    // `values` tensor to broadcast across every write,
+                    // so that case must collapse all gathered
+                    // contributions back into the single scalar slot.
+                    // Non-broadcast values receive gradients in the
+                    // same flat prefix order the forward consumed; any
+                    // extra source elements were unused and keep zero
+                    // gradient.
+                    let values_needed = Self::checked_mul_usize(
+                        n_indices,
+                        suffix_size,
+                        "index_put backward values shape overflow",
+                    )?;
+                    let values_numel = self.nodes[values.0].tensor.meta().numel();
+                    let scalar_broadcast = values_numel == 1 && values_needed > 1;
+                    let mut gathered = Vec::with_capacity(values_needed);
                     for &base in &bases {
                         for s in 0..suffix_size {
-                            values_grad.push(incoming[base + s]);
+                            gathered.push(incoming[base + s]);
                         }
                     }
-                    Self::accumulate_tensor_gradient(
-                        values,
-                        &mut grads[values.0],
-                        &values_grad,
-                    )?;
+                    let values_grad = if scalar_broadcast {
+                        vec![gathered.iter().sum()]
+                    } else {
+                        let mut grad = vec![0.0; values_numel];
+                        Self::ensure_tensor_len(node_id, values_needed, gathered.len())?;
+                        if values_needed > values_numel {
+                            return Err(AutogradError::TensorGradientShapeMismatch {
+                                node: values,
+                                expected: values_numel,
+                                actual: values_needed,
+                            });
+                        }
+                        grad[..values_needed].copy_from_slice(&gathered);
+                        grad
+                    };
+                    Self::accumulate_tensor_gradient(values, &mut grads[values.0], &values_grad)?;
                     Self::complete_dependency(&mut pending, values, &mut queue)?;
 
                     steps.push(TensorBackwardStep {

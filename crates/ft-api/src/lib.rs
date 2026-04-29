@@ -29598,12 +29598,8 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], false)
             .unwrap();
-        let idx = s
-            .tensor_variable(vec![1.0, 3.0], vec![2], false)
-            .unwrap();
-        let values = s
-            .tensor_variable(vec![10.0, 30.0], vec![2], true)
-            .unwrap();
+        let idx = s.tensor_variable(vec![1.0, 3.0], vec![2], false).unwrap();
+        let values = s.tensor_variable(vec![10.0, 30.0], vec![2], true).unwrap();
         let result = s.tensor_index_put(input, &[idx], values, false).unwrap();
         let loss = s.tensor_sum(result).unwrap();
         let report = s.tensor_backward(loss).unwrap();
@@ -29623,12 +29619,8 @@ mod tests {
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], true)
             .unwrap();
-        let idx = s
-            .tensor_variable(vec![1.0, 3.0], vec![2], false)
-            .unwrap();
-        let values = s
-            .tensor_variable(vec![10.0, 30.0], vec![2], true)
-            .unwrap();
+        let idx = s.tensor_variable(vec![1.0, 3.0], vec![2], false).unwrap();
+        let values = s.tensor_variable(vec![10.0, 30.0], vec![2], true).unwrap();
         let result = s.tensor_index_put(input, &[idx], values, false).unwrap();
         let loss = s.tensor_sum(result).unwrap();
         let report = s.tensor_backward(loss).unwrap();
@@ -29724,6 +29716,30 @@ mod tests {
         let result = s.tensor_index_put(input, &[idx], values, false).unwrap();
         let vals = s.tensor_values(result).unwrap();
         assert_eq!(vals, vec![0.0, 99.0, 0.0, 99.0, 99.0]);
+    }
+
+    #[test]
+    fn index_put_scalar_broadcast_backward_sums_value_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], true)
+            .unwrap();
+        let idx = s
+            .tensor_variable(vec![1.0, 3.0, 4.0], vec![3], false)
+            .unwrap();
+        let values = s.tensor_variable(vec![99.0], vec![1], true).unwrap();
+        let result = s.tensor_index_put(input, &[idx], values, false).unwrap();
+        let loss = s.tensor_sum(result).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("index_put must preserve gradients at non-overwritten input slots");
+        let values_grad = s
+            .tensor_gradient(&report, values)
+            .expect("broadcast scalar values must receive summed write gradients");
+        assert_eq!(input_grad, &[1.0, 0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(values_grad, &[3.0]);
     }
 
     #[test]
