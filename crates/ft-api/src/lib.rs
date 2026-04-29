@@ -10493,9 +10493,29 @@ impl FrankenTorchSession {
         let dtype = self.tensor_dtype(input)?;
         match dtype {
             DType::F64 => {
+                // Compose F64 diff through autograd primitives so the
+                // backward pass actually flows through the input. The
+                // previous implementation extracted tensor_values and
+                // rebuilt a requires_grad=false leaf per iteration —
+                // silently severing the tape (the same severed-autograd
+                // pattern Scatter / ScatterAdd / IndexPut had until
+                // recent fixes).
+                //
+                // diff(x, n=1) along last dim is linear:
+                //     out[..., i] = x[..., i + 1] - x[..., i]
+                // which is exactly
+                //     narrow(x, last, 1, len-1) - narrow(x, last, 0, len-1).
+                // Both narrow and sub have backward kernels in
+                // ft-autograd, so the resulting graph is fully
+                // differentiable and PyTorch-equivalent: each x[..., i]
+                // for 0 < i < len-1 contributes +1 to out[..., i-1]
+                // and -1 to out[..., i], so dL/dx for a sum-loss is
+                // [-1, 0, 0, ..., 0, +1] (or telescoped for higher n).
+                //
+                // For n > 1 the diff is reapplied n times, just like
+                // PyTorch's iterative implementation.
                 let mut current = input;
                 for _ in 0..n {
-                    let vals = self.tensor_values(current)?;
                     let shape = self.tensor_shape(current)?;
                     // PyTorch errors on rank-0 input ("diff expects input
                     // to be at least one-dimensional"). Match that.
@@ -10506,39 +10526,22 @@ impl FrankenTorchSession {
                             },
                         )));
                     }
-                    let last_dim = *shape.last().expect("shape non-empty checked above");
+                    let last_dim_idx = shape.len() - 1;
+                    let last_dim = shape[last_dim_idx];
                     if last_dim < 2 {
-                        // PyTorch parity: [3, 1] -> [3, 0], not [0]. Preserve
-                        // every leading dim and reduce only the last one
-                        // (frankentorch-rjn4).
+                        // PyTorch parity: [3, 1] -> [3, 0], not [0].
+                        // Preserve every leading dim and reduce only
+                        // the last one (frankentorch-rjn4).
                         let mut out_shape = shape.clone();
-                        if let Some(last) = out_shape.last_mut() {
-                            *last = 0;
-                        }
+                        out_shape[last_dim_idx] = 0;
                         return self.tensor_variable(vec![], out_shape, false);
                     }
-                    let batch: usize = vals.len() / last_dim;
                     let new_last = last_dim - 1;
-                    let result_len =
-                        Self::checked_mul(batch, new_last, "diff output size overflow")?;
-                    let mut result = Vec::with_capacity(result_len);
-                    for b in 0..batch {
-                        let base = b * last_dim;
-                        for i in 0..new_last {
-                            result.push(vals[base + i + 1] - vals[base + i]);
-                        }
-                    }
-                    let mut new_shape = shape.clone();
-                    if let Some(last) = new_shape.last_mut() {
-                        *last = new_last;
-                    } else {
-                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                            ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                reason: "diff: input must have at least one dimension",
-                            },
-                        )));
-                    }
-                    current = self.tensor_variable(result, new_shape, false)?;
+                    let head =
+                        self.tensor_narrow(current, last_dim_idx, 1, new_last)?;
+                    let tail =
+                        self.tensor_narrow(current, last_dim_idx, 0, new_last)?;
+                    current = self.tensor_sub(head, tail)?;
                 }
                 Ok(current)
             }
@@ -25215,6 +25218,91 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = s.tensor_variable_f32(vec![5.0f32], vec![], false).unwrap();
         assert!(s.tensor_diff(t, 1).is_err());
+    }
+
+    #[test]
+    fn diff_n1_propagates_gradients_f64() {
+        // Regression: tensor_diff (f64) used to extract values and
+        // rebuild a requires_grad=false leaf per iteration, severing
+        // autograd. After the narrow+sub composition fix, gradients
+        // flow through the input.
+        //
+        // For diff(x, n=1) along the last dim of a length-N vector with
+        // sum-loss reduction, every interior x[i] contributes +1 to
+        // out[i-1] (via narrow head) and -1 to out[i] (via narrow tail),
+        // canceling to 0. The endpoints survive: x[0] only feeds into
+        // out[0] with -1; x[N-1] only feeds into out[N-2] with +1.
+        // So dL/dx = [-1, 0, 0, ..., 0, +1].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 4.0, 9.0, 16.0, 25.0], vec![5], true)
+            .unwrap();
+        let d = s.tensor_diff(x, 1).unwrap();
+        assert_eq!(s.tensor_values(d).unwrap(), vec![3.0, 5.0, 7.0, 9.0]);
+
+        let loss = s.tensor_sum(d).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("tensor_diff must propagate gradient to input");
+        assert_eq!(grad, &[-1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn diff_n2_propagates_gradients_f64() {
+        // For diff(x, n=2) along the last dim, the linear map is
+        //     out[i] = x[i+2] - 2*x[i+1] + x[i]
+        // (the second discrete difference). Sum-loss expectations:
+        //   x[0]   contributes +1 to out[0]                → +1
+        //   x[1]   contributes -2 to out[0] and +1 to out[1] → -1
+        //   x[i] (interior, 1 < i < N-2):
+        //          +1 to out[i-2], -2 to out[i-1], +1 to out[i] → 0
+        //   x[N-2] contributes -2 to out[N-3] and +1 to out[N-3] is
+        //          already covered. Actually for length 5 → out length 3:
+        //   x[0..4]: [+1, -1, 0, -1, +1]. Verify against analytical.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 4.0, 8.0, 16.0], vec![5], true)
+            .unwrap();
+        let d = s.tensor_diff(x, 2).unwrap();
+        // First diff: [1, 2, 4, 8] then second diff: [1, 2, 4]
+        assert_eq!(s.tensor_values(d).unwrap(), vec![1.0, 2.0, 4.0]);
+
+        let loss = s.tensor_sum(d).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("tensor_diff n=2 must propagate gradient to input");
+        // Telescoping coefficients of the second discrete difference
+        // applied to a length-5 input with sum loss.
+        assert_eq!(grad, &[1.0, -1.0, 0.0, -1.0, 1.0]);
+    }
+
+    #[test]
+    fn diff_propagates_gradients_along_last_dim_2d() {
+        // diff applies along the last dim. For a [2, 4] input the
+        // gradient pattern is [-1, 0, 0, +1] replicated per row.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![1.0, 3.0, 6.0, 10.0, 2.0, 5.0, 9.0, 14.0],
+                vec![2, 4],
+                true,
+            )
+            .unwrap();
+        let d = s.tensor_diff(x, 1).unwrap();
+        let shape = s.tensor_shape(d).unwrap();
+        assert_eq!(shape, vec![2, 3]);
+
+        let loss = s.tensor_sum(d).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("tensor_diff must propagate gradient through 2-D input");
+        assert_eq!(
+            grad,
+            &[-1.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0]
+        );
     }
 
     // ── cummax / cummin tests ──────────────────────────────────────────
