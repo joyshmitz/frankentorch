@@ -7027,7 +7027,7 @@ impl FrankenTorchSession {
             }
         };
         self.tensor_tape
-            .scatter(input, dim, &index_data, index_shape, &src_data)
+            .scatter(input, src, dim, &index_data, index_shape, &src_data)
     }
 
     pub fn tensor_scatter_add(
@@ -29420,6 +29420,64 @@ mod tests {
             .expect("scatter_add must gather output gradient into src");
         assert_eq!(input_grad, &[1.0, 1.0, 1.0]);
         assert_eq!(src_grad, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn scatter_backward_propagates_to_src() {
+        // Regression test mirroring scatter_add_backward_propagates_to_src:
+        // ft-autograd Scatter used to drop the gradient that should
+        // flow into `src`, exactly the same severed-autograd pattern
+        // ScatterAdd had. Now grad_src is gather(incoming, dim, index)
+        // — each src[j] was overwritten into output[index[j]], so a
+        // sum-loss gradient at output[index[j]] = 1.0 must show up as
+        // src_grad[j] = 1.0 (no double-counting since this test uses
+        // unique indices).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![10.0, 20.0, 30.0], vec![1, 3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .unwrap();
+        let idx = s
+            .tensor_variable(vec![0.0, 1.0, 2.0], vec![1, 3], false)
+            .unwrap();
+        let result = s.tensor_scatter(input, 1, idx, src).unwrap();
+        let loss = s.tensor_sum(result).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, src)
+            .expect("scatter must propagate gradient to src");
+        assert_eq!(grad, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn scatter_backward_propagates_to_input_and_src() {
+        // Both prongs at once: input retains gradient at non-overwritten
+        // positions; src receives gradient at the overwritten positions.
+        // For input=[10,20,30] with indices [0,2] writing to positions
+        // 0 and 2, only position 1 of input is preserved unchanged →
+        // grad_input = [0, 1, 0]. grad_src = gather(ones, 0, [0,2]) =
+        // [1, 1].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![10.0, 20.0, 30.0], vec![3], true)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![100.0, 300.0], vec![2], true)
+            .unwrap();
+        let idx = s.tensor_variable(vec![0.0, 2.0], vec![2], false).unwrap();
+        let result = s.tensor_scatter(input, 0, idx, src).unwrap();
+        let loss = s.tensor_sum(result).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("scatter must preserve gradient at non-overwritten positions");
+        let src_grad = s
+            .tensor_gradient(&report, src)
+            .expect("scatter must gather output gradient into src");
+        assert_eq!(input_grad, &[0.0, 1.0, 0.0]);
+        assert_eq!(src_grad, &[1.0, 1.0]);
     }
 
     #[test]

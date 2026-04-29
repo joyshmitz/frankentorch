@@ -586,6 +586,14 @@ enum TensorNodeOp {
     },
     Scatter {
         input: TensorNodeId,
+        // `src` is the tensor whose values overwrite positions of
+        // `input` at the given indices. Backward must propagate the
+        // gradient at each `output[idx[j]]` slot back into `src[j]`,
+        // which is exactly gather(incoming, dim, index). Without
+        // tracking src here, callers that built src as a tracked
+        // tensor would silently get zero gradients flowing back into
+        // upstream parameters — the same bug ScatterAdd had.
+        src: TensorNodeId,
         dim: usize,
         index: Vec<f64>,
         index_shape: Vec<usize>,
@@ -7534,14 +7542,17 @@ impl TensorTape {
     pub fn scatter(
         &mut self,
         input: TensorNodeId,
+        src: TensorNodeId,
         dim: usize,
         index: &[f64],
         index_shape: Vec<usize>,
-        src: &[f64],
+        src_values: &[f64],
     ) -> Result<TensorNodeId, AutogradError> {
         let (storage, input_shape, output_dtype, output_device, requires_grad) = {
             let input_node = self.node(input)?;
-            let requires_grad = input_node.requires_grad && self.grad_enabled;
+            let src_requires_grad = self.node(src)?.requires_grad;
+            let requires_grad =
+                (input_node.requires_grad || src_requires_grad) && self.grad_enabled;
             let meta = input_node.tensor.meta().clone();
             let idx_meta =
                 ft_core::TensorMeta::from_shape(index_shape.clone(), meta.dtype(), meta.device());
@@ -7553,13 +7564,13 @@ impl TensorTape {
                         dim,
                         index,
                         &idx_meta,
-                        src,
+                        src_values,
                     )
                     .map_err(|e| AutogradError::Dispatch(e.into()))?;
                     TensorStorage::F64(Arc::new(values))
                 }
                 DType::F32 => {
-                    let src_f32: Vec<f32> = src.iter().map(|&v| v as f32).collect();
+                    let src_f32: Vec<f32> = src_values.iter().map(|&v| v as f32).collect();
                     let values = scatter_tensor_contiguous_f32(
                         input_node.tensor.contiguous_values_f32()?,
                         &meta,
@@ -7600,6 +7611,7 @@ impl TensorTape {
             requires_grad,
             op: TensorNodeOp::Scatter {
                 input,
+                src,
                 dim,
                 index: index_owned,
                 index_shape,
@@ -11946,13 +11958,23 @@ impl TensorTape {
                 }
                 TensorNodeOp::Scatter {
                     input,
+                    src,
                     dim,
                     ref index,
                     ref index_shape,
                     ref input_shape,
                 } => {
-                    // Backward: gradient passes through for non-overwritten positions;
-                    // overwritten positions get zero gradient w.r.t. input.
+                    // Backward has two prongs:
+                    //   grad_input: incoming with overwritten positions
+                    //               zeroed (those slots no longer hold
+                    //               the original value, so they make no
+                    //               contribution back through `input`).
+                    //   grad_src:   gather(incoming, dim, index) — each
+                    //               src[j] was copied verbatim to
+                    //               output[index[j]], so dL/d(src[j]) =
+                    //               dL/d(output[index[j]]). Same gather
+                    //               primitive ScatterAdd's backward
+                    //               reuses.
                     let mut contrib = incoming.to_vec();
                     let input_numel = Self::checked_shape_numel(
                         input_shape,
@@ -11999,6 +12021,23 @@ impl TensorTape {
                     }
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    // grad_src = gather(incoming, dim, index).
+                    let device = self.nodes[input.0].tensor.meta().device();
+                    let incoming_meta =
+                        ft_core::TensorMeta::from_shape(input_shape.clone(), DType::F64, device);
+                    let idx_meta =
+                        ft_core::TensorMeta::from_shape(index_shape.clone(), DType::F64, device);
+                    let src_grad = gather_tensor_contiguous_f64(
+                        &incoming,
+                        &incoming_meta,
+                        dim,
+                        index,
+                        &idx_meta,
+                    )
+                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
+                    Self::accumulate_tensor_gradient(src, &mut grads[src.0], &src_grad)?;
+                    Self::complete_dependency(&mut pending, src, &mut queue)?;
 
                     steps.push(TensorBackwardStep {
                         node: node_id,
@@ -13448,7 +13487,6 @@ impl TensorTape {
                 | TensorNodeOp::MinDim { input, .. }
                 | TensorNodeOp::IndexSelect { input, .. }
                 | TensorNodeOp::Gather { input, .. }
-                | TensorNodeOp::Scatter { input, .. }
                 | TensorNodeOp::IndexPut { input, .. }
                 | TensorNodeOp::Sort { input, .. }
                 | TensorNodeOp::TopK { input, .. }
@@ -13460,10 +13498,11 @@ impl TensorTape {
                 | TensorNodeOp::CastF64 { input } => {
                     stack.push(input);
                 }
-                TensorNodeOp::ScatterAdd { input, src, .. } => {
-                    // ScatterAdd has two tracked tensor inputs (the
-                    // destination buffer and the value source); both
-                    // must be walked so reverse-mode reaches src too.
+                TensorNodeOp::Scatter { input, src, .. }
+                | TensorNodeOp::ScatterAdd { input, src, .. } => {
+                    // Both Scatter and ScatterAdd have two tracked
+                    // tensor inputs (the destination buffer and the
+                    // value source); reverse-mode must reach src too.
                     stack.push(input);
                     stack.push(src);
                 }
@@ -13606,7 +13645,6 @@ impl TensorTape {
                 | TensorNodeOp::MinDim { input, .. }
                 | TensorNodeOp::IndexSelect { input, .. }
                 | TensorNodeOp::Gather { input, .. }
-                | TensorNodeOp::Scatter { input, .. }
                 | TensorNodeOp::IndexPut { input, .. }
                 | TensorNodeOp::Sort { input, .. }
                 | TensorNodeOp::TopK { input, .. }
@@ -13618,9 +13656,11 @@ impl TensorTape {
                 | TensorNodeOp::CastF64 { input } => {
                     pending[input.0] = pending[input.0].saturating_add(1);
                 }
-                TensorNodeOp::ScatterAdd { input, src, .. } => {
-                    // Both destination and value source contribute back-
-                    // edges that the reverse-mode planner must count.
+                TensorNodeOp::Scatter { input, src, .. }
+                | TensorNodeOp::ScatterAdd { input, src, .. } => {
+                    // Both Scatter and ScatterAdd have two tracked
+                    // tensor inputs; both back-edges must be counted
+                    // by the reverse-mode planner.
                     pending[input.0] = pending[input.0].saturating_add(1);
                     pending[src.0] = pending[src.0].saturating_add(1);
                 }
