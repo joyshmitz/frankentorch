@@ -17662,6 +17662,202 @@ print(json.dumps({"results": out}))
     }
 
     #[test]
+    fn torch_linalg_slogdet_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_linalg_slogdet against
+        // numpy.linalg.slogdet. Returns (sign, logabsdet) so that
+        //     det(A) = sign * exp(logabsdet)
+        // For singular matrices: sign = 0, logabsdet = -inf.
+        // For negative determinants: sign = -1, logabsdet = log|det|.
+        // This is the numerically stable companion to det — the
+        // log space avoids overflow on large matrices and the sign
+        // disentangles parity from magnitude.
+        //
+        // Sister harness to torch_linalg_det_numpy_subprocess_conformance
+        // — same numpy oracle, same fail-loud structure. Files closure
+        // for the slogdet slice of frankentorch-c36b.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_linalg_slogdet_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Each case: (label, flat_row_major, n) — the matrix is n×n.
+        // Mirror the det harness's coverage but add cases where
+        // log-space matters (large-magnitude determinant) and where
+        // sign disentanglement matters (negative det).
+        let cases: Vec<(&str, Vec<f64>, usize)> = vec![
+            ("identity_3x3", vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3),
+            ("scaled_identity_3x3", vec![2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0], 3),
+            ("diagonal_4x4_positive", {
+                let mut m = vec![0.0; 16];
+                m[0] = 2.0; m[5] = 3.0; m[10] = 5.0; m[15] = 7.0;
+                m
+            }, 4),
+            // sign = -1 case (negative det via row swap).
+            ("matrix_2x2_neg_det", vec![1.0, 4.0, 3.0, 2.0], 2),
+            // Singular: sign = 0, logabsdet = -inf.
+            ("singular_2x2", vec![1.0, 2.0, 2.0, 4.0], 2),
+            ("singular_3x3", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 2.0, 4.0, 6.0], 3),
+            // Large-magnitude det that overflows direct det but
+            // is well-defined in log space: 100 * I, n=8.
+            ("large_diag_8x8", {
+                let mut m = vec![0.0; 64];
+                for i in 0..8 { m[i * 8 + i] = 100.0; }
+                m
+            }, 8),
+            // Tiny-magnitude det that underflows direct det: 0.01 * I, n=8.
+            ("small_diag_8x8", {
+                let mut m = vec![0.0; 64];
+                for i in 0..8 { m[i * 8 + i] = 0.01; }
+                m
+            }, 8),
+            // Upper triangular: det = product of diag.
+            ("upper_triangular_4x4", vec![
+                2.0, 1.0, 1.0, 1.0,
+                0.0, 3.0, 1.0, 1.0,
+                0.0, 0.0, 5.0, 1.0,
+                0.0, 0.0, 0.0, 7.0,
+            ], 4),
+            // Negative diagonals — sign emerges from product of signs.
+            ("diagonal_neg_4x4", {
+                let mut m = vec![0.0; 16];
+                m[0] = -2.0; m[5] = 3.0; m[10] = -5.0; m[15] = 7.0;
+                m
+            }, 4),
+            // 1x1 corner cases.
+            ("scalar_positive", vec![3.5], 1),
+            ("scalar_negative", vec![-2.5], 1),
+            ("scalar_zero", vec![0.0], 1),
+            // General nonsingular 3x3.
+            ("matrix_3x3_general", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0], 3),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(label, vals, n)| {
+                json!({
+                    "label": *label,
+                    "n": *n as u64,
+                    "values_bits": vals.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    n = int(case["n"])
+    vals = [from_bits(s) for s in case["values_bits"]]
+    A = np.array(vals, dtype=np.float64).reshape(n, n)
+    sign, logabsdet = np.linalg.slogdet(A)
+    out.append({
+        "label": case["label"],
+        "sign_bits": to_bits(float(sign)),
+        "logabsdet_bits": to_bits(float(logabsdet)),
+    })
+print(json.dumps({"slogdet": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_linalg_slogdet_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("slogdet")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include slogdet array");
+        assert_eq!(results.len(), cases.len());
+
+        // Sign must match exactly (it's an integer in {-1, 0, 1}
+        // packed as f64). logabsdet matches numpy within LU-factor
+        // conditioning bound — relative 1e-9 absolute on logabsdet
+        // is generous given the matrices here are all well-conditioned.
+        // For singular cases, both sides return -inf and bit-equality
+        // holds.
+        const REL_TOL: f64 = 1e-9;
+        let logabsdet_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() != b.is_infinite() {
+                return false;
+            }
+            let scale = a.abs().max(b.abs()).max(1.0);
+            (a - b).abs() <= REL_TOL * scale
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (label, vals, n)) in cases.iter().enumerate() {
+            let result_obj = &results[i];
+            let want_sign = f64::from_bits(
+                result_obj["sign_bits"].as_str().unwrap().parse::<u64>().unwrap(),
+            );
+            let want_logabsdet = f64::from_bits(
+                result_obj["logabsdet_bits"].as_str().unwrap().parse::<u64>().unwrap(),
+            );
+            let xt = session
+                .tensor_variable(vals.clone(), vec![*n, *n], false)
+                .expect("xt");
+            let (got_sign, got_logabsdet) = session
+                .tensor_linalg_slogdet(xt)
+                .expect("tensor_linalg_slogdet");
+            if got_sign != want_sign {
+                mismatches.push(format!(
+                    "tensor_linalg_slogdet({label}).sign = {got_sign} but numpy returned {want_sign}"
+                ));
+                continue;
+            }
+            if !logabsdet_eq(got_logabsdet, want_logabsdet) {
+                mismatches.push(format!(
+                    "tensor_linalg_slogdet({label}).logabsdet = {got_logabsdet} but numpy returned {want_logabsdet} — relative error > {REL_TOL}"
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "linalg.slogdet numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
