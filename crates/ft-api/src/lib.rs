@@ -13232,43 +13232,42 @@ impl FrankenTorchSession {
         x: TensorNodeId,
         y: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        if self.tensor_tape.tensor_requires_grad(x)? || self.tensor_tape.tensor_requires_grad(y)? {
+        // Composes through tensor_log1p + tensor_mul + tensor_eq +
+        // tensor_where so the autograd tape carries gradients through
+        // both x and y. Previously this had a fail-loud guard
+        // rejecting tracked inputs because the body extracted values
+        // and rebuilt a fresh requires_grad=false leaf — same
+        // severed-autograd pattern as tensor_xlogy / logit / cov etc.
+        // PyTorch's torch.special.xlog1py is differentiable. Tracked
+        // under frankentorch-1tax.
+        //
+        // Math:  xlog1py(x, y) = x * log(1 + y), with the convention
+        //                       0 * log(1 + y) = 0  (preserves the
+        //                       y == -1 boundary where log1p(-1) is
+        //                       -inf — output stays 0 when x is 0).
+        //
+        // Composition:
+        //     where(x == 0, 0, x * log1p(y))
+        //
+        // Backward:
+        //     d xlog1py / dx where x != 0 = log1p(y)
+        //     d xlog1py / dy where x != 0 = x / (1 + y)
+        //     both gradients zero where x == 0 (mask blocks flow)
+        let x_shape = self.tensor_shape(x)?;
+        let y_shape = self.tensor_shape(y)?;
+        if x_shape != y_shape {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "xlog1py: autograd is not supported",
+                    reason: "xlog1py: inputs must have the same shape",
                 },
             )));
         }
-        let (x_vals, x_meta) = {
-            let tensor = self.tensor_tape.tensor(x)?;
-            (tensor.storage()?.to_vec(), tensor.meta().clone())
-        };
-        let y_vals = {
-            let tensor = self.tensor_tape.tensor(y)?;
-            tensor.storage()?.to_vec()
-        };
-
-        if x_vals.len() != y_vals.len() {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "xlog1py: inputs must have the same number of elements",
-                },
-            )));
-        }
-
-        let values: Vec<f64> = x_vals
-            .iter()
-            .zip(y_vals.iter())
-            .map(
-                |(&xi, &yi)| {
-                    if xi == 0.0 { 0.0 } else { xi * (1.0 + yi).ln() }
-                },
-            )
-            .collect();
-
-        let out = self
-            .tensor_tape
-            .leaf(values, x_meta.shape().to_vec(), false)?;
+        let log1p_y = self.tensor_log1p(y)?;
+        let prod = self.tensor_mul(x, log1p_y)?;
+        let zeros = self.full(x_shape.clone(), 0.0, false)?;
+        let mask = self.tensor_eq(x, zeros)?;
+        let zero_branch = self.full(x_shape, 0.0, false)?;
+        let out = self.tensor_where(mask, zero_branch, prod)?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("xlog1py x={} y={} out={}", x.0, y.0, out.0),
@@ -29862,11 +29861,55 @@ mod tests {
     }
 
     #[test]
-    fn xlog1py_rejects_grad_input() {
+    fn xlog1py_propagates_gradients_through_x_and_y() {
+        // Regression test for frankentorch-1tax: tensor_xlog1py used
+        // to fail-loud reject tracked inputs because the body
+        // extracted values and rebuilt a fresh requires_grad=false
+        // leaf. After the where(x==0, 0, x*log1p(y)) composition fix
+        // gradients flow through both x and y; the rejection guard
+        // is gone (test renamed from xlog1py_rejects_grad_input).
+        //
+        // Analytical derivatives where x != 0:
+        //   d xlog1py / dx = log1p(y) = log(1 + y)
+        //   d xlog1py / dy = x / (1 + y)
+        // Where x == 0, the convention pins both gradients to 0.
+        //
+        // For x = [2.0, 0.0, 3.0], y = [1.0, 1.0, 4.0]:
+        //   output  = [2*ln(2), 0,        3*ln(5)]
+        //   sum loss → incoming = ones
+        //   grad_x  = [ln(2),   0,        ln(5)]   (mask zeros position 1)
+        //   grad_y  = [2/2,     0,        3/5]     (mask zeros position 1)
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
-        let y = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
-        assert!(s.tensor_xlog1py(x, y).is_err());
+        let x = s
+            .tensor_variable(vec![2.0, 0.0, 3.0], vec![3], true)
+            .unwrap();
+        let y = s
+            .tensor_variable(vec![1.0, 1.0, 4.0], vec![3], true)
+            .unwrap();
+        let out = s.tensor_xlog1py(x, y).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_x = s
+            .tensor_gradient(&report, x)
+            .expect("xlog1py must propagate gradient to x");
+        let grad_y = s
+            .tensor_gradient(&report, y)
+            .expect("xlog1py must propagate gradient to y");
+
+        let expect_x = [2.0_f64.ln(), 0.0, 5.0_f64.ln()];
+        let expect_y = [2.0 / 2.0, 0.0, 3.0 / 5.0];
+        for (i, (&g, &e)) in grad_x.iter().zip(expect_x.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "xlog1py grad_x[{i}] = {g}, expected log1p(y_i) (or 0): {e}"
+            );
+        }
+        for (i, (&g, &e)) in grad_y.iter().zip(expect_y.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "xlog1py grad_y[{i}] = {g}, expected x_i/(1+y_i) (or 0): {e}"
+            );
+        }
     }
 
     #[test]
