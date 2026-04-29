@@ -3579,67 +3579,83 @@ impl Module for PReLU {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        // PReLU(x) = x          if x >= 0
+        //          = w[c] * x   otherwise
+        //
+        // where w broadcasts: a single scalar across all positions
+        // when num_parameters == 1, or one slope per channel when
+        // num_parameters == channels. Composed as
+        //
+        //     where(x >= 0, x, weight_broadcast * x)
+        //
+        // through tensor_ge / tensor_mul / tensor_where + a
+        // tensor_reshape + tensor_expand chain that lifts `weight`
+        // (shape [num_parameters]) to the full input shape. Backward
+        // correctness:
+        //   d output / d input  for x >= 0:  1     (where x branch)
+        //                       for x <  0:  w[c]  (mul backward)
+        //   d output / d weight[c]: sum over (b, spatial) of x_i
+        //                           where mask_i == 0 in channel c
+        //                           (mul backward + expand backward
+        //                            sums broadcast dims back to
+        //                            weight's original shape).
+        // The previous severed-autograd path dropped both the input
+        // and the weight gradient.
         let input_shape = session.tensor_shape(input)?;
-        let input_vals = session.tensor_values(input)?;
-        let weight_vals = session.tensor_values(self.weight)?;
 
-        let numel = input_vals.len();
-        let mut output = Vec::with_capacity(numel);
-
-        if self.num_parameters == 1 {
-            let a = weight_vals[0];
-            for &x in &input_vals {
-                output.push(if x >= 0.0 { x } else { a * x });
-            }
-        } else {
-            // Multi-channel: weight[c] applies to channel c
-            // Determine channel dimension (dim 1 for multi-dim, or dim 0 for 1D)
-            let channels = if input_shape.len() >= 2 {
-                input_shape[1]
+        // Determine the pre-expand shape for the weight tensor.
+        // tensor_expand requires every original dim to be 1 or to
+        // already match the target dim. So we lay out
+        //   num_parameters == 1                 → [1, 1, ..., 1]
+        //   1-D input, num_parameters == len    → [num_parameters]
+        //   N-D input, num_parameters == channels → [1, C, 1, ..., 1]
+        let weight_pre_expand: Vec<usize> = if self.num_parameters == 1 {
+            if input_shape.is_empty() {
+                vec![]
             } else {
-                input_shape[0]
-            };
-            if channels != self.num_parameters {
+                vec![1; input_shape.len()]
+            }
+        } else if input_shape.len() <= 1 {
+            // 1-D input with per-element slope; weight shape must be
+            // [num_parameters] and match the input length.
+            if input_shape.first().copied().unwrap_or(0) != self.num_parameters {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "PReLU num_parameters must match input length for 1-D input",
+                    },
+                )));
+            }
+            vec![self.num_parameters]
+        } else {
+            // 2+D input: per-channel slope along dim 1.
+            if input_shape[1] != self.num_parameters {
                 return Err(AutogradError::Dispatch(DispatchError::Key(
                     DispatchKeyError::IncompatibleSet {
                         reason: "PReLU num_parameters must match channel count",
                     },
                 )));
             }
-            let spatial = if input_shape.len() >= 2 {
-                checked_shape_numel(&input_shape[2..], "PReLU spatial shape overflow")?
-            } else {
-                1
-            };
-            let batch = if input_shape.len() >= 2 {
-                input_shape[0]
-            } else {
-                1
-            };
-            let batch_stride = checked_mul(channels, spatial, "PReLU channel spatial overflow")?;
-            let expected = checked_mul(batch, batch_stride, "PReLU input shape volume overflow")?;
-            if expected != input_vals.len() {
-                return Err(AutogradError::Dispatch(DispatchError::Key(
-                    DispatchKeyError::IncompatibleSet {
-                        reason: "PReLU input values length mismatch",
-                    },
-                )));
-            }
+            let mut shape = vec![1usize; input_shape.len()];
+            shape[1] = self.num_parameters;
+            shape
+        };
 
-            for b in 0..batch {
-                let base = b * batch_stride;
-                for (c, &a) in weight_vals.iter().enumerate().take(channels) {
-                    let channel_base = base + c * spatial;
-                    for s in 0..spatial {
-                        let idx = channel_base + s;
-                        let x = input_vals[idx];
-                        output.push(if x >= 0.0 { x } else { a * x });
-                    }
-                }
-            }
-        }
-
-        session.tensor_variable(output, input_shape, false)
+        let weight_reshaped = if weight_pre_expand
+            == session.tensor_shape(self.weight)?
+        {
+            self.weight
+        } else {
+            session.tensor_reshape(self.weight, weight_pre_expand)?
+        };
+        let weight_broadcast = if session.tensor_shape(weight_reshaped)? == input_shape {
+            weight_reshaped
+        } else {
+            session.tensor_expand(weight_reshaped, input_shape.clone())?
+        };
+        let neg_branch = session.tensor_mul(weight_broadcast, input)?;
+        let zeros = session.full(input_shape, 0.0, false)?;
+        let mask = session.tensor_ge(input, zeros)?;
+        session.tensor_where(mask, input, neg_branch)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -3921,21 +3937,35 @@ impl Module for Softshrink {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = session.tensor_values(input)?;
+        // Softshrink(x) = x - λ  if x > λ
+        //               = x + λ  if x < -λ
+        //               = 0      otherwise
+        //
+        // Composed as
+        //     where(x > λ,
+        //           x - λ,
+        //           where(x < -λ, x + λ, 0))
+        //
+        // Backward delivers the analytical adjoint piecewise: 1 in
+        // both shifted regions, 0 in the dead-zone — the chain rule
+        // through tensor_sub / tensor_add / tensor_where takes care
+        // of it without bespoke kernels.
         let shape = session.tensor_shape(input)?;
-        let out: Vec<f64> = vals
-            .iter()
-            .map(|&x| {
-                if x > self.lambda {
-                    x - self.lambda
-                } else if x < -self.lambda {
-                    x + self.lambda
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        session.tensor_variable(out, shape, false)
+        let lambda_t = session.full(shape.clone(), self.lambda, false)?;
+        let neg_lambda_t = session.full(shape.clone(), -self.lambda, false)?;
+        // Positive shift: x - λ
+        let pos_branch = session.tensor_sub(input, lambda_t)?;
+        // Negative shift: x + λ
+        let neg_lambda_factor = session.full(shape.clone(), self.lambda, false)?;
+        let neg_branch = session.tensor_add(input, neg_lambda_factor)?;
+        let zeros = session.full(shape.clone(), 0.0, false)?;
+        // mask_neg = (x < -λ); inner = where(mask_neg, neg_branch, 0)
+        let mask_neg = session.tensor_lt(input, neg_lambda_t)?;
+        let inner = session.tensor_where(mask_neg, neg_branch, zeros)?;
+        // mask_pos = (x > λ); outer = where(mask_pos, pos_branch, inner)
+        let lambda_t2 = session.full(shape, self.lambda, false)?;
+        let mask_pos = session.tensor_gt(input, lambda_t2)?;
+        session.tensor_where(mask_pos, pos_branch, inner)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -3969,13 +3999,17 @@ impl Module for Hardshrink {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = session.tensor_values(input)?;
+        // Hardshrink(x) = x if |x| > λ else 0.
+        // Compose through tensor_abs + tensor_gt + tensor_where.
+        // Backward is automatically piecewise-constant: 1 in the
+        // |x| > λ region, 0 elsewhere — matching the analytical
+        // adjoint of this piecewise-linear activation.
         let shape = session.tensor_shape(input)?;
-        let out: Vec<f64> = vals
-            .iter()
-            .map(|&x| if x.abs() > self.lambda { x } else { 0.0 })
-            .collect();
-        session.tensor_variable(out, shape, false)
+        let abs_x = session.tensor_abs(input)?;
+        let lambda_t = session.full(shape.clone(), self.lambda, false)?;
+        let mask = session.tensor_gt(abs_x, lambda_t)?;
+        let zeros = session.full(shape, 0.0, false)?;
+        session.tensor_where(mask, input, zeros)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -3994,10 +4028,13 @@ impl Module for Tanhshrink {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = session.tensor_values(input)?;
-        let shape = session.tensor_shape(input)?;
-        let out: Vec<f64> = vals.iter().map(|&x| x - x.tanh()).collect();
-        session.tensor_variable(out, shape, false)
+        // Tanhshrink(x) = x - tanh(x).
+        // tensor_sub and tensor_tanh both have backward kernels, so
+        // the chain rule delivers d/dx Tanhshrink(x) = 1 - sech^2(x)
+        // automatically. Replaces the previous severed-autograd path
+        // (tensor_values → plain f64 → fresh requires_grad=false leaf).
+        let tanh_x = session.tensor_tanh(input)?;
+        session.tensor_sub(input, tanh_x)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -4017,10 +4054,14 @@ impl Module for Softsign {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = session.tensor_values(input)?;
+        // Softsign(x) = x / (1 + |x|). Composing through tensor_abs,
+        // tensor_add (with broadcast ones), and tensor_div yields the
+        // analytical derivative 1 / (1 + |x|)^2 via the chain rule.
         let shape = session.tensor_shape(input)?;
-        let out: Vec<f64> = vals.iter().map(|&x| x / (1.0 + x.abs())).collect();
-        session.tensor_variable(out, shape, false)
+        let abs_x = session.tensor_abs(input)?;
+        let ones = session.full(shape, 1.0, false)?;
+        let denom = session.tensor_add(ones, abs_x)?;
+        session.tensor_div(input, denom)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -4049,11 +4090,10 @@ impl Module for Softmin {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        // Softmin(x) = Softmax(-x)
-        let vals = session.tensor_values(input)?;
-        let shape = session.tensor_shape(input)?;
-        let neg_vals: Vec<f64> = vals.iter().map(|&x| -x).collect();
-        let neg_input = session.tensor_variable(neg_vals, shape, false)?;
+        // Softmin(x) = Softmax(-x). Replace the previous severed-
+        // autograd path (tensor_values → plain f64 negate → fresh
+        // leaf) with tensor_neg + tensor_softmax composition.
+        let neg_input = session.tensor_neg(input)?;
         session.tensor_softmax(neg_input, self.dim)
     }
 
@@ -4157,15 +4197,24 @@ impl Module for RReLU {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        // Use midpoint slope for deterministic behavior
+        // RReLU(x) = x         if x >= 0
+        //          = slope * x otherwise
+        // where slope is the midpoint of [lower, upper] for
+        // deterministic eval-mode replay (training-mode random
+        // sampling is intentionally not implemented — det contract).
+        //
+        // Composed as where(x >= 0, x, slope * x) using tensor_ge,
+        // tensor_mul (with broadcast `slope` constant), and
+        // tensor_where. Backward routes the gradient correctly:
+        //   x >= 0: 1
+        //   x <  0: slope
         let slope = (self.lower + self.upper) / 2.0;
-        let vals = session.tensor_values(input)?;
         let shape = session.tensor_shape(input)?;
-        let result: Vec<f64> = vals
-            .iter()
-            .map(|&x| if x >= 0.0 { x } else { slope * x })
-            .collect();
-        session.tensor_variable(result, shape, false)
+        let slope_t = session.full(shape.clone(), slope, false)?;
+        let neg_branch = session.tensor_mul(slope_t, input)?;
+        let zeros = session.full(shape, 0.0, false)?;
+        let mask = session.tensor_ge(input, zeros)?;
+        session.tensor_where(mask, input, neg_branch)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -19687,6 +19736,131 @@ mod tests {
         assert!((total - 1.0).abs() < 1e-8);
     }
 
+    // ── frankentorch-f6nn: gradient regression tests for the
+    // Softshrink / Hardshrink / Tanhshrink / Softsign / Softmin /
+    // RReLU activations. Each module previously extracted values and
+    // rebuilt a requires_grad=false leaf, severing the tape. The
+    // composition fixes route gradient through the standard primitive
+    // ops (where, mul, neg, sub, abs, ge, gt, lt, softmax). ────────
+
+    #[test]
+    fn softshrink_propagates_gradients() {
+        // Softshrink(x) is piecewise-linear:
+        //   x > λ:  d/dx = 1     (output = x - λ)
+        //   x < -λ: d/dx = 1     (output = x + λ)
+        //   else:   d/dx = 0     (output = 0)
+        // With λ = 0.5 and input [-1, -0.25, 0.0, 0.3, 1.0]:
+        //   grad = [1, 0, 0, 0, 1]
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ss = Softshrink::new(0.5);
+        let input = session
+            .tensor_variable(vec![-1.0, -0.25, 0.0, 0.3, 1.0], vec![5], true)
+            .unwrap();
+        let out = ss.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("Softshrink must propagate gradient through the input");
+        assert_eq!(grad, &[1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn hardshrink_propagates_gradients() {
+        // Hardshrink: 1 where |x| > λ, else 0.
+        // λ = 0.5, input [-1, -0.5, 0.0, 0.5, 0.7]:
+        //   |x| > 0.5 at positions 0 and 4; |0.5| > 0.5 is false
+        //   → grad = [1, 0, 0, 0, 1]
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let hs = Hardshrink::new(0.5);
+        let input = session
+            .tensor_variable(vec![-1.0, -0.5, 0.0, 0.5, 0.7], vec![5], true)
+            .unwrap();
+        let out = hs.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("Hardshrink must propagate gradient through the input");
+        assert_eq!(grad, &[1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn tanhshrink_propagates_gradients() {
+        // Tanhshrink(x) = x - tanh(x); d/dx = 1 - sech^2(x) = tanh(x)^2
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ts = Tanhshrink;
+        let xs = vec![-2.0, -0.5, 0.0, 0.5, 2.0];
+        let input = session
+            .tensor_variable(xs.clone(), vec![5], true)
+            .unwrap();
+        let out = ts.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("Tanhshrink must propagate gradient through the input");
+        for (i, (&g, &x)) in grad.iter().zip(xs.iter()).enumerate() {
+            let expect = x.tanh().powi(2);
+            assert!(
+                (g - expect).abs() < 1e-12,
+                "Tanhshrink grad[{i}] = {g}, expected tanh({x})^2 = {expect}"
+            );
+        }
+    }
+
+    #[test]
+    fn softsign_propagates_gradients() {
+        // Softsign(x) = x / (1 + |x|); d/dx = 1 / (1 + |x|)^2
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ss = Softsign;
+        let xs = vec![-3.0, -0.5, 0.0, 0.5, 3.0];
+        let input = session
+            .tensor_variable(xs.clone(), vec![5], true)
+            .unwrap();
+        let out = ss.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("Softsign must propagate gradient through the input");
+        for (i, (&g, &x)) in grad.iter().zip(xs.iter()).enumerate() {
+            let denom = 1.0 + x.abs();
+            let expect = 1.0 / (denom * denom);
+            assert!(
+                (g - expect).abs() < 1e-12,
+                "Softsign grad[{i}] = {g}, expected 1/(1+|{x}|)^2 = {expect}"
+            );
+        }
+    }
+
+    #[test]
+    fn softmin_propagates_gradients() {
+        // Softmin = Softmax(-x). Sum of softmax outputs over the
+        // softmax dim is exactly 1, so d/dx (sum softmin) = 0
+        // everywhere. The interesting test is that the gradient
+        // *reaches* the input at all (the previous severed-tape
+        // implementation returned an absent gradient). We sum the
+        // output and check that grad is well-defined and zero.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sm = Softmin::new(0);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let out = sm.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("Softmin must propagate gradient through the input");
+        for (i, &g) in grad.iter().enumerate() {
+            assert!(
+                g.abs() < 1e-12,
+                "Softmin sum-loss grad[{i}] should be ~0 (softmax sums to 1), got {g}"
+            );
+        }
+    }
+
     // ── RMSNorm Tests ──────────────────────────────────────────────────
 
     #[test]
@@ -22088,6 +22262,107 @@ mod tests {
     }
 
     #[test]
+    fn prelu_propagates_gradients_input_and_weight() {
+        // Single-slope PReLU: weight is shape [1] broadcast to all
+        // positions. With slope=0.1 and input=[-2, -1, 0, 1, 2]:
+        //   forward = [-0.2, -0.1, 0, 1, 2]
+        //   sum-loss → incoming = ones
+        //   d/d input:
+        //     x >= 0: 1
+        //     x <  0: slope (= 0.1)
+        //     so grad_input = [0.1, 0.1, 1, 1, 1]
+        //   d/d weight (single slope):
+        //     sum over i in mask=false of x_i = (-2) + (-1) = -3
+        //     grad_weight = [-3.0]
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let prelu = PReLU::new(&mut session, 1, 0.1).unwrap();
+        let weight_node = prelu.parameters()[0];
+        let input = session
+            .tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![1, 5], true)
+            .unwrap();
+        let output = prelu.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let input_grad = session
+            .tensor_gradient(&report, input)
+            .expect("PReLU must propagate gradient to input");
+        let weight_grad = session
+            .tensor_gradient(&report, weight_node)
+            .expect("PReLU must propagate gradient to its learnable weight");
+        for (i, (&g, &want)) in input_grad
+            .iter()
+            .zip([0.1, 0.1, 1.0, 1.0, 1.0].iter())
+            .enumerate()
+        {
+            assert!(
+                (g - want).abs() < 1e-12,
+                "PReLU input grad[{i}] = {g}, expected {want}"
+            );
+        }
+        assert_eq!(weight_grad.len(), 1);
+        assert!(
+            (weight_grad[0] - (-3.0)).abs() < 1e-12,
+            "PReLU weight grad = {}, expected -3.0 (sum of x_i where x_i < 0)",
+            weight_grad[0]
+        );
+    }
+
+    #[test]
+    fn prelu_multichannel_propagates_gradients() {
+        // 2 channels, weight shape [2]. Input shape [1, 2, 3] (batch=1,
+        // channels=2, spatial=3). With initial weight = [0.1, 0.1] and
+        // input
+        //   channel 0: [-1, -2, 1]   → sum loss contributes
+        //              (-1)+(-2)=−3 to weight grad[0]
+        //   channel 1: [3, -4, 0]    → contributes (-4) to weight grad[1]
+        //
+        // Per-channel weight grad: [-3.0, -4.0].
+        // Input grad pattern: 1 where x>=0, 0.1 where x<0.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let prelu = PReLU::new(&mut session, 2, 0.1).unwrap();
+        let weight_node = prelu.parameters()[0];
+        #[rustfmt::skip]
+        let data = vec![
+            -1.0, -2.0, 1.0,   // channel 0
+             3.0, -4.0, 0.0,   // channel 1
+        ];
+        let input = session
+            .tensor_variable(data, vec![1, 2, 3], true)
+            .unwrap();
+        let output = prelu.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let input_grad = session
+            .tensor_gradient(&report, input)
+            .expect("PReLU multichannel must propagate gradient to input");
+        let weight_grad = session
+            .tensor_gradient(&report, weight_node)
+            .expect("PReLU multichannel must propagate gradient to weight");
+
+        let expected_input = [
+            0.1, 0.1, 1.0,  // channel 0 gradient (mask=[F,F,T])
+            1.0, 0.1, 1.0,  // channel 1 gradient (mask=[T,F,T])
+        ];
+        for (i, (&g, &want)) in input_grad.iter().zip(expected_input.iter()).enumerate() {
+            assert!(
+                (g - want).abs() < 1e-12,
+                "PReLU multichannel input grad[{i}] = {g}, expected {want}"
+            );
+        }
+        assert_eq!(weight_grad.len(), 2);
+        assert!(
+            (weight_grad[0] - (-3.0)).abs() < 1e-12,
+            "PReLU weight grad[0] = {}, expected -3.0",
+            weight_grad[0]
+        );
+        assert!(
+            (weight_grad[1] - (-4.0)).abs() < 1e-12,
+            "PReLU weight grad[1] = {}, expected -4.0",
+            weight_grad[1]
+        );
+    }
+
+    #[test]
     fn prelu_has_parameters() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let prelu = PReLU::new(&mut session, 3, 0.25).unwrap();
@@ -23847,6 +24122,34 @@ mod tests {
         assert!(m.is_training());
         m.eval();
         assert!(!m.is_training());
+    }
+
+    #[test]
+    fn rrelu_propagates_gradients() {
+        // Default RReLU: lower=1/8, upper=1/3 → midpoint slope=11/48.
+        // For input [-2, -0.5, 0.0, 0.5, 2.0] sum loss:
+        //   grad = [slope, slope, 1, 1, 1]
+        const LOWER: f64 = 1.0 / 8.0;
+        const UPPER: f64 = 1.0 / 3.0;
+        const SLOPE: f64 = (LOWER + UPPER) / 2.0;
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = RReLU::new(LOWER, UPPER);
+        let input = session
+            .tensor_variable(vec![-2.0, -0.5, 0.0, 0.5, 2.0], vec![5], true)
+            .unwrap();
+        let out = m.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("RReLU must propagate gradient to input");
+        let expected = [SLOPE, SLOPE, 1.0, 1.0, 1.0];
+        for (i, (&g, &want)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - want).abs() < 1e-12,
+                "RReLU grad[{i}] = {g}, expected {want}"
+            );
+        }
     }
 
     // ── RNN utils tests ──────────────────────────────────────────────────
