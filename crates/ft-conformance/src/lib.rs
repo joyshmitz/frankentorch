@@ -15058,7 +15058,10 @@ print(json.dumps(out))
             .iter()
             .map(|v| v.to_bits().to_string())
             .collect();
-        let tanh_bits: Vec<String> = tanh_inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let tanh_bits: Vec<String> = tanh_inputs
+            .iter()
+            .map(|v| v.to_bits().to_string())
+            .collect();
         let payload = json!({
             "sinh_cosh": sinh_cosh_bits,
             "tanh": tanh_bits,
@@ -15095,21 +15098,14 @@ for x_bits_s in req["tanh"]:
 print(json.dumps(out))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_hyperbolic_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch_hyperbolic_libm_subprocess_conformance oracle invocation");
 
         let get_array = |key: &str| -> Vec<u64> {
             response
                 .get(key)
                 .and_then(serde_json::Value::as_array)
-                .unwrap_or_else(|| panic!("oracle response must include `{key}` array"))
+                .expect("oracle response must include requested array")
                 .iter()
                 .map(|v| v.as_str().unwrap().parse::<u64>().unwrap())
                 .collect()
@@ -15446,21 +15442,14 @@ for x_bits_s in req["log"]:
 print(json.dumps(out))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_exp_log_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch_exp_log_libm_subprocess_conformance oracle invocation");
 
         let get_array = |key: &str| -> Vec<u64> {
             response
                 .get(key)
                 .and_then(serde_json::Value::as_array)
-                .unwrap_or_else(|| panic!("oracle response must include `{key}` array"))
+                .expect("oracle response must include requested array")
                 .iter()
                 .map(|v| v.as_str().unwrap().parse::<u64>().unwrap())
                 .collect()
@@ -15549,9 +15538,7 @@ print(json.dumps(out))
             .collect();
         let xs: Vec<f64> = exp_finite.iter().map(|(_, x)| *x).collect();
         let n = xs.len();
-        let xt = session
-            .tensor_variable(xs, vec![n], false)
-            .expect("xt exp");
+        let xt = session.tensor_variable(xs, vec![n], false).expect("xt exp");
         let et = session.tensor_exp(xt).expect("tensor_exp");
         let ev = session.tensor_values(et).expect("exp vals");
         for (k, (i, x)) in exp_finite.iter().enumerate() {
@@ -15573,9 +15560,7 @@ print(json.dumps(out))
             .collect();
         let xs: Vec<f64> = log_finite.iter().map(|(_, x)| *x).collect();
         let n = xs.len();
-        let xt = session
-            .tensor_variable(xs, vec![n], false)
-            .expect("xt log");
+        let xt = session.tensor_variable(xs, vec![n], false).expect("xt log");
         let lt = session.tensor_log(xt).expect("tensor_log");
         let l2t = session.tensor_log2(xt).expect("tensor_log2");
         let l10t = session.tensor_log10(xt).expect("tensor_log10");

@@ -2947,8 +2947,7 @@ mod tests {
     /// `decode_checkpoint` / `decode_snapshot`.
     #[test]
     fn checkpoint_decoder_corpus_seeds_do_not_panic() {
-        let manifest_dir =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let corpus_dir = manifest_dir
             .join("..")
             .join("..")

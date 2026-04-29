@@ -345,11 +345,7 @@ fn softplus_value(x: f64) -> f64 {
     // log1p(exp(x)) is the precise form: for negative x, exp(x) is
     // small and `log(1 + small)` would lose a leading digit relative to
     // log1p(small).
-    if x > 20.0 {
-        x
-    } else {
-        x.exp().ln_1p()
-    }
+    if x > 20.0 { x } else { x.exp().ln_1p() }
 }
 
 pub fn softplus_scalar(input: &ScalarTensor) -> ScalarTensor {
@@ -4905,11 +4901,7 @@ fn hardtanh_value_f32(x: f32) -> f32 {
 fn softplus_value_f32(x: f32) -> f32 {
     // Mirrors softplus_value (f64): only the upper threshold is needed;
     // log1p(exp(x)) is precise for negative x and decays smoothly.
-    if x > 20.0f32 {
-        x
-    } else {
-        x.exp().ln_1p()
-    }
+    if x > 20.0f32 { x } else { x.exp().ln_1p() }
 }
 
 fn mish_value_f32(x: f32) -> f32 {

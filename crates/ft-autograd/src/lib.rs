@@ -3542,9 +3542,8 @@ impl Tape {
                     //     = 0.5 * (1 + erf(x/sqrt(2))) + x * phi(x)
                     //   phi(x) = (1/sqrt(2*pi)) * exp(-x^2/2)
                     let inv_sqrt_two = std::f64::consts::FRAC_1_SQRT_2;
-                    let inv_sqrt_two_pi = std::f64::consts::FRAC_1_SQRT_2
-                        * std::f64::consts::FRAC_2_SQRT_PI
-                        * 0.5;
+                    let inv_sqrt_two_pi =
+                        std::f64::consts::FRAC_1_SQRT_2 * std::f64::consts::FRAC_2_SQRT_PI * 0.5;
                     let phi = inv_sqrt_two_pi * (-0.5 * x * x).exp();
                     let derivative = 0.5 * (1.0 + libm::erf(x * inv_sqrt_two)) + x * phi;
                     grads[input.0] += incoming * derivative;
@@ -10142,9 +10141,8 @@ impl TensorTape {
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     // Exact erf-form derivative (matches PyTorch default approximate="none").
                     let inv_sqrt_two = std::f64::consts::FRAC_1_SQRT_2;
-                    let inv_sqrt_two_pi = std::f64::consts::FRAC_1_SQRT_2
-                        * std::f64::consts::FRAC_2_SQRT_PI
-                        * 0.5;
+                    let inv_sqrt_two_pi =
+                        std::f64::consts::FRAC_1_SQRT_2 * std::f64::consts::FRAC_2_SQRT_PI * 0.5;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())

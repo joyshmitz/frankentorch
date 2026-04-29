@@ -15356,7 +15356,10 @@ mod tests {
             .expect("quantize");
         let q_vals = session.tensor_values(q).expect("q vals").to_vec();
         for &qv in &q_vals {
-            assert!((qv.fract().abs() < 1e-9), "quantized values must be integral, got {qv}");
+            assert!(
+                (qv.fract().abs() < 1e-9),
+                "quantized values must be integral, got {qv}"
+            );
             assert!(
                 qv >= qmin as f64 && qv <= qmax as f64,
                 "quantized {qv} outside [{qmin}, {qmax}]"
@@ -15370,7 +15373,9 @@ mod tests {
         for (orig, recovered) in x_vals.iter().zip(dq_vals.iter()) {
             assert!(
                 (orig - recovered).abs() <= scale,
-                "round-trip drift {} > scale {}", (orig - recovered).abs(), scale
+                "round-trip drift {} > scale {}",
+                (orig - recovered).abs(),
+                scale
             );
         }
     }
@@ -15387,7 +15392,11 @@ mod tests {
             .tensor_quantize_per_tensor(x, 1.0, 0, -128, 127)
             .expect("quantize");
         let vals = session.tensor_values(q).expect("vals").to_vec();
-        assert!((vals[0] - 127.0).abs() < 1e-9, "high clamp: got {}", vals[0]);
+        assert!(
+            (vals[0] - 127.0).abs() < 1e-9,
+            "high clamp: got {}",
+            vals[0]
+        );
         assert!((vals[1] + 128.0).abs() < 1e-9, "low clamp: got {}", vals[1]);
         assert!((vals[2] - 50.0).abs() < 1e-9, "in-range: got {}", vals[2]);
     }
@@ -15399,25 +15408,31 @@ mod tests {
             .tensor_variable(vec![1.0], vec![1], false)
             .expect("variable");
         // scale = 0
-        assert!(session
-            .tensor_quantize_per_tensor(x, 0.0, 0, -128, 127)
-            .is_err());
+        assert!(
+            session
+                .tensor_quantize_per_tensor(x, 0.0, 0, -128, 127)
+                .is_err()
+        );
         // scale negative
-        assert!(session
-            .tensor_quantize_per_tensor(x, -0.1, 0, -128, 127)
-            .is_err());
+        assert!(
+            session
+                .tensor_quantize_per_tensor(x, -0.1, 0, -128, 127)
+                .is_err()
+        );
         // scale NaN
-        assert!(session
-            .tensor_quantize_per_tensor(x, f64::NAN, 0, -128, 127)
-            .is_err());
+        assert!(
+            session
+                .tensor_quantize_per_tensor(x, f64::NAN, 0, -128, 127)
+                .is_err()
+        );
         // qmin >= qmax
-        assert!(session
-            .tensor_quantize_per_tensor(x, 1.0, 0, 5, 5)
-            .is_err());
+        assert!(session.tensor_quantize_per_tensor(x, 1.0, 0, 5, 5).is_err());
         // zero_point outside [qmin, qmax]
-        assert!(session
-            .tensor_quantize_per_tensor(x, 1.0, 200, -128, 127)
-            .is_err());
+        assert!(
+            session
+                .tensor_quantize_per_tensor(x, 1.0, 200, -128, 127)
+                .is_err()
+        );
         // dequantize with scale = 0
         assert!(session.tensor_dequantize_per_tensor(x, 0.0, 0).is_err());
     }
@@ -15440,7 +15455,9 @@ mod tests {
         for (orig, recovered) in x_vals.iter().zip(fq_vals.iter()) {
             assert!(
                 (orig - recovered).abs() <= scale,
-                "fake-quantize drift {} > scale {}", (orig - recovered).abs(), scale
+                "fake-quantize drift {} > scale {}",
+                (orig - recovered).abs(),
+                scale
             );
         }
 
@@ -15484,7 +15501,9 @@ mod tests {
         let expected_scale = 5.5 / 255.0;
         assert!(
             (qp.scale - expected_scale).abs() < 1e-12,
-            "scale {} != expected {}", qp.scale, expected_scale
+            "scale {} != expected {}",
+            qp.scale,
+            expected_scale
         );
         // zero_point = round(0 - lo/scale) = round(2/scale) clamped into [0,255]
         let expected_zp = (2.0 / expected_scale).round().clamp(0.0, 255.0) as i64;
@@ -15531,11 +15550,7 @@ mod tests {
         let mut obs = MinMaxObserver::qint8();
 
         let calib = session
-            .tensor_variable(
-                vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0],
-                vec![6],
-                false,
-            )
+            .tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0], vec![6], false)
             .expect("calib");
         obs.observe(&session, calib).expect("observe");
         let qp = obs.compute_qparams().expect("qparams");
@@ -15551,7 +15566,9 @@ mod tests {
         for (orig, recovered) in test_vals.iter().zip(fq_vals.iter()) {
             assert!(
                 (orig - recovered).abs() <= qp.scale,
-                "calibrated drift {} > scale {}", (orig - recovered).abs(), qp.scale
+                "calibrated drift {} > scale {}",
+                (orig - recovered).abs(),
+                qp.scale
             );
         }
     }
