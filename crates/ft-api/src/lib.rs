@@ -11581,12 +11581,52 @@ impl FrankenTorchSession {
         mask: TensorNodeId,
         source: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_vals = self.tensor_values(input)?;
-        let mask_vals = self.tensor_values(mask)?;
-        let src_vals = self.tensor_values(source)?;
+        // Compose tensor_masked_scatter through autograd-aware
+        // primitives so the backward pass actually flows through both
+        // `input` (at the un-masked positions) and `source` (at the
+        // first n_true source slots). The previous body extracted
+        // values and rebuilt a requires_grad=false leaf — same
+        // severed-autograd pattern recently fixed in
+        // index_add / index_copy / index_fill / Scatter / ScatterAdd
+        // / IndexPut.
+        //
+        // Strategy:
+        //   1. Walk the (non-tracked) mask values to compute, for
+        //      each flat position i, the source slot index that
+        //      masked_scatter would copy from there: it's the prefix
+        //      sum of the mask, minus one. Where mask[i] == 0 we set
+        //      a *valid* sentinel index (clamped to [0, src_len-1]
+        //      or 0 when src_len == 0 and there are no true masks)
+        //      so the gather below stays in-bounds; tensor_where
+        //      below masks those positions out.
+        //   2. tensor_reshape `source` to a flat 1-D view (autograd
+        //      flows through reshape).
+        //   3. tensor_gather(source_flat, 0, prefix_clamped_node) →
+        //      a tensor of the same shape as input where each slot
+        //      holds the source value that masked_scatter would put
+        //      there if the mask was true. Gather's backward
+        //      scatter_adds gradient back to source at the gathered
+        //      positions — which are exactly the first n_true source
+        //      slots, with each used exactly once.
+        //   4. tensor_where(mask, scattered, input). Where's
+        //      backward routes the incoming gradient to scattered
+        //      at mask==1 slots and to input at mask==0 slots — the
+        //      analytical adjoint of masked_scatter.
+        //
+        // For mask==0 positions, the gather index is irrelevant
+        // (always masked out by where), but we still need the index
+        // to be in-bounds. We pick `src_len-1` (or 0 if src_len==0
+        // and n_true==0) so gather succeeds; the corresponding slot
+        // in `scattered` is then discarded by where, and gather's
+        // backward correctly accumulates 0 into source at those
+        // positions because grad_scattered = 0 at mask==0 slots.
+        let mask_vals = self.tensor_tape.values(mask)?;
         let shape = self.tensor_shape(input)?;
-
-        if input_vals.len() != mask_vals.len() {
+        let input_numel = Self::checked_shape_numel(
+            &shape,
+            "masked_scatter: input shape volume overflow",
+        )?;
+        if input_numel != mask_vals.len() {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "masked_scatter: input and mask must have same number of elements",
@@ -11594,23 +11634,51 @@ impl FrankenTorchSession {
             )));
         }
 
-        let mut result = input_vals;
-        let mut src_idx = 0;
-        for (i, &m) in mask_vals.iter().enumerate() {
+        let source_shape = self.tensor_shape(source)?;
+        let source_numel = Self::checked_shape_numel(
+            &source_shape,
+            "masked_scatter: source shape volume overflow",
+        )?;
+
+        let n_true = mask_vals.iter().filter(|&&m| m != 0.0).count();
+        if n_true > source_numel {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "masked_scatter: source doesn't have enough elements",
+                },
+            )));
+        }
+
+        // Fast path: no true mask entries → output equals input. No
+        // gather is needed (and source might be empty, in which case
+        // we'd otherwise have nothing to gather from).
+        if n_true == 0 {
+            return Ok(input);
+        }
+
+        // Build the gather index. Source has at least 1 element here
+        // (n_true >= 1, so source_numel >= 1), so any 0..source_numel
+        // sentinel for masked-out slots is in-bounds.
+        let mut prefix_idx = Vec::with_capacity(input_numel);
+        let mut count: usize = 0;
+        let safe_off_index = source_numel - 1;
+        #[allow(clippy::cast_precision_loss)]
+        for &m in &mask_vals {
             if m != 0.0 {
-                if src_idx >= src_vals.len() {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "masked_scatter: source doesn't have enough elements",
-                        },
-                    )));
-                }
-                result[i] = src_vals[src_idx];
-                src_idx += 1;
+                prefix_idx.push(count as f64);
+                count += 1;
+            } else {
+                prefix_idx.push(safe_off_index as f64);
             }
         }
 
-        self.tensor_tape.leaf(result, shape, false)
+        let prefix_node = self
+            .tensor_tape
+            .leaf(prefix_idx, vec![input_numel], false)?;
+        let source_flat = self.tensor_reshape(source, vec![source_numel])?;
+        let scattered_flat = self.tensor_gather(source_flat, 0, prefix_node)?;
+        let scattered = self.tensor_reshape(scattered_flat, shape.clone())?;
+        self.tensor_where(mask, scattered, input)
     }
 
     /// Compute A^n via binary exponentiation.
@@ -33563,6 +33631,101 @@ mod tests {
         let mask = s.tensor_variable(vec![1.0, 1.0], vec![2], false).unwrap();
         let source = s.tensor_variable(vec![10.0], vec![1], false).unwrap();
         assert!(s.tensor_masked_scatter(input, mask, source).is_err());
+    }
+
+    #[test]
+    fn masked_scatter_propagates_gradients_to_input_and_source() {
+        // Regression: tensor_masked_scatter used to extract values
+        // and rebuild a requires_grad=false leaf, severing autograd
+        // for both `input` and `source`. After the cumsum + gather +
+        // where composition fix, gradients flow through both.
+        //
+        // For input=[1,2,3,4,5], mask=[0,1,0,1,0], source=[10,20]:
+        //   prefix (clamped) = [1, 0, 1, 1, 1]   (idx where mask==1)
+        //                                         elsewhere safe sentinel
+        //   scattered = [src[1], src[0], src[1], src[1], src[1]]
+        //             = [20, 10, 20, 20, 20]
+        //   output = where(mask, scattered, input)
+        //          = [1, 10, 3, 20, 5]
+        //
+        // sum loss → incoming = ones
+        // grad_input  = mask==0 mask = [1, 0, 1, 0, 1]
+        // grad_source = scatter_add(zeros, 0, prefix, grad_scattered)
+        //             where grad_scattered = mask==1 mask = [0, 1, 0, 1, 0]
+        //             so source[0] picks up grad_scattered[1] = 1.0
+        //             and source[1] picks up grad_scattered[3] = 1.0
+        //             grad_source = [1.0, 1.0]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], true)
+            .unwrap();
+        let mask = s
+            .tensor_variable(vec![0.0, 1.0, 0.0, 1.0, 0.0], vec![5], false)
+            .unwrap();
+        let source = s.tensor_variable(vec![10.0, 20.0], vec![2], true).unwrap();
+        let out = s.tensor_masked_scatter(input, mask, source).unwrap();
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 10.0, 3.0, 20.0, 5.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("masked_scatter must propagate gradient to input at mask==0 positions");
+        let source_grad = s
+            .tensor_gradient(&report, source)
+            .expect("masked_scatter must propagate gradient to source at the consumed slots");
+        assert_eq!(input_grad, &[1.0, 0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(source_grad, &[1.0, 1.0]);
+    }
+
+    #[test]
+    fn masked_scatter_unused_source_slots_get_zero_gradient() {
+        // When source has more elements than n_true, the trailing
+        // slots are unused by the forward and must receive zero
+        // gradient. Mask has only one true → only source[0] is
+        // consumed; source[1] and source[2] should backprop 0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
+        let mask = s
+            .tensor_variable(vec![0.0, 0.0, 1.0, 0.0], vec![4], false)
+            .unwrap();
+        let source = s
+            .tensor_variable(vec![100.0, 200.0, 300.0], vec![3], true)
+            .unwrap();
+        let out = s.tensor_masked_scatter(input, mask, source).unwrap();
+        // Forward parity: only source[0] (=100.0) goes into position 2.
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 2.0, 100.0, 4.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let source_grad = s
+            .tensor_gradient(&report, source)
+            .expect("masked_scatter must propagate gradient to source");
+        assert_eq!(source_grad, &[1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn masked_scatter_all_false_mask_passes_input_through_with_grad() {
+        // With no true positions, the output equals input bit-for-bit
+        // and source isn't consumed at all. Input gradient should be
+        // ones (passthrough); source gradient should be zero.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let mask = s.tensor_variable(vec![0.0; 3], vec![3], false).unwrap();
+        let source = s.tensor_variable(vec![99.0], vec![1], true).unwrap();
+        let out = s.tensor_masked_scatter(input, mask, source).unwrap();
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 2.0, 3.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("masked_scatter must propagate gradient to input even when mask is all-false");
+        assert_eq!(input_grad, &[1.0, 1.0, 1.0]);
     }
 
     // ── frankentorch-plj: Gradient checkpointing tests ────────────────
