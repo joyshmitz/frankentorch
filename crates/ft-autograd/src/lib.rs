@@ -11982,12 +11982,19 @@ impl TensorTape {
                     //               zeroed (those slots no longer hold
                     //               the original value, so they make no
                     //               contribution back through `input`).
-                    //   grad_src:   gather(incoming, dim, index) — each
-                    //               src[j] was copied verbatim to
-                    //               output[index[j]], so dL/d(src[j]) =
-                    //               dL/d(output[index[j]]). Same gather
-                    //               primitive ScatterAdd's backward
-                    //               reuses.
+                    //   grad_src:   gather(incoming, dim, index), then
+                    //               zero out any src slot that was
+                    //               *not* the last write to its target
+                    //               output position. With duplicate
+                    //               indices, scatter is last-write-
+                    //               wins on CPU (the iteration order
+                    //               in scatter_tensor_contiguous_*),
+                    //               so only the final writer's src
+                    //               contributes to the output and must
+                    //               receive gradient — earlier writers
+                    //               were clobbered and contribute zero.
+                    //               Mirrors the index_put last-write
+                    //               fix from c43b380.
                     let mut contrib = incoming.to_vec();
                     let input_numel = Self::checked_shape_numel(
                         input_shape,
@@ -12002,6 +12009,10 @@ impl TensorTape {
                         "scatter backward index shape volume overflow",
                     )?;
                     Self::ensure_tensor_len(node_id, index_numel, index.len())?;
+
+                    let mut active_src_slots = vec![true; index_numel];
+                    let mut last_writer_for_output: Vec<Option<usize>> =
+                        vec![None; input_numel];
 
                     for outer in 0..outer_size {
                         for r in 0..idx_dim_size {
@@ -12028,6 +12039,10 @@ impl TensorTape {
                                 )?;
                                 let orig_pos =
                                     outer * dim_size * inner_size + selected * inner_size + inner;
+                                if let Some(prev_slot) = last_writer_for_output[orig_pos] {
+                                    active_src_slots[prev_slot] = false;
+                                }
+                                last_writer_for_output[orig_pos] = Some(idx_pos);
                                 contrib[orig_pos] = 0.0;
                             }
                         }
@@ -12035,13 +12050,14 @@ impl TensorTape {
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
 
-                    // grad_src = gather(incoming, dim, index).
+                    // grad_src = gather(incoming, dim, index), then
+                    // mask out non-last writers.
                     let device = self.nodes[input.0].tensor.meta().device();
                     let incoming_meta =
                         ft_core::TensorMeta::from_shape(input_shape.clone(), DType::F64, device);
                     let idx_meta =
                         ft_core::TensorMeta::from_shape(index_shape.clone(), DType::F64, device);
-                    let src_grad = gather_tensor_contiguous_f64(
+                    let mut src_grad = gather_tensor_contiguous_f64(
                         &incoming,
                         &incoming_meta,
                         dim,
@@ -12049,13 +12065,18 @@ impl TensorTape {
                         &idx_meta,
                     )
                     .map_err(|e| AutogradError::Dispatch(e.into()))?;
+                    for (slot, &active) in active_src_slots.iter().enumerate() {
+                        if !active {
+                            src_grad[slot] = 0.0;
+                        }
+                    }
                     Self::accumulate_tensor_gradient(src, &mut grads[src.0], &src_grad)?;
                     Self::complete_dependency(&mut pending, src, &mut queue)?;
 
                     steps.push(TensorBackwardStep {
                         node: node_id,
                         incoming_grad_len: incoming.len(),
-                        rule: "d(scatter(x))/dx=mask_overwritten_to_zero",
+                        rule: "d(scatter(x,src))/d(x,src)=(mask_overwritten,last_write_gather)",
                     });
                 }
                 TensorNodeOp::ScatterAdd {

@@ -29569,6 +29569,90 @@ mod tests {
     }
 
     #[test]
+    fn scatter_backward_honors_last_write_for_duplicate_indices() {
+        // Regression: when multiple src positions write to the same
+        // output slot via duplicate indices, scatter (non-add) is
+        // last-write-wins on CPU (the iteration order in
+        // scatter_tensor_contiguous_*). Earlier writes are clobbered
+        // and must receive zero gradient. The previous backward
+        // gave every src slot the gathered incoming gradient,
+        // double-counting the writes that didn't survive.
+        //
+        // Setup: indices [0, 0, 2] writing src=[10.0, 20.0, 30.0]
+        // into a length-3 input. Forward output: position 0 ends up
+        // holding 20.0 (the second write), position 2 holds 30.0,
+        // position 1 retains its original input value. Sum-loss
+        // incoming gradient is ones throughout.
+        //
+        // Expected backward:
+        //   grad_input = [0, 1, 0]    (positions 0 and 2 overwritten)
+        //   grad_src   = [0, 1, 1]    (src[0] is the *first* write to
+        //                              output 0 and was clobbered →
+        //                              zero; src[1] is the last write
+        //                              to output 0 → 1; src[2] is the
+        //                              only write to output 2 → 1)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![10.0, 20.0, 30.0], vec![3], true)
+            .unwrap();
+        let idx = s
+            .tensor_variable(vec![0.0, 0.0, 2.0], vec![3], false)
+            .unwrap();
+        let result = s.tensor_scatter(input, 0, idx, src).unwrap();
+        // Forward parity: last write (20.0) wins at index 0.
+        assert_eq!(s.tensor_values(result).unwrap(), vec![20.0, 2.0, 30.0]);
+
+        let loss = s.tensor_sum(result).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("scatter must preserve gradient at non-overwritten positions");
+        let src_grad = s
+            .tensor_gradient(&report, src)
+            .expect("scatter must gather output gradient into the last-writing src slots");
+        assert_eq!(input_grad, &[0.0, 1.0, 0.0]);
+        assert_eq!(
+            src_grad,
+            &[0.0, 1.0, 1.0],
+            "src[0] was overwritten by src[1]; only the last write contributes"
+        );
+    }
+
+    #[test]
+    fn scatter_backward_long_duplicate_chain_picks_last_writer() {
+        // Stress the last-write tracking with three writes to the
+        // same target. indices [1, 1, 1] all write to position 1
+        // sequentially; only src[2] (the third write) survives.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![10.0, 20.0, 30.0], vec![3], true)
+            .unwrap();
+        let idx = s
+            .tensor_variable(vec![1.0, 1.0, 1.0], vec![3], false)
+            .unwrap();
+        let result = s.tensor_scatter(input, 0, idx, src).unwrap();
+        // Forward parity: last write (30.0) wins.
+        assert_eq!(s.tensor_values(result).unwrap(), vec![1.0, 30.0, 3.0]);
+
+        let loss = s.tensor_sum(result).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let src_grad = s
+            .tensor_gradient(&report, src)
+            .expect("scatter must mask out non-last writers in src");
+        assert_eq!(
+            src_grad,
+            &[0.0, 0.0, 1.0],
+            "only the third write survives; first two were overwritten"
+        );
+    }
+
+    #[test]
     fn scatter_add_as_inverse_of_gather() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Gather: select elements then scatter_add back should recover sums
