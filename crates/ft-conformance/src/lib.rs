@@ -19299,6 +19299,214 @@ print(json.dumps({"eigh": out}))
     }
 
     #[test]
+    fn torch_linalg_lstsq_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_linalg_lstsq against
+        // numpy.linalg.lstsq. Both solve the least-squares problem
+        //     X = argmin ||A X - B||_F
+        // For a full-column-rank A, X is unique and FrankenTorch
+        // computes it via the SVD-based pseudoinverse
+        // X = V diag(1/σ) U^T B. Both implementations should agree
+        // element-wise within the SVD precision envelope.
+        //
+        // Sister harness to the svd / pinv / inv / solve harnesses.
+        // Files closure for the lstsq slice of frankentorch-c36b.
+        // Skips rank-deficient cases (tracked under
+        // frankentorch-zs8a — same SVD basis-completion limitation
+        // that affects pinv).
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_linalg_lstsq_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Each case: (label, A_flat, B_flat, m, n, nrhs).
+        // A is m×n, B is m×nrhs (or m,) for nrhs=1.
+        type LstsqCase = (&'static str, Vec<f64>, Vec<f64>, usize, usize, usize);
+        let cases: Vec<LstsqCase> = vec![
+            // Square nonsingular: lstsq reduces to solve.
+            ("square_nonsingular_3x3",
+                vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
+                vec![1.0, 2.0, 3.0],
+                3, 3, 1),
+            // Tall full column rank: classic overdetermined LS.
+            ("tall_4x2_overdetermined",
+                vec![
+                    1.0, 1.0,
+                    1.0, 2.0,
+                    1.0, 3.0,
+                    1.0, 4.0,
+                ],
+                // y = a + b*x. Use y = [1, 3, 5, 7] which is line a=−1, b=2.
+                vec![1.0, 3.0, 5.0, 7.0],
+                4, 2, 1),
+            ("tall_5x3_overdetermined",
+                vec![
+                    1.0, 0.0, 0.0,
+                    1.0, 1.0, 0.0,
+                    1.0, 0.0, 1.0,
+                    1.0, 1.0, 1.0,
+                    1.0, 2.0, 0.0,
+                ],
+                vec![1.0, 2.0, 3.0, 4.0, 5.0],
+                5, 3, 1),
+            // Multi-RHS overdetermined.
+            ("tall_4x2_multi_rhs",
+                vec![
+                    1.0, 1.0,
+                    1.0, 2.0,
+                    1.0, 3.0,
+                    1.0, 4.0,
+                ],
+                vec![
+                    1.0, 0.0,
+                    3.0, 1.0,
+                    5.0, 2.0,
+                    7.0, 3.0,
+                ],
+                4, 2, 2),
+            // Identity → X = B.
+            ("identity_3x3",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                vec![5.0, -3.0, 7.0],
+                3, 3, 1),
+            // 1x1 scalar.
+            ("scalar_1x1", vec![5.0], vec![15.0], 1, 1, 1),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(label, a, b, m, n, nrhs)| {
+                json!({
+                    "label": *label,
+                    "m": *m as u64,
+                    "n": *n as u64,
+                    "nrhs": *nrhs as u64,
+                    "a_bits": a.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                    "b_bits": b.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    m = int(case["m"])
+    n = int(case["n"])
+    nrhs = int(case["nrhs"])
+    a = [from_bits(s) for s in case["a_bits"]]
+    b = [from_bits(s) for s in case["b_bits"]]
+    A = np.array(a, dtype=np.float64).reshape(m, n)
+    if nrhs == 1:
+        B = np.array(b, dtype=np.float64)
+    else:
+        B = np.array(b, dtype=np.float64).reshape(m, nrhs)
+    X, residuals, rank, s = np.linalg.lstsq(A, B, rcond=None)
+    out.append({
+        "label": case["label"],
+        "x_bits": [to_bits(v) for v in X.flatten().tolist()],
+    })
+print(json.dumps({"lstsq": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_linalg_lstsq_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("lstsq")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include lstsq array");
+        assert_eq!(results.len(), cases.len());
+
+        // Pinv-style envelope: 1e-7 relative since lstsq via SVD has
+        // double the conditioning of plain solve (A^T A or U diag(1/σ)
+        // U^T paths) and our test cases include some moderately
+        // ill-conditioned overdetermined systems.
+        const REL_TOL: f64 = 1e-7;
+        let elem_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            let scale = a.abs().max(b.abs()).max(1.0);
+            (a - b).abs() <= REL_TOL * scale
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (label, a_vals, b_vals, m, n, nrhs)) in cases.iter().enumerate() {
+            let result_obj = &results[i];
+            let want: Vec<f64> = result_obj["x_bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap()))
+                .collect();
+
+            let at = session
+                .tensor_variable(a_vals.clone(), vec![*m, *n], false)
+                .expect("at");
+            let b_shape = if *nrhs == 1 { vec![*m] } else { vec![*m, *nrhs] };
+            let bt = session
+                .tensor_variable(b_vals.clone(), b_shape, false)
+                .expect("bt");
+            let x_id = session
+                .tensor_linalg_lstsq(at, bt)
+                .expect("tensor_linalg_lstsq");
+            let got = session.tensor_values(x_id).expect("got");
+            assert_eq!(got.len(), want.len(), "{label}: shape mismatch");
+
+            for (idx, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+                if !elem_eq(g, w) {
+                    mismatches.push(format!(
+                        "tensor_linalg_lstsq({label})[{idx}] = {g} but numpy returned {w} — relative error > {REL_TOL}"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "linalg.lstsq numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
