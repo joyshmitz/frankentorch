@@ -3537,12 +3537,17 @@ impl Tape {
                 }
                 NodeOp::Gelu { input } => {
                     let x = self.nodes[input.0].tensor.value();
-                    // GELU'(x) via tanh approximation
-                    let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2;
-                    let k = c * (x + 0.044715 * x * x * x);
-                    let t = k.tanh();
-                    let dk = c * (1.0 + 0.134145 * x * x);
-                    grads[input.0] += incoming * (0.5 * (1.0 + t) + 0.5 * x * (1.0 - t * t) * dk);
+                    // GELU'(x) for exact erf form (PyTorch default approximate="none"):
+                    //   d/dx [0.5 * x * (1 + erf(x/sqrt(2)))]
+                    //     = 0.5 * (1 + erf(x/sqrt(2))) + x * phi(x)
+                    //   phi(x) = (1/sqrt(2*pi)) * exp(-x^2/2)
+                    let inv_sqrt_two = std::f64::consts::FRAC_1_SQRT_2;
+                    let inv_sqrt_two_pi = std::f64::consts::FRAC_1_SQRT_2
+                        * std::f64::consts::FRAC_2_SQRT_PI
+                        * 0.5;
+                    let phi = inv_sqrt_two_pi * (-0.5 * x * x).exp();
+                    let derivative = 0.5 * (1.0 + libm::erf(x * inv_sqrt_two)) + x * phi;
+                    grads[input.0] += incoming * derivative;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(BackwardStep {
@@ -10138,15 +10143,17 @@ impl TensorTape {
                 TensorNodeOp::Gelu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
-                    let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2;
+                    // Exact erf-form derivative (matches PyTorch default approximate="none").
+                    let inv_sqrt_two = std::f64::consts::FRAC_1_SQRT_2;
+                    let inv_sqrt_two_pi = std::f64::consts::FRAC_1_SQRT_2
+                        * std::f64::consts::FRAC_2_SQRT_PI
+                        * 0.5;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
                         .map(|(g, &x)| {
-                            let k = c * (x + 0.044715 * x * x * x);
-                            let t = k.tanh();
-                            let dk = c * (1.0 + 0.134145 * x * x);
-                            g * (0.5 * (1.0 + t) + 0.5 * x * (1.0 - t * t) * dk)
+                            let phi = inv_sqrt_two_pi * (-0.5 * x * x).exp();
+                            g * (0.5 * (1.0 + libm::erf(x * inv_sqrt_two)) + x * phi)
                         })
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
@@ -16524,9 +16531,8 @@ mod tests {
     // ── gelu/silu/leaky_relu/elu scalar tests ──────────────────────────
 
     fn gelu_expected(x: f64) -> f64 {
-        let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2;
-        let k = c * (x + 0.044715 * x * x * x);
-        0.5 * x * (1.0 + k.tanh())
+        // Exact erf-form GELU (PyTorch default approximate="none").
+        0.5 * x * (1.0 + libm::erf(x * std::f64::consts::FRAC_1_SQRT_2))
     }
 
     fn silu_expected(x: f64) -> f64 {

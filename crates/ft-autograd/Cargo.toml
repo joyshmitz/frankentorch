@@ -8,6 +8,7 @@ license-file = "../../LICENSE"
 ft-core = { workspace = true }
 ft-dispatch = { workspace = true }
 ft-kernel-cpu = { workspace = true }
+libm = { workspace = true }
 
 [dev-dependencies]
 insta = "1.47.2"

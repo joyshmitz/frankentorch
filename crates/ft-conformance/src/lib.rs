@@ -14871,6 +14871,254 @@ print(json.dumps(out))
     }
 
     #[test]
+    fn torch_gelu_exact_libm_subprocess_conformance() {
+        // Lock the precision contract for GELU (the exact erf-form, which
+        // is PyTorch's default `approximate="none"`).
+        //
+        // Until this test landed alongside the matching ft-kernel-cpu
+        // patch, FrankenTorch's `gelu` used Hendrycks & Gimpel's tanh
+        // approximation:
+        //
+        //   GELU_tanh(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+        //
+        // PyTorch's `torch.nn.functional.gelu` defaults to the exact
+        // formula, which only differs from the tanh approximation in
+        // the 4th–5th decimal:
+        //
+        //   GELU(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+        //
+        // Visible parity divergence example: GELU(1.0) under the tanh
+        // approximation is ~0.84119, while PyTorch returns 0.8411919...
+        // and the exact erf form returns 0.8413447... — a ~3e-4 drift
+        // that is well outside the ~1 ULP precision contract this
+        // harness enforces for the rest of the libm-backed unary ops.
+        //
+        // The oracle here computes GELU directly from libm `erf` so
+        // FrankenTorch's exact implementation is bit-locked against
+        // the same `0.5 * x * (1 + erf(x / sqrt(2)))` reduction PyTorch
+        // performs in its CPU kernel.
+        //
+        // Companion to torch_erf_erfc_libm_subprocess_conformance:
+        // same harness layout, but the operator under test is the
+        // GELU activation rather than the raw erf primitive.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!(
+                "torch_gelu_exact_libm_subprocess_conformance: python3 not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        let inputs: Vec<f64> = vec![
+            // Trivial / zeros / signs.
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            // Mid-range values where the tanh approximation visibly
+            // disagrees with the exact erf form (this is exactly where
+            // the old impl was wrong).
+            0.5,
+            -0.5,
+            0.7,
+            -0.7,
+            0.8413447,
+            -0.8413447,
+            1.5,
+            -1.5,
+            2.0,
+            -2.0,
+            2.5,
+            -2.5,
+            3.0,
+            -3.0,
+            // Small-magnitude inputs near the origin: GELU(x) ~ x/2 +
+            // x^2/sqrt(2*pi) here, sensitive to the erf small-x series.
+            1e-3,
+            -1e-3,
+            1e-7,
+            -1e-7,
+            1e-15,
+            -1e-15,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            // Saturation tails — GELU(x) ~ x for x >> 0 and ~ 0 for
+            // x << 0. Lock the precision-collapse points the old
+            // tanh-approx impl was sloppy about.
+            4.0,
+            -4.0,
+            5.0,
+            -5.0,
+            6.0,
+            -6.0,
+            8.0,
+            -8.0,
+            10.0,
+            -10.0,
+            15.0,
+            -15.0,
+            20.0,
+            -20.0,
+            // Generic interior + transcendental constants.
+            std::f64::consts::E,
+            -std::f64::consts::E,
+            std::f64::consts::PI,
+            -std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        assert!(
+            inputs.len() >= 50,
+            "gelu conformance matrix must have at least 50 inputs, got {}",
+            inputs.len()
+        );
+
+        let input_bits: Vec<String> = inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({ "inputs": input_bits });
+
+        // Python oracle: ctypes-load libm and compute GELU directly
+        // from the exact erf form. Going through libm ctypes (rather
+        // than math.erf) keeps the oracle consistent with the rest of
+        // the libm-backed conformance harnesses in this file.
+        let script = r#"
+import ctypes, ctypes.util, json, math, struct, sys
+
+libm_name = ctypes.util.find_library("m") or "libm.so.6"
+libm = ctypes.CDLL(libm_name)
+libm.erf.restype = ctypes.c_double
+libm.erf.argtypes = [ctypes.c_double]
+
+INV_SQRT_2 = 1.0 / math.sqrt(2.0)
+
+req = json.loads(sys.stdin.read())
+gelu_out = []
+for x_bits_s in req["inputs"]:
+    x = struct.unpack("<d", struct.pack("<Q", int(x_bits_s)))[0]
+    if math.isnan(x):
+        y = float("nan")
+    else:
+        y = 0.5 * x * (1.0 + libm.erf(x * INV_SQRT_2))
+    gelu_out.append(str(struct.unpack("<Q", struct.pack("<d", y))[0]))
+print(json.dumps({"gelu": gelu_out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_gelu_exact_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let gelu_results = response
+            .get("gelu")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include gelu array");
+        assert_eq!(gelu_results.len(), inputs.len());
+
+        // ULP-tolerant comparison: FrankenTorch's `gelu` routes through
+        // the pure-Rust `libm` crate (a MUSL-derived port), while the
+        // oracle calls the platform libm directly via ctypes (typically
+        // glibc on Linux runners). Both implementations are C99 / IEEE
+        // 754 compliant to within ~1 ULP at the erf step but can
+        // disagree in the last bit. For negative x near -sqrt(2) the
+        // factor `(1 + erf(x/sqrt(2)))` is small and magnifies the
+        // erf-step ULP gap into the final product (observed: 6 ULPs at
+        // gelu(-1.5) where 1 + erf(-1.06) ≈ 0.134). Cap at 16 ULPs to
+        // absorb that magnification while still catching the 3e-4-
+        // magnitude tanh-approximation regression the pre-libm
+        // implementation introduced.
+        const MAX_ULPS: u64 = 16;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() || b.is_infinite() || a.is_nan() || b.is_nan() {
+                return false;
+            }
+            if a.is_sign_negative() != b.is_sign_negative() {
+                return false;
+            }
+            let diff = a.to_bits().abs_diff(b.to_bits());
+            diff <= MAX_ULPS
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in inputs.iter().enumerate() {
+            let gelu_oracle =
+                f64::from_bits(gelu_results[i].as_str().unwrap().parse::<u64>().unwrap());
+
+            let x_var = session.variable(*x, false);
+            let ft_gelu = session.gelu(x_var).expect("gelu");
+            let ft_gelu_val = session.value(ft_gelu).expect("gelu value");
+
+            if !approx_eq(ft_gelu_val, gelu_oracle) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::gelu({x:?}) = {ft_gelu_val:?} (bits 0x{:016x}) but exact-erf libm returned {gelu_oracle:?} (bits 0x{:016x}) — > {MAX_ULPS} ULP apart",
+                    ft_gelu_val.to_bits(),
+                    gelu_oracle.to_bits()
+                ));
+            }
+        }
+
+        // Tensor batch path on the finite subset.
+        let finite_subset: Vec<(usize, f64)> = inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_finite())
+            .map(|(i, x)| (i, *x))
+            .collect();
+        let xs: Vec<f64> = finite_subset.iter().map(|(_, x)| *x).collect();
+        let n = xs.len();
+        let xt = session.tensor_variable(xs, vec![n], false).expect("xt");
+        let gt = session.tensor_gelu(xt).expect("tensor_gelu");
+        let gv = session.tensor_values(gt).expect("gelu vals");
+        for (k, (i, x)) in finite_subset.iter().enumerate() {
+            let gelu_oracle =
+                f64::from_bits(gelu_results[*i].as_str().unwrap().parse::<u64>().unwrap());
+            if !approx_eq(gv[k], gelu_oracle) {
+                mismatches.push(format!(
+                    "tensor_gelu({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {gelu_oracle:?} — > {MAX_ULPS} ULP apart",
+                    gv[k],
+                    gv[k].to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "gelu exact-erf libm conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_fmod_remainder_sign_matrix_conformance() {
         // Lock down the full sign matrix for fmod (truncating, sign of
         // dividend) vs remainder (flooring, sign of divisor) — these

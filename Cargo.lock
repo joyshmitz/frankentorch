@@ -395,6 +395,7 @@ dependencies = [
  "ft-dispatch",
  "ft-kernel-cpu",
  "insta",
+ "libm",
  "proptest",
 ]
 

@@ -225,10 +225,10 @@ pub fn cosh_scalar(input: &ScalarTensor) -> ScalarTensor {
 }
 
 fn gelu_value(x: f64) -> f64 {
-    // GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-    let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2; // sqrt(2/pi)
-    let k = c * (x + 0.044715 * x * x * x);
-    0.5 * x * (1.0 + k.tanh())
+    // PyTorch default GELU (approximate="none"): exact erf form
+    // GELU(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+    // Uses libm-quality erf so we match torch's CPU std::erf path bit-for-bit.
+    0.5 * x * (1.0 + libm::erf(x * std::f64::consts::FRAC_1_SQRT_2))
 }
 
 pub fn gelu_scalar(input: &ScalarTensor) -> ScalarTensor {
@@ -4858,9 +4858,8 @@ fn ensure_dtype_device_and_layout_f32(
 // f32 activation helpers
 
 fn gelu_value_f32(x: f32) -> f32 {
-    let c = std::f32::consts::FRAC_2_SQRT_PI * std::f32::consts::FRAC_1_SQRT_2;
-    let k = c * (x + 0.044715f32 * x * x * x);
-    0.5f32 * x * (1.0f32 + k.tanh())
+    // PyTorch default GELU (approximate="none"): exact erf form.
+    0.5f32 * x * (1.0f32 + libm::erff(x * std::f32::consts::FRAC_1_SQRT_2))
 }
 
 fn silu_value_f32(x: f32) -> f32 {

@@ -18351,9 +18351,8 @@ mod tests {
     // ── gelu/silu/leaky_relu/elu API tests ─────────────────────────────
 
     fn gelu_val(x: f64) -> f64 {
-        let c = std::f64::consts::FRAC_2_SQRT_PI * std::f64::consts::FRAC_1_SQRT_2;
-        let k = c * (x + 0.044715 * x * x * x);
-        0.5 * x * (1.0 + k.tanh())
+        // Exact erf-form GELU (PyTorch default approximate="none").
+        0.5 * x * (1.0 + libm::erf(x * std::f64::consts::FRAC_1_SQRT_2))
     }
 
     #[test]
