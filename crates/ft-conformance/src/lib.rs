@@ -13880,6 +13880,281 @@ print(json.dumps({"expm1": expm1_out, "log1p": log1p_out}))
     }
 
     #[test]
+    fn torch_erf_erfc_libm_subprocess_conformance() {
+        // Lock the precision contract for erf / erfc.
+        //
+        // Until this test landed alongside the matching ft-kernel-cpu
+        // patch, FrankenTorch's `erf` used the Abramowitz-Stegun 7.1.26
+        // polynomial approximation (max abs error ~1.5e-7 — single
+        // precision territory) and `erfc` was computed as `1.0 - erf(x)`
+        // which cancelled to literal 0.0 for |x| > ~5.95. PyTorch's
+        // `torch.erf` / `torch.erfc` both wrap libm `erf` / `erfc`,
+        // so this oracle locks the upstream parity to within ~1 ULP
+        // and explicitly exercises the precision-collapse points the
+        // old implementation got wrong:
+        //
+        //   * Tail erfc(x) for x ∈ {6, 8, 10, 20, 27} — the old impl
+        //     would return 0.0 here while libm returns subnormal but
+        //     non-zero positive numbers down to ~erfc(27) ≈ 5e-321.
+        //   * Mid-range erf around |x| ≈ 1 where the AS 7.1.26 formula
+        //     was visibly off in the 7th decimal.
+        //
+        // Companion to the atan2 / pow / expm1+log1p / fmod+remainder
+        // subprocess conformance harnesses: same pattern, different op
+        // family.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!(
+                "torch_erf_erfc_libm_subprocess_conformance: python3 not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        let inputs: Vec<f64> = vec![
+            // Trivial / signs.
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            // Mid-range where AS 7.1.26 was visibly off.
+            0.1,
+            -0.1,
+            0.5,
+            -0.5,
+            0.7,
+            -0.7,
+            0.84375,
+            -0.84375,
+            1.25,
+            -1.25,
+            1.5,
+            -1.5,
+            2.0,
+            -2.0,
+            3.0,
+            -3.0,
+            // Precision-sensitive small magnitudes.
+            1e-3,
+            -1e-3,
+            1e-7,
+            -1e-7,
+            1e-15,
+            -1e-15,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            // Tail region where erfc precision matters most. Old impl
+            // returned 0.0 here; libm returns small but non-zero
+            // positive numbers down to erfc(~27) ≈ 5e-321.
+            4.0,
+            5.0,
+            5.95,
+            6.0,
+            7.0,
+            8.0,
+            9.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            27.0,
+            // Symmetric negative tail: erfc(-x) = 2 - erfc(x), so
+            // erfc(-large) → 2.0 from below.
+            -4.0,
+            -5.0,
+            -10.0,
+            -20.0,
+            -27.0,
+            // Generic interior + transcendental constants.
+            std::f64::consts::E,
+            std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        assert!(
+            inputs.len() >= 50,
+            "erf/erfc conformance matrix must have at least 50 inputs, got {}",
+            inputs.len()
+        );
+
+        let input_bits: Vec<String> = inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({ "inputs": input_bits });
+
+        // Python oracle: ctypes-load libm and call erf / erfc directly.
+        // math.erf / math.erfc work fine for these inputs but going
+        // through libm directly is consistent with the other libm-
+        // backed conformance harnesses in this file.
+        let script = r#"
+import ctypes, ctypes.util, json, struct, sys
+
+libm_name = ctypes.util.find_library("m") or "libm.so.6"
+libm = ctypes.CDLL(libm_name)
+libm.erf.restype = ctypes.c_double
+libm.erf.argtypes = [ctypes.c_double]
+libm.erfc.restype = ctypes.c_double
+libm.erfc.argtypes = [ctypes.c_double]
+
+req = json.loads(sys.stdin.read())
+erf_out = []
+erfc_out = []
+for x_bits_s in req["inputs"]:
+    x = struct.unpack("<d", struct.pack("<Q", int(x_bits_s)))[0]
+    e = libm.erf(x)
+    c = libm.erfc(x)
+    erf_out.append(str(struct.unpack("<Q", struct.pack("<d", e))[0]))
+    erfc_out.append(str(struct.unpack("<Q", struct.pack("<d", c))[0]))
+print(json.dumps({"erf": erf_out, "erfc": erfc_out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_erf_erfc_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let erf_results = response
+            .get("erf")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include erf array");
+        let erfc_results = response
+            .get("erfc")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include erfc array");
+        assert_eq!(erf_results.len(), inputs.len());
+        assert_eq!(erfc_results.len(), inputs.len());
+
+        // ULP-tolerant comparison: FrankenTorch's `erf` / `erfc` route
+        // through the pure-Rust `libm` crate (a MUSL-derived port),
+        // while the oracle calls the platform libm directly via ctypes
+        // (typically glibc on Linux runners). Both implementations are
+        // C99 / IEEE 754 compliant to within ~1 ULP of the true value
+        // — the C99 `erfc` spec does not require bit-exact reproduction
+        // across implementations — but they can disagree in the last
+        // bit on some inputs (e.g. erfc(2.0): 0x3f7328f5ec350e67 from
+        // Rust libm vs 0x3f7328f5ec350e66 from glibc).
+        //
+        // Bit-exact glibc parity would require unsafe FFI to call
+        // glibc directly, which `unsafe_code = forbid` rules out. So
+        // we lock the Rust-libm vs platform-libm gap to a small ULP
+        // bound that still catches the 1.5e-7-ULP regression the
+        // pre-libm Abramowitz-Stegun approximation introduced.
+        const MAX_ULPS: u64 = 2;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() || b.is_infinite() || a.is_nan() || b.is_nan() {
+                return false;
+            }
+            // Sign-aware ULP distance. Different signs only "agree"
+            // through ±0.0 which the `a == b` early return covers.
+            if a.is_sign_negative() != b.is_sign_negative() {
+                return false;
+            }
+            let diff = a.to_bits().abs_diff(b.to_bits());
+            diff <= MAX_ULPS
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in inputs.iter().enumerate() {
+            let erf_oracle =
+                f64::from_bits(erf_results[i].as_str().unwrap().parse::<u64>().unwrap());
+            let erfc_oracle =
+                f64::from_bits(erfc_results[i].as_str().unwrap().parse::<u64>().unwrap());
+
+            let x_var = session.variable(*x, false);
+            let ft_erf = session.erf(x_var).expect("erf");
+            let ft_erfc = session.erfc(x_var).expect("erfc");
+            let ft_erf_val = session.value(ft_erf).expect("erf value");
+            let ft_erfc_val = session.value(ft_erfc).expect("erfc value");
+
+            if !approx_eq(ft_erf_val, erf_oracle) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::erf({x:?}) = {ft_erf_val:?} (bits 0x{:016x}) but libm returned {erf_oracle:?} (bits 0x{:016x}) — > {MAX_ULPS} ULP apart",
+                    ft_erf_val.to_bits(),
+                    erf_oracle.to_bits()
+                ));
+            }
+            if !approx_eq(ft_erfc_val, erfc_oracle) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::erfc({x:?}) = {ft_erfc_val:?} (bits 0x{:016x}) but libm returned {erfc_oracle:?} (bits 0x{:016x}) — > {MAX_ULPS} ULP apart",
+                    ft_erfc_val.to_bits(),
+                    erfc_oracle.to_bits()
+                ));
+            }
+        }
+
+        // Tensor batch path on the finite subset.
+        let finite_subset: Vec<(usize, f64)> = inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_finite())
+            .map(|(i, x)| (i, *x))
+            .collect();
+        let xs: Vec<f64> = finite_subset.iter().map(|(_, x)| *x).collect();
+        let n = xs.len();
+        let xt = session.tensor_variable(xs, vec![n], false).expect("xt");
+        let et = session.tensor_erf(xt).expect("tensor_erf");
+        let ct = session.tensor_erfc(xt).expect("tensor_erfc");
+        let ev = session.tensor_values(et).expect("erf vals");
+        let cv = session.tensor_values(ct).expect("erfc vals");
+        for (k, (i, x)) in finite_subset.iter().enumerate() {
+            let erf_oracle =
+                f64::from_bits(erf_results[*i].as_str().unwrap().parse::<u64>().unwrap());
+            let erfc_oracle =
+                f64::from_bits(erfc_results[*i].as_str().unwrap().parse::<u64>().unwrap());
+            if !approx_eq(ev[k], erf_oracle) {
+                mismatches.push(format!(
+                    "tensor_erf({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {erf_oracle:?} — > {MAX_ULPS} ULP apart",
+                    ev[k],
+                    ev[k].to_bits()
+                ));
+            }
+            if !approx_eq(cv[k], erfc_oracle) {
+                mismatches.push(format!(
+                    "tensor_erfc({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {erfc_oracle:?} — > {MAX_ULPS} ULP apart",
+                    cv[k],
+                    cv[k].to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "erf/erfc libm conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_fmod_remainder_sign_matrix_conformance() {
         // Lock down the full sign matrix for fmod (truncating, sign of
         // dividend) vs remainder (flooring, sign of divisor) — these

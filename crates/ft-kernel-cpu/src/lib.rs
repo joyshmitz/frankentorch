@@ -265,18 +265,27 @@ pub fn rsqrt_scalar(input: &ScalarTensor) -> ScalarTensor {
 
 /// Gauss error function approximation (Abramowitz and Stegun, formula 7.1.26).
 /// Maximum error: |ε(x)| ≤ 1.5×10⁻⁷.
+/// f64 error function with libm-quality precision (~1 ULP across the
+/// entire f64 domain), via the pure-Rust `libm` crate. The previous
+/// implementation used the Abramowitz-Stegun 7.1.26 polynomial
+/// approximation whose absolute error of ~1.5e-7 collapsed precision
+/// to single-precision territory — an 8-orders-of-magnitude regression
+/// vs PyTorch's `torch.erf` which wraps libm `erf`. Routing through
+/// `libm::erf` restores f64 precision and bit-aligns with the upstream
+/// reference (see `torch_erf_erfc_libm_subprocess_conformance` in
+/// ft-conformance).
 fn erf_value(x: f64) -> f64 {
-    let a1 = 0.254829592;
-    let a2 = -0.284496736;
-    let a3 = 1.421413741;
-    let a4 = -1.453152027;
-    let a5 = 1.061405429;
-    let p = 0.3275911;
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let abs_x = x.abs();
-    let t = 1.0 / (1.0 + p * abs_x);
-    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-abs_x * abs_x).exp();
-    sign * y
+    libm::erf(x)
+}
+
+/// Companion to `erf_value` for the complementary error function. Using
+/// `libm::erfc` directly (instead of computing `1.0 - erf(x)`) preserves
+/// precision in the tail region |x| >> 1 where `1 - erf(x)` cancels
+/// down to subnormal magnitudes — `1.0 - erf(x)` would round to 0.0
+/// for |x| > ~5.95 even though `erfc(x)` is still a tiny but non-zero
+/// positive number.
+fn erfc_value(x: f64) -> f64 {
+    libm::erfc(x)
 }
 
 pub fn erf_scalar(input: &ScalarTensor) -> ScalarTensor {
@@ -284,7 +293,7 @@ pub fn erf_scalar(input: &ScalarTensor) -> ScalarTensor {
 }
 
 pub fn erfc_scalar(input: &ScalarTensor) -> ScalarTensor {
-    input.with_value(1.0 - erf_value(input.value()))
+    input.with_value(erfc_value(input.value()))
 }
 
 fn hardswish_value(x: f64) -> f64 {
@@ -978,7 +987,10 @@ pub fn erfc_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |v| 1.0 - erf_value(v))
+    // Use libm::erfc directly rather than `1.0 - erf(x)` — the latter
+    // cancels down to 0.0 for |x| > ~5.95 even though `erfc(x)` is
+    // still a tiny but non-zero positive number.
+    unary_contiguous_f64(input, meta, erfc_value)
 }
 
 pub fn hardswish_tensor_contiguous_f64(
@@ -4724,17 +4736,13 @@ fn elu_value_f32(x: f32) -> f32 {
 }
 
 fn erf_value_f32(x: f32) -> f32 {
-    let a1 = 0.254_829_6_f32;
-    let a2 = -0.284_496_72_f32;
-    let a3 = 1.421_413_8_f32;
-    let a4 = -1.453_152_1_f32;
-    let a5 = 1.061_405_4_f32;
-    let p = 0.327_591_1_f32;
-    let sign = if x < 0.0f32 { -1.0f32 } else { 1.0f32 };
-    let abs_x = x.abs();
-    let t = 1.0f32 / (1.0f32 + p * abs_x);
-    let y = 1.0f32 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-abs_x * abs_x).exp();
-    sign * y
+    // F32 companion to `erf_value` — see that function for the reason
+    // `libm` is preferred over the Abramowitz-Stegun approximation.
+    libm::erff(x)
+}
+
+fn erfc_value_f32(x: f32) -> f32 {
+    libm::erfcf(x)
 }
 
 fn hardswish_value_f32(x: f32) -> f32 {
@@ -4840,8 +4848,7 @@ define_unary_f32!(leaky_relu_tensor_contiguous_f32, leaky_relu_value_f32);
 define_unary_f32!(elu_tensor_contiguous_f32, elu_value_f32);
 define_unary_f32!(rsqrt_tensor_contiguous_f32, |v: f32| 1.0f32 / v.sqrt());
 define_unary_f32!(erf_tensor_contiguous_f32, erf_value_f32);
-define_unary_f32!(erfc_tensor_contiguous_f32, |v: f32| 1.0f32
-    - erf_value_f32(v));
+define_unary_f32!(erfc_tensor_contiguous_f32, erfc_value_f32);
 define_unary_f32!(hardswish_tensor_contiguous_f32, hardswish_value_f32);
 define_unary_f32!(hardsigmoid_tensor_contiguous_f32, hardsigmoid_value_f32);
 define_unary_f32!(hardtanh_tensor_contiguous_f32, hardtanh_value_f32);

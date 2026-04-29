@@ -6,6 +6,7 @@ license-file = "../../LICENSE"
 
 [dependencies]
 ft-core = { workspace = true }
+libm = { workspace = true }
 
 [dev-dependencies]
 proptest = "1.6.0"
