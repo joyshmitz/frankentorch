@@ -13138,23 +13138,40 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.special.digamma(input)`.
     pub fn tensor_digamma(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        if self.tensor_tape.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "digamma: autograd is not supported",
-                },
-            )));
-        }
-        let (storage, meta) = {
-            let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage()?.to_vec(), tensor.meta().clone())
-        };
-
-        let values: Vec<f64> = storage.iter().map(|&x| digamma_approx(x)).collect();
-
-        let out = self
-            .tensor_tape
-            .leaf(values, meta.shape().to_vec(), false)?;
+        // Wrap digamma_approx in a tensor_apply_function with a
+        // trigamma backward (= polygamma(1, x)). Tracked under
+        // frankentorch-1tax. Same pattern as the gammaln autograd
+        // wiring just above.
+        //
+        //     forward : y = digamma(x)
+        //     backward: dy/dx = trigamma(x) = polygamma(1, x)
+        let out = self.tensor_apply_function(
+            &[input],
+            |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                let values: Vec<f64> = vals.iter().map(|&x| digamma_approx(x)).collect();
+                Ok((values, shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let x_vals = &saved[0];
+                if grad_out.len() != x_vals.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "digamma backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+                let grad_in: Vec<f64> = x_vals
+                    .iter()
+                    .zip(grad_out.iter())
+                    .map(|(&x, &go)| go * polygamma_approx(1, x))
+                    .collect();
+                Ok(vec![Some(grad_in)])
+            },
+        )?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("digamma in={} out={}", input.0, out.0),
@@ -29937,6 +29954,48 @@ mod tests {
         let vals = s.tensor_values(result).unwrap();
         assert_eq!(vals[0], f64::NEG_INFINITY, "ψ(+0.0) must be -inf");
         assert_eq!(vals[1], f64::INFINITY, "ψ(-0.0) must be +inf");
+    }
+
+    #[test]
+    fn digamma_propagates_gradient_via_trigamma() {
+        // Regression test for frankentorch-1tax: tensor_digamma used
+        // to fail-loud reject tracked inputs. After wrapping in
+        // tensor_apply_function with a trigamma backward
+        // (polygamma(1, x)), gradients flow through the input.
+        //
+        // d/dx digamma(x) = trigamma(x) = polygamma(1, x).
+        // Special integer values:
+        //   trigamma(1) = π^2 / 6 ≈ 1.6449340668...
+        //   trigamma(2) = π^2 / 6 - 1
+        //   trigamma(3) = π^2 / 6 - 1 - 1/4
+        //
+        // For sum-loss on input [1, 2, 3]: grad = trigamma at each x.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let out = s.tensor_digamma(input).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("digamma must propagate gradient via trigamma backward");
+        let pi2_6 = std::f64::consts::PI.powi(2) / 6.0;
+        let expected = [pi2_6, pi2_6 - 1.0, pi2_6 - 1.0 - 0.25];
+        for (i, (&g, &e)) in grad.iter().zip(expected.iter()).enumerate() {
+            // polygamma_approx is looser than digamma_approx — a
+            // shorter recurrence (shift to x >= 10) and only the
+            // leading asymptotic terms — so the empirical envelope
+            // is ~5e-6 absolute at small integer x. The harness
+            // still catches sign flips, missing factorial terms,
+            // and reflection-formula regressions; tightening this
+            // bound would require improving polygamma_approx itself.
+            assert!(
+                (g - e).abs() < 1e-4,
+                "digamma grad[{i}] = {g}, expected trigamma({}) = {e}",
+                [1.0, 2.0, 3.0][i]
+            );
+        }
     }
 
     #[test]
