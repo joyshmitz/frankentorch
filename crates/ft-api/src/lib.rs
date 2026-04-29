@@ -15387,23 +15387,25 @@ impl FrankenTorchSession {
     /// Equivalent to `torch.cov(input)`.
     /// Input shape: `(N, M)` where N is the number of variables and M is
     /// the number of observations. Returns an `(N, N)` covariance matrix.
+    ///
+    /// Composes through tensor_mean_dim / tensor_unsqueeze /
+    /// tensor_expand / tensor_sub / tensor_matmul / tensor_transpose /
+    /// tensor_div so the autograd tape carries gradients through the
+    /// input. Previously this extracted tensor_values and rebuilt a
+    /// requires_grad=false leaf, severing the tape (same pattern
+    /// recently fixed for xlogy / xlog1py / logit / entr — tracked
+    /// under frankentorch-1tax).
     pub fn tensor_cov(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = {
-            let (v, m) = self.tensor_values_meta(input)?;
-            (v, m.shape().to_vec())
-        };
-
-        if meta.len() != 2 {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "cov: input must be a 2-D tensor (N, M)",
                 },
             )));
         }
-
-        let n = meta[0]; // variables
-        let m = meta[1]; // observations
-
+        let n = shape[0]; // variables
+        let m = shape[1]; // observations
         if m < 2 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -15412,33 +15414,28 @@ impl FrankenTorchSession {
             )));
         }
 
-        // Compute means
-        let mut means = vec![0.0; n];
-        for i in 0..n {
-            let sum: f64 = (0..m).map(|j| vals[i * m + j]).sum();
-            means[i] = sum / m as f64;
-        }
+        // means[i] = mean over observations for variable i.
+        // Shape: [N]. Unsqueeze + expand to [N, M] so broadcast
+        // subtraction has matching shapes (tensor_sub doesn't itself
+        // broadcast in this code base for arbitrary shapes).
+        let means = self.tensor_mean_dim(input, 1)?;
+        let means_unsq = self.tensor_unsqueeze(means, 1)?;
+        let means_bcast = self.tensor_expand(means_unsq, vec![n, m])?;
+        let centered = self.tensor_sub(input, means_bcast)?;
 
-        // Compute covariance matrix
-        let mut cov = vec![0.0; n * n];
-        for i in 0..n {
-            for j in i..n {
-                let mut s = 0.0;
-                for k in 0..m {
-                    s += (vals[i * m + k] - means[i]) * (vals[j * m + k] - means[j]);
-                }
-                let c = s / (m - 1) as f64;
-                cov[i * n + j] = c;
-                cov[j * n + i] = c;
-            }
-        }
+        // cov = (centered @ centered.T) / (m - 1).
+        let centered_t = self.tensor_transpose(centered, 0, 1)?;
+        let outer = self.tensor_matmul(centered, centered_t)?;
+        #[allow(clippy::cast_precision_loss)]
+        let denom_value = (m - 1) as f64;
+        let denom = self.full(vec![n, n], denom_value, false)?;
+        let cov = self.tensor_div(outer, denom)?;
 
-        let out = self.tensor_tape.leaf(cov, vec![n, n], false)?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
-            format!("cov input={} out={}", input.0, out.0),
+            format!("cov input={} out={}", input.0, cov.0),
         );
-        Ok(out)
+        Ok(cov)
     }
 
     // ── corrcoef ────────────────────────────────────────────────────────
@@ -32865,6 +32862,55 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
         assert!(s.tensor_cov(x).is_err());
+    }
+
+    #[test]
+    fn cov_propagates_gradients_through_input() {
+        // Regression test for frankentorch-1tax: tensor_cov used to
+        // extract values and rebuild a fresh requires_grad=false leaf,
+        // dropping gradients to the input. After the
+        // mean_dim/unsqueeze/expand/sub/matmul/transpose/div
+        // composition fix, gradients flow through.
+        //
+        // The exact gradient is messy to write down element-wise but
+        // numerical equivalence on a small case is enough to confirm
+        // the autograd graph is intact. We use a 2x3 input and
+        // verify that backward through sum-loss produces a finite
+        // non-trivial gradient with the expected structural property
+        // that each row sums to zero (because cov is shift-invariant
+        // along the observation dim — adding a constant to row i
+        // doesn't change cov).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 6.0, 5.0],
+                vec![2, 3],
+                true,
+            )
+            .unwrap();
+        let cov = s.tensor_cov(x).unwrap();
+        let loss = s.tensor_sum(cov).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("cov must propagate gradient through input");
+        assert_eq!(grad.len(), 6);
+        for &g in grad.iter() {
+            assert!(g.is_finite(), "cov backward must produce finite grads, got {g}");
+        }
+        // Row-sum invariance: shifting row i by a constant doesn't
+        // change cov, so d(sum(cov))/d(x[i,j]) summed over j should
+        // be ~0 for each row.
+        let row0_sum: f64 = grad[..3].iter().sum();
+        let row1_sum: f64 = grad[3..].iter().sum();
+        assert!(
+            row0_sum.abs() < 1e-12,
+            "sum of row-0 grad components should be ~0 (cov shift-invariant), got {row0_sum}"
+        );
+        assert!(
+            row1_sum.abs() < 1e-12,
+            "sum of row-1 grad components should be ~0 (cov shift-invariant), got {row1_sum}"
+        );
     }
 
     // ── corrcoef tests ──────────────────────────────────────────────────
