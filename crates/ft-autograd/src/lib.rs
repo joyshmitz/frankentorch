@@ -12175,11 +12175,11 @@ impl TensorTape {
                     // Gather incoming at the same positions to recover
                     // dL/d(values). The forward allows a one-element
                     // `values` tensor to broadcast across every write,
-                    // so that case must collapse all gathered
-                    // contributions back into the single scalar slot.
-                    // Non-broadcast values receive gradients in the
-                    // same flat prefix order the forward consumed; any
-                    // extra source elements were unused and keep zero
+                    // so that case must collapse gathered contributions
+                    // back into the single scalar slot. In
+                    // non-accumulate mode, duplicate target positions
+                    // are last-write-wins; earlier value slots do not
+                    // influence the output and must receive zero
                     // gradient.
                     let values_needed = Self::checked_mul_usize(
                         n_indices,
@@ -12188,10 +12188,33 @@ impl TensorTape {
                     )?;
                     let values_numel = self.nodes[values.0].tensor.meta().numel();
                     let scalar_broadcast = values_numel == 1 && values_needed > 1;
+
+                    let mut active_value_slots = vec![true; values_needed];
+                    if !accumulate {
+                        let mut last_slot_for_output = vec![None; input_numel];
+                        for (i, &base) in bases.iter().enumerate() {
+                            for s in 0..suffix_size {
+                                let output_slot = base + s;
+                                let value_slot = i * suffix_size + s;
+                                if let Some(previous_value_slot) = last_slot_for_output[output_slot]
+                                {
+                                    active_value_slots[previous_value_slot] = false;
+                                }
+                                last_slot_for_output[output_slot] = Some(value_slot);
+                            }
+                        }
+                    }
+
                     let mut gathered = Vec::with_capacity(values_needed);
-                    for &base in &bases {
+                    for (i, &base) in bases.iter().enumerate() {
                         for s in 0..suffix_size {
-                            gathered.push(incoming[base + s]);
+                            let value_slot = i * suffix_size + s;
+                            let grad = if active_value_slots[value_slot] {
+                                incoming[base + s]
+                            } else {
+                                0.0
+                            };
+                            gathered.push(grad);
                         }
                     }
                     let values_grad = if scalar_broadcast {
@@ -14498,6 +14521,66 @@ mod tests {
         assert_eq!(
             report.gradient(y).expect("y grad should exist"),
             &[1.0, 1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn tensor_index_put_non_accumulate_duplicate_values_are_last_write_wins() {
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .expect("input leaf should succeed");
+        let values = tape
+            .leaf(vec![10.0, 20.0, 30.0], vec![3], true)
+            .expect("values leaf should succeed");
+        let values_data = tape.values(values).expect("values should resolve");
+        let out = tape
+            .index_put(input, values, &[vec![1.0, 1.0, 3.0]], &values_data, false)
+            .expect("index_put should succeed");
+
+        assert_eq!(
+            tape.values(out).expect("output values should resolve"),
+            vec![1.0, 20.0, 3.0, 30.0]
+        );
+
+        let report = tape.backward(out).expect("backward should succeed");
+        assert_eq!(
+            report.gradient(input).expect("input grad should exist"),
+            &[1.0, 0.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            report.gradient(values).expect("values grad should exist"),
+            &[0.0, 1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn tensor_index_put_scalar_broadcast_duplicate_grad_counts_distinct_outputs() {
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .expect("input leaf should succeed");
+        let values = tape
+            .leaf(vec![10.0], vec![1], true)
+            .expect("values leaf should succeed");
+        let values_data = tape.values(values).expect("values should resolve");
+        let out = tape
+            .index_put(input, values, &[vec![1.0, 1.0, 3.0]], &values_data, false)
+            .expect("index_put should succeed");
+
+        assert_eq!(
+            tape.values(out).expect("output values should resolve"),
+            vec![1.0, 10.0, 3.0, 10.0]
+        );
+
+        let report = tape.backward(out).expect("backward should succeed");
+        assert_eq!(
+            report.gradient(input).expect("input grad should exist"),
+            &[1.0, 0.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            report.gradient(values).expect("values grad should exist"),
+            &[2.0]
         );
     }
 
