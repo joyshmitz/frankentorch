@@ -7492,44 +7492,70 @@ impl FrankenTorchSession {
             })
         };
 
-        match input_dtype {
-            DType::F64 => {
-                let mut result = self.tensor_tape.values(input)?;
-                for o in 0..outer {
-                    for &idx_f in &idx_vals {
-                        let idx = normalize_index(idx_f)?;
-                        for i in 0..inner {
-                            let offset = o * dim_size * inner + idx * inner + i;
-                            if offset < result.len() {
-                                result[offset] = value;
-                            }
-                        }
-                    }
-                }
-                self.tensor_variable(result, shape, false)
-            }
-            DType::F32 => {
-                let mut result = self.tensor_tape.values_f32(input)?;
-                let fill_value = value as f32;
-                for o in 0..outer {
-                    for &idx_f in &idx_vals {
-                        let idx = normalize_index(idx_f)?;
-                        for i in 0..inner {
-                            let offset = o * dim_size * inner + idx * inner + i;
-                            if offset < result.len() {
-                                result[offset] = fill_value;
-                            }
-                        }
-                    }
-                }
-                self.tensor_variable_f32(result, shape, false)
-            }
-            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+        // Validate every supplied index up-front so the composition
+        // below sees only well-formed indices.
+        for &idx_f in &idx_vals {
+            normalize_index(idx_f)?;
+        }
+        if !matches!(input_dtype, DType::F64 | DType::F32) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "index_fill requires f32 or f64 tensors",
                 },
-            ))),
+            )));
         }
+
+        // Compose index_fill through tensor_scatter (non-add) with a
+        // constant `src` tensor of the fill value. The previous body
+        // extracted input values and rebuilt a requires_grad=false
+        // leaf, silently severing the tape — same severed-autograd
+        // pattern as the recently-fixed index_add / index_copy.
+        //
+        // Mathematically:
+        //   output[..., idx_1d[r], ...] = value          (r in 0..idx_len)
+        //   output[..., other,       ...] = input[...]
+        //
+        // tensor_scatter(input, dim, expanded_idx, src_const) does
+        // exactly this when src_const is shaped like the indexed
+        // region and uniformly equal to `value`. Backward correctness:
+        //   grad_input gets passthrough with overwritten positions
+        //     zeroed (the autograd-aware scatter we just built); this
+        //     is what we want for index_fill since the filled
+        //     positions no longer carry input's contribution.
+        //   grad_src would be a gather of incoming, but src_const has
+        //     requires_grad=false (it's a constant value), so that
+        //     gradient is correctly dropped — no backprop into the
+        //     scalar fill value.
+        let idx_len = idx_vals.len();
+        let expanded_numel = Self::checked_mul(
+            Self::checked_mul(outer, idx_len, "index_fill: expanded index outer overflow")?,
+            inner,
+            "index_fill: expanded index inner overflow",
+        )?;
+        let mut expanded_idx_vals = Vec::with_capacity(expanded_numel);
+        for _o in 0..outer {
+            for &idx_f in &idx_vals {
+                for _i in 0..inner {
+                    expanded_idx_vals.push(idx_f);
+                }
+            }
+        }
+        let mut src_shape = shape.clone();
+        src_shape[dim] = idx_len;
+        let expanded_idx_node =
+            self.tensor_tape.leaf(expanded_idx_vals, src_shape.clone(), false)?;
+
+        let src_const = match input_dtype {
+            DType::F64 => self.tensor_variable(vec![value; expanded_numel], src_shape, false)?,
+            DType::F32 => {
+                #[allow(clippy::cast_possible_truncation)]
+                let value_f32 = value as f32;
+                self.tensor_variable_f32(vec![value_f32; expanded_numel], src_shape, false)?
+            }
+            _ => unreachable!("dtype already validated above"),
+        };
+
+        self.tensor_scatter(input, dim, expanded_idx_node, src_const)
     }
 
     pub fn tensor_cat(
@@ -27616,6 +27642,67 @@ mod tests {
         let out = s.tensor_index_fill(input, 0, index, 0.0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![0.0, 2.0, 0.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn index_fill_propagates_gradients_to_input() {
+        // Regression test: tensor_index_fill used to extract values
+        // and rebuild a requires_grad=false leaf, severing autograd.
+        // After the scatter composition fix (with a constant src),
+        // input gradient flows correctly: positions filled with the
+        // constant value are zeroed (input no longer contributes to
+        // them), positions left alone keep their incoming gradient.
+        //
+        // For input=[1,2,3,4,5], indices=[0,2,4], fill_value=0.0:
+        //   out = [0, 2, 0, 4, 0]
+        //   sum loss → incoming = ones
+        //   grad_input = [0, 1, 0, 1, 0]   (filled positions zeroed)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], true)
+            .unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 2.0, 4.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_index_fill(input, 0, index, 0.0).unwrap();
+        assert_eq!(s.tensor_values(out).unwrap(), vec![0.0, 2.0, 0.0, 4.0, 0.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("index_fill must propagate gradient through input at non-filled positions");
+        assert_eq!(grad, &[0.0, 1.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn index_fill_2d_propagates_gradients_along_dim() {
+        // 2-D case along dim=1: fill columns [1, 3] of a [3, 4] input.
+        // grad_input pattern: each row has [1, 0, 1, 0].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+                vec![3, 4],
+                true,
+            )
+            .unwrap();
+        let index = s.tensor_variable(vec![1.0, 3.0], vec![2], false).unwrap();
+        let out = s.tensor_index_fill(input, 1, index, -7.0).unwrap();
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("index_fill 2-D must propagate gradient through unfilled positions");
+        assert_eq!(
+            grad,
+            &[
+                1.0, 0.0, 1.0, 0.0, // row 0
+                1.0, 0.0, 1.0, 0.0, // row 1
+                1.0, 0.0, 1.0, 0.0, // row 2
+            ]
+        );
     }
 
     #[test]
