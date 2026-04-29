@@ -18253,6 +18253,183 @@ print(json.dumps({"solve": out}))
     }
 
     #[test]
+    fn torch_linalg_cholesky_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_linalg_cholesky against
+        // numpy.linalg.cholesky. Both return the lower triangular
+        // factor L such that A = L L^T for symmetric positive definite
+        // A. Numpy and FrankenTorch use the same diagonal sign
+        // convention (positive diagonal), so L is unique and
+        // bit-exact agreement is achievable up to the rounding bound.
+        //
+        // Sister harness to the inv / solve harnesses. Files closure
+        // for the cholesky slice of frankentorch-c36b.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_linalg_cholesky_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Each case: (label, flat_row_major, n) for an n×n SPD matrix.
+        // The matrices below are all SPD (verified by construction or
+        // standard examples).
+        let cases: Vec<(&str, Vec<f64>, usize)> = vec![
+            // Identity → L = identity.
+            ("identity_3x3", vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3),
+            // Scaled identity → L = sqrt(scale) * identity.
+            ("scaled_identity_3x3", vec![4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 4.0], 3),
+            // Diagonal SPD → L = diag(sqrt(diag(A))).
+            ("diagonal_4x4_spd", {
+                let mut m = vec![0.0; 16];
+                m[0] = 4.0; m[5] = 9.0; m[10] = 16.0; m[15] = 25.0;
+                m
+            }, 4),
+            // Tridiagonal SPD (diagonally dominant).
+            ("spd_tridiag_4x4", vec![
+                4.0, 1.0, 0.0, 0.0,
+                1.0, 4.0, 1.0, 0.0,
+                0.0, 1.0, 4.0, 1.0,
+                0.0, 0.0, 1.0, 4.0,
+            ], 4),
+            // Hilbert matrix (notoriously ill-conditioned but SPD up
+            // to small n; n=3 is fine for f64).
+            ("hilbert_3x3", vec![
+                1.0,        1.0/2.0,    1.0/3.0,
+                1.0/2.0,    1.0/3.0,    1.0/4.0,
+                1.0/3.0,    1.0/4.0,    1.0/5.0,
+            ], 3),
+            // Pascal-style SPD 4x4.
+            ("pascal_4x4", vec![
+                1.0,  1.0,  1.0,  1.0,
+                1.0,  2.0,  3.0,  4.0,
+                1.0,  3.0,  6.0, 10.0,
+                1.0,  4.0, 10.0, 20.0,
+            ], 4),
+            // 1x1 scalar SPD.
+            ("scalar_1x1", vec![25.0], 1),
+            // 2x2 explicit SPD.
+            ("spd_2x2", vec![4.0, 2.0, 2.0, 5.0], 2),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(label, vals, n)| {
+                json!({
+                    "label": *label,
+                    "n": *n as u64,
+                    "values_bits": vals.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    n = int(case["n"])
+    vals = [from_bits(s) for s in case["values_bits"]]
+    A = np.array(vals, dtype=np.float64).reshape(n, n)
+    L = np.linalg.cholesky(A)
+    out.append({
+        "label": case["label"],
+        "values_bits": [to_bits(v) for v in L.flatten().tolist()],
+    })
+print(json.dumps({"cholesky": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_linalg_cholesky_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("cholesky")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include cholesky array");
+        assert_eq!(results.len(), cases.len());
+
+        // Cholesky is element-wise reduce + sqrt; numerical agreement
+        // matches numpy within ~few ULPs on well-conditioned matrices.
+        // Hilbert 3x3 has condition number ~500 so ~1e-13 abs error
+        // in L; allow 1e-9 relative as a safe envelope.
+        const REL_TOL: f64 = 1e-9;
+        let elem_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            let scale = a.abs().max(b.abs()).max(1.0);
+            (a - b).abs() <= REL_TOL * scale
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (label, vals, n)) in cases.iter().enumerate() {
+            let result_obj = &results[i];
+            let want: Vec<f64> = result_obj["values_bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap()))
+                .collect();
+
+            let xt = session
+                .tensor_variable(vals.clone(), vec![*n, *n], false)
+                .expect("xt");
+            let l_id = session
+                .tensor_linalg_cholesky(xt, false)
+                .expect("tensor_linalg_cholesky");
+            let got = session.tensor_values(l_id).expect("got");
+            assert_eq!(got.len(), want.len(), "{label}: shape mismatch");
+
+            for (idx, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+                if !elem_eq(g, w) {
+                    mismatches.push(format!(
+                        "tensor_linalg_cholesky({label})[{idx}] = {g} but numpy returned {w} — relative error > {REL_TOL}"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "linalg.cholesky numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
