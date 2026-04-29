@@ -11679,18 +11679,33 @@ impl FrankenTorchSession {
             )));
         }
 
-        // Fast path: no true mask entries → output equals input. No
-        // gather is needed (and source might be empty, in which case
-        // we'd otherwise have nothing to gather from). Validation
-        // above ensures this fast path agrees with the slow path's
-        // contract regardless of mask contents.
-        if n_true == 0 {
+        // Empty-source fast path: source is shape-empty so its
+        // gradient contract collapses to a zero-length vector that
+        // cannot have come from anywhere — the autograd backward
+        // produces nothing for it regardless. n_true must be 0 here
+        // (validated above), so the output equals input. No gather
+        // is needed and source has nothing to thread through the
+        // graph.
+        if source_numel == 0 {
+            // n_true is provably 0 here (otherwise the size check
+            // would have errored), so output == input.
+            debug_assert_eq!(n_true, 0);
             return Ok(input);
         }
 
-        // Build the gather index. Source has at least 1 element here
-        // (n_true >= 1, so source_numel >= 1), so any 0..source_numel
-        // sentinel for masked-out slots is in-bounds.
+        // Non-empty source: thread source through the graph via the
+        // gather + where composition below in BOTH n_true == 0 and
+        // n_true > 0 cases. When n_true == 0, every prefix slot is
+        // the safe sentinel `source_numel - 1`; gather still copies
+        // those values into `scattered`, but tensor_where's all-false
+        // mask discards them so the forward output equals input bit-
+        // for-bit. The backward then correctly zeros source's
+        // gradient (gather backward of an all-zero grad_scattered),
+        // which the previous fast-path-returns-input shortcut would
+        // have left as None — closes frankentorch-c4tx.
+        //
+        // Build the gather index: source_numel >= 1 here, so the
+        // safe sentinel index 0..source_numel is in-bounds.
         let mut prefix_idx = Vec::with_capacity(input_numel);
         let mut count: usize = 0;
         let safe_off_index = source_numel - 1;
@@ -33740,15 +33755,20 @@ mod tests {
 
     #[test]
     fn masked_scatter_all_false_mask_passes_input_through_with_grad() {
-        // With no true positions, the output equals input bit-for-bit
-        // and source isn't consumed at all. Input gradient should be
-        // ones (passthrough); source gradient should be zero.
+        // With no true positions, the output equals input bit-for-bit.
+        // Input gradient is ones (passthrough). Source gradient must
+        // be zeros of source.shape — *not* None — because source was
+        // a tracked argument that the autograd graph reaches even
+        // when no mask entries consumed it. This is the contract the
+        // gather + where composition delivers (frankentorch-c4tx).
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
             .unwrap();
         let mask = s.tensor_variable(vec![0.0; 3], vec![3], false).unwrap();
-        let source = s.tensor_variable(vec![99.0], vec![1], true).unwrap();
+        let source = s
+            .tensor_variable(vec![99.0, 200.0], vec![2], true)
+            .unwrap();
         let out = s.tensor_masked_scatter(input, mask, source).unwrap();
         assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 2.0, 3.0]);
 
@@ -33757,6 +33777,42 @@ mod tests {
         let input_grad = s
             .tensor_gradient(&report, input)
             .expect("masked_scatter must propagate gradient to input even when mask is all-false");
+        assert_eq!(input_grad, &[1.0, 1.0, 1.0]);
+        let source_grad = s
+            .tensor_gradient(&report, source)
+            .expect(
+                "masked_scatter all-false must still record a zero source gradient, not drop \
+                 source from the backward graph (frankentorch-c4tx)",
+            );
+        assert_eq!(
+            source_grad,
+            &[0.0, 0.0],
+            "source gradient must be zeros(source.shape) — not absent — for an all-false mask"
+        );
+    }
+
+    #[test]
+    fn masked_scatter_all_false_mask_with_empty_source_returns_input() {
+        // Edge case: source is shape-empty AND mask is all-false. The
+        // n_true validation already requires n_true <= source_numel,
+        // so this configuration is well-formed: output equals input,
+        // and there's no source-gradient contract to satisfy because
+        // source has no elements. We still verify the input gradient
+        // flows through the input passthrough.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let mask = s.tensor_variable(vec![0.0; 3], vec![3], false).unwrap();
+        let source = s.tensor_variable(Vec::<f64>::new(), vec![0], false).unwrap();
+        let out = s.tensor_masked_scatter(input, mask, source).unwrap();
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 2.0, 3.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("masked_scatter empty-source fast path must propagate input gradient");
         assert_eq!(input_grad, &[1.0, 1.0, 1.0]);
     }
 
