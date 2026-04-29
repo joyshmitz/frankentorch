@@ -11620,6 +11620,36 @@ impl FrankenTorchSession {
         // in `scattered` is then discarded by where, and gather's
         // backward correctly accumulates 0 into source at those
         // positions because grad_scattered = 0 at mask==0 slots.
+        // Validate dtype + device + shape contracts up-front, BEFORE
+        // any fast path. The slow path delegates these checks to
+        // tensor_where (cond / x / y must match dtype + device +
+        // shape) and to tensor_gather (source dtype propagates
+        // through reshape -> gather -> scattered). If the n_true == 0
+        // fast path returns input directly without these checks,
+        // mask/source mismatches would be silently accepted, making
+        // validation data-dependent on mask contents (closes
+        // frankentorch-zdpm).
+        let input_dtype = self.tensor_tape.dtype(input)?;
+        let mask_dtype = self.tensor_tape.dtype(mask)?;
+        let source_dtype = self.tensor_tape.dtype(source)?;
+        if mask_dtype != input_dtype || source_dtype != input_dtype {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "masked_scatter requires input, mask, and source to share dtype",
+                },
+            )));
+        }
+        let input_device = self.tensor_tape.tensor(input)?.meta().device();
+        let mask_device = self.tensor_tape.tensor(mask)?.meta().device();
+        let source_device = self.tensor_tape.tensor(source)?.meta().device();
+        if mask_device != input_device || source_device != input_device {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "masked_scatter requires input, mask, and source to be on the same device",
+                },
+            )));
+        }
+
         let mask_vals = self.tensor_tape.values(mask)?;
         let shape = self.tensor_shape(input)?;
         let input_numel = Self::checked_shape_numel(
@@ -11651,7 +11681,9 @@ impl FrankenTorchSession {
 
         // Fast path: no true mask entries → output equals input. No
         // gather is needed (and source might be empty, in which case
-        // we'd otherwise have nothing to gather from).
+        // we'd otherwise have nothing to gather from). Validation
+        // above ensures this fast path agrees with the slow path's
+        // contract regardless of mask contents.
         if n_true == 0 {
             return Ok(input);
         }
@@ -33726,6 +33758,40 @@ mod tests {
             .tensor_gradient(&report, input)
             .expect("masked_scatter must propagate gradient to input even when mask is all-false");
         assert_eq!(input_grad, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn masked_scatter_all_false_mask_still_validates_source_dtype() {
+        // Regression test for frankentorch-zdpm: the n_true==0 fast
+        // path must still reject incompatible source dtypes. Before
+        // the fix the fast path returned Ok(input) without consulting
+        // source's dtype, so an F64 input with an all-false mask and
+        // an F32 source would silently succeed — making validation
+        // data-dependent on mask contents. The slow path (any true
+        // mask entry) reaches tensor_where which catches the dtype
+        // mismatch; the fast path now reaches the same check up-front.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let mask = s.tensor_variable(vec![0.0; 3], vec![3], false).unwrap();
+        let source_f32 = s
+            .tensor_variable_f32(vec![99.0_f32], vec![1], false)
+            .unwrap();
+        let err = s
+            .tensor_masked_scatter(input, mask, source_f32)
+            .expect_err("dtype-mismatched source must be rejected even when mask is all-false");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("dtype"),
+            "rejection message should mention the dtype mismatch, got {msg}"
+        );
+
+        // Sanity: a matching F64 source with the same all-false mask
+        // still flows through the fast path successfully.
+        let source_f64 = s.tensor_variable(vec![99.0], vec![1], false).unwrap();
+        let out = s
+            .tensor_masked_scatter(input, mask, source_f64)
+            .expect("matching dtype must take the fast path");
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 2.0, 3.0]);
     }
 
     // ── frankentorch-plj: Gradient checkpointing tests ────────────────
