@@ -333,13 +333,22 @@ pub fn hardtanh_scalar(input: &ScalarTensor) -> ScalarTensor {
 }
 
 fn softplus_value(x: f64) -> f64 {
-    // Numerically stable: for large x, softplus(x) ≈ x
+    // PyTorch: softplus(x) = log1p(exp(beta*x)) / beta, with the
+    // upper-threshold short circuit (returns x when beta*x > threshold)
+    // for numerical stability when exp would overflow.
+    //
+    // Defaults: beta = 1, threshold = 20. PyTorch only thresholds in
+    // the *upper* direction — for x → -∞, log1p(exp(x)) decays smoothly
+    // to 0 without losing precision, so an artificial lower clamp would
+    // wrongly flatten values like softplus(-25) ≈ 1.39e-11 to 0.
+    //
+    // log1p(exp(x)) is the precise form: for negative x, exp(x) is
+    // small and `log(1 + small)` would lose a leading digit relative to
+    // log1p(small).
     if x > 20.0 {
         x
-    } else if x < -20.0 {
-        0.0
     } else {
-        (1.0 + x.exp()).ln()
+        x.exp().ln_1p()
     }
 }
 
@@ -4894,12 +4903,12 @@ fn hardtanh_value_f32(x: f32) -> f32 {
 }
 
 fn softplus_value_f32(x: f32) -> f32 {
+    // Mirrors softplus_value (f64): only the upper threshold is needed;
+    // log1p(exp(x)) is precise for negative x and decays smoothly.
     if x > 20.0f32 {
         x
-    } else if x < -20.0f32 {
-        0.0f32
     } else {
-        (1.0f32 + x.exp()).ln()
+        x.exp().ln_1p()
     }
 }
 

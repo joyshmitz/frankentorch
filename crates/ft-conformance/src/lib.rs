@@ -15119,6 +15119,251 @@ print(json.dumps({"gelu": gelu_out}))
     }
 
     #[test]
+    fn torch_softplus_libm_subprocess_conformance() {
+        // Lock the precision contract for softplus (default beta=1,
+        // threshold=20).
+        //
+        // PyTorch defines softplus as
+        //
+        //   softplus(x) = (1/beta) * log1p(exp(beta * x))   if beta*x <= threshold
+        //   softplus(x) = x                                 otherwise
+        //
+        // Note that the threshold is *only* applied in the upper
+        // direction: PyTorch never short-circuits to 0 for very
+        // negative x — the log1p(exp(x)) form already decays smoothly
+        // to 0 without needing a clamp.
+        //
+        // Until this test landed alongside the matching ft-kernel-cpu
+        // patch, FrankenTorch's `softplus` short-circuited `x < -20`
+        // to literal 0.0, which prematurely flattened
+        // softplus(-25) ≈ 1.39e-11 to 0 (and analogous values across
+        // the entire (-inf, -20] half-line). It also computed the
+        // body as `(1.0 + x.exp()).ln()` rather than `x.exp().ln_1p()`,
+        // losing a leading digit for moderately negative x where
+        // exp(x) is in the magnitude range that triggers the
+        // log(1+small) cancellation.
+        //
+        // Companion to the gelu / erf / lgamma libm conformance
+        // harnesses: same pattern, different op family.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!(
+                "torch_softplus_libm_subprocess_conformance: python3 not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        let inputs: Vec<f64> = vec![
+            // Trivial / signs.
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            // Mid-range (well inside the smooth body).
+            0.5,
+            -0.5,
+            2.0,
+            -2.0,
+            5.0,
+            -5.0,
+            10.0,
+            -10.0,
+            // Threshold transition: PyTorch returns x verbatim for
+            // x > 20 and computes log1p(exp(x)) elsewhere. The exact
+            // boundary at x = 20 must compute log1p(exp(20)) (since
+            // the threshold is strict-greater-than).
+            19.0,
+            19.999_999,
+            20.0,
+            20.000_001,
+            21.0,
+            25.0,
+            50.0,
+            // Large positive x: identity short-circuit.
+            100.0,
+            500.0,
+            // Negative tail — the regression zone. PyTorch returns
+            // small but non-zero values here; the old implementation
+            // returned 0.0 for any x < -20.
+            -19.0,
+            -19.999_999,
+            -20.0,
+            -20.000_001,
+            -21.0,
+            -25.0,
+            -30.0,
+            -36.0,
+            -37.0,
+            -50.0,
+            // Very negative x: exp(x) underflows to 0 in double, and
+            // softplus correctly returns +0.0.
+            -100.0,
+            -500.0,
+            // Precision-sensitive small magnitudes (test the log1p path).
+            1e-3,
+            -1e-3,
+            1e-7,
+            -1e-7,
+            1e-15,
+            -1e-15,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            // Generic interior + transcendental constants.
+            std::f64::consts::E,
+            -std::f64::consts::E,
+            std::f64::consts::PI,
+            -std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        assert!(
+            inputs.len() >= 50,
+            "softplus conformance matrix must have at least 50 inputs, got {}",
+            inputs.len()
+        );
+
+        let input_bits: Vec<String> = inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({ "inputs": input_bits });
+
+        // Python oracle: ctypes-load libm and compute softplus(x) =
+        // log1p(exp(x)) directly, with the upper-threshold short
+        // circuit at x > 20 to match torch.nn.functional.softplus
+        // defaults (beta=1, threshold=20).
+        let script = r#"
+import ctypes, ctypes.util, json, math, struct, sys
+
+libm_name = ctypes.util.find_library("m") or "libm.so.6"
+libm = ctypes.CDLL(libm_name)
+libm.log1p.restype = ctypes.c_double
+libm.log1p.argtypes = [ctypes.c_double]
+libm.exp.restype = ctypes.c_double
+libm.exp.argtypes = [ctypes.c_double]
+
+req = json.loads(sys.stdin.read())
+sp_out = []
+for x_bits_s in req["inputs"]:
+    x = struct.unpack("<d", struct.pack("<Q", int(x_bits_s)))[0]
+    if math.isnan(x):
+        y = float("nan")
+    elif x > 20.0:
+        y = x
+    else:
+        y = libm.log1p(libm.exp(x))
+    sp_out.append(str(struct.unpack("<Q", struct.pack("<d", y))[0]))
+print(json.dumps({"softplus": sp_out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_softplus_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let sp_results = response
+            .get("softplus")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include softplus array");
+        assert_eq!(sp_results.len(), inputs.len());
+
+        // ULP-tolerant comparison: FrankenTorch routes through Rust's
+        // f64::exp / f64::ln_1p (libm-quality) while the oracle calls
+        // platform libm directly via ctypes. Both are IEEE-754 / C99
+        // compliant to ~1 ULP at each step, and the chained
+        // log1p(exp(x)) reduction picks up at most a couple of ULPs of
+        // rounding. Cap at 4 ULPs to stay comfortably above the
+        // libm-vs-libm last-bit gap while still catching the
+        // tail-clamp regression the pre-patch implementation introduced.
+        const MAX_ULPS: u64 = 4;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() || b.is_infinite() || a.is_nan() || b.is_nan() {
+                return false;
+            }
+            if a.is_sign_negative() != b.is_sign_negative() {
+                return false;
+            }
+            let diff = a.to_bits().abs_diff(b.to_bits());
+            diff <= MAX_ULPS
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in inputs.iter().enumerate() {
+            let sp_oracle = f64::from_bits(sp_results[i].as_str().unwrap().parse::<u64>().unwrap());
+
+            let x_var = session.variable(*x, false);
+            let ft_sp = session.softplus(x_var).expect("softplus");
+            let ft_sp_val = session.value(ft_sp).expect("softplus value");
+
+            if !approx_eq(ft_sp_val, sp_oracle) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::softplus({x:?}) = {ft_sp_val:?} (bits 0x{:016x}) but log1p(exp(x)) returned {sp_oracle:?} (bits 0x{:016x}) — > {MAX_ULPS} ULP apart",
+                    ft_sp_val.to_bits(),
+                    sp_oracle.to_bits()
+                ));
+            }
+        }
+
+        // Tensor batch path on the finite subset.
+        let finite_subset: Vec<(usize, f64)> = inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_finite())
+            .map(|(i, x)| (i, *x))
+            .collect();
+        let xs: Vec<f64> = finite_subset.iter().map(|(_, x)| *x).collect();
+        let n = xs.len();
+        let xt = session.tensor_variable(xs, vec![n], false).expect("xt");
+        let st = session.tensor_softplus(xt).expect("tensor_softplus");
+        let sv = session.tensor_values(st).expect("softplus vals");
+        for (k, (i, x)) in finite_subset.iter().enumerate() {
+            let sp_oracle =
+                f64::from_bits(sp_results[*i].as_str().unwrap().parse::<u64>().unwrap());
+            if !approx_eq(sv[k], sp_oracle) {
+                mismatches.push(format!(
+                    "tensor_softplus({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {sp_oracle:?} — > {MAX_ULPS} ULP apart",
+                    sv[k],
+                    sv[k].to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "softplus libm conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_fmod_remainder_sign_matrix_conformance() {
         // Lock down the full sign matrix for fmod (truncating, sign of
         // dividend) vs remainder (flooring, sign of divisor) — these

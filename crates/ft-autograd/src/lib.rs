@@ -3708,14 +3708,11 @@ impl Tape {
                 NodeOp::Mish { input } => {
                     let x = self.nodes[input.0].tensor.value();
                     // d/dx mish(x) = tanh(sp) + x * sig * (1 - tanh(sp)^2)
-                    // where sp = softplus(x), sig = sigmoid(x)
-                    let sp = if x > 20.0 {
-                        x
-                    } else if x < -20.0 {
-                        0.0
-                    } else {
-                        (1.0 + x.exp()).ln()
-                    };
+                    // where sp = softplus(x), sig = sigmoid(x).
+                    // softplus uses log1p(exp(x)) for numerical stability
+                    // and only thresholds in the upper direction (matches
+                    // ft-kernel-cpu::softplus_value).
+                    let sp = if x > 20.0 { x } else { x.exp().ln_1p() };
                     let tsp = sp.tanh();
                     let sig = 1.0 / (1.0 + (-x).exp());
                     let grad = tsp + x * sig * (1.0 - tsp * tsp);
@@ -10368,13 +10365,9 @@ impl TensorTape {
                         .iter()
                         .zip(input_values.iter())
                         .map(|(g, x)| {
-                            let sp = if *x > 20.0 {
-                                *x
-                            } else if *x < -20.0 {
-                                0.0
-                            } else {
-                                (1.0 + x.exp()).ln()
-                            };
+                            // softplus uses log1p(exp(x)) for numerical
+                            // stability; matches ft-kernel-cpu::softplus_value.
+                            let sp = if *x > 20.0 { *x } else { x.exp().ln_1p() };
                             let tsp = sp.tanh();
                             let sig = 1.0 / (1.0 + (-x).exp());
                             g * (tsp + x * sig * (1.0 - tsp * tsp))
