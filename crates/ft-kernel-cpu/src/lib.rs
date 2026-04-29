@@ -2053,28 +2053,50 @@ pub fn softmax_dim_tensor_contiguous_f64(
     let mut output = vec![0.0; numel];
     let data = &input[offset..];
 
+    // Inner_size == 1 means we are softmaxing over the last dim (the
+    // typical classifier / attention shape: [B, V] softmax over V).
+    // The strided access collapses to a contiguous slice per outer,
+    // so we can exp(x - max) directly into `output` and pairwise-sum
+    // from there with zero scratch allocation.
+    if inner_size == 1 {
+        for outer in 0..outer_size {
+            let start = outer * reduce_size;
+            let end = start + reduce_size;
+            let in_slice = &data[start..end];
+            let max_val = in_slice
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            for (out, &x) in output[start..end].iter_mut().zip(in_slice.iter()) {
+                *out = (x - max_val).exp();
+            }
+            let sum = pairwise_sum_f64(&output[start..end]);
+            for v in &mut output[start..end] {
+                *v /= sum;
+            }
+        }
+        return Ok(output);
+    }
+
+    // General strided case: gather each (outer, inner) slice into a
+    // reusable scratch buffer, compute exp(x - max) in place there,
+    // pairwise-sum, then scatter the normalised values back to the
+    // strided output positions. One allocation per call, not per cell.
+    let mut scratch = vec![0.0_f64; reduce_size];
     for outer in 0..outer_size {
         for inner in 0..inner_size {
-            // Find max for numerical stability
-            let mut max_val = f64::NEG_INFINITY;
             for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                if data[idx] > max_val {
-                    max_val = data[idx];
-                }
+                scratch[r] =
+                    data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            // Compute exp(x - max) and sum
-            let mut sum = 0.0;
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                let e = (data[idx] - max_val).exp();
-                output[idx] = e;
-                sum += e;
+            let max_val = scratch.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            for v in scratch.iter_mut() {
+                *v = (*v - max_val).exp();
             }
-            // Normalize
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                output[idx] /= sum;
+            let sum = pairwise_sum_f64(&scratch);
+            for (r, &exp_x) in scratch.iter().enumerate() {
+                output[outer * reduce_size * inner_size + r * inner_size + inner] =
+                    exp_x / sum;
             }
         }
     }
@@ -2103,27 +2125,41 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
     let mut output = vec![0.0; numel];
     let data = &input[offset..];
 
+    // Same fast/general split as `softmax_dim_tensor_contiguous_f64`.
+    // log-sum-exp = max + log(sum(exp(x - max))) — the max subtraction
+    // is the standard numerical-stability trick; pairwise replaces the
+    // sum-of-exps accumulator.
+    if inner_size == 1 {
+        for outer in 0..outer_size {
+            let start = outer * reduce_size;
+            let end = start + reduce_size;
+            let in_slice = &data[start..end];
+            let max_val = in_slice
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            let sum_exp = pairwise_sum_map_f64(in_slice, |x| (x - max_val).exp());
+            let log_sum_exp = max_val + sum_exp.ln();
+            for (out, &x) in output[start..end].iter_mut().zip(in_slice.iter()) {
+                *out = x - log_sum_exp;
+            }
+        }
+        return Ok(output);
+    }
+
+    let mut scratch = vec![0.0_f64; reduce_size];
     for outer in 0..outer_size {
         for inner in 0..inner_size {
-            // Find max for numerical stability
-            let mut max_val = f64::NEG_INFINITY;
             for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                if data[idx] > max_val {
-                    max_val = data[idx];
-                }
+                scratch[r] =
+                    data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            // Compute log(sum(exp(x - max)))
-            let mut sum_exp = 0.0;
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                sum_exp += (data[idx] - max_val).exp();
-            }
+            let max_val = scratch.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let sum_exp = pairwise_sum_map_f64(&scratch, |x| (x - max_val).exp());
             let log_sum_exp = max_val + sum_exp.ln();
-            // output = x - log_sum_exp
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                output[idx] = data[idx] - log_sum_exp;
+            for (r, &x) in scratch.iter().enumerate() {
+                output[outer * reduce_size * inner_size + r * inner_size + inner] =
+                    x - log_sum_exp;
             }
         }
     }
@@ -5599,25 +5635,45 @@ pub fn softmax_dim_tensor_contiguous_f32(
     let offset = meta.storage_offset();
     let mut output = vec![0.0f32; numel];
     let data = &input[offset..];
+
+    // F32 mirror of `softmax_dim_tensor_contiguous_f64`. F32's 24-bit
+    // mantissa makes the pairwise vs sequential precision win even
+    // larger here than in the f64 path.
+    if inner_size == 1 {
+        for outer in 0..outer_size {
+            let start = outer * reduce_size;
+            let end = start + reduce_size;
+            let in_slice = &data[start..end];
+            let max_val = in_slice
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
+            for (out, &x) in output[start..end].iter_mut().zip(in_slice.iter()) {
+                *out = (x - max_val).exp();
+            }
+            let sum = pairwise_sum_f32(&output[start..end]);
+            for v in &mut output[start..end] {
+                *v /= sum;
+            }
+        }
+        return Ok(output);
+    }
+
+    let mut scratch = vec![0.0f32; reduce_size];
     for outer in 0..outer_size {
         for inner in 0..inner_size {
-            let mut max_val = f32::NEG_INFINITY;
             for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                if data[idx] > max_val {
-                    max_val = data[idx];
-                }
+                scratch[r] =
+                    data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            let mut sum = 0.0f32;
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                let e = (data[idx] - max_val).exp();
-                output[idx] = e;
-                sum += e;
+            let max_val = scratch.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            for v in scratch.iter_mut() {
+                *v = (*v - max_val).exp();
             }
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                output[idx] /= sum;
+            let sum = pairwise_sum_f32(&scratch);
+            for (r, &exp_x) in scratch.iter().enumerate() {
+                output[outer * reduce_size * inner_size + r * inner_size + inner] =
+                    exp_x / sum;
             }
         }
     }
@@ -5644,24 +5700,39 @@ pub fn log_softmax_dim_tensor_contiguous_f32(
     let offset = meta.storage_offset();
     let mut output = vec![0.0f32; numel];
     let data = &input[offset..];
+
+    // F32 mirror of `log_softmax_dim_tensor_contiguous_f64`.
+    if inner_size == 1 {
+        for outer in 0..outer_size {
+            let start = outer * reduce_size;
+            let end = start + reduce_size;
+            let in_slice = &data[start..end];
+            let max_val = in_slice
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
+            let sum_exp = pairwise_sum_map_f32(in_slice, |x| (x - max_val).exp());
+            let log_sum_exp = max_val + sum_exp.ln();
+            for (out, &x) in output[start..end].iter_mut().zip(in_slice.iter()) {
+                *out = x - log_sum_exp;
+            }
+        }
+        return Ok(output);
+    }
+
+    let mut scratch = vec![0.0f32; reduce_size];
     for outer in 0..outer_size {
         for inner in 0..inner_size {
-            let mut max_val = f32::NEG_INFINITY;
             for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                if data[idx] > max_val {
-                    max_val = data[idx];
-                }
+                scratch[r] =
+                    data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            let mut sum_exp = 0.0f32;
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                sum_exp += (data[idx] - max_val).exp();
-            }
+            let max_val = scratch.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let sum_exp = pairwise_sum_map_f32(&scratch, |x| (x - max_val).exp());
             let log_sum_exp = max_val + sum_exp.ln();
-            for r in 0..reduce_size {
-                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                output[idx] = data[idx] - log_sum_exp;
+            for (r, &x) in scratch.iter().enumerate() {
+                output[outer * reduce_size * inner_size + r * inner_size + inner] =
+                    x - log_sum_exp;
             }
         }
     }
@@ -7370,6 +7441,7 @@ mod tests {
         sum_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64, trunc_scalar,
         trunc_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
     };
+    use super::{pairwise_sum_f64, pairwise_sum_map_f64};
 
     #[test]
     fn neg_scalar_returns_expected_value() {
@@ -7933,6 +8005,75 @@ mod tests {
             "col1 sum drift {:e} > 1e-9 tolerance (got {}, expected {truth_col1})",
             (out[1] - truth_col1).abs(),
             out[1]
+        );
+    }
+
+    #[test]
+    fn softmax_dim_pairwise_sums_exactly_to_one_at_large_n() {
+        // Softmax distribution must sum to 1 exactly within ULP. With
+        // sequential summation in the normalizer accumulator, drift
+        // grows O(N · ε) and a 100k-element softmax row visibly
+        // departs from 1.0 in the 11th decimal. Pairwise summation
+        // tightens that to O(log N · ε) and the row sum stays within
+        // ~5 ULPs of 1.0.
+        //
+        // Choose values that produce a non-trivial distribution: a
+        // normal-distribution-like tail. Here we use a deterministic
+        // pattern: x_k = (k mod 100) * 0.01 — uniform across [0, 1).
+        // After softmax(x), each output sums to exactly 1.0 in
+        // analytic arithmetic; the test locks how close the
+        // implementation gets in f64.
+        let b = 4usize;
+        let v = 100_000usize;
+        let mut input = Vec::with_capacity(b * v);
+        for _ in 0..b {
+            for k in 0..v {
+                #[allow(clippy::cast_precision_loss)]
+                let val = ((k % 100) as f64) * 0.01;
+                input.push(val);
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![b, v], DType::F64, Device::Cpu);
+        let out = softmax_dim_tensor_contiguous_f64(&input, &meta, 1)
+            .expect("softmax_dim should succeed");
+        assert_eq!(out.len(), b * v);
+
+        for batch in 0..b {
+            let row = &out[batch * v..(batch + 1) * v];
+            let row_sum = pairwise_sum_f64(row);
+            assert!(
+                (row_sum - 1.0).abs() < 5e-15,
+                "softmax row {batch} sums to {row_sum}, expected 1.0 (drift {:e} > 5e-15)",
+                (row_sum - 1.0).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn log_softmax_dim_pairwise_logsumexp_at_large_n() {
+        // log_softmax(x) - x = -log_sum_exp(x). Sum of exp(log_softmax)
+        // along the reduce axis must equal 1.0 (it's a log-probability
+        // distribution). Locks the same pairwise precision contract
+        // for log_softmax that the previous test locks for softmax.
+        let v = 100_000usize;
+        let mut input = Vec::with_capacity(v);
+        for k in 0..v {
+            #[allow(clippy::cast_precision_loss)]
+            let val = ((k % 50) as f64) * 0.02;
+            input.push(val);
+        }
+        let meta = TensorMeta::from_shape(vec![v], DType::F64, Device::Cpu);
+        let out = log_softmax_dim_tensor_contiguous_f64(&input, &meta, 0)
+            .expect("log_softmax_dim should succeed");
+        assert_eq!(out.len(), v);
+
+        // exp(log_softmax(x)) is the softmax distribution; its sum
+        // should be 1.0 within pairwise precision.
+        let exp_sum = pairwise_sum_map_f64(&out, |x| x.exp());
+        assert!(
+            (exp_sum - 1.0).abs() < 5e-15,
+            "exp(log_softmax) row sums to {exp_sum}, expected 1.0 (drift {:e} > 5e-15)",
+            (exp_sum - 1.0).abs()
         );
     }
 
