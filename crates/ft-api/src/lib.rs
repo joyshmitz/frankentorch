@@ -13061,24 +13061,46 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.special.erfinv(input)`.
     /// Uses a rational approximation (Winitzki, 2008).
+    ///
+    /// Wraps erfinv_approx in a tensor_apply_function with the
+    /// analytical backward
+    ///     d/dx erfinv(x) = sqrt(pi)/2 * exp(erfinv(x)^2)
+    /// which is best computed from the forward output y, not from x
+    /// (saves a redundant erfinv evaluation in the backward pass).
+    /// Tracked under frankentorch-1tax — same severed-autograd
+    /// pattern recently fixed for gammaln / digamma / polygamma /
+    /// multigammaln.
     pub fn tensor_erfinv(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        if self.tensor_tape.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "erfinv: autograd is not supported",
-                },
-            )));
-        }
-        let (storage, meta) = {
-            let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage()?.to_vec(), tensor.meta().clone())
-        };
-
-        let values: Vec<f64> = storage.iter().map(|&x| erfinv_approx(x)).collect();
-
-        let out = self
-            .tensor_tape
-            .leaf(values, meta.shape().to_vec(), false)?;
+        let out = self.tensor_apply_function(
+            &[input],
+            |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                let values: Vec<f64> = vals.iter().map(|&x| erfinv_approx(x)).collect();
+                // Save y (= erfinv(x)) for the backward; the
+                // analytical derivative is expressed in terms of y.
+                ctx.save_for_backward(values.clone(), shape.to_vec());
+                Ok((values, shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let y_vals = &saved[0];
+                if grad_out.len() != y_vals.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "erfinv backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+                let half_sqrt_pi = std::f64::consts::PI.sqrt() * 0.5;
+                let grad_in: Vec<f64> = y_vals
+                    .iter()
+                    .zip(grad_out.iter())
+                    .map(|(&y, &go)| go * half_sqrt_pi * (y * y).exp())
+                    .collect();
+                Ok(vec![Some(grad_in)])
+            },
+        )?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("erfinv in={} out={}", input.0, out.0),
@@ -29896,6 +29918,50 @@ mod tests {
             assert!(
                 (got - want).abs() <= 2e-14,
                 "erfinv({x:?}) = {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn erfinv_propagates_gradient_via_exp_y_squared() {
+        // Regression test for frankentorch-1tax: tensor_erfinv used to
+        // extract values, run erfinv_approx, and rebuild a
+        // requires_grad=false leaf — silently severing autograd.
+        // After wrapping in tensor_apply_function with the analytical
+        // backward
+        //     d/dx erfinv(x) = sqrt(pi)/2 * exp(erfinv(x)^2)
+        // gradients flow through the input.
+        //
+        // Concretely with y = erfinv(x):
+        //   x = 0.0 → y = 0.0 → grad = sqrt(pi)/2 * 1            ≈ 0.8862269
+        //   x = 0.5 → y ≈ 0.4769362762 → grad ≈ sqrt(pi)/2 * exp(y^2) ≈ 1.1124302
+        //   x =-0.5 → same grad as 0.5 (the derivative is even in y)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs = [0.0, 0.5, -0.5];
+        let input = s
+            .tensor_variable(xs.to_vec(), vec![xs.len()], true)
+            .unwrap();
+        let out = s.tensor_erfinv(input).unwrap();
+        let y_vals = s.tensor_values(out).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("erfinv must propagate gradient via exp(y^2) backward");
+
+        let half_sqrt_pi = std::f64::consts::PI.sqrt() * 0.5;
+        for (i, &x) in xs.iter().enumerate() {
+            let y = y_vals[i];
+            let expected = half_sqrt_pi * (y * y).exp();
+            // erfinv_approx is Winitzki+Newton; the analytical
+            // derivative is exact in y, so the only error is the y
+            // approximation feeding exp(y^2). Loose 1e-6 absolute
+            // tolerance (matches the precision regime of the forward
+            // approximation).
+            assert!(
+                (grad[i] - expected).abs() < 1e-6,
+                "erfinv grad[{i}] at x={x} = {g}, expected sqrt(pi)/2 * exp(y^2) = {expected} (y={y})",
+                g = grad[i]
             );
         }
     }
