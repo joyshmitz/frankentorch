@@ -17858,6 +17858,187 @@ print(json.dumps({"slogdet": out}))
     }
 
     #[test]
+    fn torch_linalg_inv_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_linalg_inv against
+        // numpy.linalg.inv. Both compute matrix inverse via LU
+        // factorization with partial pivoting; agreement is bounded
+        // by the matrix condition number times the LU rounding
+        // bound. Files closure for the inv slice of frankentorch-c36b.
+        //
+        // Sister harness to torch_linalg_det_numpy_subprocess_conformance
+        // and torch_linalg_slogdet_numpy_subprocess_conformance — same
+        // numpy oracle, same fail-loud structure.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_linalg_inv_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Each case: (label, flat_row_major, n) — the matrix is n×n.
+        // All cases must be nonsingular (numpy.linalg.inv on a
+        // singular matrix raises LinAlgError).
+        let cases: Vec<(&str, Vec<f64>, usize)> = vec![
+            // Identity → inverse is identity.
+            ("identity_3x3", vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3),
+            // Diagonal → inverse is reciprocal-diagonal.
+            ("diagonal_4x4", {
+                let mut m = vec![0.0; 16];
+                m[0] = 2.0; m[5] = 4.0; m[10] = 5.0; m[15] = 8.0;
+                m
+            }, 4),
+            // Scaled identity.
+            ("scaled_identity_3x3", vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0], 3),
+            // Generic 2x2.
+            ("general_2x2", vec![4.0, 7.0, 2.0, 6.0], 2),
+            // Generic 3x3 (well-conditioned).
+            ("general_3x3", vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0], 3),
+            // Permutation matrix → inverse is its transpose.
+            ("permutation_3x3", vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0], 3),
+            // Symmetric positive definite (build A = M^T M with random M).
+            ("spd_4x4", vec![
+                4.0, 1.0, 0.0, 0.0,
+                1.0, 4.0, 1.0, 0.0,
+                0.0, 1.0, 4.0, 1.0,
+                0.0, 0.0, 1.0, 4.0,
+            ], 4),
+            // Upper triangular nonsingular.
+            ("upper_triangular_3x3", vec![
+                2.0, 1.0, 1.0,
+                0.0, 3.0, 1.0,
+                0.0, 0.0, 5.0,
+            ], 3),
+            // 1x1 scalar.
+            ("scalar_1x1", vec![5.0], 1),
+            // Negative-determinant matrix.
+            ("neg_det_2x2", vec![1.0, 2.0, 3.0, 1.0], 2),
+            // 5x5 with mixed signs.
+            ("mixed_5x5", vec![
+                1.0, 0.0, -1.0, 0.0, 0.0,
+                0.0, 2.0, 0.0, -1.0, 0.0,
+                0.0, 0.0, 3.0, 0.0, -1.0,
+                -1.0, 0.0, 0.0, 4.0, 0.0,
+                0.0, -1.0, 0.0, 0.0, 5.0,
+            ], 5),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(label, vals, n)| {
+                json!({
+                    "label": *label,
+                    "n": *n as u64,
+                    "values_bits": vals.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    n = int(case["n"])
+    vals = [from_bits(s) for s in case["values_bits"]]
+    A = np.array(vals, dtype=np.float64).reshape(n, n)
+    Ainv = np.linalg.inv(A)
+    out.append({
+        "label": case["label"],
+        "values_bits": [to_bits(v) for v in Ainv.flatten().tolist()],
+    })
+print(json.dumps({"inv": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_linalg_inv_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("inv")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include inv array");
+        assert_eq!(results.len(), cases.len());
+
+        // LU-factorization-bounded relative tolerance per element. The
+        // 5x5 mixed-sign case has a moderate condition number so we
+        // allow 1e-9 relative; identity / diagonal / 1x1 should match
+        // bit-exactly or within ~1 ULP.
+        const REL_TOL: f64 = 1e-9;
+        let elem_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            let scale = a.abs().max(b.abs()).max(1.0);
+            (a - b).abs() <= REL_TOL * scale
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (label, vals, n)) in cases.iter().enumerate() {
+            let result_obj = &results[i];
+            let want_bits = result_obj["values_bits"]
+                .as_array()
+                .expect("values_bits must be array");
+            let want: Vec<f64> = want_bits
+                .iter()
+                .map(|v| f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap()))
+                .collect();
+            let xt = session
+                .tensor_variable(vals.clone(), vec![*n, *n], false)
+                .expect("xt");
+            let inv_id = session.tensor_linalg_inv(xt).expect("tensor_linalg_inv");
+            let got = session.tensor_values(inv_id).expect("got");
+            assert_eq!(got.len(), want.len(), "{label}: shape mismatch");
+
+            for (idx, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+                if !elem_eq(g, w) {
+                    mismatches.push(format!(
+                        "tensor_linalg_inv({label})[{idx}] = {g} but numpy returned {w} — relative error > {REL_TOL}"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "linalg.inv numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
