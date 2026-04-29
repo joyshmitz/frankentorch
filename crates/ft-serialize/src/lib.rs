@@ -116,6 +116,7 @@ pub fn encode_checkpoint(
     entries: &[SnapshotEntry],
     mode: CheckpointMode,
 ) -> Result<String, SerializeError> {
+    validate_checkpoint_entries_representable(entries)?;
     let normalized_entries = normalize_entries(entries);
     let source_hash = checkpoint_hash(CHECKPOINT_SCHEMA_VERSION, mode, &normalized_entries);
 
@@ -395,6 +396,32 @@ fn validate_checkpoint(envelope: &CheckpointEnvelope) -> Result<(), SerializeErr
         });
     }
 
+    Ok(())
+}
+
+fn validate_checkpoint_entries_representable(
+    entries: &[SnapshotEntry],
+) -> Result<(), SerializeError> {
+    for entry in entries {
+        if !entry.value.is_finite() {
+            return Err(SerializeError::IncompatiblePayload {
+                reason: format!(
+                    "checkpoint entry contains non-finite value: node_id={} field=value",
+                    entry.node_id
+                ),
+            });
+        }
+        if let Some(grad) = entry.grad
+            && !grad.is_finite()
+        {
+            return Err(SerializeError::IncompatiblePayload {
+                reason: format!(
+                    "checkpoint entry contains non-finite value: node_id={} field=grad",
+                    entry.node_id
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -1679,6 +1706,38 @@ mod tests {
         let err = decode_checkpoint(payload.to_string().as_str(), DecodeMode::Strict)
             .expect_err("checksum mismatch should fail");
         assert!(err.to_string().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn encode_checkpoint_rejects_non_finite_value() {
+        let entries = vec![SnapshotEntry {
+            node_id: 9,
+            value: f64::NAN,
+            grad: Some(1.0),
+        }];
+
+        let err = encode_checkpoint(&entries, CheckpointMode::Strict)
+            .expect_err("non-finite checkpoint value must fail before JSON encoding");
+
+        assert!(matches!(err, SerializeError::IncompatiblePayload { .. }));
+        assert!(err.to_string().contains("field=value"));
+        assert!(err.to_string().contains("node_id=9"));
+    }
+
+    #[test]
+    fn encode_checkpoint_rejects_non_finite_grad() {
+        let entries = vec![SnapshotEntry {
+            node_id: 10,
+            value: 1.0,
+            grad: Some(f64::INFINITY),
+        }];
+
+        let err = encode_checkpoint(&entries, CheckpointMode::Hardened)
+            .expect_err("non-finite checkpoint grad must fail before JSON encoding");
+
+        assert!(matches!(err, SerializeError::IncompatiblePayload { .. }));
+        assert!(err.to_string().contains("field=grad"));
+        assert!(err.to_string().contains("node_id=10"));
     }
 
     #[test]
