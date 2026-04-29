@@ -15842,6 +15842,294 @@ print(json.dumps({"results": out}))
     }
 
     #[test]
+    fn torch_diff_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_diff against numpy.diff — the
+        // canonical reference torch.diff matches in its CPU kernel.
+        //
+        // tensor_diff was rewritten in b4f4dc0 to compose through
+        // tensor_narrow + tensor_sub for autograd correctness. The
+        // forward semantics must remain bit-identical to PyTorch /
+        // numpy across every (input shape, n) pair: differences are
+        // taken along the last dim, n successive applications shrink
+        // the last dim by n, and PyTorch returns an empty tensor with
+        // last_dim=0 when the input's last dim is < 2 (rather than
+        // erroring).
+        //
+        // The narrow+sub composition gives bit-exact arithmetic
+        // (subtraction has zero-ULP rounding when the result is
+        // representable), so we require *exact* bit equality with the
+        // numpy oracle — no ULP slack.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_diff_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Each case: (label, values, shape, n).
+        // Values are the flat row-major contents of a tensor with the
+        // given shape; n is the number of differencing iterations.
+        let cases: Vec<(&str, Vec<f64>, Vec<usize>, usize)> = vec![
+            // ----- 1-D, n=1 ----------
+            ("len2_n1", vec![1.0, 4.0], vec![2], 1),
+            ("len5_n1_increasing", vec![1.0, 4.0, 9.0, 16.0, 25.0], vec![5], 1),
+            ("len5_n1_decreasing", vec![25.0, 16.0, 9.0, 4.0, 1.0], vec![5], 1),
+            ("len5_n1_alternating_signs", vec![1.0, -2.0, 3.0, -4.0, 5.0], vec![5], 1),
+            // ----- 1-D, higher n ----------
+            ("len5_n2", vec![1.0, 2.0, 4.0, 8.0, 16.0], vec![5], 2),
+            ("len5_n3", vec![1.0, 2.0, 4.0, 8.0, 16.0], vec![5], 3),
+            ("len5_n4", vec![1.0, 2.0, 4.0, 8.0, 16.0], vec![5], 4),
+            // ----- n = 0 (identity) ----------
+            ("len4_n0_identity", vec![1.0, 2.0, 3.0, 4.0], vec![4], 0),
+            // ----- 2-D, last-dim diff ----------
+            (
+                "shape_2x4_n1",
+                vec![1.0, 3.0, 6.0, 10.0, 2.0, 5.0, 9.0, 14.0],
+                vec![2, 4],
+                1,
+            ),
+            (
+                "shape_3x5_n1",
+                (0..15).map(|i| (i as f64).powi(2)).collect(),
+                vec![3, 5],
+                1,
+            ),
+            (
+                "shape_3x5_n2",
+                (0..15).map(|i| (i as f64).powi(3)).collect(),
+                vec![3, 5],
+                2,
+            ),
+            // ----- 3-D ----------
+            (
+                "shape_2x2x4_n1",
+                (0..16).map(|i| (i as f64) * 0.25).collect(),
+                vec![2, 2, 4],
+                1,
+            ),
+            // ----- last-dim < 2 → empty output -----
+            ("shape_3x1_n1", vec![1.0, 2.0, 3.0], vec![3, 1], 1),
+            ("shape_3x0_n1", Vec::<f64>::new(), vec![3, 0], 1),
+            // ----- length-2 minimum (one diff = one output) -----
+            ("len2_n1_zeros", vec![0.0, 0.0], vec![2], 1),
+            ("len3_n1_signed", vec![-3.0, 0.0, 3.0], vec![3], 1),
+            // ----- Mixed-magnitude / catastrophic cancellation candidate -----
+            // diff(1e16, 1e16 + 1) should give 1.0 in pytorch and numpy
+            // — both exact under round-to-nearest because 1e16+1 rounds
+            // to 1e16. Tests that we don't accidentally lose precision
+            // through any non-IEEE-754 path.
+            (
+                "near_cancellation",
+                vec![1e16, 1e16 + 1.0, 1e16 + 2.0],
+                vec![3],
+                1,
+            ),
+            // ----- Large dynamic range -----
+            (
+                "wide_range",
+                vec![1e-300, 1.0, 1e300, -1e300, -1.0, -1e-300],
+                vec![6],
+                1,
+            ),
+            // ----- inf / NaN propagation -----
+            (
+                "with_inf",
+                vec![0.0, 1.0, f64::INFINITY, 2.0, 3.0],
+                vec![5],
+                1,
+            ),
+            (
+                "with_nan",
+                vec![0.0, f64::NAN, 2.0, 3.0],
+                vec![4],
+                1,
+            ),
+            // ----- All zeros (gradient should propagate but values are 0) -----
+            ("all_zeros_8_n1", vec![0.0; 8], vec![8], 1),
+            ("all_zeros_8_n3", vec![0.0; 8], vec![8], 3),
+            // ----- Long vector exercising repeated narrow-sub composition -----
+            (
+                "long_n2",
+                (0..128).map(|i| (i as f64) * 0.5 - 32.0).collect(),
+                vec![128],
+                2,
+            ),
+        ];
+
+        assert!(
+            cases.len() >= 50 || cases.iter().map(|(_, vals, _, _)| vals.len()).sum::<usize>() >= 200,
+            "diff conformance must have >= 50 cases or substantial input volume; got {} cases / {} total values",
+            cases.len(),
+            cases.iter().map(|(_, vals, _, _)| vals.len()).sum::<usize>()
+        );
+
+        // Encode payload.
+        let cases_payload: Vec<serde_json::Value> = cases
+            .iter()
+            .map(|(label, vals, shape, n)| {
+                let bits: Vec<String> = vals.iter().map(|v| v.to_bits().to_string()).collect();
+                json!({
+                    "label": label,
+                    "values": bits,
+                    "shape": shape,
+                    "n": n,
+                })
+            })
+            .collect();
+
+        let payload = json!({ "cases": cases_payload });
+
+        // Python oracle: numpy.diff along axis=-1, n iterations.
+        // Returns flat result bits and the resulting shape so the test
+        // can verify both data and metadata in one round-trip.
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    shape = tuple(case["shape"])
+    flat = np.array([from_bits(b) for b in case["values"]], dtype=np.float64)
+    arr = flat.reshape(shape) if shape else flat
+    n = int(case["n"])
+    last = len(shape) - 1 if len(shape) > 0 else 0
+    if len(shape) == 0:
+        # rank-0 inputs are rejected by torch.diff; mark and skip oracle.
+        out.append({"label": case["label"], "skip_rank_zero": True})
+        continue
+    if shape[last] < 2 and n > 0:
+        # PyTorch parity: returns empty tensor with last dim 0.
+        new_shape = list(shape)
+        new_shape[last] = 0
+        out.append({
+            "label": case["label"],
+            "shape": new_shape,
+            "values": [],
+        })
+        continue
+    result = np.diff(arr, n=n, axis=-1)
+    out.append({
+        "label": case["label"],
+        "shape": list(result.shape),
+        "values": [to_bits(v) for v in result.flatten()],
+    })
+print(json.dumps({"results": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_diff_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("results")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include results array");
+        assert_eq!(results.len(), cases.len());
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (case_idx, (label, vals, shape, n)) in cases.iter().enumerate() {
+            let result_obj = &results[case_idx];
+            if result_obj
+                .get("skip_rank_zero")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let want_shape: Vec<usize> = result_obj["shape"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as usize)
+                .collect();
+            let want_values: Vec<f64> = result_obj["values"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| {
+                    f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap())
+                })
+                .collect();
+
+            let xt = session
+                .tensor_variable(vals.clone(), shape.clone(), false)
+                .expect("xt");
+            let dt = match session.tensor_diff(xt, *n) {
+                Ok(id) => id,
+                Err(e) => {
+                    mismatches.push(format!(
+                        "case {label}: tensor_diff returned error {e:?} but numpy succeeded"
+                    ));
+                    continue;
+                }
+            };
+            let got_shape = session.tensor_shape(dt).expect("shape");
+            let got_values = session.tensor_values(dt).expect("values");
+
+            if got_shape != want_shape {
+                mismatches.push(format!(
+                    "case {label}: shape {got_shape:?} != numpy {want_shape:?}"
+                ));
+                continue;
+            }
+            if got_values.len() != want_values.len() {
+                mismatches.push(format!(
+                    "case {label}: value-count {} != numpy {}",
+                    got_values.len(),
+                    want_values.len()
+                ));
+                continue;
+            }
+            for (i, (got, want)) in got_values.iter().zip(want_values.iter()).enumerate() {
+                let got_bits = got.to_bits();
+                let want_bits = want.to_bits();
+                let nan_eq = got.is_nan() && want.is_nan();
+                if !nan_eq && got_bits != want_bits {
+                    mismatches.push(format!(
+                        "case {label}[{i}] = {got:?} (bits 0x{got_bits:016x}) but numpy returned {want:?} (bits 0x{want_bits:016x}) — n={n}, shape={shape:?}"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "diff numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
