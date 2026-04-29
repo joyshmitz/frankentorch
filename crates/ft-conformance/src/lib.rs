@@ -14588,6 +14588,300 @@ print(json.dumps({"erfinv": out}))
     }
 
     #[test]
+    fn torch_trig_libm_subprocess_conformance() {
+        // Lock the entire f64 trig surface vs platform libm.
+        //
+        // Rust's `f64::sin / cos / tan / asin / acos / atan` FFI
+        // directly to the platform libm via libstd (glibc on Linux
+        // runners, distinct from the Rust `libm` crate which is a
+        // MUSL-derived port we use elsewhere for `erf` / `lgamma`).
+        // PyTorch's `torch.sin` etc. wrap the SAME platform libm,
+        // so this oracle should match bit-for-bit on the entire
+        // f64 domain — and any future replacement of the Rust
+        // f64 method with a hand-rolled approximation (the same
+        // class of regression we hit on erf and lgamma) would
+        // surface immediately.
+        //
+        // Companion to the atan2 / pow / expm1+log1p / erf+erfc /
+        // lgamma / erfinv subprocess harnesses: same pattern, but
+        // covers the whole trig family in a single test rather than
+        // one harness per op — six libm calls per input, all
+        // expected bit-exact (no ULP fudge factor needed since
+        // both sides hit glibc through equivalent FFI paths).
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!(
+                "torch_trig_libm_subprocess_conformance: python3 not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Inputs span:
+        //   * sin/cos/tan: full real domain — exact zeros at integer
+        //     multiples of π for sin (well, near-zero — π isn't exactly
+        //     representable), exact ±1 at π/2 multiples for cos.
+        //   * asin/acos: domain [-1, 1] with ±1 boundaries.
+        //   * atan: full real domain with ±π/2 asymptotes at ±inf.
+        // Out-of-domain inputs for asin/acos (|x|>1) are excluded from
+        // the comparison batch since libm produces NaN there and we'd
+        // be testing NaN-equivalence rather than precision.
+        let inputs: Vec<f64> = vec![
+            // Trivial / signed zero.
+            0.0,
+            -0.0,
+            // Exact small values.
+            0.1,
+            -0.1,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            // π and its rational multiples (arguments where sin/cos
+            // hit zero / ±1 to within rounding).
+            std::f64::consts::PI,
+            -std::f64::consts::PI,
+            std::f64::consts::FRAC_PI_2,
+            -std::f64::consts::FRAC_PI_2,
+            std::f64::consts::FRAC_PI_3,
+            std::f64::consts::FRAC_PI_4,
+            std::f64::consts::FRAC_PI_6,
+            std::f64::consts::FRAC_PI_8,
+            2.0 * std::f64::consts::PI,
+            -2.0 * std::f64::consts::PI,
+            // Mid-range generic.
+            0.7,
+            -0.7,
+            1.5,
+            -1.5,
+            2.5,
+            -2.5,
+            // Subnormals and near-zero.
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            1e-15,
+            -1e-15,
+            // Large arguments — sin/cos undergo argument reduction
+            // here and any drift in the reduction algorithm shows up
+            // as multi-ULP error.
+            1e6,
+            1e10,
+            1e16,
+            1e18,
+            // Transcendental constants.
+            std::f64::consts::E,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+        ];
+        // Domain-restricted subset for asin/acos (|x| <= 1).
+        let asin_inputs: Vec<f64> = inputs
+            .iter()
+            .copied()
+            .filter(|x| x.is_finite() && x.abs() <= 1.0)
+            .collect();
+        // atan accepts the full domain plus ±inf, NaN.
+        let mut atan_inputs = inputs.clone();
+        atan_inputs.push(f64::INFINITY);
+        atan_inputs.push(f64::NEG_INFINITY);
+        atan_inputs.push(f64::NAN);
+
+        // Total input count across the three groups must satisfy the
+        // option-(E) >= 50-input requirement in aggregate.
+        let total_count = inputs.len() * 3 + asin_inputs.len() * 2 + atan_inputs.len();
+        assert!(
+            total_count >= 50,
+            "trig conformance must have >= 50 total comparisons, got {total_count}",
+        );
+
+        let inputs_bits: Vec<String> =
+            inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let asin_bits: Vec<String> =
+            asin_inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let atan_bits: Vec<String> =
+            atan_inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({
+            "trig": inputs_bits,
+            "asin_acos": asin_bits,
+            "atan": atan_bits,
+        });
+
+        // Python oracle: math.{sin,cos,tan,asin,acos,atan} all wrap
+        // libm directly. Use ctypes-libm for full transparency.
+        let script = r#"
+import ctypes, ctypes.util, json, struct, sys
+
+libm_name = ctypes.util.find_library("m") or "libm.so.6"
+libm = ctypes.CDLL(libm_name)
+for name in ["sin", "cos", "tan", "asin", "acos", "atan"]:
+    fn = getattr(libm, name)
+    fn.restype = ctypes.c_double
+    fn.argtypes = [ctypes.c_double]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", v))[0])
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+req = json.loads(sys.stdin.read())
+out = {"sin": [], "cos": [], "tan": [], "asin": [], "acos": [], "atan": []}
+for x_bits_s in req["trig"]:
+    x = from_bits(x_bits_s)
+    out["sin"].append(to_bits(libm.sin(x)))
+    out["cos"].append(to_bits(libm.cos(x)))
+    out["tan"].append(to_bits(libm.tan(x)))
+for x_bits_s in req["asin_acos"]:
+    x = from_bits(x_bits_s)
+    out["asin"].append(to_bits(libm.asin(x)))
+    out["acos"].append(to_bits(libm.acos(x)))
+for x_bits_s in req["atan"]:
+    x = from_bits(x_bits_s)
+    out["atan"].append(to_bits(libm.atan(x)))
+print(json.dumps(out))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_trig_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let get_array = |key: &str| -> Vec<u64> {
+            response
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .expect("oracle response must include op array")
+                .iter()
+                .map(|v| v.as_str().unwrap().parse::<u64>().unwrap())
+                .collect()
+        };
+        let sin_oracle = get_array("sin");
+        let cos_oracle = get_array("cos");
+        let tan_oracle = get_array("tan");
+        let asin_oracle = get_array("asin");
+        let acos_oracle = get_array("acos");
+        let atan_oracle = get_array("atan");
+
+        // Both sides hit glibc libm via FFI: Rust f64 stdlib goes
+        // through libstd's libm extern, the oracle goes through
+        // ctypes. Bit-exact (with NaN-payload-equivalence) is the
+        // expected outcome. Allow 1 ULP wiggle as defense against any
+        // future libstd-internal libm variant change.
+        const MAX_ULPS: u64 = 1;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() || b.is_infinite() || a.is_nan() || b.is_nan() {
+                return false;
+            }
+            if a.is_sign_negative() != b.is_sign_negative() {
+                return false;
+            }
+            a.to_bits().abs_diff(b.to_bits()) <= MAX_ULPS
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        // sin / cos / tan over the full inputs slice via FrankenTorch
+        // scalar API.
+        for (i, x) in inputs.iter().enumerate() {
+            let sin_want = f64::from_bits(sin_oracle[i]);
+            let cos_want = f64::from_bits(cos_oracle[i]);
+            let tan_want = f64::from_bits(tan_oracle[i]);
+
+            let v = session.variable(*x, false);
+            let sin_v = session.sin(v).expect("sin");
+            let cos_v = session.cos(v).expect("cos");
+            let tan_v = session.tan(v).expect("tan");
+            let s = session.value(sin_v).expect("sin val");
+            let c = session.value(cos_v).expect("cos val");
+            let t = session.value(tan_v).expect("tan val");
+
+            for (op, got, want) in [
+                ("sin", s, sin_want),
+                ("cos", c, cos_want),
+                ("tan", t, tan_want),
+            ] {
+                if !approx_eq(got, want) {
+                    mismatches.push(format!(
+                        "{op}({x:?}) = {got:?} (bits 0x{:016x}) but libm returned {want:?} (bits 0x{:016x}) — > {MAX_ULPS} ULP apart",
+                        got.to_bits(),
+                        want.to_bits()
+                    ));
+                }
+            }
+        }
+
+        // asin / acos over the |x| <= 1 subset.
+        for (i, x) in asin_inputs.iter().enumerate() {
+            let asin_want = f64::from_bits(asin_oracle[i]);
+            let acos_want = f64::from_bits(acos_oracle[i]);
+
+            let v = session.variable(*x, false);
+            let asin_v = session.asin(v).expect("asin");
+            let acos_v = session.acos(v).expect("acos");
+            let a = session.value(asin_v).expect("asin val");
+            let c = session.value(acos_v).expect("acos val");
+
+            for (op, got, want) in [("asin", a, asin_want), ("acos", c, acos_want)] {
+                if !approx_eq(got, want) {
+                    mismatches.push(format!(
+                        "{op}({x:?}) = {got:?} (bits 0x{:016x}) but libm returned {want:?} (bits 0x{:016x}) — > {MAX_ULPS} ULP apart",
+                        got.to_bits(),
+                        want.to_bits()
+                    ));
+                }
+            }
+        }
+
+        // atan over the full domain plus ±inf and NaN.
+        for (i, x) in atan_inputs.iter().enumerate() {
+            let atan_want = f64::from_bits(atan_oracle[i]);
+            let v = session.variable(*x, false);
+            let atan_v = session.atan(v).expect("atan");
+            let got = session.value(atan_v).expect("atan val");
+            if !approx_eq(got, atan_want) {
+                mismatches.push(format!(
+                    "atan({x:?}) = {got:?} (bits 0x{:016x}) but libm returned {atan_want:?} (bits 0x{:016x}) — > {MAX_ULPS} ULP apart",
+                    got.to_bits(),
+                    atan_want.to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "trig libm conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_fmod_remainder_sign_matrix_conformance() {
         // Lock down the full sign matrix for fmod (truncating, sign of
         // dividend) vs remainder (flooring, sign of divisor) — these
