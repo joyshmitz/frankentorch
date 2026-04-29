@@ -19514,6 +19514,203 @@ print(json.dumps({"lstsq": out}))
     }
 
     #[test]
+    fn torch_softmax_scipy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_softmax / tensor_log_softmax
+        // against scipy.special.softmax / scipy.special.log_softmax.
+        // Both implementations use the max-subtraction trick to avoid
+        // exp overflow:
+        //     softmax(x)_i     = exp(x_i - max) / sum(exp(x_j - max))
+        //     log_softmax(x)_i = (x_i - max) - log(sum(exp(x_j - max)))
+        // FrankenTorch and scipy should agree element-wise within
+        // libm precision (~few ULPs).
+        //
+        // Files closure for frankentorch-fntr (softmax/log_softmax
+        // subprocess-conformance gap surfaced during the
+        // /reality-check pass).
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let scipy_available = Command::new("python3")
+            .arg("-c")
+            .arg("from scipy import special; import json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !scipy_available {
+            eprintln!(
+                "torch_softmax_scipy_subprocess_conformance: python3/scipy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Each case: (label, flat_row_major, shape, dim).
+        type SmCase = (&'static str, Vec<f64>, Vec<usize>, usize);
+        let cases: Vec<SmCase> = vec![
+            // 1-D interior. Sum should be 1.0 to within ~few ULPs.
+            ("interior_1d_5", vec![1.0, 2.0, 3.0, 2.0, 1.0], vec![5], 0),
+            // Uniform input → all equal probabilities = 1/n.
+            ("uniform_1d_4", vec![5.0, 5.0, 5.0, 5.0], vec![4], 0),
+            // Single element (degenerate; should be 1.0).
+            ("scalar_1d_1", vec![3.0], vec![1], 0),
+            // Large positive — exp would overflow without max-subtraction.
+            ("large_positive_1d", vec![1000.0, 1001.0, 1002.0], vec![3], 0),
+            // Large negative — exp underflows to 0 without max-subtraction.
+            ("large_negative_1d", vec![-1000.0, -1001.0, -999.0], vec![3], 0),
+            // Mixed positive / negative.
+            ("mixed_1d", vec![-5.0, 0.0, 5.0, 10.0], vec![4], 0),
+            // 2-D along dim=1 (per-row softmax — the typical
+            // classification-head case).
+            ("2d_along_dim1", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], 1),
+            // 2-D along dim=0 (per-column softmax — less common).
+            ("2d_along_dim0", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], 0),
+            // 3-D middle dim.
+            ("3d_middle_dim", {
+                let mut v = Vec::with_capacity(24);
+                for i in 0..24 {
+                    v.push(i as f64 * 0.1);
+                }
+                v
+            }, vec![2, 3, 4], 1),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(label, vals, shape, dim)| {
+                json!({
+                    "label": *label,
+                    "shape": shape.iter().map(|&s| s as u64).collect::<Vec<_>>(),
+                    "dim": *dim as u64,
+                    "values_bits": vals.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+from scipy import special
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    shape = [int(s) for s in case["shape"]]
+    dim = int(case["dim"])
+    vals = [from_bits(s) for s in case["values_bits"]]
+    A = np.array(vals, dtype=np.float64).reshape(shape)
+    sm = special.softmax(A, axis=dim)
+    lsm = special.log_softmax(A, axis=dim)
+    out.append({
+        "label": case["label"],
+        "softmax_bits": [to_bits(v) for v in sm.flatten().tolist()],
+        "log_softmax_bits": [to_bits(v) for v in lsm.flatten().tolist()],
+    })
+print(json.dumps({"softmax": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_softmax_scipy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("softmax")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include softmax array");
+        assert_eq!(results.len(), cases.len());
+
+        // softmax is exp + sum + div: ~few ULPs for the smooth
+        // interior. log_softmax is essentially x - logsumexp(x): also
+        // libm-quality. Allow 8 ULP relative or 1e-15 absolute floor.
+        const ULP_TOL: u64 = 8;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() != b.is_infinite()
+                || a.is_nan() != b.is_nan()
+                || a.is_sign_negative() != b.is_sign_negative()
+            {
+                return false;
+            }
+            if (a - b).abs() <= 1e-15 {
+                return true;
+            }
+            let a_bits = a.to_bits();
+            let b_bits = b.to_bits();
+            a_bits.abs_diff(b_bits) <= ULP_TOL
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (label, vals, shape, dim)) in cases.iter().enumerate() {
+            let result_obj = &results[i];
+            let want_sm: Vec<f64> = result_obj["softmax_bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap()))
+                .collect();
+            let want_lsm: Vec<f64> = result_obj["log_softmax_bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap()))
+                .collect();
+
+            let xt = session
+                .tensor_variable(vals.clone(), shape.clone(), false)
+                .expect("xt");
+            let sm_id = session.tensor_softmax(xt, *dim).expect("tensor_softmax");
+            let got_sm = session.tensor_values(sm_id).expect("got_sm");
+            let lsm_id = session
+                .tensor_log_softmax(xt, *dim)
+                .expect("tensor_log_softmax");
+            let got_lsm = session.tensor_values(lsm_id).expect("got_lsm");
+
+            for (idx, (&g, &w)) in got_sm.iter().zip(want_sm.iter()).enumerate() {
+                if !approx_eq(g, w) {
+                    mismatches.push(format!(
+                        "tensor_softmax({label})[{idx}] = {g} but scipy returned {w}"
+                    ));
+                }
+            }
+            for (idx, (&g, &w)) in got_lsm.iter().zip(want_lsm.iter()).enumerate() {
+                if !approx_eq(g, w) {
+                    mismatches.push(format!(
+                        "tensor_log_softmax({label})[{idx}] = {g} but scipy returned {w}"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "softmax/log_softmax scipy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).

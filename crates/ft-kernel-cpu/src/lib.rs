@@ -2156,6 +2156,15 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
     // log-sum-exp = max + log(sum(exp(x - max))) — the max subtraction
     // is the standard numerical-stability trick; pairwise replaces the
     // sum-of-exps accumulator.
+    // The output formulation is (x - max) - log(sum_exp), NOT
+    // x - (max + log(sum_exp)). Algebraically identical, but the
+    // first preserves precision when x and max are large-magnitude
+    // (e.g. logits ~1000) and the result ~ -O(1) — combining x and
+    // max first via subtraction keeps the intermediate small, while
+    // pre-summing max + log(sum_exp) before the subtraction triggers
+    // catastrophic cancellation that costs ~13 digits of mantissa.
+    // scipy.special.log_softmax uses the (x - max) - log(sum_exp)
+    // form; tracked under frankentorch-ebrb.
     if inner_size == 1 {
         for outer in 0..outer_size {
             let start = outer * reduce_size;
@@ -2163,9 +2172,9 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
             let in_slice = &data[start..end];
             let max_val = in_slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let sum_exp = pairwise_sum_map_f64(in_slice, |x| (x - max_val).exp());
-            let log_sum_exp = max_val + sum_exp.ln();
+            let log_sum_exp = sum_exp.ln();
             for (out, &x) in output[start..end].iter_mut().zip(in_slice.iter()) {
-                *out = x - log_sum_exp;
+                *out = (x - max_val) - log_sum_exp;
             }
         }
         return Ok(output);
@@ -2179,9 +2188,10 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
             }
             let max_val = scratch.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let sum_exp = pairwise_sum_map_f64(&scratch, |x| (x - max_val).exp());
-            let log_sum_exp = max_val + sum_exp.ln();
+            let log_sum_exp = sum_exp.ln();
             for (r, &x) in scratch.iter().enumerate() {
-                output[outer * reduce_size * inner_size + r * inner_size + inner] = x - log_sum_exp;
+                output[outer * reduce_size * inner_size + r * inner_size + inner] =
+                    (x - max_val) - log_sum_exp;
             }
         }
     }
@@ -5747,7 +5757,9 @@ pub fn log_softmax_dim_tensor_contiguous_f32(
     let mut output = vec![0.0f32; numel];
     let data = &input[offset..];
 
-    // F32 mirror of `log_softmax_dim_tensor_contiguous_f64`.
+    // F32 mirror of `log_softmax_dim_tensor_contiguous_f64`. Uses
+    // (x - max) - log(sum_exp) rather than x - (max + log(sum_exp))
+    // for the same precision-preservation reasons (frankentorch-ebrb).
     if inner_size == 1 {
         for outer in 0..outer_size {
             let start = outer * reduce_size;
@@ -5755,9 +5767,9 @@ pub fn log_softmax_dim_tensor_contiguous_f32(
             let in_slice = &data[start..end];
             let max_val = in_slice.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let sum_exp = pairwise_sum_map_f32(in_slice, |x| (x - max_val).exp());
-            let log_sum_exp = max_val + sum_exp.ln();
+            let log_sum_exp = sum_exp.ln();
             for (out, &x) in output[start..end].iter_mut().zip(in_slice.iter()) {
-                *out = x - log_sum_exp;
+                *out = (x - max_val) - log_sum_exp;
             }
         }
         return Ok(output);
@@ -5771,9 +5783,10 @@ pub fn log_softmax_dim_tensor_contiguous_f32(
             }
             let max_val = scratch.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let sum_exp = pairwise_sum_map_f32(&scratch, |x| (x - max_val).exp());
-            let log_sum_exp = max_val + sum_exp.ln();
+            let log_sum_exp = sum_exp.ln();
             for (r, &x) in scratch.iter().enumerate() {
-                output[outer * reduce_size * inner_size + r * inner_size + inner] = x - log_sum_exp;
+                output[outer * reduce_size * inner_size + r * inner_size + inner] =
+                    (x - max_val) - log_sum_exp;
             }
         }
     }
