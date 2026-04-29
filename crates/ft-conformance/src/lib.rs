@@ -15245,6 +15245,378 @@ print(json.dumps(out))
     }
 
     #[test]
+    fn torch_exp_log_libm_subprocess_conformance() {
+        // Lock the f64 exp / ln / log2 / log10 surface vs platform libm.
+        //
+        // Rust's `f64::exp / ln / log2 / log10` FFI directly to the
+        // platform libm via libstd (glibc on Linux runners), and
+        // PyTorch's `torch.exp / torch.log / torch.log2 / torch.log10`
+        // wrap the SAME libm in their CPU kernels. So this oracle
+        // should match bit-for-bit on the entire f64 domain.
+        //
+        // Companion to torch_trig_libm / torch_hyperbolic_libm /
+        // torch_expm1_log1p_libm: same pattern, but covers the four
+        // base exp/log primitives that the others build on top of.
+        // The expm1+log1p harness covers the *small-argument*
+        // numerically-stable variants; this harness covers the bare
+        // exp/log family, which has the *large-argument* overflow /
+        // domain-error edges (exp around the +710 cliff, log at 0 / 1
+        // / negative / inf).
+        //
+        // Any future replacement of the Rust f64 method with a hand-
+        // rolled approximation — the same class of regression we hit
+        // on erf and lgamma — would surface here immediately.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!("torch_exp_log_libm_subprocess_conformance: python3 not available, skipping");
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // exp(x) is defined on the entire real line. Overflow boundary
+        // is x ≈ 709.78 (ln(MAX_F64)); exp underflows to 0 around
+        // x ≈ -745.13 (ln(MIN_SUBNORMAL_F64)). Cover both cliffs plus
+        // the smooth interior, the small-x Taylor regime where
+        // exp(x) ≈ 1 + x + ..., and inf / nan propagation.
+        let exp_inputs: Vec<f64> = vec![
+            // Trivial / signs.
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            // Small-x Taylor regime: exp(x) ≈ 1 + x for tiny x.
+            1e-3,
+            -1e-3,
+            1e-7,
+            -1e-7,
+            1e-15,
+            -1e-15,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            // Smooth interior.
+            0.5,
+            -0.5,
+            2.0,
+            -2.0,
+            5.0,
+            -5.0,
+            10.0,
+            -10.0,
+            50.0,
+            -50.0,
+            // Approaching the overflow cliff at ln(MAX_F64) ≈ 709.78.
+            500.0,
+            700.0,
+            709.0,
+            709.78,
+            709.79,
+            710.0,
+            711.0,
+            // Approaching the underflow cliff at ln(MIN_SUBNORMAL) ≈ -745.13.
+            -500.0,
+            -700.0,
+            -745.0,
+            -745.13,
+            -745.14,
+            -750.0,
+            -1000.0,
+            // Generic interior + transcendental constants.
+            std::f64::consts::E,
+            -std::f64::consts::E,
+            std::f64::consts::PI,
+            -std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        // ln / log2 / log10 share the domain (0, ∞] (returns -inf at
+        // 0, NaN for negative). Cover the special points (1 → 0 for
+        // all three; 2 → 1 for log2; 10 → 1 for log10), small / mid /
+        // large magnitudes, the subnormal / inf edges, and inputs
+        // outside the domain.
+        let log_inputs: Vec<f64> = vec![
+            // Domain edges.
+            0.0,
+            -0.0,
+            f64::MIN_POSITIVE,
+            5e-324,
+            // Special inputs that hit exact integer outputs.
+            1.0,
+            2.0,
+            4.0,
+            8.0,
+            10.0,
+            100.0,
+            1000.0,
+            // Small positive (negative log outputs).
+            0.5,
+            0.1,
+            0.01,
+            0.001,
+            1e-10,
+            1e-100,
+            1e-300,
+            // Large positive (positive log outputs).
+            1e10,
+            1e100,
+            1e300,
+            f64::MAX,
+            // Smooth interior + transcendental constants.
+            std::f64::consts::E,
+            std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+            1.5,
+            2.5,
+            7.0,
+            // Out-of-domain (negative): must yield NaN bit-identically.
+            -1.0,
+            -0.5,
+            -1e-10,
+            -1e10,
+            f64::MIN,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        let total_count = exp_inputs.len() + 3 * log_inputs.len();
+        assert!(
+            total_count >= 50,
+            "exp/log conformance must have >= 50 total comparisons, got {total_count}",
+        );
+
+        let exp_bits: Vec<String> = exp_inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let log_bits: Vec<String> = log_inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({
+            "exp": exp_bits,
+            "log": log_bits,
+        });
+
+        // Python oracle: ctypes-load libm and call exp / log / log2 /
+        // log10 directly. math.* wraps libm too but ctypes is
+        // consistent with the trig / hyperbolic sibling harnesses.
+        let script = r#"
+import ctypes, ctypes.util, json, struct, sys
+
+libm_name = ctypes.util.find_library("m") or "libm.so.6"
+libm = ctypes.CDLL(libm_name)
+for name in ["exp", "log", "log2", "log10"]:
+    fn = getattr(libm, name)
+    fn.restype = ctypes.c_double
+    fn.argtypes = [ctypes.c_double]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", v))[0])
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+req = json.loads(sys.stdin.read())
+out = {"exp": [], "log": [], "log2": [], "log10": []}
+for x_bits_s in req["exp"]:
+    x = from_bits(x_bits_s)
+    out["exp"].append(to_bits(libm.exp(x)))
+for x_bits_s in req["log"]:
+    x = from_bits(x_bits_s)
+    out["log"].append(to_bits(libm.log(x)))
+    out["log2"].append(to_bits(libm.log2(x)))
+    out["log10"].append(to_bits(libm.log10(x)))
+print(json.dumps(out))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_exp_log_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let get_array = |key: &str| -> Vec<u64> {
+            response
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .unwrap_or_else(|| panic!("oracle response must include `{key}` array"))
+                .iter()
+                .map(|v| v.as_str().unwrap().parse::<u64>().unwrap())
+                .collect()
+        };
+        let exp_oracle = get_array("exp");
+        let log_oracle = get_array("log");
+        let log2_oracle = get_array("log2");
+        let log10_oracle = get_array("log10");
+        assert_eq!(exp_oracle.len(), exp_inputs.len());
+        assert_eq!(log_oracle.len(), log_inputs.len());
+        assert_eq!(log2_oracle.len(), log_inputs.len());
+        assert_eq!(log10_oracle.len(), log_inputs.len());
+
+        // Both sides hit glibc through equivalent FFI paths. Require
+        // bit-exact agreement, NaN-payload-aware. The NaN check is
+        // important here because log of a negative finite number must
+        // produce NaN on both sides (and the NaN bit pattern is
+        // implementation-defined, but `is_nan()` agreement is enough).
+        let bit_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            a.to_bits() == b.to_bits()
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in exp_inputs.iter().enumerate() {
+            let want = f64::from_bits(exp_oracle[i]);
+            let x_var = session.variable(*x, false);
+            let got_id = session.exp(x_var).expect("exp");
+            let got = session.value(got_id).expect("exp value");
+            if !bit_eq(got, want) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::exp({x:?}) = {got:?} (bits 0x{:016x}) but libm returned {want:?} (bits 0x{:016x})",
+                    got.to_bits(),
+                    want.to_bits()
+                ));
+            }
+        }
+
+        for (i, x) in log_inputs.iter().enumerate() {
+            let log_want = f64::from_bits(log_oracle[i]);
+            let log2_want = f64::from_bits(log2_oracle[i]);
+            let log10_want = f64::from_bits(log10_oracle[i]);
+
+            let x_var = session.variable(*x, false);
+            let log_id = session.log(x_var).expect("log");
+            let log2_id = session.log2(x_var).expect("log2");
+            let log10_id = session.log10(x_var).expect("log10");
+            let log_got = session.value(log_id).expect("log value");
+            let log2_got = session.value(log2_id).expect("log2 value");
+            let log10_got = session.value(log10_id).expect("log10 value");
+
+            if !bit_eq(log_got, log_want) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::log({x:?}) = {log_got:?} (bits 0x{:016x}) but libm returned {log_want:?} (bits 0x{:016x})",
+                    log_got.to_bits(),
+                    log_want.to_bits()
+                ));
+            }
+            if !bit_eq(log2_got, log2_want) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::log2({x:?}) = {log2_got:?} (bits 0x{:016x}) but libm returned {log2_want:?} (bits 0x{:016x})",
+                    log2_got.to_bits(),
+                    log2_want.to_bits()
+                ));
+            }
+            if !bit_eq(log10_got, log10_want) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::log10({x:?}) = {log10_got:?} (bits 0x{:016x}) but libm returned {log10_want:?} (bits 0x{:016x})",
+                    log10_got.to_bits(),
+                    log10_want.to_bits()
+                ));
+            }
+        }
+
+        // Tensor batch path on the finite subsets — exercises the
+        // contiguous unary kernels.
+        let exp_finite: Vec<(usize, f64)> = exp_inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_finite())
+            .map(|(i, x)| (i, *x))
+            .collect();
+        let xs: Vec<f64> = exp_finite.iter().map(|(_, x)| *x).collect();
+        let n = xs.len();
+        let xt = session
+            .tensor_variable(xs, vec![n], false)
+            .expect("xt exp");
+        let et = session.tensor_exp(xt).expect("tensor_exp");
+        let ev = session.tensor_values(et).expect("exp vals");
+        for (k, (i, x)) in exp_finite.iter().enumerate() {
+            let want = f64::from_bits(exp_oracle[*i]);
+            if !bit_eq(ev[k], want) {
+                mismatches.push(format!(
+                    "tensor_exp({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {want:?}",
+                    ev[k],
+                    ev[k].to_bits()
+                ));
+            }
+        }
+
+        let log_finite: Vec<(usize, f64)> = log_inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_finite())
+            .map(|(i, x)| (i, *x))
+            .collect();
+        let xs: Vec<f64> = log_finite.iter().map(|(_, x)| *x).collect();
+        let n = xs.len();
+        let xt = session
+            .tensor_variable(xs, vec![n], false)
+            .expect("xt log");
+        let lt = session.tensor_log(xt).expect("tensor_log");
+        let l2t = session.tensor_log2(xt).expect("tensor_log2");
+        let l10t = session.tensor_log10(xt).expect("tensor_log10");
+        let lv = session.tensor_values(lt).expect("log vals");
+        let l2v = session.tensor_values(l2t).expect("log2 vals");
+        let l10v = session.tensor_values(l10t).expect("log10 vals");
+        for (k, (i, x)) in log_finite.iter().enumerate() {
+            let log_want = f64::from_bits(log_oracle[*i]);
+            let log2_want = f64::from_bits(log2_oracle[*i]);
+            let log10_want = f64::from_bits(log10_oracle[*i]);
+            if !bit_eq(lv[k], log_want) {
+                mismatches.push(format!(
+                    "tensor_log({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {log_want:?}",
+                    lv[k],
+                    lv[k].to_bits()
+                ));
+            }
+            if !bit_eq(l2v[k], log2_want) {
+                mismatches.push(format!(
+                    "tensor_log2({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {log2_want:?}",
+                    l2v[k],
+                    l2v[k].to_bits()
+                ));
+            }
+            if !bit_eq(l10v[k], log10_want) {
+                mismatches.push(format!(
+                    "tensor_log10({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {log10_want:?}",
+                    l10v[k],
+                    l10v[k].to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "exp/log libm conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
