@@ -13584,6 +13584,302 @@ print(json.dumps({"logaddexp": logaddexp, "logaddexp2": logaddexp2}))
     }
 
     #[test]
+    fn torch_expm1_log1p_libm_subprocess_conformance() {
+        // Subprocess diff test for `expm1(x) = e^x - 1` and
+        // `log1p(x) = log(1 + x)` — the two precision-sensitive
+        // libm primitives whose ENTIRE reason for existing is to
+        // preserve precision near x = 0 where the naive formulas
+        // (`exp(x) - 1` and `log(1 + x)`) cancel away significant
+        // digits. FrankenTorch's surface (`tensor_expm1`,
+        // `tensor_log1p`, `expm1`, `log1p` on the scalar API) calls
+        // Rust's `f64::exp_m1` / `f64::ln_1p`, both of which are libm
+        // wrappers; PyTorch's `torch.expm1` / `torch.log1p` wrap the
+        // same C functions, so this oracle doubles as upstream
+        // PyTorch parity.
+        //
+        // Companion to atan2 / pow / logaddexp subprocess tests: same
+        // pattern, different op family.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!(
+                "torch_expm1_log1p_libm_subprocess_conformance: python3 not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Boundary + precision-sensitive matrix.
+        //
+        // For expm1: the precision win vs `exp(x) - 1` is concentrated
+        // around |x| << 1; the spec also pins behavior at edges and
+        // signed zero / NaN / ±inf.
+        //
+        // For log1p: the precision win vs `log(1 + x)` is concentrated
+        // around |x| << 1; the spec pins behavior at log1p(-1) = -inf,
+        // log1p(< -1) = NaN, log1p(NaN) = NaN, log1p(+inf) = +inf,
+        // log1p(-inf) = NaN.
+        let inputs: Vec<f64> = vec![
+            // Trivial / zero / signs.
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            // Precision-sensitive small magnitudes: the whole reason
+            // expm1/log1p exist. Each value is a place where the naive
+            // formula loses ULPs that the libm primitive preserves.
+            1e-1,
+            -1e-1,
+            1e-2,
+            -1e-2,
+            1e-5,
+            -1e-5,
+            1e-10,
+            -1e-10,
+            1e-15,
+            -1e-15,
+            1e-20,
+            -1e-20,
+            5e-300,
+            -5e-300,
+            // Subnormals and the smallest positive double.
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            // Generic interior.
+            0.5,
+            -0.5,
+            2.0,
+            -2.0,
+            std::f64::consts::E,
+            -std::f64::consts::E,
+            std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::LN_10,
+            // Large positive — expm1 saturates to +inf around x ≈ 709
+            // for f64; log1p stays finite for any finite positive x.
+            10.0,
+            100.0,
+            500.0,
+            708.0,
+            709.0,
+            710.0,
+            1e6,
+            1e100,
+            // Large negative — expm1 saturates to -1 (since e^x -> 0);
+            // log1p(x) for x close to -1 from above is finite but huge
+            // negative.
+            -10.0,
+            -100.0,
+            -708.0,
+            -709.0,
+            -1e6,
+            -0.999_999_999_999_999_9,
+            -0.999_999_999_999,
+            -0.999,
+            // Edge cases around log1p domain boundary at -1.
+            -1.0,
+            -1.000_000_000_000_000_2,
+            -2.0,
+            -1e6,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        assert!(
+            inputs.len() >= 50,
+            "expm1/log1p conformance matrix must have at least 50 inputs, got {}",
+            inputs.len()
+        );
+
+        let input_bits: Vec<String> = inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({ "inputs": input_bits });
+
+        // Python oracle: bypass `math.expm1` / `math.log1p` (which
+        // raise on some libm edge cases — log1p(-1) raises ValueError
+        // for "math domain error" on some Python builds) and call
+        // libm's `expm1` / `log1p` directly through ctypes — that's
+        // the same C function PyTorch wraps.
+        let script = r#"
+import ctypes, ctypes.util, json, struct, sys
+
+libm_name = ctypes.util.find_library("m") or "libm.so.6"
+libm = ctypes.CDLL(libm_name)
+libm.expm1.restype = ctypes.c_double
+libm.expm1.argtypes = [ctypes.c_double]
+libm.log1p.restype = ctypes.c_double
+libm.log1p.argtypes = [ctypes.c_double]
+
+req = json.loads(sys.stdin.read())
+expm1_out = []
+log1p_out = []
+for x_bits_s in req["inputs"]:
+    x = struct.unpack("<d", struct.pack("<Q", int(x_bits_s)))[0]
+    e = libm.expm1(x)
+    l = libm.log1p(x)
+    expm1_out.append(str(struct.unpack("<Q", struct.pack("<d", e))[0]))
+    log1p_out.append(str(struct.unpack("<Q", struct.pack("<d", l))[0]))
+print(json.dumps({"expm1": expm1_out, "log1p": log1p_out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                // Match the skip-on-oracle-error pattern used by the
+                // atan2 sibling test (rather than the panic! pow test
+                // uses) — UBS flags panic! in library code as critical
+                // and we want this harness to be both useful and
+                // policy-clean.
+                eprintln!(
+                    "torch_expm1_log1p_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let expm1_results = response
+            .get("expm1")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include expm1 array");
+        let log1p_results = response
+            .get("log1p")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include log1p array");
+        assert_eq!(expm1_results.len(), inputs.len());
+        assert_eq!(log1p_results.len(), inputs.len());
+
+        let bit_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                true
+            } else {
+                a.to_bits() == b.to_bits()
+            }
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in inputs.iter().enumerate() {
+            let expm1_oracle_bits: u64 = expm1_results[i]
+                .as_str()
+                .expect("string")
+                .parse()
+                .expect("u64");
+            let log1p_oracle_bits: u64 = log1p_results[i]
+                .as_str()
+                .expect("string")
+                .parse()
+                .expect("u64");
+            let expm1_oracle = f64::from_bits(expm1_oracle_bits);
+            let log1p_oracle = f64::from_bits(log1p_oracle_bits);
+
+            // Rust f64 path.
+            let rust_expm1 = x.exp_m1();
+            let rust_log1p = x.ln_1p();
+            // FrankenTorch scalar API.
+            let x_var = session.variable(*x, false);
+            let ft_expm1 = session
+                .expm1(x_var)
+                .expect("session.expm1");
+            let ft_log1p = session
+                .log1p(x_var)
+                .expect("session.log1p");
+            let ft_expm1_val = session.value(ft_expm1).expect("expm1 value");
+            let ft_log1p_val = session.value(ft_log1p).expect("log1p value");
+
+            if !bit_eq(rust_expm1, expm1_oracle) {
+                mismatches.push(format!(
+                    "rust f64::exp_m1({x:?}) = {rust_expm1:?} (bits 0x{:016x}) but libm returned {expm1_oracle:?} (bits 0x{:016x})",
+                    rust_expm1.to_bits(),
+                    expm1_oracle_bits
+                ));
+            }
+            if !bit_eq(ft_expm1_val, expm1_oracle) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::expm1({x:?}) = {ft_expm1_val:?} (bits 0x{:016x}) but libm returned {expm1_oracle:?} (bits 0x{:016x})",
+                    ft_expm1_val.to_bits(),
+                    expm1_oracle_bits
+                ));
+            }
+            if !bit_eq(rust_log1p, log1p_oracle) {
+                mismatches.push(format!(
+                    "rust f64::ln_1p({x:?}) = {rust_log1p:?} (bits 0x{:016x}) but libm returned {log1p_oracle:?} (bits 0x{:016x})",
+                    rust_log1p.to_bits(),
+                    log1p_oracle_bits
+                ));
+            }
+            if !bit_eq(ft_log1p_val, log1p_oracle) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::log1p({x:?}) = {ft_log1p_val:?} (bits 0x{:016x}) but libm returned {log1p_oracle:?} (bits 0x{:016x})",
+                    ft_log1p_val.to_bits(),
+                    log1p_oracle_bits
+                ));
+            }
+        }
+
+        // Tensor-batch path: drive a single tensor through tensor_expm1
+        // and tensor_log1p with the FINITE inputs and compare to the
+        // pre-collected oracle. (Inf / NaN are exercised one-at-a-time
+        // through the scalar path above; the tensor batch path uses the
+        // same kernel internally so mass-checking is sufficient.)
+        let finite_subset: Vec<(usize, f64)> = inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_finite())
+            .map(|(i, x)| (i, *x))
+            .collect();
+        let xs: Vec<f64> = finite_subset.iter().map(|(_, x)| *x).collect();
+        let n = xs.len();
+        let xt = session
+            .tensor_variable(xs, vec![n], false)
+            .expect("xt");
+        let et = session.tensor_expm1(xt).expect("tensor_expm1");
+        let lt = session.tensor_log1p(xt).expect("tensor_log1p");
+        let ev = session.tensor_values(et).expect("ev");
+        let lv = session.tensor_values(lt).expect("lv");
+        for (k, (i, x)) in finite_subset.iter().enumerate() {
+            let expm1_oracle =
+                f64::from_bits(expm1_results[*i].as_str().unwrap().parse().unwrap());
+            let log1p_oracle =
+                f64::from_bits(log1p_results[*i].as_str().unwrap().parse().unwrap());
+            if !bit_eq(ev[k], expm1_oracle) {
+                mismatches.push(format!(
+                    "tensor_expm1({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {expm1_oracle:?}",
+                    ev[k],
+                    ev[k].to_bits()
+                ));
+            }
+            if !bit_eq(lv[k], log1p_oracle) {
+                mismatches.push(format!(
+                    "tensor_log1p({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {log1p_oracle:?}",
+                    lv[k],
+                    lv[k].to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "expm1/log1p libm conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_fmod_remainder_sign_matrix_conformance() {
         // Lock down the full sign matrix for fmod (truncating, sign of
         // dividend) vs remainder (flooring, sign of divisor) — these
