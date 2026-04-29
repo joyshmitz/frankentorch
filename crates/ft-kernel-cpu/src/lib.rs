@@ -1358,13 +1358,30 @@ pub fn sum_dim_tensor_contiguous_f64(
     let mut output = vec![0.0; out_numel];
     let data = &input[offset..];
 
+    // Inner_size == 1 means we are reducing the last (most-contiguous)
+    // dim, which is the most common shape: e.g. [B, D].sum(dim=-1).
+    // The strided slice for each outer is pure contiguous, so we can
+    // pairwise-sum directly with zero scratch allocation.
+    if inner_size == 1 {
+        for (outer, slot) in output.iter_mut().enumerate() {
+            let start = outer * reduce_size;
+            let end = start + reduce_size;
+            *slot = pairwise_sum_f64(&data[start..end]);
+        }
+        return Ok(output);
+    }
+
+    // General strided case: gather each (outer, inner) slice into a
+    // reusable scratch buffer, then pairwise-sum. One allocation per
+    // call, not per cell. Same precision pattern as `var_dim_*`.
+    let mut scratch = vec![0.0_f64; reduce_size];
     for outer in 0..outer_size {
         for inner in 0..inner_size {
-            let mut sum = 0.0;
             for r in 0..reduce_size {
-                sum += data[outer * reduce_size * inner_size + r * inner_size + inner];
+                scratch[r] =
+                    data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            output[outer * inner_size + inner] = sum;
+            output[outer * inner_size + inner] = pairwise_sum_f64(&scratch);
         }
     }
 
@@ -5119,13 +5136,27 @@ pub fn sum_dim_tensor_contiguous_f32(
     let offset = meta.storage_offset();
     let mut output = vec![0.0f32; out_numel];
     let data = &input[offset..];
+
+    // F32 mirror of the f64 sum_dim fast/general split. F32 has only
+    // a 24-bit mantissa so the precision improvement from pairwise
+    // vs sequential is even more pronounced here.
+    if inner_size == 1 {
+        for (outer, slot) in output.iter_mut().enumerate() {
+            let start = outer * reduce_size;
+            let end = start + reduce_size;
+            *slot = pairwise_sum_f32(&data[start..end]);
+        }
+        return Ok(output);
+    }
+
+    let mut scratch = vec![0.0f32; reduce_size];
     for outer in 0..outer_size {
         for inner in 0..inner_size {
-            let mut sum = 0.0f32;
             for r in 0..reduce_size {
-                sum += data[outer * reduce_size * inner_size + r * inner_size + inner];
+                scratch[r] =
+                    data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            output[outer * inner_size + inner] = sum;
+            output[outer * inner_size + inner] = pairwise_sum_f32(&scratch);
         }
     }
     Ok(output)
@@ -7827,6 +7858,81 @@ mod tests {
             "var drift {:e} > 1e-3 tolerance (got {}, expected {var_truth})",
             (var[0] - var_truth).abs(),
             var[0]
+        );
+    }
+
+    #[test]
+    fn sum_dim_tensor_contiguous_pairwise_fast_path_at_large_n() {
+        // Fast path: inner_size == 1 (reducing the last dim of [B, D]).
+        // For shape [B=8, D=131072] reducing dim=1, each output cell
+        // is a contiguous slice of 131072 doubles. Pairwise summation
+        // hits the BLOCK = 128 base case at ~1024 leaves, log2(1024) =
+        // 10 levels of tree, with O(log N · ε) error vs the prior
+        // O(N · ε) sequential path.
+        //
+        // Each row k = 0..B contains 131072 copies of (k+1) · 0.1.
+        // The analytical sum per row is 131072 · (k+1) · 0.1.
+        let b = 8usize;
+        let d = 131072usize;
+        let mut input = Vec::with_capacity(b * d);
+        for k in 0..b {
+            #[allow(clippy::cast_precision_loss)]
+            let v = (k as f64 + 1.0) * 0.1;
+            for _ in 0..d {
+                input.push(v);
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![b, d], DType::F64, Device::Cpu);
+        let out = sum_dim_tensor_contiguous_f64(&input, &meta, 1)
+            .expect("sum_dim should succeed");
+        assert_eq!(out.len(), b);
+        for (k, &row_sum) in out.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let truth = (d as f64) * (k as f64 + 1.0) * 0.1;
+            assert!(
+                (row_sum - truth).abs() < 1e-9,
+                "row {k} sum drift {:e} > 1e-9 tolerance (got {row_sum}, expected {truth})",
+                (row_sum - truth).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn sum_dim_tensor_contiguous_pairwise_general_strided_at_large_n() {
+        // General strided case: inner_size > 1. Shape [D=65536, B=2]
+        // reducing dim=0 means each of the 2 output cells gathers a
+        // strided slice of 65536 elements (stride 2 in storage). The
+        // gather-then-pairwise path locks O(log N · ε) precision here
+        // even though the slice is non-contiguous in memory.
+        //
+        // Column 0 holds 65536 copies of 0.1; column 1 holds 65536
+        // copies of 0.2. Analytical sums are 6553.6 and 13107.2.
+        let d = 65536usize;
+        let b = 2usize;
+        let mut input = Vec::with_capacity(d * b);
+        for _ in 0..d {
+            input.push(0.1);
+            input.push(0.2);
+        }
+        let meta = TensorMeta::from_shape(vec![d, b], DType::F64, Device::Cpu);
+        let out = sum_dim_tensor_contiguous_f64(&input, &meta, 0)
+            .expect("sum_dim should succeed");
+        assert_eq!(out.len(), b);
+        #[allow(clippy::cast_precision_loss)]
+        let truth_col0 = (d as f64) * 0.1;
+        #[allow(clippy::cast_precision_loss)]
+        let truth_col1 = (d as f64) * 0.2;
+        assert!(
+            (out[0] - truth_col0).abs() < 1e-9,
+            "col0 sum drift {:e} > 1e-9 tolerance (got {}, expected {truth_col0})",
+            (out[0] - truth_col0).abs(),
+            out[0]
+        );
+        assert!(
+            (out[1] - truth_col1).abs() < 1e-9,
+            "col1 sum drift {:e} > 1e-9 tolerance (got {}, expected {truth_col1})",
+            (out[1] - truth_col1).abs(),
+            out[1]
         );
     }
 
