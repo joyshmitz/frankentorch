@@ -13034,15 +13034,9 @@ for y_bits_s, x_bits_s in req["pairs"]:
 print(json.dumps({"results": out}))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_atan2_ieee754_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload).expect(
+            "torch_atan2_ieee754_subprocess_conformance: oracle invocation must succeed after python3 availability check",
+        );
 
         let results = response
             .get("results")
@@ -13115,11 +13109,7 @@ print(json.dumps({"results": out}))
             .enumerate()
             .filter(|(_, (y, x))| y.is_finite() && x.is_finite())
             .map(|(i, (y, x))| {
-                let oracle_bits: u64 = results[i]
-                    .as_str()
-                    .expect("string")
-                    .parse()
-                    .expect("u64");
+                let oracle_bits: u64 = results[i].as_str().expect("string").parse().expect("u64");
                 (*y, *x, f64::from_bits(oracle_bits))
             })
             .collect();
@@ -13173,18 +13163,12 @@ print(json.dumps({"results": out}))
         //    0     5      0        0
         use ft_api::FrankenTorchSession;
 
-        let lhs_data: Vec<f64> = vec![
-            7.0, -7.0, 7.0, -7.0, 6.0, -6.0, 3.5, -3.5, 3.5, -3.5, 0.0,
-        ];
-        let rhs_data: Vec<f64> = vec![
-            3.0, 3.0, -3.0, -3.0, 3.0, 3.0, 1.5, 1.5, -1.5, -1.5, 5.0,
-        ];
-        let expected_fmod: Vec<f64> = vec![
-            1.0, -1.0, 1.0, -1.0, 0.0, 0.0, 0.5, -0.5, 0.5, -0.5, 0.0,
-        ];
-        let expected_remainder: Vec<f64> = vec![
-            1.0, 2.0, -2.0, -1.0, 0.0, 0.0, 0.5, 1.0, -1.0, -0.5, 0.0,
-        ];
+        let lhs_data: Vec<f64> = vec![7.0, -7.0, 7.0, -7.0, 6.0, -6.0, 3.5, -3.5, 3.5, -3.5, 0.0];
+        let rhs_data: Vec<f64> = vec![3.0, 3.0, -3.0, -3.0, 3.0, 3.0, 1.5, 1.5, -1.5, -1.5, 5.0];
+        let expected_fmod: Vec<f64> =
+            vec![1.0, -1.0, 1.0, -1.0, 0.0, 0.0, 0.5, -0.5, 0.5, -0.5, 0.0];
+        let expected_remainder: Vec<f64> =
+            vec![1.0, 2.0, -2.0, -1.0, 0.0, 0.0, 0.5, 1.0, -1.0, -0.5, 0.0];
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let n = lhs_data.len();
