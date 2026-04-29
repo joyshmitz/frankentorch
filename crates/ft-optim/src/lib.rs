@@ -86,6 +86,10 @@ fn decode_exact_i64_field(value: f64, min: i64) -> Option<i64> {
     Some(value as i64)
 }
 
+fn powi_exponent_saturating(value: usize) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 fn load_param_gradient(
     session: &FrankenTorchSession,
     param: TensorNodeId,
@@ -1830,7 +1834,7 @@ impl StepLR {
         }
         let e = epoch as usize;
         let exponent = e / self.step_size;
-        self.initial_lr * self.gamma.powi(exponent as i32)
+        self.initial_lr * self.gamma.powi(powi_exponent_saturating(exponent))
     }
 }
 
@@ -1964,7 +1968,7 @@ impl MultiStepLR {
 
     fn compute_lr_at_epoch(&self, epoch: i64) -> f64 {
         let decay_count = self.milestone_count_at_epoch(epoch);
-        self.initial_lr * self.gamma.powi(decay_count as i32)
+        self.initial_lr * self.gamma.powi(powi_exponent_saturating(decay_count))
     }
 }
 
@@ -3848,15 +3852,17 @@ impl CyclicLR {
         // cycle = floor(1 + iteration / (step_size_up + step_size_down))
         // x = 1 - abs(iteration / step_size_up - 2 * cycle + 1)
         // x is clamped to [0, 1]
-        let total_size = self.step_size_up + self.step_size_down;
-        let cycle = 1 + iteration / total_size;
+        let total_size = self.step_size_up.saturating_add(self.step_size_down).max(1);
+        let cycle = 1usize.saturating_add(iteration / total_size);
         let x = (iteration as f64 / self.step_size_up as f64) - 2.0 * cycle as f64 + 1.0;
         let scale_x = (1.0 - x.abs()).max(0.0);
 
         let scale_fn = match &self.mode {
             CyclicLRMode::Triangular => 1.0,
-            CyclicLRMode::Triangular2 => 1.0 / (2.0_f64.powi((cycle - 1) as i32)),
-            CyclicLRMode::ExpRange { gamma } => gamma.powi(iteration as i32),
+            CyclicLRMode::Triangular2 => {
+                1.0 / (2.0_f64.powi(powi_exponent_saturating(cycle.saturating_sub(1))))
+            }
+            CyclicLRMode::ExpRange { gamma } => gamma.powi(powi_exponent_saturating(iteration)),
         };
 
         self.base_lr + (self.max_lr - self.base_lr) * scale_x * scale_fn
@@ -3869,7 +3875,7 @@ impl LRScheduler for CyclicLR {
         let lr = self.compute_lr(self.iteration);
         optimizer.set_lr(lr);
         self.last_lr = lr;
-        self.iteration += 1;
+        self.iteration = self.iteration.saturating_add(1);
     }
 
     fn get_lr(&self) -> Vec<f64> {
@@ -9317,9 +9323,8 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let num_embeddings = 6;
         let embedding_dim = 4;
-        let emb =
-            Embedding::with_options(&mut session, num_embeddings, embedding_dim, true)
-                .expect("sparse embedding");
+        let emb = Embedding::with_options(&mut session, num_embeddings, embedding_dim, true)
+            .expect("sparse embedding");
         let weight = emb.weight();
 
         let weights_before = session.tensor_values(weight).expect("values").to_vec();
@@ -9347,8 +9352,8 @@ mod tests {
             let start = row * embedding_dim;
             let end = start + embedding_dim;
             let touched = row == 1 || row == 4;
-            let row_changed = (start..end)
-                .any(|i| (weights_before[i] - weights_after[i]).abs() > 1e-12);
+            let row_changed =
+                (start..end).any(|i| (weights_before[i] - weights_after[i]).abs() > 1e-12);
             assert_eq!(
                 row_changed, touched,
                 "row {row}: changed={row_changed}, expected_changed={touched}"
@@ -9384,8 +9389,7 @@ mod tests {
         let after = session.tensor_values(weight).expect("values").to_vec();
         // Touched row 2 must change.
         let row_start = 2 * 2;
-        let row_changed = (row_start..row_start + 2)
-            .any(|i| (before[i] - after[i]).abs() > 1e-12);
+        let row_changed = (row_start..row_start + 2).any(|i| (before[i] - after[i]).abs() > 1e-12);
         assert!(row_changed, "row 2 should be updated");
     }
 
@@ -9531,6 +9535,58 @@ mod tests {
                 original.extra.iter().find(|(name, _)| name == key)
             );
         }
+    }
+
+    #[test]
+    fn cyclic_lr_huge_periods_do_not_overflow_cycle_length() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = CyclicLR::new(&opt, 0.001, 0.01, usize::MAX).step_size_down(usize::MAX);
+
+        scheduler.step(&mut opt, None);
+
+        let lr = opt.get_lr();
+        assert!(lr.is_finite(), "lr should remain finite, got {lr}");
+        assert_eq!(scheduler.get_last_lr(), vec![0.001]);
+    }
+
+    #[test]
+    fn cyclic_lr_saturates_loaded_max_iteration_counter() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("variable");
+        let mut opt = SGD::new(vec![x], 0.1);
+        let mut scheduler = CyclicLR::new(&opt, 0.001, 0.01, 1);
+
+        scheduler.load_state_dict(SchedulerState {
+            last_epoch: 7,
+            last_lrs: vec![0.001],
+            extra: vec![
+                ("base_lr".to_owned(), 0.001),
+                ("max_lr".to_owned(), 0.01),
+                ("step_size_up".to_owned(), 1.0),
+                ("step_size_down".to_owned(), 1.0),
+                ("iteration".to_owned(), usize::MAX as f64),
+            ],
+        });
+
+        scheduler.step(&mut opt, None);
+
+        let lr = opt.get_lr();
+        assert!(lr.is_finite(), "lr should remain finite, got {lr}");
+        assert_eq!(
+            scheduler
+                .state_dict()
+                .extra
+                .iter()
+                .find(|(name, _)| name == "iteration")
+                .map(|(_, value)| *value),
+            Some(usize::MAX as f64)
+        );
     }
 
     #[test]
