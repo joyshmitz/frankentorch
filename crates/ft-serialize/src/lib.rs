@@ -770,6 +770,11 @@ pub fn load_state_dict_from_bytes(
                 reason: "invalid UTF-8 in key".to_string(),
             })?;
         pos = key_end;
+        if result.contains_key(&key) {
+            return Err(TensorIOError::Corrupt {
+                reason: format!("duplicate tensor key in native state dict: '{key}'"),
+            });
+        }
 
         // Shape
         let ndim = read_usize(data, &mut pos, "ndim")?;
@@ -2311,6 +2316,27 @@ mod tests {
         let err = load_state_dict_from_bytes(&data).expect_err("impossible tensor count must fail");
         assert!(matches!(err, TensorIOError::Corrupt { .. }));
         assert!(err.to_string().contains("claimed 2 tensors"));
+    }
+
+    #[test]
+    fn load_state_dict_rejects_duplicate_tensor_keys() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&2u64.to_le_bytes()); // num_tensors = 2
+
+        for value in [1.0_f64, 2.0_f64] {
+            data.extend_from_slice(&1u64.to_le_bytes()); // key length
+            data.push(b'w');
+            data.extend_from_slice(&1u64.to_le_bytes()); // ndim
+            data.extend_from_slice(&1u64.to_le_bytes()); // shape[0]
+            data.push(0); // F64 dtype tag
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let err = load_state_dict_from_bytes(&data).expect_err("duplicate keys must fail closed");
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(err.to_string().contains("duplicate tensor key"));
     }
 
     #[test]
