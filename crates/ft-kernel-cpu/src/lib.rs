@@ -1287,6 +1287,25 @@ fn pairwise_sum_f64(values: &[f64]) -> f64 {
     pairwise_sum_f64(&values[..mid]) + pairwise_sum_f64(&values[mid..])
 }
 
+/// Like `pairwise_sum_f64`, but applies a closure `f` to each element
+/// before adding. Used by norm helpers — `norm_l1` sums `|x|`,
+/// `norm_l2` sums `x*x`, generic `norm_lp` sums `|x|^p` — to inherit
+/// the same O(log N · ε) precision contract as `pairwise_sum_f64`
+/// without an intermediate allocation. The closure must be `Fn + Copy`
+/// so we can pass it by value through the recursion (true for the
+/// stateless or capture-by-Copy closures we use here).
+fn pairwise_sum_map_f64<F>(values: &[f64], f: F) -> f64
+where
+    F: Fn(f64) -> f64 + Copy,
+{
+    const BLOCK: usize = 128;
+    if values.len() <= BLOCK {
+        return values.iter().copied().map(f).sum();
+    }
+    let mid = values.len() / 2;
+    pairwise_sum_map_f64(&values[..mid], f) + pairwise_sum_map_f64(&values[mid..], f)
+}
+
 pub fn sum_tensor_contiguous_f64(input: &[f64], meta: &TensorMeta) -> Result<f64, KernelError> {
     ensure_unary_layout_and_storage(input, meta)?;
     let numel = meta.numel();
@@ -1870,12 +1889,12 @@ pub fn norm_tensor_contiguous_f64(
         // L0 "norm": count of non-zero elements
         Ok(data.iter().filter(|&&x| x != 0.0).count() as f64)
     } else if p == 1.0 {
-        Ok(data.iter().map(|x| x.abs()).sum())
+        Ok(pairwise_sum_map_f64(data, |x| x.abs()))
     } else if p == 2.0 {
-        let sum_sq: f64 = data.iter().map(|x| x * x).sum();
+        let sum_sq = pairwise_sum_map_f64(data, |x| x * x);
         Ok(sum_sq.sqrt())
     } else {
-        let sum_pow: f64 = data.iter().map(|x| x.abs().powf(p)).sum();
+        let sum_pow = pairwise_sum_map_f64(data, |x| x.abs().powf(p));
         Ok(sum_pow.powf(1.0 / p))
     }
 }
@@ -5026,6 +5045,20 @@ fn pairwise_sum_f32(values: &[f32]) -> f32 {
     pairwise_sum_f32(&values[..mid]) + pairwise_sum_f32(&values[mid..])
 }
 
+/// F32 companion to `pairwise_sum_map_f64` — see that function for
+/// the precision-correctness rationale.
+fn pairwise_sum_map_f32<F>(values: &[f32], f: F) -> f32
+where
+    F: Fn(f32) -> f32 + Copy,
+{
+    const BLOCK: usize = 128;
+    if values.len() <= BLOCK {
+        return values.iter().copied().map(f).sum();
+    }
+    let mid = values.len() / 2;
+    pairwise_sum_map_f32(&values[..mid], f) + pairwise_sum_map_f32(&values[mid..], f)
+}
+
 pub fn sum_tensor_contiguous_f32(input: &[f32], meta: &TensorMeta) -> Result<f32, KernelError> {
     ensure_unary_layout_and_storage_f32(input, meta)?;
     let numel = meta.numel();
@@ -5384,12 +5417,12 @@ pub fn norm_tensor_contiguous_f32(
     } else if p == 0.0f32 {
         Ok(data.iter().filter(|&&x| x != 0.0f32).count() as f32)
     } else if p == 1.0f32 {
-        Ok(data.iter().map(|x| x.abs()).sum())
+        Ok(pairwise_sum_map_f32(data, |x| x.abs()))
     } else if p == 2.0f32 {
-        let sum_sq: f32 = data.iter().map(|x| x * x).sum();
+        let sum_sq = pairwise_sum_map_f32(data, |x| x * x);
         Ok(sum_sq.sqrt())
     } else {
-        let sum_pow: f32 = data.iter().map(|x| x.abs().powf(p)).sum();
+        let sum_pow = pairwise_sum_map_f32(data, |x| x.abs().powf(p));
         Ok(sum_pow.powf(1.0f32 / p))
     }
 }
@@ -7266,6 +7299,7 @@ mod tests {
         max_dim_tensor_contiguous_f64, max_scalar, max_tensor_contiguous_f64,
         mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_dim_tensor_contiguous_f64,
         min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64,
+        norm_tensor_contiguous_f64,
         narrow_tensor_contiguous_f64, ne_scalar, ne_tensor_contiguous_f64, neg_scalar,
         neg_tensor_contiguous_f64, outer_tensor_contiguous_f64, pow_scalar,
         pow_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64, reciprocal_scalar,
@@ -7675,6 +7709,58 @@ mod tests {
                 "sum of 0..{n} = {got}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn norm_tensor_contiguous_l2_pairwise_correctness_at_large_n() {
+        // L2 norm via `pairwise_sum_map_f64(data, |x| x*x).sqrt()`
+        // must match the analytical truth to a tighter bound than the
+        // naive `iter().map(|x| x*x).sum().sqrt()` could provide.
+        //
+        // Input: 1M copies of 0.1. Sum of squares = 1M · 0.01 = 1e4.
+        // L2 = sqrt(1e4) = 100.0 exactly.
+        //
+        // Both pairwise and naive land near 100.0 on this trivial
+        // pattern; the precision win is most visible at adversarial
+        // input distributions, but here we just lock the absolute
+        // bound the pairwise path achieves on a 1M-element norm so
+        // any future regression that switches the helper back to
+        // naive accumulation would surface as the test loosening
+        // toward a worse bound.
+        let n = 1usize << 20; // 1048576 elements
+        let value = 0.1_f64;
+        let input = vec![value; n];
+        let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+
+        let l1 =
+            norm_tensor_contiguous_f64(&input, &meta, 1.0).expect("l1 norm should succeed");
+        let l2 =
+            norm_tensor_contiguous_f64(&input, &meta, 2.0).expect("l2 norm should succeed");
+        let l3 =
+            norm_tensor_contiguous_f64(&input, &meta, 3.0).expect("l3 norm should succeed");
+
+        // L1 = sum(|x|) = N · 0.1 = 104857.6 exactly.
+        let l1_truth = (n as f64) * value;
+        assert!(
+            (l1 - l1_truth).abs() < 1e-8,
+            "l1 drift {:e} > 1e-8 tolerance (got {l1}, expected {l1_truth})",
+            (l1 - l1_truth).abs()
+        );
+        // L2 = sqrt(sum(x²)) = sqrt(N · 0.01) = sqrt(10485.76) ≈ 102.4.
+        // Use the analytical double here.
+        let l2_truth = ((n as f64) * value * value).sqrt();
+        assert!(
+            (l2 - l2_truth).abs() < 1e-10,
+            "l2 drift {:e} > 1e-10 tolerance (got {l2}, expected {l2_truth})",
+            (l2 - l2_truth).abs()
+        );
+        // L3 = (sum(|x|³))^(1/3) = (N · 0.001)^(1/3).
+        let l3_truth = ((n as f64) * value * value * value).powf(1.0 / 3.0);
+        assert!(
+            (l3 - l3_truth).abs() < 1e-10,
+            "l3 drift {:e} > 1e-10 tolerance (got {l3}, expected {l3_truth})",
+            (l3 - l3_truth).abs()
+        );
     }
 
     #[test]
