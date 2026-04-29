@@ -16,6 +16,26 @@ pub const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub const RAPTORQ_SIDECAR_SCHEMA_VERSION: u32 = 1;
 const MAX_CHECKPOINT_PAYLOAD_BYTES: usize = 1_048_576;
 
+/// Cap on the user-supplied `repair_symbols` input to
+/// `generate_raptorq_sidecar`. asupersync's `emit_repair`
+/// preallocates `Vec::with_capacity(count)` and uses
+/// `u32::try_from(i).expect(...)` inside its loop, so an unbounded
+/// `usize` (e.g. via `--repair-symbols 4294967296` on the CLI) can
+/// trigger an OOM allocation or a `repair count exceeds u32` panic.
+/// 1024 is well above realistic usage (the CLI default is 4 and
+/// existing fallback budgets only reach 128).
+pub const MAX_RAPTORQ_REPAIR_SYMBOLS: usize = 1024;
+
+/// Hard cap on the *computed* repair count actually passed to
+/// asupersync. The user-supplied value may be combined with the
+/// k_prime padding (`min_repair_symbols`) and an 8-symbol headroom
+/// before reaching the encoder; the hard cap catches pathological
+/// payloads where `min_repair_symbols` alone is enormous (the RFC
+/// 6330 maximum k_prime is 56403). 65 536 is comfortably below any
+/// memory or u32 boundary while still leaving room for realistic
+/// padding.
+const RAPTORQ_REPAIR_COUNT_HARD_CAP: usize = 65_536;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SnapshotEntry {
@@ -156,6 +176,21 @@ pub fn generate_raptorq_sidecar(
     payload: &str,
     repair_symbols: usize,
 ) -> Result<(RaptorQSidecar, DecodeProofArtifact), SerializeError> {
+    // Reject excessive `repair_symbols` up-front. asupersync's
+    // emit_repair preallocates a Vec::with_capacity(count) and uses
+    // u32::try_from(i).expect(...) inside its loop, so values above
+    // u32::MAX panic and values just below cause unbounded
+    // allocation. Cap at MAX_RAPTORQ_REPAIR_SYMBOLS — well above
+    // realistic usage (CLI default is 4, existing fallback budgets
+    // reach 128) and far below any failure boundary.
+    if repair_symbols > MAX_RAPTORQ_REPAIR_SYMBOLS {
+        return Err(SerializeError::IncompatiblePayload {
+            reason: format!(
+                "repair_symbols={repair_symbols} exceeds max of {MAX_RAPTORQ_REPAIR_SYMBOLS}"
+            ),
+        });
+    }
+
     let payload_bytes = payload.as_bytes();
     let symbol_size = recommended_symbol_size(payload_bytes.len());
     let source_symbols = split_source_symbols(payload_bytes, symbol_size);
@@ -171,6 +206,19 @@ pub fn generate_raptorq_sidecar(
         .max(1)
         .max(min_repair_symbols)
         .saturating_add(8);
+    if repair_count > RAPTORQ_REPAIR_COUNT_HARD_CAP {
+        // Even a small user-supplied repair_symbols can compute to a
+        // huge repair_count if min_repair_symbols (k_prime padding)
+        // is large enough on its own. Refuse loudly rather than
+        // silently capping below the count the encoder needs.
+        return Err(SerializeError::IncompatiblePayload {
+            reason: format!(
+                "computed repair_count={repair_count} exceeds hard cap of {RAPTORQ_REPAIR_COUNT_HARD_CAP} \
+                 (min_repair_symbols={min_repair_symbols} from k_prime={} - source_symbol_count={source_symbol_count})",
+                params.k_prime
+            ),
+        });
+    }
 
     let mut encoder =
         SystematicEncoder::new(&source_symbols, symbol_size, seed).ok_or_else(|| {
@@ -1756,6 +1804,65 @@ mod tests {
             .expect_err("oversized payload must fail");
         assert!(matches!(err, SerializeError::IncompatiblePayload { .. }));
         assert!(err.to_string().contains("exceeds max bytes"));
+    }
+
+    #[test]
+    fn raptorq_sidecar_rejects_repair_symbols_above_max() {
+        // Closes bead frankentorch-6q4m: passing usize::MAX or any
+        // value above MAX_RAPTORQ_REPAIR_SYMBOLS used to flow into
+        // asupersync's emit_repair which preallocates
+        // Vec::with_capacity(count) (potential OOM) and uses
+        // u32::try_from(i).expect(...) inside the loop (panic for
+        // i > u32::MAX). Now generate_raptorq_sidecar fails closed
+        // with IncompatiblePayload before any allocation happens.
+        let entries = vec![SnapshotEntry {
+            node_id: 0,
+            value: 1.0,
+            grad: None,
+        }];
+        let payload =
+            encode_checkpoint(&entries, CheckpointMode::Strict).expect("strict encode");
+
+        // Just above the bound.
+        let err = super::generate_raptorq_sidecar(&payload, super::MAX_RAPTORQ_REPAIR_SYMBOLS + 1)
+            .expect_err("repair_symbols just above max must be rejected");
+        assert!(
+            matches!(err, super::SerializeError::IncompatiblePayload { .. }),
+            "expected IncompatiblePayload, got {err:?}"
+        );
+
+        // u32::MAX + 1 (the symbolic asupersync u32::try_from boundary).
+        let u32_overflow: usize = (u32::MAX as usize).saturating_add(1);
+        if u32_overflow > super::MAX_RAPTORQ_REPAIR_SYMBOLS {
+            let err = super::generate_raptorq_sidecar(&payload, u32_overflow)
+                .expect_err("u32::MAX + 1 must be rejected");
+            assert!(matches!(
+                err,
+                super::SerializeError::IncompatiblePayload { .. }
+            ));
+        }
+
+        // usize::MAX — the worst-case OOM trigger.
+        let err = super::generate_raptorq_sidecar(&payload, usize::MAX)
+            .expect_err("usize::MAX must be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains(&format!("{}", super::MAX_RAPTORQ_REPAIR_SYMBOLS)),
+            "rejection message should mention the cap, got {msg}"
+        );
+
+        // Boundary: exactly MAX is accepted (sanity that we didn't
+        // tighten beyond what existing callers can use).
+        let _result = super::generate_raptorq_sidecar(&payload, super::MAX_RAPTORQ_REPAIR_SYMBOLS);
+        // We don't assert success because the encoder might still
+        // refuse for unrelated reasons on tiny payloads, but it
+        // must not be an IncompatiblePayload(over-cap) error.
+        if let Err(super::SerializeError::IncompatiblePayload { reason }) = &_result {
+            assert!(
+                !reason.contains("exceeds max"),
+                "MAX value should not be rejected by the cap itself, got: {reason}"
+            );
+        }
     }
 
     #[test]

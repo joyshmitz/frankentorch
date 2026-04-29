@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ft_serialize::generate_raptorq_sidecar;
+use ft_serialize::{generate_raptorq_sidecar, MAX_RAPTORQ_REPAIR_SYMBOLS};
 use serde::Serialize;
 use serde_json::json;
 
@@ -601,6 +601,16 @@ fn parse_args() -> Result<Args, String> {
                 })?;
                 if repair_symbols == 0 {
                     return Err("--repair-symbols must be > 0".to_string());
+                }
+                // Reject values that would later panic / OOM inside
+                // the encoder. This mirrors generate_raptorq_sidecar's
+                // own check but catches it at the CLI layer with a
+                // more user-facing diagnostic (closes
+                // frankentorch-6q4m).
+                if repair_symbols > MAX_RAPTORQ_REPAIR_SYMBOLS {
+                    return Err(format!(
+                        "--repair-symbols={repair_symbols} exceeds max of {MAX_RAPTORQ_REPAIR_SYMBOLS}"
+                    ));
                 }
             }
             other => {
