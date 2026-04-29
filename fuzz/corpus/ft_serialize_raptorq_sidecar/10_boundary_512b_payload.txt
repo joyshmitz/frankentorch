@@ -1,0 +1,1 @@
+FrankenTorch RaptorQ sidecar boundary seed: deterministic payload recovery must keep exact byte length after padded source symbols. This seed is intentionally longer than the tiny JSON fixtures so the fuzzer enters the 65..512 recommended-symbol-size branch and exercises multiple systematic source symbols plus repair equations under the same deterministic seed.

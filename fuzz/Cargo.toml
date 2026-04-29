@@ -48,4 +48,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_serialize_raptorq_sidecar"
+path = "fuzz_targets/ft_serialize_raptorq_sidecar.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
