@@ -2992,8 +2992,8 @@ mod tests {
         }
 
         assert!(
-            seeds_seen >= 12,
-            "expected at least 12 corpus seeds, walked {seeds_seen} in {}",
+            seeds_seen >= 21,
+            "expected at least 21 corpus seeds, walked {seeds_seen} in {}",
             corpus_dir.display()
         );
     }
