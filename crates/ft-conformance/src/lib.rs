@@ -16801,18 +16801,17 @@ print(json.dumps({"polygamma": out}))
             (1.0, 0.0),
             (5.0, 0.0),
             (-1.0, 0.0),
-            // The masked branch: x == 0 should yield 0 regardless of y,
-            // even when y == -1 (log1p(-1) = -inf) or y < -1 (NaN).
-            // NB scipy's mask is (x == 0 && !isnan(y)) so NaN
-            // propagates when y is NaN; FrankenTorch's mask is just
-            // (x == 0), which swallows NaN from y. Tracked under
-            // frankentorch-duf7; (0.0, NaN) is intentionally omitted
-            // from this harness until the mask is tightened.
+            // The masked branch: x == 0 should yield 0 when y is
+            // not NaN (even when y == -1 / log1p(-1) = -inf or y < -1
+            // where log1p is NaN of its own). When y itself is NaN,
+            // scipy and FrankenTorch (post-bd-duf7 fix) both
+            // propagate NaN.
             (0.0, 1.0),
             (0.0, -0.5),
             (0.0, -1.0),
             (0.0, -2.0),
             (0.0, f64::INFINITY),
+            (0.0, f64::NAN),
             // x ≠ 0 / y == -1: scipy returns -inf for x > 0, +inf for
             // x < 0 (sign of x times -inf). Test both.
             (1.0, -1.0),

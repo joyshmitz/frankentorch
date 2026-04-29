@@ -13366,7 +13366,18 @@ impl FrankenTorchSession {
         let log1p_y = self.tensor_log1p(y)?;
         let prod = self.tensor_mul(x, log1p_y)?;
         let zeros = self.full(x_shape.clone(), 0.0, false)?;
-        let mask = self.tensor_eq(x, zeros)?;
+        let mask_x_zero = self.tensor_eq(x, zeros)?;
+        // scipy.special.xlog1py propagates NaN from y when x == 0 —
+        // its mask is (x == 0 && !isnan(y)). Tighten the where mask
+        // accordingly so a NaN y survives the masked branch as a
+        // genuine NaN output, matching scipy bit-exactly. Tracked
+        // under frankentorch-duf7. The previous mask was just
+        // (x == 0), which short-circuited even at y=NaN and yielded
+        // a spurious 0.
+        let isnan_y = self.tensor_isnan(y)?;
+        let ones = self.full(x_shape.clone(), 1.0, false)?;
+        let not_isnan_y = self.tensor_sub(ones, isnan_y)?;
+        let mask = self.tensor_mul(mask_x_zero, not_isnan_y)?;
         let zero_branch = self.full(x_shape, 0.0, false)?;
         let out = self.tensor_where(mask, zero_branch, prod)?;
         self.runtime.ledger_mut().record(
@@ -30223,6 +30234,39 @@ mod tests {
             "2 * log1p(1) = 2*ln(2)"
         );
         assert!((vals[2]).abs() < 1e-12, "1 * log1p(0) = 0");
+    }
+
+    #[test]
+    fn xlog1py_propagates_nan_from_y_when_x_is_zero() {
+        // Regression test for frankentorch-duf7. scipy.special.xlog1py
+        // and torch.special.xlog1py both propagate NaN from y when
+        // x == 0 (their mask is x == 0 && !isnan(y)). Previously
+        // tensor_xlog1py's mask was just (x == 0) so it returned 0
+        // for (0, NaN), diverging from scipy. The fix tightens the
+        // mask to also exclude NaN y, so NaN survives the masked
+        // branch as a genuine NaN output.
+        //
+        // Other masked-branch behaviors are preserved:
+        //   (0, -1)         → 0  (the y == -1 pole convention)
+        //   (0, finite)     → 0
+        //   (0, +inf)       → 0
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 0.0, 0.0, 0.0], vec![4], false)
+            .unwrap();
+        let y = s
+            .tensor_variable(
+                vec![f64::NAN, -1.0, 1.0, f64::INFINITY],
+                vec![4],
+                false,
+            )
+            .unwrap();
+        let out = s.tensor_xlog1py(x, y).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!(vals[0].is_nan(), "(0, NaN) must yield NaN, got {}", vals[0]);
+        assert_eq!(vals[1], 0.0, "(0, -1) must yield 0, got {}", vals[1]);
+        assert_eq!(vals[2], 0.0, "(0, 1) must yield 0, got {}", vals[2]);
+        assert_eq!(vals[3], 0.0, "(0, +inf) must yield 0, got {}", vals[3]);
     }
 
     #[test]
