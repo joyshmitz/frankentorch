@@ -2766,6 +2766,27 @@ impl FrankenTorchSession {
         }
         let total = Self::checked_shape_numel(&out_shape, "kron: output shape volume overflow")?;
 
+        if self.tensor_tape.tensor_requires_grad(a)? || self.tensor_tape.tensor_requires_grad(b)? {
+            let mut a_kron_shape = Vec::with_capacity(rank * 2);
+            let mut b_kron_shape = Vec::with_capacity(rank * 2);
+            let mut interleaved_shape = Vec::with_capacity(rank * 2);
+            for (&a_dim, &b_dim) in a_aligned.iter().zip(&b_aligned) {
+                a_kron_shape.push(a_dim);
+                a_kron_shape.push(1);
+                b_kron_shape.push(1);
+                b_kron_shape.push(b_dim);
+                interleaved_shape.push(a_dim);
+                interleaved_shape.push(b_dim);
+            }
+
+            let a_view = self.tensor_reshape(a, a_kron_shape)?;
+            let b_view = self.tensor_reshape(b, b_kron_shape)?;
+            let a_expanded = self.tensor_expand(a_view, interleaved_shape.clone())?;
+            let b_expanded = self.tensor_expand(b_view, interleaved_shape)?;
+            let product = self.tensor_mul(a_expanded, b_expanded)?;
+            return self.tensor_reshape(product, out_shape);
+        }
+
         let a_vals = self.tensor_values(a)?;
         let b_vals = self.tensor_values(b)?;
         if total == 0 {
@@ -2805,11 +2826,8 @@ impl FrankenTorchSession {
                         b_aligned[dim],
                         "kron: output coordinate overflow",
                     )?;
-                    let out_coord = Self::checked_add(
-                        scaled_a,
-                        b_coord,
-                        "kron: output coordinate overflow",
-                    )?;
+                    let out_coord =
+                        Self::checked_add(scaled_a, b_coord, "kron: output coordinate overflow")?;
                     out_linear = Self::checked_add(
                         Self::checked_mul(
                             out_linear,
@@ -10445,13 +10463,11 @@ impl FrankenTorchSession {
                     // PyTorch errors on rank-0 input ("diff expects input
                     // to be at least one-dimensional"). Match that.
                     if shape.is_empty() {
-                        return Err(AutogradError::Dispatch(
-                            ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "diff: input must have at least one dimension",
-                                },
-                            ),
-                        ));
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "diff: input must have at least one dimension",
+                            },
+                        )));
                     }
                     let last_dim = *shape.last().expect("shape non-empty checked above");
                     if last_dim < 2 {
@@ -10495,13 +10511,11 @@ impl FrankenTorchSession {
                     let vals = self.tensor_values_f32(current)?;
                     let shape = self.tensor_shape(current)?;
                     if shape.is_empty() {
-                        return Err(AutogradError::Dispatch(
-                            ft_dispatch::DispatchError::Key(
-                                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                    reason: "diff: input must have at least one dimension",
-                                },
-                            ),
-                        ));
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "diff: input must have at least one dimension",
+                            },
+                        )));
                     }
                     let last_dim = *shape.last().expect("shape non-empty checked above");
                     if last_dim < 2 {
@@ -24870,9 +24884,7 @@ mod tests {
     #[test]
     fn diff_rejects_rank_zero_input_f32() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let t = s
-            .tensor_variable_f32(vec![5.0f32], vec![], false)
-            .unwrap();
+        let t = s.tensor_variable_f32(vec![5.0f32], vec![], false).unwrap();
         assert!(s.tensor_diff(t, 1).is_err());
     }
 
@@ -28041,8 +28053,12 @@ mod tests {
         let b_numel: usize = b_shape.iter().product();
         let a_data: Vec<f64> = (0..a_numel).map(|i| (i as f64) + 1.0).collect();
         let b_data: Vec<f64> = (0..b_numel).map(|i| (i as f64) + 10.0).collect();
-        let a = s.tensor_variable(a_data.clone(), a_shape.clone(), false).unwrap();
-        let b = s.tensor_variable(b_data.clone(), b_shape.clone(), false).unwrap();
+        let a = s
+            .tensor_variable(a_data.clone(), a_shape.clone(), false)
+            .unwrap();
+        let b = s
+            .tensor_variable(b_data.clone(), b_shape.clone(), false)
+            .unwrap();
 
         let k = s.tensor_kron(a, b).unwrap();
         let vals = s.tensor_values(k).unwrap();
@@ -28076,6 +28092,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn kron_2d_preserves_autograd_gradients() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0], vec![1, 2], true).unwrap();
+        let b = s
+            .tensor_variable(vec![3.0, 4.0, 5.0, 6.0], vec![2, 2], true)
+            .unwrap();
+
+        let k = s.tensor_kron(a, b).unwrap();
+        assert!(s.tensor_requires_grad(k).unwrap());
+        assert_eq!(s.tensor_shape(k).unwrap(), vec![2, 4]);
+        assert_eq!(
+            s.tensor_values(k).unwrap(),
+            vec![3.0, 4.0, 6.0, 8.0, 5.0, 6.0, 10.0, 12.0]
+        );
+
+        let loss = s.tensor_sum(k).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+
+        assert_eq!(
+            s.tensor_gradient(&report, a).expect("a grad"),
+            &[18.0, 18.0]
+        );
+        assert_eq!(
+            s.tensor_gradient(&report, b).expect("b grad"),
+            &[3.0, 3.0, 3.0, 3.0]
+        );
     }
 
     // ── Cholesky tests (bd-2drq.5) ────────────────────────────────────
@@ -29655,7 +29700,10 @@ mod tests {
         let shape = s.tensor_shape(nz).unwrap();
         assert_eq!(shape, vec![1, 0]);
         let vals = s.tensor_values(nz).unwrap();
-        assert!(vals.is_empty(), "scalar nonzero indices have ndim=0 columns");
+        assert!(
+            vals.is_empty(),
+            "scalar nonzero indices have ndim=0 columns"
+        );
     }
 
     #[test]
