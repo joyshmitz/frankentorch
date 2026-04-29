@@ -3651,13 +3651,11 @@ impl Module for Threshold {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = session.tensor_shape(input)?;
-        let input_vals = session.tensor_values(input)?;
-        let output: Vec<f64> = input_vals
-            .iter()
-            .map(|&x| if x > self.threshold { x } else { self.value })
-            .collect();
-        session.tensor_variable(output, input_shape, false)
+        let shape = session.tensor_shape(input)?;
+        let threshold = session.full(shape.clone(), self.threshold, false)?;
+        let mask = session.tensor_gt(input, threshold)?;
+        let replacement = session.full(shape, self.value, false)?;
+        session.tensor_where(mask, input, replacement)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -3741,13 +3739,7 @@ impl Module for Hardtanh {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = session.tensor_values(input)?;
-        let shape = session.tensor_shape(input)?;
-        let out: Vec<f64> = vals
-            .iter()
-            .map(|&x| x.clamp(self.min_val, self.max_val))
-            .collect();
-        session.tensor_variable(out, shape, false)
+        session.tensor_clamp(input, self.min_val, self.max_val)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -19290,6 +19282,23 @@ mod tests {
     }
 
     #[test]
+    fn hardtanh_propagates_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ht = Hardtanh::default();
+        let input = session
+            .tensor_variable(vec![-5.0, -1.0, 0.5, 1.0, 5.0], vec![5], true)
+            .unwrap();
+        let out = ht.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(out).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient must be tracked through Hardtanh");
+
+        assert_eq!(grad, vec![0.0, 1.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
     fn softshrink_shrinks() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ss = Softshrink::default(); // lambda=0.5
@@ -21816,6 +21825,23 @@ mod tests {
         let output = threshold.forward(&mut session, input).unwrap();
         let vals = session.tensor_values(output).unwrap();
         assert_eq!(vals, vec![0.0, 0.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn threshold_propagates_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let threshold = Threshold::new(0.5, -1.0);
+        let input = session
+            .tensor_variable(vec![-1.0, 0.5, 0.6, 2.0], vec![4], true)
+            .unwrap();
+        let output = threshold.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient must be tracked through Threshold");
+
+        assert_eq!(grad, vec![0.0, 0.0, 1.0, 1.0]);
     }
 
     #[test]
