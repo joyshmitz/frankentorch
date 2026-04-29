@@ -14871,6 +14871,380 @@ print(json.dumps(out))
     }
 
     #[test]
+    fn torch_hyperbolic_libm_subprocess_conformance() {
+        // Lock the f64 hyperbolic surface (sinh / cosh / tanh) vs
+        // platform libm.
+        //
+        // Rust's `f64::sinh / cosh / tanh` FFI directly to the platform
+        // libm via libstd (glibc on Linux runners), and PyTorch's
+        // `torch.sinh / cosh / tanh` wrap the SAME libm in their CPU
+        // kernels. So this oracle should match bit-for-bit on the
+        // entire f64 domain. Any future replacement of the Rust f64
+        // method with a hand-rolled approximation (the same class of
+        // regression we hit on erf and lgamma) would surface here
+        // immediately.
+        //
+        // Sister harness to torch_trig_libm_subprocess_conformance,
+        // which covers the *circular* trig family (sin/cos/tan/asin/
+        // acos/atan); the trig harness explicitly excluded the
+        // hyperbolic siblings, leaving sinh/cosh/tanh without a
+        // libm parity contract until this test landed.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!(
+                "torch_hyperbolic_libm_subprocess_conformance: python3 not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // sinh / cosh / tanh are defined on the entire real line. The
+        // saturation behaviour differs:
+        //
+        //   * sinh(x) overflows to +inf around x ≈ 710  (≈ ln(MAX_F64))
+        //   * cosh(x) overflows to +inf around x ≈ 710 (same magnitude)
+        //   * tanh(x) saturates to ±1 around |x| ≈ 19  (since
+        //     1 - tanh(x) ≈ 2*exp(-2x) goes below 1 ULP of 1.0 there)
+        //
+        // We cover the smooth interior, both saturation tails, the
+        // small-x range where the Taylor series matters most for
+        // sinh (sinh(x) ≈ x for tiny x; naive (e^x - e^-x)/2 cancels),
+        // and the inf / nan propagation path. We split the input set
+        // by op rather than re-using a single vector because the
+        // overflow boundaries differ for sinh/cosh vs tanh.
+        let sinh_cosh_inputs: Vec<f64> = vec![
+            // Trivial / signs.
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            // Small-x regime where sinh suffers cancellation in the
+            // (e^x - e^-x)/2 formulation; libm uses the Taylor series
+            // here.
+            1e-3,
+            -1e-3,
+            1e-7,
+            -1e-7,
+            1e-15,
+            -1e-15,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            // Mid-range smooth interior.
+            0.1,
+            -0.1,
+            0.5,
+            -0.5,
+            2.0,
+            -2.0,
+            5.0,
+            -5.0,
+            10.0,
+            -10.0,
+            // Approaching the overflow boundary: sinh / cosh both
+            // diverge near |x| = ln(MAX_F64) ≈ 709.78. Pick the exact
+            // boundary plus inputs just inside / just outside.
+            500.0,
+            700.0,
+            709.78,
+            709.79,
+            710.0,
+            711.0,
+            // Negative tail of the same boundary (sinh is odd, cosh
+            // is even, both saturate symmetrically in magnitude).
+            -500.0,
+            -700.0,
+            -709.78,
+            -710.0,
+            -711.0,
+            // Generic interior + transcendental constants.
+            std::f64::consts::E,
+            -std::f64::consts::E,
+            std::f64::consts::PI,
+            -std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        // tanh saturates much earlier (|x| > ~19 already returns
+        // exactly ±1.0 in libm), so the boundary-of-interest inputs
+        // are different — we sweep |x| up to several hundred to verify
+        // both implementations agree on which exact x flips to the
+        // ±1.0 plateau.
+        let tanh_inputs: Vec<f64> = vec![
+            // Trivial / signs.
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            // Small-x regime: tanh(x) ≈ x for tiny x (Taylor series).
+            1e-3,
+            -1e-3,
+            1e-7,
+            -1e-7,
+            1e-15,
+            -1e-15,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            // Smooth interior.
+            0.1,
+            -0.1,
+            0.5,
+            -0.5,
+            2.0,
+            -2.0,
+            5.0,
+            -5.0,
+            // Saturation boundary: tanh hits exactly ±1.0 around
+            // |x| ≈ 19.06 (where 1 - tanh(x) ≈ 2*exp(-2x) drops below
+            // 0.5 ULP of 1.0).
+            10.0,
+            -10.0,
+            15.0,
+            -15.0,
+            18.0,
+            -18.0,
+            19.0,
+            -19.0,
+            19.06,
+            -19.06,
+            20.0,
+            -20.0,
+            // Beyond saturation — must be exactly ±1.0 from both
+            // sides bit-for-bit.
+            100.0,
+            -100.0,
+            1000.0,
+            -1000.0,
+            // Generic interior + transcendental constants.
+            std::f64::consts::E,
+            -std::f64::consts::E,
+            std::f64::consts::PI,
+            -std::f64::consts::PI,
+            std::f64::consts::LN_2,
+            std::f64::consts::SQRT_2,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        let total_count = 2 * sinh_cosh_inputs.len() + tanh_inputs.len();
+        assert!(
+            total_count >= 50,
+            "hyperbolic conformance must have >= 50 total comparisons, got {total_count}",
+        );
+
+        let sinh_cosh_bits: Vec<String> = sinh_cosh_inputs
+            .iter()
+            .map(|v| v.to_bits().to_string())
+            .collect();
+        let tanh_bits: Vec<String> = tanh_inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({
+            "sinh_cosh": sinh_cosh_bits,
+            "tanh": tanh_bits,
+        });
+
+        // Python oracle: ctypes-load libm and call sinh / cosh / tanh
+        // directly. math.{sinh,cosh,tanh} also wrap libm but going
+        // through ctypes is consistent with the trig sibling harness.
+        let script = r#"
+import ctypes, ctypes.util, json, struct, sys
+
+libm_name = ctypes.util.find_library("m") or "libm.so.6"
+libm = ctypes.CDLL(libm_name)
+for name in ["sinh", "cosh", "tanh"]:
+    fn = getattr(libm, name)
+    fn.restype = ctypes.c_double
+    fn.argtypes = [ctypes.c_double]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", v))[0])
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+req = json.loads(sys.stdin.read())
+out = {"sinh": [], "cosh": [], "tanh": []}
+for x_bits_s in req["sinh_cosh"]:
+    x = from_bits(x_bits_s)
+    out["sinh"].append(to_bits(libm.sinh(x)))
+    out["cosh"].append(to_bits(libm.cosh(x)))
+for x_bits_s in req["tanh"]:
+    x = from_bits(x_bits_s)
+    out["tanh"].append(to_bits(libm.tanh(x)))
+print(json.dumps(out))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_hyperbolic_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let get_array = |key: &str| -> Vec<u64> {
+            response
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .unwrap_or_else(|| panic!("oracle response must include `{key}` array"))
+                .iter()
+                .map(|v| v.as_str().unwrap().parse::<u64>().unwrap())
+                .collect()
+        };
+        let sinh_oracle = get_array("sinh");
+        let cosh_oracle = get_array("cosh");
+        let tanh_oracle = get_array("tanh");
+        assert_eq!(sinh_oracle.len(), sinh_cosh_inputs.len());
+        assert_eq!(cosh_oracle.len(), sinh_cosh_inputs.len());
+        assert_eq!(tanh_oracle.len(), tanh_inputs.len());
+
+        // Both sides hit glibc through equivalent FFI paths (Rust f64
+        // -> std libc shim; Python ctypes -> dlopen'd libm), so we
+        // require bit-exact agreement. NaN payloads are normalised
+        // through bit-identity already by the f64::to_bits round trip.
+        let bit_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            a.to_bits() == b.to_bits()
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in sinh_cosh_inputs.iter().enumerate() {
+            let sinh_want = f64::from_bits(sinh_oracle[i]);
+            let cosh_want = f64::from_bits(cosh_oracle[i]);
+
+            let x_var = session.variable(*x, false);
+            let ft_sinh = session.sinh(x_var).expect("sinh");
+            let ft_cosh = session.cosh(x_var).expect("cosh");
+            let sinh_got = session.value(ft_sinh).expect("sinh value");
+            let cosh_got = session.value(ft_cosh).expect("cosh value");
+
+            if !bit_eq(sinh_got, sinh_want) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::sinh({x:?}) = {sinh_got:?} (bits 0x{:016x}) but libm returned {sinh_want:?} (bits 0x{:016x})",
+                    sinh_got.to_bits(),
+                    sinh_want.to_bits()
+                ));
+            }
+            if !bit_eq(cosh_got, cosh_want) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::cosh({x:?}) = {cosh_got:?} (bits 0x{:016x}) but libm returned {cosh_want:?} (bits 0x{:016x})",
+                    cosh_got.to_bits(),
+                    cosh_want.to_bits()
+                ));
+            }
+        }
+
+        for (i, x) in tanh_inputs.iter().enumerate() {
+            let tanh_want = f64::from_bits(tanh_oracle[i]);
+
+            let x_var = session.variable(*x, false);
+            let ft_tanh = session.tanh(x_var).expect("tanh");
+            let tanh_got = session.value(ft_tanh).expect("tanh value");
+
+            if !bit_eq(tanh_got, tanh_want) {
+                mismatches.push(format!(
+                    "FrankenTorchSession::tanh({x:?}) = {tanh_got:?} (bits 0x{:016x}) but libm returned {tanh_want:?} (bits 0x{:016x})",
+                    tanh_got.to_bits(),
+                    tanh_want.to_bits()
+                ));
+            }
+        }
+
+        // Tensor batch path on the finite subsets — exercises the
+        // contiguous unary kernel rather than the per-scalar dispatch.
+        let sinh_cosh_finite: Vec<(usize, f64)> = sinh_cosh_inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_finite())
+            .map(|(i, x)| (i, *x))
+            .collect();
+        let xs: Vec<f64> = sinh_cosh_finite.iter().map(|(_, x)| *x).collect();
+        let n = xs.len();
+        let xt = session
+            .tensor_variable(xs, vec![n], false)
+            .expect("xt sinh_cosh");
+        let st = session.tensor_sinh(xt).expect("tensor_sinh");
+        let ct = session.tensor_cosh(xt).expect("tensor_cosh");
+        let sv = session.tensor_values(st).expect("sinh vals");
+        let cv = session.tensor_values(ct).expect("cosh vals");
+        for (k, (i, x)) in sinh_cosh_finite.iter().enumerate() {
+            let sinh_want = f64::from_bits(sinh_oracle[*i]);
+            let cosh_want = f64::from_bits(cosh_oracle[*i]);
+            if !bit_eq(sv[k], sinh_want) {
+                mismatches.push(format!(
+                    "tensor_sinh({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {sinh_want:?}",
+                    sv[k],
+                    sv[k].to_bits()
+                ));
+            }
+            if !bit_eq(cv[k], cosh_want) {
+                mismatches.push(format!(
+                    "tensor_cosh({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {cosh_want:?}",
+                    cv[k],
+                    cv[k].to_bits()
+                ));
+            }
+        }
+
+        let tanh_finite: Vec<(usize, f64)> = tanh_inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_finite())
+            .map(|(i, x)| (i, *x))
+            .collect();
+        let xs: Vec<f64> = tanh_finite.iter().map(|(_, x)| *x).collect();
+        let n = xs.len();
+        let xt = session
+            .tensor_variable(xs, vec![n], false)
+            .expect("xt tanh");
+        let tt = session.tensor_tanh(xt).expect("tensor_tanh");
+        let tv = session.tensor_values(tt).expect("tanh vals");
+        for (k, (i, x)) in tanh_finite.iter().enumerate() {
+            let tanh_want = f64::from_bits(tanh_oracle[*i]);
+            if !bit_eq(tv[k], tanh_want) {
+                mismatches.push(format!(
+                    "tensor_tanh({x:?})[{k}] = {:?} (bits 0x{:016x}) but oracle {tanh_want:?}",
+                    tv[k],
+                    tv[k].to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "hyperbolic libm conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
