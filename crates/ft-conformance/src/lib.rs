@@ -18039,6 +18039,220 @@ print(json.dumps({"inv": out}))
     }
 
     #[test]
+    fn torch_linalg_solve_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_linalg_solve(A, B) against
+        // numpy.linalg.solve(A, B). Both compute X such that A X = B
+        // via LU factorization with partial pivoting; agreement is
+        // bounded by cond(A) * eps. Files closure for the solve slice
+        // of frankentorch-c36b.
+        //
+        // Sister harness to torch_linalg_inv_numpy_subprocess_conformance —
+        // same numpy oracle. Solve is the preferred operator over
+        // inv-then-multiply (better numerical stability), so the
+        // independent harness ensures the lu_solve path is locked
+        // separately from the lu_inv path.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_linalg_solve_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Each case: (label, A_flat_row_major, B_flat_row_major, n,
+        // nrhs). A is n×n, B is n×nrhs, output X is n×nrhs.
+        type SolveCase = (&'static str, Vec<f64>, Vec<f64>, usize, usize);
+        let cases: Vec<SolveCase> = vec![
+            ("identity_3x3_single_rhs",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                vec![5.0, -3.0, 7.0],
+                3, 1),
+            ("identity_3x3_multi_rhs",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0],
+                3, 2),
+            ("diagonal_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    m[0] = 2.0; m[5] = 4.0; m[10] = 5.0; m[15] = 8.0;
+                    m
+                },
+                vec![10.0, 20.0, 30.0, 40.0],
+                4, 1),
+            ("general_2x2",
+                vec![4.0, 7.0, 2.0, 6.0],
+                vec![15.0, 20.0],
+                2, 1),
+            ("general_3x3",
+                vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
+                vec![1.0, 2.0, 3.0],
+                3, 1),
+            ("spd_4x4_multi_rhs", vec![
+                4.0, 1.0, 0.0, 0.0,
+                1.0, 4.0, 1.0, 0.0,
+                0.0, 1.0, 4.0, 1.0,
+                0.0, 0.0, 1.0, 4.0,
+            ],
+                vec![1.0, 0.0,
+                     0.0, 1.0,
+                     0.0, 0.0,
+                     0.0, 0.0],
+                4, 2),
+            ("upper_triangular_3x3",
+                vec![
+                    2.0, 1.0, 1.0,
+                    0.0, 3.0, 1.0,
+                    0.0, 0.0, 5.0,
+                ],
+                vec![6.0, 7.0, 10.0],
+                3, 1),
+            ("scalar_1x1", vec![5.0], vec![15.0], 1, 1),
+            ("neg_det_2x2",
+                vec![1.0, 2.0, 3.0, 1.0],
+                vec![3.0, 4.0],
+                2, 1),
+            // Multiple RHS with mixed-sign 5x5.
+            ("mixed_5x5_multi_rhs", vec![
+                1.0, 0.0, -1.0, 0.0, 0.0,
+                0.0, 2.0, 0.0, -1.0, 0.0,
+                0.0, 0.0, 3.0, 0.0, -1.0,
+                -1.0, 0.0, 0.0, 4.0, 0.0,
+                0.0, -1.0, 0.0, 0.0, 5.0,
+            ],
+                vec![1.0, 6.0,
+                     2.0, 7.0,
+                     3.0, 8.0,
+                     4.0, 9.0,
+                     5.0, 10.0],
+                5, 2),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(label, a, b, n, nrhs)| {
+                json!({
+                    "label": *label,
+                    "n": *n as u64,
+                    "nrhs": *nrhs as u64,
+                    "a_bits": a.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                    "b_bits": b.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    n = int(case["n"])
+    nrhs = int(case["nrhs"])
+    a = [from_bits(s) for s in case["a_bits"]]
+    b = [from_bits(s) for s in case["b_bits"]]
+    A = np.array(a, dtype=np.float64).reshape(n, n)
+    if nrhs == 1:
+        B = np.array(b, dtype=np.float64)
+    else:
+        B = np.array(b, dtype=np.float64).reshape(n, nrhs)
+    X = np.linalg.solve(A, B)
+    out.append({
+        "label": case["label"],
+        "values_bits": [to_bits(v) for v in X.flatten().tolist()],
+    })
+print(json.dumps({"solve": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_linalg_solve_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("solve")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include solve array");
+        assert_eq!(results.len(), cases.len());
+
+        // Per-element relative tolerance — same envelope as inv since
+        // both are LU-factor based.
+        const REL_TOL: f64 = 1e-9;
+        let elem_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            let scale = a.abs().max(b.abs()).max(1.0);
+            (a - b).abs() <= REL_TOL * scale
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (label, a_vals, b_vals, n, nrhs)) in cases.iter().enumerate() {
+            let result_obj = &results[i];
+            let want: Vec<f64> = result_obj["values_bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap()))
+                .collect();
+
+            let at = session
+                .tensor_variable(a_vals.clone(), vec![*n, *n], false)
+                .expect("at");
+            let b_shape = if *nrhs == 1 { vec![*n] } else { vec![*n, *nrhs] };
+            let bt = session
+                .tensor_variable(b_vals.clone(), b_shape, false)
+                .expect("bt");
+            let x_id = session.tensor_linalg_solve(at, bt).expect("tensor_linalg_solve");
+            let got = session.tensor_values(x_id).expect("got");
+            assert_eq!(got.len(), want.len(), "{label}: shape mismatch");
+
+            for (idx, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+                if !elem_eq(g, w) {
+                    mismatches.push(format!(
+                        "tensor_linalg_solve({label})[{idx}] = {g} but numpy returned {w} — relative error > {REL_TOL}"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "linalg.solve numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).
