@@ -7224,53 +7224,56 @@ impl FrankenTorchSession {
             })
         };
 
-        match input_dtype {
-            DType::F64 => {
-                let mut result = self.tensor_tape.values(input)?;
-                let src_vals = self.tensor_tape.values(src)?;
-                for o in 0..outer {
-                    for (si, &idx_f) in idx_vals.iter().enumerate() {
-                        let idx = normalize_index(idx_f)?;
-                        if si >= src_dim_size {
-                            continue;
-                        }
-                        for i in 0..inner {
-                            let dst_offset = o * dim_size * inner + idx * inner + i;
-                            let src_offset = o * src_dim_size * inner + si * inner + i;
-                            if dst_offset < result.len() && src_offset < src_vals.len() {
-                                result[dst_offset] += src_vals[src_offset];
-                            }
-                        }
-                    }
-                }
-                self.tensor_variable(result, shape, false)
-            }
-            DType::F32 => {
-                let mut result = self.tensor_tape.values_f32(input)?;
-                let src_vals = self.tensor_tape.values_f32(src)?;
-                for o in 0..outer {
-                    for (si, &idx_f) in idx_vals.iter().enumerate() {
-                        let idx = normalize_index(idx_f)?;
-                        if si >= src_dim_size {
-                            continue;
-                        }
-                        for i in 0..inner {
-                            let dst_offset = o * dim_size * inner + idx * inner + i;
-                            let src_offset = o * src_dim_size * inner + si * inner + i;
-                            if dst_offset < result.len() && src_offset < src_vals.len() {
-                                result[dst_offset] += src_vals[src_offset];
-                            }
-                        }
-                    }
-                }
-                self.tensor_variable_f32(result, shape, false)
-            }
-            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+        // Validate every supplied index up-front so the composition
+        // below sees only well-formed indices. (tensor_scatter_add
+        // performs its own validation but produces less specific
+        // error messages.)
+        for &idx_f in &idx_vals {
+            normalize_index(idx_f)?;
+        }
+        if !matches!(input_dtype, DType::F64 | DType::F32) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "index_add requires f32 or f64 tensors",
                 },
-            ))),
+            )));
         }
+
+        // Compose index_add through tensor_scatter_add so the
+        // autograd tape carries gradients to both `input` and `src`.
+        // The previous body extracted values and rebuilt a fresh
+        // requires_grad=false leaf, silently severing the tape — the
+        // same severed-autograd pattern Scatter / ScatterAdd /
+        // IndexPut had until 5d4b5a1 / 56c5165 / 692d90e.
+        //
+        // index_add(input, dim, idx_1d, src) writes
+        //     output[..., idx_1d[r], ...] += src[..., r, ...]
+        // for each r in 0..src_dim_size, broadcasting across every
+        // outer/inner position. tensor_scatter_add already implements
+        // exactly this when given an index tensor of the same shape
+        // as src, so we just expand the 1-D `idx_1d` into a full
+        // [outer, src_dim_size, inner] index where every element at
+        // position (o, r, i) is `idx_1d[r]`.
+        let expanded_numel = Self::checked_mul(
+            Self::checked_mul(outer, src_dim_size, "index_add: expanded index outer overflow")?,
+            inner,
+            "index_add: expanded index inner overflow",
+        )?;
+        let mut expanded_idx_vals = Vec::with_capacity(expanded_numel);
+        for _o in 0..outer {
+            for &idx_f in &idx_vals {
+                for _i in 0..inner {
+                    expanded_idx_vals.push(idx_f);
+                }
+            }
+        }
+        let expanded_idx_node =
+            self.tensor_tape.leaf(expanded_idx_vals, src_shape.clone(), false)?;
+
+        // Note: tensor_scatter_add propagates gradients through both
+        // `input` (passthrough) and `src` (gather). Output dtype
+        // matches `input` dtype.
+        self.tensor_scatter_add(input, dim, expanded_idx_node, src)
     }
 
     /// Copy `src` into `self` at positions specified by `index` along `dim`.
@@ -7371,53 +7374,58 @@ impl FrankenTorchSession {
             })
         };
 
-        match input_dtype {
-            DType::F64 => {
-                let mut result = self.tensor_tape.values(input)?;
-                let src_vals = self.tensor_tape.values(src)?;
-                for o in 0..outer {
-                    for (si, &idx_f) in idx_vals.iter().enumerate() {
-                        let idx = normalize_index(idx_f)?;
-                        if si >= src_dim_size {
-                            continue;
-                        }
-                        for i in 0..inner {
-                            let dst_offset = o * dim_size * inner + idx * inner + i;
-                            let src_offset = o * src_dim_size * inner + si * inner + i;
-                            if dst_offset < result.len() && src_offset < src_vals.len() {
-                                result[dst_offset] = src_vals[src_offset];
-                            }
-                        }
-                    }
-                }
-                self.tensor_variable(result, shape, false)
-            }
-            DType::F32 => {
-                let mut result = self.tensor_tape.values_f32(input)?;
-                let src_vals = self.tensor_tape.values_f32(src)?;
-                for o in 0..outer {
-                    for (si, &idx_f) in idx_vals.iter().enumerate() {
-                        let idx = normalize_index(idx_f)?;
-                        if si >= src_dim_size {
-                            continue;
-                        }
-                        for i in 0..inner {
-                            let dst_offset = o * dim_size * inner + idx * inner + i;
-                            let src_offset = o * src_dim_size * inner + si * inner + i;
-                            if dst_offset < result.len() && src_offset < src_vals.len() {
-                                result[dst_offset] = src_vals[src_offset];
-                            }
-                        }
-                    }
-                }
-                self.tensor_variable_f32(result, shape, false)
-            }
-            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+        // Validate every supplied index up-front so the composition
+        // below sees only well-formed indices.
+        for &idx_f in &idx_vals {
+            normalize_index(idx_f)?;
+        }
+        if !matches!(input_dtype, DType::F64 | DType::F32) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "index_copy requires f32 or f64 tensors",
                 },
-            ))),
+            )));
         }
+
+        // Compose index_copy through tensor_scatter (non-add) so the
+        // autograd tape carries gradients through both `input` and
+        // `src`. Same severed-autograd pattern fix as in
+        // tensor_index_add (this commit) and the earlier Scatter /
+        // ScatterAdd / IndexPut fixes.
+        //
+        // index_copy(input, dim, idx_1d, src) writes
+        //     output[..., idx_1d[r], ...] = src[..., r, ...]
+        // for each r, broadcasting across every outer/inner position.
+        // tensor_scatter implements this with overwrite (and the
+        // updated last-write semantics for duplicate indices, fixed
+        // in this branch). We expand the 1-D `idx_1d` to a full
+        // [outer, src_dim_size, inner] index where every element at
+        // (o, r, i) is `idx_1d[r]`.
+        let expanded_numel = Self::checked_mul(
+            Self::checked_mul(
+                outer,
+                src_dim_size,
+                "index_copy: expanded index outer overflow",
+            )?,
+            inner,
+            "index_copy: expanded index inner overflow",
+        )?;
+        let mut expanded_idx_vals = Vec::with_capacity(expanded_numel);
+        for _o in 0..outer {
+            for &idx_f in &idx_vals {
+                for _i in 0..inner {
+                    expanded_idx_vals.push(idx_f);
+                }
+            }
+        }
+        let expanded_idx_node =
+            self.tensor_tape.leaf(expanded_idx_vals, src_shape.clone(), false)?;
+
+        // tensor_scatter propagates gradients through both `input`
+        // (passthrough with overwritten positions zeroed) and `src`
+        // (gather, last-write-wins on duplicates). Output dtype
+        // matches `input` dtype.
+        self.tensor_scatter(input, dim, expanded_idx_node, src)
     }
 
     /// Fill positions specified by `index` along `dim` with a scalar value.
@@ -27361,6 +27369,65 @@ mod tests {
     }
 
     #[test]
+    fn index_add_propagates_gradients_to_input_and_src() {
+        // Regression test: tensor_index_add used to extract values
+        // and rebuild a requires_grad=false leaf, severing autograd.
+        // After the scatter_add composition fix, gradients flow
+        // through both input and src.
+        //
+        // Setup: input=[1,2,3,4,5], indices=[1,3], src=[10,30].
+        //   out = [1, 12, 3, 34, 5]
+        //   sum loss → incoming = ones
+        //   grad_input = ones (passthrough — accumulate doesn't
+        //                      destroy any input value)
+        //   grad_src   = [incoming[1], incoming[3]] = [1.0, 1.0]
+        //                (gather at the indexed positions)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], true)
+            .unwrap();
+        let index = s.tensor_variable(vec![1.0, 3.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 30.0], vec![2], true).unwrap();
+        let out = s.tensor_index_add(input, 0, index, src).unwrap();
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 12.0, 3.0, 34.0, 5.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("index_add must propagate gradient to input");
+        let src_grad = s
+            .tensor_gradient(&report, src)
+            .expect("index_add must propagate gradient to src");
+        assert_eq!(input_grad, &[1.0, 1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(src_grad, &[1.0, 1.0]);
+    }
+
+    #[test]
+    fn index_add_duplicate_indices_double_count_src_gradient() {
+        // index_add accumulates duplicate indices like PyTorch:
+        // both src writes to position 0 contribute to output[0],
+        // and each correctly receives incoming[0] in the backward
+        // gather. No de-duplication.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0], vec![2], true).unwrap();
+        let out = s.tensor_index_add(input, 0, index, src).unwrap();
+        // Forward: 10 + 20 lands at position 0.
+        assert_eq!(s.tensor_values(out).unwrap(), vec![30.0, 0.0, 0.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let src_grad = s
+            .tensor_gradient(&report, src)
+            .expect("index_add accumulate must gather output gradient into both src writers");
+        assert_eq!(src_grad, &[1.0, 1.0]);
+    }
+
+    #[test]
     fn index_add_1d_f32() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
@@ -27423,6 +27490,68 @@ mod tests {
         let out = s.tensor_index_copy(input, 0, index, src).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![1.0, 99.0, 3.0, 88.0]);
+    }
+
+    #[test]
+    fn index_copy_propagates_gradients_to_input_and_src() {
+        // Regression test: tensor_index_copy used to extract values
+        // and rebuild a requires_grad=false leaf, severing autograd.
+        // After the scatter (non-add) composition fix, gradients flow
+        // through both input and src.
+        //
+        // Setup: input=[1,2,3,4], indices=[1,3], src=[99,88].
+        //   out = [1, 99, 3, 88]
+        //   sum loss → incoming = ones
+        //   grad_input = [1, 0, 1, 0]   (positions 1 and 3 overwritten,
+        //                                so input contributes nothing
+        //                                there; positions 0 and 2 keep
+        //                                their original values)
+        //   grad_src   = [1, 1]         (gather at idx [1, 3])
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
+        let index = s.tensor_variable(vec![1.0, 3.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![99.0, 88.0], vec![2], true).unwrap();
+        let out = s.tensor_index_copy(input, 0, index, src).unwrap();
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 99.0, 3.0, 88.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("index_copy must preserve gradient at non-overwritten positions");
+        let src_grad = s
+            .tensor_gradient(&report, src)
+            .expect("index_copy must propagate gradient to src");
+        assert_eq!(input_grad, &[1.0, 0.0, 1.0, 0.0]);
+        assert_eq!(src_grad, &[1.0, 1.0]);
+    }
+
+    #[test]
+    fn index_copy_duplicate_indices_use_last_writer_for_src_gradient() {
+        // index_copy with duplicate indices is last-write-wins. With
+        // indices [0, 0] writing src=[10, 20] into a length-3 input,
+        // src[0] is the first write to position 0 and gets clobbered.
+        // Only src[1] survives and contributes to the output.
+        // Same last-write semantics as the underlying tensor_scatter
+        // (98ea841).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let index = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0], vec![2], true).unwrap();
+        let out = s.tensor_index_copy(input, 0, index, src).unwrap();
+        // Forward: position 0 = 20 (last write).
+        assert_eq!(s.tensor_values(out).unwrap(), vec![20.0, 2.0, 3.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let src_grad = s
+            .tensor_gradient(&report, src)
+            .expect("index_copy must mask out non-last writers in src");
+        assert_eq!(src_grad, &[0.0, 1.0]);
     }
 
     #[test]
