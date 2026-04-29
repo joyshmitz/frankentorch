@@ -16130,6 +16130,239 @@ print(json.dumps({"results": out}))
     }
 
     #[test]
+    fn torch_histc_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_histc against numpy.histogram —
+        // both PyTorch's torch.histc and numpy.histogram share the
+        // same out-of-range-drop semantics (values outside the
+        // [min, max] range are ignored, not clamped). FrankenTorch
+        // matches that contract after the histc-clamp-to-ignore fix
+        // commit; this harness locks it.
+        //
+        // The implementations agree on:
+        //   - Equal-width binning: bin_width = (max - min) / bins
+        //   - Half-open intervals [edge_i, edge_{i+1}) for bins
+        //     0..bins-2 and a closed [edge_{bins-1}, max] for the
+        //     last bin (so v == max lands in the last bin).
+        //   - Out-of-range values dropped (not counted).
+        //
+        // Auto-range (min == max == 0) defers to the data's actual
+        // min/max. We avoid mixing the auto-range case here because
+        // numpy.histogram's range argument doesn't support an
+        // "auto" sentinel — we just supply explicit ranges.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_histc_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Each case: (label, values, bins, min, max).
+        let cases: Vec<(&str, Vec<f64>, usize, f64, f64)> = vec![
+            // Trivial: all values inside, integer bin edges.
+            ("integers_in_range", vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 5, 0.0, 5.0),
+            ("ascending_floats", vec![0.5, 1.5, 2.5, 3.5, 4.5], 5, 0.0, 5.0),
+            // Out-of-range drop (the regression we just fixed).
+            (
+                "drops_outliers_below_and_above",
+                vec![-100.0, -10.0, 0.5, 1.5, 100.0],
+                2,
+                0.0,
+                2.0,
+            ),
+            (
+                "drops_far_outliers_only",
+                vec![-1e10, 0.0, 0.5, 1.0, 1e10],
+                2,
+                0.0,
+                1.0,
+            ),
+            // Upper-boundary inclusion: v == max lands in last bin.
+            (
+                "upper_boundary_in_last_bin",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                5,
+                0.0,
+                5.0,
+            ),
+            // Single bin: every in-range value falls in bin 0.
+            ("single_bin", vec![0.0, 0.25, 0.5, 0.75, 1.0], 1, 0.0, 1.0),
+            // Many bins, sparse data.
+            (
+                "sparse_many_bins",
+                vec![0.5, 0.5, 5.5, 9.5],
+                10,
+                0.0,
+                10.0,
+            ),
+            // Empty input.
+            ("empty_input", Vec::<f64>::new(), 5, 0.0, 5.0),
+            // All values exactly at the lower boundary.
+            ("all_at_min", vec![0.0; 8], 4, 0.0, 4.0),
+            // All values exactly at the upper boundary.
+            ("all_at_max", vec![4.0; 8], 4, 0.0, 4.0),
+            // Negative range.
+            ("negative_range", vec![-3.0, -2.5, -1.5, -0.5, 0.0], 3, -3.0, 0.0),
+            // Asymmetric range with mixed signs.
+            (
+                "asymmetric_mixed_sign",
+                vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0],
+                3,
+                -1.0,
+                2.0,
+            ),
+            // Float-precision boundary edge: a value just shy of max
+            // should land in the last bin via the floor truncation.
+            (
+                "near_upper_boundary",
+                vec![0.999_999_999_999, 1.0],
+                2,
+                0.0,
+                1.0,
+            ),
+            // Wide bin count with realistic distribution. We use
+            // an integer-aligned step (0.5 with bin_width = 1.0) so
+            // every value lands at an exact bin edge — avoiding the
+            // floating-point ambiguity that arises when value/bin_width
+            // would round to a different integer between numpy's
+            // searchsorted-on-linspace approach and the
+            // floor((v-min)/bin_width) formula PyTorch and FrankenTorch
+            // both use. Behavioral conformance (drop, upper inclusion)
+            // is what we care about; the libm-quality FP-edge contract
+            // is already exercised by the dedicated near_upper_boundary
+            // case above.
+            (
+                "uniform_10_bins",
+                (0..20).map(|i| (i as f64) * 0.5).collect(),
+                10,
+                0.0,
+                10.0,
+            ),
+            // Densely packed at one end.
+            ("dense_low_end", vec![0.1; 100], 10, 0.0, 10.0),
+        ];
+
+        let cases_payload: Vec<serde_json::Value> = cases
+            .iter()
+            .map(|(label, vals, bins, lo, hi)| {
+                let bits: Vec<String> = vals.iter().map(|v| v.to_bits().to_string()).collect();
+                json!({
+                    "label": label,
+                    "values": bits,
+                    "bins": bins,
+                    "lo_bits": lo.to_bits().to_string(),
+                    "hi_bits": hi.to_bits().to_string(),
+                })
+            })
+            .collect();
+        let payload = json!({ "cases": cases_payload });
+
+        // Python oracle: numpy.histogram. Returns f64 counts as
+        // bit-pattern strings so we can compare exactly.
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    arr = np.array([from_bits(b) for b in case["values"]], dtype=np.float64)
+    bins = int(case["bins"])
+    lo = from_bits(case["lo_bits"])
+    hi = from_bits(case["hi_bits"])
+    counts, _edges = np.histogram(arr, bins=bins, range=(lo, hi))
+    out.append({
+        "label": case["label"],
+        "counts": [to_bits(float(v)) for v in counts],
+    })
+print(json.dumps({"results": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_histc_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("results")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include results array");
+        assert_eq!(results.len(), cases.len());
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (idx, (label, vals, bins, lo, hi)) in cases.iter().enumerate() {
+            let result_obj = &results[idx];
+            let want: Vec<f64> = result_obj["counts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap()))
+                .collect();
+
+            let xt = session
+                .tensor_variable(vals.clone(), vec![vals.len()], false)
+                .expect("xt");
+            let counts_id = session
+                .tensor_histc(xt, *bins, *lo, *hi)
+                .expect("tensor_histc");
+            let got = session.tensor_values(counts_id).expect("counts");
+
+            if got.len() != want.len() {
+                mismatches.push(format!(
+                    "{label}: bin count mismatch: got {} bins, numpy {} bins",
+                    got.len(),
+                    want.len()
+                ));
+                continue;
+            }
+            for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+                // Counts are integer-valued floats; bit-exact equality
+                // expected (no rounding involved in counting).
+                if g.to_bits() != w.to_bits() {
+                    mismatches.push(format!(
+                        "{label}: bin {i} count = {g} (bits 0x{:016x}) but numpy {w} (bits 0x{:016x}) — bins={bins} range=[{lo}, {hi}]",
+                        g.to_bits(),
+                        w.to_bits()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "histc numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_gelu_exact_libm_subprocess_conformance() {
         // Lock the precision contract for GELU (the exact erf-form, which
         // is PyTorch's default `approximate="none"`).

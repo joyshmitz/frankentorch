@@ -3679,8 +3679,12 @@ impl FrankenTorchSession {
     /// Equivalent to `torch.histc(input, bins=100, min=0, max=0)`.
     /// Divides the range `[min, max]` into `bins` equal-width bins and counts
     /// elements falling into each bin. If `min == max`, the range is set to
-    /// `[input.min(), input.max()]`. Values outside the range are clamped to
-    /// the first/last bin.
+    /// `[input.min(), input.max()]`.
+    ///
+    /// Values outside `[min, max]` are *ignored* (not counted in any bin),
+    /// matching PyTorch's `torch.histc` and NumPy's `numpy.histogram`. The
+    /// upper boundary is inclusive: values exactly equal to `max` land in
+    /// the last bin (`bins - 1`).
     pub fn tensor_histc(
         &mut self,
         input: TensorNodeId,
@@ -3745,15 +3749,24 @@ impl FrankenTorchSession {
         let mut counts = vec![0.0f64; bins];
         let bin_width = (hi - lo) / bins as f64;
 
+        // Match PyTorch / numpy semantics: values outside [lo, hi] are
+        // ignored (not counted in any bin). The upper boundary is
+        // inclusive — values exactly equal to `hi` land in the last
+        // bin (the floor((v-lo)/bin_width) computation maps `v == hi`
+        // to bin `bins`, which we cap to `bins - 1`).
+        //
+        // Previously this clamped out-of-range values to the first /
+        // last bin, which violated the "Equivalent to torch.histc"
+        // contract: torch.histc(x=[-10, 0.5, 1.5, 100], bins=2,
+        // min=0, max=2) returns [1, 1] (just the in-range elements),
+        // not [2, 2].
         for &v in &vals {
-            let bin = if v <= lo {
-                0
-            } else if v >= hi {
-                bins - 1
-            } else {
-                let b = ((v - lo) / bin_width) as usize;
-                b.min(bins - 1)
-            };
+            if v < lo || v > hi {
+                continue;
+            }
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let raw_bin = ((v - lo) / bin_width) as usize;
+            let bin = raw_bin.min(bins - 1);
             counts[bin] += 1.0;
         }
 
@@ -25215,16 +25228,39 @@ mod tests {
     }
 
     #[test]
-    fn histc_clamp_outliers() {
+    fn histc_ignores_out_of_range() {
+        // PyTorch / numpy parity: values outside [min, max] are
+        // dropped, not clamped to the first/last bin. (Renamed from
+        // histc_clamp_outliers; the previous assertion exercised the
+        // pre-fix clamp behavior which divided from torch.histc.)
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = s
             .tensor_variable(vec![-10.0, 0.5, 1.5, 100.0], vec![4], false)
             .unwrap();
         let out = s.tensor_histc(t, 2, 0.0, 2.0).unwrap();
         let vals = s.tensor_values(out).unwrap();
-        // -10 clamps to bin 0, 100 clamps to bin 1
-        assert!((vals[0] - 2.0).abs() < 1e-12); // -10, 0.5
-        assert!((vals[1] - 2.0).abs() < 1e-12); // 1.5, 100
+        // -10 and 100 are outside [0, 2] → ignored.
+        // 0.5 → bin 0 (range [0, 1)).
+        // 1.5 → bin 1 (range [1, 2]).
+        assert!((vals[0] - 1.0).abs() < 1e-12, "bin 0 count = {}", vals[0]);
+        assert!((vals[1] - 1.0).abs() < 1e-12, "bin 1 count = {}", vals[1]);
+    }
+
+    #[test]
+    fn histc_includes_upper_boundary_in_last_bin() {
+        // Values exactly equal to `max` go into the last bin (matching
+        // torch.histc and numpy.histogram). Without this special case
+        // the floor((v-lo)/bin_width) computation would put `v == max`
+        // into bin `bins` (out of range).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], vec![6], false)
+            .unwrap();
+        let out = s.tensor_histc(t, 5, 0.0, 5.0).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // Bins: [0,1), [1,2), [2,3), [3,4), [4,5]
+        //       Values 0, 1, 2, 3, 4-and-5 → counts [1, 1, 1, 1, 2]
+        assert_eq!(vals, vec![1.0, 1.0, 1.0, 1.0, 2.0]);
     }
 
     #[test]
