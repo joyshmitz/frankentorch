@@ -7069,7 +7069,7 @@ impl FrankenTorchSession {
             }
         };
         self.tensor_tape
-            .scatter_add(input, dim, &index_data, index_shape, &src_data)
+            .scatter_add(input, src, dim, &index_data, index_shape, &src_data)
     }
 
     pub fn tensor_index_put(
@@ -29374,6 +29374,52 @@ mod tests {
         assert!((vals[0] - 16.0).abs() < 1e-10); // 10 + 1 + 2 + 3
         assert!((vals[1] - 20.0).abs() < 1e-10);
         assert!((vals[2] - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn scatter_add_backward_propagates_to_src() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .unwrap();
+        let idx = s
+            .tensor_variable(vec![0.0, 1.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let result = s.tensor_scatter_add(input, 1, idx, src).unwrap();
+        let loss = s.tensor_sum(result).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, src)
+            .expect("scatter_add must propagate gradient to src");
+        assert_eq!(grad, &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn scatter_add_backward_propagates_to_input_and_src() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![10.0, 20.0, 30.0], vec![3], true)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let idx = s
+            .tensor_variable(vec![0.0, 0.0, 2.0], vec![3], false)
+            .unwrap();
+        let result = s.tensor_scatter_add(input, 0, idx, src).unwrap();
+        let loss = s.tensor_sum(result).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let input_grad = s
+            .tensor_gradient(&report, input)
+            .expect("scatter_add must preserve destination gradient");
+        let src_grad = s
+            .tensor_gradient(&report, src)
+            .expect("scatter_add must gather output gradient into src");
+        assert_eq!(input_grad, &[1.0, 1.0, 1.0]);
+        assert_eq!(src_grad, &[1.0, 1.0, 1.0]);
     }
 
     #[test]

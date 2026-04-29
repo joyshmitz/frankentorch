@@ -1349,31 +1349,6 @@ impl Module for Fold {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        // Fold is the analytical transpose of Unfold (scatter_add into
-        // a [N, C, H, W] buffer with overlap accumulation). Wiring it
-        // through the autograd tape requires scatter_add to back-
-        // propagate gradients through its `src` argument — which the
-        // current ft-autograd ScatterAdd op does NOT do (it only
-        // back-propagates to the destination buffer). Until that
-        // capability lands, attempting to compose Fold via scatter_add
-        // would produce a graph that silently zeroes gradients to the
-        // input, which is exactly the bug we are fixing.
-        //
-        // Bridge until then: fail loud when the caller passes a
-        // tensor that requires gradient. Forward-only callers (the
-        // dominant existing use case, and the only one exercised by
-        // the existing tests) keep working bit-for-bit; gradient
-        // callers get a clear error instead of silently-zeroed
-        // gradients into upstream parameters.
-        if session.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(DispatchError::Key(
-                DispatchKeyError::IncompatibleSet {
-                    reason: "fold: backward through Fold is not yet supported (composition via tensor_scatter_add cannot back-propagate through `src` until the ScatterAdd autograd op tracks src). Detach the input or use Conv2d's transpose path instead",
-                },
-            )));
-        }
-
-        let vals = session.tensor_values(input)?;
         let shape = session.tensor_shape(input)?;
         if shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -1404,15 +1379,39 @@ impl Module for Fold {
 
         let h = self.output_h;
         let w = self.output_w;
-        let mut output = vec![0.0f64; n * c * h * w];
+        let output_numel = checked_shape_numel(&[n, c, h, w], "fold output shape overflow")?;
+        let input_numel = checked_shape_numel(&[n, block_size, l], "fold input shape overflow")?;
 
+        let input_dtype = session.tensor_dtype(input)?;
+        let zero_output = match input_dtype {
+            DType::F64 => {
+                session.tensor_variable(vec![0.0; output_numel], vec![output_numel], false)?
+            }
+            DType::F32 => session.tensor_variable_f32(
+                vec![0.0_f32; output_numel],
+                vec![output_numel],
+                false,
+            )?,
+            _ => {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "fold: input must be f32 or f64",
+                    },
+                )));
+            }
+        };
+
+        let mut index_vals = Vec::with_capacity(input_numel);
+        let mut mask_vals = Vec::with_capacity(input_numel);
         for batch in 0..n {
-            for oh in 0..out_h {
-                for ow in 0..out_w {
-                    let col_idx = oh * out_w + ow;
-                    for ci in 0..c {
-                        for kh in 0..self.kernel_h {
-                            for kw in 0..self.kernel_w {
+            for ci in 0..c {
+                for kh in 0..self.kernel_h {
+                    for kw in 0..self.kernel_w {
+                        for oh in 0..out_h {
+                            for ow in 0..out_w {
+                                #[allow(clippy::cast_precision_loss)]
+                                let mut flat_dst = 0.0_f64;
+                                let mut valid = false;
                                 let ih = oh * self.stride_h + kh * self.dilation_h;
                                 let iw = ow * self.stride_w + kw * self.dilation_w;
                                 if ih >= self.padding_h
@@ -1422,12 +1421,12 @@ impl Module for Fold {
                                 {
                                     let dst_h = ih - self.padding_h;
                                     let dst_w = iw - self.padding_w;
-                                    let row = ci * self.kernel_h * self.kernel_w
-                                        + kh * self.kernel_w
-                                        + kw;
-                                    output[batch * c * h * w + ci * h * w + dst_h * w + dst_w] +=
-                                        vals[batch * block_size * l + row * l + col_idx];
+                                    let flat = batch * c * h * w + ci * h * w + dst_h * w + dst_w;
+                                    flat_dst = flat as f64;
+                                    valid = true;
                                 }
+                                index_vals.push(flat_dst);
+                                mask_vals.push(valid);
                             }
                         }
                     }
@@ -1435,7 +1434,31 @@ impl Module for Fold {
             }
         }
 
-        session.tensor_variable(output, vec![n, c, h, w], false)
+        let flat_input = session.tensor_reshape(input, vec![input_numel])?;
+        let mask = match input_dtype {
+            DType::F64 => session.tensor_variable(
+                mask_vals
+                    .iter()
+                    .map(|&valid| if valid { 1.0 } else { 0.0 })
+                    .collect(),
+                vec![input_numel],
+                false,
+            )?,
+            DType::F32 => session.tensor_variable_f32(
+                mask_vals
+                    .into_iter()
+                    .map(|valid| if valid { 1.0_f32 } else { 0.0_f32 })
+                    .collect(),
+                vec![input_numel],
+                false,
+            )?,
+            _ => unreachable!("fold input dtype was already validated"),
+        };
+        let masked_input = session.tensor_mul(flat_input, mask)?;
+        let index = session.tensor_variable(index_vals, vec![input_numel], false)?;
+        let flat_output = session.tensor_scatter_add(zero_output, 0, index, masked_input)?;
+
+        session.tensor_reshape(flat_output, vec![n, c, h, w])
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -5209,8 +5232,27 @@ impl Module for AvgPool2d {
         } else {
             (w_padded - self.kernel_w) / self.stride_w
         };
-        let h_out = checked_add(h_out_base, 1, "AvgPool2d output height overflow")?;
-        let w_out = checked_add(w_out_base, 1, "AvgPool2d output width overflow")?;
+        let mut h_out = checked_add(h_out_base, 1, "AvgPool2d output height overflow")?;
+        if self.ceil_mode && h_out > 0 {
+            let last_start =
+                checked_mul(h_out - 1, self.stride_h, "AvgPool2d output height overflow")?;
+            let input_pad_boundary =
+                checked_add(h_in, self.padding_h, "AvgPool2d output height overflow")?;
+            if last_start >= input_pad_boundary {
+                h_out -= 1;
+            }
+        }
+
+        let mut w_out = checked_add(w_out_base, 1, "AvgPool2d output width overflow")?;
+        if self.ceil_mode && w_out > 0 {
+            let last_start =
+                checked_mul(w_out - 1, self.stride_w, "AvgPool2d output width overflow")?;
+            let input_pad_boundary =
+                checked_add(w_in, self.padding_w, "AvgPool2d output width overflow")?;
+            if last_start >= input_pad_boundary {
+                w_out -= 1;
+            }
+        }
 
         let nc = checked_mul(n, c, "AvgPool2d batch channel overflow")?;
 
@@ -5221,38 +5263,47 @@ impl Module for AvgPool2d {
             let h_end =
                 checked_add(h_start, self.kernel_h, "AvgPool2d row end overflow")?.min(h_padded);
             let kh_actual = h_end - h_start;
-            let row_slice = session.tensor_narrow(padded, 2, h_start, kh_actual)?;
+            let valid_h_start = h_start.saturating_sub(self.padding_h).min(h_in);
+            let valid_h_end = h_end.saturating_sub(self.padding_h).min(h_in);
+            let valid_h_len = valid_h_end.saturating_sub(valid_h_start);
             for wi in 0..w_out {
                 let w_start = checked_mul(wi, self.stride_w, "AvgPool2d col start overflow")?;
                 let w_end = checked_add(w_start, self.kernel_w, "AvgPool2d col end overflow")?
                     .min(w_padded);
                 let kw_actual = w_end - w_start;
+                let valid_w_start = w_start.saturating_sub(self.padding_w).min(w_in);
+                let valid_w_end = w_end.saturating_sub(self.padding_w).min(w_in);
+                let valid_w_len = valid_w_end.saturating_sub(valid_w_start);
 
-                let patch = session.tensor_narrow(row_slice, 3, w_start, kw_actual)?;
-                let kernel_area =
-                    checked_mul(kh_actual, kw_actual, "AvgPool2d kernel size overflow")?;
-                let flat = session.tensor_reshape(patch, vec![nc, kernel_area])?;
-
-                if self.count_include_pad || (self.padding_h == 0 && self.padding_w == 0) {
-                    // Sum and divide by full kernel size
-                    let sum = session.tensor_sum_dim(flat, 1)?;
-                    let full_kernel = checked_mul(
-                        self.kernel_h,
-                        self.kernel_w,
-                        "AvgPool2d full kernel size overflow",
-                    )?;
-                    let divisor = session.full(vec![nc], full_kernel as f64, false)?;
-                    let avg = session.tensor_div(sum, divisor)?;
-                    let shaped = session.tensor_reshape(avg, vec![n, c, 1])?;
-                    patches.push(shaped);
+                let (patch, flat_len) = if self.count_include_pad {
+                    let row_slice = session.tensor_narrow(padded, 2, h_start, kh_actual)?;
+                    let patch = session.tensor_narrow(row_slice, 3, w_start, kw_actual)?;
+                    let flat_len =
+                        checked_mul(kh_actual, kw_actual, "AvgPool2d kernel size overflow")?;
+                    (patch, flat_len)
                 } else {
-                    // count_include_pad=false divides by the materialized patch size only.
-                    let sum = session.tensor_sum_dim(flat, 1)?;
-                    let divisor = session.full(vec![nc], kernel_area as f64, false)?;
-                    let avg = session.tensor_div(sum, divisor)?;
-                    let shaped = session.tensor_reshape(avg, vec![n, c, 1])?;
-                    patches.push(shaped);
-                }
+                    if valid_h_len == 0 || valid_w_len == 0 {
+                        return Err(AutogradError::Dispatch(DispatchError::Key(
+                            DispatchKeyError::IncompatibleSet {
+                                reason: "AvgPool2d pooling window contains no input elements",
+                            },
+                        )));
+                    }
+                    let row_slice = session.tensor_narrow(input, 2, valid_h_start, valid_h_len)?;
+                    let patch = session.tensor_narrow(row_slice, 3, valid_w_start, valid_w_len)?;
+                    let flat_len = checked_mul(
+                        valid_h_len,
+                        valid_w_len,
+                        "AvgPool2d valid kernel size overflow",
+                    )?;
+                    (patch, flat_len)
+                };
+                let flat = session.tensor_reshape(patch, vec![nc, flat_len])?;
+                let sum = session.tensor_sum_dim(flat, 1)?;
+                let divisor = session.full(vec![nc], flat_len as f64, false)?;
+                let avg = session.tensor_div(sum, divisor)?;
+                let shaped = session.tensor_reshape(avg, vec![n, c, 1])?;
+                patches.push(shaped);
             }
         }
 
@@ -17700,43 +17751,35 @@ mod tests {
     }
 
     #[test]
-    fn fold_rejects_requires_grad_input_loudly() {
-        // Regression test: Fold used to silently sever the autograd
-        // tape (read tensor_values, rebuild leaf with
-        // requires_grad=false). The forward output was numerically
-        // correct, but any backward downstream of Fold would silently
-        // zero the gradient flowing into upstream parameters.
-        //
-        // Until the ft-autograd ScatterAdd op learns to back-propagate
-        // through `src` (which would let Fold compose through
-        // tensor_scatter_add the same way Unfold composes through
-        // tensor_gather), the safe behavior is to fail loud rather
-        // than silently corrupt training. This test locks that contract.
+    fn fold_propagates_gradients() {
+        // Fold is a linear scatter-add from column blocks into output
+        // image positions. For a sum loss, every valid column entry
+        // contributes with coefficient 1, so dL/d(input) is all ones.
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let data: Vec<f64> = (0..16).map(|i| (i as f64) * 0.5 + 1.0).collect();
+        let data: Vec<f64> = (1..=16).map(f64::from).collect();
         let input = session
-            .tensor_variable(data, vec![1, 4, 4], true)
+            .tensor_variable(data.clone(), vec![1, 4, 4], true)
             .unwrap();
         let fold = Fold::new((3, 3), (2, 2));
-        let err = fold.forward(&mut session, input).expect_err(
-            "Fold must reject requires_grad=true inputs until backward is implemented",
-        );
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("backward through Fold is not yet supported"),
-            "Fold rejection should explain the gradient-tracking limitation, got {msg}"
-        );
-
-        // Forward path on a non-tracked tensor still works.
-        let data2: Vec<f64> = (0..16).map(|i| (i as f64) * 0.5 + 1.0).collect();
-        let untracked = session
-            .tensor_variable(data2, vec![1, 4, 4], false)
-            .unwrap();
         let folded = fold
-            .forward(&mut session, untracked)
-            .expect("Fold forward must still work on detached inputs");
+            .forward(&mut session, input)
+            .expect("Fold forward must support tracked inputs");
         let shape = session.tensor_shape(folded).unwrap();
         assert_eq!(shape, vec![1, 1, 3, 3]);
+        #[rustfmt::skip]
+        let expected_output = vec![
+            1.0, 7.0, 6.0,
+            12.0, 34.0, 22.0,
+            11.0, 27.0, 16.0,
+        ];
+        assert_eq!(session.tensor_values(folded).unwrap(), expected_output);
+
+        let loss = session.tensor_sum(folded).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("Fold must propagate gradient to input blocks");
+        assert_eq!(grad, vec![1.0; data.len()]);
     }
 
     // ── ParameterList / ParameterDict Tests ──────────────────────────
@@ -21568,6 +21611,38 @@ mod tests {
         let vals = session.tensor_values(output).unwrap();
         // Center: mean of all 9 / 9 = 5.0
         assert!((vals[4] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn avgpool2d_padding_excludes_pad_from_divisor() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let pool = AvgPool2d::new((3, 3), (1, 1), (1, 1), false, false);
+        let output = pool.forward(&mut session, input).unwrap();
+        let shape = session.tensor_shape(output).unwrap();
+        assert_eq!(shape, vec![1, 1, 2, 2]);
+        let vals = session.tensor_values(output).unwrap();
+        assert_eq!(vals, vec![2.5, 2.5, 2.5, 2.5]);
+    }
+
+    #[test]
+    fn avgpool2d_ceil_mode_uses_actual_window_area() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![1, 1, 3, 3],
+                false,
+            )
+            .unwrap();
+        let pool = AvgPool2d::new((2, 2), (2, 2), (0, 0), true, true);
+        let output = pool.forward(&mut session, input).unwrap();
+        let shape = session.tensor_shape(output).unwrap();
+        assert_eq!(shape, vec![1, 1, 2, 2]);
+        let vals = session.tensor_values(output).unwrap();
+        assert_eq!(vals, vec![3.0, 4.5, 7.5, 9.0]);
     }
 
     #[test]
