@@ -14751,15 +14751,9 @@ for x_bits_s in req["atan"]:
 print(json.dumps(out))
 "#;
 
-        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!(
-                    "torch_trig_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
-                );
-                return;
-            }
-        };
+        let response = super::run_legacy_oracle_script(&config, script, &payload).expect(
+            "torch_trig_libm_subprocess_conformance: oracle invocation must succeed after python3 availability check",
+        );
 
         let get_array = |key: &str| -> Vec<u64> {
             response
