@@ -15443,24 +15443,39 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.corrcoef(input)`.
     /// Input shape: `(N, M)`. Returns an `(N, N)` correlation matrix.
+    ///
+    /// Composes through tensor_cov + tensor_diagonal + tensor_sqrt +
+    /// tensor_outer + tensor_div + tensor_eq + tensor_where so the
+    /// autograd tape carries gradients through the input. Previously
+    /// this delegated to tensor_cov, then extracted values and rebuilt
+    /// a fresh requires_grad=false leaf — severing the tape after
+    /// cov's autograd graph was built. Tracked under
+    /// frankentorch-1tax.
+    ///
+    /// Math: corr[i,j] = cov[i,j] / sqrt(cov[i,i] * cov[j,j])
+    ///                 = cov[i,j] / (sqrt(diag(cov))[i] * sqrt(diag(cov))[j])
+    /// The latter form admits a clean composition via the outer
+    /// product of sqrt(diag). When the denominator is zero (any
+    /// variable with zero variance) the result is 0 — implemented
+    /// via tensor_where masking.
     pub fn tensor_corrcoef(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let cov = self.tensor_cov(input)?;
-        let cov_vals = self.tensor_values(cov)?;
         let n_shape = self.tensor_shape(cov)?;
         let n = n_shape[0];
 
-        let mut corr = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let cij = cov_vals[i * n + j];
-                let cii = cov_vals[i * n + i];
-                let cjj = cov_vals[j * n + j];
-                let denom = (cii * cjj).sqrt();
-                corr[i * n + j] = if denom > 0.0 { cij / denom } else { 0.0 };
-            }
-        }
+        let diag = self.tensor_diagonal(cov, 0)?;
+        let diag_sqrt = self.tensor_sqrt(diag)?;
+        let denom = self.tensor_outer(diag_sqrt, diag_sqrt)?;
 
-        let out = self.tensor_tape.leaf(corr, vec![n, n], false)?;
+        // corr_unsafe = cov / denom (NaN/inf at zero-variance entries).
+        let corr_unsafe = self.tensor_div(cov, denom)?;
+
+        // mask = (denom == 0); where mask is true, output 0.
+        let zeros_for_eq = self.full(vec![n, n], 0.0, false)?;
+        let mask = self.tensor_eq(denom, zeros_for_eq)?;
+        let zero_branch = self.full(vec![n, n], 0.0, false)?;
+        let out = self.tensor_where(mask, zero_branch, corr_unsafe)?;
+
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("corrcoef input={} out={}", input.0, out.0),
@@ -32940,6 +32955,50 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         // Perfect negative correlation
         assert!((vals[1] + 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn corrcoef_propagates_gradients_through_input() {
+        // Regression test for frankentorch-1tax: tensor_corrcoef used
+        // to extract values and rebuild a fresh requires_grad=false
+        // leaf, severing the tape after cov's autograd graph. After
+        // the cov + diagonal + sqrt + outer + div + where composition
+        // fix, gradients flow through the input.
+        //
+        // Like cov, corrcoef is shift-and-scale-invariant along the
+        // observation dim — adding a constant to a row or scaling it
+        // by a positive constant doesn't change the output. The
+        // shift invariance gives the row-sum-to-zero gradient
+        // property we already verified for cov; we re-check it here
+        // to confirm corrcoef's autograd graph is correctly chained.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 6.0, 5.0],
+                vec![2, 3],
+                true,
+            )
+            .unwrap();
+        let corr = s.tensor_corrcoef(x).unwrap();
+        let loss = s.tensor_sum(corr).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("corrcoef must propagate gradient through input");
+        assert_eq!(grad.len(), 6);
+        for &g in grad.iter() {
+            assert!(g.is_finite(), "corrcoef backward must produce finite grads, got {g}");
+        }
+        let row0_sum: f64 = grad[..3].iter().sum();
+        let row1_sum: f64 = grad[3..].iter().sum();
+        assert!(
+            row0_sum.abs() < 1e-10,
+            "corrcoef row-0 grad sum should be ~0 (shift-invariant), got {row0_sum}"
+        );
+        assert!(
+            row1_sum.abs() < 1e-10,
+            "corrcoef row-1 grad sum should be ~0 (shift-invariant), got {row1_sum}"
+        );
     }
 
     // ── mode tests ──────────────────────────────────────────────────────
