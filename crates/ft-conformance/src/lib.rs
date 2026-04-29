@@ -16935,6 +16935,185 @@ print(json.dumps({"xlog1py": out}))
     }
 
     #[test]
+    fn torch_entr_scipy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_entr against scipy.special.entr.
+        //     entr(x) = -x * log(x)        for x > 0
+        //             = 0                  for x == 0   (continuity limit)
+        //             = -inf               for x < 0
+        //             = NaN                for x == NaN
+        //             = -inf               for x == +inf
+        // FrankenTorch's tensor_entr composes through tensor_log +
+        // tensor_neg + tensor_mul + tensor_where on a (x == 0) mask
+        // (returns 0) and a (x < 0) mask (returns -inf), so it should
+        // match scipy bit-exactly on the masked branches and within
+        // libm-quality precision on the smooth interior.
+        //
+        // Sister harness to torch_xlog1py_scipy_subprocess_conformance —
+        // same scipy oracle, same fail-loud structure. Files closure
+        // for the entr slice of frankentorch-b5of.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let scipy_available = Command::new("python3")
+            .arg("-c")
+            .arg("from scipy import special; import json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !scipy_available {
+            eprintln!(
+                "torch_entr_scipy_subprocess_conformance: python3/scipy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Cover x == 0 (mask branch), x in (0, 1) where entr is
+        // positive (peaks at 1/e ≈ 0.3679), x == 1 where entr == -0
+        // (sign-of-zero matters for IEEE), x > 1 where entr is
+        // negative, x < 0 where the implementation returns -inf, and
+        // ±inf / NaN propagation.
+        let inputs: Vec<f64> = vec![
+            0.0,
+            -0.0,
+            1e-300,
+            1e-15,
+            0.001,
+            0.01,
+            0.1,
+            0.25,
+            0.5,
+            // Maximum: x = 1/e gives entr(x) = 1/e ≈ 0.3679.
+            std::f64::consts::FRAC_1_PI, // not maximum but a known transcendental
+            std::f64::consts::E.recip(),
+            1.0,
+            std::f64::consts::E,
+            std::f64::consts::PI,
+            2.0,
+            10.0,
+            100.0,
+            1e10,
+            1e300,
+            // Negative — implementation returns -inf.
+            -1e-15,
+            -0.001,
+            -0.5,
+            -1.0,
+            -2.0,
+            -1e10,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        let input_bits: Vec<String> = inputs.iter().map(|v| v.to_bits().to_string()).collect();
+        let payload = json!({ "inputs": input_bits });
+
+        let script = r#"
+import json, struct, sys
+from scipy import special
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for x_bits_s in req["inputs"]:
+    x = from_bits(x_bits_s)
+    try:
+        y = float(special.entr(x))
+    except Exception:
+        y = float("nan")
+    out.append(to_bits(y))
+print(json.dumps({"entr": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_entr_scipy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("entr")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include entr array");
+        assert_eq!(results.len(), inputs.len());
+
+        // ULP-tolerant comparison; tighter than xlog1py because entr
+        // is a single multiply on top of log (one libm call). Allow
+        // 4 ULP relative or 1e-15 absolute floor for results near zero.
+        // Sign-of-zero is enforced strictly so that entr(1.0) == -0.0
+        // (which scipy returns) is locked in — flipping to +0.0 would
+        // be a real bug in the neg/where composition.
+        const ULP_TOL: u64 = 4;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                // IEEE == treats +0.0 == -0.0 as true; enforce
+                // bit-equal sign for the zero case so we catch -0
+                // regressions.
+                if a == 0.0 && b == 0.0 {
+                    return a.is_sign_negative() == b.is_sign_negative();
+                }
+                return true;
+            }
+            if a.is_infinite() != b.is_infinite()
+                || a.is_nan() != b.is_nan()
+                || a.is_sign_negative() != b.is_sign_negative()
+            {
+                return false;
+            }
+            if (a - b).abs() <= 1e-15 {
+                return true;
+            }
+            let a_bits = a.to_bits();
+            let b_bits = b.to_bits();
+            a_bits.abs_diff(b_bits) <= ULP_TOL
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in inputs.iter().enumerate() {
+            let want = f64::from_bits(results[i].as_str().unwrap().parse::<u64>().unwrap());
+            let xt = session
+                .tensor_variable(vec![*x], vec![1], false)
+                .expect("xt");
+            let got_id = session.tensor_entr(xt).expect("tensor_entr");
+            let got = session.tensor_values(got_id).expect("got")[0];
+            if !approx_eq(got, want) {
+                mismatches.push(format!(
+                    "tensor_entr({x:?}) = {got:?} (bits 0x{:016x}) but scipy returned {want:?} (bits 0x{:016x})",
+                    got.to_bits(),
+                    want.to_bits(),
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "entr scipy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_linalg_det_numpy_subprocess_conformance() {
         // Lock FrankenTorch's tensor_linalg_det against
         // numpy.linalg.det. Both compute the determinant via an LU
