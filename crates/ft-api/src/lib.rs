@@ -16031,8 +16031,23 @@ fn digamma_approx(mut x: f64) -> f64 {
     if x.is_nan() {
         return f64::NAN;
     }
-    if x <= 0.0 && x == x.floor() {
-        return f64::NAN; // poles at non-positive integers
+    // The pole at x = 0 is one-sided: ψ(x) ~ -1/x near zero, so
+    // ψ(0+) = -∞ and ψ(0-) = +∞. IEEE 754 distinguishes positive and
+    // negative zero, so we do too — matching scipy.special.digamma's
+    // contract. The previous implementation lumped both 0.0 and -0.0
+    // into the "NaN at non-positive integer" branch which silently
+    // disagreed with scipy / PyTorch at the most common boundary case.
+    if x == 0.0 {
+        return if x.is_sign_negative() {
+            f64::INFINITY
+        } else {
+            f64::NEG_INFINITY
+        };
+    }
+    if x < 0.0 && x == x.floor() {
+        // Poles at -1, -2, -3, ... — finite-but-undefined signed
+        // limit means scipy returns NaN there.
+        return f64::NAN;
     }
 
     let mut result = 0.0;
@@ -29732,6 +29747,43 @@ mod tests {
             "psi(1) ≈ -{euler_mascheroni}, got {}",
             vals[0]
         );
+    }
+
+    #[test]
+    fn digamma_signed_zero_returns_signed_infinity() {
+        // ψ(x) ~ -1/x near zero, so the limit is -∞ from the right
+        // and +∞ from the left. IEEE 754 distinguishes +0.0 and
+        // -0.0; scipy.special.digamma returns -inf and +inf
+        // respectively. Previously digamma_approx lumped both into
+        // the "NaN at non-positive integer" branch, which silently
+        // disagreed with scipy / PyTorch at the most common boundary
+        // case.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.0, -0.0], vec![2], false)
+            .unwrap();
+        let result = s.tensor_digamma(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert_eq!(vals[0], f64::NEG_INFINITY, "ψ(+0.0) must be -inf");
+        assert_eq!(vals[1], f64::INFINITY, "ψ(-0.0) must be +inf");
+    }
+
+    #[test]
+    fn digamma_negative_integer_poles_return_nan() {
+        // Poles at -1, -2, -3, ... — the function genuinely has no
+        // limit there (the left and right limits differ in sign and
+        // diverge), so scipy returns NaN. Verify FrankenTorch does
+        // too. The `digamma_signed_zero` test above shows we no
+        // longer conflate these with the x==0 case.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![-1.0, -2.0, -10.0], vec![3], false)
+            .unwrap();
+        let result = s.tensor_digamma(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        for (i, &v) in vals.iter().enumerate() {
+            assert!(v.is_nan(), "ψ at negative-integer pole {i} must be NaN, got {v}");
+        }
     }
 
     #[test]
