@@ -4351,7 +4351,6 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         p: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = self.tensor_values(input)?;
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -4363,8 +4362,55 @@ impl FrankenTorchSession {
         let n = shape[0];
         let m = shape[1];
         let out_len = n * (n - 1) / 2;
-        let mut result = Vec::with_capacity(out_len);
 
+        // For finite p > 0, compose through index_select + sub + abs +
+        // pow + sum_dim + pow primitives so gradients flow to the
+        // input. PyTorch's torch.nn.functional.pdist IS differentiable
+        // for finite p > 0 (sub-gradient at the abs corner). p == 0
+        // (counting metric) and p == +inf (max-routing) follow
+        // separate paths and stay severed; for now they fail-loud
+        // when requires_grad is set. Tracked under frankentorch-0i8u.
+        if p.is_finite() && p > 0.0 && out_len > 0 {
+            // Build row_i and row_j index tensors of length out_len.
+            #[allow(clippy::cast_precision_loss)]
+            let mut row_i_idx = Vec::with_capacity(out_len);
+            #[allow(clippy::cast_precision_loss)]
+            let mut row_j_idx = Vec::with_capacity(out_len);
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    row_i_idx.push(i as f64);
+                    row_j_idx.push(j as f64);
+                }
+            }
+            let row_i_t = self
+                .tensor_tape
+                .leaf(row_i_idx, vec![out_len], false)?;
+            let row_j_t = self
+                .tensor_tape
+                .leaf(row_j_idx, vec![out_len], false)?;
+            let left = self.tensor_index_select(input, 0, row_i_t)?;
+            let right = self.tensor_index_select(input, 0, row_j_t)?;
+            let diff = self.tensor_sub(left, right)?;
+            let abs_diff = self.tensor_abs(diff)?;
+            let pow_diff = self.tensor_pow(abs_diff, p)?;
+            let sum = self.tensor_sum_dim(pow_diff, 1)?; // [out_len]
+            return self.tensor_pow(sum, 1.0 / p);
+        }
+
+        if (p == f64::INFINITY || p == 0.0)
+            && self.tensor_tape.tensor_requires_grad(input)?
+        {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pdist: autograd is not yet implemented for p=0 or p=inf",
+                },
+            )));
+        }
+
+        // Non-grad paths for p == 0, p == inf, or empty output —
+        // fall back to the original direct computation.
+        let vals = self.tensor_values(input)?;
+        let mut result = Vec::with_capacity(out_len);
         for i in 0..n {
             for j in (i + 1)..n {
                 let mut dist = 0.0f64;
@@ -27063,6 +27109,40 @@ mod tests {
         let out = s.tensor_pdist(t, 1.0).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert!((vals[0] - 7.0).abs() < 1e-10); // |3|+|4| = 7
+    }
+
+    #[test]
+    fn pdist_l2_propagates_gradient_through_input() {
+        // Regression test for frankentorch-0i8u. tensor_pdist used
+        // to extract values, compute distances in plain f64, and
+        // rebuild a non-grad leaf — silently severing autograd.
+        // After composing through index_select + sub + abs + pow +
+        // sum_dim + pow primitives, gradients flow.
+        //
+        // For x = [[0, 0], [3, 4]] (shape [2, 2]) with p=2:
+        //   diff = [[0-3, 0-4]] = [[-3, -4]]
+        //   d_01 = sqrt(9 + 16) = 5
+        // Backward (d2 case): d/dx[i, k] (||x[i] - x[j]||_2) = (x[i,k] - x[j,k]) / d
+        //   d_01 / dx[0, 0] = -3/5
+        //   d_01 / dx[0, 1] = -4/5
+        //   d_01 / dx[1, 0] = 3/5
+        //   d_01 / dx[1, 1] = 4/5
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 0.0, 3.0, 4.0], vec![2, 2], true)
+            .unwrap();
+        let out = s.tensor_pdist(x, 2.0).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("tensor_pdist must propagate gradient through input");
+        let expected = [-0.6_f64, -0.8, 0.6, 0.8];
+        for (i, (&g, &e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "pdist L2 grad[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     // ── matrix_power / matrix_exp tests (bd-2drq.10) ──────────────────
