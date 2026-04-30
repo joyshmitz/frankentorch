@@ -11856,8 +11856,6 @@ impl LossModule for MultiMarginLoss {
         input: TensorNodeId,
         target: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = session.tensor_values(input)?;
-        let targets = session.tensor_values(target)?;
         let shape = session.tensor_shape(input)?;
         if shape.len() != 2 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -11867,34 +11865,36 @@ impl LossModule for MultiMarginLoss {
             )));
         }
         let (n, c) = (shape[0], shape[1]);
-        let mut losses = vec![0.0f64; n];
 
-        for i in 0..n {
-            let y = targets[i] as usize;
-            let xy = vals[i * c + y];
-            let mut loss = 0.0f64;
-            for j in 0..c {
-                if j == y {
-                    continue;
-                }
-                let margin_val = self.margin - xy + vals[i * c + j];
-                if margin_val > 0.0 {
-                    loss += margin_val.powf(self.p);
-                }
-            }
-            losses[i] = loss / c as f64;
-        }
+        // Compose through autograd primitives (mirrors the session
+        // multi_margin_loss fix in frankentorch-x9cr).
+        // Tracked under frankentorch-1s4q (child of cq0b).
+        let mask_y = session.one_hot(target, c)?;
+        let ones = session.full(vec![n, c], 1.0, false)?;
+        let mask_others = session.tensor_sub(ones, mask_y)?;
+
+        let score_y_per_elem = session.tensor_mul(input, mask_y)?;
+        let score_y = session.tensor_sum_dim(score_y_per_elem, 1)?; // [n]
+        let score_y_kd = session.tensor_unsqueeze(score_y, 1)?; // [n, 1]
+        let score_y_b = session.tensor_expand(score_y_kd, vec![n, c])?;
+
+        let margin_t = session.full(vec![n, c], self.margin, false)?;
+        let x_minus_y = session.tensor_sub(input, score_y_b)?;
+        let diff = session.tensor_add(x_minus_y, margin_t)?;
+
+        let clamped = session.tensor_relu(diff)?;
+        let masked = session.tensor_mul(clamped, mask_others)?;
+
+        let powered = session.tensor_pow(masked, self.p)?;
+
+        let per_sample_sum = session.tensor_sum_dim(powered, 1)?; // [n]
+        let classes_t = session.full(vec![n], c as f64, false)?;
+        let per_sample = session.tensor_div(per_sample_sum, classes_t)?; // [n]
 
         match self.reduction {
-            Reduction::None => session.tensor_variable(losses, vec![n], false),
-            Reduction::Mean => {
-                let mean = losses.iter().sum::<f64>() / n as f64;
-                session.tensor_variable(vec![mean], vec![1], false)
-            }
-            Reduction::Sum => {
-                let sum = losses.iter().sum::<f64>();
-                session.tensor_variable(vec![sum], vec![1], false)
-            }
+            Reduction::None => Ok(per_sample),
+            Reduction::Mean => session.tensor_mean(per_sample),
+            Reduction::Sum => session.tensor_sum(per_sample),
         }
     }
 }
@@ -11921,33 +11921,26 @@ impl LossModule for SoftMarginLoss {
         input: TensorNodeId,
         target: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = session.tensor_values(input)?;
-        let targets = session.tensor_values(target)?;
-        let shape = session.tensor_shape(input)?;
-        let n = vals.len();
-
-        let mut losses = Vec::with_capacity(n);
-        for i in 0..n {
-            // log(1 + exp(-y * x)) with numerical stability
-            let yx = targets[i] * vals[i];
-            let loss = if yx > 0.0 {
-                (-yx).exp().ln_1p()
-            } else {
-                -yx + (yx.exp()).ln_1p()
-            };
-            losses.push(loss);
-        }
-
+        // Compose through autograd-aware primitives. Tracked under
+        // frankentorch-fjao (child of cq0b). Math: with z = -t * x,
+        //   soft_margin_loss = log1p(exp(z))
+        //                    = relu(z) + log1p(exp(-|z|))
+        // (numerically stable form, matching the session
+        // soft_margin_loss fix under tr2a). Previously this body
+        // extracted values, computed per-element loss in plain f64,
+        // and rebuilt a non-grad leaf — silently severing autograd.
+        let neg_target = session.tensor_neg(target)?;
+        let z = session.tensor_mul(neg_target, input)?;
+        let relu_z = session.tensor_relu(z)?;
+        let abs_z = session.tensor_abs(z)?;
+        let neg_abs_z = session.tensor_neg(abs_z)?;
+        let exp_neg_abs = session.tensor_exp(neg_abs_z)?;
+        let log_term = session.tensor_log1p(exp_neg_abs)?;
+        let per_elem = session.tensor_add(relu_z, log_term)?;
         match self.reduction {
-            Reduction::None => session.tensor_variable(losses, shape, false),
-            Reduction::Mean => {
-                let mean = losses.iter().sum::<f64>() / n as f64;
-                session.tensor_variable(vec![mean], vec![1], false)
-            }
-            Reduction::Sum => {
-                let sum = losses.iter().sum::<f64>();
-                session.tensor_variable(vec![sum], vec![1], false)
-            }
+            Reduction::None => Ok(per_elem),
+            Reduction::Mean => session.tensor_mean(per_elem),
+            Reduction::Sum => session.tensor_sum(per_elem),
         }
     }
 }
