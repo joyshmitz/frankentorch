@@ -12529,41 +12529,35 @@ impl Module for ReflectionPad1d {
             return Ok(input);
         }
 
-        let vals = session.tensor_values(input)?;
-        let batch_dims = if ndim == 1 {
-            1
-        } else {
-            checked_shape_numel(
-                &input_shape[..ndim - 1],
-                "ReflectionPad1d batch shape overflow",
-            )?
-        };
+        // Compose through tensor_index_select along the last dim so
+        // gradients flow back to the input. The previous body extracted
+        // tensor_values and rebuilt a requires_grad=false leaf, severing
+        // autograd through every reflection-padded layer (frankentorch-kae4).
+        // PyTorch's reflection pad: left half mirrors around index 0
+        // (exclusive), right half mirrors around index l-1 (exclusive).
         let pad_total = checked_add(
             self.padding_left,
             self.padding_right,
             "ReflectionPad1d padding overflow",
         )?;
         let new_l = checked_add(l, pad_total, "ReflectionPad1d output length overflow")?;
-        let output_len = checked_mul(batch_dims, new_l, "ReflectionPad1d output size overflow")?;
-        let mut output = Vec::with_capacity(output_len);
-
-        for b in 0..batch_dims {
-            let row = &vals[b * l..(b + 1) * l];
-            // Left reflection
-            for i in (0..self.padding_left).rev() {
-                output.push(row[i + 1]);
-            }
-            // Original
-            output.extend_from_slice(row);
-            // Right reflection
-            for i in 0..self.padding_right {
-                output.push(row[l - 2 - i]);
-            }
+        let mut indices: Vec<f64> = Vec::with_capacity(new_l);
+        for j in 0..self.padding_left {
+            // output[..., j] = input[..., pad_left - j] for j < pad_left
+            #[allow(clippy::cast_precision_loss)]
+            indices.push((self.padding_left - j) as f64);
         }
-
-        let mut new_shape = input_shape;
-        *new_shape.last_mut().unwrap() = new_l;
-        session.tensor_variable(output, new_shape, false)
+        for i in 0..l {
+            #[allow(clippy::cast_precision_loss)]
+            indices.push(i as f64);
+        }
+        for i in 0..self.padding_right {
+            // last `pad_right` outputs reflect around index l-1
+            #[allow(clippy::cast_precision_loss)]
+            indices.push((l - 2 - i) as f64);
+        }
+        let idx_tensor = session.tensor_variable(indices, vec![new_l], false)?;
+        session.tensor_index_select(input, ndim - 1, idx_tensor)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -12618,15 +12612,11 @@ impl Module for ReflectionPad2d {
             )));
         }
 
-        let vals = session.tensor_values(input)?;
-        let batch_dims = if ndim == 2 {
-            1
-        } else {
-            checked_shape_numel(
-                &input_shape[..ndim - 2],
-                "ReflectionPad2d batch shape overflow",
-            )?
-        };
+        // Compose through two sequential tensor_index_select calls
+        // (one per spatial axis) so gradients flow to the input. The
+        // previous body extracted tensor_values and rebuilt a
+        // requires_grad=false leaf, severing autograd through every
+        // reflection-padded conv stack (frankentorch-kae4).
         let pad_h = checked_add(
             self.pad_top,
             self.pad_bottom,
@@ -12639,43 +12629,40 @@ impl Module for ReflectionPad2d {
         )?;
         let new_h = checked_add(h, pad_h, "ReflectionPad2d output height overflow")?;
         let new_w = checked_add(w, pad_w, "ReflectionPad2d output width overflow")?;
-        let output_plane = checked_mul(new_h, new_w, "ReflectionPad2d output size overflow")?;
-        let output_len = checked_mul(
-            batch_dims,
-            output_plane,
-            "ReflectionPad2d output size overflow",
-        )?;
-        let mut output = Vec::with_capacity(output_len);
-        let input_plane = checked_mul(h, w, "ReflectionPad2d input shape overflow")?;
 
-        for b in 0..batch_dims {
-            let plane = &vals[b * input_plane..(b + 1) * input_plane];
-            for row_out in 0..new_h {
-                let src_row = if row_out < self.pad_top {
-                    self.pad_top - row_out
-                } else if row_out >= self.pad_top + h {
-                    h - 2 - (row_out - self.pad_top - h)
-                } else {
-                    row_out - self.pad_top
-                };
-                let row_data = &plane[src_row * w..(src_row + 1) * w];
-                for col_out in 0..new_w {
-                    let src_col = if col_out < self.pad_left {
-                        self.pad_left - col_out
-                    } else if col_out >= self.pad_left + w {
-                        w - 2 - (col_out - self.pad_left - w)
-                    } else {
-                        col_out - self.pad_left
-                    };
-                    output.push(row_data[src_col]);
-                }
-            }
+        // Reflection along the W (last) axis first.
+        let mut col_indices: Vec<f64> = Vec::with_capacity(new_w);
+        for j in 0..self.pad_left {
+            #[allow(clippy::cast_precision_loss)]
+            col_indices.push((self.pad_left - j) as f64);
         }
+        for i in 0..w {
+            #[allow(clippy::cast_precision_loss)]
+            col_indices.push(i as f64);
+        }
+        for i in 0..self.pad_right {
+            #[allow(clippy::cast_precision_loss)]
+            col_indices.push((w - 2 - i) as f64);
+        }
+        let col_idx_t = session.tensor_variable(col_indices, vec![new_w], false)?;
+        let after_w = session.tensor_index_select(input, ndim - 1, col_idx_t)?;
 
-        let mut new_shape = input_shape;
-        new_shape[ndim - 2] = new_h;
-        new_shape[ndim - 1] = new_w;
-        session.tensor_variable(output, new_shape, false)
+        // Then reflection along the H axis.
+        let mut row_indices: Vec<f64> = Vec::with_capacity(new_h);
+        for j in 0..self.pad_top {
+            #[allow(clippy::cast_precision_loss)]
+            row_indices.push((self.pad_top - j) as f64);
+        }
+        for i in 0..h {
+            #[allow(clippy::cast_precision_loss)]
+            row_indices.push(i as f64);
+        }
+        for i in 0..self.pad_bottom {
+            #[allow(clippy::cast_precision_loss)]
+            row_indices.push((h - 2 - i) as f64);
+        }
+        let row_idx_t = session.tensor_variable(row_indices, vec![new_h], false)?;
+        session.tensor_index_select(after_w, ndim - 2, row_idx_t)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -12722,38 +12709,26 @@ impl Module for ReplicationPad1d {
             )));
         }
 
-        let vals = session.tensor_values(input)?;
-        let batch_dims = if ndim == 1 {
-            1
-        } else {
-            checked_shape_numel(
-                &input_shape[..ndim - 1],
-                "ReplicationPad1d batch shape overflow",
-            )?
-        };
+        // Compose via tensor_index_select so the input gradient flows.
+        // The previous body extracted tensor_values + rebuilt a non-grad
+        // leaf, severing autograd (frankentorch-kae4).
         let pad_total = checked_add(
             self.padding_left,
             self.padding_right,
             "ReplicationPad1d padding overflow",
         )?;
         let new_l = checked_add(l, pad_total, "ReplicationPad1d output length overflow")?;
-        let output_len = checked_mul(batch_dims, new_l, "ReplicationPad1d output size overflow")?;
-        let mut output = Vec::with_capacity(output_len);
-
-        for b in 0..batch_dims {
-            let row = &vals[b * l..(b + 1) * l];
-            for _ in 0..self.padding_left {
-                output.push(row[0]);
-            }
-            output.extend_from_slice(row);
-            for _ in 0..self.padding_right {
-                output.push(row[l - 1]);
-            }
+        let mut indices: Vec<f64> = Vec::with_capacity(new_l);
+        indices.extend(std::iter::repeat_n(0.0_f64, self.padding_left));
+        for i in 0..l {
+            #[allow(clippy::cast_precision_loss)]
+            indices.push(i as f64);
         }
-
-        let mut new_shape = input_shape;
-        *new_shape.last_mut().unwrap() = new_l;
-        session.tensor_variable(output, new_shape, false)
+        #[allow(clippy::cast_precision_loss)]
+        let last = (l - 1) as f64;
+        indices.extend(std::iter::repeat_n(last, self.padding_right));
+        let idx_t = session.tensor_variable(indices, vec![new_l], false)?;
+        session.tensor_index_select(input, ndim - 1, idx_t)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -12808,15 +12783,9 @@ impl Module for ReplicationPad2d {
                 },
             )));
         }
-        let vals = session.tensor_values(input)?;
-        let batch_dims = if ndim == 2 {
-            1
-        } else {
-            checked_shape_numel(
-                &input_shape[..ndim - 2],
-                "ReplicationPad2d batch shape overflow",
-            )?
-        };
+        // Compose via two sequential tensor_index_select calls so the
+        // input gradient flows. Previously: tensor_values + non-grad
+        // leaf rebuild silently severed autograd (frankentorch-kae4).
         let pad_h = checked_add(
             self.pad_top,
             self.pad_bottom,
@@ -12829,43 +12798,36 @@ impl Module for ReplicationPad2d {
         )?;
         let new_h = checked_add(h, pad_h, "ReplicationPad2d output height overflow")?;
         let new_w = checked_add(w, pad_w, "ReplicationPad2d output width overflow")?;
-        let output_plane = checked_mul(new_h, new_w, "ReplicationPad2d output size overflow")?;
-        let output_len = checked_mul(
-            batch_dims,
-            output_plane,
-            "ReplicationPad2d output size overflow",
-        )?;
-        let mut output = Vec::with_capacity(output_len);
-        let input_plane = checked_mul(h, w, "ReplicationPad2d input shape overflow")?;
 
-        for b in 0..batch_dims {
-            let plane = &vals[b * input_plane..(b + 1) * input_plane];
-            for row_out in 0..new_h {
-                let src_row = if row_out < self.pad_top {
-                    0
-                } else if row_out >= self.pad_top + h {
-                    h - 1
-                } else {
-                    row_out - self.pad_top
-                };
-                let row_data = &plane[src_row * w..(src_row + 1) * w];
-                for col_out in 0..new_w {
-                    let src_col = if col_out < self.pad_left {
-                        0
-                    } else if col_out >= self.pad_left + w {
-                        w - 1
-                    } else {
-                        col_out - self.pad_left
-                    };
-                    output.push(row_data[src_col]);
-                }
-            }
+        if self.pad_left == 0 && self.pad_right == 0 && self.pad_top == 0 && self.pad_bottom == 0 {
+            return Ok(input);
         }
 
-        let mut new_shape = input_shape;
-        new_shape[ndim - 2] = new_h;
-        new_shape[ndim - 1] = new_w;
-        session.tensor_variable(output, new_shape, false)
+        // Replication along W (last) axis.
+        let mut col_indices: Vec<f64> = Vec::with_capacity(new_w);
+        col_indices.extend(std::iter::repeat_n(0.0_f64, self.pad_left));
+        for i in 0..w {
+            #[allow(clippy::cast_precision_loss)]
+            col_indices.push(i as f64);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let last_w = (w - 1) as f64;
+        col_indices.extend(std::iter::repeat_n(last_w, self.pad_right));
+        let col_t = session.tensor_variable(col_indices, vec![new_w], false)?;
+        let after_w = session.tensor_index_select(input, ndim - 1, col_t)?;
+
+        // Replication along H axis.
+        let mut row_indices: Vec<f64> = Vec::with_capacity(new_h);
+        row_indices.extend(std::iter::repeat_n(0.0_f64, self.pad_top));
+        for i in 0..h {
+            #[allow(clippy::cast_precision_loss)]
+            row_indices.push(i as f64);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let last_h = (h - 1) as f64;
+        row_indices.extend(std::iter::repeat_n(last_h, self.pad_bottom));
+        let row_t = session.tensor_variable(row_indices, vec![new_h], false)?;
+        session.tensor_index_select(after_w, ndim - 2, row_t)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -12930,15 +12892,21 @@ impl Module for ReplicationPad3d {
                 },
             )));
         }
-        let vals = session.tensor_values(input)?;
-        let batch_dims = if ndim == 3 {
-            1
-        } else {
-            checked_shape_numel(
-                &input_shape[..ndim - 3],
-                "ReplicationPad3d batch shape overflow",
-            )?
-        };
+
+        if self.pad_front == 0
+            && self.pad_back == 0
+            && self.pad_top == 0
+            && self.pad_bottom == 0
+            && self.pad_left == 0
+            && self.pad_right == 0
+        {
+            return Ok(input);
+        }
+
+        // Compose via three sequential tensor_index_select calls (one
+        // per spatial axis) so gradients flow through. Previously the
+        // body extracted tensor_values and rebuilt a non-grad leaf,
+        // severing autograd (frankentorch-kae4).
         let pad_d = checked_add(
             self.pad_front,
             self.pad_back,
@@ -12957,36 +12925,45 @@ impl Module for ReplicationPad3d {
         let new_d = checked_add(d, pad_d, "ReplicationPad3d output depth overflow")?;
         let new_h = checked_add(h, pad_h, "ReplicationPad3d output height overflow")?;
         let new_w = checked_add(w, pad_w, "ReplicationPad3d output width overflow")?;
-        let output_plane = checked_mul(new_h, new_w, "ReplicationPad3d output size overflow")?;
-        let output_vol = checked_mul(new_d, output_plane, "ReplicationPad3d output size overflow")?;
-        let output_len = checked_mul(
-            batch_dims,
-            output_vol,
-            "ReplicationPad3d output size overflow",
-        )?;
-        let mut output = Vec::with_capacity(output_len);
-        let input_plane = checked_mul(h, w, "ReplicationPad3d input shape overflow")?;
-        let input_vol = checked_mul(d, input_plane, "ReplicationPad3d input shape overflow")?;
 
-        for b in 0..batch_dims {
-            let vol = &vals[b * input_vol..(b + 1) * input_vol];
-            for di in 0..new_d {
-                let src_d = di.saturating_sub(self.pad_front).min(d - 1);
-                for ri in 0..new_h {
-                    let src_h = ri.saturating_sub(self.pad_top).min(h - 1);
-                    for ci in 0..new_w {
-                        let src_w = ci.saturating_sub(self.pad_left).min(w - 1);
-                        output.push(vol[src_d * h * w + src_h * w + src_w]);
-                    }
-                }
-            }
+        // W axis.
+        let mut col_indices: Vec<f64> = Vec::with_capacity(new_w);
+        col_indices.extend(std::iter::repeat_n(0.0_f64, self.pad_left));
+        for i in 0..w {
+            #[allow(clippy::cast_precision_loss)]
+            col_indices.push(i as f64);
         }
+        #[allow(clippy::cast_precision_loss)]
+        let last_w = (w - 1) as f64;
+        col_indices.extend(std::iter::repeat_n(last_w, self.pad_right));
+        let col_t = session.tensor_variable(col_indices, vec![new_w], false)?;
+        let after_w = session.tensor_index_select(input, ndim - 1, col_t)?;
 
-        let mut new_shape = input_shape;
-        new_shape[ndim - 3] = new_d;
-        new_shape[ndim - 2] = new_h;
-        new_shape[ndim - 1] = new_w;
-        session.tensor_variable(output, new_shape, false)
+        // H axis.
+        let mut row_indices: Vec<f64> = Vec::with_capacity(new_h);
+        row_indices.extend(std::iter::repeat_n(0.0_f64, self.pad_top));
+        for i in 0..h {
+            #[allow(clippy::cast_precision_loss)]
+            row_indices.push(i as f64);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let last_h = (h - 1) as f64;
+        row_indices.extend(std::iter::repeat_n(last_h, self.pad_bottom));
+        let row_t = session.tensor_variable(row_indices, vec![new_h], false)?;
+        let after_h = session.tensor_index_select(after_w, ndim - 2, row_t)?;
+
+        // D axis.
+        let mut depth_indices: Vec<f64> = Vec::with_capacity(new_d);
+        depth_indices.extend(std::iter::repeat_n(0.0_f64, self.pad_front));
+        for i in 0..d {
+            #[allow(clippy::cast_precision_loss)]
+            depth_indices.push(i as f64);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let last_d = (d - 1) as f64;
+        depth_indices.extend(std::iter::repeat_n(last_d, self.pad_back));
+        let depth_t = session.tensor_variable(depth_indices, vec![new_d], false)?;
+        session.tensor_index_select(after_h, ndim - 3, depth_t)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -13033,43 +13010,33 @@ impl Module for CircularPad1d {
             )));
         }
 
-        let vals = session.tensor_values(input)?;
-        let batch_dims = if ndim == 1 {
-            1
-        } else {
-            checked_shape_numel(
-                &input_shape[..ndim - 1],
-                "CircularPad1d batch shape overflow",
-            )?
-        };
+        // Compose via tensor_index_select so the input gradient flows.
+        // The previous body extracted tensor_values + rebuilt a
+        // non-grad leaf, severing autograd (frankentorch-kae4).
         let pad_total = checked_add(
             self.padding_left,
             self.padding_right,
             "CircularPad1d padding overflow",
         )?;
         let new_l = checked_add(l, pad_total, "CircularPad1d output length overflow")?;
-        let output_len = checked_mul(batch_dims, new_l, "CircularPad1d output size overflow")?;
-        let mut output = Vec::with_capacity(output_len);
-
-        for b in 0..batch_dims {
-            let row = &vals[b * l..(b + 1) * l];
-            // Left circular: take from end
-            for i in 0..self.padding_left {
-                let src = ((l as isize - self.padding_left as isize + i as isize) % l as isize
-                    + l as isize) as usize
-                    % l;
-                output.push(row[src]);
-            }
-            output.extend_from_slice(row);
-            // Right circular: take from beginning
-            for i in 0..self.padding_right {
-                output.push(row[i % l]);
-            }
+        let mut indices: Vec<f64> = Vec::with_capacity(new_l);
+        for i in 0..self.padding_left {
+            let src = ((l as isize - self.padding_left as isize + i as isize) % l as isize
+                + l as isize) as usize
+                % l;
+            #[allow(clippy::cast_precision_loss)]
+            indices.push(src as f64);
         }
-
-        let mut new_shape = input_shape;
-        *new_shape.last_mut().unwrap() = new_l;
-        session.tensor_variable(output, new_shape, false)
+        for i in 0..l {
+            #[allow(clippy::cast_precision_loss)]
+            indices.push(i as f64);
+        }
+        for i in 0..self.padding_right {
+            #[allow(clippy::cast_precision_loss)]
+            indices.push((i % l) as f64);
+        }
+        let idx_t = session.tensor_variable(indices, vec![new_l], false)?;
+        session.tensor_index_select(input, ndim - 1, idx_t)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -13124,15 +13091,13 @@ impl Module for CircularPad2d {
                 },
             )));
         }
-        let vals = session.tensor_values(input)?;
-        let batch_dims = if ndim == 2 {
-            1
-        } else {
-            checked_shape_numel(
-                &input_shape[..ndim - 2],
-                "CircularPad2d batch shape overflow",
-            )?
-        };
+        if self.pad_left == 0 && self.pad_right == 0 && self.pad_top == 0 && self.pad_bottom == 0 {
+            return Ok(input);
+        }
+
+        // Compose via two tensor_index_select calls. Previously the
+        // body extracted tensor_values + rebuilt non-grad leaf,
+        // severing autograd (frankentorch-kae4).
         let pad_h = checked_add(
             self.pad_top,
             self.pad_bottom,
@@ -13145,35 +13110,28 @@ impl Module for CircularPad2d {
         )?;
         let new_h = checked_add(h, pad_h, "CircularPad2d output height overflow")?;
         let new_w = checked_add(w, pad_w, "CircularPad2d output width overflow")?;
-        let output_plane = checked_mul(new_h, new_w, "CircularPad2d output size overflow")?;
-        let output_len = checked_mul(
-            batch_dims,
-            output_plane,
-            "CircularPad2d output size overflow",
-        )?;
-        let mut output = Vec::with_capacity(output_len);
-        let input_plane = checked_mul(h, w, "CircularPad2d input shape overflow")?;
 
-        for b in 0..batch_dims {
-            let plane = &vals[b * input_plane..(b + 1) * input_plane];
-            for row_out in 0..new_h {
-                let src_row = ((row_out as isize - self.pad_top as isize) % h as isize + h as isize)
-                    as usize
-                    % h;
-                let row_data = &plane[src_row * w..(src_row + 1) * w];
-                for col_out in 0..new_w {
-                    let src_col = ((col_out as isize - self.pad_left as isize) % w as isize
-                        + w as isize) as usize
-                        % w;
-                    output.push(row_data[src_col]);
-                }
-            }
+        let mut col_indices: Vec<f64> = Vec::with_capacity(new_w);
+        for col_out in 0..new_w {
+            let src_col = ((col_out as isize - self.pad_left as isize) % w as isize
+                + w as isize) as usize
+                % w;
+            #[allow(clippy::cast_precision_loss)]
+            col_indices.push(src_col as f64);
         }
+        let col_t = session.tensor_variable(col_indices, vec![new_w], false)?;
+        let after_w = session.tensor_index_select(input, ndim - 1, col_t)?;
 
-        let mut new_shape = input_shape;
-        new_shape[ndim - 2] = new_h;
-        new_shape[ndim - 1] = new_w;
-        session.tensor_variable(output, new_shape, false)
+        let mut row_indices: Vec<f64> = Vec::with_capacity(new_h);
+        for row_out in 0..new_h {
+            let src_row = ((row_out as isize - self.pad_top as isize) % h as isize
+                + h as isize) as usize
+                % h;
+            #[allow(clippy::cast_precision_loss)]
+            row_indices.push(src_row as f64);
+        }
+        let row_t = session.tensor_variable(row_indices, vec![new_h], false)?;
+        session.tensor_index_select(after_w, ndim - 2, row_t)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -22820,6 +22778,149 @@ mod tests {
         );
         assert!(CircularPad1d::new((1, 1)).parameters().is_empty());
         assert!(CircularPad2d::new((1, 1, 1, 1)).parameters().is_empty());
+    }
+
+    #[test]
+    fn reflection_pad1d_propagates_input_gradient() {
+        // Regression for frankentorch-kae4: previous body extracted
+        // tensor_values + rebuilt a non-grad leaf, severing autograd.
+        // Now composes via tensor_index_select; gradient counts how
+        // many output positions reference each input position.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], true)
+            .unwrap();
+        let pad = ReflectionPad1d::new((2, 2));
+        let output = pad.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist (autograd not severed)");
+        // Output indices are [2, 1, 0, 1, 2, 3, 2, 1]: counts = [1, 3, 3, 1].
+        assert_eq!(grad, &vec![1.0, 3.0, 3.0, 1.0]);
+    }
+
+    #[test]
+    fn replication_pad1d_propagates_input_gradient() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], true)
+            .unwrap();
+        let pad = ReplicationPad1d::new((2, 3));
+        let output = pad.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist");
+        // Output indices [0, 0, 0, 1, 2, 3, 3, 3, 3]: counts = [3, 1, 1, 4].
+        assert_eq!(grad, &vec![3.0, 1.0, 1.0, 4.0]);
+    }
+
+    #[test]
+    fn circular_pad1d_propagates_input_gradient() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], true)
+            .unwrap();
+        let pad = CircularPad1d::new((2, 2));
+        let output = pad.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist");
+        // Output indices [2, 3, 0, 1, 2, 3, 0, 1]: each of [0..4] appears twice.
+        assert_eq!(grad, &vec![2.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn reflection_pad2d_propagates_input_gradient() {
+        // 2D pad uses two sequential index_selects (W then H). Gradient
+        // must still flow back to every input element.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![1, 1, 3, 3],
+                true,
+            )
+            .unwrap();
+        let pad = ReflectionPad2d::new((1, 1, 1, 1));
+        let output = pad.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist");
+        assert_eq!(grad.len(), 9);
+        assert!(
+            grad.iter().all(|g| g.is_finite() && *g > 0.0),
+            "every input position is referenced at least once: {:?}",
+            grad
+        );
+        // Total grad mass equals output element count (5*5 = 25 ones).
+        let total: f64 = grad.iter().sum();
+        assert!((total - 25.0).abs() < 1e-9, "total grad mass = {}", total);
+    }
+
+    #[test]
+    fn replication_pad2d_propagates_input_gradient() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
+            .unwrap();
+        let pad = ReplicationPad2d::new((1, 1, 1, 1));
+        let output = pad.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist");
+        // Corner pixels are replicated 4 times, edges once each: total 16 ones.
+        let total: f64 = grad.iter().sum();
+        assert!((total - 16.0).abs() < 1e-9, "total grad mass = {}", total);
+    }
+
+    #[test]
+    fn replication_pad3d_propagates_input_gradient() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                vec![1, 1, 2, 2, 2],
+                true,
+            )
+            .unwrap();
+        let pad = ReplicationPad3d::new((1, 1, 0, 0, 0, 0));
+        let output = pad.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist");
+        // Output is [1,1,2,2,4] = 16 ones; each W-edge replicated twice.
+        let total: f64 = grad.iter().sum();
+        assert!((total - 16.0).abs() < 1e-9, "total grad mass = {}", total);
+    }
+
+    #[test]
+    fn circular_pad2d_propagates_input_gradient() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 1, 2, 3], true)
+            .unwrap();
+        let pad = CircularPad2d::new((1, 1, 1, 1));
+        let output = pad.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist");
+        // Output is [1,1,4,5] = 20 ones distributed across 6 input cells.
+        let total: f64 = grad.iter().sum();
+        assert!((total - 20.0).abs() < 1e-9, "total grad mass = {}", total);
     }
 
     // ── EmbeddingBag Tests ───────────────────────────────────────────────
