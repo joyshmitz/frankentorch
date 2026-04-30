@@ -11576,9 +11576,7 @@ impl FrankenTorchSession {
         b: TensorNodeId,
         upper: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let a_vals = self.tensor_values(a)?;
         let a_shape = self.tensor_shape(a)?;
-        let b_vals = self.tensor_values(b)?;
         let b_shape = self.tensor_shape(b)?;
 
         if a_shape.len() != 2 || a_shape[0] != a_shape[1] {
@@ -11600,47 +11598,125 @@ impl FrankenTorchSession {
             )));
         }
 
-        let mut x = b_vals.clone();
-
-        for col in 0..nrhs {
-            if upper {
-                // Back substitution
-                for i in (0..n).rev() {
-                    let diag = a_vals[i * n + i];
-                    if diag.abs() < 1e-15 {
-                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                            ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                reason: "triangular_solve: singular triangular matrix",
-                            },
-                        )));
+        // tensor_apply_function takes (forward, backward) closures.
+        // The forward solves AX = B by direct substitution.
+        // The backward applies the standard triangular-solve identity:
+        //     grad_B = A^{-T} grad_X
+        //     grad_A = -A^{-T} grad_X X^T   masked to A's triangle
+        // We implement triangular_solve(A^T, grad_X, !upper) inline
+        // for the grad_B leg, then outer-product with -X^T to get
+        // grad_A and zero out the off-triangular half.
+        // Tracked under frankentorch-skpl (child of frankentorch-tw0y).
+        let b_shape_clone = b_shape.clone();
+        let out = self.tensor_apply_function(
+            &[a, b],
+            move |ctx, inputs| {
+                let (a_vals, a_in_shape) = inputs[0];
+                let (b_vals, _b_in_shape) = inputs[1];
+                let mut x = b_vals.to_vec();
+                for col in 0..nrhs {
+                    if upper {
+                        for i in (0..n).rev() {
+                            let diag = a_vals[i * n + i];
+                            if diag.abs() < 1e-15 {
+                                return Err(AutogradError::Dispatch(
+                                    ft_dispatch::DispatchError::Key(
+                                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                            reason: "triangular_solve: singular triangular matrix",
+                                        },
+                                    ),
+                                ));
+                            }
+                            let mut sum = x[i * nrhs + col];
+                            for j in (i + 1)..n {
+                                sum -= a_vals[i * n + j] * x[j * nrhs + col];
+                            }
+                            x[i * nrhs + col] = sum / diag;
+                        }
+                    } else {
+                        for i in 0..n {
+                            let diag = a_vals[i * n + i];
+                            if diag.abs() < 1e-15 {
+                                return Err(AutogradError::Dispatch(
+                                    ft_dispatch::DispatchError::Key(
+                                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                            reason: "triangular_solve: singular triangular matrix",
+                                        },
+                                    ),
+                                ));
+                            }
+                            let mut sum = x[i * nrhs + col];
+                            for j in 0..i {
+                                sum -= a_vals[i * n + j] * x[j * nrhs + col];
+                            }
+                            x[i * nrhs + col] = sum / diag;
+                        }
                     }
-                    let mut sum = x[i * nrhs + col];
-                    for j in (i + 1)..n {
-                        sum -= a_vals[i * n + j] * x[j * nrhs + col];
-                    }
-                    x[i * nrhs + col] = sum / diag;
                 }
-            } else {
-                // Forward substitution
+                // Save A (for the backward triangular_solve(A^T, ..)) and
+                // X (for the outer product in grad_A).
+                ctx.save_for_backward(a_vals.to_vec(), a_in_shape.to_vec());
+                ctx.save_for_backward(x.clone(), b_shape_clone.clone());
+                Ok((x, b_shape_clone.clone()))
+            },
+            move |ctx, grad_outputs| {
+                let grad_x = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let a_vals = &saved[0];
+                let x_vals = &saved[1];
+
+                // Step 1: grad_B = A^{-T} grad_X = triangular_solve(A^T, grad_X, !upper).
+                // We perform the substitution directly on a transposed
+                // view of A (i.e. swap (i, j) → (j, i) in indexing).
+                // The triangle flips: solving with A^T treats the
+                // upper-tri part of A as the lower-tri part of A^T.
+                let mut grad_b = grad_x.to_vec();
+                let solve_upper = !upper;
+                for col in 0..nrhs {
+                    if solve_upper {
+                        for i in (0..n).rev() {
+                            // diag of A^T is same as diag of A
+                            let diag = a_vals[i * n + i];
+                            // a_T[i,j] = a[j,i]; relevant for j > i
+                            let mut sum = grad_b[i * nrhs + col];
+                            for j in (i + 1)..n {
+                                sum -= a_vals[j * n + i] * grad_b[j * nrhs + col];
+                            }
+                            grad_b[i * nrhs + col] = sum / diag;
+                        }
+                    } else {
+                        for i in 0..n {
+                            let diag = a_vals[i * n + i];
+                            let mut sum = grad_b[i * nrhs + col];
+                            for j in 0..i {
+                                sum -= a_vals[j * n + i] * grad_b[j * nrhs + col];
+                            }
+                            grad_b[i * nrhs + col] = sum / diag;
+                        }
+                    }
+                }
+
+                // Step 2: grad_A = -grad_B @ X^T   masked to A's triangle.
+                // grad_A[i,k] = -sum_j grad_B[i,j] * X[k,j]
+                let mut grad_a = vec![0.0_f64; n * n];
                 for i in 0..n {
-                    let diag = a_vals[i * n + i];
-                    if diag.abs() < 1e-15 {
-                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                            ft_dispatch::DispatchKeyError::IncompatibleSet {
-                                reason: "triangular_solve: singular triangular matrix",
-                            },
-                        )));
+                    for k in 0..n {
+                        // Mask: keep only the triangle that A has.
+                        let in_triangle = if upper { k >= i } else { k <= i };
+                        if !in_triangle {
+                            continue;
+                        }
+                        let mut acc = 0.0_f64;
+                        for j in 0..nrhs {
+                            acc += grad_b[i * nrhs + j] * x_vals[k * nrhs + j];
+                        }
+                        grad_a[i * n + k] = -acc;
                     }
-                    let mut sum = x[i * nrhs + col];
-                    for j in 0..i {
-                        sum -= a_vals[i * n + j] * x[j * nrhs + col];
-                    }
-                    x[i * nrhs + col] = sum / diag;
                 }
-            }
-        }
 
-        let out = self.tensor_tape.leaf(x, b_shape, false)?;
+                Ok(vec![Some(grad_a), Some(grad_b)])
+            },
+        )?;
         Ok(out)
     }
 
@@ -34929,6 +35005,60 @@ mod tests {
         let vals = s.tensor_values(x).unwrap();
         assert!((vals[0] - 1.5).abs() < 1e-10);
         assert!((vals[1] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn triangular_solve_propagates_gradient_through_a_and_b() {
+        // Regression test for frankentorch-skpl. tensor_triangular_solve
+        // used to extract values, run substitution, and rebuild a
+        // requires_grad=false leaf — same severed-autograd pattern
+        // recently fixed for cov / corrcoef / mode etc. After
+        // wrapping in tensor_apply_function with the analytical
+        //     grad_B = A^{-T} grad_X
+        //     grad_A = -A^{-T} grad_X X^T   (masked to A's triangle)
+        // gradients flow through both A and B.
+        //
+        // For diagonal A = diag(2, 4) and B = [10, 20] (lower):
+        //   X = [10/2, 20/4] = [5, 5]
+        //   Under sum loss: grad_X = [1, 1]
+        //   grad_B = A^{-T} grad_X = [1/2, 1/4]
+        //   grad_A_full = -A^{-T} grad_X X^T (outer):
+        //     [[-1/2 * 5, -1/2 * 5],
+        //      [-1/4 * 5, -1/4 * 5]]
+        //     = [[-2.5, -2.5], [-1.25, -1.25]]
+        //   masked to lower triangle (upper=false) keeps i >= k:
+        //     grad_A = [[-2.5, 0], [-1.25, -1.25]]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![2.0, 0.0, 0.0, 4.0], vec![2, 2], true)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![10.0, 20.0], vec![2, 1], true)
+            .unwrap();
+        let x = s.tensor_triangular_solve(a, b, false).unwrap();
+        let loss = s.tensor_sum(x).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_a = s
+            .tensor_gradient(&report, a)
+            .expect("triangular_solve must propagate gradient through A");
+        let grad_b = s
+            .tensor_gradient(&report, b)
+            .expect("triangular_solve must propagate gradient through B");
+
+        let exp_a = [-2.5_f64, 0.0, -1.25, -1.25];
+        let exp_b = [0.5_f64, 0.25];
+        for (i, (&g, &e)) in grad_a.iter().zip(exp_a.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "triangular_solve grad_A[{i}] = {g}, expected {e}"
+            );
+        }
+        for (i, (&g, &e)) in grad_b.iter().zip(exp_b.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "triangular_solve grad_B[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     // ── cholesky_inverse tests ──────────────────────────────────────────
