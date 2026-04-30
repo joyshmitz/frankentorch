@@ -10917,6 +10917,22 @@ impl FrankenTorchSession {
                 Ok(current)
             }
             DType::F32 => {
+                // F32 diff: the autograd path through tensor_narrow +
+                // tensor_sub doesn't currently preserve F32 dtype
+                // through the binary op (tensor_sub upcasts), which
+                // would silently change the output dtype. Until a
+                // dtype-preserving F32 sub is wired up, fail-loud on
+                // requires_grad=true and keep the existing severed
+                // forward path for non-grad inputs (matches the
+                // affine_grid / linalg_inv pattern of "F64 autograd
+                // only" for tensor_apply_function-incompatible ops).
+                if self.tensor_tape.tensor_requires_grad(input)? {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "diff: autograd is only supported for F64",
+                        },
+                    )));
+                }
                 let mut current = input;
                 for _ in 0..n {
                     let vals = self.tensor_values_f32(current)?;
