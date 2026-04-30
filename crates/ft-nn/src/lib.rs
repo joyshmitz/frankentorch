@@ -6185,11 +6185,7 @@ impl MaxUnpool1d {
         indices: &[usize],
         output_size: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
-        };
-
+        let input_shape = session.tensor_shape(input)?;
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -6210,22 +6206,53 @@ impl MaxUnpool1d {
             )));
         }
 
-        let input_vals = session.tensor_values(input)?;
-        let mut output = vec![0.0f64; n * c * output_size];
-
-        for batch in 0..n {
-            for ch in 0..c {
-                for (l, &dst_pos) in indices.iter().enumerate().take(l_pooled) {
-                    let src_idx = batch * c * l_pooled + ch * l_pooled + l;
-                    if dst_pos < output_size {
-                        let dst_idx = batch * c * output_size + ch * output_size + dst_pos;
-                        output[dst_idx] = input_vals[src_idx];
+        // Compose through tensor_apply_function with the analytical
+        // scatter-then-gather backward. Tracked under
+        // frankentorch-cbyx. Forward scatters input values into the
+        // output grid via the indices mapping; backward gathers
+        // grad_output back via the same mapping.
+        let in_numel = n * c * l_pooled;
+        let out_numel = n * c * output_size;
+        let indices_for_fwd: Vec<usize> = indices.to_vec();
+        let indices_for_bwd: Vec<usize> = indices.to_vec();
+        let out_shape = vec![n, c, output_size];
+        session.tensor_apply_function(
+            &[input],
+            move |_ctx, inputs| {
+                let (vals, _shape) = inputs[0];
+                let mut output = vec![0.0_f64; out_numel];
+                for batch in 0..n {
+                    for ch in 0..c {
+                        for (l, &dst_pos) in indices_for_fwd.iter().enumerate().take(l_pooled) {
+                            let src_idx = batch * c * l_pooled + ch * l_pooled + l;
+                            if dst_pos < output_size {
+                                let dst_idx =
+                                    batch * c * output_size + ch * output_size + dst_pos;
+                                output[dst_idx] = vals[src_idx];
+                            }
+                        }
                     }
                 }
-            }
-        }
-
-        session.tensor_variable(output, vec![n, c, output_size], false)
+                Ok((output, out_shape.clone()))
+            },
+            move |_ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let mut grad_in = vec![0.0_f64; in_numel];
+                for batch in 0..n {
+                    for ch in 0..c {
+                        for (l, &dst_pos) in indices_for_bwd.iter().enumerate().take(l_pooled) {
+                            let src_idx = batch * c * l_pooled + ch * l_pooled + l;
+                            if dst_pos < output_size {
+                                let dst_idx =
+                                    batch * c * output_size + ch * output_size + dst_pos;
+                                grad_in[src_idx] = g[dst_idx];
+                            }
+                        }
+                    }
+                }
+                Ok(vec![Some(grad_in)])
+            },
+        )
     }
 }
 
@@ -6278,11 +6305,7 @@ impl MaxUnpool2d {
         indices: &[usize],
         output_size: (usize, usize),
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
-        };
-
+        let input_shape = session.tensor_shape(input)?;
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -6306,27 +6329,63 @@ impl MaxUnpool2d {
             )));
         }
 
-        let input_vals = session.tensor_values(input)?;
+        // Same scatter-then-gather autograd pattern as MaxUnpool1d.
+        // Tracked under frankentorch-cbyx.
+        let in_numel = n * c * spatial_pooled;
         let out_spatial = h_out * w_out;
-        let mut output = vec![0.0f64; n * c * out_spatial];
-
-        for batch in 0..n {
-            for ch in 0..c {
-                for hi in 0..h_pooled {
-                    for wi in 0..w_pooled {
-                        let src_idx =
-                            batch * c * spatial_pooled + ch * spatial_pooled + hi * w_pooled + wi;
-                        let dst_pos = indices[hi * w_pooled + wi];
-                        if dst_pos < out_spatial {
-                            let dst_idx = batch * c * out_spatial + ch * out_spatial + dst_pos;
-                            output[dst_idx] = input_vals[src_idx];
+        let out_numel = n * c * out_spatial;
+        let indices_for_fwd: Vec<usize> = indices.to_vec();
+        let indices_for_bwd: Vec<usize> = indices.to_vec();
+        let out_shape = vec![n, c, h_out, w_out];
+        session.tensor_apply_function(
+            &[input],
+            move |_ctx, inputs| {
+                let (vals, _shape) = inputs[0];
+                let mut output = vec![0.0_f64; out_numel];
+                for batch in 0..n {
+                    for ch in 0..c {
+                        for hi in 0..h_pooled {
+                            for wi in 0..w_pooled {
+                                let src_idx = batch * c * spatial_pooled
+                                    + ch * spatial_pooled
+                                    + hi * w_pooled
+                                    + wi;
+                                let dst_pos = indices_for_fwd[hi * w_pooled + wi];
+                                if dst_pos < out_spatial {
+                                    let dst_idx =
+                                        batch * c * out_spatial + ch * out_spatial + dst_pos;
+                                    output[dst_idx] = vals[src_idx];
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
-
-        session.tensor_variable(output, vec![n, c, h_out, w_out], false)
+                Ok((output, out_shape.clone()))
+            },
+            move |_ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let mut grad_in = vec![0.0_f64; in_numel];
+                for batch in 0..n {
+                    for ch in 0..c {
+                        for hi in 0..h_pooled {
+                            for wi in 0..w_pooled {
+                                let src_idx = batch * c * spatial_pooled
+                                    + ch * spatial_pooled
+                                    + hi * w_pooled
+                                    + wi;
+                                let dst_pos = indices_for_bwd[hi * w_pooled + wi];
+                                if dst_pos < out_spatial {
+                                    let dst_idx =
+                                        batch * c * out_spatial + ch * out_spatial + dst_pos;
+                                    grad_in[src_idx] = g[dst_idx];
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(vec![Some(grad_in)])
+            },
+        )
     }
 }
 
@@ -6379,11 +6438,7 @@ impl MaxUnpool3d {
         indices: &[usize],
         output_size: (usize, usize, usize),
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
-        };
-
+        let input_shape = session.tensor_shape(input)?;
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -6408,23 +6463,53 @@ impl MaxUnpool3d {
             )));
         }
 
-        let input_vals = session.tensor_values(input)?;
+        // Same scatter-then-gather autograd pattern as MaxUnpool1d/2d.
+        // Tracked under frankentorch-cbyx.
+        let in_numel = n * c * spatial_pooled;
         let out_spatial = d_out * h_out * w_out;
-        let mut output = vec![0.0f64; n * c * out_spatial];
-
-        for batch in 0..n {
-            for ch in 0..c {
-                for (i, &dst_pos) in indices.iter().enumerate().take(spatial_pooled) {
-                    let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + i;
-                    if dst_pos < out_spatial {
-                        let dst_idx = batch * c * out_spatial + ch * out_spatial + dst_pos;
-                        output[dst_idx] = input_vals[src_idx];
+        let out_numel = n * c * out_spatial;
+        let indices_for_fwd: Vec<usize> = indices.to_vec();
+        let indices_for_bwd: Vec<usize> = indices.to_vec();
+        let out_shape = vec![n, c, d_out, h_out, w_out];
+        session.tensor_apply_function(
+            &[input],
+            move |_ctx, inputs| {
+                let (vals, _shape) = inputs[0];
+                let mut output = vec![0.0_f64; out_numel];
+                for batch in 0..n {
+                    for ch in 0..c {
+                        for (i, &dst_pos) in
+                            indices_for_fwd.iter().enumerate().take(spatial_pooled)
+                        {
+                            let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + i;
+                            if dst_pos < out_spatial {
+                                let dst_idx = batch * c * out_spatial + ch * out_spatial + dst_pos;
+                                output[dst_idx] = vals[src_idx];
+                            }
+                        }
                     }
                 }
-            }
-        }
-
-        session.tensor_variable(output, vec![n, c, d_out, h_out, w_out], false)
+                Ok((output, out_shape.clone()))
+            },
+            move |_ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let mut grad_in = vec![0.0_f64; in_numel];
+                for batch in 0..n {
+                    for ch in 0..c {
+                        for (i, &dst_pos) in
+                            indices_for_bwd.iter().enumerate().take(spatial_pooled)
+                        {
+                            let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + i;
+                            if dst_pos < out_spatial {
+                                let dst_idx = batch * c * out_spatial + ch * out_spatial + dst_pos;
+                                grad_in[src_idx] = g[dst_idx];
+                            }
+                        }
+                    }
+                }
+                Ok(vec![Some(grad_in)])
+            },
+        )
     }
 }
 
