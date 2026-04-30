@@ -11456,27 +11456,40 @@ impl FrankenTorchSession {
         cholesky_factor: TensorNodeId,
         upper: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (factor_values, factor_meta) = self.tensor_values_meta(cholesky_factor)?;
-        let factor_shape = factor_meta.shape();
+        let factor_shape = self.tensor_shape(cholesky_factor)?;
         if factor_shape.len() != 2 || factor_shape[0] != factor_shape[1] {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
                 ft_kernel_cpu::KernelError::ShapeMismatch {
-                    lhs: factor_shape.to_vec(),
-                    rhs: vec![factor_shape.len()],
+                    lhs: factor_shape,
+                    rhs: vec![2],
                 },
             )));
         }
-        let n = factor_shape[0];
-        let chol = ft_kernel_cpu::CholeskyResult {
-            factor: factor_values,
-            n,
-        };
-        let (b_values, b_meta) = self.tensor_values_meta(b)?;
-        let b_shape = b_meta.shape().to_vec();
-        let solution =
-            ft_kernel_cpu::cholesky_solve_contiguous_f64(&chol, &b_values, &b_meta, upper)
-                .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
-        self.tensor_variable(solution, b_shape, false)
+
+        // Compose through tensor_triangular_solve so the autograd
+        // tape carries gradients through both b and the cholesky
+        // factor. tensor_triangular_solve was made autograd-aware
+        // under frankentorch-skpl.
+        //
+        // For A = L L^T (upper=false) solving A X = B:
+        //   Y = L^{-1} B   = triangular_solve(L, B, upper=false)
+        //   X = L^{-T} Y   = triangular_solve(L^T, Y, upper=true)
+        //
+        // For A = U^T U (upper=true):
+        //   Y = U^{-T} B   = triangular_solve(U^T, B, upper=false)
+        //   X = U^{-1} Y   = triangular_solve(U, Y, upper=true)
+        //
+        // Either way the inner triangle becomes upper after the
+        // transpose. Tracked under frankentorch-tw0y.
+        if upper {
+            let u_t = self.tensor_transpose(cholesky_factor, 0, 1)?;
+            let y = self.tensor_triangular_solve(u_t, b, false)?;
+            self.tensor_triangular_solve(cholesky_factor, y, true)
+        } else {
+            let y = self.tensor_triangular_solve(cholesky_factor, b, false)?;
+            let l_t = self.tensor_transpose(cholesky_factor, 0, 1)?;
+            self.tensor_triangular_solve(l_t, y, true)
+        }
     }
 
     /// Compute the matrix inverse.
@@ -29722,6 +29735,41 @@ mod tests {
         // Same answer as lower: [-0.125, 0.75]
         assert!((vals[0] - (-0.125)).abs() < 1e-10);
         assert!((vals[1] - 0.75).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cholesky_solve_propagates_gradient_through_b() {
+        // Regression test for frankentorch-tw0y. tensor_cholesky_solve
+        // used to extract values, run the kernel, and rebuild a
+        // requires_grad=false leaf — same severed-autograd pattern
+        // recently fixed. After composing through tensor_transpose +
+        // tensor_triangular_solve (both autograd-aware), the
+        // gradient flows.
+        //
+        // For diagonal A = diag(4, 9), L = chol(A) = diag(2, 3) and
+        //   X = A^{-1} B = diag(1/4, 1/9) B
+        //   grad_B = A^{-T} grad_X = A^{-1} grad_X (A symmetric)
+        //   For B = [4, 9] under sum loss, X = [1, 1], grad_X = [1, 1]
+        //   grad_B = [1/4, 1/9]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![4.0, 0.0, 0.0, 9.0], vec![2, 2], false)
+            .unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let b = s.tensor_variable(vec![4.0, 9.0], vec![2, 1], true).unwrap();
+        let x = s.tensor_cholesky_solve(b, l, false).unwrap();
+        let loss = s.tensor_sum(x).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_b = s
+            .tensor_gradient(&report, b)
+            .expect("cholesky_solve must propagate gradient through B");
+        let expected = [0.25_f64, 1.0 / 9.0];
+        for (i, (&g, &e)) in grad_b.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "cholesky_solve grad_B[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     // ── linalg.solve tests (bd-2drq.6) ────────────────────────────────
