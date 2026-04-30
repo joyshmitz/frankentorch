@@ -4253,9 +4253,7 @@ impl FrankenTorchSession {
         x2: TensorNodeId,
         p: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let x1_vals = self.tensor_values(x1)?;
         let x1_shape = self.tensor_shape(x1)?;
-        let x2_vals = self.tensor_values(x2)?;
         let x2_shape = self.tensor_shape(x2)?;
 
         let (batch, p_dim, m1, r_dim, m2, batched) = match (x1_shape.len(), x2_shape.len()) {
@@ -4294,6 +4292,64 @@ impl FrankenTorchSession {
             )));
         }
         let m = m1;
+
+        // Autograd path for finite p > 0: compose through broadcasted
+        // sub + abs + pow + sum_dim + pow. Tracked under
+        // frankentorch-tdqo. p == 0 / p == +inf still fail-loud on
+        // requires_grad (sister of frankentorch-0i8u behavior).
+        if p.is_finite() && p > 0.0 && batch * p_dim * r_dim > 0 {
+            let (x1_b, x2_b, expand_target, sum_dim_idx, out_shape) = if batched {
+                // x1: [B, P, M], x2: [B, R, M]
+                // x1_b: [B, P, 1, M], x2_b: [B, 1, R, M], target: [B, P, R, M]
+                let x1_u = self.tensor_unsqueeze(x1, 2)?;
+                let x2_u = self.tensor_unsqueeze(x2, 1)?;
+                (
+                    x1_u,
+                    x2_u,
+                    vec![batch, p_dim, r_dim, m],
+                    3,
+                    vec![batch, p_dim, r_dim],
+                )
+            } else {
+                // x1: [P, M], x2: [R, M]
+                // x1_b: [P, 1, M], x2_b: [1, R, M], target: [P, R, M]
+                let x1_u = self.tensor_unsqueeze(x1, 1)?;
+                let x2_u = self.tensor_unsqueeze(x2, 0)?;
+                (
+                    x1_u,
+                    x2_u,
+                    vec![p_dim, r_dim, m],
+                    2,
+                    vec![p_dim, r_dim],
+                )
+            };
+            let x1_e = self.tensor_expand(x1_b, expand_target.clone())?;
+            let x2_e = self.tensor_expand(x2_b, expand_target)?;
+            let diff = self.tensor_sub(x1_e, x2_e)?;
+            let abs_diff = self.tensor_abs(diff)?;
+            let pow_diff = self.tensor_pow(abs_diff, p)?;
+            let sum = self.tensor_sum_dim(pow_diff, sum_dim_idx)?;
+            let result = self.tensor_pow(sum, 1.0 / p)?;
+            // Reshape ensures the output shape contract matches the
+            // original direct-path output (sum_dim already reduces
+            // the right axis; we just need to confirm the shape).
+            return self.tensor_reshape(result, out_shape);
+        }
+
+        if (p == f64::INFINITY || p == 0.0)
+            && (self.tensor_tape.tensor_requires_grad(x1)?
+                || self.tensor_tape.tensor_requires_grad(x2)?)
+        {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "cdist: autograd is not yet implemented for p=0 or p=inf",
+                },
+            )));
+        }
+
+        // Non-grad fallback path for p == 0, p == inf, or empty output.
+        let x1_vals = self.tensor_values(x1)?;
+        let x2_vals = self.tensor_values(x2)?;
 
         let mut result = vec![0.0f64; batch * p_dim * r_dim];
 
@@ -27079,6 +27135,53 @@ mod tests {
         let out = s.tensor_cdist(x1, x2, f64::INFINITY).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert!((vals[0] - 4.0).abs() < 1e-10); // max(3, 4) = 4
+    }
+
+    #[test]
+    fn cdist_l2_propagates_gradient_through_both_inputs() {
+        // Regression test for frankentorch-tdqo. tensor_cdist used to
+        // extract values, compute distances in plain f64, and rebuild
+        // a non-grad leaf — silently severing autograd through both
+        // x1 and x2. After composing through broadcasted sub + abs +
+        // pow + sum_dim + pow, gradients flow.
+        //
+        // For x1 = [[0, 0]] (shape [1, 2]) and x2 = [[3, 4]] (shape
+        // [1, 2]) with p=2:
+        //   diff = [[-3, -4]]
+        //   d = sqrt(9 + 16) = 5
+        // Backward (single-pair): d/dx1[0, k] = (x1[0,k] - x2[0,k]) / d
+        //   d/dx1[0, 0] = -3/5
+        //   d/dx1[0, 1] = -4/5
+        //   d/dx2[0, k] = -d/dx1[0, k] (the derivatives flip sign)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s
+            .tensor_variable(vec![0.0, 0.0], vec![1, 2], true)
+            .unwrap();
+        let x2 = s
+            .tensor_variable(vec![3.0, 4.0], vec![1, 2], true)
+            .unwrap();
+        let out = s.tensor_cdist(x1, x2, 2.0).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let grad_x1 = s
+            .tensor_gradient(&report, x1)
+            .expect("cdist must propagate gradient through x1");
+        let grad_x2 = s
+            .tensor_gradient(&report, x2)
+            .expect("cdist must propagate gradient through x2");
+        let exp_x1 = [-0.6_f64, -0.8];
+        let exp_x2 = [0.6_f64, 0.8];
+        for (i, (&g, &e)) in grad_x1.iter().zip(exp_x1.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "cdist L2 grad_x1[{i}] = {g}, expected {e}"
+            );
+        }
+        for (i, (&g, &e)) in grad_x2.iter().zip(exp_x2.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "cdist L2 grad_x2[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     // ── pdist tests ────────────────────────────────────────────────────
