@@ -15684,11 +15684,7 @@ impl FrankenTorchSession {
         x: Option<TensorNodeId>,
         dim: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (y_vals, y_shape) = {
-            let (v, m) = self.tensor_values_meta(y)?;
-            (v, m.shape().to_vec())
-        };
-
+        let y_shape = self.tensor_shape(y)?;
         let ndim = y_shape.len();
         if dim >= ndim {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -15705,62 +15701,36 @@ impl FrankenTorchSession {
             return self.tensor_tape.leaf(Vec::new(), out_shape, false);
         }
 
-        let x_vals = if let Some(x_id) = x {
-            Some(self.tensor_values(x_id)?)
+        // Compose through autograd primitives. Tracked under
+        // frankentorch-atg3. Same shape as tensor_trapezoid (b4ys)
+        // but ends with tensor_cumsum instead of tensor_sum_dim.
+        let new_dim_size = dim_size - 1;
+        let y0 = self.tensor_narrow(y, dim, 0, new_dim_size)?;
+        let y1 = self.tensor_narrow(y, dim, 1, new_dim_size)?;
+        let y_sum = self.tensor_add(y0, y1)?;
+        let mut narrow_shape = y_shape.clone();
+        narrow_shape[dim] = new_dim_size;
+        let half_t = self.full(narrow_shape.clone(), 0.5, false)?;
+        let avg = self.tensor_mul(y_sum, half_t)?;
+
+        let weighted = if let Some(x_id) = x {
+            let x_shape = self.tensor_shape(x_id)?;
+            if x_shape != y_shape {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "cumulative_trapezoid: x and y must have the same shape",
+                    },
+                )));
+            }
+            let x0 = self.tensor_narrow(x_id, dim, 0, new_dim_size)?;
+            let x1 = self.tensor_narrow(x_id, dim, 1, new_dim_size)?;
+            let dx = self.tensor_sub(x1, x0)?;
+            self.tensor_mul(avg, dx)?
         } else {
-            None
+            avg
         };
 
-        let outer_size = Self::checked_shape_numel(
-            &y_shape[..dim],
-            "cumulative_trapezoid: outer shape overflow",
-        )?;
-        let inner_size = Self::checked_shape_numel(
-            &y_shape[dim + 1..],
-            "cumulative_trapezoid: inner shape overflow",
-        )?;
-        let out_dim_size = dim_size - 1;
-
-        let outer_len = Self::checked_mul(
-            outer_size,
-            out_dim_size,
-            "cumulative_trapezoid: output size overflow",
-        )?;
-        let out_len = Self::checked_mul(
-            outer_len,
-            inner_size,
-            "cumulative_trapezoid: output size overflow",
-        )?;
-        let mut result = Vec::with_capacity(out_len);
-
-        for outer in 0..outer_size {
-            for d in 0..out_dim_size {
-                for inner in 0..inner_size {
-                    let idx0 = outer * dim_size * inner_size + d * inner_size + inner;
-                    let idx1 = outer * dim_size * inner_size + (d + 1) * inner_size + inner;
-                    let dx = if let Some(ref xv) = x_vals {
-                        xv[idx1] - xv[idx0]
-                    } else {
-                        1.0
-                    };
-                    // Get cumulative sum up to this point
-                    let prev_sum = if d == 0 {
-                        0.0
-                    } else {
-                        // Index into result for the previous element
-                        let prev_idx =
-                            outer * out_dim_size * inner_size + (d - 1) * inner_size + inner;
-                        result[prev_idx]
-                    };
-                    result.push(prev_sum + 0.5 * (y_vals[idx0] + y_vals[idx1]) * dx);
-                }
-            }
-        }
-
-        let mut out_shape = y_shape;
-        out_shape[dim] = out_dim_size;
-
-        let out = self.tensor_tape.leaf(result, out_shape, false)?;
+        let out = self.tensor_cumsum(weighted, dim)?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("cumulative_trapezoid y={} dim={dim} out={}", y.0, out.0),
@@ -36136,6 +36106,49 @@ mod tests {
         assert!((vals[0] - 0.5).abs() < 1e-10);
         // step 1: 0.5 + 0.5*(1+3)*1 = 0.5 + 2.0 = 2.5
         assert!((vals[1] - 2.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cumulative_trapezoid_propagates_gradient_through_y() {
+        // Regression test for frankentorch-atg3.
+        // tensor_cumulative_trapezoid used to extract values, run a
+        // running-sum loop in plain f64, and rebuild a non-grad leaf.
+        // After composing through narrow + add + mul + cumsum,
+        // gradients flow.
+        //
+        // For y = [1, 2, 3, 4] with uniform dx=1:
+        //   pair_avgs = [0.5*(1+2), 0.5*(2+3), 0.5*(3+4)] = [1.5, 2.5, 3.5]
+        //   cumsum = [1.5, 4.0, 7.5]
+        // Under sum loss (= 1.5 + 4.0 + 7.5 = 13.0):
+        //   The cumsum backward gives reverse-cumulative grad on the
+        //   weighted_avgs: grad_w_avg = [3, 2, 1] (entry i contributes
+        //   to (n-i) elements of cumsum).
+        //   weighted_avg[d] = 0.5 * (y[d] + y[d+1])
+        //   d weighted_avg[d] / d y[d]   = 0.5
+        //   d weighted_avg[d] / d y[d+1] = 0.5
+        //   So grad_y[k] = 0.5 * (sum of grad_w_avg[d] for d s.t. d == k or d+1 == k)
+        //   y[0]: only d=0 contributes (k = d) → 0.5 * 3 = 1.5
+        //   y[1]: d=0 (k = d+1) and d=1 (k = d) → 0.5 * (3 + 2) = 2.5
+        //   y[2]: d=1 (k = d+1) and d=2 (k = d) → 0.5 * (2 + 1) = 1.5
+        //   y[3]: only d=2 (k = d+1) → 0.5 * 1 = 0.5
+        //   grad_y = [1.5, 2.5, 1.5, 0.5]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let y = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
+        let out = s.tensor_cumulative_trapezoid(y, None, 0).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, y)
+            .expect("cumulative_trapezoid must propagate gradient through y");
+        let expected = [1.5_f64, 2.5, 1.5, 0.5];
+        for (i, (&g, &e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "cumulative_trapezoid grad[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     // ── addr tests ──────────────────────────────────────────────────────
