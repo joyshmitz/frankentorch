@@ -5154,7 +5154,6 @@ impl FrankenTorchSession {
         p: f64,
         dim: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = self.tensor_values(input)?;
         let shape = self.tensor_shape(input)?;
         let ndim = shape.len();
         if dim >= ndim {
@@ -5165,30 +5164,30 @@ impl FrankenTorchSession {
             )));
         }
 
-        let dim_size = shape[dim];
-        let outer = Self::checked_shape_numel(&shape[..dim], "normalize: outer shape overflow")?;
-        let inner =
-            Self::checked_shape_numel(&shape[dim + 1..], "normalize: inner shape overflow")?;
-        let mut result = vals.clone();
-
-        for o in 0..outer {
-            for i in 0..inner {
-                // Compute Lp norm along dim
-                let mut norm = 0.0f64;
-                for d in 0..dim_size {
-                    let idx = o * dim_size * inner + d * inner + i;
-                    norm += vals[idx].abs().powf(p);
-                }
-                norm = norm.powf(1.0 / p).max(1e-12); // clamp for stability
-
-                for d in 0..dim_size {
-                    let idx = o * dim_size * inner + d * inner + i;
-                    result[idx] = vals[idx] / norm;
-                }
-            }
-        }
-
-        self.tensor_variable(result, shape, false)
+        // Compose through autograd primitives so gradients flow.
+        // Math: y = x / max(||x||_p along dim, eps)
+        //         = x / max((sum_d |x_d|^p)^(1/p), 1e-12)
+        // Tracked under frankentorch-c5g4. Previously this body
+        // extracted values, divided in plain f64, and rebuilt a
+        // requires_grad=false leaf — silently severing the tape
+        // through every L2-normalization layer (a common pattern
+        // in retrieval / contrastive / metric-learning models).
+        //
+        // The norm reduction is reshaped to a keepdim=true-style
+        // broadcast shape (input's shape with `dim` set to 1) so
+        // the subsequent expand + div work uniformly across 1-D
+        // and higher-rank inputs without needing a separate path
+        // for the rank-1 case.
+        let abs_x = self.tensor_abs(input)?;
+        let pow_x = self.tensor_pow(abs_x, p)?;
+        let sum_x = self.tensor_sum_dim(pow_x, dim)?;
+        let norm = self.tensor_pow(sum_x, 1.0 / p)?;
+        let norm_c = self.tensor_clamp_min(norm, 1e-12)?;
+        let mut broadcast_shape = shape.clone();
+        broadcast_shape[dim] = 1;
+        let norm_reshaped = self.tensor_reshape(norm_c, broadcast_shape)?;
+        let norm_b = self.tensor_expand(norm_reshaped, shape)?;
+        self.tensor_div(input, norm_b)
     }
 
     /// Apply dropout (random zeroing) to a tensor.
@@ -29357,6 +29356,51 @@ mod tests {
         assert!((vals[0] - 1.0 / 6.0).abs() < 1e-10);
         assert!((vals[1] - 2.0 / 6.0).abs() < 1e-10);
         assert!((vals[2] - 3.0 / 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn functional_normalize_propagates_gradient_through_input() {
+        // Regression test for frankentorch-c5g4. functional_normalize
+        // used to extract values, divide in plain f64, and rebuild
+        // a requires_grad=false leaf — silently severing autograd
+        // through every L2-normalization layer (used in retrieval /
+        // contrastive / metric-learning models).
+        //
+        // After composing through abs/pow/sum_dim/clamp_min/unsqueeze/
+        // expand/div primitives, gradients flow.
+        //
+        // For input = [3.0, 4.0] with p=2 (L2 normalize on dim=0):
+        //   norm = sqrt(9 + 16) = 5
+        //   y    = [3/5, 4/5] = [0.6, 0.8]
+        //   loss = sum(y) = 1.4
+        // Gradient of L2 normalize:
+        //   d/dx_i (x_i / ||x||_2) = (||x||_2 - x_i^2/||x||_2) / ||x||_2^2
+        //                          = (1 - x_i^2/||x||_2^2) / ||x||_2
+        //                          = (1 - y_i^2) / ||x||_2
+        //   d/dx_j (x_i / ||x||_2) = -x_i x_j / ||x||_2^3
+        //                          = -y_i y_j / ||x||_2     (j != i)
+        // Under sum loss (grad_y = [1, 1]):
+        //   grad_x_i = sum_j (1) * d y_j / d x_i
+        //            = (1 - y_i^2)/||x||_2 - sum_{j != i} y_i y_j / ||x||_2
+        //            = (1 - y_i sum_j y_j) / ||x||_2
+        // For x = [3, 4]: y_i = [0.6, 0.8], sum y = 1.4, ||x||=5
+        //   grad_0 = (1 - 0.6 * 1.4) / 5 = (1 - 0.84) / 5 = 0.16 / 5 = 0.032
+        //   grad_1 = (1 - 0.8 * 1.4) / 5 = (1 - 1.12) / 5 = -0.12 / 5 = -0.024
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![3.0, 4.0], vec![2], true).unwrap();
+        let out = s.functional_normalize(input, 2.0, 0).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("functional_normalize must propagate gradient through input");
+        let expected = [0.032_f64, -0.024];
+        for (i, (&g, &e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "functional_normalize grad[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     #[test]
