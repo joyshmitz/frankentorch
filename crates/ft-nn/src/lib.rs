@@ -12089,11 +12089,7 @@ impl Module for LPPool1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, shape) = {
-            let (v, m) = session.tensor_values_meta(input)?;
-            (v, m.shape().to_vec())
-        };
-
+        let shape = session.tensor_shape(input)?;
         if shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -12101,8 +12097,7 @@ impl Module for LPPool1d {
                 },
             )));
         }
-
-        let (batch, channels, length) = (shape[0], shape[1], shape[2]);
+        let length = shape[2];
         if self.kernel_size == 0 || self.stride == 0 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -12117,35 +12112,17 @@ impl Module for LPPool1d {
                 },
             )));
         }
-        let out_len = checked_add(
-            (length - self.kernel_size) / self.stride,
-            1,
-            "LPPool1d output length overflow",
-        )?;
-        let batch_channels = checked_mul(batch, channels, "LPPool1d output size overflow")?;
-        let output_len = checked_mul(batch_channels, out_len, "LPPool1d output size overflow")?;
-        let mut output = Vec::with_capacity(output_len);
-        let channel_stride = checked_mul(channels, length, "LPPool1d index overflow")?;
 
-        for b in 0..batch {
-            let base_b = checked_mul(b, channel_stride, "LPPool1d index overflow")?;
-            for c in 0..channels {
-                let base_c = checked_mul(c, length, "LPPool1d index overflow")?;
-                let base = checked_add(base_b, base_c, "LPPool1d index overflow")?;
-                for i in 0..out_len {
-                    let start = checked_mul(i, self.stride, "LPPool1d window start overflow")?;
-                    let mut lp_sum = 0.0_f64;
-                    for k in 0..self.kernel_size {
-                        let offset = checked_add(start, k, "LPPool1d index overflow")?;
-                        let idx = checked_add(base, offset, "LPPool1d index overflow")?;
-                        lp_sum += vals[idx].abs().powf(self.norm_type);
-                    }
-                    output.push(lp_sum.powf(1.0 / self.norm_type));
-                }
-            }
-        }
-
-        session.tensor_variable(output, vec![batch, channels, out_len], false)
+        // Compose through autograd-aware primitives. Tracked under
+        // frankentorch-bkxb. Strategy:
+        //   unfolded = unfold(input, dim=2, kernel_size, stride)
+        //              → [N, C, out_len, kernel_size]
+        //   pooled  = (sum_k |unfolded|^p)^(1/p) along the kernel dim
+        let unfolded = session.tensor_unfold(input, 2, self.kernel_size, self.stride)?;
+        let abs_u = session.tensor_abs(unfolded)?;
+        let pow_u = session.tensor_pow(abs_u, self.norm_type)?;
+        let sum_u = session.tensor_sum_dim(pow_u, 3)?; // reduce over kernel_size (dim 3)
+        session.tensor_pow(sum_u, 1.0 / self.norm_type)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -12188,11 +12165,7 @@ impl Module for LPPool2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, shape) = {
-            let (v, m) = session.tensor_values_meta(input)?;
-            (v, m.shape().to_vec())
-        };
-
+        let shape = session.tensor_shape(input)?;
         if shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -12200,8 +12173,8 @@ impl Module for LPPool2d {
                 },
             )));
         }
-
-        let (batch, channels, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let h = shape[2];
+        let w = shape[3];
         let (kh, kw) = self.kernel_size;
         let (sh, sw) = self.stride;
         if kh == 0 || kw == 0 || sh == 0 || sw == 0 {
@@ -12218,49 +12191,19 @@ impl Module for LPPool2d {
                 },
             )));
         }
-        let oh = checked_add((h - kh) / sh, 1, "LPPool2d output height overflow")?;
-        let ow = checked_add((w - kw) / sw, 1, "LPPool2d output width overflow")?;
-        let batch_channels = checked_mul(batch, channels, "LPPool2d output size overflow")?;
-        let spatial_out = checked_mul(oh, ow, "LPPool2d output size overflow")?;
-        let output_len = checked_mul(batch_channels, spatial_out, "LPPool2d output size overflow")?;
-        let mut output = Vec::with_capacity(output_len);
-        let spatial = checked_mul(h, w, "LPPool2d index overflow")?;
-        let channel_stride = checked_mul(channels, spatial, "LPPool2d index overflow")?;
 
-        for b in 0..batch {
-            let base_b = checked_mul(b, channel_stride, "LPPool2d index overflow")?;
-            for c in 0..channels {
-                let base_c = checked_mul(c, spatial, "LPPool2d index overflow")?;
-                let base = checked_add(base_b, base_c, "LPPool2d index overflow")?;
-                for i in 0..oh {
-                    for j in 0..ow {
-                        let mut lp_sum = 0.0_f64;
-                        for ki in 0..kh {
-                            for kj in 0..kw {
-                                let row = checked_add(
-                                    checked_mul(i, sh, "LPPool2d row index overflow")?,
-                                    ki,
-                                    "LPPool2d row index overflow",
-                                )?;
-                                let col = checked_add(
-                                    checked_mul(j, sw, "LPPool2d col index overflow")?,
-                                    kj,
-                                    "LPPool2d col index overflow",
-                                )?;
-                                let row_offset = checked_mul(row, w, "LPPool2d index overflow")?;
-                                let offset =
-                                    checked_add(row_offset, col, "LPPool2d index overflow")?;
-                                let idx = checked_add(base, offset, "LPPool2d index overflow")?;
-                                lp_sum += vals[idx].abs().powf(self.norm_type);
-                            }
-                        }
-                        output.push(lp_sum.powf(1.0 / self.norm_type));
-                    }
-                }
-            }
-        }
-
-        session.tensor_variable(output, vec![batch, channels, oh, ow], false)
+        // Compose through autograd-aware primitives. Tracked under
+        // frankentorch-bkxb. Strategy: nested unfold over H and W:
+        //   unf_h = unfold(input, 2, kh, sh)   → [N, C, oh, W, kh]
+        //   unf_hw = unfold(unf_h, 3, kw, sw)  → [N, C, oh, ow, kh, kw]
+        //   abs + pow + sum_dim(over kw=5) + sum_dim(over kh=4) + pow.
+        let unf_h = session.tensor_unfold(input, 2, kh, sh)?;
+        let unf_hw = session.tensor_unfold(unf_h, 3, kw, sw)?;
+        let abs_u = session.tensor_abs(unf_hw)?;
+        let pow_u = session.tensor_pow(abs_u, self.norm_type)?;
+        let sum_kw = session.tensor_sum_dim(pow_u, 5)?; // → [N, C, oh, ow, kh]
+        let sum_khkw = session.tensor_sum_dim(sum_kw, 4)?; // → [N, C, oh, ow]
+        session.tensor_pow(sum_khkw, 1.0 / self.norm_type)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
