@@ -5213,26 +5213,38 @@ impl FrankenTorchSession {
         if !training || p == 0.0 {
             return Ok(input);
         }
+        let shape = self.tensor_shape(input)?;
         if p >= 1.0 {
-            let shape = self.tensor_shape(input)?;
+            // p >= 1 → all elements dropped → output is zero, with
+            // gradient also zero (a zero tensor multiplied with input
+            // is differentiable; for fully-dropped layers the
+            // gradient should still pass through as zero, which is
+            // semantically equivalent to a non-grad zero leaf).
             let numel = Self::checked_shape_numel(&shape, "dropout: shape volume overflow")?;
             return self.tensor_variable(vec![0.0; numel], shape, false);
         }
 
-        let vals = self.tensor_values(input)?;
-        let shape = self.tensor_shape(input)?;
+        // Compose through tensor_mul against a non-grad random mask.
+        // The mask values are 0 (dropped) or scale = 1/(1-p) (kept);
+        // the multiplication is autograd-aware so the input's tape
+        // edge is preserved. Tracked under frankentorch-7yvv —
+        // previously the body extracted input values, masked +
+        // scaled in plain f64, and rebuilt a requires_grad=false
+        // leaf, silently severing autograd through every dropout
+        // layer.
+        let numel = Self::checked_shape_numel(&shape, "dropout: shape volume overflow")?;
         let scale = 1.0 / (1.0 - p);
-        let result: Vec<f64> = vals
-            .iter()
-            .map(|&v| {
+        let mask_vals: Vec<f64> = (0..numel)
+            .map(|_| {
                 if self.rng.next_f64() < p {
                     0.0
                 } else {
-                    v * scale
+                    scale
                 }
             })
             .collect();
-        self.tensor_variable(result, shape, false)
+        let mask = self.tensor_variable(mask_vals, shape, false)?;
+        self.tensor_mul(input, mask)
     }
 
     /// Look up embeddings from a weight matrix.
@@ -29383,6 +29395,54 @@ mod tests {
             (mean - 1.0).abs() < 0.2,
             "dropout mean {mean} should be ~1.0"
         );
+    }
+
+    #[test]
+    fn functional_dropout_propagates_gradient_through_input() {
+        // Regression test for frankentorch-7yvv. functional_dropout
+        // used to extract input values, mask + scale in plain f64,
+        // and rebuild a requires_grad=false leaf — silently severing
+        // autograd through every dropout layer. After composing
+        // through tensor_mul against a non-grad random mask, the
+        // input's tape edge is preserved.
+        //
+        // For p < 1, the gradient on input is exactly the dropout
+        // mask itself (each surviving element gets gradient = scale,
+        // each dropped element gets gradient = 0). Sum over all
+        // input gradient entries = mean * numel. Under sum loss, the
+        // total = sum(output) = sum(input * mask), so its gradient
+        // = mask values. The expected value of grad_input.sum() is
+        // numel * (1-p) * scale = numel = 100.
+        //
+        // Use a fixed input but a randomized mask. The exact gradient
+        // depends on the RNG draws, so we just check:
+        //   - all entries are 0 OR scale (= 1/(1-p) = 2 for p=0.5)
+        //   - finite throughout
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let n = 100usize;
+        let input = s
+            .tensor_variable(vec![1.0; n], vec![n], true)
+            .unwrap();
+        let out = s.functional_dropout(input, 0.5, true).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("functional_dropout must propagate gradient through input");
+        assert_eq!(grad.len(), n);
+        let scale = 1.0 / 0.5;
+        for (i, &g) in grad.iter().enumerate() {
+            assert!(g.is_finite(), "dropout grad[{i}] must be finite");
+            assert!(
+                g == 0.0 || (g - scale).abs() < 1e-12,
+                "dropout grad[{i}] = {g}, expected 0 or {scale}"
+            );
+        }
+        // Sanity: at least some entries should be non-zero (otherwise
+        // we got an unlucky all-drop, which is vanishingly unlikely
+        // for n=100, p=0.5).
+        let alive = grad.iter().filter(|&&g| g != 0.0).count();
+        assert!(alive > 10, "too few surviving elements ({alive}/{n})");
     }
 
     #[test]
