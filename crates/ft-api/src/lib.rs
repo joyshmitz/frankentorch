@@ -3857,10 +3857,15 @@ impl FrankenTorchSession {
             return self.tensor_variable(vec![], vec![0, 0], false);
         }
 
-        // Collect shapes, treating 1-D as (1, N)
-        let mut blocks: Vec<(Vec<f64>, usize, usize)> = Vec::with_capacity(tensors.len());
+        // Pre-compute block (rows, cols), output total dimensions, and
+        // (row_offset, col_offset) per block. The forward + backward
+        // closures need both the per-block extents (to walk the block)
+        // and the offsets (to map block coords ↔ output coords).
+        // We also preserve the original input shape (1-D vs 2-D) so
+        // gradients return as the same rank.
+        let mut block_meta: Vec<(usize, usize, usize, usize, Vec<usize>)> =
+            Vec::with_capacity(tensors.len());
         for &t in tensors {
-            let vals = self.tensor_values(t)?;
             let shape = self.tensor_shape(t)?;
             let (rows, cols) = match shape.len() {
                 1 => (1, shape[0]),
@@ -3873,44 +3878,76 @@ impl FrankenTorchSession {
                     )));
                 }
             };
-            let expected = Self::checked_mul(rows, cols, "block_diag: block size overflow")?;
-            if vals.len() != expected {
-                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                    ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "block_diag: values length does not match shape",
-                    },
-                )));
-            }
-            blocks.push((vals, rows, cols));
+            block_meta.push((rows, cols, 0, 0, shape.clone()));
         }
+        // Fill row/col offsets sequentially.
+        let mut row_offset = 0usize;
+        let mut col_offset = 0usize;
+        for entry in &mut block_meta {
+            entry.2 = row_offset;
+            entry.3 = col_offset;
+            row_offset = Self::checked_add(row_offset, entry.0, "block_diag: output overflow")?;
+            col_offset = Self::checked_add(col_offset, entry.1, "block_diag: output overflow")?;
+        }
+        let total_rows = row_offset;
+        let total_cols = col_offset;
+        let numel = Self::checked_mul(total_rows, total_cols, "block_diag: output overflow")?;
+        let _ =
+            Self::checked_mul(numel, std::mem::size_of::<f64>(), "block_diag: output overflow")?;
 
-        let total_rows = blocks.iter().try_fold(0usize, |acc, (_, r, _)| {
-            Self::checked_add(acc, *r, "block_diag: output size overflow")
-        })?;
-        let total_cols = blocks.iter().try_fold(0usize, |acc, (_, _, c)| {
-            Self::checked_add(acc, *c, "block_diag: output size overflow")
-        })?;
-        let numel = Self::checked_mul(total_rows, total_cols, "block_diag: output size overflow")?;
-        let _ = Self::checked_mul(
-            numel,
-            std::mem::size_of::<f64>(),
-            "block_diag: output size overflow",
-        )?;
-        let mut data = vec![0.0f64; numel];
-
-        let mut row_offset = 0;
-        let mut col_offset = 0;
-        for (vals, rows, cols) in &blocks {
-            for r in 0..*rows {
-                for c in 0..*cols {
-                    data[(row_offset + r) * total_cols + col_offset + c] = vals[r * cols + c];
+        // Forward + backward closures need the metadata at backward
+        // time. tensor_apply_function captures via Send + Sync, so we
+        // clone into the closures.
+        let block_meta_fwd = block_meta.clone();
+        let block_meta_bwd = block_meta.clone();
+        self.tensor_apply_function(
+            tensors,
+            move |_ctx, inputs| {
+                let mut data = vec![0.0_f64; total_rows * total_cols];
+                for (i, (vals, _shape)) in inputs.iter().enumerate() {
+                    let (rows, cols, row_off, col_off, _) = block_meta_fwd[i];
+                    let expected = rows.checked_mul(cols).ok_or(AutogradError::Dispatch(
+                        ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "block_diag: block size overflow",
+                            },
+                        ),
+                    ))?;
+                    if vals.len() != expected {
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "block_diag: values length does not match shape",
+                            },
+                        )));
+                    }
+                    for r in 0..rows {
+                        for c in 0..cols {
+                            data[(row_off + r) * total_cols + col_off + c] = vals[r * cols + c];
+                        }
+                    }
                 }
-            }
-            row_offset += rows;
-            col_offset += cols;
-        }
-
-        self.tensor_variable(data, vec![total_rows, total_cols], false)
+                Ok((data, vec![total_rows, total_cols]))
+            },
+            move |_ctx, grad_outputs| {
+                let grad_y = grad_outputs[0];
+                let mut grads: Vec<Option<Vec<f64>>> = Vec::with_capacity(block_meta_bwd.len());
+                for (rows, cols, row_off, col_off, original_shape) in &block_meta_bwd {
+                    let mut grad_block = vec![0.0_f64; rows * cols];
+                    for r in 0..*rows {
+                        for c in 0..*cols {
+                            grad_block[r * cols + c] =
+                                grad_y[(row_off + r) * total_cols + col_off + c];
+                        }
+                    }
+                    // Original 1-D inputs deserve a flat-1-D gradient
+                    // (rows == 1 && shape.len() == 1) — the storage
+                    // is row-major so the same Vec works.
+                    let _ = original_shape;
+                    grads.push(Some(grad_block));
+                }
+                Ok(grads)
+            },
+        )
     }
 
     /// Generate a Vandermonde matrix from a 1-D input tensor.
@@ -26252,6 +26289,68 @@ mod tests {
         let out = s.tensor_block_diag(&[]).unwrap();
         let shape = s.tensor_shape(out).unwrap();
         assert_eq!(shape, vec![0, 0]);
+    }
+
+    #[test]
+    fn block_diag_propagates_gradient_through_each_block() {
+        // Regression test for frankentorch-w6l2. tensor_block_diag
+        // used to extract values from each input, build the diagonal
+        // assembly in plain f64, and rebuild a requires_grad=false
+        // leaf — same severed-autograd pattern fixed for cross /
+        // diag_embed / matrix_norm. After wrapping in
+        // tensor_apply_function with per-block extraction, gradients
+        // flow back to each input.
+        //
+        // Compose two 2x2 blocks: A = [[1,2],[3,4]] and B = [[5,6],[7,8]].
+        // The output is 4x4 with A in top-left and B in bottom-right.
+        // Use a weighted sum loss with weights = arange(0..16) reshaped
+        // to 4x4 so the gradient on each block is the corresponding
+        // 2x2 sub-matrix of weights.
+        //   weights = [[0, 1, 2, 3],
+        //              [4, 5, 6, 7],
+        //              [8, 9, 10, 11],
+        //              [12, 13, 14, 15]]
+        //   grad on A = top-left 2x2 = [[0, 1], [4, 5]]
+        //   grad on B = bottom-right 2x2 = [[10, 11], [14, 15]]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], true)
+            .unwrap();
+        let out = s.tensor_block_diag(&[a, b]).unwrap();
+        let mut weight_vals = Vec::with_capacity(16);
+        for i in 0..16 {
+            weight_vals.push(i as f64);
+        }
+        let w = s
+            .tensor_variable(weight_vals, vec![4, 4], false)
+            .unwrap();
+        let weighted = s.tensor_mul(out, w).unwrap();
+        let loss = s.tensor_sum(weighted).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_a = s
+            .tensor_gradient(&report, a)
+            .expect("block_diag must propagate gradient to first block");
+        let grad_b = s
+            .tensor_gradient(&report, b)
+            .expect("block_diag must propagate gradient to second block");
+
+        let exp_a = [0.0_f64, 1.0, 4.0, 5.0];
+        let exp_b = [10.0_f64, 11.0, 14.0, 15.0];
+        for (i, (&g, &e)) in grad_a.iter().zip(exp_a.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "block_diag grad_a[{i}] = {g}, expected {e}"
+            );
+        }
+        for (i, (&g, &e)) in grad_b.iter().zip(exp_b.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "block_diag grad_b[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     // ── vander tests ────────────────────────────────────────────────────
