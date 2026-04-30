@@ -19514,6 +19514,184 @@ print(json.dumps({"lstsq": out}))
     }
 
     #[test]
+    fn torch_matrix_norm_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_matrix_norm against
+        // numpy.linalg.norm (which is what torch.linalg.matrix_norm
+        // wraps for the supported orderings: fro, 1, -1, inf, -inf).
+        // All five orderings are now composed through autograd
+        // primitives (frankentorch-i4rd fix), so the value path is
+        // also verifiable against numpy.
+        //
+        // Sister harness to the rest of the c36b family (det /
+        // slogdet / inv / solve / cholesky / qr / svd / pinv / eigh /
+        // lstsq). Closes the matrix_norm slice that I missed during
+        // the c36b umbrella close.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_matrix_norm_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        type MnCase = (&'static str, &'static str, Vec<f64>, usize, usize);
+        let cases: Vec<MnCase> = vec![
+            // Frobenius across multiple shapes / sign patterns.
+            ("identity_3x3_fro", "fro",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3, 3),
+            ("scaled_2x2_fro", "fro", vec![2.0, 0.0, 0.0, 2.0], 2, 2),
+            ("mixed_2x2_fro", "fro", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
+            ("rectangular_3x4_fro", "fro", vec![
+                1.0, 2.0, 3.0, 4.0,
+                5.0, 6.0, 7.0, 8.0,
+                9.0, 10.0, 11.0, 12.0,
+            ], 3, 4),
+            // Operator-1 norm (max abs column sum).
+            ("simple_2x2_op1", "1", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
+            ("identity_3x3_op1", "1",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3, 3),
+            ("rectangular_2x4_op1", "1", vec![
+                1.0, -2.0, 3.0, -4.0,
+                5.0, 6.0, -7.0, 8.0,
+            ], 2, 4),
+            // Operator-inf norm (max abs row sum).
+            ("simple_2x2_opinf", "inf", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
+            ("identity_3x3_opinf", "inf",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3, 3),
+            // Min-column / min-row variants.
+            ("simple_2x2_neg1", "-1", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
+            ("simple_2x2_neginf", "-inf", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
+            // 1x1 scalar.
+            ("scalar_1x1_fro", "fro", vec![5.0], 1, 1),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(label, ord, vals, m, n)| {
+                json!({
+                    "label": *label,
+                    "ord": *ord,
+                    "m": *m as u64,
+                    "n": *n as u64,
+                    "values_bits": vals.iter().map(|v| v.to_bits().to_string()).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    m = int(case["m"])
+    n = int(case["n"])
+    ord_s = case["ord"]
+    vals = [from_bits(s) for s in case["values_bits"]]
+    A = np.array(vals, dtype=np.float64).reshape(m, n)
+    if ord_s == "fro":
+        v = float(np.linalg.norm(A, ord="fro"))
+    elif ord_s == "1":
+        v = float(np.linalg.norm(A, ord=1))
+    elif ord_s == "-1":
+        v = float(np.linalg.norm(A, ord=-1))
+    elif ord_s == "inf":
+        v = float(np.linalg.norm(A, ord=np.inf))
+    elif ord_s == "-inf":
+        v = float(np.linalg.norm(A, ord=-np.inf))
+    else:
+        v = float("nan")
+    out.append({"label": case["label"], "value_bits": to_bits(v)})
+print(json.dumps({"matrix_norm": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_matrix_norm_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("matrix_norm")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include matrix_norm array");
+        assert_eq!(results.len(), cases.len());
+
+        // Norms are sums of squares + sqrt (fro) or sums of abs +
+        // single max (operator). Both should match numpy bit-exactly
+        // up to summation order — allow 4 ULP relative or 1e-15
+        // absolute floor.
+        const ULP_TOL: u64 = 4;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if (a - b).abs() <= 1e-15 {
+                return true;
+            }
+            let a_bits = a.to_bits();
+            let b_bits = b.to_bits();
+            a_bits.abs_diff(b_bits) <= ULP_TOL
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (label, ord, vals, m, n)) in cases.iter().enumerate() {
+            let want = f64::from_bits(
+                results[i]["value_bits"].as_str().unwrap().parse::<u64>().unwrap(),
+            );
+            let xt = session
+                .tensor_variable(vals.clone(), vec![*m, *n], false)
+                .expect("xt");
+            let out_id = session
+                .tensor_matrix_norm(xt, ord)
+                .expect("tensor_matrix_norm");
+            let got = session.tensor_values(out_id).expect("got")[0];
+            if !approx_eq(got, want) {
+                mismatches.push(format!(
+                    "tensor_matrix_norm({label}, ord={ord}) = {got} (bits 0x{:016x}) but numpy returned {want} (bits 0x{:016x})",
+                    got.to_bits(),
+                    want.to_bits()
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "linalg.matrix_norm numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_softmax_scipy_subprocess_conformance() {
         // Lock FrankenTorch's tensor_softmax / tensor_log_softmax
         // against scipy.special.softmax / scipy.special.log_softmax.

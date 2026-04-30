@@ -11604,7 +11604,6 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         ord: &str,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = self.tensor_values(input)?;
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -11613,53 +11612,45 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let (m, n) = (shape[0], shape[1]);
 
+        // Compose through autograd primitives so gradients flow to
+        // the input. Previously the body extracted tensor_values,
+        // computed the norm in plain f64, and rebuilt a
+        // requires_grad=false leaf — silently severing the autograd
+        // tape on tracked inputs. Same severed-autograd pattern as
+        // the cov / corrcoef / mode / quantile family fixed under
+        // frankentorch-1tax. Tracked under frankentorch-i4rd.
+        //
+        // The sum-of-row-or-column-abs paths reduce to a 1-D vector
+        // and then take a scalar max/min. tensor_max_dim / min_dim
+        // along the only dim of a 1-D tensor returns a 0-D scalar
+        // (and discards the argmax index — gradient flows through
+        // the values branch only). For shape parity with the previous
+        // contract (output shape [1]), reshape via tensor_unsqueeze
+        // at the end.
         let result = match ord {
-            "fro" => vals.iter().map(|&v| v * v).sum::<f64>().sqrt(),
-            "1" => {
-                // Max absolute column sum
-                let mut max_col = 0.0_f64;
-                for j in 0..n {
-                    let col_sum: f64 = (0..m).map(|i| vals[i * n + j].abs()).sum();
-                    if col_sum > max_col {
-                        max_col = col_sum;
-                    }
-                }
-                max_col
+            "fro" => {
+                let sq = self.tensor_mul(input, input)?;
+                let sum_sq = self.tensor_sum(sq)?;
+                self.tensor_sqrt(sum_sq)?
             }
-            "inf" => {
-                // Max absolute row sum
-                let mut max_row = 0.0_f64;
-                for i in 0..m {
-                    let row_sum: f64 = (0..n).map(|j| vals[i * n + j].abs()).sum();
-                    if row_sum > max_row {
-                        max_row = row_sum;
-                    }
-                }
-                max_row
-            }
-            "-1" => {
-                // Min absolute column sum
-                let mut min_col = f64::INFINITY;
-                for j in 0..n {
-                    let col_sum: f64 = (0..m).map(|i| vals[i * n + j].abs()).sum();
-                    if col_sum < min_col {
-                        min_col = col_sum;
-                    }
-                }
-                min_col
-            }
-            "-inf" => {
-                // Min absolute row sum
-                let mut min_row = f64::INFINITY;
-                for i in 0..m {
-                    let row_sum: f64 = (0..n).map(|j| vals[i * n + j].abs()).sum();
-                    if row_sum < min_row {
-                        min_row = row_sum;
-                    }
-                }
-                min_row
+            "1" | "inf" | "-1" | "-inf" => {
+                let reduce_dim: usize = if ord == "1" || ord == "-1" {
+                    // ||A||_1 = max_j sum_i |A_ij|; sum over rows (dim=0).
+                    0
+                } else {
+                    // ||A||_inf = max_i sum_j |A_ij|; sum over cols (dim=1).
+                    1
+                };
+                let take_max = ord == "1" || ord == "inf";
+                let abs_a = self.tensor_abs(input)?;
+                let sums = self.tensor_sum_dim(abs_a, reduce_dim)?;
+                let (reduced, _argidx) = if take_max {
+                    self.tensor_max_dim(sums, 0)?
+                } else {
+                    self.tensor_min_dim(sums, 0)?
+                };
+                reduced
             }
             _ => {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -11670,7 +11661,20 @@ impl FrankenTorchSession {
             }
         };
 
-        self.tensor_tape.leaf(vec![result], vec![1], false)
+        // Previous contract was a 1-D shape [1] output. tensor_sum
+        // and tensor_max_dim along the only dim both yield a 0-D
+        // scalar (shape [] or [1] — depends on the kernel), so
+        // promote / preserve shape via reshape. We use unsqueeze if
+        // the reduction left a 0-D scalar.
+        let result_shape = self.tensor_shape(result)?;
+        if result_shape.is_empty() {
+            self.tensor_unsqueeze(result, 0)
+        } else if result_shape == [1] {
+            Ok(result)
+        } else {
+            // Defensive: reshape to [1].
+            self.tensor_reshape(result, vec![1])
+        }
     }
 
     /// Scatter values into positions indicated by a mask.
@@ -34868,6 +34872,70 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         // Max row sum: row0=|1|+|-2|=3, row1=|3|+|4|=7 → 7
         assert!((vals[0] - 7.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matrix_norm_frobenius_propagates_gradient() {
+        // Regression test for frankentorch-i4rd. tensor_matrix_norm
+        // used to extract values, compute the norm in plain f64, and
+        // rebuild a requires_grad=false leaf — same severed-autograd
+        // pattern fixed under frankentorch-1tax. After composing
+        // through autograd primitives (mul + sum + sqrt), gradients
+        // flow through the input.
+        //
+        // ||A||_F = sqrt(sum(A_ij^2))
+        // d ||A||_F / d A_ij = A_ij / ||A||_F
+        // For A = [[1, 2], [3, 4]]:
+        //   ||A||_F = sqrt(1 + 4 + 9 + 16) = sqrt(30) ≈ 5.4772
+        //   grad[i,j] = A[i,j] / sqrt(30)
+        //   = [1/√30, 2/√30, 3/√30, 4/√30]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+            .unwrap();
+        let out = s.tensor_matrix_norm(a, "fro").unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let grad = s
+            .tensor_gradient(&report, a)
+            .expect("matrix_norm fro must propagate gradient");
+
+        let inv_norm = 1.0 / 30.0_f64.sqrt();
+        let expected = [1.0 * inv_norm, 2.0 * inv_norm, 3.0 * inv_norm, 4.0 * inv_norm];
+        for (i, (&g, &e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "matrix_norm fro grad[{i}] = {g}, expected {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn matrix_norm_inf_propagates_gradient_to_max_row() {
+        // ||A||_inf = max_i sum_j |A_ij|. The gradient is non-zero
+        // only on the row(s) achieving the max — torch / numpy use
+        // the "argmax-routing" convention.
+        //
+        // For A = [[1, -2], [3, 4]]:
+        //   row sums: |1|+|-2|=3, |3|+|4|=7 → max is row 1 (value 7)
+        //   grad[0,*] = 0
+        //   grad[1,j] = sign(A[1,j]) = [1, 1] (since 3, 4 are positive)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, -2.0, 3.0, 4.0], vec![2, 2], true)
+            .unwrap();
+        let out = s.tensor_matrix_norm(a, "inf").unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let grad = s
+            .tensor_gradient(&report, a)
+            .expect("matrix_norm inf must propagate gradient via max-row routing");
+
+        let expected = [0.0_f64, 0.0, 1.0, 1.0];
+        for (i, (&g, &e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "matrix_norm inf grad[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     // ── masked_scatter tests ────────────────────────────────────────────
