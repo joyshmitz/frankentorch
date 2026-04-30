@@ -14730,12 +14730,8 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         dim: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (storage, meta) = {
-            let t = self.tensor_tape.tensor(input)?;
-            (t.storage()?.to_vec(), t.meta().clone())
-        };
-        let shape = meta.shape();
-        let ndim = shape.len();
+        let in_shape = self.tensor_shape(input)?;
+        let ndim = in_shape.len();
         if dim >= ndim {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -14743,37 +14739,83 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let outer_size =
-            Self::checked_shape_numel(&shape[..dim], "logsumexp: outer shape overflow")?;
-        let dim_size = shape[dim];
-        let inner_size =
-            Self::checked_shape_numel(&shape[dim + 1..], "logsumexp: inner shape overflow")?;
-        let out_len = Self::checked_mul(outer_size, inner_size, "logsumexp: output size overflow")?;
-        let mut result = Vec::with_capacity(out_len);
-        for outer in 0..outer_size {
-            for inner in 0..inner_size {
-                let mut max_val = f64::NEG_INFINITY;
-                for d in 0..dim_size {
-                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
-                    if storage[idx] > max_val {
-                        max_val = storage[idx];
-                    }
-                }
-                let mut sum_exp = 0.0;
-                for d in 0..dim_size {
-                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
-                    sum_exp += (storage[idx] - max_val).exp();
-                }
-                result.push(max_val + sum_exp.ln());
-            }
-        }
-        let mut out_shape: Vec<usize> = shape.to_vec();
+
+        // Wrap in tensor_apply_function with the analytical backward
+        //     y = log(sum_d exp(x_d))
+        //     grad_x_d = grad_y * exp(x_d - y)
+        // The exp(x - y) factor is in [0, 1] (since y >= max(x) under
+        // max-subtract), so the backward is numerically stable.
+        // Save x and y for backward. Tracked under frankentorch-t1q4.
+        let mut out_shape: Vec<usize> = in_shape.clone();
         out_shape.remove(dim);
         if out_shape.is_empty() {
             out_shape.push(1);
         }
-        let out = self.tensor_tape.leaf(result, out_shape, false)?;
-        Ok(out)
+        let out_shape_clone = out_shape.clone();
+        self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                let outer_size =
+                    Self::checked_shape_numel(&shape[..dim], "logsumexp: outer overflow")?;
+                let dim_size = shape[dim];
+                let inner_size =
+                    Self::checked_shape_numel(&shape[dim + 1..], "logsumexp: inner overflow")?;
+                let out_len =
+                    Self::checked_mul(outer_size, inner_size, "logsumexp: output overflow")?;
+                let mut result = Vec::with_capacity(out_len);
+                for outer in 0..outer_size {
+                    for inner in 0..inner_size {
+                        let mut max_val = f64::NEG_INFINITY;
+                        for d in 0..dim_size {
+                            let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                            if vals[idx] > max_val {
+                                max_val = vals[idx];
+                            }
+                        }
+                        let mut sum_exp = 0.0_f64;
+                        for d in 0..dim_size {
+                            let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                            sum_exp += (vals[idx] - max_val).exp();
+                        }
+                        result.push(max_val + sum_exp.ln());
+                    }
+                }
+                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                ctx.save_for_backward(result.clone(), out_shape_clone.clone());
+                Ok((result, out_shape_clone.clone()))
+            },
+            move |ctx, grad_outputs| {
+                let grad_y = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let saved_shapes = ctx.saved_shapes();
+                let x_vals = &saved[0];
+                let y_vals = &saved[1];
+                let in_shape = &saved_shapes[0];
+                let outer_size = Self::checked_shape_numel(
+                    &in_shape[..dim],
+                    "logsumexp backward: outer overflow",
+                )?;
+                let dim_size = in_shape[dim];
+                let inner_size = Self::checked_shape_numel(
+                    &in_shape[dim + 1..],
+                    "logsumexp backward: inner overflow",
+                )?;
+                let mut grad_x = vec![0.0_f64; x_vals.len()];
+                for outer in 0..outer_size {
+                    for inner in 0..inner_size {
+                        let y_idx = outer * inner_size + inner;
+                        let y = y_vals[y_idx];
+                        let g = grad_y[y_idx];
+                        for d in 0..dim_size {
+                            let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                            grad_x[idx] = g * (x_vals[idx] - y).exp();
+                        }
+                    }
+                }
+                Ok(vec![Some(grad_x)])
+            },
+        )
     }
 
     /// Compute the p-norm distance between two tensors.
@@ -35186,6 +35228,53 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
         assert!(s.tensor_logsumexp(x, 1).is_err());
+    }
+
+    #[test]
+    fn logsumexp_propagates_gradient_via_softmax_weights() {
+        // Regression test for frankentorch-t1q4. tensor_logsumexp
+        // used to extract storage, compute the result, and rebuild
+        // a requires_grad=false leaf — same severed-autograd pattern
+        // recently fixed for cross / diag_embed / block_diag /
+        // matrix_norm / vander.
+        //
+        // After wrapping in tensor_apply_function with the analytical
+        //     y = log(sum_d exp(x_d))
+        //     grad_x_d = grad_y * exp(x_d - y)
+        // gradients flow.
+        //
+        // For x = [1, 2, 3] reduced over the only dim under sum loss
+        // (grad_y = 1):
+        //   y = log(e + e^2 + e^3) ≈ 3.4076
+        //   grad_x = exp(x - y) = softmax(x)
+        //         ≈ [0.0900, 0.2447, 0.6652]
+        // (the exp values normalized to sum to 1).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let y = s.tensor_logsumexp(x, 0).unwrap();
+        let report = s.tensor_backward(y).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("logsumexp must propagate gradient via softmax weights");
+
+        // Expected: grad = softmax([1, 2, 3]).
+        let exps = [1.0_f64.exp(), 2.0_f64.exp(), 3.0_f64.exp()];
+        let z: f64 = exps.iter().sum();
+        let expected: Vec<f64> = exps.iter().map(|&e| e / z).collect();
+        for (i, (&g, &e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "logsumexp grad[{i}] = {g}, expected {e}"
+            );
+        }
+        // Sanity: gradient sums to 1 (softmax invariant).
+        let total: f64 = grad.iter().sum();
+        assert!(
+            (total - 1.0).abs() < 1e-12,
+            "logsumexp gradient should sum to 1.0 (softmax weights), got {total}"
+        );
     }
 
     #[test]
