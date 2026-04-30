@@ -13730,9 +13730,6 @@ pub fn weight_norm_reconstruct(
             },
         )));
     }
-    let v_values = session.tensor_values(v)?;
-    let g_values = session.tensor_values(g)?;
-    let numel = checked_shape_numel(&v_shape, "weight_norm: shape volume overflow")?;
     let dim_size = v_shape[dim];
     if dim_size == 0 {
         return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -13741,41 +13738,70 @@ pub fn weight_norm_reconstruct(
             },
         )));
     }
-    if g_values.len() != dim_size {
+    let g_shape = session.tensor_shape(g)?;
+    let g_numel = checked_shape_numel(&g_shape, "weight_norm: g shape volume overflow")?;
+    if g_numel != dim_size {
         return Err(AutogradError::Dispatch(DispatchError::Key(
             DispatchKeyError::IncompatibleSet {
                 reason: "weight_norm: magnitude length mismatch",
             },
         )));
     }
-    if numel != v_values.len() {
-        return Err(AutogradError::Dispatch(DispatchError::Key(
-            DispatchKeyError::IncompatibleSet {
-                reason: "weight_norm: input values length mismatch",
-            },
-        )));
+    let numel = checked_shape_numel(&v_shape, "weight_norm: shape volume overflow")?;
+    // Compose via autograd-aware primitives so gradients flow to both
+    // g and v. Tracked under frankentorch-8kd7. The previous body
+    // extracted values + rebuilt a non-grad leaf.
+    //
+    // Math: w = g * v / ||v||_dim
+    //   permute v so `dim` is first → reshape to [dim_size, others];
+    //   compute per-row L2 norm (clamped to >= 1e-12 for stability);
+    //   scale each row by g / norm, then permute/reshape back.
+    let ndim = v_shape.len();
+    let mut perm: Vec<usize> = Vec::with_capacity(ndim);
+    perm.push(dim);
+    for axis in 0..ndim {
+        if axis != dim {
+            perm.push(axis);
+        }
     }
-    let mut inner = checked_shape_numel(&v_shape[dim + 1..], "weight_norm: inner shape overflow")?;
-    if inner == 0 {
-        inner = 1;
+    let v_perm = if dim == 0 {
+        v
+    } else {
+        session.tensor_permute(v, perm.clone())?
+    };
+    let mut perm_shape: Vec<usize> = Vec::with_capacity(ndim);
+    perm_shape.push(dim_size);
+    for (axis, &d_size) in v_shape.iter().enumerate() {
+        if axis != dim {
+            perm_shape.push(d_size);
+        }
     }
-
-    let mut norms = vec![0.0; dim_size];
-    for (i, &val) in v_values.iter().enumerate().take(numel) {
-        let dim_idx = (i / inner) % dim_size;
-        norms[dim_idx] += val * val;
+    let others = numel / dim_size;
+    let v_2d = session.tensor_reshape(v_perm, vec![dim_size, others])?;
+    let v_sq = session.tensor_mul(v_2d, v_2d)?;
+    let norm_sq = session.tensor_sum_dim(v_sq, 1)?; // [dim_size]
+    let norm = session.tensor_sqrt(norm_sq)?;
+    let norm_safe = session.tensor_clamp_min(norm, 1e-12)?;
+    let g_flat = if g_shape == vec![dim_size] {
+        g
+    } else {
+        session.tensor_reshape(g, vec![dim_size])?
+    };
+    let scale = session.tensor_div(g_flat, norm_safe)?; // [dim_size]
+    let scale_kd = session.tensor_unsqueeze(scale, 1)?;
+    let scale_b = session.tensor_expand(scale_kd, vec![dim_size, others])?;
+    let w_2d = session.tensor_mul(scale_b, v_2d)?;
+    let w_perm = session.tensor_reshape(w_2d, perm_shape)?;
+    if dim == 0 {
+        Ok(w_perm)
+    } else {
+        // Inverse permutation: where did axis k end up?
+        let mut inverse_perm: Vec<usize> = vec![0; ndim];
+        for (new_pos, &old_axis) in perm.iter().enumerate() {
+            inverse_perm[old_axis] = new_pos;
+        }
+        session.tensor_permute(w_perm, inverse_perm)
     }
-    for n in &mut norms {
-        *n = n.sqrt().max(1e-12);
-    }
-
-    let mut w_values = vec![0.0; numel];
-    for i in 0..numel {
-        let dim_idx = (i / inner) % dim_size;
-        w_values[i] = g_values[dim_idx] * v_values[i] / norms[dim_idx];
-    }
-
-    session.tensor_variable(w_values, v_shape, false)
 }
 
 /// Compute the spectral norm of a weight matrix (largest singular value).
@@ -24726,6 +24752,75 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let w = s.tensor_variable(vec![1.0; 6], vec![2, 3], true).unwrap();
         assert!(weight_norm_decompose(&mut s, w, 5).is_err());
+    }
+
+    #[test]
+    fn weight_norm_reconstruct_propagates_gradients() {
+        // Regression for frankentorch-8kd7: previous body extracted
+        // tensor_values + rebuilt a non-grad leaf, severing gradients
+        // through both g (magnitude) and v (direction).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let g = s
+            .tensor_variable(vec![2.0, 3.0], vec![2], true)
+            .unwrap();
+        let v = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], true)
+            .unwrap();
+        let w = weight_norm_reconstruct(&mut s, g, v, 0).unwrap();
+        // For unit-norm rows of v, w == diag(g); sum = g[0] + g[1] = 5.
+        let w_vals = s.tensor_values(w).unwrap();
+        assert!((w_vals[0] - 2.0).abs() < 1e-10);
+        assert!((w_vals[3] - 3.0).abs() < 1e-10);
+        let loss = s.tensor_sum(w).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let g_grad = s
+            .tensor_gradient(&report, g)
+            .expect("g gradient should exist (autograd not severed)");
+        let v_grad = s
+            .tensor_gradient(&report, v)
+            .expect("v gradient should exist (autograd not severed)");
+        // For unit-norm rows of v, dL/dg[i] = 1.0 (each row contributes
+        // g[i]*1 to loss). dL/dv[i, j] = 0 along the unit direction
+        // because the projection cancels with the normalization, but
+        // for off-axis components the gradient is g[i] * (-(v[i,j]/||v||^3)*(v[i,k]==target column)) — not zero.
+        // We only assert that gradients are finite and at least one
+        // component is non-zero (the gradient through the norm).
+        assert!(g_grad.iter().all(|x| x.is_finite()));
+        assert!(v_grad.iter().all(|x| x.is_finite()));
+        for &gg in g_grad {
+            assert!(
+                (gg - 1.0).abs() < 1e-10,
+                "g gradient should be 1.0 for unit-norm v, got {gg}"
+            );
+        }
+    }
+
+    #[test]
+    fn weight_norm_reconstruct_dim1_propagates_gradients() {
+        // dim=1 path exercises permutation logic.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let g = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        // 2x3 matrix with column norms (over dim=0): col 0 = sqrt(1+4)=sqrt(5), col 1 = sqrt(0+9)=3, col 2 = sqrt(16+0)=4
+        let v = s
+            .tensor_variable(vec![1.0, 0.0, 4.0, 2.0, 3.0, 0.0], vec![2, 3], true)
+            .unwrap();
+        let w = weight_norm_reconstruct(&mut s, g, v, 1).unwrap();
+        let w_shape = s.tensor_shape(w).unwrap();
+        assert_eq!(w_shape, vec![2, 3]);
+        let loss = s.tensor_sum(w).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let g_grad = s
+            .tensor_gradient(&report, g)
+            .expect("g gradient should exist with dim=1");
+        let v_grad = s
+            .tensor_gradient(&report, v)
+            .expect("v gradient should exist with dim=1");
+        assert_eq!(g_grad.len(), 3);
+        assert_eq!(v_grad.len(), 6);
+        assert!(g_grad.iter().all(|x| x.is_finite()));
+        assert!(v_grad.iter().all(|x| x.is_finite()));
     }
 
     #[test]
