@@ -10580,6 +10580,152 @@ mod tests {
             prop_assert_eq!(outcome.values.len(), rows * cols);
             prop_assert!(outcome.values.iter().all(|value| value.is_finite()));
         }
+
+        // ── metamorphic equivalence tests [bd-8z7x] ────────────────────
+        //
+        // These property tests verify that algebraically-equivalent
+        // computation paths agree within tight ULP tolerances. They
+        // would have caught the log_softmax precision bug
+        // (frankentorch-ebrb) — log(softmax(x)) and log_softmax(x)
+        // diverged by ~1000 ULPs at large magnitudes before that fix.
+
+        #[test]
+        fn fuzz_metamorphic_log_softmax_equals_log_of_softmax(
+            samples in prop::collection::vec(-2000i16..2000i16, 2..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable");
+            let lsm = s.tensor_log_softmax(x, 0).expect("log_softmax");
+            let lsm_vals = s.tensor_values(lsm).expect("lsm");
+
+            // Compute log(softmax(x)) explicitly and compare.
+            let sm = s.tensor_softmax(x, 0).expect("softmax");
+            let log_sm = s.tensor_log(sm).expect("log");
+            let log_sm_vals = s.tensor_values(log_sm).expect("log_sm");
+
+            // log_softmax should equal log(softmax) within libm
+            // precision. Both go through max-subtract then exp/log;
+            // the algebraic difference is just whether log(sum(exp))
+            // is computed once or sum(exp) is computed then log'd.
+            // Allow 16 ULP relative or 1e-12 absolute (looser than
+            // the kernel-direct envelope because the explicit
+            // log(softmax) path passes through one extra exp/log
+            // round-trip that scipy's reference doesn't).
+            for (a, b) in lsm_vals.iter().zip(log_sm_vals.iter()) {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 1e-12 || diff <= 16.0 * scale * f64::EPSILON,
+                    "log_softmax = {a} but log(softmax) = {b}, diff = {diff:e}"
+                );
+            }
+        }
+
+        #[test]
+        fn fuzz_metamorphic_softmax_sums_to_one(
+            samples in prop::collection::vec(-1500i16..1500i16, 2..40)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable");
+            let sm = s.tensor_softmax(x, 0).expect("softmax");
+            let s_sum = s.tensor_sum(sm).expect("sum");
+            let total = s.tensor_values(s_sum).expect("total")[0];
+
+            // softmax outputs a probability distribution; the sum
+            // should equal 1.0 within ~few ULPs of the rounding
+            // accumulated in (sum_exp / sum_exp). Use an absolute
+            // tolerance scaled by n since each element contributes
+            // ~eps to the sum's rounding error.
+            let tol = (n as f64) * f64::EPSILON * 4.0;
+            prop_assert!(
+                (total - 1.0).abs() <= tol,
+                "softmax(x).sum() = {total}, expected 1.0 ± {tol:e}"
+            );
+        }
+
+        #[test]
+        fn fuzz_metamorphic_softmax_translation_invariance(
+            (samples, shift_raw) in (
+                prop::collection::vec(-500i16..500i16, 2..16),
+                -1000i16..1000i16,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 11.0).collect();
+            let shift = f64::from(shift_raw) / 7.0;
+            let shifted: Vec<f64> = input.iter().map(|x| x + shift).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input, vec![n], false)
+                .expect("variable");
+            let sm_x = s.tensor_softmax(x, 0).expect("softmax x");
+            let v_x = s.tensor_values(sm_x).expect("v_x");
+
+            let xs = s
+                .tensor_variable(shifted, vec![n], false)
+                .expect("variable shifted");
+            let sm_xs = s.tensor_softmax(xs, 0).expect("softmax x+c");
+            let v_xs = s.tensor_values(sm_xs).expect("v_xs");
+
+            // softmax is translation-invariant: softmax(x + c) ==
+            // softmax(x). Allow modest ULP slack since the
+            // max-subtraction step makes both paths land at
+            // bit-identical values in the typical case, but
+            // catastrophic cancellation in (x + c - max) can
+            // accumulate a few ULPs.
+            for (a, b) in v_x.iter().zip(v_xs.iter()) {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 1e-12 || diff <= 32.0 * scale * f64::EPSILON,
+                    "softmax(x) = {a} but softmax(x+{shift}) = {b}, diff = {diff:e}"
+                );
+            }
+        }
+
+        #[test]
+        fn fuzz_metamorphic_double_transpose_is_identity(
+            (rows, cols, raw) in (1usize..5, 1usize..5)
+                .prop_flat_map(|(rows, cols)| (
+                    Just(rows),
+                    Just(cols),
+                    prop::collection::vec(-512i16..512i16, rows * cols),
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 19.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s
+                .tensor_variable(input.clone(), vec![rows, cols], false)
+                .expect("variable");
+            let xt = s.tensor_transpose(x, 0, 1).expect("transpose 1");
+            let xtt = s.tensor_transpose(xt, 0, 1).expect("transpose 2");
+            let v = s.tensor_values(xtt).expect("values");
+
+            // transpose composed with itself is the identity. This
+            // should be bit-exact since transposing only reorders
+            // memory access — no arithmetic is performed.
+            prop_assert_eq!(v.len(), input.len());
+            for (a, b) in v.iter().zip(input.iter()) {
+                prop_assert_eq!(*a, *b);
+            }
+        }
     }
 
     #[cfg(feature = "fuzz")]
