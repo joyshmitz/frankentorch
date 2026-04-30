@@ -990,12 +990,8 @@ impl Bilinear {
         x1: TensorNodeId,
         x2: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let x1_vals = session.tensor_values(x1)?;
         let x1_shape = session.tensor_shape(x1)?;
-        let x2_vals = session.tensor_values(x2)?;
         let x2_shape = session.tensor_shape(x2)?;
-        let w_vals = session.tensor_values(self.weight)?;
-
         let in1 = self.in1_features;
         let in2 = self.in2_features;
         let out = self.out_features;
@@ -1009,10 +1005,8 @@ impl Bilinear {
                 "bilinear: batch shape overflow",
             )?
         };
-
         let x1_last = *x1_shape.last().unwrap_or(&0);
         let x2_last = *x2_shape.last().unwrap_or(&0);
-
         if x1_last != in1 || x2_last != in2 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -1021,22 +1015,24 @@ impl Bilinear {
             )));
         }
 
-        // y[b, k] = sum_i sum_j x1[b, i] * W[k, i, j] * x2[b, j]
-        let out_len = checked_mul(batch, out, "bilinear: output size overflow")?;
-        let mut result = vec![0.0f64; out_len];
-        for b in 0..batch {
-            for k in 0..out {
-                let mut val = 0.0f64;
-                for i in 0..in1 {
-                    for j in 0..in2 {
-                        val += x1_vals[b * in1 + i]
-                            * w_vals[k * in1 * in2 + i * in2 + j]
-                            * x2_vals[b * in2 + j];
-                    }
-                }
-                result[b * out + k] = val;
-            }
-        }
+        // Compose through autograd-aware primitives. Tracked under
+        // frankentorch-yn0i. Math:
+        //   y[b, k] = sum_{i, j} x1[b, i] * W[k, i, j] * x2[b, j]
+        //          = (vec(x1[b] outer x2[b])) · vec(W[k])
+        // i.e. flatten the per-batch outer product into [batch, in1*in2]
+        // and matmul with reshape(W, [out, in1*in2]).T.
+        let x1_flat = session.tensor_reshape(x1, vec![batch, in1])?;
+        let x2_flat = session.tensor_reshape(x2, vec![batch, in2])?;
+        let x1_b = session.tensor_unsqueeze(x1_flat, 2)?; // [batch, in1, 1]
+        let x2_b = session.tensor_unsqueeze(x2_flat, 1)?; // [batch, 1, in2]
+        let x1_b_e = session.tensor_expand(x1_b, vec![batch, in1, in2])?;
+        let x2_b_e = session.tensor_expand(x2_b, vec![batch, in1, in2])?;
+        let outer = session.tensor_mul(x1_b_e, x2_b_e)?; // [batch, in1, in2]
+        let outer_flat = session.tensor_reshape(outer, vec![batch, in1 * in2])?;
+
+        let w_flat = session.tensor_reshape(self.weight, vec![out, in1 * in2])?;
+        let w_flat_t = session.tensor_transpose(w_flat, 0, 1)?; // [in1*in2, out]
+        let result = session.tensor_matmul(outer_flat, w_flat_t)?; // [batch, out]
 
         let out_shape = if x1_shape.len() == 1 {
             vec![out]
@@ -1045,8 +1041,7 @@ impl Bilinear {
             s.push(out);
             s
         };
-
-        let result_node = session.tensor_variable(result, out_shape.clone(), false)?;
+        let result_node = session.tensor_reshape(result, out_shape.clone())?;
 
         if let Some(bias) = self.bias {
             let expanded_bias = session.tensor_expand(bias, out_shape)?;
