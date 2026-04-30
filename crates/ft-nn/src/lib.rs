@@ -11008,20 +11008,29 @@ impl HingeEmbeddingLoss {
     ) -> Result<TensorNodeId, AutogradError> {
         // For y=1: loss = x
         // For y=-1: loss = max(0, margin - x)
-        // Combined: loss = (1+y)/2 * x + (1-y)/2 * max(0, margin - x)
-        let input_vals = session.tensor_values(input)?;
-        let target_vals = session.tensor_values(target)?;
+        // Compose through autograd primitives so the gradient on input
+        // flows. Tracked under frankentorch-8530 (child of cq0b).
+        // Previously this body extracted values, computed per-element
+        // loss in plain f64, and rebuilt a non-grad leaf.
+        //
+        // Strategy: build a {0, 1} mask from target (non-grad since
+        // target is constant labels), then
+        //   result = mask * input + (1 - mask) * relu(margin - input)
         let shape = session.tensor_shape(input)?;
-        let numel = checked_shape_numel(&shape, "HingeEmbeddingLoss input shape overflow")?;
-        let mut result = vec![0.0f64; numel];
-        for i in 0..numel {
-            if target_vals[i] > 0.0 {
-                result[i] = input_vals[i];
-            } else {
-                result[i] = (self.margin - input_vals[i]).max(0.0);
-            }
-        }
-        let loss_elements = session.tensor_variable(result, shape, false)?;
+        let target_vals = session.tensor_values(target)?;
+        let mask_vals: Vec<f64> = target_vals
+            .iter()
+            .map(|&t| if t > 0.0 { 1.0 } else { 0.0 })
+            .collect();
+        let mask = session.tensor_variable(mask_vals, shape.clone(), false)?;
+        let ones_t = session.full(shape.clone(), 1.0, false)?;
+        let inv_mask = session.tensor_sub(ones_t, mask)?;
+        let margin_t = session.full(shape, self.margin, false)?;
+        let margin_minus_x = session.tensor_sub(margin_t, input)?;
+        let relu_part = session.tensor_relu(margin_minus_x)?;
+        let pos_branch = session.tensor_mul(mask, input)?;
+        let neg_branch = session.tensor_mul(inv_mask, relu_part)?;
+        let loss_elements = session.tensor_add(pos_branch, neg_branch)?;
         session.tensor_mean(loss_elements)
     }
 }
