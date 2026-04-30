@@ -11099,7 +11099,6 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         repeats: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = self.tensor_values(input)?;
         let shape = self.tensor_shape(input)?;
         if shape.len() != 1 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -11108,26 +11107,47 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let capacity = Self::checked_mul(
-            vals.len(),
+        let in_len = shape[0];
+        let out_len = Self::checked_mul(
+            in_len,
             repeats,
             "repeat_interleave: output size overflow",
         )?;
-        let mut result = Vec::new();
-        result.try_reserve_exact(capacity).map_err(|_| {
-            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "repeat_interleave: output size overflow",
-                },
-            ))
-        })?;
-        for &v in &vals {
-            for _ in 0..repeats {
-                result.push(v);
-            }
-        }
-        let out_len = result.len();
-        self.tensor_variable(result, vec![out_len], false)
+        // Reject byte-size overflow before tensor_apply_function tries
+        // to allocate (the prior body used try_reserve_exact for this;
+        // checked_mul only validates element-count, but
+        // (1, usize::MAX) yields usize::MAX which fits in usize but
+        // not in Vec's byte budget).
+        let _ = Self::checked_mul(
+            out_len,
+            std::mem::size_of::<f64>(),
+            "repeat_interleave: output size overflow",
+        )?;
+
+        // Wrap in tensor_apply_function with the analytical
+        // backward grad_input[i] = sum_{j: j / R == i} grad_output[j].
+        // Tracked under frankentorch-5196.
+        self.tensor_apply_function(
+            &[input],
+            move |_ctx, inputs| {
+                let (vals, _shape) = inputs[0];
+                let mut result = Vec::with_capacity(out_len);
+                for &v in vals {
+                    for _ in 0..repeats {
+                        result.push(v);
+                    }
+                }
+                Ok((result, vec![out_len]))
+            },
+            move |_ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let mut grad_in = vec![0.0_f64; in_len];
+                for (j, &gj) in g.iter().enumerate() {
+                    grad_in[j / repeats] += gj;
+                }
+                Ok(vec![Some(grad_in)])
+            },
+        )
     }
 
     /// Selects elements from input where mask is non-zero, returning a 1-D tensor.
@@ -26665,6 +26685,35 @@ mod tests {
         let out = s.tensor_repeat_interleave(t, 1).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn repeat_interleave_propagates_gradient_via_sum_of_repeats() {
+        // Regression test for frankentorch-5196.
+        // tensor_repeat_interleave used to extract values, repeat in
+        // plain f64, and rebuild a non-grad leaf. After wrapping in
+        // tensor_apply_function with the sum-of-R backward,
+        // gradients flow.
+        //
+        // For x = [3, 5], repeats = 4:
+        //   out = [3, 3, 3, 3, 5, 5, 5, 5]
+        // Under sum loss: grad_x[i] = number of output entries
+        // routing to i = 4 each.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![3.0, 5.0], vec![2], true).unwrap();
+        let out = s.tensor_repeat_interleave(x, 4).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("repeat_interleave must propagate gradient via sum-of-R");
+        let expected = [4.0_f64, 4.0];
+        for (i, (&g, &e)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "repeat_interleave grad[{i}] = {g}, expected {e}"
+            );
+        }
     }
 
     #[test]
