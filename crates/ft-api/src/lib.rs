@@ -3037,11 +3037,13 @@ impl FrankenTorchSession {
                     // Trace: sum of diagonal
                     return self.tensor_trace(tensor);
                 } else if output_idx.len() == 1 && output_idx[0] == repeated[0] {
-                    // Diagonal extraction
-                    let n = shape[0];
-                    let vals = self.tensor_values(tensor)?;
-                    let diag: Vec<f64> = (0..n).map(|i| vals[i * n + i]).collect();
-                    return self.tensor_variable(diag, vec![n], false);
+                    // Diagonal extraction. Delegate to tensor_diagonal
+                    // so the autograd path goes through the
+                    // diag-scatter backward (frankentorch-sirh).
+                    // Previously this body extracted values + rebuilt
+                    // a non-grad leaf — silently severing autograd
+                    // for the einsum 'ii->i' pattern.
+                    return self.tensor_diagonal(tensor, 0);
                 }
             }
             return Err(make_err(
