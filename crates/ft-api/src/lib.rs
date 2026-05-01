@@ -16298,6 +16298,23 @@ impl FrankenTorchSession {
             )));
         }
 
+        // For requires_grad inputs/src, the 'sum' reduction has a
+        // direct autograd-aware composition: tensor_scatter_add(input,
+        // dim, index, src). Other reductions (prod / mean / amax /
+        // amin) need bespoke backwards that aren't yet implemented;
+        // surface them as fail-loud guards so users don't silently
+        // get NaN gradients. Tracked under frankentorch-dhm4.
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(src)? {
+            if reduce == "sum" {
+                return self.tensor_scatter_add(input, dim, index, src);
+            }
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scatter_reduce: autograd not supported for reduce other than 'sum' (use 'sum' for autograd-aware accumulation; tracked under frankentorch-dhm4)",
+                },
+            )));
+        }
+
         let input_dtype = self.tensor_tape.dtype(input)?;
         let src_dtype = self.tensor_tape.dtype(src)?;
         if src_dtype != input_dtype {
@@ -36453,6 +36470,51 @@ mod tests {
             .unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, &[14.0 / 3.0, 8.0]);
+    }
+
+    #[test]
+    fn scatter_reduce_sum_propagates_gradient() {
+        // Regression for frankentorch-dhm4: requires_grad input/src
+        // routes through tensor_scatter_add for the 'sum' reduction;
+        // other reductions fail loud.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0], vec![2], true).unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 1.0, 0.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![10.0, 20.0, 30.0], vec![3], true)
+            .unwrap();
+        let out = s
+            .tensor_scatter_reduce(input, 0, index, src, "sum")
+            .unwrap();
+        // sum: input + src scattered = [1+10+30, 2+20] = [41, 22]
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[41.0, 22.0]);
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let in_grad = s.tensor_gradient(&report, input).expect("input grad");
+        let src_grad = s.tensor_gradient(&report, src).expect("src grad");
+        assert_eq!(in_grad, &vec![1.0, 1.0]);
+        assert_eq!(src_grad, &vec![1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn scatter_reduce_non_sum_fails_loud_on_requires_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![2.0, 6.0], vec![2], true).unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![4.0, 8.0, 10.0], vec![3], false)
+            .unwrap();
+        for reduce in ["mean", "prod", "amax", "amin"] {
+            let err = s
+                .tensor_scatter_reduce(input, 0, index, src, reduce)
+                .expect_err("non-sum reduce must fail loud on requires_grad");
+            assert!(format!("{err:?}").contains("autograd not supported"));
+        }
     }
 
     #[test]
