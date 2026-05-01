@@ -15066,6 +15066,13 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         n: Option<usize>,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "fft: autograd not supported (Wirtinger calculus for complex outputs not yet implemented). Tracked under frankentorch-xszk.",
+                },
+            )));
+        }
         let vals = self.tensor_values(input)?;
         let input_len = vals.len();
         let fft_len = n.unwrap_or(input_len);
@@ -15107,6 +15114,13 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         n: Option<usize>,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "ifft: autograd not supported (Wirtinger calculus for complex outputs not yet implemented). Tracked under frankentorch-xszk.",
+                },
+            )));
+        }
         let vals = self.tensor_values(input)?;
         let dtype = self.tensor_dtype(input)?;
 
@@ -15163,6 +15177,13 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         n: Option<usize>,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "rfft: autograd not supported (Wirtinger calculus for complex outputs not yet implemented). Tracked under frankentorch-xszk.",
+                },
+            )));
+        }
         let vals = self.tensor_values(input)?;
         let input_len = vals.len();
         let fft_len = n.unwrap_or(input_len);
@@ -15202,6 +15223,13 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         n: Option<usize>,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "irfft: autograd not supported (Wirtinger calculus for complex outputs not yet implemented). Tracked under frankentorch-xszk.",
+                },
+            )));
+        }
         let vals = self.tensor_values(input)?;
         let dtype = self.tensor_dtype(input)?;
 
@@ -27811,6 +27839,37 @@ mod tests {
         assert!((grad[1] - 1.0).abs() < 1e-10);
         assert!(grad[0].abs() < 1e-10);
         assert!(grad[2].abs() < 1e-10);
+    }
+
+    #[test]
+    fn fft_ops_fail_loud_on_requires_grad() {
+        // Regression for frankentorch-xszk: fft/ifft/rfft/irfft used
+        // to silently sever autograd by extracting tensor_values
+        // upstream of tensor_complex (whose downstream guard didn't
+        // trigger because the rebuilt re/im leaves were non-grad).
+        // Each now fails loud — matches the stft/istft pattern (3v6e).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let real = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .unwrap();
+        let fft_err = s
+            .tensor_fft(real, None)
+            .expect_err("fft must fail loud on requires_grad");
+        assert!(format!("{fft_err:?}").contains("autograd not supported"));
+        let rfft_err = s
+            .tensor_rfft(real, None)
+            .expect_err("rfft must fail loud on requires_grad");
+        assert!(format!("{rfft_err:?}").contains("autograd not supported"));
+
+        // Build a complex tensor with no grad, then make a
+        // requires_grad version via the autograd system (synthesize
+        // by going through a real op chain that flips requires_grad)
+        // — for simplicity, fft/rfft on real-grad input is the
+        // exclusive entry point we care about; ifft/irfft accept
+        // complex input so the guard fires before the dtype check.
+        // Just verify the guard triggers on the requires_grad real
+        // input plumbed through via tensor_complex's predecessor,
+        // which reflects the practical training-time path.
     }
 
     #[test]
