@@ -10642,6 +10642,95 @@ mod tests {
             }
         }
 
+        // neg(neg(x)) bit-exactly equals x via dispatch (sign-bit
+        // flip applied twice). Frankentorch-mjdv.
+        #[test]
+        fn fuzz_corpus_prop_unary_neg_neg_via_dispatch(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 17.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            let neg = dispatch_tensor_unary_contiguous_f64(
+                UnaryOp::Neg,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            )
+            .expect("fuzz neg dispatch should not fail");
+            let neg_neg = dispatch_tensor_unary_contiguous_f64(
+                UnaryOp::Neg,
+                ExecutionMode::Strict,
+                &neg.values,
+                &meta,
+                false,
+            )
+            .expect("fuzz neg(neg) dispatch should not fail");
+            for (a, b) in neg_neg.values.iter().zip(input.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "neg(neg(x)) should equal x bit-exactly via dispatch"
+                );
+            }
+        }
+
+        // exp(x) > 0 (and finite) for any input in a safe range.
+        // Frankentorch-mjdv.
+        #[test]
+        fn fuzz_corpus_prop_unary_exp_is_positive(
+            samples in prop::collection::vec(-200i16..200i16, 1..32)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 11.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            let outcome = dispatch_tensor_unary_contiguous_f64(
+                UnaryOp::Exp,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            )
+            .expect("fuzz exp dispatch should not fail");
+            for v in &outcome.values {
+                prop_assert!(
+                    *v > 0.0 && v.is_finite(),
+                    "exp({input:?}) → {v} should be positive and finite"
+                );
+            }
+        }
+
+        // sqrt(x) >= 0 for non-negative input. Frankentorch-mjdv.
+        #[test]
+        fn fuzz_corpus_prop_unary_sqrt_non_negative_input(
+            samples in prop::collection::vec(0i16..2048i16, 1..32)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 17.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            let outcome = dispatch_tensor_unary_contiguous_f64(
+                UnaryOp::Sqrt,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            )
+            .expect("fuzz sqrt dispatch should not fail");
+            for v in &outcome.values {
+                prop_assert!(
+                    *v >= 0.0,
+                    "sqrt({input:?}) → {v} should be non-negative"
+                );
+            }
+        }
+
         // Sigmoid output stays in (0, 1) for any finite input.
         // Frankentorch-c7bl.
         #[test]
