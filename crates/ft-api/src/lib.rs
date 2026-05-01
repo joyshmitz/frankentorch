@@ -12701,6 +12701,40 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        // Autograd-aware path for full-rank A (frankentorch-d3gs):
+        //   m >= n (full column rank): A^+ = (A^T A)^{-1} A^T
+        //   m <= n (full row rank):    A^+ = A^T (A A^T)^{-1}
+        // Both compose through tensor_transpose + tensor_matmul +
+        // tensor_linalg_inv — all autograd-aware after recent fixes.
+        // The SVD-based path below stays for non-grad inputs to
+        // continue handling rank-deficient cases correctly. If A is
+        // rank-deficient and requires_grad, the inv inside the normal
+        // equations will error loud (matches torch.linalg.pinv when
+        // gradient mode is on without ridge regularization).
+        if self.tensor_requires_grad(input)? {
+            let shape_check = self.tensor_shape(input)?;
+            if shape_check.len() != 2 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "pinv: input must be 2-D",
+                    },
+                )));
+            }
+            let m = shape_check[0];
+            let n = shape_check[1];
+            let a_t = self.tensor_transpose(input, 0, 1)?;
+            return if m >= n {
+                // tall: A^+ = (A^T A)^{-1} A^T
+                let ata = self.tensor_matmul(a_t, input)?;
+                let inv_ata = self.tensor_linalg_inv(ata)?;
+                self.tensor_matmul(inv_ata, a_t)
+            } else {
+                // wide: A^+ = A^T (A A^T)^{-1}
+                let aat = self.tensor_matmul(input, a_t)?;
+                let inv_aat = self.tensor_linalg_inv(aat)?;
+                self.tensor_matmul(a_t, inv_aat)
+            };
+        }
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -27543,6 +27577,63 @@ mod tests {
                 "pinv roundtrip mismatch at {i}: got {got}, expected {exp}"
             );
         }
+    }
+
+    #[test]
+    fn pinv_propagates_gradient_through_full_rank_input() {
+        // Regression for frankentorch-d3gs: requires_grad input now
+        // takes the normal-equation path (A^T A)^{-1} A^T or
+        // A^T (A A^T)^{-1}, which composes through autograd-aware
+        // ops. The previous SVD-based path silently severed autograd.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Tall matrix (m=3, n=2) with full column rank.
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            1.0, 0.0,
+            0.0, 1.0,
+            1.0, 1.0,
+        ], vec![3, 2], true).unwrap();
+        let pinv = s.tensor_linalg_pinv(a).unwrap();
+        let pinv_shape = s.tensor_shape(pinv).unwrap();
+        assert_eq!(pinv_shape, vec![2, 3]);
+        // Pseudoinverse property: A @ A+ @ A ≈ A.
+        let a_pinv = s.tensor_matmul(a, pinv).unwrap();
+        let recon = s.tensor_matmul(a_pinv, a).unwrap();
+        let a_vals = s.tensor_values(a).unwrap();
+        let r = s.tensor_values(recon).unwrap();
+        for (i, (&got, &exp)) in r.iter().zip(a_vals.iter()).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-8,
+                "pinv roundtrip [{i}]: got {got}, expected {exp}"
+            );
+        }
+        // Gradient of sum(pinv) must exist and be finite.
+        let loss = s.tensor_sum(pinv).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, a)
+            .expect("input gradient should exist (autograd not severed)");
+        assert!(grad.iter().all(|g| g.is_finite()));
+        // Some component must be non-zero — otherwise the chain rule
+        // is silently zero, indicating a severance.
+        assert!(grad.iter().any(|g| g.abs() > 1e-12));
+    }
+
+    #[test]
+    fn pinv_propagates_gradient_through_wide_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Wide matrix (m=2, n=3) with full row rank.
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            1.0, 0.0, 1.0,
+            0.0, 1.0, 1.0,
+        ], vec![2, 3], true).unwrap();
+        let pinv = s.tensor_linalg_pinv(a).unwrap();
+        let loss = s.tensor_sum(pinv).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, a).expect("wide pinv grad");
+        assert!(grad.iter().all(|g| g.is_finite()));
+        assert!(grad.iter().any(|g| g.abs() > 1e-12));
     }
 
     #[test]
