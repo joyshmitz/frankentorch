@@ -23069,6 +23069,85 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn rnn_final_hidden_state_trains_end_to_end_with_adam() {
+        // E2E regression for frankentorch-3ial. Mirrors the LSTM
+        // (eets) and GRU (c6a4) E2E tests but exercises the
+        // RNNCell forward (matmul + tanh) — the simplest of the
+        // recurrent cell variants.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{Module, RNNConfig, RNN};
+        use ft_optim::{Adam, Optimizer};
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let rnn = RNN::new(
+            &mut session,
+            4,
+            4,
+            RNNConfig {
+                num_layers: 1,
+                use_tanh: true,
+                bidirectional: false,
+                dropout: 0.0,
+                batch_first: false,
+            },
+        )
+        .expect("rnn");
+
+        // Input: seq=3, batch=1, input=4 (time-first).
+        let input_vals: Vec<f64> =
+            (0..12).map(|i| ((i as f64 - 5.5) / 6.0) * 0.5).collect();
+        let input = session
+            .tensor_variable(input_vals, vec![3, 1, 4], false)
+            .expect("input");
+
+        // Target final hidden state: [1, 4] of zeros.
+        let target = session
+            .tensor_variable(vec![0.0; 4], vec![1, 4], false)
+            .expect("target");
+
+        let mut optimizer = Adam::new(rnn.parameters(), 0.05);
+
+        let initial_result = rnn
+            .forward_rnn(&mut session, input, None)
+            .expect("initial rnn");
+        let initial_hn = session
+            .tensor_squeeze(initial_result.h_n, 0)
+            .expect("initial squeeze");
+        let initial_loss = session
+            .mse_loss(initial_hn, target)
+            .expect("initial loss");
+        let initial_loss_val =
+            session.tensor_values(initial_loss).expect("initial val")[0];
+        let mut best_loss = initial_loss_val;
+        let mut saw_loss_improvement = false;
+
+        for _ in 0..200 {
+            optimizer.zero_grad(&mut session).expect("zero_grad");
+            let result = rnn
+                .forward_rnn(&mut session, input, None)
+                .expect("rnn");
+            let h_n = session.tensor_squeeze(result.h_n, 0).expect("squeeze");
+            let loss = session.mse_loss(h_n, target).expect("loss");
+            let loss_val = session.tensor_values(loss).expect("loss val")[0];
+            if loss_val < best_loss {
+                best_loss = loss_val;
+                saw_loss_improvement = true;
+            }
+            let report = session.tensor_backward(loss).expect("backward");
+            optimizer.step(&mut session, &report).expect("optim step");
+        }
+
+        assert!(
+            saw_loss_improvement,
+            "RNN never improved the loss"
+        );
+        assert!(
+            best_loss < initial_loss_val * 0.1,
+            "RNN should drop loss by 10x: initial={initial_loss_val}, best={best_loss}"
+        );
+    }
+
+    #[test]
     fn terminate_and_reap_child_reaps_running_process() {
         let mut child = Command::new("sh")
             .arg("-c")
