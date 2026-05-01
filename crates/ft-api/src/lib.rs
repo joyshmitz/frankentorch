@@ -5913,9 +5913,6 @@ impl FrankenTorchSession {
             ));
         }
 
-        let input_vals = self.tensor_values(input)?;
-        let weight_vals = self.tensor_values(weight)?;
-
         let span = Self::checked_mul(
             input_l - 1,
             stride,
@@ -5935,46 +5932,47 @@ impl FrankenTorchSession {
             output_padding,
             "conv_transpose1d output length overflow",
         )?;
-        let output_len = Self::checked_mul(
-            batch_size,
-            out_channels,
-            "conv_transpose1d output size overflow",
-        )?;
-        let output_len = Self::checked_mul(
-            output_len,
-            output_l,
-            "conv_transpose1d output size overflow",
-        )?;
-        let mut output = vec![0.0; output_len];
 
-        for n in 0..batch_size {
-            for ic in 0..in_channels {
-                for il in 0..input_l {
-                    let in_val = input_vals[(n * in_channels + ic) * input_l + il];
-                    for oc in 0..out_channels {
-                        for k in 0..kernel_l {
-                            let ol = il * stride + k;
-                            if ol >= padding && ol - padding < output_l {
-                                let w_idx = (ic * out_channels + oc) * kernel_l + k;
-                                let out_idx = (n * out_channels + oc) * output_l + (ol - padding);
-                                output[out_idx] += in_val * weight_vals[w_idx];
-                            }
-                        }
-                    }
+        // Compose via tensor_narrow + tensor_matmul + tensor_pad +
+        // tensor_add so gradients flow back to input and weight.
+        // Tracked under frankentorch-zjf6. Previously the body ran
+        // the transposed convolution in plain f64 and rebuilt a
+        // non-grad leaf, severing autograd through every F.conv_t1d
+        // call (U-Net decoders, GANs, segmentation upsamplers).
+        //
+        // Mirrors the ConvTranspose1d nn.Module composition:
+        // for each kernel position k, for each input position i,
+        // contribute x[:, :, i] @ w[:, :, k] at output position
+        // i*stride + k - padding. Implemented via narrow + matmul
+        // + pad + accumulating add.
+        let mut result = self.zeros(vec![batch_size, out_channels, output_l], false)?;
+        for k in 0..kernel_l {
+            let w_k = self.tensor_narrow(weight, 2, k, 1)?;
+            let w_k = self.tensor_squeeze(w_k, 2)?; // [in_channels, out_channels]
+            for il in 0..input_l {
+                let out_pos_raw = il * stride + k;
+                if out_pos_raw < padding || out_pos_raw - padding >= output_l {
+                    continue;
                 }
+                let out_pos = out_pos_raw - padding;
+                let x_i = self.tensor_narrow(input, 2, il, 1)?;
+                let x_i = self.tensor_squeeze(x_i, 2)?; // [batch, in_channels]
+                let contrib = self.tensor_matmul(x_i, w_k)?; // [batch, out_channels]
+                let contrib = self.tensor_unsqueeze(contrib, 2)?; // [batch, out_channels, 1]
+                let pad_left = out_pos;
+                let pad_right = output_l - out_pos - 1;
+                let contrib_padded = self.tensor_pad(contrib, &[pad_left, pad_right], 0.0)?;
+                result = self.tensor_add(result, contrib_padded)?;
             }
         }
-
-        let out_node =
-            self.tensor_variable(output, vec![batch_size, out_channels, output_l], false)?;
 
         match bias {
             Some(bias) => {
                 let bias = self.tensor_reshape(bias, vec![1, out_channels, 1])?;
                 let bias = self.tensor_expand(bias, vec![batch_size, out_channels, output_l])?;
-                self.tensor_add(out_node, bias)
+                self.tensor_add(result, bias)
             }
-            None => Ok(out_node),
+            None => Ok(result),
         }
     }
 
@@ -6038,9 +6036,6 @@ impl FrankenTorchSession {
             ));
         }
 
-        let input_vals = self.tensor_values(input)?;
-        let weight_vals = self.tensor_values(weight)?;
-
         let span_h = Self::checked_mul(
             input_h - 1,
             stride_h,
@@ -6081,70 +6076,63 @@ impl FrankenTorchSession {
             "conv_transpose2d output width overflow",
         )?;
 
-        let output_len = Self::checked_mul(
-            batch_size,
-            out_channels,
-            "conv_transpose2d output size overflow",
-        )?;
-        let output_len = Self::checked_mul(
-            output_len,
-            output_h,
-            "conv_transpose2d output size overflow",
-        )?;
-        let output_len = Self::checked_mul(
-            output_len,
-            output_w,
-            "conv_transpose2d output size overflow",
-        )?;
-        let mut output = vec![0.0; output_len];
-
-        for n in 0..batch_size {
-            for ic in 0..in_channels {
+        // Compose via tensor_narrow + tensor_matmul + tensor_pad +
+        // tensor_add so gradients flow back to input and weight.
+        // Tracked under frankentorch-zjf6. Same scatter-and-accumulate
+        // pattern as conv_transpose1d, with two spatial axes:
+        // for each kernel (kh, kw), each input position (ih, iw),
+        // compute x[:, :, ih, iw] @ w[:, :, kh, kw] and pad it to
+        // the right output position before accumulating.
+        let mut result = self.zeros(vec![batch_size, out_channels, output_h, output_w], false)?;
+        for kh in 0..kernel_h {
+            for kw in 0..kernel_w {
+                let w_kh = self.tensor_narrow(weight, 2, kh, 1)?;
+                let w_kw = self.tensor_narrow(w_kh, 3, kw, 1)?;
+                let w_kw = self.tensor_squeeze(w_kw, 3)?;
+                let w_kw = self.tensor_squeeze(w_kw, 2)?; // [in_channels, out_channels]
                 for ih in 0..input_h {
                     for iw in 0..input_w {
-                        let in_val =
-                            input_vals[((n * in_channels + ic) * input_h + ih) * input_w + iw];
-                        for oc in 0..out_channels {
-                            for kh in 0..kernel_h {
-                                for kw in 0..kernel_w {
-                                    let oh = ih * stride_h + kh;
-                                    let ow = iw * stride_w + kw;
-                                    if oh >= padding_h
-                                        && ow >= padding_w
-                                        && oh - padding_h < output_h
-                                        && ow - padding_w < output_w
-                                    {
-                                        let w_idx = ((ic * out_channels + oc) * kernel_h + kh)
-                                            * kernel_w
-                                            + kw;
-                                        let out_idx = ((n * out_channels + oc) * output_h
-                                            + (oh - padding_h))
-                                            * output_w
-                                            + (ow - padding_w);
-                                        output[out_idx] += in_val * weight_vals[w_idx];
-                                    }
-                                }
-                            }
+                        let oh_raw = ih * stride_h + kh;
+                        let ow_raw = iw * stride_w + kw;
+                        if oh_raw < padding_h
+                            || ow_raw < padding_w
+                            || oh_raw - padding_h >= output_h
+                            || ow_raw - padding_w >= output_w
+                        {
+                            continue;
                         }
+                        let oh = oh_raw - padding_h;
+                        let ow = ow_raw - padding_w;
+                        let x_ih = self.tensor_narrow(input, 2, ih, 1)?;
+                        let x_iw = self.tensor_narrow(x_ih, 3, iw, 1)?;
+                        let x_iw = self.tensor_squeeze(x_iw, 3)?;
+                        let x_iw = self.tensor_squeeze(x_iw, 2)?; // [batch, in_channels]
+                        let contrib = self.tensor_matmul(x_iw, w_kw)?; // [batch, out_channels]
+                        let contrib = self.tensor_unsqueeze(contrib, 2)?;
+                        let contrib = self.tensor_unsqueeze(contrib, 3)?; // [batch, out_channels, 1, 1]
+                        let pad_left = ow;
+                        let pad_right = output_w - ow - 1;
+                        let pad_top = oh;
+                        let pad_bottom = output_h - oh - 1;
+                        let contrib_padded = self.tensor_pad(
+                            contrib,
+                            &[pad_left, pad_right, pad_top, pad_bottom],
+                            0.0,
+                        )?;
+                        result = self.tensor_add(result, contrib_padded)?;
                     }
                 }
             }
         }
-
-        let out_node = self.tensor_variable(
-            output,
-            vec![batch_size, out_channels, output_h, output_w],
-            false,
-        )?;
 
         match bias {
             Some(bias) => {
                 let bias = self.tensor_reshape(bias, vec![1, out_channels, 1, 1])?;
                 let bias =
                     self.tensor_expand(bias, vec![batch_size, out_channels, output_h, output_w])?;
-                self.tensor_add(out_node, bias)
+                self.tensor_add(result, bias)
             }
-            None => Ok(out_node),
+            None => Ok(result),
         }
     }
 
@@ -29465,6 +29453,54 @@ mod tests {
         assert!((vals[1] - 1.0).abs() < 1e-10);
         assert!((vals[4] - 1.0).abs() < 1e-10);
         assert!((vals[5] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn conv_transpose1d_propagates_gradient_through_input_and_weight() {
+        // Regression for frankentorch-zjf6: previous body extracted
+        // tensor_values + rebuilt non-grad output, severing autograd
+        // through both input and weight. Now composes via the
+        // narrow + matmul + pad + add scatter pattern.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 1.0], vec![1, 1, 2], true)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, 1.0, 1.0], vec![1, 1, 3], true)
+            .unwrap();
+        let out = s
+            .functional_conv_transpose1d(input, weight, None, 1, 0, 0)
+            .unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let in_grad = s.tensor_gradient(&report, input).expect("input grad");
+        let w_grad = s.tensor_gradient(&report, weight).expect("weight grad");
+        assert!(in_grad.iter().all(|g| g.is_finite()));
+        assert!(w_grad.iter().all(|g| g.is_finite()));
+        assert!(in_grad.iter().any(|g| g.abs() > 1e-12));
+        assert!(w_grad.iter().any(|g| g.abs() > 1e-12));
+    }
+
+    #[test]
+    fn conv_transpose2d_propagates_gradient_through_input_and_weight() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, 1.0, 1.0, 1.0], vec![1, 1, 2, 2], true)
+            .unwrap();
+        let out = s
+            .functional_conv_transpose2d(input, weight, None, (1, 1), (0, 0), (0, 0))
+            .unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let in_grad = s.tensor_gradient(&report, input).expect("input grad");
+        let w_grad = s.tensor_gradient(&report, weight).expect("weight grad");
+        assert!(in_grad.iter().all(|g| g.is_finite()));
+        assert!(w_grad.iter().all(|g| g.is_finite()));
+        assert!(in_grad.iter().any(|g| g.abs() > 1e-12));
+        assert!(w_grad.iter().any(|g| g.abs() > 1e-12));
     }
 
     // ── adaptive pooling tests ────────────────────────────────────────
