@@ -22228,7 +22228,7 @@ print(json.dumps({"softplus": sp_out}))
         // E2E (eets) but exercises the GRU gate equations
         // (reset/update/new) which are distinct from LSTM gates.
         use ft_api::FrankenTorchSession;
-        use ft_nn::GRU;
+        use ft_nn::{Module, GRU};
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
