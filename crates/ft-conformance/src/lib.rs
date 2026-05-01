@@ -10943,6 +10943,103 @@ mod tests {
                 "sum(sum_dim(x, 0)) = {v_two_step} but sum(x) = {v_direct}; diff = {diff:e}, bound = {bound:e}"
             );
         }
+
+        // sigmoid(x) + sigmoid(-x) == 1: the two sides of the
+        // sigmoid curve are reflections that sum to 1 by definition.
+        // Allow modest ULP slack since sigmoid is computed via
+        // 1 / (1 + exp(-x)) and the rounding paths differ slightly
+        // for ±x. Frankentorch-b27s.
+        #[test]
+        fn fuzz_metamorphic_sigmoid_complement_sums_to_one(
+            samples in prop::collection::vec(-1500i16..1500i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable");
+            let nx = s.tensor_neg(x).expect("neg");
+            let s_pos = s.tensor_sigmoid(x).expect("sigmoid x");
+            let s_neg = s.tensor_sigmoid(nx).expect("sigmoid -x");
+            let total = s.tensor_add(s_pos, s_neg).expect("add");
+            let v = s.tensor_values(total).expect("vals");
+            for (i, t) in v.iter().enumerate() {
+                let diff = (t - 1.0).abs();
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON,
+                    "sigmoid(x[{i}]) + sigmoid(-x[{i}]) = {t}, expected 1.0, diff = {diff:e}"
+                );
+            }
+        }
+
+        // log(exp(x)) ≈ x for x in a safe range: exp can blow up
+        // for very large x, so restrict to [-30, 30] which keeps
+        // exp(x) well within f64 dynamic range. Frankentorch-b27s.
+        #[test]
+        fn fuzz_metamorphic_exp_log_roundtrip(
+            samples in prop::collection::vec(-300i16..300i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 11.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable");
+            let exp_x = s.tensor_exp(x).expect("exp");
+            let log_exp_x = s.tensor_log(exp_x).expect("log");
+            let v = s.tensor_values(log_exp_x).expect("vals");
+            for (a, b) in v.iter().zip(input.iter()) {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * scale * f64::EPSILON,
+                    "log(exp(x)) = {a} but x = {b}, diff = {diff:e}"
+                );
+            }
+        }
+
+        // abs(x * y) bit-exactly equals abs(x) * abs(y): both are
+        // sign-bit operations on the same magnitude product.
+        // Frankentorch-b27s.
+        #[test]
+        fn fuzz_metamorphic_abs_product_equals_product_of_abs(
+            pairs in prop::collection::vec(
+                (-2048i16..2048i16, -2048i16..2048i16),
+                1..32,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let xs: Vec<f64> = pairs.iter().map(|(x, _)| f64::from(*x) / 23.0).collect();
+            let ys: Vec<f64> = pairs.iter().map(|(_, y)| f64::from(*y) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = xs.len();
+            let x = s
+                .tensor_variable(xs.clone(), vec![n], false)
+                .expect("x variable");
+            let y = s
+                .tensor_variable(ys.clone(), vec![n], false)
+                .expect("y variable");
+            let prod = s.tensor_mul(x, y).expect("mul");
+            let abs_prod = s.tensor_abs(prod).expect("abs(mul)");
+            let abs_x = s.tensor_abs(x).expect("abs x");
+            let abs_y = s.tensor_abs(y).expect("abs y");
+            let prod_abs = s.tensor_mul(abs_x, abs_y).expect("abs * abs");
+            let v_lhs = s.tensor_values(abs_prod).expect("lhs");
+            let v_rhs = s.tensor_values(prod_abs).expect("rhs");
+            for (a, b) in v_lhs.iter().zip(v_rhs.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "abs(x*y) should equal abs(x)*abs(y) bit-exactly"
+                );
+            }
+        }
     }
 
     #[cfg(feature = "fuzz")]
