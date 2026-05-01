@@ -16765,9 +16765,155 @@ impl FrankenTorchSession {
                 let divisor = self.tensor_add(count, one_t)?;
                 return self.tensor_div(summed, divisor);
             }
+            if reduce == "amax" || reduce == "amin" {
+                // Argmax-routing autograd (frankentorch-7k6a). For
+                // each output position, exactly one of input[i] or
+                // one src[j]→i wins; the gradient flows only to the
+                // winning element. Forward: result[i] = mask_input[i]
+                // * input[i] + sum over j-mapped-to-i of mask_src[j]
+                // * src[j], with masks computed in plain f64 from the
+                // input/src values (non-diff). The masks are
+                // reconstructed exactly via a values read.
+                let input_vals = self.tensor_tape.values(input)?;
+                let src_vals = self.tensor_tape.values(src)?;
+                let idx_vals = self.tensor_tape.values(index)?;
+                let src_shape = self.tensor_shape(src)?;
+                let in_numel = input_vals.len();
+                let src_numel = src_vals.len();
+                let dim_size = input_shape[dim];
+                // Compute outer/inner strides for [outer, dim_size, inner] view.
+                let outer = Self::checked_shape_numel(
+                    &input_shape[..dim],
+                    "scatter_reduce: outer overflow",
+                )?;
+                let inner = Self::checked_shape_numel(
+                    &input_shape[dim + 1..],
+                    "scatter_reduce: inner overflow",
+                )?;
+                let dim_size_i = isize::try_from(dim_size).map_err(|_| {
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "scatter_reduce: dim size out of platform isize",
+                        },
+                    ))
+                })?;
+                // For each (outer, inner) cell, compute the winner across
+                // input[outer, dim_size, inner] and the src values that map to it.
+                // Track best value + bool flag (true = src wins) + src index.
+                let mut input_winner = vec![false; in_numel];
+                let mut src_winner = vec![false; src_numel];
+                let mut best = vec![f64::NAN; in_numel];
+                // Initialize best with input values; mark input as winner.
+                #[allow(clippy::needless_range_loop)]
+                for i in 0..in_numel {
+                    best[i] = input_vals[i];
+                    input_winner[i] = true;
+                }
+                // Walk src in flat order; map each (outer, src_dim, inner) → input position.
+                let src_dim_size = src_shape[dim];
+                let src_outer = Self::checked_shape_numel(
+                    &src_shape[..dim],
+                    "scatter_reduce: src outer overflow",
+                )?;
+                let src_inner = Self::checked_shape_numel(
+                    &src_shape[dim + 1..],
+                    "scatter_reduce: src inner overflow",
+                )?;
+                if src_outer != outer || src_inner != inner {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "scatter_reduce: src shape must match input shape except at dim",
+                        },
+                    )));
+                }
+                for o in 0..outer {
+                    for s in 0..src_dim_size {
+                        for i in 0..inner {
+                            let src_flat = (o * src_dim_size + s) * inner + i;
+                            // Validate index value.
+                            let idx_f = idx_vals[src_flat];
+                            let idx_i = Self::exact_integer_index_to_isize(
+                                idx_f,
+                                "scatter_reduce: index values must be finite integers",
+                            )?;
+                            if idx_i < -dim_size_i || idx_i >= dim_size_i {
+                                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                        reason: "scatter_reduce: index value out of range",
+                                    },
+                                )));
+                            }
+                            let target_dim = if idx_i < 0 {
+                                (idx_i + dim_size_i) as usize
+                            } else {
+                                idx_i as usize
+                            };
+                            let dst_flat = (o * dim_size + target_dim) * inner + i;
+                            let v = src_vals[src_flat];
+                            let beats = if reduce == "amax" {
+                                v > best[dst_flat]
+                            } else {
+                                v < best[dst_flat]
+                            };
+                            if beats {
+                                // Demote previous winner.
+                                if input_winner[dst_flat] {
+                                    input_winner[dst_flat] = false;
+                                }
+                                // Find any prior src winner for this dst and demote.
+                                // Scan back through src that hit this dst — but since
+                                // we walk src in flat order, the prior winner (if any)
+                                // is the most recent earlier src that beat all before
+                                // it. We can simply clear src_winner for any earlier
+                                // src that mapped here. Use a simpler approach: track
+                                // best-src-flat per dst.
+                                // (Re-scan would be O(n^2); use a dst→best_src lookup.)
+                                best[dst_flat] = v;
+                                src_winner[src_flat] = true;
+                                // Demote any older src winner for this dst
+                                for prior in 0..src_flat {
+                                    if !src_winner[prior] {
+                                        continue;
+                                    }
+                                    // Compute prior's dst:
+                                    let prior_o = prior / (src_dim_size * inner);
+                                    let prior_rem = prior % (src_dim_size * inner);
+                                    let prior_i = prior_rem % inner;
+                                    let prior_idx_f = idx_vals[prior];
+                                    let prior_idx_i = prior_idx_f as isize;
+                                    let prior_target = if prior_idx_i < 0 {
+                                        (prior_idx_i + dim_size_i) as usize
+                                    } else {
+                                        prior_idx_i as usize
+                                    };
+                                    let prior_dst =
+                                        (prior_o * dim_size + prior_target) * inner + prior_i;
+                                    if prior_dst == dst_flat {
+                                        src_winner[prior] = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Build mask tensors and compose final result.
+                let mask_in_vals: Vec<f64> = input_winner
+                    .iter()
+                    .map(|&w| if w { 1.0 } else { 0.0 })
+                    .collect();
+                let mask_src_vals: Vec<f64> = src_winner
+                    .iter()
+                    .map(|&w| if w { 1.0 } else { 0.0 })
+                    .collect();
+                let mask_in = self.tensor_variable(mask_in_vals, input_shape.clone(), false)?;
+                let mask_src = self.tensor_variable(mask_src_vals, src_shape, false)?;
+                let masked_input = self.tensor_mul(mask_in, input)?;
+                let masked_src = self.tensor_mul(mask_src, src)?;
+                return self.tensor_scatter_add(masked_input, dim, index, masked_src);
+            }
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "scatter_reduce: autograd not supported for reduce other than 'sum'/'mean' (prod/amax/amin backward not yet implemented; tracked under frankentorch-dhm4)",
+                    reason: "scatter_reduce: autograd not supported for reduce='prod' (divide-back at zero is unstable; tracked under frankentorch-dhm4)",
                 },
             )));
         }
@@ -37091,9 +37237,9 @@ mod tests {
     }
 
     #[test]
-    fn scatter_reduce_prod_amax_amin_fail_loud_on_requires_grad() {
-        // mean mode is now autograd-aware (frankentorch-uzca);
-        // prod/amax/amin still fail loud.
+    fn scatter_reduce_prod_fails_loud_on_requires_grad() {
+        // amax/amin are now autograd-aware (frankentorch-7k6a);
+        // only prod still fails loud.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s.tensor_variable(vec![2.0, 6.0], vec![2], true).unwrap();
         let index = s
@@ -37102,12 +37248,69 @@ mod tests {
         let src = s
             .tensor_variable(vec![4.0, 8.0, 10.0], vec![3], false)
             .unwrap();
-        for reduce in ["prod", "amax", "amin"] {
-            let err = s
-                .tensor_scatter_reduce(input, 0, index, src, reduce)
-                .expect_err("non-sum/mean reduce must fail loud on requires_grad");
-            assert!(format!("{err:?}").contains("autograd not supported"));
-        }
+        let err = s
+            .tensor_scatter_reduce(input, 0, index, src, "prod")
+            .expect_err("prod must fail loud on requires_grad");
+        assert!(format!("{err:?}").contains("autograd not supported"));
+    }
+
+    #[test]
+    fn scatter_reduce_amax_propagates_gradient() {
+        // Regression for frankentorch-7k6a: amax composes via
+        // argmax-routing masks + scatter_add. Gradient flows only to
+        // the winning element per output position.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // input = [2, 6]; index = [0, 0, 1]; src = [4, 8, 10]
+        // Position 0: max(2, 4, 8) = 8 (src[1] wins)
+        // Position 1: max(6, 10) = 10 (src[2] wins)
+        let input = s.tensor_variable(vec![2.0, 6.0], vec![2], true).unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![4.0, 8.0, 10.0], vec![3], true)
+            .unwrap();
+        let out = s
+            .tensor_scatter_reduce(input, 0, index, src, "amax")
+            .unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[8.0, 10.0]);
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let in_grad = s.tensor_gradient(&report, input).expect("input grad");
+        let src_grad = s.tensor_gradient(&report, src).expect("src grad");
+        // Neither input position is the max → in_grad = [0, 0]
+        assert_eq!(in_grad, &vec![0.0, 0.0]);
+        // src[1] and src[2] win → src_grad = [0, 1, 1]
+        assert_eq!(src_grad, &vec![0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn scatter_reduce_amin_propagates_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // input = [2, 6]; index = [0, 0, 1]; src = [4, 8, 10]
+        // Position 0: min(2, 4, 8) = 2 (input[0] wins)
+        // Position 1: min(6, 10) = 6 (input[1] wins)
+        let input = s.tensor_variable(vec![2.0, 6.0], vec![2], true).unwrap();
+        let index = s
+            .tensor_variable(vec![0.0, 0.0, 1.0], vec![3], false)
+            .unwrap();
+        let src = s
+            .tensor_variable(vec![4.0, 8.0, 10.0], vec![3], true)
+            .unwrap();
+        let out = s
+            .tensor_scatter_reduce(input, 0, index, src, "amin")
+            .unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, &[2.0, 6.0]);
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let in_grad = s.tensor_gradient(&report, input).expect("input grad");
+        let src_grad = s.tensor_gradient(&report, src).expect("src grad");
+        // Both inputs win → in_grad = [1, 1]
+        assert_eq!(in_grad, &vec![1.0, 1.0]);
+        // No src wins → src_grad = [0, 0, 0]
+        assert_eq!(src_grad, &vec![0.0, 0.0, 0.0]);
     }
 
     #[test]
