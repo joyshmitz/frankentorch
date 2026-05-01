@@ -14723,13 +14723,6 @@ impl FrankenTorchSession {
         // now, fail loud on requires_grad input to surface the silent
         // severance that the legacy plain-f64 path produced.
         let requires_grad = self.tensor_requires_grad(input)?;
-        if requires_grad && mode == "bicubic" {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "interpolate: bicubic autograd not yet implemented (cubic-Hermite backward needs 16-corner weighted gather). Tracked under frankentorch-ov0v.",
-                },
-            )));
-        }
 
         let (storage, meta) = {
             let tensor = self.tensor_tape.tensor(input)?;
@@ -14831,14 +14824,22 @@ impl FrankenTorchSession {
                     )
                 }
             }
-            "bicubic" if spatial_dims == 2 => self.interpolate_bicubic(
-                &storage,
-                batch,
-                channels,
-                &in_spatial,
-                &out_spatial,
-                align,
-            ),
+            "bicubic" if spatial_dims == 2 => {
+                if requires_grad {
+                    self.interpolate_bicubic_autograd(
+                        input, batch, channels, &in_spatial, &out_spatial, align,
+                    )
+                } else {
+                    self.interpolate_bicubic(
+                        &storage,
+                        batch,
+                        channels,
+                        &in_spatial,
+                        &out_spatial,
+                        align,
+                    )
+                }
+            }
             "trilinear" if spatial_dims == 3 => {
                 if requires_grad {
                     self.interpolate_trilinear_autograd(
@@ -15143,6 +15144,79 @@ impl FrankenTorchSession {
         }
         let summed = acc.expect("trilinear has 8 corners");
         self.tensor_reshape(summed, vec![batch, channels, od, oh, ow])
+    }
+
+    fn interpolate_bicubic_autograd(
+        &mut self,
+        input: TensorNodeId,
+        batch: usize,
+        channels: usize,
+        in_spatial: &[usize],
+        out_spatial: &[usize],
+        align_corners: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // Autograd-aware 2-D bicubic interpolation: 16 corner
+        // index_selects (4 per axis) with cubic-Hermite weights.
+        // Tracked under frankentorch-tm8j. Forward result agrees
+        // bit-exactly with the legacy plain-f64 path because the
+        // weights and source-position formulas mirror it.
+        let (ih, iw) = (in_spatial[0], in_spatial[1]);
+        let (oh, ow) = (out_spatial[0], out_spatial[1]);
+        let bc = Self::checked_mul(batch, channels, "interpolate_bicubic_autograd: bc overflow")?;
+        let in_numel = Self::checked_mul(ih, iw, "interpolate_bicubic_autograd: in_numel overflow")?;
+        let out_numel = Self::checked_mul(oh, ow, "interpolate_bicubic_autograd: out_numel overflow")?;
+        // 16 corners (4 dy × 4 dx); each gets an index array and weight array.
+        let mut corners: Vec<(Vec<f64>, Vec<f64>)> = (0..16)
+            .map(|_| (Vec::with_capacity(out_numel), Vec::with_capacity(out_numel)))
+            .collect();
+        for oy in 0..oh {
+            let src_y = if align_corners && oh > 1 {
+                oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
+            } else {
+                (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
+            };
+            let src_y = src_y.max(0.0).min((ih - 1) as f64);
+            let iy = src_y.floor() as i64;
+            let ty = src_y - iy as f64;
+            for ox in 0..ow {
+                let src_x = if align_corners && ow > 1 {
+                    ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
+                } else {
+                    (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
+                };
+                let src_x = src_x.max(0.0).min((iw - 1) as f64);
+                let ix = src_x.floor() as i64;
+                let tx = src_x - ix as f64;
+                let mut ci = 0usize;
+                for dy in -1..=2_i64 {
+                    let wy = cubic_weight(ty - dy as f64);
+                    let sy = (iy + dy).clamp(0, ih as i64 - 1) as usize;
+                    for dx in -1..=2_i64 {
+                        let wx = cubic_weight(tx - dx as f64);
+                        let sx = (ix + dx).clamp(0, iw as i64 - 1) as usize;
+                        #[allow(clippy::cast_precision_loss)]
+                        corners[ci].0.push((sy * iw + sx) as f64);
+                        corners[ci].1.push(wy * wx);
+                        ci += 1;
+                    }
+                }
+            }
+        }
+        let flat = self.tensor_reshape(input, vec![bc, in_numel])?;
+        let mut acc: Option<TensorNodeId> = None;
+        for (idx_vec, w_vec) in corners {
+            let idx_n = self.tensor_variable(idx_vec, vec![out_numel], false)?;
+            let g = self.tensor_index_select(flat, 1, idx_n)?;
+            let w_n = self.tensor_variable(w_vec, vec![1, out_numel], false)?;
+            let w_b = self.tensor_expand(w_n, vec![bc, out_numel])?;
+            let term = self.tensor_mul(g, w_b)?;
+            acc = Some(match acc {
+                Some(a) => self.tensor_add(a, term)?,
+                None => term,
+            });
+        }
+        let summed = acc.expect("bicubic has 16 corners");
+        self.tensor_reshape(summed, vec![batch, channels, oh, ow])
     }
 
     fn interpolate_nearest(
@@ -29109,17 +29183,28 @@ mod tests {
     }
 
     #[test]
-    fn interpolate_bicubic_fails_loud_on_requires_grad() {
-        // bilinear/trilinear/linear are now autograd-aware
-        // (frankentorch-3t1t); only bicubic still fails loud.
+    fn interpolate_bicubic_propagates_input_gradient() {
+        // Regression for frankentorch-tm8j: bicubic interp now
+        // composes via 16-corner cubic-Hermite weighted gather.
+        // Cubic weights are NOT a partition of unity in general
+        // (only for non-extrapolating positions), so just verify
+        // gradients are finite and non-zero.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
             .unwrap();
-        let err = s
-            .tensor_interpolate(input, Some(vec![4, 4]), None, "bicubic", Some(false))
-            .expect_err("bicubic must fail loud on requires_grad");
-        assert!(format!("{err:?}").contains("autograd not yet implemented"));
+        let out = s
+            .tensor_interpolate(input, Some(vec![4, 4]), None, "bicubic", Some(true))
+            .unwrap();
+        let shape = s.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![1, 1, 4, 4]);
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist");
+        assert!(grad.iter().all(|g| g.is_finite()));
+        assert!(grad.iter().any(|g| g.abs() > 1e-12));
     }
 
     #[test]
