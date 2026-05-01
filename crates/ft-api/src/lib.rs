@@ -11681,6 +11681,13 @@ impl FrankenTorchSession {
         indices: TensorNodeId,
         num_classes: usize,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(indices)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "one_hot: autograd not supported (binary mask from integer indices is non-differentiable). Tracked under frankentorch-sjcw.",
+                },
+            )));
+        }
         let (idx_vals, idx_meta) = self.tensor_values_meta(indices)?;
         let idx_shape = idx_meta.shape().to_vec();
         let total = idx_vals.len();
@@ -25784,6 +25791,22 @@ mod tests {
             .tensor_variable(vec![0.0, f64::INFINITY], vec![2], false)
             .expect("indices");
         assert!(session.one_hot(indices, 3).is_err());
+    }
+
+    #[test]
+    fn one_hot_fails_loud_on_requires_grad() {
+        // Regression for frankentorch-sjcw: one_hot is intrinsically
+        // non-differentiable (binary mask from integer indices).
+        // Now fails loud on requires_grad input instead of silently
+        // severing.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let indices = s
+            .tensor_variable(vec![0.0, 1.0, 2.0], vec![3], true)
+            .unwrap();
+        let err = s
+            .one_hot(indices, 3)
+            .expect_err("one_hot must fail loud on requires_grad");
+        assert!(format!("{err:?}").contains("autograd not supported"));
     }
 
     // ---- tensor_pad tests ----
