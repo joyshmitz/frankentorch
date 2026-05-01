@@ -12743,20 +12743,65 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         ord: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = self.tensor_values(input)?;
+        // Compose via autograd-aware primitives so gradients flow back
+        // to the input. Tracked under frankentorch-4yh9. Previous body
+        // extracted tensor_values and rebuilt a non-grad leaf,
+        // silently severing autograd through every vector_norm call
+        // (used in normalization layers, regularization, gradient
+        // clipping, etc).
+        let shape = self.tensor_shape(input)?;
+        let numel = shape.iter().product::<usize>();
+        if numel == 0 {
+            // Empty input: every norm is 0 by convention.
+            return self.tensor_variable(vec![0.0], vec![1], false);
+        }
+        // Flatten so the reduction has a single axis.
+        let flat = self.tensor_reshape(input, vec![numel])?;
+        let abs_x = self.tensor_abs(flat)?;
 
-        let norm = if ord == f64::INFINITY {
-            vals.iter().map(|v| v.abs()).fold(0.0f64, f64::max)
-        } else if ord == f64::NEG_INFINITY {
-            vals.iter().map(|v| v.abs()).fold(f64::INFINITY, f64::min)
-        } else if ord == 0.0 {
-            vals.iter().filter(|&&v| v != 0.0).count() as f64
-        } else {
-            let sum: f64 = vals.iter().map(|v| v.abs().powf(ord)).sum();
-            sum.powf(1.0 / ord)
-        };
-
-        self.tensor_variable(vec![norm], vec![1], false)
+        if ord == 0.0 {
+            // L0 norm is non-differentiable (integer count of nonzeros).
+            // Fail loud when caller asked for gradients; otherwise
+            // fall back to the f64 path.
+            if self.tensor_requires_grad(input)? {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "vector_norm(ord=0): autograd not supported (integer count of nonzeros is not differentiable)",
+                    },
+                )));
+            }
+            let vals = self.tensor_values(input)?;
+            #[allow(clippy::cast_precision_loss)]
+            let count = vals.iter().filter(|&&v| v != 0.0).count() as f64;
+            return self.tensor_variable(vec![count], vec![1], false);
+        }
+        if ord == f64::INFINITY {
+            // L_inf = max(|x|). tensor_max_dim returns (vals, idx).
+            let (m, _) = self.tensor_max_dim(abs_x, 0)?;
+            // Result has shape [1] already after dim-0 reduction
+            // because input was 1-D — but let's normalize via reshape
+            // to match the legacy [1] shape contract.
+            let m_shape = self.tensor_shape(m)?;
+            return if m_shape == vec![1] {
+                Ok(m)
+            } else {
+                self.tensor_reshape(m, vec![1])
+            };
+        }
+        if ord == f64::NEG_INFINITY {
+            let (m, _) = self.tensor_min_dim(abs_x, 0)?;
+            let m_shape = self.tensor_shape(m)?;
+            return if m_shape == vec![1] {
+                Ok(m)
+            } else {
+                self.tensor_reshape(m, vec![1])
+            };
+        }
+        // General p: (sum_i |x_i|^p)^(1/p).
+        let pow_p = self.tensor_pow(abs_x, ord)?;
+        let summed = self.tensor_sum(pow_p)?;
+        // tensor_sum returns shape [1]; tensor_pow accepts that.
+        self.tensor_pow(summed, 1.0 / ord)
     }
 
     /// Compute the least-squares solution to a linear system A @ X = B.
@@ -27541,6 +27586,67 @@ mod tests {
         let norm = s.tensor_linalg_vector_norm(t, 0.0).unwrap();
         let val = s.tensor_values(norm).unwrap()[0];
         assert!((val - 2.0).abs() < 1e-10); // 2 nonzero elements
+    }
+
+    #[test]
+    fn vector_norm_l2_propagates_gradient() {
+        // Regression for frankentorch-4yh9: previously extracted
+        // tensor_values + rebuilt non-grad leaf, severing autograd
+        // through every vector_norm call.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![3.0, 4.0], vec![2], true).unwrap();
+        let norm = s.tensor_linalg_vector_norm(t, 2.0).unwrap();
+        let val = s.tensor_values(norm).unwrap()[0];
+        assert!((val - 5.0).abs() < 1e-10);
+        let report = s.tensor_backward(norm).unwrap();
+        let grad = s
+            .tensor_gradient(&report, t)
+            .expect("input gradient should exist");
+        // d/dx_i sqrt(x_0^2 + x_1^2) = x_i / norm. For [3, 4], norm=5:
+        //   grad = [3/5, 4/5] = [0.6, 0.8]
+        assert!((grad[0] - 0.6).abs() < 1e-10);
+        assert!((grad[1] - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_l1_propagates_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![-3.0, 4.0], vec![2], true).unwrap();
+        let norm = s.tensor_linalg_vector_norm(t, 1.0).unwrap();
+        let report = s.tensor_backward(norm).unwrap();
+        let grad = s.tensor_gradient(&report, t).expect("L1 grad");
+        // d/dx_i |x_i| = sign(x_i): [-1, 1]
+        assert!((grad[0] - (-1.0)).abs() < 1e-10);
+        assert!((grad[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_inf_propagates_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![-3.0, 4.0, -1.0], vec![3], true)
+            .unwrap();
+        let norm = s.tensor_linalg_vector_norm(t, f64::INFINITY).unwrap();
+        let report = s.tensor_backward(norm).unwrap();
+        let grad = s.tensor_gradient(&report, t).expect("L_inf grad");
+        // max(|x|) = 4 at index 1 (positive). d/dx_1 |x_1| = sign(x_1) = +1;
+        // others zero (max is differentiable only at the strict argmax).
+        assert!((grad[1] - 1.0).abs() < 1e-10);
+        assert!(grad[0].abs() < 1e-10);
+        assert!(grad[2].abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_l0_fails_loud_with_requires_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 0.0, 3.0], vec![4], true)
+            .unwrap();
+        let err = s
+            .tensor_linalg_vector_norm(t, 0.0)
+            .expect_err("L0 with requires_grad should fail loud");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("not differentiable"), "got {msg}");
     }
 
     // ── Eigendecomposition tests (bd-2drq.7) ──────────────────────────
