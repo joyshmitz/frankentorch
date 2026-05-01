@@ -10642,6 +10642,80 @@ mod tests {
             }
         }
 
+        // log(x) for x > 0 is always finite. Frankentorch-z1k3.
+        #[test]
+        fn fuzz_corpus_prop_unary_log_positive_input(
+            samples in prop::collection::vec(1i16..2048i16, 1..32)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 17.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            let outcome = dispatch_tensor_unary_contiguous_f64(
+                UnaryOp::Log,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            )
+            .expect("fuzz log dispatch should not fail");
+            for v in &outcome.values {
+                prop_assert!(v.is_finite(), "log({input:?}) → {v} should be finite");
+            }
+        }
+
+        // abs(x) is always ≥ 0. Frankentorch-z1k3.
+        #[test]
+        fn fuzz_corpus_prop_unary_abs_is_non_negative(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 17.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            let outcome = dispatch_tensor_unary_contiguous_f64(
+                UnaryOp::Abs,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            )
+            .expect("fuzz abs dispatch should not fail");
+            for v in &outcome.values {
+                prop_assert!(*v >= 0.0, "abs({input:?}) → {v} should be ≥ 0");
+            }
+        }
+
+        // a / 1.0 ≈ a within a few ULPs (division by 1 is essentially
+        // a no-op modulo rounding). Frankentorch-z1k3.
+        #[test]
+        fn fuzz_corpus_prop_binary_div_by_one_is_identity(
+            samples in prop::collection::vec(-1024i16..1024i16, 1..24)
+        ) {
+            let lhs: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 19.0).collect();
+            let ones: Vec<f64> = vec![1.0; lhs.len()];
+            let meta = fuzz_meta_1d(lhs.len());
+            let outcome = dispatch_tensor_binary_contiguous_f64(
+                BinaryOp::Div,
+                ExecutionMode::Strict,
+                &lhs,
+                &ones,
+                &meta,
+                &meta,
+                false,
+            )
+            .expect("fuzz div dispatch should not fail");
+            for (a, b) in outcome.values.iter().zip(lhs.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "x / 1.0 should equal x bit-exactly"
+                );
+            }
+        }
+
         // neg(neg(x)) bit-exactly equals x via dispatch (sign-bit
         // flip applied twice). Frankentorch-mjdv.
         #[test]
