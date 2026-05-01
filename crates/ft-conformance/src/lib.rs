@@ -10581,6 +10581,99 @@ mod tests {
             prop_assert!(outcome.values.iter().all(|value| value.is_finite()));
         }
 
+        // ReLU output is always >= 0 element-wise. Frankentorch-9kc9.
+        #[test]
+        fn fuzz_corpus_prop_unary_relu_is_non_negative(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 17.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            let outcome = dispatch_tensor_unary_contiguous_f64(
+                UnaryOp::Relu,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            )
+            .expect("fuzz unary relu dispatch should not fail");
+            prop_assert_eq!(outcome.values.len(), input.len());
+            prop_assert!(outcome.values.iter().all(|v| *v >= 0.0));
+        }
+
+        // Multiplication is commutative bit-exactly: a * b == b * a.
+        // Frankentorch-9kc9.
+        #[test]
+        fn fuzz_corpus_prop_binary_mul_commutative(
+            pairs in prop::collection::vec((-1024i16..1024i16, -1024i16..1024i16), 1..24)
+        ) {
+            let lhs: Vec<f64> = pairs.iter().map(|(l, _)| f64::from(*l) / 19.0).collect();
+            let rhs: Vec<f64> = pairs.iter().map(|(_, r)| f64::from(*r) / 19.0).collect();
+            let meta = fuzz_meta_1d(lhs.len());
+            let lr = dispatch_tensor_binary_contiguous_f64(
+                BinaryOp::Mul,
+                ExecutionMode::Strict,
+                &lhs,
+                &rhs,
+                &meta,
+                &meta,
+                false,
+            )
+            .expect("fuzz mul lhs*rhs should not fail");
+            let rl = dispatch_tensor_binary_contiguous_f64(
+                BinaryOp::Mul,
+                ExecutionMode::Strict,
+                &rhs,
+                &lhs,
+                &meta,
+                &meta,
+                false,
+            )
+            .expect("fuzz mul rhs*lhs should not fail");
+            prop_assert_eq!(lr.values.len(), rl.values.len());
+            for (a, b) in lr.values.iter().zip(rl.values.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "mul should be bit-exactly commutative"
+                );
+            }
+        }
+
+        // Mean reduction matches the simple fold reference (sum/n).
+        // Frankentorch-9kc9.
+        #[test]
+        fn fuzz_corpus_prop_reduction_mean_matches_reference(
+            samples in prop::collection::vec(-3000i16..3000i16, 1..48)
+        ) {
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|value| f64::from(*value) / 13.0)
+                .collect();
+            let meta = fuzz_meta_1d(input.len());
+            #[allow(clippy::cast_precision_loss)]
+            let expected = input.iter().sum::<f64>() / input.len() as f64;
+            let outcome = dispatch_tensor_reduction_contiguous_f64(
+                ReductionOp::Mean,
+                ExecutionMode::Strict,
+                &input,
+                &meta,
+                false,
+            )
+            .expect("fuzz reduction mean dispatch should not fail");
+            let scale = expected.abs().max(outcome.value.abs()).max(1.0);
+            let diff = (outcome.value - expected).abs();
+            prop_assert!(
+                diff <= 8.0 * scale * f64::EPSILON,
+                "mean dispatch = {} but reference = {}; diff = {:e}",
+                outcome.value,
+                expected,
+                diff
+            );
+        }
+
         // ── metamorphic equivalence tests [bd-8z7x] ────────────────────
         //
         // These property tests verify that algebraically-equivalent
