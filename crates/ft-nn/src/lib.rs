@@ -7470,11 +7470,15 @@ impl Module for ConvTranspose1d {
             }
         }
 
-        // Add bias if present
+        // Add bias if present. bias shape is [1, out_channels];
+        // reshape to [1, out_channels, 1] before expanding to the
+        // full [batch, out_channels, l_out] output (tensor_expand
+        // only broadcasts size-1 dims; it does not add new dims).
+        // Tracked under frankentorch-ru7u.
         if let Some(bias) = self.bias {
             let bias_shape = vec![batch_size, self.out_channels, l_out];
-            let bias_expanded = session.tensor_expand(bias, vec![1, self.out_channels, 1])?;
-            let bias_expanded = session.tensor_expand(bias_expanded, bias_shape)?;
+            let bias_3d = session.tensor_reshape(bias, vec![1, self.out_channels, 1])?;
+            let bias_expanded = session.tensor_expand(bias_3d, bias_shape)?;
             result = session.tensor_add(result, bias_expanded)?;
         }
 

@@ -23222,6 +23222,69 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn conv_transpose1d_upsampler_trains_end_to_end_with_adam() {
+        // E2E regression for frankentorch-vyxi. Validates the
+        // ConvTranspose1d nn.Module forward chain (narrow + matmul +
+        // pad + add scatter pattern; 1-D audio-style upsampling
+        // counterpart of the bnmh ConvTranspose2d test).
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{ConvTranspose1d, Module};
+        use ft_optim::{Adam, Optimizer};
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Use kernel=3, stride=1 — the same config that nn.ConvTranspose1d
+        // tests use, with l_out = (L_in - 1) * stride + kernel = 5.
+        let upsampler = ConvTranspose1d::new(&mut session, 1, 1, 3, 1, 0, true)
+            .expect("conv_transpose1d");
+
+        // 1x1x3 fixed input.
+        let input = session
+            .tensor_variable(vec![1.0, -1.0, 0.5], vec![1, 1, 3], false)
+            .expect("input");
+        // 1x1x5 target of zeros — reachable by setting w to all-zero
+        // and bias to 0 (limited expressivity of [3, 1] kernel maps
+        // to a scalar bias term per output position; harder to fit
+        // arbitrary target).
+        let target = session
+            .tensor_variable(vec![0.0; 5], vec![1, 1, 5], false)
+            .expect("target");
+
+        let mut optimizer = Adam::new(upsampler.parameters(), 0.05);
+
+        let initial_out = upsampler
+            .forward(&mut session, input)
+            .expect("initial forward");
+        let initial_loss = session
+            .mse_loss(initial_out, target)
+            .expect("initial loss");
+        let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
+        let mut best_loss = initial_loss_val;
+        let mut saw_loss_improvement = false;
+
+        for _ in 0..200 {
+            optimizer.zero_grad(&mut session).expect("zero_grad");
+            let out = upsampler.forward(&mut session, input).expect("forward");
+            let loss = session.mse_loss(out, target).expect("loss");
+            let loss_val = session.tensor_values(loss).expect("loss val")[0];
+            if loss_val < best_loss {
+                best_loss = loss_val;
+                saw_loss_improvement = true;
+            }
+            let report = session.tensor_backward(loss).expect("backward");
+            optimizer.step(&mut session, &report).expect("optim step");
+        }
+
+        assert!(
+            saw_loss_improvement,
+            "ConvTranspose1d never improved the loss"
+        );
+        assert!(
+            best_loss < initial_loss_val * 0.1,
+            "ConvTranspose1d should drop loss by 10x: initial={initial_loss_val}, best={best_loss}"
+        );
+    }
+
+    #[test]
     fn terminate_and_reap_child_reaps_running_process() {
         let mut child = Command::new("sh")
             .arg("-c")
