@@ -11246,6 +11246,110 @@ mod tests {
             );
         }
 
+        // relu(relu(x)) bit-exactly equals relu(x): once values are
+        // clamped to [0, ∞), a second relu is a no-op. Frankentorch-zhis.
+        #[test]
+        fn fuzz_metamorphic_relu_is_idempotent(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input, vec![n], false)
+                .expect("variable");
+            let r1 = s.tensor_relu(x).expect("relu once");
+            let r2 = s.tensor_relu(r1).expect("relu twice");
+            let v1 = s.tensor_values(r1).expect("v1");
+            let v2 = s.tensor_values(r2).expect("v2");
+            for (a, b) in v1.iter().zip(v2.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "relu(relu(x)) should equal relu(x) bit-exactly"
+                );
+            }
+        }
+
+        // (A @ B)^T ≈ B^T @ A^T: a fundamental matmul/transpose
+        // identity. The two paths involve the same multiplications and
+        // sums up to summation order, so allow a few ULPs of slack
+        // scaled by the inner dimension. Frankentorch-zhis.
+        #[test]
+        fn fuzz_metamorphic_transpose_of_product(
+            (m, k, n, a_raw, b_raw) in (1usize..5, 1usize..5, 1usize..5)
+                .prop_flat_map(|(m, k, n)| (
+                    Just(m),
+                    Just(k),
+                    Just(n),
+                    prop::collection::vec(-256i16..256i16, m * k),
+                    prop::collection::vec(-256i16..256i16, k * n),
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let b: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a_n = s
+                .tensor_variable(a.clone(), vec![m, k], false)
+                .expect("a");
+            let b_n = s
+                .tensor_variable(b.clone(), vec![k, n], false)
+                .expect("b");
+            // (A @ B)^T
+            let ab = s.tensor_matmul(a_n, b_n).expect("a@b");
+            let abt = s.tensor_transpose(ab, 0, 1).expect("(a@b)^T");
+            // B^T @ A^T
+            let bt = s.tensor_transpose(b_n, 0, 1).expect("b^T");
+            let at = s.tensor_transpose(a_n, 0, 1).expect("a^T");
+            let bt_at = s.tensor_matmul(bt, at).expect("b^T @ a^T");
+            let v_lhs = s.tensor_values(abt).expect("lhs");
+            let v_rhs = s.tensor_values(bt_at).expect("rhs");
+            // Bound by k * |a|max * |b|max * eps (per dot product step).
+            let abs_a_max: f64 = a.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+            let abs_b_max: f64 = b.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+            let bound = (k as f64) * abs_a_max * abs_b_max * f64::EPSILON * 8.0 + 1e-12;
+            for (lhs, rhs) in v_lhs.iter().zip(v_rhs.iter()) {
+                let diff = (lhs - rhs).abs();
+                prop_assert!(
+                    diff <= bound,
+                    "(A@B)^T = {lhs} but B^T@A^T = {rhs}; diff = {diff:e}, bound = {bound:e}"
+                );
+            }
+        }
+
+        // functional_dropout(x, p=0, training=true) bit-exactly equals
+        // x: the dropout mask is all-ones at p=0, so the chain
+        // simplifies to multiplication by 1 (or identity short-circuit).
+        // Frankentorch-zhis.
+        #[test]
+        fn fuzz_metamorphic_dropout_p_zero_is_identity(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable");
+            let dropped = s
+                .functional_dropout(x, 0.0, true)
+                .expect("dropout p=0");
+            let v = s.tensor_values(dropped).expect("vals");
+            for (a, b) in v.iter().zip(input.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "dropout(x, p=0) should equal x bit-exactly"
+                );
+            }
+        }
+
         // std_dim(x, 0) ≈ sqrt(var_dim(x, 0)): both compute the same
         // variance via the same sum-of-squares formula; std just
         // takes the square root. Frankentorch-yg6k.
