@@ -1044,7 +1044,15 @@ impl Bilinear {
         let result_node = session.tensor_reshape(result, out_shape.clone())?;
 
         if let Some(bias) = self.bias {
-            let expanded_bias = session.tensor_expand(bias, out_shape)?;
+            // bias is shape [out_features] (rank 1); reshape to a
+            // rank-matched broadcast shape (1s in leading dims,
+            // out_features in last) before expanding to out_shape.
+            // tensor_expand only broadcasts size-1 dims; it cannot
+            // add new dims. Tracked under frankentorch-3t8u.
+            let mut bias_broadcast_shape = vec![1usize; out_shape.len()];
+            *bias_broadcast_shape.last_mut().unwrap() = self.out_features;
+            let bias_reshaped = session.tensor_reshape(bias, bias_broadcast_shape)?;
+            let expanded_bias = session.tensor_expand(bias_reshaped, out_shape)?;
             session.tensor_add(result_node, expanded_bias)
         } else {
             Ok(result_node)
@@ -17825,6 +17833,41 @@ mod tests {
         let vals = session.tensor_values(out).unwrap();
         // 1*1*3 + 1*0*4 + 2*0*3 + 2*1*4 = 3 + 8 = 11 + bias(10) = 21
         assert!((vals[0] - 21.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn bilinear_with_bias_batched_input() {
+        // Regression for frankentorch-3t8u: previously the rank-2
+        // batched-input + bias path errored with ShapeMismatch
+        // because tensor_expand was called on rank-1 bias targeting
+        // rank-2 output. Fixed by reshaping bias to rank-2 first.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![1, 2, 2], true)
+            .unwrap();
+        let b = session.tensor_variable(vec![10.0], vec![1], true).unwrap();
+        let bilinear = Bilinear {
+            weight: w,
+            bias: Some(b),
+            in1_features: 2,
+            in2_features: 2,
+            out_features: 1,
+        };
+        // Batched x1 [2, 2] and x2 [2, 2]: two samples.
+        let x1 = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let x2 = session
+            .tensor_variable(vec![3.0, 4.0, 1.0, 2.0], vec![2, 2], false)
+            .unwrap();
+        let out = bilinear.forward_bilinear(&mut session, x1, x2).unwrap();
+        let shape = session.tensor_shape(out).unwrap();
+        assert_eq!(shape, vec![2, 1]);
+        let vals = session.tensor_values(out).unwrap();
+        // Sample 0: x1=[1,2], x2=[3,4] → 11 + bias(10) = 21 (same as 1-D case)
+        assert!((vals[0] - 21.0).abs() < 1e-10);
+        // Sample 1: x1=[3,4], x2=[1,2] → 3*1*1 + 4*1*2 = 11 + bias(10) = 21
+        assert!((vals[1] - 21.0).abs() < 1e-10);
     }
 
     #[test]
