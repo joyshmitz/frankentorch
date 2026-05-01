@@ -3532,6 +3532,13 @@ impl FrankenTorchSession {
         return_inverse: bool,
         return_counts: bool,
     ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "unique: autograd not supported (set deduplication is non-differentiable). Tracked under frankentorch-gec0.",
+                },
+            )));
+        }
         let vals = self.tensor_values(input)?;
 
         // Collect unique values preserving first-occurrence order.
@@ -3610,6 +3617,13 @@ impl FrankenTorchSession {
         return_inverse: bool,
         return_counts: bool,
     ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "unique_consecutive: autograd not supported (consecutive deduplication is non-differentiable). Tracked under frankentorch-gec0.",
+                },
+            )));
+        }
         let vals = self.tensor_values(input)?;
 
         let mut unique_vals: Vec<f64> = Vec::new();
@@ -3785,6 +3799,13 @@ impl FrankenTorchSession {
         min_val: f64,
         max_val: f64,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "histc: autograd not supported (integer counts are non-differentiable). Tracked under frankentorch-gec0.",
+                },
+            )));
+        }
         if bins == 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -15981,6 +16002,13 @@ impl FrankenTorchSession {
         elements: TensorNodeId,
         test_elements: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(elements)? || self.tensor_requires_grad(test_elements)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "isin: autograd not supported (membership mask is non-differentiable). Tracked under frankentorch-gec0.",
+                },
+            )));
+        }
         let elem_vals = self.tensor_values(elements)?;
         let test_vals = self.tensor_values(test_elements)?;
         let shape = self.tensor_shape(elements)?;
@@ -38067,6 +38095,35 @@ mod tests {
         let test = s.tensor_variable(vec![2.0, 4.0], vec![2], false).unwrap();
         let out = s.tensor_isin(elements, test).unwrap();
         assert_eq!(s.tensor_values(out).unwrap(), &[0.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn discrete_ops_fail_loud_on_requires_grad() {
+        // Regression for frankentorch-gec0: unique, unique_consecutive,
+        // histc, isin used to silently sever autograd via tensor_values.
+        // Each is intrinsically non-differentiable; now fails loud on
+        // requires_grad input.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 2.0, 3.0], vec![4], true)
+            .unwrap();
+        let unique_err = s
+            .tensor_unique(x, false, false, false)
+            .expect_err("unique must fail loud on requires_grad");
+        assert!(format!("{unique_err:?}").contains("autograd not supported"));
+        let cons_err = s
+            .tensor_unique_consecutive(x, false, false)
+            .expect_err("unique_consecutive must fail loud on requires_grad");
+        assert!(format!("{cons_err:?}").contains("autograd not supported"));
+        let histc_err = s
+            .tensor_histc(x, 3, 0.0, 4.0)
+            .expect_err("histc must fail loud on requires_grad");
+        assert!(format!("{histc_err:?}").contains("autograd not supported"));
+        let test = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        let isin_err = s
+            .tensor_isin(x, test)
+            .expect_err("isin must fail loud on requires_grad elements");
+        assert!(format!("{isin_err:?}").contains("autograd not supported"));
     }
 
     // ── triangular_solve tests ──────────────────────────────────────────
