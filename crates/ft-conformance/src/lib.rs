@@ -21153,6 +21153,100 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn embedding_bag_classifier_trains_end_to_end_with_adam() {
+        // E2E regression for frankentorch-6i2v (and depends on the
+        // y8le autograd fix): EmbeddingBag should produce gradients
+        // through both its weight and any linear head wired up after
+        // it, allowing Adam to drive cross-entropy loss down across
+        // many steps. This catches gradient-flow regressions that
+        // unit-level dL/dweight checks would miss when chained with
+        // a downstream linear layer.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{EmbeddingBag, EmbeddingBagMode, Linear, Module};
+        use ft_optim::{Adam, Optimizer};
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let vocab = 6usize;
+        let embed_dim = 4usize;
+        let num_classes = 2usize;
+        let eb = EmbeddingBag::new(
+            &mut session,
+            vocab,
+            embed_dim,
+            EmbeddingBagMode::Mean,
+            None,
+        )
+        .expect("embedding bag");
+        let head = Linear::new(&mut session, embed_dim, num_classes, true).expect("linear");
+
+        // Four bags split into two classes:
+        //   bags [0, 1] and [2, 3] → class 0
+        //   bags [4]    and [5]    → class 1
+        // Concat indices, mark offsets at each bag boundary.
+        let indices = session
+            .tensor_variable(
+                vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                vec![6],
+                false,
+            )
+            .expect("indices");
+        let offsets = session
+            .tensor_variable(vec![0.0, 2.0, 4.0, 5.0], vec![4], false)
+            .expect("offsets");
+        let targets = session
+            .tensor_variable(vec![0.0, 0.0, 1.0, 1.0], vec![4], false)
+            .expect("targets");
+
+        let mut params = eb.parameters();
+        params.extend(head.parameters());
+        let mut optimizer = Adam::new(params, 0.1);
+
+        let initial_emb = eb
+            .forward_with_offsets(&mut session, indices, offsets, None)
+            .expect("eb forward");
+        let initial_logits = head
+            .forward(&mut session, initial_emb)
+            .expect("head forward");
+        let initial_loss = session
+            .cross_entropy_loss(initial_logits, targets)
+            .expect("initial loss");
+        let initial_loss_val = session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let mut best_loss = initial_loss_val;
+        let mut saw_loss_improvement = false;
+
+        // 200 steps gives Adam comfortable convergence headroom on
+        // this 4-class-balanced toy problem. lr=0.1 (vs. the affine
+        // test's 0.05) because EmbeddingBag's per-bag mean dilutes the
+        // gradient signal by a factor of bag_size.
+        for _ in 0..200 {
+            optimizer.zero_grad(&mut session).expect("zero_grad");
+            let emb = eb
+                .forward_with_offsets(&mut session, indices, offsets, None)
+                .expect("eb forward");
+            let logits = head.forward(&mut session, emb).expect("head forward");
+            let loss = session
+                .cross_entropy_loss(logits, targets)
+                .expect("loss");
+            let loss_val = session.tensor_values(loss).expect("loss val")[0];
+            if loss_val < best_loss {
+                best_loss = loss_val;
+                saw_loss_improvement = true;
+            }
+            let report = session.tensor_backward(loss).expect("backward");
+            optimizer.step(&mut session, &report).expect("optim step");
+        }
+
+        assert!(
+            saw_loss_improvement,
+            "EmbeddingBag classifier never improved the loss"
+        );
+        assert!(
+            best_loss < initial_loss_val * 0.1,
+            "EmbeddingBag classifier should drop loss by 10x: initial={initial_loss_val}, best={best_loss}"
+        );
+    }
+
+    #[test]
     fn terminate_and_reap_child_reaps_running_process() {
         let mut child = Command::new("sh")
             .arg("-c")
