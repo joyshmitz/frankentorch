@@ -22859,6 +22859,73 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn sequential_mlp_trains_end_to_end_with_adam() {
+        // E2E regression for frankentorch-9rut. Validates Sequential
+        // composition: Linear → ReLU → Linear forms a 2-layer MLP
+        // trained on a 4-sample regression task. Sequential's
+        // parameters() should collect from both Linear children and
+        // Adam should drive the loss down.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{Linear, Module, ReLU, Sequential};
+        use ft_optim::{Adam, Optimizer};
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let l1 = Linear::new(&mut session, 4, 8, true).expect("l1");
+        let l2 = Linear::new(&mut session, 8, 1, true).expect("l2");
+        let mut seq = Sequential::new();
+        seq.push(Box::new(l1));
+        seq.push(Box::new(ReLU));
+        seq.push(Box::new(l2));
+
+        // 4 samples of size 4.
+        #[rustfmt::skip]
+        let input_vals: Vec<f64> = vec![
+            1.0, 0.0, 0.5, -0.5,
+            -0.5, 0.5, 1.0, 0.0,
+            0.0, -1.0, 0.0, 1.0,
+            -1.0, 0.0, -0.5, 0.5,
+        ];
+        let input = session
+            .tensor_variable(input_vals, vec![4, 4], false)
+            .expect("input");
+        let target = session
+            .tensor_variable(vec![1.0, -1.0, 0.5, -0.5], vec![4, 1], false)
+            .expect("target");
+
+        let mut optimizer = Adam::new(seq.parameters(), 0.05);
+
+        let initial_pred = seq.forward(&mut session, input).expect("initial seq");
+        let initial_loss = session
+            .mse_loss(initial_pred, target)
+            .expect("initial loss");
+        let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
+        let mut best_loss = initial_loss_val;
+        let mut saw_loss_improvement = false;
+
+        for _ in 0..200 {
+            optimizer.zero_grad(&mut session).expect("zero_grad");
+            let pred = seq.forward(&mut session, input).expect("seq");
+            let loss = session.mse_loss(pred, target).expect("loss");
+            let loss_val = session.tensor_values(loss).expect("loss val")[0];
+            if loss_val < best_loss {
+                best_loss = loss_val;
+                saw_loss_improvement = true;
+            }
+            let report = session.tensor_backward(loss).expect("backward");
+            optimizer.step(&mut session, &report).expect("optim step");
+        }
+
+        assert!(
+            saw_loss_improvement,
+            "Sequential MLP never improved the loss"
+        );
+        assert!(
+            best_loss < initial_loss_val * 0.1,
+            "Sequential MLP should drop loss by 10x: initial={initial_loss_val}, best={best_loss}"
+        );
+    }
+
+    #[test]
     fn terminate_and_reap_child_reaps_running_process() {
         let mut child = Command::new("sh")
             .arg("-c")
