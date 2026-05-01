@@ -13369,7 +13369,6 @@ pub fn pack_padded_sequence(
     enforce_sorted: bool,
 ) -> Result<PackedSequence, AutogradError> {
     let shape = session.tensor_shape(input)?;
-    let storage = session.tensor_values(input)?;
 
     if shape.len() < 2 {
         return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -13425,23 +13424,6 @@ pub fn pack_padded_sequence(
     if feature_size == 0 {
         feature_size = 1;
     }
-    let expected = checked_mul(
-        batch_size,
-        max_len,
-        "pack_padded_sequence input shape overflow",
-    )?;
-    let expected = checked_mul(
-        expected,
-        feature_size,
-        "pack_padded_sequence input shape overflow",
-    )?;
-    if expected != storage.len() {
-        return Err(AutogradError::Dispatch(DispatchError::Key(
-            DispatchKeyError::IncompatibleSet {
-                reason: "pack_padded_sequence: input storage length mismatch",
-            },
-        )));
-    }
 
     // Compute batch_sizes: at timestep t, how many sequences are still active
     let mut batch_sizes = Vec::with_capacity(max_len);
@@ -13453,26 +13435,49 @@ pub fn pack_padded_sequence(
         batch_sizes.push(count);
     }
 
-    // Pack data: for each timestep, emit elements for active sequences (in sorted order)
-    let mut packed_data = Vec::new();
+    // Compose via tensor_index_select so gradients flow back to input.
+    // Tracked under frankentorch-tp3r. Previous body extracted
+    // tensor_values + rebuilt a non-grad leaf, severing autograd
+    // through every RNN/LSTM/GRU pipeline using packed sequences.
+    //
+    // Strategy: normalize input to time-first [T, B, F] (permute if
+    // batch_first), reshape to [T*B, F], then index_select rows in
+    // pack order. For each (t, s) where 0 <= s < batch_sizes[t],
+    // the source row in the [T*B, F] flat is `t*B + sorted_indices[s]`.
+    let time_first = if batch_first {
+        // Permute [B, T, ...] -> [T, B, ...]
+        let mut perm: Vec<usize> = vec![1, 0];
+        perm.extend(2..shape.len());
+        session.tensor_permute(input, perm)?
+    } else {
+        input
+    };
+    // Flatten to [T*B, F]
+    let t_b = checked_mul(max_len, batch_size, "pack_padded_sequence T*B overflow")?;
+    let flat = session.tensor_reshape(time_first, vec![t_b, feature_size])?;
+
+    // Build the gather index list of length sum(batch_sizes).
+    let total_packed: usize = batch_sizes.iter().sum();
+    let mut idx_vals: Vec<f64> = Vec::with_capacity(total_packed);
     for (t, &bs) in batch_sizes.iter().enumerate() {
         for &orig_batch in sorted_indices.iter().take(bs) {
-            let offset = if batch_first {
-                (orig_batch * max_len + t) * feature_size
-            } else {
-                (t * batch_size + orig_batch) * feature_size
-            };
-            packed_data.extend_from_slice(&storage[offset..offset + feature_size]);
+            #[allow(clippy::cast_precision_loss)]
+            let row = (t * batch_size + orig_batch) as f64;
+            idx_vals.push(row);
         }
     }
-
-    let total_elements = packed_data.len();
-    let data_shape = if feature_size == 1 {
-        vec![total_elements]
+    let data = if total_packed == 0 {
+        // Empty packed sequence — preserve [0, F] (or [0]) shape.
+        session.tensor_variable(Vec::new(), vec![0, feature_size], false)?
     } else {
-        vec![total_elements / feature_size, feature_size]
+        let idx_t = session.tensor_variable(idx_vals, vec![total_packed], false)?;
+        session.tensor_index_select(flat, 0, idx_t)?
     };
-    let data = session.tensor_variable(packed_data, data_shape, false)?;
+    let data = if feature_size == 1 {
+        session.tensor_reshape(data, vec![total_packed])?
+    } else {
+        data
+    };
 
     Ok(PackedSequence {
         data,
@@ -13494,7 +13499,6 @@ pub fn pad_packed_sequence(
     padding_value: f64,
     total_length: Option<usize>,
 ) -> Result<(TensorNodeId, Vec<usize>), AutogradError> {
-    let packed_data = session.tensor_values(packed.data)?;
     let packed_shape = session.tensor_shape(packed.data)?;
 
     let feature_size = if packed_shape.len() > 1 {
@@ -13522,54 +13526,73 @@ pub fn pad_packed_sequence(
         .map(|&sorted_pos| sorted_lengths[sorted_pos])
         .collect();
 
-    // Build padded output
-    let mut expected_steps = 0usize;
-    for &bs in &packed.batch_sizes {
-        expected_steps = checked_add(
-            expected_steps,
-            bs,
-            "pad_packed_sequence packed batch_sizes overflow",
-        )?;
-    }
-    let expected_elems = checked_mul(
-        expected_steps,
-        feature_size,
-        "pad_packed_sequence packed data overflow",
-    )?;
-    if expected_elems != packed_data.len() {
-        return Err(AutogradError::Dispatch(DispatchError::Key(
-            DispatchKeyError::IncompatibleSet {
-                reason: "pad_packed_sequence: packed data length mismatch",
-            },
-        )));
-    }
+    let total_packed: usize = packed.batch_sizes.iter().sum();
 
-    let total = checked_mul(
-        batch_size,
-        out_len,
-        "pad_packed_sequence output size overflow",
-    )?;
-    let total = checked_mul(
-        total,
-        feature_size,
-        "pad_packed_sequence output size overflow",
-    )?;
-    let mut output = vec![padding_value; total];
+    // Compose via tensor_index_select + autograd-aware blending so
+    // gradients flow back to packed.data. Tracked under
+    // frankentorch-tp3r. Previous body extracted tensor_values +
+    // rebuilt a non-grad leaf, severing autograd.
+    //
+    // Strategy: for every output position d in [0, B*out_len),
+    //   - if d corresponds to an active (orig_batch, t) pair, look up
+    //     the packed-row index k that produced it; gather row k from
+    //     packed.data (reshaped to [P, F]).
+    //   - otherwise pick row 0 as a placeholder and zero it out via
+    //     a non-grad mask.
+    // Then blend `gathered * mask + padding_value * (1 - mask)` so the
+    // padding cells take the configured constant while autograd
+    // routes only through active cells.
+    let total_out = checked_mul(batch_size, out_len, "pad_packed_sequence output size overflow")?;
+    let mut dst_to_packed_row: Vec<f64> = vec![0.0; total_out];
+    let mut mask_vals: Vec<f64> = vec![0.0; total_out];
 
-    let mut data_offset = 0;
+    let mut packed_offset = 0usize;
     for (t, &bs) in packed.batch_sizes.iter().enumerate() {
+        if t >= out_len {
+            packed_offset += bs;
+            continue;
+        }
         for s in 0..bs {
             let orig_batch = packed.sorted_indices[s];
-            let out_offset = if batch_first {
-                (orig_batch * out_len + t) * feature_size
+            let d = if batch_first {
+                orig_batch * out_len + t
             } else {
-                (t * batch_size + orig_batch) * feature_size
+                t * batch_size + orig_batch
             };
-            output[out_offset..out_offset + feature_size]
-                .copy_from_slice(&packed_data[data_offset..data_offset + feature_size]);
-            data_offset += feature_size;
+            #[allow(clippy::cast_precision_loss)]
+            let k = (packed_offset + s) as f64;
+            dst_to_packed_row[d] = k;
+            mask_vals[d] = 1.0;
         }
+        packed_offset += bs;
     }
+
+    // Reshape packed data to [P, F].
+    let packed_2d = if packed_shape.len() == 1 {
+        session.tensor_reshape(packed.data, vec![total_packed, 1])?
+    } else {
+        packed.data
+    };
+
+    let gathered_2d = if total_packed == 0 {
+        // No active rows; produce an all-padding output.
+        session.full(vec![total_out, feature_size], padding_value, false)?
+    } else {
+        let idx_t = session.tensor_variable(dst_to_packed_row, vec![total_out], false)?;
+        let g = session.tensor_index_select(packed_2d, 0, idx_t)?; // [total_out, F]
+        // mask: [total_out, 1] expanded to [total_out, F].
+        let mask = session.tensor_variable(mask_vals.clone(), vec![total_out], false)?;
+        let mask_kd = session.tensor_unsqueeze(mask, 1)?;
+        let mask_b = session.tensor_expand(mask_kd, vec![total_out, feature_size])?;
+        let active_part = session.tensor_mul(g, mask_b)?;
+        let pad_const = session.full(vec![total_out, feature_size], padding_value, false)?;
+        let inv_mask_vals: Vec<f64> = mask_vals.iter().map(|&v| 1.0 - v).collect();
+        let inv_mask = session.tensor_variable(inv_mask_vals, vec![total_out], false)?;
+        let inv_mask_kd = session.tensor_unsqueeze(inv_mask, 1)?;
+        let inv_mask_b = session.tensor_expand(inv_mask_kd, vec![total_out, feature_size])?;
+        let pad_part = session.tensor_mul(pad_const, inv_mask_b)?;
+        session.tensor_add(active_part, pad_part)?
+    };
 
     let out_shape = if batch_first {
         if feature_size > 1 {
@@ -13582,8 +13605,7 @@ pub fn pad_packed_sequence(
     } else {
         vec![out_len, batch_size]
     };
-
-    let padded = session.tensor_variable(output, out_shape, false)?;
+    let padded = session.tensor_reshape(gathered_2d, out_shape)?;
     Ok((padded, lengths))
 }
 
@@ -24423,6 +24445,60 @@ mod tests {
         let input = s.tensor_variable(vec![0.0; 6], vec![3, 2], false).unwrap();
         // lengths [1, 3] are NOT sorted descending
         assert!(pack_padded_sequence(&mut s, input, &[1, 3], false, true).is_err());
+    }
+
+    #[test]
+    fn pack_pad_roundtrip_propagates_input_gradient() {
+        // Regression for frankentorch-tp3r: previous body extracted
+        // tensor_values + rebuilt non-grad leaves, severing autograd
+        // through every RNN/LSTM/GRU pipeline using packed sequences.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [T=4, B=3] with lengths [4, 2, 3].
+        #[rustfmt::skip]
+        let input = s.tensor_variable(vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 0.0, 8.0,
+            9.0, 0.0, 0.0,
+        ], vec![4, 3], true).unwrap();
+        let packed = pack_padded_sequence(&mut s, input, &[4, 2, 3], false, false).unwrap();
+        let (unpacked, _lengths) = pad_packed_sequence(&mut s, &packed, false, 0.0, None).unwrap();
+        let loss = s.tensor_sum(unpacked).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("input gradient should exist (autograd not severed)");
+        // Active positions:
+        //   t=0: all 3 sequences active → grad=1 at indices 0,1,2
+        //   t=1: all 3 active           → grad=1 at indices 3,4,5
+        //   t=2: seq 0 and seq 2 active → grad=1 at indices 6,8 (idx 7 is padding, grad=0)
+        //   t=3: only seq 0 active      → grad=1 at index 9 (10,11 padding, grad=0)
+        let expected = vec![
+            1.0, 1.0, 1.0, // t=0
+            1.0, 1.0, 1.0, // t=1
+            1.0, 0.0, 1.0, // t=2 (seq 1 padded)
+            1.0, 0.0, 0.0, // t=3 (seq 1,2 padded)
+        ];
+        assert_eq!(grad, &expected);
+    }
+
+    #[test]
+    fn pack_pad_batch_first_propagates_input_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [B=2, T=3] with lengths [3, 1].
+        #[rustfmt::skip]
+        let input = s.tensor_variable(vec![
+            10.0, 20.0, 30.0,
+            40.0,  0.0,  0.0,
+        ], vec![2, 3], true).unwrap();
+        let packed = pack_padded_sequence(&mut s, input, &[3, 1], true, false).unwrap();
+        let (unpacked, _lengths) = pad_packed_sequence(&mut s, &packed, true, 0.0, None).unwrap();
+        let loss = s.tensor_sum(unpacked).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, input).expect("input grad");
+        // Active: seq0=[0,1,2], seq1=[0]; padding=[seq1[1], seq1[2]] → grad zero.
+        let expected = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
+        assert_eq!(grad, &expected);
     }
 
     #[test]
