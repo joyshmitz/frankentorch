@@ -21498,6 +21498,71 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn conv2d_bilinear_upsampler_trains_end_to_end_with_adam() {
+        // E2E regression for frankentorch-0bd8 (depends on the
+        // bilinear interpolate autograd fix, frankentorch-3t1t):
+        // a small learnable conv feeding into a 2x bilinear
+        // upsampler should converge to fit a target image when
+        // trained with Adam. Validates the upsampling chain
+        // (Conv2d → tensor_interpolate(bilinear) → MSE → Adam.step)
+        // works end-to-end without silent gradient severance.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{Conv2d, Module};
+        use ft_optim::{Adam, Optimizer};
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (1, 1), true)
+            .expect("conv2d");
+
+        // 2x2 fixed input image.
+        let input = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![1, 1, 2, 2], false)
+            .expect("input");
+        // 4x4 target image of ones.
+        let target = session
+            .tensor_variable(vec![1.0; 16], vec![1, 1, 4, 4], false)
+            .expect("target");
+
+        let mut optimizer = Adam::new(conv.parameters(), 0.05);
+
+        let initial_h = conv.forward(&mut session, input).expect("initial conv");
+        let initial_up = session
+            .tensor_interpolate(initial_h, Some(vec![4, 4]), None, "bilinear", Some(true))
+            .expect("initial upsample");
+        let initial_loss = session
+            .mse_loss(initial_up, target)
+            .expect("initial loss");
+        let initial_loss_val = session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let mut best_loss = initial_loss_val;
+        let mut saw_loss_improvement = false;
+
+        for _ in 0..200 {
+            optimizer.zero_grad(&mut session).expect("zero_grad");
+            let h = conv.forward(&mut session, input).expect("conv");
+            let up = session
+                .tensor_interpolate(h, Some(vec![4, 4]), None, "bilinear", Some(true))
+                .expect("upsample");
+            let loss = session.mse_loss(up, target).expect("loss");
+            let loss_val = session.tensor_values(loss).expect("loss val")[0];
+            if loss_val < best_loss {
+                best_loss = loss_val;
+                saw_loss_improvement = true;
+            }
+            let report = session.tensor_backward(loss).expect("backward");
+            optimizer.step(&mut session, &report).expect("optim step");
+        }
+
+        assert!(
+            saw_loss_improvement,
+            "Conv2d → bilinear upsample never improved the loss"
+        );
+        assert!(
+            best_loss < initial_loss_val * 0.1,
+            "Conv2d → bilinear should drop loss by 10x: initial={initial_loss_val}, best={best_loss}"
+        );
+    }
+
+    #[test]
     fn terminate_and_reap_child_reaps_running_process() {
         let mut child = Command::new("sh")
             .arg("-c")
