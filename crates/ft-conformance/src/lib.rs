@@ -22795,6 +22795,70 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn conv2d_groupnorm_block_trains_end_to_end_with_adam() {
+        // E2E regression for frankentorch-1x5f. Validates a typical
+        // Conv2d → GroupNorm block (common in modern CNNs that
+        // replace BatchNorm with GroupNorm in low-batch regimes)
+        // end-to-end through Adam.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{Conv2d, GroupNorm, Module};
+        use ft_optim::{Adam, Optimizer};
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv2d::new(&mut session, 4, 4, (3, 3), (1, 1), (1, 1), true)
+            .expect("conv2d");
+        let gn = GroupNorm::new(&mut session, 2, 4, 1e-5, true).expect("groupnorm");
+
+        // 1x4x4x4 input.
+        let input_vals: Vec<f64> = (0..64).map(|i| (i as f64 - 31.5) / 32.0).collect();
+        let input = session
+            .tensor_variable(input_vals, vec![1, 4, 4, 4], false)
+            .expect("input");
+        let target = session
+            .tensor_variable(vec![0.5; 64], vec![1, 4, 4, 4], false)
+            .expect("target");
+
+        let mut params = conv.parameters();
+        params.extend(gn.parameters());
+        let mut optimizer = Adam::new(params, 0.05);
+
+        let initial_h = conv.forward(&mut session, input).expect("initial conv");
+        let initial_n = gn.forward(&mut session, initial_h).expect("initial gn");
+        let initial_loss = session
+            .mse_loss(initial_n, target)
+            .expect("initial loss");
+        let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
+        let mut best_loss = initial_loss_val;
+        let mut saw_loss_improvement = false;
+
+        for _ in 0..200 {
+            optimizer.zero_grad(&mut session).expect("zero_grad");
+            let h = conv.forward(&mut session, input).expect("conv");
+            let n = gn.forward(&mut session, h).expect("gn");
+            let loss = session.mse_loss(n, target).expect("loss");
+            let loss_val = session.tensor_values(loss).expect("loss val")[0];
+            if loss_val < best_loss {
+                best_loss = loss_val;
+                saw_loss_improvement = true;
+            }
+            let report = session.tensor_backward(loss).expect("backward");
+            optimizer.step(&mut session, &report).expect("optim step");
+        }
+
+        assert!(
+            saw_loss_improvement,
+            "Conv2d → GroupNorm block never improved the loss"
+        );
+        // 5x reduction is a comfortable threshold: GroupNorm
+        // normalizes the output, limiting how closely arbitrary
+        // targets can be matched.
+        assert!(
+            best_loss < initial_loss_val * 0.5,
+            "Conv2d → GroupNorm should drop loss by 2x: initial={initial_loss_val}, best={best_loss}"
+        );
+    }
+
+    #[test]
     fn terminate_and_reap_child_reaps_running_process() {
         let mut child = Command::new("sh")
             .arg("-c")
