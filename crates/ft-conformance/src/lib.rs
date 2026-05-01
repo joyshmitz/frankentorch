@@ -11246,6 +11246,98 @@ mod tests {
             );
         }
 
+        // cat([x, y], 0) followed by narrow(0, 0..n_x) bit-exactly
+        // recovers x: cat is a memory operation, narrow is a slice;
+        // both preserve values exactly. Frankentorch-nujc.
+        #[test]
+        fn fuzz_metamorphic_cat_narrow_round_trip(
+            (x_raw, y_raw) in (
+                prop::collection::vec(-512i16..512i16, 1..16),
+                prop::collection::vec(-512i16..512i16, 1..16),
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let x_vals: Vec<f64> = x_raw.iter().map(|v| f64::from(*v) / 19.0).collect();
+            let y_vals: Vec<f64> = y_raw.iter().map(|v| f64::from(*v) / 19.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n_x = x_vals.len();
+            let n_y = y_vals.len();
+            let x = s
+                .tensor_variable(x_vals.clone(), vec![n_x], false)
+                .expect("x");
+            let y = s
+                .tensor_variable(y_vals.clone(), vec![n_y], false)
+                .expect("y");
+            let cated = s.tensor_cat(&[x, y], 0).expect("cat");
+            let recovered_x = s.tensor_narrow(cated, 0, 0, n_x).expect("narrow x");
+            let recovered_y = s.tensor_narrow(cated, 0, n_x, n_y).expect("narrow y");
+            let v_x = s.tensor_values(recovered_x).expect("recovered x");
+            let v_y = s.tensor_values(recovered_y).expect("recovered y");
+            for (a, b) in v_x.iter().zip(x_vals.iter()) {
+                prop_assert_eq!(a.to_bits(), b.to_bits());
+            }
+            for (a, b) in v_y.iter().zip(y_vals.iter()) {
+                prop_assert_eq!(a.to_bits(), b.to_bits());
+            }
+        }
+
+        // Every softmax output element lies in [0, 1]: softmax produces
+        // a probability distribution. Frankentorch-nujc.
+        #[test]
+        fn fuzz_metamorphic_softmax_positivity(
+            samples in prop::collection::vec(-1500i16..1500i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input, vec![n], false)
+                .expect("variable");
+            let sm = s.tensor_softmax(x, 0).expect("softmax");
+            let v = s.tensor_values(sm).expect("vals");
+            for prob in &v {
+                prop_assert!(
+                    *prob >= 0.0 && *prob <= 1.0,
+                    "softmax output {prob} not in [0, 1]"
+                );
+            }
+        }
+
+        // sort(x) has the same multiset of values as x: sort is a
+        // permutation. Compare sorted copies of both and require
+        // bit-exact equality (sort doesn't change values, only order).
+        // Frankentorch-nujc.
+        #[test]
+        fn fuzz_metamorphic_sort_preserves_multiset(
+            samples in prop::collection::vec(-1500i16..1500i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable");
+            let (sorted_t, _idx) = s.tensor_sort(x, 0, false).expect("sort");
+            let sorted_vals = s.tensor_values(sorted_t).expect("sorted vals");
+            // Reference: Rust sort the original (using total_cmp for
+            // NaN-safe ordering — proptest only generates finite
+            // inputs here so this is just for parity).
+            let mut reference = input.clone();
+            reference.sort_by(|a, b| a.total_cmp(b));
+            for (a, b) in sorted_vals.iter().zip(reference.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "sort should preserve the multiset bit-exactly"
+                );
+            }
+        }
+
         // relu(relu(x)) bit-exactly equals relu(x): once values are
         // clamped to [0, ∞), a second relu is a no-op. Frankentorch-zhis.
         #[test]
