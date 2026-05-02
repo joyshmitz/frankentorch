@@ -4843,6 +4843,63 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Inverse hyperbolic sine.
+    ///
+    /// Equivalent to `torch.asinh(input)`. Composes via the closed
+    /// form `asinh(x) = log(x + sqrt(x^2 + 1))`. Defined for all real x.
+    /// Tracked under frankentorch-2vc0.
+    pub fn tensor_asinh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let one = self.full(shape, 1.0, false)?;
+        let x_sq = self.tensor_mul(input, input)?;
+        let inner = self.tensor_add(x_sq, one)?;
+        let sqrt_term = self.tensor_sqrt(inner)?;
+        let sum = self.tensor_add(input, sqrt_term)?;
+        self.tensor_log(sum)
+    }
+
+    /// Inverse hyperbolic cosine (defined for x >= 1).
+    ///
+    /// Equivalent to `torch.acosh(input)`. Composes via the closed
+    /// form `acosh(x) = log(x + sqrt(x^2 - 1))`. Inputs less than 1
+    /// produce NaN (matches PyTorch). Tracked under frankentorch-2vc0.
+    pub fn tensor_acosh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let one = self.full(shape, 1.0, false)?;
+        let x_sq = self.tensor_mul(input, input)?;
+        let inner = self.tensor_sub(x_sq, one)?;
+        let sqrt_term = self.tensor_sqrt(inner)?;
+        let sum = self.tensor_add(input, sqrt_term)?;
+        self.tensor_log(sum)
+    }
+
+    /// Inverse hyperbolic tangent (defined for |x| < 1).
+    ///
+    /// Equivalent to `torch.atanh(input)`. Composes via the closed
+    /// form `atanh(x) = 0.5 * log((1 + x) / (1 - x))`. Inputs at
+    /// |x| = 1 produce ±inf and |x| > 1 produces NaN (matches PyTorch).
+    /// Tracked under frankentorch-2vc0.
+    pub fn tensor_atanh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let one = self.full(shape.clone(), 1.0, false)?;
+        let one2 = self.full(shape.clone(), 1.0, false)?;
+        let half = self.full(shape, 0.5, false)?;
+        let num = self.tensor_add(one, input)?;
+        let den = self.tensor_sub(one2, input)?;
+        let ratio = self.tensor_div(num, den)?;
+        let log_ratio = self.tensor_log(ratio)?;
+        self.tensor_mul(log_ratio, half)
+    }
+
     pub fn tensor_gelu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.gelu(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
@@ -27729,6 +27786,76 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── tensor_asinh / acosh / atanh tests (frankentorch-2vc0) ────────
+
+    #[test]
+    fn asinh_known_values() {
+        // asinh(0) = 0; asinh(sinh(1)) = 1.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 1.0_f64.sinh(), 2.0_f64.sinh()], vec![3], false)
+            .unwrap();
+        let out = s.tensor_asinh(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].abs() < 1e-12);
+        assert!((v[1] - 1.0).abs() < 1e-12);
+        assert!((v[2] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn acosh_known_values() {
+        // acosh(1) = 0; acosh(cosh(2)) = 2.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0_f64.cosh(), 3.0_f64.cosh()], vec![3], false)
+            .unwrap();
+        let out = s.tensor_acosh(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].abs() < 1e-12);
+        assert!((v[1] - 2.0).abs() < 1e-10);
+        assert!((v[2] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn atanh_known_values() {
+        // atanh(0) = 0; atanh(tanh(0.5)) = 0.5.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 0.5_f64.tanh(), 0.9_f64.tanh()], vec![3], false)
+            .unwrap();
+        let out = s.tensor_atanh(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].abs() < 1e-12);
+        assert!((v[1] - 0.5).abs() < 1e-12);
+        assert!((v[2] - 0.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn asinh_propagates_gradient_one_over_sqrt_one_plus_x_squared() {
+        // d/dx asinh(x) = 1/sqrt(1 + x^2). At x = 0: 1; at x = 3: 1/sqrt(10) ≈ 0.31623.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 3.0], vec![2], true).unwrap();
+        let out = s.tensor_asinh(x).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert!((g[0] - 1.0).abs() < 1e-12);
+        assert!((g[1] - (1.0 / 10.0_f64.sqrt())).abs() < 1e-12);
+    }
+
+    #[test]
+    fn atanh_propagates_gradient_one_over_one_minus_x_squared() {
+        // d/dx atanh(x) = 1/(1 - x^2). At x = 0: 1; at x = 0.5: 1/0.75 ≈ 1.3333.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 0.5], vec![2], true).unwrap();
+        let out = s.tensor_atanh(x).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert!((g[0] - 1.0).abs() < 1e-12);
+        assert!((g[1] - (1.0 / 0.75)).abs() < 1e-12);
     }
 
     // ── tensor_take + swapaxes/swapdims tests (frankentorch-1qxf) ─────
