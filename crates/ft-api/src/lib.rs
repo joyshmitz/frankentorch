@@ -4843,6 +4843,33 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// L2 hypotenuse: `sqrt(x² + y²)`.
+    ///
+    /// Equivalent to `torch.hypot(x, y)`. Element-wise. Composes
+    /// through autograd-aware tensor_mul + tensor_add + tensor_sqrt;
+    /// gradients ∂hypot/∂x = x / hypot, ∂hypot/∂y = y / hypot fall
+    /// out of the chain rule. Tracked under frankentorch-k3p4.
+    pub fn tensor_hypot(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let x_shape = self.tensor_shape(x)?;
+        let y_shape = self.tensor_shape(y)?;
+        if x_shape != y_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: x_shape,
+                    rhs: y_shape,
+                },
+            )));
+        }
+        let x_sq = self.tensor_mul(x, x)?;
+        let y_sq = self.tensor_mul(y, y)?;
+        let sum = self.tensor_add(x_sq, y_sq)?;
+        self.tensor_sqrt(sum)
+    }
+
     /// Convert from degrees to radians.
     ///
     /// Equivalent to `torch.deg2rad(input)`. Element-wise multiply by
@@ -27814,6 +27841,44 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── tensor_hypot tests (frankentorch-k3p4) ────────────────────────
+
+    #[test]
+    fn hypot_known_values() {
+        // hypot(3, 4) = 5; hypot(0, 7) = 7; hypot(5, 12) = 13.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![3.0, 0.0, 5.0], vec![3], false).unwrap();
+        let y = s.tensor_variable(vec![4.0, 7.0, 12.0], vec![3], false).unwrap();
+        let out = s.tensor_hypot(x, y).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 5.0).abs() < 1e-12);
+        assert!((v[1] - 7.0).abs() < 1e-12);
+        assert!((v[2] - 13.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hypot_propagates_gradient_x_over_hypot_and_y_over_hypot() {
+        // ∂hypot(x, y)/∂x = x / hypot(x, y); same for y.
+        // For (3, 4): hypot = 5, ∂/∂x = 3/5 = 0.6, ∂/∂y = 4/5 = 0.8.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        let y = s.tensor_variable(vec![4.0], vec![1], true).unwrap();
+        let out = s.tensor_hypot(x, y).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let g_x = s.tensor_gradient(&report, x).unwrap();
+        let g_y = s.tensor_gradient(&report, y).unwrap();
+        assert!((g_x[0] - 0.6).abs() < 1e-12);
+        assert!((g_y[0] - 0.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hypot_rejects_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let y = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(s.tensor_hypot(x, y).is_err());
     }
 
     // ── tensor_deg2rad / rad2deg tests (frankentorch-obts) ────────────
