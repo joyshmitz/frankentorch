@@ -10902,6 +10902,88 @@ impl FrankenTorchSession {
         self.tensor_neg(mean_val)
     }
 
+    /// KL divergence loss: `KL(target || input)`.
+    ///
+    /// Equivalent to `torch.nn.functional.kl_div(input, target, reduction, log_target)`.
+    /// `input` is expected to be log-probabilities; `target` is
+    /// probabilities (or log-probabilities if `log_target=true`).
+    ///
+    /// Forward (log_target=false): `target * (log(target) - input)`
+    /// Forward (log_target=true):  `exp(target) * (target - input)`
+    ///
+    /// `reduction` accepts:
+    ///   - "none": element-wise loss tensor
+    ///   - "sum": sum of all elements
+    ///   - "mean": sum / numel (PyTorch's misnomer "mean" — a per-element average)
+    ///   - "batchmean": sum / batch_size (mathematically correct KL —
+    ///     divide only by the leading dim)
+    ///
+    /// Composes through autograd-aware tensor_log + tensor_sub +
+    /// tensor_mul + reduction. For numerical stability when target
+    /// is given as probabilities (log_target=false), a small eps is
+    /// added before log. Tracked under frankentorch-5qs5.
+    pub fn kl_div_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        log_target: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let target_shape = self.tensor_shape(target)?;
+        let input_shape = self.tensor_shape(input)?;
+        if target_shape != input_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: input_shape,
+                    rhs: target_shape,
+                },
+            )));
+        }
+
+        let elem = if log_target {
+            // exp(target) * (target - input)
+            let target_exp = self.tensor_exp(target)?;
+            let diff = self.tensor_sub(target, input)?;
+            self.tensor_mul(target_exp, diff)?
+        } else {
+            // target * (log(target + eps) - input). The eps avoids
+            // log(0) when target has zero entries (a common case in
+            // teacher-forcing where the target distribution is
+            // sparse).
+            let eps = 1e-8;
+            let eps_t = self.full(target_shape.clone(), eps, false)?;
+            let safe_target = self.tensor_add(target, eps_t)?;
+            let log_target_t = self.tensor_log(safe_target)?;
+            let diff = self.tensor_sub(log_target_t, input)?;
+            self.tensor_mul(target, diff)?
+        };
+
+        match reduction {
+            "none" => Ok(elem),
+            "sum" => self.tensor_sum(elem),
+            "mean" => self.tensor_mean(elem),
+            "batchmean" => {
+                if target_shape.is_empty() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "kl_div_loss: batchmean requires at least 1-D input",
+                        },
+                    )));
+                }
+                let batch_size = target_shape[0];
+                let summed = self.tensor_sum(elem)?;
+                let summed_shape = self.tensor_shape(summed)?;
+                let divisor = self.full(summed_shape, batch_size as f64, false)?;
+                self.tensor_div(summed, divisor)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "kl_div_loss: unsupported reduction (use none, sum, mean, batchmean)",
+                },
+            ))),
+        }
+    }
+
     /// Binary cross-entropy with logits loss (numerically stable):
     /// `mean(max(x, 0) - x * y + log1p(exp(-|x|)))`
     ///
@@ -27865,6 +27947,121 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── kl_div_loss tests (frankentorch-5qs5) ──────────────────────────
+
+    #[test]
+    fn kl_div_loss_zero_when_input_matches_target_distribution() {
+        // KL(P || Q) = 0 when P = Q. Pass log_q where q = p so the
+        // diff term is zero (modulo eps).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let target = s
+            .tensor_variable(vec![0.5, 0.5], vec![2], false)
+            .unwrap();
+        let log_input = s.tensor_log(target).unwrap();
+        let loss = s
+            .kl_div_loss(log_input, target, "sum", false)
+            .unwrap();
+        let v = s.tensor_values(loss).unwrap()[0];
+        // Eps-level only — the eps inside log(target+eps) creates a
+        // tiny positive bias.
+        assert!(v.abs() < 1e-7, "expected ~0, got {v}");
+    }
+
+    #[test]
+    fn kl_div_loss_positive_when_distributions_differ() {
+        // P = [0.5, 0.5], Q = [0.9, 0.1] → KL(P||Q) > 0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let target = s
+            .tensor_variable(vec![0.5, 0.5], vec![2], false)
+            .unwrap();
+        let q = s
+            .tensor_variable(vec![0.9, 0.1], vec![2], false)
+            .unwrap();
+        let log_q = s.tensor_log(q).unwrap();
+        let loss = s.kl_div_loss(log_q, target, "sum", false).unwrap();
+        let v = s.tensor_values(loss).unwrap()[0];
+        // Analytic: KL = 0.5 * log(0.5/0.9) + 0.5 * log(0.5/0.1)
+        //              = 0.5 * (log(0.5) - log(0.9)) + 0.5 * (log(0.5) - log(0.1))
+        let expected = 0.5_f64 * (0.5_f64.ln() - 0.9_f64.ln())
+            + 0.5_f64 * (0.5_f64.ln() - 0.1_f64.ln());
+        assert!((v - expected).abs() < 1e-5, "got {v}, expected {expected}");
+    }
+
+    #[test]
+    fn kl_div_loss_log_target_uses_exp_target_formula() {
+        // With log_target=true: KL = exp(target) * (target - input)
+        // For target = [-0.5, -0.5], input = [-1.0, -2.0]:
+        //   loss_elem = exp(-0.5) * (-0.5 - (-1.0))   = 0.6065 * 0.5
+        //               exp(-0.5) * (-0.5 - (-2.0))   = 0.6065 * 1.5
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let target = s
+            .tensor_variable(vec![-0.5_f64, -0.5_f64], vec![2], false)
+            .unwrap();
+        let input = s
+            .tensor_variable(vec![-1.0_f64, -2.0_f64], vec![2], false)
+            .unwrap();
+        let loss = s.kl_div_loss(input, target, "none", true).unwrap();
+        let v = s.tensor_values(loss).unwrap();
+        let exp_neg_half = (-0.5_f64).exp();
+        assert!((v[0] - exp_neg_half * 0.5).abs() < 1e-12);
+        assert!((v[1] - exp_neg_half * 1.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn kl_div_loss_batchmean_divides_by_leading_dim() {
+        // For shape [3, 2] with all elements 0 inside the formula
+        // (target = uniform, log_input = log(0.5)), KL ≈ 0 per
+        // element so sum ≈ 0 and batchmean = 0/3 = 0. Use a
+        // non-degenerate case to verify the divisor:
+        // target [3, 2] of [0.5, 0.5] each row, log_input [3, 2] of
+        // log(0.4) each. Each element contributes 0.5 * (log(0.5) -
+        // log(0.4)) = 0.5 * log(1.25). With 3 batch * 2 cols = 6
+        // elements, sum = 6 * 0.5 * log(1.25) = 3 * log(1.25).
+        // batchmean = 3 * log(1.25) / 3 = log(1.25).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let target = s
+            .tensor_variable(vec![0.5; 6], vec![3, 2], false)
+            .unwrap();
+        let log_input = s
+            .tensor_variable(vec![0.4_f64.ln(); 6], vec![3, 2], false)
+            .unwrap();
+        let loss = s
+            .kl_div_loss(log_input, target, "batchmean", false)
+            .unwrap();
+        let v = s.tensor_values(loss).unwrap()[0];
+        let expected = 1.25_f64.ln();
+        assert!((v - expected).abs() < 1e-5, "got {v}, expected {expected}");
+    }
+
+    #[test]
+    fn kl_div_loss_propagates_gradient_to_input() {
+        // d/d(input_i) [target_i * (log(target_i) - input_i)] = -target_i.
+        // For sum reduction with target = [0.5, 0.5], grad wrt input
+        // should be [-0.5, -0.5].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let target = s
+            .tensor_variable(vec![0.5_f64, 0.5_f64], vec![2], false)
+            .unwrap();
+        let log_input = s
+            .tensor_variable(vec![(-0.7_f64), (-0.7_f64)], vec![2], true)
+            .unwrap();
+        let loss = s
+            .kl_div_loss(log_input, target, "sum", false)
+            .unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let g = s.tensor_gradient(&report, log_input).unwrap();
+        assert!((g[0] + 0.5).abs() < 1e-12, "got {}", g[0]);
+        assert!((g[1] + 0.5).abs() < 1e-12, "got {}", g[1]);
+    }
+
+    #[test]
+    fn kl_div_loss_rejects_unknown_reduction() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.5, 0.5], vec![2], false).unwrap();
+        let i = s.tensor_variable(vec![-0.7, -0.7], vec![2], false).unwrap();
+        assert!(s.kl_div_loss(i, t, "elementwise_mean", false).is_err());
     }
 
     // ── causal_mask tests (frankentorch-2heg) ──────────────────────────
