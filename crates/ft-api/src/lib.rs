@@ -8815,6 +8815,46 @@ impl FrankenTorchSession {
         self.tensor_expand(reshaped, target_shape)
     }
 
+    /// Broadcast a list of tensors to a common shape.
+    ///
+    /// Equivalent to `torch.broadcast_tensors(*tensors)`. Computes
+    /// the right-aligned per-dim broadcast of every input shape and
+    /// returns each input broadcast to that joint shape via
+    /// tensor_broadcast_to. Autograd-aware: the broadcast_to backward
+    /// sums gradient over broadcasted dims, so each input's gradient
+    /// flows back unaffected by sibling shapes. Tracked under
+    /// frankentorch-j0yz.
+    pub fn tensor_broadcast_tensors(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        if tensors.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut joint_shape = self.tensor_shape(tensors[0])?;
+        for &t in &tensors[1..] {
+            let shape = self.tensor_shape(t)?;
+            joint_shape = Self::broadcast_shape(&joint_shape, &shape)?;
+        }
+        let mut out = Vec::with_capacity(tensors.len());
+        for &t in tensors {
+            out.push(self.tensor_broadcast_to(t, joint_shape.clone())?);
+        }
+        Ok(out)
+    }
+
+    /// Indices of non-zero elements; alias for `tensor_nonzero`.
+    ///
+    /// Equivalent to `torch.argwhere(input)` — a numpy-compatible
+    /// alias for `torch.nonzero(input)` that returns indices as a
+    /// `[M, ndim]` 2-D non-grad tensor. Tracked under frankentorch-j0yz.
+    pub fn tensor_argwhere(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nonzero(input)
+    }
+
     /// Broadcast `input` to match `other`'s shape.
     ///
     /// Equivalent to `torch.Tensor.expand_as(other)` — thin wrapper
@@ -28958,6 +28998,65 @@ mod tests {
         let g = s.tensor_gradient(&report, x).unwrap();
         // expected: row 0 = [0, 1, 0], row 1 = [1, 0, 1]
         assert_eq!(g, &[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
+    }
+
+    // ── tensor_broadcast_tensors / argwhere tests (frankentorch-j0yz) ─
+
+    #[test]
+    fn broadcast_tensors_promotes_all_inputs_to_joint_shape() {
+        // Mix of shapes: [3], [1, 3], [2, 1] → joint [2, 3]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![10.0, 20.0, 30.0], vec![1, 3], false)
+            .unwrap();
+        let c = s
+            .tensor_variable(vec![100.0, 200.0], vec![2, 1], false)
+            .unwrap();
+        let outs = s.tensor_broadcast_tensors(&[a, b, c]).unwrap();
+        assert_eq!(outs.len(), 3);
+        for &t in &outs {
+            assert_eq!(s.tensor_shape(t).unwrap(), vec![2, 3]);
+        }
+        assert_eq!(
+            s.tensor_values(outs[0]).unwrap(),
+            vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            s.tensor_values(outs[2]).unwrap(),
+            vec![100.0, 100.0, 100.0, 200.0, 200.0, 200.0]
+        );
+    }
+
+    #[test]
+    fn broadcast_tensors_empty_input_returns_empty() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let out = s.tensor_broadcast_tensors(&[]).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn broadcast_tensors_rejects_incompatible_shapes() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(s.tensor_broadcast_tensors(&[a, b]).is_err());
+    }
+
+    #[test]
+    fn argwhere_returns_same_indices_as_nonzero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 1.0, 0.0, 2.0, 0.0], vec![5], false)
+            .unwrap();
+        let nz = s.tensor_nonzero(x).unwrap();
+        let aw = s.tensor_argwhere(x).unwrap();
+        let v_nz = s.tensor_values(nz).unwrap();
+        let v_aw = s.tensor_values(aw).unwrap();
+        assert_eq!(v_nz, v_aw);
+        assert_eq!(s.tensor_shape(nz).unwrap(), s.tensor_shape(aw).unwrap());
     }
 
     // ── tensor_broadcast_to / expand_as tests (frankentorch-h2zt) ─────
