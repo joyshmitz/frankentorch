@@ -11790,6 +11790,50 @@ mod tests {
             }
         }
 
+        // pixel_unshuffle(pixel_shuffle(x, r), r) == x, bit-exactly.
+        // Both ops are pure reshape + permute with no arithmetic, so
+        // any deviation indicates a permutation-axis bug in either
+        // direction. Frankentorch-scyb.
+        #[test]
+        fn fuzz_metamorphic_pixel_shuffle_unshuffle_round_trip(
+            (r, n, oc, h, w, raw) in (1usize..=3).prop_flat_map(|r| (
+                Just(r),
+                1usize..=2,
+                1usize..=2,
+                1usize..=3,
+                1usize..=3,
+            ).prop_flat_map(move |(_, n, oc, h, w)| (
+                Just(r),
+                Just(n),
+                Just(oc),
+                Just(h),
+                Just(w),
+                prop::collection::vec(-2048i16..2048i16, n * oc * r * r * h * w),
+            )))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let c = oc * r * r;
+            let vals: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s
+                .tensor_variable(vals.clone(), vec![n, c, h, w], false)
+                .expect("x");
+            let shuffled = s.tensor_pixel_shuffle(x, r).expect("shuffle");
+            let recovered = s.tensor_pixel_unshuffle(shuffled, r).expect("unshuffle");
+            let recovered_vals = s.tensor_values(recovered).expect("recovered");
+            let recovered_shape = s.tensor_shape(recovered).expect("recovered shape");
+            prop_assert_eq!(recovered_shape, vec![n, c, h, w]);
+            prop_assert_eq!(recovered_vals.len(), vals.len());
+            for (a, b) in recovered_vals.iter().zip(vals.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "pixel_unshuffle ∘ pixel_shuffle must be bit-exact identity"
+                );
+            }
+        }
+
         // det(A @ B) = det(A) * det(B): the determinant is a multiplicative
         // homomorphism. Exercises the autograd-aware tensor_linalg_det
         // (frankentorch-pvfk) through composition with matmul + mul.
