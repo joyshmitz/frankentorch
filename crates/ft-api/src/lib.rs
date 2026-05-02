@@ -5318,6 +5318,81 @@ impl FrankenTorchSession {
         Ok(true)
     }
 
+    /// Element-wise close-comparison mask, returning 0.0/1.0 tensor.
+    ///
+    /// Equivalent to `torch.isclose(lhs, rhs, rtol, atol, equal_nan)`.
+    /// Each element is 1.0 when `|lhs - rhs| <= atol + rtol * |rhs|`,
+    /// else 0.0. NaN handling follows PyTorch: NaN never closes to
+    /// anything unless `equal_nan=true` and both sides are NaN. ±inf
+    /// is close only to itself.
+    ///
+    /// Non-differentiable: fails loud on tracked inputs to avoid
+    /// silently severing the autograd tape. Tracked under
+    /// frankentorch-rvjs.
+    pub fn tensor_isclose(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+        rtol: f64,
+        atol: f64,
+        equal_nan: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !rtol.is_finite() || !atol.is_finite() || rtol < 0.0 || atol < 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "isclose requires finite non-negative rtol and atol",
+                },
+            )));
+        }
+        if self.tensor_requires_grad(lhs)? || self.tensor_requires_grad(rhs)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "isclose: autograd not supported (close-comparison mask is non-differentiable). Tracked under frankentorch-rvjs.",
+                },
+            )));
+        }
+
+        let (lhs_values, lhs_meta) = self.tensor_values_meta(lhs)?;
+        let (rhs_values, rhs_meta) = self.tensor_values_meta(rhs)?;
+        if lhs_meta.shape() != rhs_meta.shape() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: lhs_meta.shape().to_vec(),
+                    rhs: rhs_meta.shape().to_vec(),
+                },
+            )));
+        }
+
+        let result: Vec<f64> = lhs_values
+            .iter()
+            .zip(rhs_values.iter())
+            .map(|(&l, &r)| {
+                if l.is_nan() || r.is_nan() {
+                    if equal_nan && l.is_nan() && r.is_nan() {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else if l.is_infinite() || r.is_infinite() {
+                    if l == r {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    let tolerance = atol + rtol * r.abs();
+                    if (l - r).abs() <= tolerance {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+            })
+            .collect();
+        let shape = lhs_meta.shape().to_vec();
+        self.tensor_variable(result, shape, false)
+    }
+
     pub fn tensor_sum(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sum(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
@@ -27416,6 +27491,78 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── tensor_isclose tests (frankentorch-rvjs) ──────────────────────
+
+    #[test]
+    fn isclose_close_pairs_are_one_far_pairs_are_zero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .unwrap();
+        // Within atol of 1.0 for each except the last (off by 0.5).
+        let b = s
+            .tensor_variable(vec![1.0 + 1e-9, 2.0 - 1e-9, 3.0, 4.5], vec![4], false)
+            .unwrap();
+        let mask = s.tensor_isclose(a, b, 1e-5, 1e-8, false).unwrap();
+        let v = s.tensor_values(mask).unwrap();
+        assert_eq!(v, vec![1.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn isclose_handles_nan_via_equal_nan_flag() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![f64::NAN, 1.0, f64::NAN], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![f64::NAN, 1.0, 2.0], vec![3], false)
+            .unwrap();
+        // equal_nan=false: NaN != NaN
+        let m1 = s.tensor_isclose(a, b, 1e-5, 1e-8, false).unwrap();
+        assert_eq!(s.tensor_values(m1).unwrap(), vec![0.0, 1.0, 0.0]);
+        // equal_nan=true: matched-NaN positions are 1
+        let m2 = s.tensor_isclose(a, b, 1e-5, 1e-8, true).unwrap();
+        assert_eq!(s.tensor_values(m2).unwrap(), vec![1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn isclose_inf_only_matches_same_signed_inf() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(
+                vec![f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY],
+                vec![3],
+                false,
+            )
+            .unwrap();
+        let b = s
+            .tensor_variable(
+                vec![f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
+                vec![3],
+                false,
+            )
+            .unwrap();
+        let m = s.tensor_isclose(a, b, 1e-5, 1e-8, false).unwrap();
+        assert_eq!(s.tensor_values(m).unwrap(), vec![1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn isclose_fails_loud_on_requires_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let b = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        assert!(s.tensor_isclose(a, b, 1e-5, 1e-8, false).is_err());
+    }
+
+    #[test]
+    fn isclose_rejects_negative_tolerance() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let b = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        assert!(s.tensor_isclose(a, b, -1e-5, 1e-8, false).is_err());
+        assert!(s.tensor_isclose(a, b, 1e-5, -1e-8, false).is_err());
     }
 
     // ── tensor_atleast_{1,2,3}d tests (frankentorch-oi03) ──────────────
