@@ -5966,9 +5966,13 @@ fn run_tensor_linalg_case(
             let t = session
                 .tensor_variable(input_data.clone(), shape.clone(), false)
                 .map_err(|e| format!("tensor build failed for '{}': {e}", case.name))?;
-            let actual = session
+            let det_id = session
                 .tensor_linalg_det(t)
                 .map_err(|e| format!("det failed for '{}': {e}", case.name))?;
+            let actual_vals = session
+                .tensor_values(det_id)
+                .map_err(|e| format!("det value read failed for '{}': {e}", case.name))?;
+            let actual = actual_vals[0];
             (actual - expected).abs() <= tolerance
         }
         "inv" => {
@@ -18850,7 +18854,8 @@ print(json.dumps({"results": out}))
             let xt = session
                 .tensor_variable(vals.clone(), vec![*n, *n], false)
                 .expect("xt");
-            let got = session.tensor_linalg_det(xt).expect("tensor_linalg_det");
+            let det_id = session.tensor_linalg_det(xt).expect("tensor_linalg_det");
+            let got = session.tensor_values(det_id).expect("det value read")[0];
             if !approx_eq(got, want) {
                 mismatches.push(format!(
                     "tensor_linalg_det({label}) = {got:?} but numpy returned {want:?} — relative error > {REL_TOL}"
@@ -19038,9 +19043,15 @@ print(json.dumps({"slogdet": out}))
             let xt = session
                 .tensor_variable(vals.clone(), vec![*n, *n], false)
                 .expect("xt");
-            let (got_sign, got_logabsdet) = session
+            let (sign_id, logabsdet_id) = session
                 .tensor_linalg_slogdet(xt)
                 .expect("tensor_linalg_slogdet");
+            let got_sign = session
+                .tensor_values(sign_id)
+                .expect("slogdet sign read")[0];
+            let got_logabsdet = session
+                .tensor_values(logabsdet_id)
+                .expect("slogdet logabsdet read")[0];
             if got_sign != want_sign {
                 mismatches.push(format!(
                     "tensor_linalg_slogdet({label}).sign = {got_sign} but numpy returned {want_sign}"

@@ -12738,26 +12738,170 @@ impl FrankenTorchSession {
 
     /// Compute the determinant of a square matrix.
     ///
-    /// Uses LU factorization: det = product(U diagonal) * sign(permutation).
-    pub fn tensor_linalg_det(&mut self, input: TensorNodeId) -> Result<f64, AutogradError> {
-        let (values, meta) = self.tensor_values_meta(input)?;
-        let result = ft_kernel_cpu::det_contiguous_f64(&values, &meta)
-            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
-        Ok(result.det)
+    /// Returns a 0-D tensor that participates in the autograd graph
+    /// (matches `torch.linalg.det`). Backward via Jacobi's formula:
+    ///     grad_A = grad_out * det(A) * (A^{-1})^T
+    /// Singular A → backward emits zeros (gradient undefined).
+    /// Tracked under frankentorch-pvfk.
+    pub fn tensor_linalg_det(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 || shape[0] != shape[1] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: shape.clone(),
+                    rhs: vec![2],
+                },
+            )));
+        }
+        let n = shape[0];
+        self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (vals, in_shape) = inputs[0];
+                let meta = ft_core::TensorMeta::from_shape(
+                    in_shape.to_vec(),
+                    DType::F64,
+                    ft_core::Device::Cpu,
+                );
+                let result = ft_kernel_cpu::det_contiguous_f64(vals, &meta)
+                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                ctx.save_for_backward(vals.to_vec(), in_shape.to_vec());
+                Ok((vec![result.det], vec![]))
+            },
+            move |ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                if g.len() != 1 {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "linalg_det backward: expected 0-D upstream gradient",
+                        },
+                    )));
+                }
+                let saved = ctx.saved_tensors();
+                let a = &saved[0];
+                if a.len() != n * n {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "linalg_det backward: saved A shape mismatch",
+                        },
+                    )));
+                }
+                let meta = ft_core::TensorMeta::from_shape(
+                    vec![n, n],
+                    DType::F64,
+                    ft_core::Device::Cpu,
+                );
+                let det_result = ft_kernel_cpu::det_contiguous_f64(a, &meta)
+                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                let inv_a = match ft_kernel_cpu::inv_tensor_contiguous_f64(a, &meta) {
+                    Ok(inv) => inv,
+                    Err(_) => {
+                        return Ok(vec![Some(vec![0.0; n * n])]);
+                    }
+                };
+                let scale = g[0] * det_result.det;
+                let mut grad_a = vec![0.0_f64; n * n];
+                for i in 0..n {
+                    for j in 0..n {
+                        grad_a[i * n + j] = scale * inv_a[j * n + i];
+                    }
+                }
+                Ok(vec![Some(grad_a)])
+            },
+        )
     }
 
     /// Compute sign and log-absolute-determinant of a square matrix.
     ///
-    /// Returns `(sign, logabsdet)` where `det(A) = sign * exp(logabsdet)`.
-    /// More numerically stable than `det` for large matrices.
+    /// Returns `(sign, logabsdet)` as 0-D tensors where
+    /// `det(A) = sign * exp(logabsdet)`. More numerically stable than
+    /// `det` for large matrices. Sign is non-differentiable (constant
+    /// in {-1, 0, 1}); logabsdet participates in the autograd graph.
+    /// Backward of logabsdet via Jacobi's formula:
+    ///     grad_A = grad_logabsdet * (A^{-1})^T
+    /// Singular A → backward emits zeros. Tracked under frankentorch-pvfk.
     pub fn tensor_linalg_slogdet(
         &mut self,
         input: TensorNodeId,
-    ) -> Result<(f64, f64), AutogradError> {
-        let (values, meta) = self.tensor_values_meta(input)?;
-        let result = ft_kernel_cpu::slogdet_contiguous_f64(&values, &meta)
-            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
-        Ok((result.sign, result.logabsdet))
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 || shape[0] != shape[1] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: shape.clone(),
+                    rhs: vec![2],
+                },
+            )));
+        }
+        let n = shape[0];
+
+        // Compute sign once via the kernel, return as a non-grad 0-D tensor.
+        let sign_val = {
+            let (vals, meta) = self.tensor_values_meta(input)?;
+            let result = ft_kernel_cpu::slogdet_contiguous_f64(&vals, &meta)
+                .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+            result.sign
+        };
+        let sign_id = self.tensor_variable(vec![sign_val], vec![], false)?;
+
+        let logabsdet_id = self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (vals, in_shape) = inputs[0];
+                let meta = ft_core::TensorMeta::from_shape(
+                    in_shape.to_vec(),
+                    DType::F64,
+                    ft_core::Device::Cpu,
+                );
+                let result = ft_kernel_cpu::slogdet_contiguous_f64(vals, &meta)
+                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                ctx.save_for_backward(vals.to_vec(), in_shape.to_vec());
+                Ok((vec![result.logabsdet], vec![]))
+            },
+            move |ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                if g.len() != 1 {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "linalg_slogdet backward: expected 0-D upstream gradient",
+                        },
+                    )));
+                }
+                let saved = ctx.saved_tensors();
+                let a = &saved[0];
+                if a.len() != n * n {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "linalg_slogdet backward: saved A shape mismatch",
+                        },
+                    )));
+                }
+                let meta = ft_core::TensorMeta::from_shape(
+                    vec![n, n],
+                    DType::F64,
+                    ft_core::Device::Cpu,
+                );
+                let inv_a = match ft_kernel_cpu::inv_tensor_contiguous_f64(a, &meta) {
+                    Ok(inv) => inv,
+                    Err(_) => {
+                        return Ok(vec![Some(vec![0.0; n * n])]);
+                    }
+                };
+                let scale = g[0];
+                let mut grad_a = vec![0.0_f64; n * n];
+                for i in 0..n {
+                    for j in 0..n {
+                        grad_a[i * n + j] = scale * inv_a[j * n + i];
+                    }
+                }
+                Ok(vec![Some(grad_a)])
+            },
+        )?;
+
+        Ok((sign_id, logabsdet_id))
     }
 
     /// Compute the Moore-Penrose pseudoinverse via SVD.
@@ -18067,6 +18211,7 @@ mod tests {
 
     use super::{
         FrankenTorchSession, GridSampleMode, GridSamplePaddingMode, IstftOptions, StftOptions,
+        TensorNodeId,
     };
 
     #[test]
@@ -26922,11 +27067,18 @@ mod tests {
 
     // ── linalg.det / slogdet tests ────────────────────────────────────
 
+    fn scalar_value(s: &mut FrankenTorchSession, t: TensorNodeId) -> f64 {
+        let v = s.tensor_values(t).unwrap();
+        assert_eq!(v.len(), 1, "expected 0-D / 1-element tensor");
+        v[0]
+    }
+
     #[test]
     fn det_identity() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = s.eye(3, false).unwrap();
-        let det = s.tensor_linalg_det(a).unwrap();
+        let det_id = s.tensor_linalg_det(a).unwrap();
+        let det = scalar_value(&mut s, det_id);
         assert!((det - 1.0).abs() < 1e-12);
     }
 
@@ -26940,7 +27092,8 @@ mod tests {
                 false,
             )
             .unwrap();
-        let det = s.tensor_linalg_det(a).unwrap();
+        let det_id = s.tensor_linalg_det(a).unwrap();
+        let det = scalar_value(&mut s, det_id);
         assert!((det - 8.0).abs() < 1e-12);
     }
 
@@ -26953,7 +27106,8 @@ mod tests {
             4.0, 5.0, 6.0,
             7.0, 8.0, 10.0,
         ], vec![3, 3], false).unwrap();
-        let det = s.tensor_linalg_det(a).unwrap();
+        let det_id = s.tensor_linalg_det(a).unwrap();
+        let det = scalar_value(&mut s, det_id);
         assert!((det - (-3.0)).abs() < 1e-10);
     }
 
@@ -26963,7 +27117,8 @@ mod tests {
         let a = s
             .tensor_variable(vec![1.0, 2.0, 2.0, 4.0], vec![2, 2], false)
             .unwrap();
-        let det = s.tensor_linalg_det(a).unwrap();
+        let det_id = s.tensor_linalg_det(a).unwrap();
+        let det = scalar_value(&mut s, det_id);
         assert!(det.abs() < 1e-10);
     }
 
@@ -26971,7 +27126,8 @@ mod tests {
     fn det_1x1_scalar() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = s.tensor_variable(vec![7.5], vec![1, 1], false).unwrap();
-        let det = s.tensor_linalg_det(a).unwrap();
+        let det_id = s.tensor_linalg_det(a).unwrap();
+        let det = scalar_value(&mut s, det_id);
         assert!((det - 7.5).abs() < 1e-12);
     }
 
@@ -26984,8 +27140,11 @@ mod tests {
             4.0, 5.0, 6.0,
             7.0, 8.0, 10.0,
         ], vec![3, 3], false).unwrap();
-        let det = s.tensor_linalg_det(a).unwrap();
-        let (sign, logabsdet) = s.tensor_linalg_slogdet(a).unwrap();
+        let det_id = s.tensor_linalg_det(a).unwrap();
+        let det = scalar_value(&mut s, det_id);
+        let (sign_id, logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
+        let sign = scalar_value(&mut s, sign_id);
+        let logabsdet = scalar_value(&mut s, logabsdet_id);
         let reconstructed = sign * logabsdet.exp();
         assert!((reconstructed - det).abs() < 1e-10);
     }
@@ -26996,7 +27155,9 @@ mod tests {
         let a = s
             .tensor_variable(vec![1.0, 2.0, 2.0, 4.0], vec![2, 2], false)
             .unwrap();
-        let (sign, logabsdet) = s.tensor_linalg_slogdet(a).unwrap();
+        let (sign_id, logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
+        let sign = scalar_value(&mut s, sign_id);
+        let logabsdet = scalar_value(&mut s, logabsdet_id);
         assert!(sign.abs() < 1e-12);
         assert!(logabsdet.is_infinite() && logabsdet < 0.0);
     }
@@ -27008,9 +27169,63 @@ mod tests {
         let a = s
             .tensor_variable(vec![0.0, 1.0, 1.0, 0.0], vec![2, 2], false)
             .unwrap();
-        let (sign, logabsdet) = s.tensor_linalg_slogdet(a).unwrap();
+        let (sign_id, logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
+        let sign = scalar_value(&mut s, sign_id);
+        let logabsdet = scalar_value(&mut s, logabsdet_id);
         assert!((sign - (-1.0)).abs() < 1e-12);
         assert!(logabsdet.abs() < 1e-12);
+    }
+
+    #[test]
+    fn det_propagates_gradient_via_jacobi() {
+        // det backward (Jacobi): grad_A = grad_out * det(A) * (A^{-1})^T.
+        // With grad_out = 1 this is just det(A) * (A^{-1})^T.
+        // For A = [[1,2],[3,5]]: det = 1*5 - 2*3 = -1.
+        // A^{-1} = (1/det) * [[5,-2],[-3,1]] = [[-5,2],[3,-1]].
+        // (A^{-1})^T = [[-5,3],[2,-1]].
+        // det * (A^{-1})^T = (-1) * [[-5,3],[2,-1]] = [[5,-3],[-2,1]].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 5.0], vec![2, 2], true)
+            .unwrap();
+        let det_id = s.tensor_linalg_det(a).unwrap();
+        let report = s.tensor_backward(det_id).unwrap();
+        let grad = s.tensor_gradient(&report, a).unwrap();
+        let expected = [5.0_f64, -3.0, -2.0, 1.0];
+        for (g, e) in grad.iter().zip(expected.iter()) {
+            assert!((g - e).abs() < 1e-10, "grad mismatch: got {g}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn slogdet_propagates_gradient_via_jacobi() {
+        // logabsdet backward (Jacobi): grad_A = grad_out * (A^{-1})^T.
+        // For A = [[1,2],[3,5]]: A^{-1} = [[-5,2],[3,-1]].
+        // (A^{-1})^T = [[-5,3],[2,-1]].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 5.0], vec![2, 2], true)
+            .unwrap();
+        let (_sign_id, logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
+        let report = s.tensor_backward(logabsdet_id).unwrap();
+        let grad = s.tensor_gradient(&report, a).unwrap();
+        let expected = [-5.0_f64, 3.0, 2.0, -1.0];
+        for (g, e) in grad.iter().zip(expected.iter()) {
+            assert!((g - e).abs() < 1e-10, "grad mismatch: got {g}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn slogdet_sign_does_not_require_grad() {
+        // Sign is constant in {-1, 0, 1}; must not be on the autograd
+        // tape. Backward through sign should fail (or produce no grad).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 5.0], vec![2, 2], true)
+            .unwrap();
+        let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
+        assert!(!s.tensor_requires_grad(sign_id).unwrap(),
+            "slogdet sign must be non-grad");
     }
 
     // ── unique / unique_consecutive tests (bd-2klp.3) ─────────────────
