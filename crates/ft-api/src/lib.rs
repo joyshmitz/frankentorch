@@ -5061,6 +5061,80 @@ impl FrankenTorchSession {
         self.tensor_mul(input, factor)
     }
 
+    /// SoftShrink activation: soft thresholding by `lambd`.
+    ///
+    /// `out = x - lambd if x > lambd; x + lambd if x < -lambd; else 0`.
+    /// Equivalent to `torch.nn.functional.softshrink(input, lambd)`.
+    /// Common as the proximal operator of the L1 norm in
+    /// ISTA/FISTA/sparse-coding training loops.
+    ///
+    /// Composes through autograd-aware tensor_gt/lt + tensor_where +
+    /// tensor_sub/add. Gradient is 1 outside [-lambd, lambd] and 0
+    /// inside (the where routes the inside region to the no-grad
+    /// zeros constant). Tracked under frankentorch-t503.
+    pub fn tensor_softshrink(
+        &mut self,
+        input: TensorNodeId,
+        lambd: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !lambd.is_finite() || lambd < 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "softshrink: lambd must be finite and non-negative",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let zeros = self.full(shape.clone(), 0.0, false)?;
+        let lambd_t = self.full(shape.clone(), lambd, false)?;
+        let neg_lambd_t = self.full(shape.clone(), -lambd, false)?;
+
+        let pos_mask = self.tensor_gt(input, lambd_t)?;
+        let neg_mask = self.tensor_lt(input, neg_lambd_t)?;
+
+        let lambd_const = self.full(shape.clone(), lambd, false)?;
+        let shifted_pos = self.tensor_sub(input, lambd_const)?;
+        let lambd_const2 = self.full(shape, lambd, false)?;
+        let shifted_neg = self.tensor_add(input, lambd_const2)?;
+
+        // First branch: positive side
+        let step1 = self.tensor_where(pos_mask, shifted_pos, zeros)?;
+        // Second branch: negative side overrides only where neg_mask
+        // is true; otherwise keep step1's choice. The two masks are
+        // mutually exclusive (x > lambd and x < -lambd can't both
+        // hold for lambd >= 0), so this gives the correct three-way
+        // split.
+        self.tensor_where(neg_mask, shifted_neg, step1)
+    }
+
+    /// HardShrink activation: hard thresholding by `lambd`.
+    ///
+    /// `out = x if |x| > lambd, else 0`. Equivalent to
+    /// `torch.nn.functional.hardshrink(input, lambd)`. Composes
+    /// through autograd-aware tensor_abs + tensor_gt + tensor_where.
+    /// Gradient is 1 where |x| > lambd, 0 inside [-lambd, lambd]
+    /// (the where routes the inside region to the no-grad zeros
+    /// constant). Tracked under frankentorch-t503.
+    pub fn tensor_hardshrink(
+        &mut self,
+        input: TensorNodeId,
+        lambd: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !lambd.is_finite() || lambd < 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "hardshrink: lambd must be finite and non-negative",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let zeros = self.full(shape.clone(), 0.0, false)?;
+        let lambd_t = self.full(shape, lambd, false)?;
+        let abs_x = self.tensor_abs(input)?;
+        let mask = self.tensor_gt(abs_x, lambd_t)?;
+        self.tensor_where(mask, input, zeros)
+    }
+
     /// TanhShrink activation: `x - tanh(x)`.
     ///
     /// Equivalent to `torch.nn.functional.tanhshrink(input)`. Composes
@@ -28879,6 +28953,99 @@ mod tests {
         let report = s.tensor_backward(scalar).unwrap();
         let g = s.tensor_gradient(&report, x).unwrap();
         assert!((g[0] - std::f64::consts::PI / 180.0).abs() < 1e-12);
+    }
+
+    // ── tensor_softshrink / hardshrink tests (frankentorch-t503) ──────
+
+    #[test]
+    fn softshrink_known_values() {
+        // softshrink(x, 0.5):
+        //   2.0 → 1.5
+        //  -2.0 → -1.5
+        //   0.3 → 0
+        //   0.7 → 0.2
+        //  -0.7 → -0.2
+        //  -0.5 → 0 (boundary, not greater than)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![2.0, -2.0, 0.3, 0.7, -0.7, -0.5],
+                vec![6],
+                false,
+            )
+            .unwrap();
+        let out = s.tensor_softshrink(x, 0.5).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 1.5).abs() < 1e-12);
+        assert!((v[1] - (-1.5)).abs() < 1e-12);
+        assert!(v[2].abs() < 1e-12);
+        assert!((v[3] - 0.2).abs() < 1e-12);
+        assert!((v[4] - (-0.2)).abs() < 1e-12);
+        assert!(v[5].abs() < 1e-12);
+    }
+
+    #[test]
+    fn softshrink_propagates_gradient_one_outside_zero_inside() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![2.0, 0.3, -0.7], vec![3], true)
+            .unwrap();
+        let out = s.tensor_softshrink(x, 0.5).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert_eq!(g[0], 1.0); // outside (positive)
+        assert_eq!(g[1], 0.0); // inside [-lambd, lambd]
+        assert_eq!(g[2], 1.0); // outside (negative)
+    }
+
+    #[test]
+    fn hardshrink_known_values() {
+        // hardshrink(x, 0.5):
+        //   2.0 → 2.0
+        //  -2.0 → -2.0
+        //   0.3 → 0
+        //   0.7 → 0.7
+        //  -0.5 → 0 (boundary)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![2.0, -2.0, 0.3, 0.7, -0.5],
+                vec![5],
+                false,
+            )
+            .unwrap();
+        let out = s.tensor_hardshrink(x, 0.5).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 2.0).abs() < 1e-12);
+        assert!((v[1] - (-2.0)).abs() < 1e-12);
+        assert!(v[2].abs() < 1e-12);
+        assert!((v[3] - 0.7).abs() < 1e-12);
+        assert!(v[4].abs() < 1e-12);
+    }
+
+    #[test]
+    fn hardshrink_propagates_gradient_one_outside_zero_inside() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![2.0, 0.3, -0.7, 0.0], vec![4], true)
+            .unwrap();
+        let out = s.tensor_hardshrink(x, 0.5).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert_eq!(g[0], 1.0); // outside
+        assert_eq!(g[1], 0.0); // inside
+        assert_eq!(g[2], 1.0); // outside
+        assert_eq!(g[3], 0.0); // exactly 0 → inside
+    }
+
+    #[test]
+    fn shrink_rejects_negative_lambd() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        assert!(s.tensor_softshrink(x, -0.1).is_err());
+        assert!(s.tensor_hardshrink(x, -0.1).is_err());
     }
 
     // ── tensor_tanhshrink / softsign tests (frankentorch-uykm) ────────
