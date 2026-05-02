@@ -4972,6 +4972,87 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// NumPy-style broadcast shape of two input shapes.
+    ///
+    /// Returns the element-wise max of the right-aligned dims after
+    /// validating each pair is broadcast-compatible (equal or one is 1).
+    /// Tracked under frankentorch-h2m0 (used by tensor_maximum / minimum).
+    fn broadcast_shape(
+        lhs_shape: &[usize],
+        rhs_shape: &[usize],
+    ) -> Result<Vec<usize>, AutogradError> {
+        let lhs_len = lhs_shape.len();
+        let rhs_len = rhs_shape.len();
+        let out_len = lhs_len.max(rhs_len);
+        let mut out = Vec::with_capacity(out_len);
+        for i in 0..out_len {
+            let l = if i + lhs_len >= out_len {
+                lhs_shape[i + lhs_len - out_len]
+            } else {
+                1
+            };
+            let r = if i + rhs_len >= out_len {
+                rhs_shape[i + rhs_len - out_len]
+            } else {
+                1
+            };
+            if l == r {
+                out.push(l);
+            } else if l == 1 {
+                out.push(r);
+            } else if r == 1 {
+                out.push(l);
+            } else {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: lhs_shape.to_vec(),
+                        rhs: rhs_shape.to_vec(),
+                    },
+                )));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Element-wise maximum with NumPy-style broadcasting.
+    ///
+    /// Equivalent to `torch.maximum(a, b)`. Broadcasts both operands
+    /// to a common shape via tensor_broadcast_to and dispatches
+    /// tensor_max on the matched-shape result. Autograd-aware:
+    /// max routes upstream gradient to whichever operand achieved
+    /// the per-element maximum, and broadcast_to's backward sums
+    /// gradient over the broadcasted dims. Tracked under
+    /// frankentorch-h2m0.
+    pub fn tensor_maximum(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let lhs_shape = self.tensor_shape(lhs)?;
+        let rhs_shape = self.tensor_shape(rhs)?;
+        let out_shape = Self::broadcast_shape(&lhs_shape, &rhs_shape)?;
+        let lhs_b = self.tensor_broadcast_to(lhs, out_shape.clone())?;
+        let rhs_b = self.tensor_broadcast_to(rhs, out_shape)?;
+        self.tensor_max(lhs_b, rhs_b)
+    }
+
+    /// Element-wise minimum with NumPy-style broadcasting.
+    ///
+    /// Sister to `tensor_maximum`, equivalent to `torch.minimum(a, b)`.
+    /// Tracked under frankentorch-h2m0.
+    pub fn tensor_minimum(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let lhs_shape = self.tensor_shape(lhs)?;
+        let rhs_shape = self.tensor_shape(rhs)?;
+        let out_shape = Self::broadcast_shape(&lhs_shape, &rhs_shape)?;
+        let lhs_b = self.tensor_broadcast_to(lhs, out_shape.clone())?;
+        let rhs_b = self.tensor_broadcast_to(rhs, out_shape)?;
+        self.tensor_min(lhs_b, rhs_b)
+    }
+
     pub fn tensor_atan2(
         &mut self,
         lhs: TensorNodeId,
@@ -27581,6 +27662,90 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── tensor_maximum / minimum tests (frankentorch-h2m0) ─────────────
+
+    #[test]
+    fn maximum_minimum_same_shape() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 5.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![4.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let mx = s.tensor_maximum(a, b).unwrap();
+        let mn = s.tensor_minimum(a, b).unwrap();
+        assert_eq!(s.tensor_values(mx).unwrap(), vec![4.0, 5.0, 3.0]);
+        assert_eq!(s.tensor_values(mn).unwrap(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn maximum_broadcasts_scalar_against_vector() {
+        // [1] vs [4]: broadcast scalar to shape [4], then element-wise max
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        let b = s
+            .tensor_variable(vec![1.0, 2.0, 5.0, 0.0], vec![4], false)
+            .unwrap();
+        let mx = s.tensor_maximum(a, b).unwrap();
+        assert_eq!(s.tensor_values(mx).unwrap(), vec![3.0, 3.0, 5.0, 3.0]);
+    }
+
+    #[test]
+    fn maximum_broadcasts_higher_rank() {
+        // [3] vs [2, 3]: prepend 1 to make [1, 3], expand to [2, 3]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let row = s
+            .tensor_variable(vec![3.0, 1.0, 4.0], vec![3], false)
+            .unwrap();
+        let mat = s
+            .tensor_variable(vec![1.0, 5.0, 3.0, 4.0, 0.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let mx = s.tensor_maximum(row, mat).unwrap();
+        assert_eq!(s.tensor_shape(mx).unwrap(), vec![2, 3]);
+        assert_eq!(
+            s.tensor_values(mx).unwrap(),
+            vec![3.0, 5.0, 4.0, 4.0, 1.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn maximum_rejects_incompatible_shapes() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(s.tensor_maximum(a, b).is_err());
+    }
+
+    #[test]
+    fn maximum_propagates_gradient_to_winning_operand() {
+        // a = [1, 5, 3], b = [4, 2, 3]; max = [4, 5, 3].
+        // Where a wins (idx 1): grad → a = 1, b = 0.
+        // Where b wins (idx 0): grad → a = 0, b = 1.
+        // Tie (idx 2): convention varies; tensor_max routes to whichever
+        // the kernel picks (typically lhs first), so we don't pin tie
+        // behavior — just sum the grads at idx 2 to confirm exactly one
+        // operand received it.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 5.0, 3.0], vec![3], true)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![4.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+        let mx = s.tensor_maximum(a, b).unwrap();
+        let scalar = s.tensor_sum(mx).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g_a = s.tensor_gradient(&report, a).unwrap().to_vec();
+        let g_b = s.tensor_gradient(&report, b).unwrap().to_vec();
+        assert_eq!(g_a[0], 0.0, "b wins at idx 0");
+        assert_eq!(g_b[0], 1.0);
+        assert_eq!(g_a[1], 1.0, "a wins at idx 1");
+        assert_eq!(g_b[1], 0.0);
+        // Tie at idx 2: exactly one of the two operands receives the gradient.
+        assert_eq!(g_a[2] + g_b[2], 1.0, "tie should distribute exactly 1.0");
     }
 
     // ── tensor_amax / amin tests (frankentorch-wehk) ───────────────────
