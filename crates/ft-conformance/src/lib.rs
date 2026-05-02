@@ -11790,6 +11790,53 @@ mod tests {
             }
         }
 
+        // cat(chunk(x, n, dim), dim) == x, bit-exactly. Symmetric
+        // companion to fuzz_metamorphic_cat_narrow_round_trip. Both
+        // tensor_chunk and tensor_cat are pure layout ops with no
+        // arithmetic; any deviation indicates a tape bug. Frankentorch-fmzd.
+        #[test]
+        fn fuzz_metamorphic_chunk_cat_round_trip(
+            (rows, cols, n_chunks, dim, raw) in (1usize..=4, 1usize..=4)
+                .prop_flat_map(|(r, c)| (
+                    Just(r),
+                    Just(c),
+                    1usize..=4,
+                    0usize..=1,
+                ))
+                .prop_filter("chunk dim must be divisible by chunk count", |&(r, c, n, d)| {
+                    let dim_size = if d == 0 { r } else { c };
+                    dim_size >= n && dim_size % n == 0
+                })
+                .prop_flat_map(|(r, c, n, d)| (
+                    Just(r),
+                    Just(c),
+                    Just(n),
+                    Just(d),
+                    prop::collection::vec(-2048i16..2048i16, r * c),
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let vals: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s
+                .tensor_variable(vals.clone(), vec![rows, cols], false)
+                .expect("x");
+            let chunks = s.tensor_chunk(x, n_chunks, dim).expect("chunk");
+            let recovered = s.tensor_cat(&chunks, dim).expect("cat");
+            let recovered_vals = s.tensor_values(recovered).expect("recovered");
+            let recovered_shape = s.tensor_shape(recovered).expect("recovered shape");
+            prop_assert_eq!(recovered_shape, vec![rows, cols]);
+            prop_assert_eq!(recovered_vals.len(), vals.len());
+            for (a, b) in recovered_vals.iter().zip(vals.iter()) {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "cat(chunk(x)) must be bit-exact identity"
+                );
+            }
+        }
+
         // pixel_unshuffle(pixel_shuffle(x, r), r) == x, bit-exactly.
         // Both ops are pure reshape + permute with no arithmetic, so
         // any deviation indicates a permutation-axis bug in either
