@@ -1632,6 +1632,30 @@ impl FrankenTorchSession {
     }
 
     /// Create a 2-D identity matrix of size n x n.
+    /// Square subsequent mask for transformer decoder attention.
+    ///
+    /// Equivalent to `torch.nn.Transformer.generate_square_subsequent_mask(sz)`.
+    /// Returns a `[sz, sz]` 2-D tensor where each element above the
+    /// main diagonal is `-inf` and each element on or below is `0.0`.
+    /// Added to attention scores (typically after the QK^T / sqrt(d_k)
+    /// scaling) before softmax so that softmax(score + mask) zeros out
+    /// the future positions. Tracked under frankentorch-2heg.
+    pub fn causal_mask(
+        &mut self,
+        size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if size == 0 {
+            return self.tensor_variable(Vec::new(), vec![0, 0], false);
+        }
+        let mut data = vec![0.0_f64; size * size];
+        for i in 0..size {
+            for j in (i + 1)..size {
+                data[i * size + j] = f64::NEG_INFINITY;
+            }
+        }
+        self.tensor_variable(data, vec![size, size], false)
+    }
+
     pub fn eye(&mut self, n: usize, requires_grad: bool) -> Result<TensorNodeId, AutogradError> {
         let numel = Self::checked_square_numel(n, "eye shape volume overflow")?;
         let mut values = vec![0.0; numel];
@@ -27841,6 +27865,66 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── causal_mask tests (frankentorch-2heg) ──────────────────────────
+
+    #[test]
+    fn causal_mask_3x3_has_neginf_above_diagonal_zero_on_below() {
+        // Expected layout for sz=3:
+        //   [  0, -inf, -inf]
+        //   [  0,    0, -inf]
+        //   [  0,    0,    0]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mask = s.causal_mask(3).unwrap();
+        assert_eq!(s.tensor_shape(mask).unwrap(), vec![3, 3]);
+        let v = s.tensor_values(mask).unwrap();
+        assert_eq!(v[0], 0.0);
+        assert!(v[1].is_infinite() && v[1] < 0.0);
+        assert!(v[2].is_infinite() && v[2] < 0.0);
+        assert_eq!(v[3], 0.0);
+        assert_eq!(v[4], 0.0);
+        assert!(v[5].is_infinite() && v[5] < 0.0);
+        assert_eq!(v[6], 0.0);
+        assert_eq!(v[7], 0.0);
+        assert_eq!(v[8], 0.0);
+    }
+
+    #[test]
+    fn causal_mask_zero_size_returns_empty_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mask = s.causal_mask(0).unwrap();
+        assert_eq!(s.tensor_shape(mask).unwrap(), vec![0, 0]);
+        assert_eq!(s.tensor_values(mask).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn causal_mask_softmax_after_addition_zeros_future_positions() {
+        // Add causal_mask to a constant attention-score tensor and
+        // check that softmax along dim=1 puts zero probability on
+        // future positions. This locks the typical
+        // softmax(QK^T / sqrt(d_k) + mask) usage pattern.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let scores = s
+            .tensor_variable(vec![1.0; 9], vec![3, 3], false)
+            .unwrap();
+        let mask = s.causal_mask(3).unwrap();
+        let masked = s.tensor_add(scores, mask).unwrap();
+        let probs = s.tensor_softmax(masked, 1).unwrap();
+        let v = s.tensor_values(probs).unwrap();
+        // Row 0 attends only to position 0 → [1, 0, 0]
+        assert!((v[0] - 1.0).abs() < 1e-12);
+        assert!(v[1].abs() < 1e-12);
+        assert!(v[2].abs() < 1e-12);
+        // Row 1 attends to positions 0,1 → [0.5, 0.5, 0]
+        assert!((v[3] - 0.5).abs() < 1e-12);
+        assert!((v[4] - 0.5).abs() < 1e-12);
+        assert!(v[5].abs() < 1e-12);
+        // Row 2 attends to all 3 → [1/3, 1/3, 1/3]
+        let third = 1.0 / 3.0;
+        assert!((v[6] - third).abs() < 1e-12);
+        assert!((v[7] - third).abs() < 1e-12);
+        assert!((v[8] - third).abs() < 1e-12);
     }
 
     // ── tensor_hypot tests (frankentorch-k3p4) ────────────────────────
