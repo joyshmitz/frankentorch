@@ -5061,6 +5061,38 @@ impl FrankenTorchSession {
         self.tensor_mul(input, factor)
     }
 
+    /// TanhShrink activation: `x - tanh(x)`.
+    ///
+    /// Equivalent to `torch.nn.functional.tanhshrink(input)`. Composes
+    /// through autograd-aware tensor_tanh + tensor_sub. The function
+    /// is monotonic and odd; useful in specialized normalization
+    /// layers. Tracked under frankentorch-uykm.
+    pub fn tensor_tanhshrink(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let t = self.tensor_tanh(input)?;
+        self.tensor_sub(input, t)
+    }
+
+    /// SoftSign activation: `x / (1 + |x|)`.
+    ///
+    /// Equivalent to `torch.nn.functional.softsign(input)`. Composes
+    /// through autograd-aware tensor_abs + tensor_add (with constant 1)
+    /// + tensor_div. Smoothly maps R → (-1, 1).
+    ///
+    /// Tracked under frankentorch-uykm.
+    pub fn tensor_softsign(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let abs_x = self.tensor_abs(input)?;
+        let one = self.full(shape, 1.0, false)?;
+        let denom = self.tensor_add(one, abs_x)?;
+        self.tensor_div(input, denom)
+    }
+
     /// Power-of-two exponential: `2^x`.
     ///
     /// Equivalent to `torch.exp2(input)`. Composes through
@@ -28847,6 +28879,72 @@ mod tests {
         let report = s.tensor_backward(scalar).unwrap();
         let g = s.tensor_gradient(&report, x).unwrap();
         assert!((g[0] - std::f64::consts::PI / 180.0).abs() < 1e-12);
+    }
+
+    // ── tensor_tanhshrink / softsign tests (frankentorch-uykm) ────────
+
+    #[test]
+    fn tanhshrink_known_values() {
+        // tanhshrink(0) = 0; tanhshrink(1) = 1 - tanh(1) ≈ 0.2384.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 1.0, -1.0, 2.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_tanhshrink(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].abs() < 1e-12);
+        assert!((v[1] - (1.0 - 1.0_f64.tanh())).abs() < 1e-12);
+        // Odd function: tanhshrink(-x) = -tanhshrink(x).
+        assert!((v[2] - (-v[1])).abs() < 1e-12);
+        assert!((v[3] - (2.0 - 2.0_f64.tanh())).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tanhshrink_propagates_gradient_one_minus_sech_squared() {
+        // d/dx tanhshrink(x) = 1 - sech²(x) = 1 - (1 - tanh²(x)) = tanh²(x).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 1.0], vec![2], true)
+            .unwrap();
+        let out = s.tensor_tanhshrink(x).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        // grad at x=0: tanh²(0) = 0
+        assert!(g[0].abs() < 1e-12);
+        // grad at x=1: tanh²(1) ≈ 0.5800
+        let expected = 1.0_f64.tanh().powi(2);
+        assert!((g[1] - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn softsign_known_values() {
+        // softsign(0) = 0; softsign(1) = 1/2 = 0.5; softsign(-3) = -3/4
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 1.0, -3.0, 100.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_softsign(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].abs() < 1e-12);
+        assert!((v[1] - 0.5).abs() < 1e-12);
+        assert!((v[2] - (-0.75)).abs() < 1e-12);
+        // Asymptote: softsign(100) ≈ 1
+        assert!((v[3] - (100.0 / 101.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn softsign_propagates_gradient() {
+        // d/dx softsign(x) = 1 / (1 + |x|)²
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 1.0, -3.0], vec![3], true).unwrap();
+        let out = s.tensor_softsign(x).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert!((g[0] - 1.0).abs() < 1e-12);
+        assert!((g[1] - 1.0 / 4.0).abs() < 1e-12);
+        assert!((g[2] - 1.0 / 16.0).abs() < 1e-12);
     }
 
     // ── tensor_exp2 / logsigmoid tests (frankentorch-lcxs) ────────────
