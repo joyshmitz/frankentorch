@@ -5061,6 +5061,37 @@ impl FrankenTorchSession {
         self.tensor_mul(input, factor)
     }
 
+    /// Power-of-two exponential: `2^x`.
+    ///
+    /// Equivalent to `torch.exp2(input)`. Composes through
+    /// `tensor_exp(input * ln(2))`. Autograd-aware; gradient is
+    /// `2^x * ln(2)`. Tracked under frankentorch-lcxs.
+    pub fn tensor_exp2(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ln2 = self.full(shape, std::f64::consts::LN_2, false)?;
+        let scaled = self.tensor_mul(input, ln2)?;
+        self.tensor_exp(scaled)
+    }
+
+    /// Numerically stable log-sigmoid: `log(sigmoid(x)) = -softplus(-x)`.
+    ///
+    /// Equivalent to `torch.nn.functional.logsigmoid(input)`. Avoids
+    /// the numerical underflow of `log(sigmoid(x))` for very negative
+    /// x (where sigmoid → 0 and log → -inf). Composes via
+    /// `tensor_neg(tensor_softplus(tensor_neg(input)))`. Autograd-aware.
+    /// Tracked under frankentorch-lcxs.
+    pub fn tensor_logsigmoid(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let neg_x = self.tensor_neg(input)?;
+        let sp = self.tensor_softplus(neg_x)?;
+        self.tensor_neg(sp)
+    }
+
     /// Inverse hyperbolic sine.
     ///
     /// Equivalent to `torch.asinh(input)`. Composes via the closed
@@ -28816,6 +28847,72 @@ mod tests {
         let report = s.tensor_backward(scalar).unwrap();
         let g = s.tensor_gradient(&report, x).unwrap();
         assert!((g[0] - std::f64::consts::PI / 180.0).abs() < 1e-12);
+    }
+
+    // ── tensor_exp2 / logsigmoid tests (frankentorch-lcxs) ────────────
+
+    #[test]
+    fn exp2_known_values() {
+        // 2^-1 = 0.5; 2^0 = 1; 2^1 = 2; 2^10 = 1024.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-1.0, 0.0, 1.0, 10.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_exp2(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 0.5).abs() < 1e-12);
+        assert!((v[1] - 1.0).abs() < 1e-12);
+        assert!((v[2] - 2.0).abs() < 1e-12);
+        assert!((v[3] - 1024.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exp2_propagates_gradient_2x_ln2() {
+        // d/dx 2^x = 2^x * ln(2). At x=3: 8 * ln(2).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        let out = s.tensor_exp2(x).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        let expected = 8.0 * std::f64::consts::LN_2;
+        assert!((g[0] - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn logsigmoid_matches_log_of_sigmoid_in_normal_range() {
+        // For moderate x, log_sigmoid ≈ log(sigmoid(x)). Skip extreme
+        // negatives where log(sigmoid) underflows but log_sigmoid
+        // stays finite — that's the whole point of the stable form.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![5], false)
+            .unwrap();
+        let direct_sig = s.tensor_sigmoid(x).unwrap();
+        let direct = s.tensor_log(direct_sig).unwrap();
+        let stable = s.tensor_logsigmoid(x).unwrap();
+        let v_d = s.tensor_values(direct).unwrap();
+        let v_s = s.tensor_values(stable).unwrap();
+        for (a, b) in v_d.iter().zip(v_s.iter()) {
+            assert!((a - b).abs() < 1e-12, "direct={a}, stable={b}");
+        }
+    }
+
+    #[test]
+    fn logsigmoid_stable_for_extreme_negative_input() {
+        // For x = -50, sigmoid(x) = e^(-50) / (1 + e^(-50)) ≈ e^(-50)
+        // ≈ 1.93e-22, well above f64 underflow but log gives -50.
+        // The naive log(sigmoid) chain is fine here, but for x = -1000
+        // sigmoid would underflow to 0 and log → -inf. Our stable
+        // form returns -1000 + small correction. Verify both behaviors.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-1000.0], vec![1], false)
+            .unwrap();
+        let stable = s.tensor_logsigmoid(x).unwrap();
+        let v = s.tensor_values(stable).unwrap()[0];
+        // -softplus(-(-1000)) = -softplus(1000) ≈ -1000.
+        assert!(v.is_finite(), "logsigmoid(-1000) should be finite, got {v}");
+        assert!((v - (-1000.0)).abs() < 1e-6, "got {v}");
     }
 
     // ── tensor_asinh / acosh / atanh tests (frankentorch-2vc0) ────────
