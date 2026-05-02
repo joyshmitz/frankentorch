@@ -7263,6 +7263,33 @@ impl FrankenTorchSession {
         self.tensor_tape.min_dim(input, dim)
     }
 
+    /// Reduce along `dim` returning only the maximum values (no indices).
+    ///
+    /// Equivalent to `torch.amax(input, dim)`. Wraps `tensor_max_dim`
+    /// and discards the index tensor — the values output keeps the
+    /// argmax-routed gradient. Tracked under frankentorch-wehk.
+    pub fn tensor_amax(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (values, _argmax) = self.tensor_max_dim(input, dim)?;
+        Ok(values)
+    }
+
+    /// Reduce along `dim` returning only the minimum values (no indices).
+    ///
+    /// Equivalent to `torch.amin(input, dim)`. Sister to `tensor_amax`.
+    /// Tracked under frankentorch-wehk.
+    pub fn tensor_amin(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (values, _argmin) = self.tensor_min_dim(input, dim)?;
+        Ok(values)
+    }
+
     fn validate_index_tensor_values(
         input_shape: &[usize],
         dim: usize,
@@ -27554,6 +27581,37 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── tensor_amax / amin tests (frankentorch-wehk) ───────────────────
+
+    #[test]
+    fn amax_amin_return_values_only() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [[1, 5, 3], [4, 2, 6]] — max along dim=0 = [4, 5, 6], min = [1, 2, 3]
+        let x = s
+            .tensor_variable(vec![1.0, 5.0, 3.0, 4.0, 2.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let max_ = s.tensor_amax(x, 0).unwrap();
+        let min_ = s.tensor_amin(x, 0).unwrap();
+        assert_eq!(s.tensor_values(max_).unwrap(), vec![4.0, 5.0, 6.0]);
+        assert_eq!(s.tensor_values(min_).unwrap(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn amax_propagates_gradient_to_argmax_position() {
+        // For x = [[1, 5, 3], [4, 2, 6]], amax along dim=0 = [4, 5, 6].
+        // backward(sum(amax)) routes 1.0 to (1,0), (0,1), (1,2) only.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 5.0, 3.0, 4.0, 2.0, 6.0], vec![2, 3], true)
+            .unwrap();
+        let max_ = s.tensor_amax(x, 0).unwrap();
+        let scalar = s.tensor_sum(max_).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        // expected: row 0 = [0, 1, 0], row 1 = [1, 0, 1]
+        assert_eq!(g, &[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
     }
 
     // ── tensor_broadcast_to / expand_as tests (frankentorch-h2zt) ─────
