@@ -8267,6 +8267,69 @@ impl FrankenTorchSession {
         self.tensor_tape.expand(input, target_shape)
     }
 
+    /// Broadcast `input` to `target_shape` with full broadcasting rules.
+    ///
+    /// Equivalent to `torch.broadcast_to(input, shape)`. Differs from
+    /// `tensor_expand` in two ways:
+    ///   - accepts a target shape with HIGHER rank than input;
+    ///     prepends size-1 dims on the left to match rank.
+    ///   - validates broadcast compatibility per dim: each input dim
+    ///     must be either 1 or exactly the target dim.
+    ///
+    /// Composes through autograd-aware tensor_reshape + tensor_expand,
+    /// so gradients flow unchanged. Tracked under frankentorch-h2zt.
+    pub fn tensor_broadcast_to(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() > target_shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "broadcast_to: target rank must be >= input rank",
+                },
+            )));
+        }
+        let prefix = target_shape.len() - input_shape.len();
+        // Validate each input dim is broadcast-compatible with the
+        // corresponding (right-aligned) target dim.
+        for (i, &in_dim) in input_shape.iter().enumerate() {
+            let tgt_dim = target_shape[prefix + i];
+            if in_dim != tgt_dim && in_dim != 1 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: input_shape.clone(),
+                        rhs: target_shape.clone(),
+                    },
+                )));
+            }
+        }
+        // Prepend size-1 dims to match target rank, then expand.
+        let mut padded_shape = vec![1usize; prefix];
+        padded_shape.extend_from_slice(&input_shape);
+        let reshaped = if padded_shape == input_shape {
+            input
+        } else {
+            self.tensor_reshape(input, padded_shape)?
+        };
+        self.tensor_expand(reshaped, target_shape)
+    }
+
+    /// Broadcast `input` to match `other`'s shape.
+    ///
+    /// Equivalent to `torch.Tensor.expand_as(other)` — thin wrapper
+    /// around `tensor_broadcast_to(input, other.shape)`. Tracked
+    /// under frankentorch-h2zt.
+    pub fn tensor_expand_as(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let target_shape = self.tensor_shape(other)?;
+        self.tensor_broadcast_to(input, target_shape)
+    }
+
     pub fn tensor_split(
         &mut self,
         input: TensorNodeId,
@@ -27491,6 +27554,90 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── tensor_broadcast_to / expand_as tests (frankentorch-h2zt) ─────
+
+    #[test]
+    fn broadcast_to_prepends_dims_and_expands() {
+        // [3] → [2, 3] via (prepend 1) → reshape to [1, 3] → expand to [2, 3]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let out = s.tensor_broadcast_to(v, vec![2, 3]).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![2, 3]);
+        assert_eq!(
+            s.tensor_values(out).unwrap(),
+            vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn broadcast_to_expands_size_one_dims() {
+        // [1, 3] → [4, 3]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .unwrap();
+        let out = s.tensor_broadcast_to(v, vec![4, 3]).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![4, 3]);
+        let vals = s.tensor_values(out).unwrap();
+        for chunk in vals.chunks(3) {
+            assert_eq!(chunk, &[1.0, 2.0, 3.0]);
+        }
+    }
+
+    #[test]
+    fn broadcast_to_returns_same_id_when_shapes_match() {
+        // No-op when target matches input exactly: same rank, no
+        // size-1 dims to expand. Should return the input id (no
+        // reshape node). expand handles same-shape as no-op.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let out = s.tensor_broadcast_to(v, vec![2, 2]).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![2, 2]);
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn broadcast_to_rejects_incompatible_shape() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        // [3] cannot broadcast to [2] (3 != 2 and 3 != 1)
+        assert!(s.tensor_broadcast_to(v, vec![2]).is_err());
+        // Higher-rank input cannot broadcast to lower-rank target
+        let m = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        assert!(s.tensor_broadcast_to(m, vec![4]).is_err());
+    }
+
+    #[test]
+    fn broadcast_to_propagates_gradient_summed_across_broadcasts() {
+        // For [3] → [2, 3] expand, the gradient at the input is the
+        // sum of upstream gradients across the prepended dim.
+        // Specifically backward(sum(broadcast_to(v, [2, 3]))) gives
+        // grad = [2, 2, 2] (each element appears twice in output).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).unwrap();
+        let broad = s.tensor_broadcast_to(v, vec![2, 3]).unwrap();
+        let scalar = s.tensor_sum(broad).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, v).unwrap();
+        assert_eq!(g, &[2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn expand_as_uses_target_shape() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s.tensor_variable(vec![5.0], vec![1], false).unwrap();
+        let target = s
+            .tensor_variable(vec![0.0; 6], vec![2, 3], false)
+            .unwrap();
+        let out = s.tensor_expand_as(v, target).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![2, 3]);
+        assert_eq!(s.tensor_values(out).unwrap(), vec![5.0; 6]);
     }
 
     // ── tensor_isclose tests (frankentorch-rvjs) ──────────────────────
