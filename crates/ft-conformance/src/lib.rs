@@ -11837,6 +11837,48 @@ mod tests {
             }
         }
 
+        // tanh(x) = 2 * sigmoid(2x) - 1. Identity that links the two
+        // primitives through a linear transformation. Cross-checks
+        // both ops on different kernel paths. Frankentorch-5wr1.
+        #[test]
+        fn fuzz_metamorphic_tanh_equals_two_sigmoid_two_x_minus_one(
+            samples in prop::collection::vec(-256i16..256i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Bound the input range to stay well clear of saturation
+            // — once |x| > ~10 both sides are essentially ±1 and the
+            // numerical comparison is dominated by ULP noise from the
+            // saturated regime.
+            let xs: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 64.0).collect();
+            let n = xs.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(xs.clone(), vec![n], false).expect("x");
+
+            let tanh_x = s.tensor_tanh(x).expect("tanh");
+
+            let two_t = s.full(vec![n], 2.0, false).expect("two");
+            let two_x = s.tensor_mul(x, two_t).expect("2x");
+            let sig_two_x = s.tensor_sigmoid(two_x).expect("sigmoid(2x)");
+            let two_sig = s.tensor_mul(sig_two_x, two_t).expect("2 * sigmoid(2x)");
+            let one_t = s.full(vec![n], 1.0, false).expect("one");
+            let rhs = s.tensor_sub(two_sig, one_t).expect("2*sigmoid(2x) - 1");
+
+            let v_lhs = s.tensor_values(tanh_x).expect("lhs");
+            let v_rhs = s.tensor_values(rhs).expect("rhs");
+
+            // Both sides ∈ [-1, 1]; bound includes ~1 ULP from each
+            // op + composition slack.
+            let bound = 64.0 * f64::EPSILON;
+            for (l, r) in v_lhs.iter().zip(v_rhs.iter()) {
+                let diff = (l - r).abs();
+                prop_assert!(
+                    diff <= bound,
+                    "tanh(x) = {l} but 2*sigmoid(2x) - 1 = {r}; diff = {diff:e}, bound = {bound:e}"
+                );
+            }
+        }
+
         // sin²(x) + cos²(x) = 1 within a few ULPs. Locks the
         // standard Pythagorean identity across random inputs and
         // exercises both tensor_sin and tensor_cos with mul and add.
