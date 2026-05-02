@@ -13946,34 +13946,66 @@ impl FrankenTorchSession {
         let shape = meta.shape().to_vec();
         let out = match meta.dtype() {
             DType::F64 => {
+                // Autograd-aware path (frankentorch-vlp6). Compose
+                // through tensor_eq + tensor_isnan + tensor_where so
+                // gradients flow through non-replaced (finite,
+                // non-NaN) positions and are zero at NaN/±inf
+                // positions (where the value was replaced by a
+                // constant). PyTorch's nan_to_num backward has the
+                // same behavior.
+                //
+                // Order: replace +inf, then -inf, then NaN. The eq
+                // checks for ±inf return false against NaN
+                // (NaN != anything in IEEE 754), so NaN passes
+                // through unchanged until the final isnan pass
+                // catches it. Without this order, an isnan-first
+                // approach would still work but the eq passes would
+                // consume any NaN-replaced value as a finite number
+                // and double-process it.
                 let posinf_val = posinf.unwrap_or(f64::MAX);
                 let neginf_val = neginf.unwrap_or(f64::MIN);
-                let storage = self.tensor_tape.values(input)?;
-                let values: Vec<f64> = storage
-                    .into_iter()
-                    .map(|v| {
-                        if v.is_nan() {
-                            nan
-                        } else if v == f64::INFINITY {
-                            posinf_val
-                        } else if v == f64::NEG_INFINITY {
-                            neginf_val
-                        } else {
-                            v
-                        }
-                    })
-                    .collect();
-                let out = self.tensor_tape.leaf(values, shape, false)?;
+
+                let nan_const = self.full(shape.clone(), nan, false)?;
+                let posinf_const = self.full(shape.clone(), posinf_val, false)?;
+                let neginf_const = self.full(shape.clone(), neginf_val, false)?;
+                let posinf_compare =
+                    self.full(shape.clone(), f64::INFINITY, false)?;
+                let neginf_compare =
+                    self.full(shape.clone(), f64::NEG_INFINITY, false)?;
+
+                let is_posinf = self.tensor_eq(input, posinf_compare)?;
+                let after_posinf =
+                    self.tensor_where(is_posinf, posinf_const, input)?;
+                let is_neginf =
+                    self.tensor_eq(after_posinf, neginf_compare)?;
+                let after_neginf =
+                    self.tensor_where(is_neginf, neginf_const, after_posinf)?;
+                let is_nan = self.tensor_isnan(after_neginf)?;
+                let out = self.tensor_where(is_nan, nan_const, after_neginf)?;
+
                 self.runtime.ledger_mut().record(
                     EvidenceKind::Dispatch,
                     format!(
-                        "nan_to_num input={} out={} nan={nan} posinf={posinf_val} neginf={neginf_val}",
+                        "nan_to_num input={} out={} nan={nan} posinf={posinf_val} neginf={neginf_val} (autograd)",
                         input.0, out.0
                     ),
                 );
                 out
             }
             DType::F32 => {
+                // tensor_where currently always returns F64 (it
+                // dispatches the underlying kernel in F64 only), so
+                // the F64 autograd composition can't be reused here
+                // without a dtype mismatch. Fail-loud on tracked F32
+                // input to avoid silently severing the tape on the
+                // F32 inference path. Tracked under frankentorch-vlp6.
+                if self.tensor_requires_grad(input)? {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "nan_to_num: autograd-aware F32 path not yet supported (tensor_where dispatches in F64). Cast to F64 first or call without requires_grad. Tracked under frankentorch-vlp6.",
+                        },
+                    )));
+                }
                 let posinf_val = posinf.map(|v| v as f32).unwrap_or(f32::MAX);
                 let neginf_val = neginf.map(|v| v as f32).unwrap_or(f32::MIN);
                 let nan_val = nan as f32;
@@ -36570,6 +36602,53 @@ mod tests {
         assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
         let vals = s.tensor_values_f32(out).unwrap();
         assert_eq!(vals, &[0.25f32, f32::MAX, f32::MIN, 1.5]);
+    }
+
+    #[test]
+    fn nan_to_num_propagates_gradient_through_finite_positions() {
+        // frankentorch-vlp6 regression. Previously nan_to_num on F64
+        // extracted values and rebuilt a non-grad leaf — silently
+        // severed the autograd tape. Now composes through tensor_eq
+        // + tensor_isnan + tensor_where so gradients flow only
+        // through finite, non-NaN positions (where the value passes
+        // through unchanged) and are zero at NaN/±inf positions
+        // (where the value was replaced by a constant).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![f64::NAN, 2.0, f64::INFINITY, 3.0, f64::NEG_INFINITY, 4.0],
+                vec![6],
+                true,
+            )
+            .unwrap();
+        let cleaned = s.tensor_nan_to_num(x, 0.0, None, None).unwrap();
+        let scalar = s.tensor_sum(cleaned).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        // grad should be 0 at NaN/inf positions, 1 at finite positions.
+        assert_eq!(g.len(), 6);
+        assert_eq!(g[0], 0.0, "NaN position should have zero gradient");
+        assert_eq!(g[1], 1.0, "Finite position should have unit gradient");
+        assert_eq!(g[2], 0.0, "+inf position should have zero gradient");
+        assert_eq!(g[3], 1.0, "Finite position should have unit gradient");
+        assert_eq!(g[4], 0.0, "-inf position should have zero gradient");
+        assert_eq!(g[5], 1.0, "Finite position should have unit gradient");
+    }
+
+    #[test]
+    fn nan_to_num_f32_with_requires_grad_fails_loud() {
+        // F32 path doesn't have an autograd-aware composition yet
+        // (tensor_where dispatches in F64 only). Must fail loud
+        // rather than silently sever.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![f32::NAN, 1.5], vec![2], true)
+            .unwrap();
+        let result = s.tensor_nan_to_num(x, 0.0, None, None);
+        assert!(
+            result.is_err(),
+            "nan_to_num on F32+requires_grad must fail loud"
+        );
     }
 
     // ── logaddexp tests ─────────────────────────────────────────────────
