@@ -8669,6 +8669,21 @@ impl FrankenTorchSession {
         self.tensor_tape.view(input, new_shape)
     }
 
+    /// View `input` with the same shape as `other`.
+    ///
+    /// Equivalent to `torch.Tensor.view_as(other)` — thin wrapper
+    /// over `tensor_view` that takes a reference tensor instead of
+    /// an explicit shape. Element counts must match (a strict view,
+    /// not a broadcast). Tracked under frankentorch-0uc1.
+    pub fn tensor_view_as(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let other_shape = self.tensor_shape(other)?;
+        self.tensor_view(input, other_shape)
+    }
+
     pub fn tensor_squeeze(
         &mut self,
         input: TensorNodeId,
@@ -29213,6 +29228,40 @@ mod tests {
         let b = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
         assert!(s.tensor_isclose(a, b, -1e-5, 1e-8, false).is_err());
         assert!(s.tensor_isclose(a, b, 1e-5, -1e-8, false).is_err());
+    }
+
+    // ── tensor_view_as tests (frankentorch-0uc1) ──────────────────────
+
+    #[test]
+    fn view_as_uses_reference_shape() {
+        // [6] view_as [2, 3] → [2, 3]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], false)
+            .unwrap();
+        let other = s
+            .tensor_variable(vec![0.0; 6], vec![2, 3], false)
+            .unwrap();
+        let out = s.tensor_view_as(x, other).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![2, 3]);
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn view_as_propagates_gradient() {
+        // sum(view_as(x, [2,3])) backward should give grad x = ones[6].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], true)
+            .unwrap();
+        let other = s
+            .tensor_variable(vec![0.0; 6], vec![2, 3], false)
+            .unwrap();
+        let viewed = s.tensor_view_as(x, other).unwrap();
+        let scalar = s.tensor_sum(viewed).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert_eq!(g, &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
 
     // ── tensor_atleast_{1,2,3}d tests (frankentorch-oi03) ──────────────
