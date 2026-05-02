@@ -4586,6 +4586,49 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Matrix-vector product: `out = M @ v`.
+    ///
+    /// Equivalent to `torch.mv(input, vec_input)`. `input` must be a 2-D
+    /// matrix of shape `[m, n]` and `vec_input` a 1-D vector of shape
+    /// `[n]`; the result is a 1-D vector of shape `[m]`.
+    /// Composes through autograd-aware tensor_reshape + tensor_matmul,
+    /// so gradients flow to both inputs. Tracked under frankentorch-256l.
+    pub fn tensor_mv(
+        &mut self,
+        input: TensorNodeId,
+        vec_input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let m_shape = self.tensor_shape(input)?;
+        let v_shape = self.tensor_shape(vec_input)?;
+        if m_shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "mv: matrix input must be 2-D",
+                },
+            )));
+        }
+        if v_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "mv: vector input must be 1-D",
+                },
+            )));
+        }
+        if m_shape[1] != v_shape[0] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: m_shape.clone(),
+                    rhs: v_shape.clone(),
+                },
+            )));
+        }
+        let n = v_shape[0];
+        let m = m_shape[0];
+        let v_2d = self.tensor_reshape(vec_input, vec![n, 1])?;
+        let out_2d = self.tensor_matmul(input, v_2d)?;
+        self.tensor_reshape(out_2d, vec![m])
+    }
+
     pub fn tensor_neg(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.neg(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
@@ -27226,6 +27269,73 @@ mod tests {
         let (sign_id, _logabsdet_id) = s.tensor_linalg_slogdet(a).unwrap();
         assert!(!s.tensor_requires_grad(sign_id).unwrap(),
             "slogdet sign must be non-grad");
+    }
+
+    // ── tensor_mv tests (frankentorch-256l) ───────────────────────────
+
+    #[test]
+    fn mv_known_values() {
+        // M = [[1, 2, 3], [4, 5, 6]], v = [1, 0, -1]
+        // M @ v = [1*1 + 2*0 + 3*(-1), 4*1 + 5*0 + 6*(-1)] = [-2, -2]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let v = s.tensor_variable(vec![1.0, 0.0, -1.0], vec![3], false).unwrap();
+        let out = s.tensor_mv(m, v).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![2]);
+        assert!((vals[0] - (-2.0)).abs() < 1e-12);
+        assert!((vals[1] - (-2.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn mv_propagates_gradient_to_matrix_and_vector() {
+        // For sum(M @ v), the gradients are:
+        //   ∂/∂M[i,j] = v[j]    (row-broadcast of v)
+        //   ∂/∂v[j]   = sum_i M[i,j]   (col sums of M)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .unwrap();
+        let v = s.tensor_variable(vec![0.5, -1.0, 2.0], vec![3], true).unwrap();
+        let out = s.tensor_mv(m, v).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g_m = s.tensor_gradient(&report, m).unwrap().to_vec();
+        let g_v = s.tensor_gradient(&report, v).unwrap().to_vec();
+
+        let expected_m = [0.5_f64, -1.0, 2.0, 0.5, -1.0, 2.0];
+        for (g, e) in g_m.iter().zip(expected_m.iter()) {
+            assert!((g - e).abs() < 1e-10, "M grad mismatch: got {g}, expected {e}");
+        }
+        let expected_v = [1.0_f64 + 4.0, 2.0 + 5.0, 3.0 + 6.0];
+        for (g, e) in g_v.iter().zip(expected_v.iter()) {
+            assert!((g - e).abs() < 1e-10, "v grad mismatch: got {g}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn mv_rejects_wrong_ranks() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        // 2-D vector
+        let bad_v = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        assert!(s.tensor_mv(m, bad_v).is_err(), "mv must reject 2-D v");
+        // 1-D matrix
+        let bad_m = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let v = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(s.tensor_mv(bad_m, v).is_err(), "mv must reject 1-D M");
+        // Mismatched n
+        let v_wrong = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        assert!(
+            s.tensor_mv(m, v_wrong).is_err(),
+            "mv must reject inner-dim mismatch"
+        );
     }
 
     // ── unique / unique_consecutive tests (bd-2klp.3) ─────────────────
