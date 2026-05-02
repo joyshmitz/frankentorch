@@ -18913,6 +18913,197 @@ print(json.dumps({"multigammaln": out}))
     }
 
     #[test]
+    fn linalg_slogdet_logabsdet_backward_matches_central_finite_difference() {
+        // Companion to linalg_det_backward_matches_central_finite_difference.
+        // Locks the autograd-aware tensor_linalg_slogdet logabsdet
+        // output (added under frankentorch-pvfk) against numerical
+        // Jacobian via central FD. Tracked under frankentorch-veo5.
+        //
+        // Jacobi for log|det|: ∂logabsdet/∂A_{i,j} = (A^{-1})_{j,i}.
+        // FD: (logabsdet(A + eps*E_{ij}) - logabsdet(A - eps*E_{ij})) / (2*eps).
+        //
+        // logabsdet is much better-conditioned than det itself
+        // (log of magnitude vs raw magnitude), so we can use a
+        // tighter tolerance.
+        use ft_api::FrankenTorchSession;
+
+        let cases: Vec<(&str, Vec<f64>, usize)> = vec![
+            (
+                "diag_3x3",
+                vec![2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 5.0],
+                3,
+            ),
+            (
+                "general_3x3",
+                vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
+                3,
+            ),
+            ("rotation_2x2", vec![0.6, -0.8, 0.8, 0.6], 2),
+            ("perturbed_identity_2x2", vec![1.1, 0.2, 0.3, 0.9], 2),
+        ];
+
+        let eps = 1e-6_f64;
+        let abs_tol = 5e-5_f64;
+
+        let mut mismatches = Vec::<String>::new();
+
+        for (label, vals, n) in &cases {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s
+                .tensor_variable(vals.clone(), vec![*n, *n], true)
+                .expect("a");
+            let (_sign_id, logabsdet_id) = s.tensor_linalg_slogdet(a).expect("slogdet");
+            let report = s.tensor_backward(logabsdet_id).expect("backward");
+            let analytic = s
+                .tensor_gradient(&report, a)
+                .expect("analytic gradient")
+                .to_vec();
+
+            let mut fd = vec![0.0_f64; n * n];
+            for i in 0..*n {
+                for j in 0..*n {
+                    let idx = i * n + j;
+                    let mut perturbed_plus = vals.clone();
+                    perturbed_plus[idx] += eps;
+                    let mut s_plus = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let a_plus = s_plus
+                        .tensor_variable(perturbed_plus, vec![*n, *n], false)
+                        .expect("a+");
+                    let (_, logabsdet_plus_id) =
+                        s_plus.tensor_linalg_slogdet(a_plus).expect("slogdet+");
+                    let logabsdet_plus = s_plus
+                        .tensor_values(logabsdet_plus_id)
+                        .expect("logabsdet+ vals")[0];
+
+                    let mut perturbed_minus = vals.clone();
+                    perturbed_minus[idx] -= eps;
+                    let mut s_minus = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let a_minus = s_minus
+                        .tensor_variable(perturbed_minus, vec![*n, *n], false)
+                        .expect("a-");
+                    let (_, logabsdet_minus_id) =
+                        s_minus.tensor_linalg_slogdet(a_minus).expect("slogdet-");
+                    let logabsdet_minus = s_minus
+                        .tensor_values(logabsdet_minus_id)
+                        .expect("logabsdet- vals")[0];
+
+                    fd[idx] = (logabsdet_plus - logabsdet_minus) / (2.0 * eps);
+                }
+            }
+
+            for k in 0..(n * n) {
+                if (analytic[k] - fd[k]).abs() > abs_tol {
+                    mismatches.push(format!(
+                        "{label}: ∂logabsdet/∂A[{k}] analytic={} fd={} diff={}",
+                        analytic[k],
+                        fd[k],
+                        (analytic[k] - fd[k]).abs()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "tensor_linalg_slogdet logabsdet backward / FD mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
+    fn linalg_inv_backward_matches_central_finite_difference() {
+        // Companion to the det / slogdet FD checks. Locks
+        // tensor_linalg_inv's autograd-aware backward (∂Y_{a,b}/∂A
+        // = -Y^T grad_Y Y^T composition) against numerical Jacobian
+        // via central FD. Reduces inv to a scalar via tensor_sum
+        // for a tractable scalar gradient. Tracked under frankentorch-veo5.
+        //
+        // For F(A) = sum(A^{-1}):
+        //     ∂F/∂A = -(Y^T 1 Y^T) where 1 is all-ones.
+        // The FD comparison is structure-agnostic; we just verify the
+        // analytic gradient matches numerical perturbation.
+        use ft_api::FrankenTorchSession;
+
+        let cases: Vec<(&str, Vec<f64>, usize)> = vec![
+            (
+                "diag_3x3",
+                vec![2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 5.0],
+                3,
+            ),
+            (
+                "general_3x3",
+                vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
+                3,
+            ),
+            ("perturbed_identity_2x2", vec![1.1, 0.2, 0.3, 0.9], 2),
+        ];
+
+        let eps = 1e-6_f64;
+        let abs_tol = 5e-4_f64;
+
+        let mut mismatches = Vec::<String>::new();
+
+        for (label, vals, n) in &cases {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s
+                .tensor_variable(vals.clone(), vec![*n, *n], true)
+                .expect("a");
+            let inv = s.tensor_linalg_inv(a).expect("inv");
+            let scalar = s.tensor_sum(inv).expect("sum");
+            let report = s.tensor_backward(scalar).expect("backward");
+            let analytic = s
+                .tensor_gradient(&report, a)
+                .expect("analytic gradient")
+                .to_vec();
+
+            let mut fd = vec![0.0_f64; n * n];
+            for i in 0..*n {
+                for j in 0..*n {
+                    let idx = i * n + j;
+                    let mut perturbed_plus = vals.clone();
+                    perturbed_plus[idx] += eps;
+                    let mut s_plus = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let a_plus = s_plus
+                        .tensor_variable(perturbed_plus, vec![*n, *n], false)
+                        .expect("a+");
+                    let inv_plus = s_plus.tensor_linalg_inv(a_plus).expect("inv+");
+                    let scalar_plus = s_plus.tensor_sum(inv_plus).expect("sum+");
+                    let v_plus = s_plus.tensor_values(scalar_plus).expect("v+")[0];
+
+                    let mut perturbed_minus = vals.clone();
+                    perturbed_minus[idx] -= eps;
+                    let mut s_minus = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let a_minus = s_minus
+                        .tensor_variable(perturbed_minus, vec![*n, *n], false)
+                        .expect("a-");
+                    let inv_minus = s_minus.tensor_linalg_inv(a_minus).expect("inv-");
+                    let scalar_minus = s_minus.tensor_sum(inv_minus).expect("sum-");
+                    let v_minus = s_minus.tensor_values(scalar_minus).expect("v-")[0];
+
+                    fd[idx] = (v_plus - v_minus) / (2.0 * eps);
+                }
+            }
+
+            for k in 0..(n * n) {
+                if (analytic[k] - fd[k]).abs() > abs_tol {
+                    mismatches.push(format!(
+                        "{label}: ∂sum(A^{{-1}})/∂A[{k}] analytic={} fd={} diff={}",
+                        analytic[k],
+                        fd[k],
+                        (analytic[k] - fd[k]).abs()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "tensor_linalg_inv backward / FD mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_linalg_det_numpy_subprocess_conformance() {
         // Lock FrankenTorch's tensor_linalg_det against
         // numpy.linalg.det. Both compute the determinant via an LU
