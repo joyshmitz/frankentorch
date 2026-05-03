@@ -24073,6 +24073,37 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn conv_transpose1d_output_padding_matches_pytorch_reference_values() {
+        // PyTorch reference:
+        // ConvTranspose1d(1, 1, 3, stride=2, output_padding=1, bias=True),
+        // weight.fill_(1.0), bias.fill_(0.5), input=[[[1.0, 2.0]]]
+        // => [[[1.5, 1.5, 3.5, 2.5, 2.5, 0.5]]].
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{ConvTranspose1d, Module};
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let upsampler =
+            ConvTranspose1d::new(&mut session, 1, 1, 3, 2, 0, 1, true).expect("conv_transpose1d");
+        session.no_grad_enter();
+        session
+            .tensor_fill_(upsampler.weight(), 1.0)
+            .expect("fill weight");
+        session
+            .tensor_fill_(upsampler.bias().expect("bias"), 0.5)
+            .expect("fill bias");
+        session.no_grad_exit();
+
+        let input = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 1, 2], false)
+            .expect("input");
+        let out = upsampler.forward(&mut session, input).expect("forward");
+        let (values, meta) = session.tensor_values_meta(out).expect("values");
+
+        assert_eq!(meta.shape(), &[1, 1, 6]);
+        assert_eq!(values, vec![1.5, 1.5, 3.5, 2.5, 2.5, 0.5]);
+    }
+
+    #[test]
     fn conv2d_pixel_shuffle_super_resolution_trains_end_to_end_with_adam() {
         // E2E regression for frankentorch-rr7i. Tiny super-resolution
         // stack: Conv2d(in_ch → out_ch * r^2) → PixelShuffle(r). The
