@@ -8287,11 +8287,16 @@ impl TensorTape {
                     },
                 )));
             }
+            let storage = Self::storage_from_f64_values_for_dtype(
+                input_node.tensor.contiguous_values_as_f64()?,
+                meta.dtype(),
+            );
+            let dtype = storage.dtype();
             (
                 input_node.requires_grad,
-                input_node.tensor.contiguous_values_as_f64()?,
+                storage,
                 meta.shape().to_vec(),
-                DType::F64,
+                dtype,
                 meta.device(),
             )
         };
@@ -8299,7 +8304,7 @@ impl TensorTape {
         let new_meta = ft_core::TensorMeta::from_shape(new_shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, storage)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, storage)?,
             requires_grad,
             op: TensorNodeOp::Reshape {
                 input,
@@ -8333,11 +8338,16 @@ impl TensorTape {
                     new_shape.push(1);
                 }
             }
+            let storage = Self::storage_from_f64_values_for_dtype(
+                input_node.tensor.contiguous_values_as_f64()?,
+                meta.dtype(),
+            );
+            let dtype = storage.dtype();
             (
                 input_node.requires_grad,
-                input_node.tensor.contiguous_values_as_f64()?,
+                storage,
                 new_shape,
-                DType::F64,
+                dtype,
                 meta.device(),
             )
         };
@@ -8345,7 +8355,7 @@ impl TensorTape {
         let new_meta = ft_core::TensorMeta::from_shape(new_shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, storage)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, storage)?,
             requires_grad,
             op: TensorNodeOp::Squeeze { input, dim },
         });
@@ -8371,11 +8381,16 @@ impl TensorTape {
             }
             let mut new_shape = shape.to_vec();
             new_shape.insert(dim, 1);
+            let storage = Self::storage_from_f64_values_for_dtype(
+                input_node.tensor.contiguous_values_as_f64()?,
+                meta.dtype(),
+            );
+            let dtype = storage.dtype();
             (
                 input_node.requires_grad,
-                input_node.tensor.contiguous_values_as_f64()?,
+                storage,
                 new_shape,
-                DType::F64,
+                dtype,
                 meta.device(),
             )
         };
@@ -8383,7 +8398,7 @@ impl TensorTape {
         let new_meta = ft_core::TensorMeta::from_shape(new_shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, storage)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, storage)?,
             requires_grad,
             op: TensorNodeOp::Unsqueeze { input, dim },
         });
@@ -8602,26 +8617,46 @@ impl TensorTape {
         start: usize,
         length: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (requires_grad, result_data, new_shape, original_shape, dtype, device) = {
+        let (requires_grad, storage, new_shape, original_shape, dtype, device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let shape = meta.shape();
             let original_shape = shape.to_vec();
-            let storage = input_node.tensor.contiguous_values_as_f64()?;
-
-            let result_data =
-                ft_kernel_cpu::narrow_tensor_contiguous_f64(&storage, meta, dim, start, length)
+            let storage = match meta.dtype() {
+                DType::F32 => {
+                    let values = ft_kernel_cpu::narrow_tensor_contiguous_f32(
+                        input_node.tensor.contiguous_values_f32()?,
+                        meta,
+                        dim,
+                        start,
+                        length,
+                    )
                     .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                    TensorStorage::F32(Arc::new(values))
+                }
+                dtype => {
+                    let values = ft_kernel_cpu::narrow_tensor_contiguous_f64(
+                        &input_node.tensor.contiguous_values_as_f64()?,
+                        meta,
+                        dim,
+                        start,
+                        length,
+                    )
+                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+                    Self::storage_from_f64_values_for_dtype(values, dtype)
+                }
+            };
+            let dtype = storage.dtype();
 
             let mut new_shape = shape.to_vec();
             new_shape[dim] = length;
 
             (
                 input_node.requires_grad,
-                result_data,
+                storage,
                 new_shape,
                 original_shape,
-                DType::F64,
+                dtype,
                 meta.device(),
             )
         };
@@ -8629,7 +8664,7 @@ impl TensorTape {
         let new_meta = ft_core::TensorMeta::from_shape(new_shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, result_data)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, storage)?,
             requires_grad,
             op: TensorNodeOp::Narrow {
                 input,
@@ -9109,10 +9144,12 @@ impl TensorTape {
         }
 
         let original_shape = shape;
+        let storage = Self::storage_from_f64_values_for_dtype(output, dtype);
+        let dtype = storage.dtype();
         let new_meta = ft_core::TensorMeta::from_shape(out_shape.clone(), dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, output)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, storage)?,
             requires_grad,
             op: TensorNodeOp::Pad {
                 input,
@@ -13891,6 +13928,16 @@ impl TensorTape {
             product = next;
         }
         Ok(product)
+    }
+
+    fn storage_from_f64_values_for_dtype(values: Vec<f64>, dtype: DType) -> TensorStorage {
+        match dtype {
+            DType::F32 => TensorStorage::F32(Arc::new(
+                values.into_iter().map(|value| value as f32).collect(),
+            )),
+            DType::F64 => TensorStorage::F64(Arc::new(values)),
+            _ => TensorStorage::F64(Arc::new(values)),
+        }
     }
 
     fn normalize_repeat_shape(
@@ -19272,6 +19319,38 @@ mod tests {
         let out = tape.expand(a, vec![3]).unwrap();
         assert_eq!(tape.dtype(out).unwrap(), DType::F32);
         assert_eq!(tape.values_f32(out).unwrap(), vec![2.0f32, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn f32_pad_preserves_dtype() {
+        let mut tape = TensorTape::new();
+        let a = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let out = tape.pad(a, &[1, 2], 0.5).unwrap();
+        assert_eq!(tape.dtype(out).unwrap(), DType::F32);
+        assert_eq!(
+            tape.values_f32(out).unwrap(),
+            vec![0.5f32, 1.0, 2.0, 3.0, 0.5, 0.5]
+        );
+    }
+
+    #[test]
+    fn f32_shape_ops_preserve_dtype() {
+        let mut tape = TensorTape::new();
+        let a = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![1, 2, 2], false)
+            .unwrap();
+        let narrowed = tape.narrow(a, 2, 0, 1).unwrap();
+        let squeezed = tape.squeeze(narrowed, 2).unwrap();
+        let unsqueezed = tape.unsqueeze(squeezed, 2).unwrap();
+        let reshaped = tape.reshape(unsqueezed, vec![2]).unwrap();
+
+        assert_eq!(tape.dtype(narrowed).unwrap(), DType::F32);
+        assert_eq!(tape.dtype(squeezed).unwrap(), DType::F32);
+        assert_eq!(tape.dtype(unsqueezed).unwrap(), DType::F32);
+        assert_eq!(tape.dtype(reshaped).unwrap(), DType::F32);
+        assert_eq!(tape.values_f32(reshaped).unwrap(), vec![1.0f32, 3.0]);
     }
 
     // ── F32 autograd: forward f32 → backward gradients correct ────────

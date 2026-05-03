@@ -7005,7 +7005,12 @@ impl FrankenTorchSession {
         // contribute x[:, :, i] @ w[:, :, k] at output position
         // i*stride + k - padding. Implemented via narrow + matmul
         // + pad + accumulating add.
-        let mut result = self.zeros(vec![batch_size, out_channels, output_l], false)?;
+        let result_shape = vec![batch_size, out_channels, output_l];
+        let mut result = if self.tensor_dtype(input)? == DType::F32 {
+            self.zeros_f32(result_shape, false)?
+        } else {
+            self.zeros(result_shape, false)?
+        };
         for k in 0..kernel_l {
             let w_k = self.tensor_narrow(weight, 2, k, 1)?;
             let w_k = self.tensor_squeeze(w_k, 2)?; // [in_channels, out_channels]
@@ -7133,7 +7138,12 @@ impl FrankenTorchSession {
         // for each kernel (kh, kw), each input position (ih, iw),
         // compute x[:, :, ih, iw] @ w[:, :, kh, kw] and pad it to
         // the right output position before accumulating.
-        let mut result = self.zeros(vec![batch_size, out_channels, output_h, output_w], false)?;
+        let result_shape = vec![batch_size, out_channels, output_h, output_w];
+        let mut result = if self.tensor_dtype(input)? == DType::F32 {
+            self.zeros_f32(result_shape, false)?
+        } else {
+            self.zeros(result_shape, false)?
+        };
         for kh in 0..kernel_h {
             for kw in 0..kernel_w {
                 let w_kh = self.tensor_narrow(weight, 2, kh, 1)?;
@@ -33802,6 +33812,23 @@ mod tests {
     }
 
     #[test]
+    fn conv_transpose1d_preserves_f32_dtype_with_padding() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable_f32(vec![1.0], vec![1, 1, 1], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false)
+            .unwrap();
+        let out = s
+            .functional_conv_transpose1d(input, weight, None, 1, 1, 0)
+            .unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![1, 1, 1]);
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(out).unwrap(), vec![2.0f32]);
+    }
+
+    #[test]
     fn conv_transpose1d_rejects_padding_erased_output() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s.tensor_variable(vec![1.0], vec![1, 1, 1], false).unwrap();
@@ -33849,6 +33876,27 @@ mod tests {
             .unwrap();
         assert_eq!(s.tensor_shape(out).unwrap(), vec![1, 1, 1, 1]);
         assert_eq!(s.tensor_values(out).unwrap(), vec![5.0]);
+    }
+
+    #[test]
+    fn conv_transpose2d_preserves_f32_dtype_with_padding() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable_f32(vec![1.0], vec![1, 1, 1, 1], false)
+            .unwrap();
+        let weight = s
+            .tensor_variable_f32(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![1, 1, 3, 3],
+                false,
+            )
+            .unwrap();
+        let out = s
+            .functional_conv_transpose2d(input, weight, None, (1, 1), (1, 1), (0, 0))
+            .unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![1, 1, 1, 1]);
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(out).unwrap(), vec![5.0f32]);
     }
 
     #[test]
