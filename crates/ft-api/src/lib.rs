@@ -5782,21 +5782,25 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.isposinf(input)`. Compose via tensor_eq
     /// against a +∞ constant of the same shape. Non-differentiable
-    /// (boolean mask); fail-loud on requires_grad like the other
-    /// classification ops. Tracked under frankentorch-f8dl.
-    pub fn tensor_isposinf(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
-        if self.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "isposinf: autograd not supported (boolean mask is non-differentiable). Tracked under frankentorch-f8dl.",
-                },
-            )));
-        }
-        let shape = self.tensor_shape(input)?;
-        let posinf = self.full(shape, f64::INFINITY, false)?;
+    /// mask results do not require grad, matching tensor_eq and the
+    /// other classification ops. Tracked under frankentorch-f8dl.
+    pub fn tensor_isposinf(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let meta = self.tensor_tape.tensor_meta(input)?.clone();
+        let shape = meta.shape().to_vec();
+        let posinf = match meta.dtype() {
+            DType::F64 => self.full(shape, f64::INFINITY, false)?,
+            DType::F32 => {
+                let numel = Self::checked_shape_numel(&shape, "isposinf shape volume overflow")?;
+                self.tensor_variable_f32(vec![f32::INFINITY; numel], shape, false)?
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "isposinf requires f32 or f64 tensors",
+                    },
+                )));
+            }
+        };
         self.tensor_eq(input, posinf)
     }
 
@@ -5804,19 +5808,23 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.isneginf(input)`. Sister to `tensor_isposinf`.
     /// Tracked under frankentorch-f8dl.
-    pub fn tensor_isneginf(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
-        if self.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "isneginf: autograd not supported (boolean mask is non-differentiable). Tracked under frankentorch-f8dl.",
-                },
-            )));
-        }
-        let shape = self.tensor_shape(input)?;
-        let neginf = self.full(shape, f64::NEG_INFINITY, false)?;
+    pub fn tensor_isneginf(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let meta = self.tensor_tape.tensor_meta(input)?.clone();
+        let shape = meta.shape().to_vec();
+        let neginf = match meta.dtype() {
+            DType::F64 => self.full(shape, f64::NEG_INFINITY, false)?,
+            DType::F32 => {
+                let numel = Self::checked_shape_numel(&shape, "isneginf shape volume overflow")?;
+                self.tensor_variable_f32(vec![f32::NEG_INFINITY; numel], shape, false)?
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "isneginf requires f32 or f64 tensors",
+                    },
+                )));
+            }
+        };
         self.tensor_eq(input, neginf)
     }
 
@@ -39892,13 +39900,35 @@ mod tests {
     }
 
     #[test]
-    fn isposinf_isneginf_fail_loud_on_requires_grad() {
+    fn isposinf_isneginf_accept_f32_inputs() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s
-            .tensor_variable(vec![1.0, f64::INFINITY], vec![2], true)
+            .tensor_variable_f32(
+                vec![f32::INFINITY, f32::NEG_INFINITY, 1.0, f32::NAN],
+                vec![4],
+                false,
+            )
             .unwrap();
-        assert!(s.tensor_isposinf(x).is_err());
-        assert!(s.tensor_isneginf(x).is_err());
+        let pos = s.tensor_isposinf(x).unwrap();
+        let neg = s.tensor_isneginf(x).unwrap();
+        assert_eq!(s.tensor_dtype(pos).unwrap(), DType::F32);
+        assert_eq!(s.tensor_dtype(neg).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(pos).unwrap(), vec![1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(s.tensor_values_f32(neg).unwrap(), vec![0.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn isposinf_isneginf_accept_requires_grad_inputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, f64::INFINITY, f64::NEG_INFINITY], vec![3], true)
+            .unwrap();
+        let pos = s.tensor_isposinf(x).unwrap();
+        let neg = s.tensor_isneginf(x).unwrap();
+        assert_eq!(s.tensor_values(pos).unwrap(), vec![0.0, 1.0, 0.0]);
+        assert_eq!(s.tensor_values(neg).unwrap(), vec![0.0, 0.0, 1.0]);
+        assert!(s.tensor_backward(pos).is_err());
+        assert!(s.tensor_backward(neg).is_err());
     }
 
     #[test]
