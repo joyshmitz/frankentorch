@@ -5020,12 +5020,13 @@ impl FrankenTorchSession {
         self.tensor_where(zero_mask2, ones2, ratio)
     }
 
-    /// L2 hypotenuse: `sqrt(x² + y²)`.
+    /// L2 hypotenuse.
     ///
-    /// Equivalent to `torch.hypot(x, y)`. Element-wise. Composes
-    /// through autograd-aware tensor_mul + tensor_add + tensor_sqrt;
-    /// gradients ∂hypot/∂x = x / hypot, ∂hypot/∂y = y / hypot fall
-    /// out of the chain rule. Tracked under frankentorch-k3p4.
+    /// Equivalent to `torch.hypot(x, y)`. Element-wise. Uses the stable
+    /// hypot primitive instead of expanding to `sqrt(x*x + y*y)`, preserving
+    /// PyTorch/C99 behavior for overflow and inf/nan pairs. Gradients are
+    /// ∂hypot/∂x = x / hypot, ∂hypot/∂y = y / hypot. Tracked under
+    /// frankentorch-k3p4.
     pub fn tensor_hypot(
         &mut self,
         x: TensorNodeId,
@@ -5041,10 +5042,78 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let x_sq = self.tensor_mul(x, x)?;
-        let y_sq = self.tensor_mul(y, y)?;
-        let sum = self.tensor_add(x_sq, y_sq)?;
-        self.tensor_sqrt(sum)
+        let x_dtype = self.tensor_dtype(x)?;
+        let y_dtype = self.tensor_dtype(y)?;
+        let output_dtype = if x_dtype == DType::F32 && y_dtype == DType::F32 {
+            DType::F32
+        } else {
+            DType::F64
+        };
+        let x_input = if x_dtype == DType::F64 {
+            x
+        } else {
+            self.tensor_to_f64(x)?
+        };
+        let y_input = if y_dtype == DType::F64 {
+            y
+        } else {
+            self.tensor_to_f64(y)?
+        };
+
+        let out = self.tensor_apply_function(
+            &[x_input, y_input],
+            |ctx, inputs| {
+                let (x_vals, x_shape) = inputs[0];
+                let (y_vals, y_shape) = inputs[1];
+                if x_shape != y_shape {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "hypot: input and other must have the same shape",
+                        },
+                    )));
+                }
+
+                ctx.save_for_backward(x_vals.to_vec(), x_shape.to_vec());
+                ctx.save_for_backward(y_vals.to_vec(), y_shape.to_vec());
+                let values = x_vals
+                    .iter()
+                    .zip(y_vals.iter())
+                    .map(|(&xi, &yi)| xi.hypot(yi))
+                    .collect::<Vec<_>>();
+                Ok((values, x_shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let x_vals = &ctx.saved_tensors()[0];
+                let y_vals = &ctx.saved_tensors()[1];
+                if grad_out.len() != x_vals.len() || x_vals.len() != y_vals.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "hypot backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+
+                let needs_grad = ctx.needs_input_grad();
+                let mut grad_x = Vec::with_capacity(x_vals.len());
+                let mut grad_y = Vec::with_capacity(y_vals.len());
+                for ((&xi, &yi), &go) in x_vals.iter().zip(y_vals.iter()).zip(grad_out.iter()) {
+                    let h = xi.hypot(yi);
+                    grad_x.push(go * xi / h);
+                    grad_y.push(go * yi / h);
+                }
+
+                Ok(vec![
+                    needs_grad[0].then_some(grad_x),
+                    needs_grad[1].then_some(grad_y),
+                ])
+            },
+        )?;
+        if output_dtype == DType::F32 {
+            self.tensor_to_f32(out)
+        } else {
+            Ok(out)
+        }
     }
 
     /// Convert from degrees to radians.
@@ -29361,6 +29430,60 @@ mod tests {
         assert!((v[0] - 5.0).abs() < 1e-12);
         assert!((v[1] - 7.0).abs() < 1e-12);
         assert!((v[2] - 13.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hypot_matches_pytorch_edge_goldens() {
+        // torch.hypot follows stable hypot behavior rather than the
+        // overflow-prone sqrt(x*x + y*y) expansion.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![
+                    3.0,
+                    -0.0,
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NAN,
+                    -5.0,
+                    1.0e308,
+                ],
+                vec![7],
+                false,
+            )
+            .unwrap();
+        let y = s
+            .tensor_variable(
+                vec![4.0, 0.0, 2.0, f64::NAN, 7.0, f64::NEG_INFINITY, 1.0e308],
+                vec![7],
+                false,
+            )
+            .unwrap();
+        let out = s.tensor_hypot(x, y).unwrap();
+        let v = s.tensor_values(out).unwrap();
+
+        assert!((v[0] - 5.0).abs() < 1e-12);
+        assert_eq!(v[1].to_bits(), 0.0f64.to_bits());
+        assert!(v[2].is_infinite() && v[2].is_sign_positive());
+        assert!(v[3].is_infinite() && v[3].is_sign_positive());
+        assert!(v[4].is_nan());
+        assert!(v[5].is_infinite() && v[5].is_sign_positive());
+        assert!((v[6] - 1.4142135623730951e308).abs() / 1.4142135623730951e308 < 1e-15);
+    }
+
+    #[test]
+    fn hypot_preserves_f32_dtype() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![3.0_f32, 5.0], vec![2], false)
+            .unwrap();
+        let y = s
+            .tensor_variable_f32(vec![4.0_f32, 12.0], vec![2], false)
+            .unwrap();
+        let out = s.tensor_hypot(x, y).unwrap();
+
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(out).unwrap(), vec![5.0, 13.0]);
     }
 
     #[test]
