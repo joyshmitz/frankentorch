@@ -24025,7 +24025,7 @@ print(json.dumps({"softplus": sp_out}))
         // Use kernel=3, stride=1 — the same config that nn.ConvTranspose1d
         // tests use, with l_out = (L_in - 1) * stride + kernel = 5.
         let upsampler =
-            ConvTranspose1d::new(&mut session, 1, 1, 3, 1, 0, true).expect("conv_transpose1d");
+            ConvTranspose1d::new(&mut session, 1, 1, 3, 1, 0, 0, true).expect("conv_transpose1d");
 
         // 1x1x3 fixed input.
         let input = session

@@ -7345,10 +7345,12 @@ pub struct ConvTranspose1d {
     kernel_size: usize,
     stride: usize,
     padding: usize,
+    output_padding: usize,
 }
 
 impl ConvTranspose1d {
     /// Create a new ConvTranspose1d with Kaiming uniform initialization.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session: &mut FrankenTorchSession,
         in_channels: usize,
@@ -7356,12 +7358,20 @@ impl ConvTranspose1d {
         kernel_size: usize,
         stride: usize,
         padding: usize,
+        output_padding: usize,
         use_bias: bool,
     ) -> Result<Self, AutogradError> {
         if in_channels == 0 || out_channels == 0 || kernel_size == 0 || stride == 0 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
                     reason: "ConvTranspose1d requires positive dimensions and stride",
+                },
+            )));
+        }
+        if output_padding >= stride {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "ConvTranspose1d output_padding must be < stride",
                 },
             )));
         }
@@ -7404,6 +7414,7 @@ impl ConvTranspose1d {
             kernel_size,
             stride,
             padding,
+            output_padding,
         })
     }
 
@@ -7450,22 +7461,19 @@ impl Module for ConvTranspose1d {
         }
         let l_in = input_shape[2];
 
-        // Output length: (L - 1) * stride - 2*padding + kernel_size.
-        if l_in == 0 {
-            return Err(incompatible_error(
-                "ConvTranspose1d requires non-empty spatial dimensions",
-            ));
-        }
-        let length_overflow = "ConvTranspose1d output length overflow";
-        let l_span = checked_mul(l_in - 1, self.stride, length_overflow)?;
-        let l_base = checked_add(l_span, self.kernel_size, length_overflow)?;
-        let padding = checked_mul(self.padding, 2, "ConvTranspose1d padding overflow")?;
-        if l_base <= padding {
-            return Err(incompatible_error(
-                "ConvTranspose1d output size underflow from padding",
-            ));
-        }
-        let l_out = l_base - padding;
+        let l_out = checked_conv_transpose_output_dim(
+            l_in,
+            self.stride,
+            self.kernel_size,
+            self.padding,
+            self.output_padding,
+            ConvTransposeOutputDimReasons {
+                overflow_reason: "ConvTranspose1d output length overflow",
+                padding_overflow_reason: "ConvTranspose1d padding overflow",
+                underflow_reason: "ConvTranspose1d output size underflow from padding",
+                empty_reason: "ConvTranspose1d requires non-empty spatial dimensions",
+            },
+        )?;
 
         // Transposed convolution via scatter-and-accumulate:
         // For each input position, scatter kernel-weighted values to output positions.
@@ -18485,7 +18493,7 @@ mod tests {
     #[test]
     fn conv_transpose1d_output_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose1d::new(&mut session, 1, 1, 3, 1, 0, false).expect("new");
+        let deconv = ConvTranspose1d::new(&mut session, 1, 1, 3, 1, 0, 0, false).expect("new");
 
         // [N=1, C_in=1, L=3], kernel=3, stride=1, padding=0
         // L_out = (3-1)*1 + 3 - 0 = 5
@@ -18501,7 +18509,7 @@ mod tests {
     #[test]
     fn conv_transpose1d_with_stride() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose1d::new(&mut session, 1, 1, 3, 2, 0, false).expect("new");
+        let deconv = ConvTranspose1d::new(&mut session, 1, 1, 3, 2, 0, 0, false).expect("new");
 
         // [N=1, C_in=1, L=2], kernel=3, stride=2, padding=0
         // L_out = (2-1)*2 + 3 - 0 = 5
@@ -18515,9 +18523,31 @@ mod tests {
     }
 
     #[test]
+    fn conv_transpose1d_with_output_padding() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv = ConvTranspose1d::new(&mut session, 1, 1, 3, 2, 0, 1, false).expect("new");
+
+        // [N=1, C_in=1, L=2], kernel=3, stride=2, output_padding=1
+        // L_out = (2-1)*2 + 3 + 1 = 6
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 1, 2], false)
+            .expect("variable");
+        let out = deconv.forward(&mut session, x).expect("forward");
+
+        let (_, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 6]);
+    }
+
+    #[test]
+    fn conv_transpose1d_output_padding_must_be_less_than_stride() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        assert!(ConvTranspose1d::new(&mut session, 1, 1, 3, 2, 0, 2, false).is_err());
+    }
+
+    #[test]
     fn conv_transpose1d_rejects_padding_erased_output() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose1d::new(&mut session, 1, 1, 1, 1, 1, false).expect("new");
+        let deconv = ConvTranspose1d::new(&mut session, 1, 1, 1, 1, 1, 0, false).expect("new");
         let x = session
             .tensor_variable(vec![1.0], vec![1, 1, 1], false)
             .expect("variable");
@@ -18528,7 +18558,7 @@ mod tests {
     #[test]
     fn conv_transpose1d_has_parameters() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose1d::new(&mut session, 2, 3, 3, 1, 0, true).expect("new");
+        let deconv = ConvTranspose1d::new(&mut session, 2, 3, 3, 1, 0, 0, true).expect("new");
 
         // weight + bias
         assert_eq!(deconv.parameters().len(), 2);
@@ -18537,7 +18567,7 @@ mod tests {
     #[test]
     fn conv_transpose1d_rejects_wrong_dim() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose1d::new(&mut session, 2, 3, 3, 1, 0, false).expect("new");
+        let deconv = ConvTranspose1d::new(&mut session, 2, 3, 3, 1, 0, 0, false).expect("new");
 
         let x = session
             .tensor_variable(vec![1.0, 2.0], vec![2], false)
@@ -18548,7 +18578,7 @@ mod tests {
     #[test]
     fn conv_transpose1d_rejects_wrong_channels() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let deconv = ConvTranspose1d::new(&mut session, 2, 3, 3, 1, 0, false).expect("new");
+        let deconv = ConvTranspose1d::new(&mut session, 2, 3, 3, 1, 0, 0, false).expect("new");
 
         // 5 channels but deconv expects 2
         let x = session
