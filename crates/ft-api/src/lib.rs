@@ -9209,6 +9209,30 @@ impl FrankenTorchSession {
         self.tensor_tape.transpose(input, dim0, dim1)
     }
 
+    /// Transpose the last two dimensions of `input`.
+    ///
+    /// Equivalent to `torch.Tensor.mT` and
+    /// `torch.transpose(input, -2, -1)`. Works on any input of rank
+    /// ≥ 2 — common in batched matmul code where the rank may not
+    /// be known at the call site. Composes through autograd-aware
+    /// tensor_transpose; gradient flows unchanged.
+    /// Tracked under frankentorch-1mcj.
+    pub fn tensor_matrix_transpose(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() < 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "matrix_transpose: input must have at least 2 dimensions",
+                },
+            )));
+        }
+        let last = shape.len() - 1;
+        self.tensor_transpose(input, last - 1, last)
+    }
+
     /// Swap two dimensions; alias for `tensor_transpose`.
     ///
     /// Equivalent to `torch.swapaxes(input, dim0, dim1)`. PyTorch
@@ -39798,6 +39822,75 @@ mod tests {
         assert!((g[0] - (-2.0)).abs() < 1e-12, "got {}", g[0]);
         assert_eq!(g[1], 0.0);
         assert!((g[2] - 2.0).abs() < 1e-12, "got {}", g[2]);
+    }
+
+    // ── tensor_matrix_transpose tests (frankentorch-1mcj) ──────────────
+
+    #[test]
+    fn matrix_transpose_2d_swaps_rows_and_cols() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [[1,2,3],[4,5,6]] → [[1,4],[2,5],[3,6]]
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let out = s.tensor_matrix_transpose(x).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![3, 2]);
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn matrix_transpose_3d_transposes_last_two_dims_per_batch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [2, 2, 3]: two batches of 2x3 matrices → output [2, 3, 2]
+        let x = s
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+                vec![2, 2, 3],
+                false,
+            )
+            .unwrap();
+        let out = s.tensor_matrix_transpose(x).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![2, 3, 2]);
+        let v = s.tensor_values(out).unwrap();
+        // Batch 0: [[1,2,3],[4,5,6]] → [[1,4],[2,5],[3,6]]
+        assert_eq!(&v[0..6], &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+        // Batch 1: [[7,8,9],[10,11,12]] → [[7,10],[8,11],[9,12]]
+        assert_eq!(&v[6..12], &[7.0, 10.0, 8.0, 11.0, 9.0, 12.0]);
+    }
+
+    #[test]
+    fn matrix_transpose_double_apply_is_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
+        let t1 = s.tensor_matrix_transpose(x).unwrap();
+        let t2 = s.tensor_matrix_transpose(t1).unwrap();
+        assert_eq!(s.tensor_shape(t2).unwrap(), vec![2, 3]);
+        assert_eq!(s.tensor_values(t2).unwrap(), s.tensor_values(x).unwrap());
+    }
+
+    #[test]
+    fn matrix_transpose_rejects_rank_below_two() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        assert!(s.tensor_matrix_transpose(v).is_err());
+        let scalar = s.tensor_variable(vec![5.0], vec![], false).unwrap();
+        assert!(s.tensor_matrix_transpose(scalar).is_err());
+    }
+
+    #[test]
+    fn matrix_transpose_propagates_gradient() {
+        // backward(sum(matrix_transpose(x))) → grad x = ones(shape).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .unwrap();
+        let t = s.tensor_matrix_transpose(x).unwrap();
+        let scalar = s.tensor_sum(t).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert_eq!(g, &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
 
     // ── tensor_ravel + squeeze_all tests (frankentorch-icld) ──────────
