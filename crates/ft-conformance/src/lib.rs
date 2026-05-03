@@ -14458,6 +14458,140 @@ print(json.dumps({
     }
 
     #[test]
+    fn torch_index_rearrange_ops_preserve_float32_dtype_subprocess_conformance() {
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_index_rearrange_ops_preserve_float32_dtype_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json
+import sys
+import torch
+
+payload = json.loads(sys.stdin.read())
+x = torch.tensor(payload["values"], dtype=torch.float32).reshape(tuple(payload["shape"]))
+expand_x = torch.tensor(payload["expand_values"], dtype=torch.float32).reshape(tuple(payload["expand_shape"]))
+expanded = expand_x.expand(tuple(payload["expand_target"]))
+flipped = torch.flip(x, dims=[1])
+repeated = x.repeat(1, 2)
+rolled = torch.roll(x, shifts=1, dims=1)
+
+print(json.dumps({
+    "expand_dtype": str(expanded.dtype),
+    "expand_values": [float(v) for v in expanded.contiguous().view(-1).tolist()],
+    "flip_dtype": str(flipped.dtype),
+    "flip_values": [float(v) for v in flipped.contiguous().view(-1).tolist()],
+    "repeat_dtype": str(repeated.dtype),
+    "repeat_values": [float(v) for v in repeated.contiguous().view(-1).tolist()],
+    "roll_dtype": str(rolled.dtype),
+    "roll_values": [float(v) for v in rolled.contiguous().view(-1).tolist()],
+}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "values": [1.0, 2.0, 3.0, 4.0],
+            "shape": [2, 2],
+            "expand_values": [1.0, 2.0],
+            "expand_shape": [1, 2],
+            "expand_target": [2, 2],
+        });
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch rearrange-ops oracle should run");
+        for key in ["expand_dtype", "flip_dtype", "repeat_dtype", "roll_dtype"] {
+            assert_eq!(
+                oracle.get(key).and_then(Value::as_str),
+                Some("torch.float32")
+            );
+        }
+
+        let f32_vec = |key: &str| -> Vec<f32> {
+            oracle
+                .get(key)
+                .and_then(Value::as_array)
+                .expect("oracle f32 vector")
+                .iter()
+                .map(|value| value.as_f64().expect("oracle scalar") as f32)
+                .collect()
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("f32 input");
+
+        let expand_input = session
+            .tensor_variable_f32(vec![1.0, 2.0], vec![1, 2], false)
+            .expect("f32 expand input");
+        let expanded = session
+            .tensor_expand(expand_input, vec![2, 2])
+            .expect("expand should succeed");
+        assert_eq!(
+            session.tensor_dtype(expanded).expect("expand dtype"),
+            ft_core::DType::F32
+        );
+        assert_eq!(
+            session.tensor_values_f32(expanded).expect("expand values"),
+            f32_vec("expand_values")
+        );
+
+        let flipped = session
+            .tensor_flip(input, &[1])
+            .expect("flip should succeed");
+        assert_eq!(
+            session.tensor_dtype(flipped).expect("flip dtype"),
+            ft_core::DType::F32
+        );
+        assert_eq!(
+            session.tensor_values_f32(flipped).expect("flip values"),
+            f32_vec("flip_values")
+        );
+
+        let repeated = session
+            .tensor_repeat(input, &[1, 2])
+            .expect("repeat should succeed");
+        assert_eq!(
+            session.tensor_dtype(repeated).expect("repeat dtype"),
+            ft_core::DType::F32
+        );
+        assert_eq!(
+            session.tensor_values_f32(repeated).expect("repeat values"),
+            f32_vec("repeat_values")
+        );
+
+        let rolled = session
+            .tensor_roll(input, 1, 1)
+            .expect("roll should succeed");
+        assert_eq!(
+            session.tensor_dtype(rolled).expect("roll dtype"),
+            ft_core::DType::F32
+        );
+        assert_eq!(
+            session.tensor_values_f32(rolled).expect("roll values"),
+            f32_vec("roll_values")
+        );
+    }
+
+    #[test]
     fn torch_atan2_ieee754_subprocess_conformance() {
         // Subprocess-based diff test: FrankenTorch's atan2 (which calls
         // Rust's f64::atan2, which calls the platform libm atan2) MUST

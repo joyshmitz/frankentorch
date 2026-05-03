@@ -8654,19 +8654,7 @@ impl TensorTape {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let original_shape = meta.shape().to_vec();
-            let input_dtype = meta.dtype();
-            let values = input_node.tensor.contiguous_values_as_f64()?;
-
-            let result_data =
-                ft_kernel_cpu::expand_tensor_contiguous_f64(&values, meta, &target_shape)
-                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
-            let storage = match input_dtype {
-                DType::F32 => TensorStorage::F32(Arc::new(
-                    result_data.into_iter().map(|value| value as f32).collect(),
-                )),
-                DType::F64 => TensorStorage::F64(Arc::new(result_data)),
-                _ => TensorStorage::F64(Arc::new(result_data)),
-            };
+            let storage = Self::expand_typed_storage(&input_node.tensor, &target_shape)?;
             let dtype = storage.dtype();
 
             (
@@ -8901,13 +8889,149 @@ impl TensorTape {
         Ok(dst)
     }
 
+    fn expand_typed_storage(
+        tensor: &DenseTensor,
+        target_shape: &[usize],
+    ) -> Result<TensorStorage, AutogradError> {
+        let meta = tensor.meta();
+        if !meta.is_contiguous() {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::UnsupportedLayout,
+            ));
+        }
+        let storage = Self::compact_typed_storage(tensor)?;
+        let shape = meta.shape();
+        if target_shape.len() != shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: shape.to_vec(),
+                    rhs: target_shape.to_vec(),
+                },
+            )));
+        }
+        for d in 0..shape.len() {
+            if shape[d] != target_shape[d] && shape[d] != 1 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: shape.to_vec(),
+                        rhs: target_shape.to_vec(),
+                    },
+                )));
+            }
+        }
+
+        let output_numel =
+            Self::checked_shape_numel(target_shape, "expand output shape volume overflow")?;
+        let output_strides = ft_core::contiguous_strides(target_shape);
+        let input_strides =
+            Self::broadcast_input_strides(shape, target_shape, "expand input strides overflow")?;
+        Self::map_typed_storage(&storage, output_numel, |flat| {
+            let mut remaining = flat;
+            let mut src_flat = 0usize;
+            for d in 0..target_shape.len() {
+                let coord = remaining / output_strides[d];
+                remaining %= output_strides[d];
+                src_flat += coord * input_strides[d];
+            }
+            Ok(src_flat)
+        })
+    }
+
+    fn broadcast_input_strides(
+        shape: &[usize],
+        target_shape: &[usize],
+        overflow_reason: &'static str,
+    ) -> Result<Vec<usize>, AutogradError> {
+        let strides = ft_core::contiguous_strides(shape);
+        let mut broadcast = Vec::with_capacity(shape.len());
+        for d in 0..shape.len() {
+            if shape[d] == target_shape[d] {
+                broadcast.push(strides[d]);
+            } else if shape[d] == 1 {
+                broadcast.push(0);
+            } else {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: shape.to_vec(),
+                        rhs: target_shape.to_vec(),
+                    },
+                )));
+            }
+        }
+        Self::checked_shape_numel(shape, overflow_reason)?;
+        Ok(broadcast)
+    }
+
+    fn map_typed_storage<F>(
+        storage: &TensorStorage,
+        output_len: usize,
+        mut src_index_for_output: F,
+    ) -> Result<TensorStorage, AutogradError>
+    where
+        F: FnMut(usize) -> Result<usize, AutogradError>,
+    {
+        Ok(match storage {
+            TensorStorage::F32(values) => TensorStorage::F32(Arc::new(Self::map_slice(
+                values,
+                output_len,
+                &mut src_index_for_output,
+            )?)),
+            TensorStorage::F64(values) => TensorStorage::F64(Arc::new(Self::map_slice(
+                values,
+                output_len,
+                &mut src_index_for_output,
+            )?)),
+            TensorStorage::F16(values) => TensorStorage::F16(Arc::new(Self::map_slice(
+                values,
+                output_len,
+                &mut src_index_for_output,
+            )?)),
+            TensorStorage::BF16(values) => TensorStorage::BF16(Arc::new(Self::map_slice(
+                values,
+                output_len,
+                &mut src_index_for_output,
+            )?)),
+            TensorStorage::Complex64(values) => TensorStorage::Complex64(Arc::new(
+                Self::map_slice(values, output_len, &mut src_index_for_output)?,
+            )),
+            TensorStorage::Complex128(values) => TensorStorage::Complex128(Arc::new(
+                Self::map_slice(values, output_len, &mut src_index_for_output)?,
+            )),
+        })
+    }
+
+    fn map_slice<T: Clone, F>(
+        values: &[T],
+        output_len: usize,
+        src_index_for_output: &mut F,
+    ) -> Result<Vec<T>, AutogradError>
+    where
+        F: FnMut(usize) -> Result<usize, AutogradError>,
+    {
+        let mut output = Vec::with_capacity(output_len);
+        for flat in 0..output_len {
+            let src = src_index_for_output(flat)?;
+            let value = values
+                .get(src)
+                .ok_or(AutogradError::DenseTensor(
+                    DenseTensorError::InsufficientStorage {
+                        needed: src + 1,
+                        actual: values.len(),
+                    },
+                ))?
+                .clone();
+            output.push(value);
+        }
+        Ok(output)
+    }
+
     #[allow(clippy::needless_range_loop)]
     pub fn flip(
         &mut self,
         input: TensorNodeId,
         dims: Vec<usize>,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (requires_grad, storage, shape, dtype, device) = {
+        let (requires_grad, storage, shape, device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let shape = meta.shape().to_vec();
@@ -8921,42 +9045,19 @@ impl TensorTape {
             }
             (
                 input_node.requires_grad,
-                input_node.tensor.contiguous_values_as_f64()?,
+                Self::compact_typed_storage(&input_node.tensor)?,
                 shape,
-                DType::F64,
                 meta.device(),
             )
         };
 
-        let numel = Self::checked_shape_numel(&shape, "flip shape volume overflow")?;
-        let strides = ft_core::contiguous_strides(&shape);
-        let ndim = shape.len();
-        let mut result = vec![0.0; numel];
-
-        for flat in 0..numel {
-            let mut remaining = flat;
-            let mut coords = vec![0usize; ndim];
-            for d in 0..ndim {
-                coords[d] = remaining / strides[d];
-                remaining %= strides[d];
-            }
-
-            let mut flipped_flat = 0;
-            for d in 0..ndim {
-                let coord = if dims.contains(&d) {
-                    shape[d] - 1 - coords[d]
-                } else {
-                    coords[d]
-                };
-                flipped_flat += coord * strides[d];
-            }
-            result[flipped_flat] = storage[flat];
-        }
+        let result = Self::flip_typed_storage(&storage, &shape, &dims)?;
+        let dtype = result.dtype();
 
         let new_meta = ft_core::TensorMeta::from_shape(shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, result)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, result)?,
             requires_grad,
             op: TensorNodeOp::Flip { input, dims },
         });
@@ -8969,17 +9070,16 @@ impl TensorTape {
         input: TensorNodeId,
         repeats: Vec<usize>,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (requires_grad, storage, original_shape, repeat_shape, dtype, device) = {
+        let (requires_grad, storage, original_shape, repeat_shape, device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let shape = meta.shape().to_vec();
             let repeat_shape = Self::normalize_repeat_shape(&shape, &repeats)?;
             (
                 input_node.requires_grad,
-                input_node.tensor.contiguous_values_as_f64()?,
+                Self::compact_typed_storage(&input_node.tensor)?,
                 shape,
                 repeat_shape,
-                DType::F64,
                 meta.device(),
             )
         };
@@ -8993,28 +9093,13 @@ impl TensorTape {
                 "repeat shape multiplication overflow",
             )?);
         }
-        let output_numel =
-            Self::checked_shape_numel(&output_shape, "repeat output shape volume overflow")?;
-        let output_strides = ft_core::contiguous_strides(&output_shape);
-        let src_strides = ft_core::contiguous_strides(&repeat_shape);
-
-        let mut result = vec![0.0; output_numel];
-        for flat in 0..output_numel {
-            let mut remaining = flat;
-            let mut src_flat = 0;
-            for d in 0..ndim {
-                let coord = remaining / output_strides[d];
-                remaining %= output_strides[d];
-                let src_coord = coord % repeat_shape[d];
-                src_flat += src_coord * src_strides[d];
-            }
-            result[flat] = storage[src_flat];
-        }
+        let result = Self::repeat_typed_storage(&storage, &repeat_shape, &repeats, &output_shape)?;
+        let dtype = result.dtype();
 
         let new_meta = ft_core::TensorMeta::from_shape(output_shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, result)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, result)?,
             requires_grad,
             op: TensorNodeOp::Repeat {
                 input,
@@ -9032,7 +9117,7 @@ impl TensorTape {
         shift: isize,
         dim: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (requires_grad, storage, shape, dtype, device) = {
+        let (requires_grad, storage, shape, device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let shape = meta.shape().to_vec();
@@ -9044,51 +9129,19 @@ impl TensorTape {
             }
             (
                 input_node.requires_grad,
-                input_node.tensor.contiguous_values_as_f64()?,
+                Self::compact_typed_storage(&input_node.tensor)?,
                 shape,
-                DType::F64,
                 meta.device(),
             )
         };
 
-        let numel = Self::checked_shape_numel(&shape, "roll shape volume overflow")?;
-        let strides = ft_core::contiguous_strides(&shape);
-        let ndim = shape.len();
-        let dim_size = shape[dim];
-        let dim_size_i = isize::try_from(dim_size)
-            .map_err(|_| Self::shape_overflow_error("roll dimension size exceeds isize range"))?;
-        let mut result = vec![0.0; numel];
-
-        if dim_size > 0 {
-            for flat in 0..numel {
-                let mut remaining = flat;
-                let mut coords = vec![0usize; ndim];
-                for d in 0..ndim {
-                    coords[d] = remaining / strides[d];
-                    remaining %= strides[d];
-                }
-
-                let old_coord = isize::try_from(coords[dim]).map_err(|_| {
-                    Self::shape_overflow_error("roll coordinate exceeds isize range")
-                })?;
-                let shifted_coord = (old_coord + shift).rem_euclid(dim_size_i);
-                let new_coord = usize::try_from(shifted_coord).map_err(|_| {
-                    Self::shape_overflow_error("roll coordinate conversion overflow")
-                })?;
-                coords[dim] = new_coord % dim_size;
-
-                let mut dst_flat = 0;
-                for d in 0..ndim {
-                    dst_flat += coords[d] * strides[d];
-                }
-                result[dst_flat] = storage[flat];
-            }
-        }
+        let result = Self::roll_typed_storage(&storage, &shape, shift, dim)?;
+        let dtype = result.dtype();
 
         let new_meta = ft_core::TensorMeta::from_shape(shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, result)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, result)?,
             requires_grad,
             op: TensorNodeOp::Roll { input, shift, dim },
         });
@@ -13937,6 +13990,239 @@ impl TensorTape {
             product = next;
         }
         Ok(product)
+    }
+
+    fn flip_typed_storage(
+        storage: &TensorStorage,
+        shape: &[usize],
+        dims: &[usize],
+    ) -> Result<TensorStorage, AutogradError> {
+        Ok(match storage {
+            TensorStorage::F32(values) => {
+                TensorStorage::F32(Arc::new(Self::flip_slice(values, shape, dims)?))
+            }
+            TensorStorage::F64(values) => {
+                TensorStorage::F64(Arc::new(Self::flip_slice(values, shape, dims)?))
+            }
+            TensorStorage::F16(values) => {
+                TensorStorage::F16(Arc::new(Self::flip_slice(values, shape, dims)?))
+            }
+            TensorStorage::BF16(values) => {
+                TensorStorage::BF16(Arc::new(Self::flip_slice(values, shape, dims)?))
+            }
+            TensorStorage::Complex64(values) => {
+                TensorStorage::Complex64(Arc::new(Self::flip_slice(values, shape, dims)?))
+            }
+            TensorStorage::Complex128(values) => {
+                TensorStorage::Complex128(Arc::new(Self::flip_slice(values, shape, dims)?))
+            }
+        })
+    }
+
+    fn flip_slice<T: Clone>(
+        values: &[T],
+        shape: &[usize],
+        dims: &[usize],
+    ) -> Result<Vec<T>, AutogradError> {
+        let numel = Self::checked_shape_numel(shape, "flip shape volume overflow")?;
+        if numel == 0 {
+            return Ok(Vec::new());
+        }
+        if values.len() < numel {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::InsufficientStorage {
+                    needed: numel,
+                    actual: values.len(),
+                },
+            ));
+        }
+
+        let strides = ft_core::contiguous_strides(shape);
+        let ndim = shape.len();
+        let mut result = vec![values[0].clone(); numel];
+
+        for (flat, value) in values.iter().enumerate().take(numel) {
+            let mut remaining = flat;
+            let mut coords = vec![0usize; ndim];
+            for d in 0..ndim {
+                coords[d] = remaining / strides[d];
+                remaining %= strides[d];
+            }
+
+            let mut flipped_flat = 0;
+            for d in 0..ndim {
+                let coord = if dims.contains(&d) {
+                    shape[d] - 1 - coords[d]
+                } else {
+                    coords[d]
+                };
+                flipped_flat += coord * strides[d];
+            }
+            result[flipped_flat] = value.clone();
+        }
+        Ok(result)
+    }
+
+    fn repeat_typed_storage(
+        storage: &TensorStorage,
+        repeat_shape: &[usize],
+        repeats: &[usize],
+        output_shape: &[usize],
+    ) -> Result<TensorStorage, AutogradError> {
+        Ok(match storage {
+            TensorStorage::F32(values) => TensorStorage::F32(Arc::new(Self::repeat_slice(
+                values,
+                repeat_shape,
+                repeats,
+                output_shape,
+            )?)),
+            TensorStorage::F64(values) => TensorStorage::F64(Arc::new(Self::repeat_slice(
+                values,
+                repeat_shape,
+                repeats,
+                output_shape,
+            )?)),
+            TensorStorage::F16(values) => TensorStorage::F16(Arc::new(Self::repeat_slice(
+                values,
+                repeat_shape,
+                repeats,
+                output_shape,
+            )?)),
+            TensorStorage::BF16(values) => TensorStorage::BF16(Arc::new(Self::repeat_slice(
+                values,
+                repeat_shape,
+                repeats,
+                output_shape,
+            )?)),
+            TensorStorage::Complex64(values) => TensorStorage::Complex64(Arc::new(
+                Self::repeat_slice(values, repeat_shape, repeats, output_shape)?,
+            )),
+            TensorStorage::Complex128(values) => TensorStorage::Complex128(Arc::new(
+                Self::repeat_slice(values, repeat_shape, repeats, output_shape)?,
+            )),
+        })
+    }
+
+    fn repeat_slice<T: Clone>(
+        values: &[T],
+        repeat_shape: &[usize],
+        repeats: &[usize],
+        output_shape: &[usize],
+    ) -> Result<Vec<T>, AutogradError> {
+        let input_numel =
+            Self::checked_shape_numel(repeat_shape, "repeat input shape volume overflow")?;
+        let output_numel =
+            Self::checked_shape_numel(output_shape, "repeat output shape volume overflow")?;
+        if output_numel == 0 {
+            return Ok(Vec::new());
+        }
+        if values.len() < input_numel {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::InsufficientStorage {
+                    needed: input_numel,
+                    actual: values.len(),
+                },
+            ));
+        }
+
+        let output_strides = ft_core::contiguous_strides(output_shape);
+        let src_strides = ft_core::contiguous_strides(repeat_shape);
+        let ndim = repeats.len();
+        let mut result = vec![values[0].clone(); output_numel];
+        for (flat, slot) in result.iter_mut().enumerate() {
+            let mut remaining = flat;
+            let mut src_flat = 0;
+            for d in 0..ndim {
+                let coord = remaining / output_strides[d];
+                remaining %= output_strides[d];
+                let src_coord = coord % repeat_shape[d];
+                src_flat += src_coord * src_strides[d];
+            }
+            *slot = values[src_flat].clone();
+        }
+        Ok(result)
+    }
+
+    fn roll_typed_storage(
+        storage: &TensorStorage,
+        shape: &[usize],
+        shift: isize,
+        dim: usize,
+    ) -> Result<TensorStorage, AutogradError> {
+        Ok(match storage {
+            TensorStorage::F32(values) => {
+                TensorStorage::F32(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
+            }
+            TensorStorage::F64(values) => {
+                TensorStorage::F64(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
+            }
+            TensorStorage::F16(values) => {
+                TensorStorage::F16(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
+            }
+            TensorStorage::BF16(values) => {
+                TensorStorage::BF16(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
+            }
+            TensorStorage::Complex64(values) => {
+                TensorStorage::Complex64(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
+            }
+            TensorStorage::Complex128(values) => {
+                TensorStorage::Complex128(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
+            }
+        })
+    }
+
+    fn roll_slice<T: Clone>(
+        values: &[T],
+        shape: &[usize],
+        shift: isize,
+        dim: usize,
+    ) -> Result<Vec<T>, AutogradError> {
+        let numel = Self::checked_shape_numel(shape, "roll shape volume overflow")?;
+        if numel == 0 {
+            return Ok(Vec::new());
+        }
+        if values.len() < numel {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::InsufficientStorage {
+                    needed: numel,
+                    actual: values.len(),
+                },
+            ));
+        }
+
+        let strides = ft_core::contiguous_strides(shape);
+        let ndim = shape.len();
+        let dim_size = shape[dim];
+        let dim_size_i = isize::try_from(dim_size)
+            .map_err(|_| Self::shape_overflow_error("roll dimension size exceeds isize range"))?;
+        let mut result = vec![values[0].clone(); numel];
+
+        if dim_size > 0 {
+            for (flat, value) in values.iter().enumerate().take(numel) {
+                let mut remaining = flat;
+                let mut coords = vec![0usize; ndim];
+                for d in 0..ndim {
+                    coords[d] = remaining / strides[d];
+                    remaining %= strides[d];
+                }
+
+                let old_coord = isize::try_from(coords[dim]).map_err(|_| {
+                    Self::shape_overflow_error("roll coordinate exceeds isize range")
+                })?;
+                let shifted_coord = (old_coord + shift).rem_euclid(dim_size_i);
+                let new_coord = usize::try_from(shifted_coord).map_err(|_| {
+                    Self::shape_overflow_error("roll coordinate conversion overflow")
+                })?;
+                coords[dim] = new_coord % dim_size;
+
+                let mut dst_flat = 0;
+                for d in 0..ndim {
+                    dst_flat += coords[d] * strides[d];
+                }
+                result[dst_flat] = value.clone();
+            }
+        }
+        Ok(result)
     }
 
     fn pad_typed_storage(
@@ -19595,6 +19881,37 @@ mod tests {
     }
 
     #[test]
+    fn complex_expand_preserves_dtype_and_imaginary_values() {
+        let mut tape = TensorTape::new();
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![1, 2], DType::Complex64, Device::Cpu),
+            TensorStorage::Complex64(Arc::new(vec![
+                Complex64::new(1.0, -1.0),
+                Complex64::new(2.0, -2.0),
+            ])),
+        )
+        .unwrap();
+        let input = tape.leaf_tensor(tensor, false);
+        let expanded = tape.expand(input, vec![3, 2]).unwrap();
+        assert_eq!(tape.dtype(expanded).unwrap(), DType::Complex64);
+        let storage = tape.node(expanded).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[
+                    Complex64::new(1.0, -1.0),
+                    Complex64::new(2.0, -2.0),
+                    Complex64::new(1.0, -1.0),
+                    Complex64::new(2.0, -2.0),
+                    Complex64::new(1.0, -1.0),
+                    Complex64::new(2.0, -2.0),
+                ]
+            );
+        }
+    }
+
+    #[test]
     fn f32_pad_preserves_dtype() {
         let mut tape = TensorTape::new();
         let a = tape
@@ -19675,6 +19992,133 @@ mod tests {
                     Complex64::new(1.0, -1.0),
                     Complex64::new(0.5, 0.0),
                 ]
+            );
+        }
+    }
+
+    #[test]
+    fn f32_flip_repeat_roll_preserve_dtype() {
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+
+        let flipped = tape.flip(input, vec![1]).unwrap();
+        assert_eq!(tape.dtype(flipped).unwrap(), DType::F32);
+        assert_eq!(
+            tape.values_f32(flipped).unwrap(),
+            vec![2.0f32, 1.0, 4.0, 3.0]
+        );
+
+        let repeated = tape.repeat(input, vec![1, 2]).unwrap();
+        assert_eq!(tape.dtype(repeated).unwrap(), DType::F32);
+        assert_eq!(
+            tape.values_f32(repeated).unwrap(),
+            vec![1.0f32, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]
+        );
+
+        let rolled = tape.roll(input, 1, 1).unwrap();
+        assert_eq!(tape.dtype(rolled).unwrap(), DType::F32);
+        assert_eq!(
+            tape.values_f32(rolled).unwrap(),
+            vec![2.0f32, 1.0, 4.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn half_repeat_preserves_dtype() {
+        let mut tape = TensorTape::new();
+        let f16_tensor = DenseTensor::from_contiguous_values_f16(
+            vec![Float16::from_f32(1.0), Float16::from_f32(2.0)],
+            vec![2],
+            Device::Cpu,
+        )
+        .unwrap();
+        let f16 = tape.leaf_tensor(f16_tensor, false);
+        let f16_repeated = tape.repeat(f16, vec![2]).unwrap();
+        assert_eq!(tape.dtype(f16_repeated).unwrap(), DType::F16);
+        let f16_storage = tape.node(f16_repeated).unwrap().tensor.typed_storage();
+        assert!(matches!(f16_storage, TensorStorage::F16(_)));
+        if let TensorStorage::F16(values) = f16_storage {
+            assert_eq!(
+                values
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect::<Vec<_>>(),
+                vec![1.0f32, 2.0, 1.0, 2.0]
+            );
+        }
+
+        let bf16_tensor = DenseTensor::from_contiguous_values_bf16(
+            vec![BFloat16::from_f32(3.0), BFloat16::from_f32(4.0)],
+            vec![2],
+            Device::Cpu,
+        )
+        .unwrap();
+        let bf16 = tape.leaf_tensor(bf16_tensor, false);
+        let bf16_repeated = tape.repeat(bf16, vec![2]).unwrap();
+        assert_eq!(tape.dtype(bf16_repeated).unwrap(), DType::BF16);
+        let bf16_storage = tape.node(bf16_repeated).unwrap().tensor.typed_storage();
+        assert!(matches!(bf16_storage, TensorStorage::BF16(_)));
+        if let TensorStorage::BF16(values) = bf16_storage {
+            assert_eq!(
+                values
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect::<Vec<_>>(),
+                vec![3.0f32, 4.0, 3.0, 4.0]
+            );
+        }
+    }
+
+    #[test]
+    fn complex_flip_repeat_roll_preserve_imaginary_values() {
+        let mut tape = TensorTape::new();
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![2], DType::Complex64, Device::Cpu),
+            TensorStorage::Complex64(Arc::new(vec![
+                Complex64::new(1.0, -1.0),
+                Complex64::new(2.0, -2.0),
+            ])),
+        )
+        .unwrap();
+        let input = tape.leaf_tensor(tensor, false);
+
+        let flipped = tape.flip(input, vec![0]).unwrap();
+        assert_eq!(tape.dtype(flipped).unwrap(), DType::Complex64);
+        let storage = tape.node(flipped).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[Complex64::new(2.0, -2.0), Complex64::new(1.0, -1.0)]
+            );
+        }
+
+        let repeated = tape.repeat(input, vec![2]).unwrap();
+        assert_eq!(tape.dtype(repeated).unwrap(), DType::Complex64);
+        let storage = tape.node(repeated).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[
+                    Complex64::new(1.0, -1.0),
+                    Complex64::new(2.0, -2.0),
+                    Complex64::new(1.0, -1.0),
+                    Complex64::new(2.0, -2.0),
+                ]
+            );
+        }
+
+        let rolled = tape.roll(input, 1, 0).unwrap();
+        assert_eq!(tape.dtype(rolled).unwrap(), DType::Complex64);
+        let storage = tape.node(rolled).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[Complex64::new(2.0, -2.0), Complex64::new(1.0, -1.0)]
             );
         }
     }
@@ -19892,22 +20336,17 @@ mod tests {
 
     // ── Metamorphic dtype-preservation across shape ops ────────────────
     //
-    // Locks in the typed-storage migration from frankentorch-6y6o
-    // (commit 8f25235). The metamorphic invariant is:
-    //   for any shape-only op f and any tensor x,
+    // Locks in the typed-storage migrations from frankentorch-6y6o and
+    // frankentorch-l7dh. The metamorphic invariant is:
+    //   for any shape/index op f and any tensor x,
     //     dtype(f(x)) == dtype(x) AND storage_variant(f(x)) == storage_variant(x).
     //
     // Coverage matrix added here (the 6y6o commit covered narrow,
     // squeeze, unsqueeze, reshape):
-    //   ops:    transpose, permute, flatten, unflatten, chunk, split
+    //   ops:    expand, transpose, permute, flatten, unflatten,
+    //           chunk, split, flip, repeat, roll
     //           + transpose-twice roundtrip + numel partition invariants
     //   dtypes: F16, BF16, Complex64, Complex128
-    //
-    // expand, flip, repeat, roll are deliberately NOT covered: they
-    // are still on the f64-upcast path and would erode dtype (and
-    // silently drop the imaginary part for Complex inputs). Tracked
-    // under frankentorch-gboq; once that fix lands, extend this
-    // harness to those four ops.
 
     fn check_shape_ops_preserve_typed_storage(
         tape: &mut TensorTape,
@@ -19931,36 +20370,41 @@ mod tests {
         let a_numel = tape.tensor_meta(a).unwrap().numel();
         let a_shape = tape.tensor_meta(a).unwrap().shape().to_vec();
 
-        // MR1: transpose preserves dtype + numel.
+        // MR1: same-shape expand preserves dtype + numel.
+        let e = tape.expand(a, a_shape.clone()).unwrap();
+        assert_node(tape, e, "expand(a, shape(a))");
+        assert_eq!(tape.tensor_meta(e).unwrap().numel(), a_numel);
+
+        // MR2: transpose preserves dtype + numel.
         let t = tape.transpose(a, 0, 1).unwrap();
         assert_node(tape, t, "transpose(a, 0, 1)");
         assert_eq!(tape.tensor_meta(t).unwrap().numel(), a_numel);
 
-        // MR2 (invertive): transpose twice along the same axes ==
+        // MR3 (invertive): transpose twice along the same axes ==
         // identity. Dtype must round-trip; shape must equal input.
         let t_twice = tape.transpose(t, 0, 1).unwrap();
         assert_node(tape, t_twice, "transpose(transpose(a, 0, 1), 0, 1)");
         assert_eq!(tape.tensor_meta(t_twice).unwrap().shape().to_vec(), a_shape);
 
-        // MR3: permute preserves dtype + numel.
+        // MR4: permute preserves dtype + numel.
         let p = tape.permute(a, vec![2, 1, 0]).unwrap();
         assert_node(tape, p, "permute(a, [2, 1, 0])");
         assert_eq!(tape.tensor_meta(p).unwrap().numel(), a_numel);
 
-        // MR4: flatten preserves dtype; output shape changes but numel
+        // MR5: flatten preserves dtype; output shape changes but numel
         // is conserved.
         let f = tape.flatten(a, 0, 1).unwrap();
         assert_node(tape, f, "flatten(a, 0, 1)");
         assert_eq!(tape.tensor_meta(f).unwrap().shape().to_vec(), vec![4, 2]);
         assert_eq!(tape.tensor_meta(f).unwrap().numel(), a_numel);
 
-        // MR5 (invertive): unflatten composed with flatten over the
+        // MR6 (invertive): unflatten composed with flatten over the
         // same dims is shape-identity (and dtype-preserving end-to-end).
         let uf = tape.unflatten(f, 0, vec![2, 2]).unwrap();
         assert_node(tape, uf, "unflatten(flatten(a, 0, 1), 0, [2, 2])");
         assert_eq!(tape.tensor_meta(uf).unwrap().shape().to_vec(), a_shape);
 
-        // MR6: chunk partitions numel — sum of chunk sizes == input
+        // MR7: chunk partitions numel; sum of chunk sizes == input
         // numel, each chunk preserves dtype.
         let chunks = tape.chunk(a, 2, 0).unwrap();
         let mut chunk_numel = 0usize;
@@ -19973,7 +20417,7 @@ mod tests {
             "chunk(a, 2, 0): sum of chunk numel must equal input numel"
         );
 
-        // MR7: split partitions numel similarly.
+        // MR8: split partitions numel similarly.
         let parts = tape.split(a, &[1, 1], 0).unwrap();
         let mut part_numel = 0usize;
         for (i, c) in parts.iter().enumerate() {
@@ -19984,6 +20428,24 @@ mod tests {
             part_numel, a_numel,
             "split(a, [1, 1], 0): sum of part numel must equal input numel"
         );
+
+        // MR9: flip and roll are pure index rearrangements.
+        let flipped = tape.flip(a, vec![2]).unwrap();
+        assert_node(tape, flipped, "flip(a, [2])");
+        assert_eq!(tape.tensor_meta(flipped).unwrap().numel(), a_numel);
+
+        let rolled = tape.roll(a, 1, 2).unwrap();
+        assert_node(tape, rolled, "roll(a, 1, 2)");
+        assert_eq!(tape.tensor_meta(rolled).unwrap().numel(), a_numel);
+
+        // MR10: repeat tiles values while preserving dtype/storage.
+        let repeated = tape.repeat(a, vec![1, 1, 2]).unwrap();
+        assert_node(tape, repeated, "repeat(a, [1, 1, 2])");
+        assert_eq!(
+            tape.tensor_meta(repeated).unwrap().shape().to_vec(),
+            vec![2, 2, 4]
+        );
+        assert_eq!(tape.tensor_meta(repeated).unwrap().numel(), a_numel * 2);
     }
 
     #[test]
