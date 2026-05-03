@@ -14476,6 +14476,8 @@ expanded = expand_x.expand(tuple(payload["expand_target"]))
 flipped = torch.flip(x, dims=[1])
 repeated = x.repeat(1, 2)
 rolled = torch.roll(x, shifts=1, dims=1)
+large_roll_x = torch.tensor(payload["large_roll_values"], dtype=torch.float32)
+large_rolled = torch.roll(large_roll_x, shifts=(2**63 - 1), dims=0)
 
 print(json.dumps({
     "expand_dtype": str(expanded.dtype),
@@ -14486,6 +14488,8 @@ print(json.dumps({
     "repeat_values": [float(v) for v in repeated.contiguous().view(-1).tolist()],
     "roll_dtype": str(rolled.dtype),
     "roll_values": [float(v) for v in rolled.contiguous().view(-1).tolist()],
+    "large_roll_dtype": str(large_rolled.dtype),
+    "large_roll_values": [float(v) for v in large_rolled.contiguous().view(-1).tolist()],
 }, sort_keys=True))
 "#;
 
@@ -14495,6 +14499,7 @@ print(json.dumps({
             "expand_values": [1.0, 2.0],
             "expand_shape": [1, 2],
             "expand_target": [2, 2],
+            "large_roll_values": [1.0, 2.0],
         });
         let oracle = match super::run_legacy_oracle_script(&config, script, &payload) {
             Ok(oracle) => oracle,
@@ -14512,7 +14517,13 @@ print(json.dumps({
                 return Err(format!("torch rearrange-ops oracle should run: {error}"));
             }
         };
-        for key in ["expand_dtype", "flip_dtype", "repeat_dtype", "roll_dtype"] {
+        for key in [
+            "expand_dtype",
+            "flip_dtype",
+            "repeat_dtype",
+            "roll_dtype",
+            "large_roll_dtype",
+        ] {
             assert_eq!(
                 oracle.get(key).and_then(Value::as_str),
                 Some("torch.float32")
@@ -14583,6 +14594,25 @@ print(json.dumps({
         assert_eq!(
             session.tensor_values_f32(rolled).expect("roll values"),
             f32_vec("roll_values")
+        );
+
+        let large_roll_input = session
+            .tensor_variable_f32(vec![1.0, 2.0], vec![2], false)
+            .expect("f32 large roll input");
+        let large_rolled = session
+            .tensor_roll(large_roll_input, i64::MAX, 0)
+            .expect("large roll should wrap modulo dimension");
+        assert_eq!(
+            session
+                .tensor_dtype(large_rolled)
+                .expect("large roll dtype"),
+            ft_core::DType::F32
+        );
+        assert_eq!(
+            session
+                .tensor_values_f32(large_rolled)
+                .expect("large roll values"),
+            f32_vec("large_roll_values")
         );
         Ok(())
     }

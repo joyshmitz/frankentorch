@@ -12486,6 +12486,13 @@ impl TensorTape {
                     let mut contrib = vec![0.0; numel];
 
                     if dim_size > 0 {
+                        let shift_mod = Self::normalized_roll_shift(
+                            shift,
+                            dim_size_i,
+                            "roll backward shift normalization overflow",
+                        )?;
+                        let inverse_shift_mod =
+                            Self::inverse_normalized_roll_shift(shift_mod, dim_size);
                         for flat in 0..numel {
                             let mut remaining = flat;
                             let mut coords = vec![0usize; ndim];
@@ -12493,18 +12500,11 @@ impl TensorTape {
                                 coords[d] = remaining / strides[d];
                                 remaining %= strides[d];
                             }
-                            let old_coord = isize::try_from(coords[dim]).map_err(|_| {
-                                Self::shape_overflow_error(
-                                    "roll backward coordinate exceeds isize range",
-                                )
-                            })?;
-                            let shifted_coord = (old_coord - shift).rem_euclid(dim_size_i);
-                            let new_coord = usize::try_from(shifted_coord).map_err(|_| {
-                                Self::shape_overflow_error(
-                                    "roll backward coordinate conversion overflow",
-                                )
-                            })?;
-                            coords[dim] = new_coord % dim_size;
+                            coords[dim] = Self::add_normalized_roll_shift(
+                                coords[dim],
+                                inverse_shift_mod,
+                                dim_size,
+                            );
                             let mut dst_flat = 0;
                             for d in 0..ndim {
                                 dst_flat += coords[d] * strides[d];
@@ -14207,6 +14207,11 @@ impl TensorTape {
         let mut result = vec![values[0].clone(); numel];
 
         if dim_size > 0 {
+            let shift_mod = Self::normalized_roll_shift(
+                shift,
+                dim_size_i,
+                "roll shift normalization overflow",
+            )?;
             for (flat, value) in values.iter().enumerate().take(numel) {
                 let mut remaining = flat;
                 let mut coords = vec![0usize; ndim];
@@ -14215,14 +14220,7 @@ impl TensorTape {
                     remaining %= strides[d];
                 }
 
-                let old_coord = isize::try_from(coords[dim]).map_err(|_| {
-                    Self::shape_overflow_error("roll coordinate exceeds isize range")
-                })?;
-                let shifted_coord = (old_coord + shift).rem_euclid(dim_size_i);
-                let new_coord = usize::try_from(shifted_coord).map_err(|_| {
-                    Self::shape_overflow_error("roll coordinate conversion overflow")
-                })?;
-                coords[dim] = new_coord % dim_size;
+                coords[dim] = Self::add_normalized_roll_shift(coords[dim], shift_mod, dim_size);
 
                 let mut dst_flat = 0;
                 for d in 0..ndim {
@@ -14232,6 +14230,35 @@ impl TensorTape {
             }
         }
         Ok(result)
+    }
+
+    fn normalized_roll_shift(
+        shift: isize,
+        dim_size_i: isize,
+        overflow_reason: &'static str,
+    ) -> Result<usize, AutogradError> {
+        usize::try_from(shift.rem_euclid(dim_size_i))
+            .map_err(|_| Self::shape_overflow_error(overflow_reason))
+    }
+
+    fn inverse_normalized_roll_shift(shift_mod: usize, dim_size: usize) -> usize {
+        if shift_mod == 0 {
+            0
+        } else {
+            dim_size - shift_mod
+        }
+    }
+
+    fn add_normalized_roll_shift(coord: usize, shift_mod: usize, dim_size: usize) -> usize {
+        if shift_mod == 0 {
+            return coord;
+        }
+        let wrap_at = dim_size - shift_mod;
+        if coord >= wrap_at {
+            coord - wrap_at
+        } else {
+            coord + shift_mod
+        }
     }
 
     fn pad_typed_storage(
@@ -20042,6 +20069,25 @@ mod tests {
             .unwrap();
 
         assert!(tape.flip(input, vec![0, 0]).is_err());
+    }
+
+    #[test]
+    fn roll_extreme_shift_does_not_overflow_forward_or_backward() {
+        let mut tape = TensorTape::new();
+        let input = tape.leaf_f32(vec![1.0f32, 2.0], vec![2], true).unwrap();
+
+        let max_rolled = tape.roll(input, isize::MAX, 0).unwrap();
+        assert_eq!(tape.values_f32(max_rolled).unwrap(), vec![2.0f32, 1.0]);
+
+        let rolled = tape.roll(input, isize::MIN, 0).unwrap();
+        assert_eq!(tape.values_f32(rolled).unwrap(), vec![1.0f32, 2.0]);
+
+        let weights = tape.leaf_f32(vec![10.0f32, 20.0], vec![2], false).unwrap();
+        let (weighted, _) = tape.mul(rolled, weights, ExecutionMode::Strict).unwrap();
+        let (loss, _) = tape.sum(weighted, ExecutionMode::Strict).unwrap();
+        let report = tape.backward(loss).unwrap();
+
+        assert_eq!(report.gradient(input).unwrap(), &[10.0, 20.0]);
     }
 
     #[test]
