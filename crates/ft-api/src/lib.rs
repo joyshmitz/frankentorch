@@ -5778,6 +5778,48 @@ impl FrankenTorchSession {
         self.tensor_float_classify(UnaryOp::IsInf, input)
     }
 
+    /// 0/1 mask of element-wise `x == +∞`.
+    ///
+    /// Equivalent to `torch.isposinf(input)`. Compose via tensor_eq
+    /// against a +∞ constant of the same shape. Non-differentiable
+    /// (boolean mask); fail-loud on requires_grad like the other
+    /// classification ops. Tracked under frankentorch-f8dl.
+    pub fn tensor_isposinf(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "isposinf: autograd not supported (boolean mask is non-differentiable). Tracked under frankentorch-f8dl.",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let posinf = self.full(shape, f64::INFINITY, false)?;
+        self.tensor_eq(input, posinf)
+    }
+
+    /// 0/1 mask of element-wise `x == -∞`.
+    ///
+    /// Equivalent to `torch.isneginf(input)`. Sister to `tensor_isposinf`.
+    /// Tracked under frankentorch-f8dl.
+    pub fn tensor_isneginf(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "isneginf: autograd not supported (boolean mask is non-differentiable). Tracked under frankentorch-f8dl.",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let neginf = self.full(shape, f64::NEG_INFINITY, false)?;
+        self.tensor_eq(input, neginf)
+    }
+
     pub fn tensor_isfinite(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_float_classify(UnaryOp::IsFinite, input)
     }
@@ -39822,6 +39864,61 @@ mod tests {
         assert!((g[0] - (-2.0)).abs() < 1e-12, "got {}", g[0]);
         assert_eq!(g[1], 0.0);
         assert!((g[2] - 2.0).abs() < 1e-12, "got {}", g[2]);
+    }
+
+    // ── tensor_isposinf / isneginf tests (frankentorch-f8dl) ───────────
+
+    #[test]
+    fn isposinf_isneginf_known_values() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    1.0,
+                    f64::NAN,
+                    -f64::INFINITY,
+                    0.0,
+                ],
+                vec![6],
+                false,
+            )
+            .unwrap();
+        let pos = s.tensor_isposinf(x).unwrap();
+        let neg = s.tensor_isneginf(x).unwrap();
+        assert_eq!(s.tensor_values(pos).unwrap(), vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(s.tensor_values(neg).unwrap(), vec![0.0, 1.0, 0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn isposinf_isneginf_fail_loud_on_requires_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, f64::INFINITY], vec![2], true)
+            .unwrap();
+        assert!(s.tensor_isposinf(x).is_err());
+        assert!(s.tensor_isneginf(x).is_err());
+    }
+
+    #[test]
+    fn isposinf_disjoint_from_isneginf() {
+        // For any x, isposinf(x) AND isneginf(x) is always false.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![f64::INFINITY, f64::NEG_INFINITY, 0.0, f64::NAN],
+                vec![4],
+                false,
+            )
+            .unwrap();
+        let pos = s.tensor_isposinf(x).unwrap();
+        let neg = s.tensor_isneginf(x).unwrap();
+        let v_pos = s.tensor_values(pos).unwrap();
+        let v_neg = s.tensor_values(neg).unwrap();
+        for (p, n) in v_pos.iter().zip(v_neg.iter()) {
+            assert!(p * n == 0.0, "isposinf and isneginf must be disjoint");
+        }
     }
 
     // ── tensor_matrix_transpose tests (frankentorch-1mcj) ──────────────
