@@ -7431,8 +7431,18 @@ impl Module for ConvTranspose1d {
         }
         let l_in = input_shape[2];
 
-        // Output length: (L - 1) * stride - 2*padding + kernel_size
-        let l_out = (l_in - 1) * self.stride + self.kernel_size - 2 * self.padding;
+        // Output length: (L - 1) * stride - 2*padding + kernel_size.
+        if l_in == 0 {
+            return Err(incompatible_error("ConvTranspose1d requires non-empty spatial dimensions"));
+        }
+        let length_overflow = "ConvTranspose1d output length overflow";
+        let l_span = checked_mul(l_in - 1, self.stride, length_overflow)?;
+        let l_base = checked_add(l_span, self.kernel_size, length_overflow)?;
+        let padding = checked_mul(self.padding, 2, "ConvTranspose1d padding overflow")?;
+        if l_base <= padding {
+            return Err(incompatible_error("ConvTranspose1d output size underflow from padding"));
+        }
+        let l_out = l_base - padding;
 
         // Transposed convolution via scatter-and-accumulate:
         // For each input position, scatter kernel-weighted values to output positions.
@@ -18459,6 +18469,17 @@ mod tests {
 
         let (_, meta) = session.tensor_values_meta(out).expect("vals");
         assert_eq!(meta.shape(), &[1, 1, 5]);
+    }
+
+    #[test]
+    fn conv_transpose1d_rejects_padding_erased_output() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv = ConvTranspose1d::new(&mut session, 1, 1, 1, 1, 1, false).expect("new");
+        let x = session
+            .tensor_variable(vec![1.0], vec![1, 1, 1], false)
+            .expect("variable");
+
+        assert!(deconv.forward(&mut session, x).is_err());
     }
 
     #[test]
