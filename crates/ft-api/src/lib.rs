@@ -13494,7 +13494,38 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         upper: bool,
     ) -> Result<TensorNodeId, AutogradError> {
+        let input_meta = self.tensor_tape.tensor_meta(input)?.clone();
         if self.tensor_requires_grad(input)? {
+            if input_meta.shape() == [1, 1] && input_meta.dtype() == DType::F64 {
+                let out = self.tensor_apply_function(
+                    &[input],
+                    move |ctx, inputs| {
+                        let values = inputs[0].0;
+                        if values[0] <= 0.0 {
+                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                    reason: "linalg_cholesky: input is not positive definite",
+                                },
+                            )));
+                        }
+                        let factor = values[0].sqrt();
+                        ctx.save_for_backward(vec![factor], vec![1, 1]);
+                        Ok((vec![factor], vec![1, 1]))
+                    },
+                    move |ctx, grad_outputs| {
+                        let factor = ctx.saved_tensors()[0][0];
+                        Ok(vec![Some(vec![grad_outputs[0][0] / (2.0 * factor)])])
+                    },
+                )?;
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!(
+                        "linalg_cholesky input={} out={} upper={upper} (autograd 1x1)",
+                        input.0, out.0
+                    ),
+                );
+                return Ok(out);
+            }
             // Cholesky backward is implementable but non-trivial
             // (involves the phi = lower(L^T L) tridiag formula).
             // Fail loud for now (parking-lot pattern matching pvfk
@@ -35800,6 +35831,19 @@ mod tests {
         let l = s.tensor_linalg_cholesky(a, false).unwrap();
         let vals = s.tensor_values(l).unwrap();
         assert!((vals[0] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cholesky_1x1_propagates_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![9.0], vec![1, 1], true).unwrap();
+        let l = s.tensor_linalg_cholesky(a, false).unwrap();
+        let loss = s.tensor_sum(l).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, a)
+            .expect("1x1 cholesky must propagate sqrt derivative");
+        assert!((grad[0] - (1.0 / 6.0)).abs() < 1e-12);
     }
 
     #[test]
