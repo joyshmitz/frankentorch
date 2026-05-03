@@ -8443,26 +8443,27 @@ impl TensorTape {
             }
             if dim0 == dim1 {
                 // Identity transpose: same shape, same data
-                let storage = input_node.tensor.contiguous_values_as_f64()?;
+                let storage = Self::compact_typed_storage(&input_node.tensor)?;
+                let dtype = storage.dtype();
                 (
                     input_node.requires_grad,
                     storage,
                     shape.to_vec(),
-                    DType::F64,
+                    dtype,
                     meta.device(),
                 )
             } else {
                 let mut perm: Vec<usize> = (0..ndim).collect();
                 perm.swap(dim0, dim1);
-                let storage = input_node.tensor.contiguous_values_as_f64()?;
-                let new_storage = Self::permute_data(&storage, shape, &perm)?;
+                let new_storage = Self::permute_typed_storage(&input_node.tensor, &perm)?;
+                let dtype = new_storage.dtype();
                 let mut new_shape = shape.to_vec();
                 new_shape.swap(dim0, dim1);
                 (
                     input_node.requires_grad,
                     new_storage,
                     new_shape,
-                    DType::F64,
+                    dtype,
                     meta.device(),
                 )
             }
@@ -8471,7 +8472,7 @@ impl TensorTape {
         let new_meta = ft_core::TensorMeta::from_shape(new_shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, new_storage)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, new_storage)?,
             requires_grad,
             op: TensorNodeOp::Transpose { input, dim0, dim1 },
         });
@@ -8514,14 +8515,14 @@ impl TensorTape {
                 seen[d] = true;
             }
 
-            let storage = input_node.tensor.contiguous_values_as_f64()?;
-            let new_storage = Self::permute_data(&storage, shape, &dims)?;
+            let new_storage = Self::permute_typed_storage(&input_node.tensor, &dims)?;
+            let dtype = new_storage.dtype();
             let new_shape: Vec<usize> = dims.iter().map(|&d| shape[d]).collect();
             (
                 input_node.requires_grad,
                 new_storage,
                 new_shape,
-                DType::F64,
+                dtype,
                 meta.device(),
             )
         };
@@ -8529,7 +8530,7 @@ impl TensorTape {
         let new_meta = ft_core::TensorMeta::from_shape(new_shape, dtype, device);
         let out = TensorNodeId(self.nodes.len());
         self.nodes.push(TensorNode {
-            tensor: DenseTensor::from_storage(new_meta, new_storage)?,
+            tensor: DenseTensor::from_typed_storage(new_meta, new_storage)?,
             requires_grad,
             op: TensorNodeOp::Permute {
                 input,
@@ -8696,7 +8697,7 @@ impl TensorTape {
         split_sizes: &[usize],
         dim: usize,
     ) -> Result<Vec<TensorNodeId>, AutogradError> {
-        let (requires_grad, storage, shape, dtype, device) = {
+        let (requires_grad, shape, dtype, device) = {
             let input_node = self.node(input)?;
             let meta = input_node.tensor.meta();
             let shape = meta.shape().to_vec();
@@ -8715,31 +8716,23 @@ impl TensorTape {
                     },
                 )));
             }
-            (
-                input_node.requires_grad,
-                input_node.tensor.contiguous_values_as_f64()?,
-                shape,
-                DType::F64,
-                meta.device(),
-            )
+            (input_node.requires_grad, shape, meta.dtype(), meta.device())
         };
 
         let original_shape = shape.clone();
-        let meta = ft_core::TensorMeta::from_shape(shape, dtype, device);
         let mut outputs = Vec::with_capacity(split_sizes.len());
         let mut start = 0;
 
         for (chunk_index, &sz) in split_sizes.iter().enumerate() {
-            let chunk_data =
-                ft_kernel_cpu::narrow_tensor_contiguous_f64(&storage, &meta, dim, start, sz)
-                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+            let chunk_storage =
+                Self::narrow_typed_storage(&self.node(input)?.tensor, dim, start, sz)?;
 
             let mut chunk_shape = original_shape.clone();
             chunk_shape[dim] = sz;
             let chunk_meta = ft_core::TensorMeta::from_shape(chunk_shape, dtype, device);
             let out = TensorNodeId(self.nodes.len());
             self.nodes.push(TensorNode {
-                tensor: DenseTensor::from_storage(chunk_meta, chunk_data)?,
+                tensor: DenseTensor::from_typed_storage(chunk_meta, chunk_storage)?,
                 requires_grad,
                 op: TensorNodeOp::Split {
                     input,
@@ -8804,20 +8797,91 @@ impl TensorTape {
         src_shape: &[usize],
         perm: &[usize],
     ) -> Result<Vec<f64>, AutogradError> {
+        Self::permute_slice(src, src_shape, perm)
+    }
+
+    fn permute_typed_storage(
+        tensor: &DenseTensor,
+        perm: &[usize],
+    ) -> Result<TensorStorage, AutogradError> {
+        let meta = tensor.meta();
+        if !meta.is_contiguous() {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::UnsupportedLayout,
+            ));
+        }
+        let start = meta.storage_offset();
+        let end = start
+            .checked_add(meta.numel())
+            .ok_or(DenseTensorError::StorageSpanOverflow {
+                storage_offset: start,
+                numel: meta.numel(),
+            })?;
+        Ok(match tensor.typed_storage() {
+            TensorStorage::F32(values) => TensorStorage::F32(Arc::new(Self::permute_slice(
+                Self::checked_storage_slice(values, start, end)?,
+                meta.shape(),
+                perm,
+            )?)),
+            TensorStorage::F64(values) => TensorStorage::F64(Arc::new(Self::permute_slice(
+                Self::checked_storage_slice(values, start, end)?,
+                meta.shape(),
+                perm,
+            )?)),
+            TensorStorage::F16(values) => TensorStorage::F16(Arc::new(Self::permute_slice(
+                Self::checked_storage_slice(values, start, end)?,
+                meta.shape(),
+                perm,
+            )?)),
+            TensorStorage::BF16(values) => TensorStorage::BF16(Arc::new(Self::permute_slice(
+                Self::checked_storage_slice(values, start, end)?,
+                meta.shape(),
+                perm,
+            )?)),
+            TensorStorage::Complex64(values) => {
+                TensorStorage::Complex64(Arc::new(Self::permute_slice(
+                    Self::checked_storage_slice(values, start, end)?,
+                    meta.shape(),
+                    perm,
+                )?))
+            }
+            TensorStorage::Complex128(values) => {
+                TensorStorage::Complex128(Arc::new(Self::permute_slice(
+                    Self::checked_storage_slice(values, start, end)?,
+                    meta.shape(),
+                    perm,
+                )?))
+            }
+        })
+    }
+
+    fn permute_slice<T: Clone>(
+        src: &[T],
+        src_shape: &[usize],
+        perm: &[usize],
+    ) -> Result<Vec<T>, AutogradError> {
         let ndim = src_shape.len();
         let numel = Self::checked_shape_numel(src_shape, "permute shape volume overflow")?;
         if numel == 0 {
             return Ok(Vec::new());
+        }
+        if src.len() < numel {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::InsufficientStorage {
+                    needed: numel,
+                    actual: src.len(),
+                },
+            ));
         }
 
         let src_strides = ft_core::contiguous_strides(src_shape);
         let dst_shape: Vec<usize> = perm.iter().map(|&d| src_shape[d]).collect();
         let dst_strides = ft_core::contiguous_strides(&dst_shape);
 
-        let mut dst = vec![0.0; numel];
+        let mut dst = vec![src[0].clone(); numel];
         let mut coords = vec![0usize; ndim];
 
-        for (flat_src, &val) in src.iter().enumerate().take(numel) {
+        for (flat_src, val) in src.iter().enumerate().take(numel) {
             // Compute source multi-index from flat source index
             let mut remaining = flat_src;
             for d in 0..ndim {
@@ -8831,7 +8895,7 @@ impl TensorTape {
                 flat_dst += coords[perm[d]] * dst_strides[d];
             }
 
-            dst[flat_dst] = val;
+            dst[flat_dst] = val.clone();
         }
 
         Ok(dst)
@@ -19607,6 +19671,92 @@ mod tests {
             assert_eq!(
                 values.as_slice(),
                 &[Complex64::new(1.0, -1.0), Complex64::new(3.0, -3.0)]
+            );
+        }
+    }
+
+    #[test]
+    fn f32_permutation_shape_ops_preserve_dtype() {
+        let mut tape = TensorTape::new();
+        let a = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+
+        let transposed = tape.transpose(a, 0, 1).unwrap();
+        assert_eq!(tape.dtype(transposed).unwrap(), DType::F32);
+        assert_eq!(
+            tape.values_f32(transposed).unwrap(),
+            vec![1.0f32, 3.0, 2.0, 4.0]
+        );
+
+        let permuted = tape.permute(a, vec![1, 0]).unwrap();
+        assert_eq!(tape.dtype(permuted).unwrap(), DType::F32);
+        assert_eq!(
+            tape.values_f32(permuted).unwrap(),
+            vec![1.0f32, 3.0, 2.0, 4.0]
+        );
+
+        let parts = tape.split(a, &[1, 1], 0).unwrap();
+        assert_eq!(tape.dtype(parts[0]).unwrap(), DType::F32);
+        assert_eq!(tape.dtype(parts[1]).unwrap(), DType::F32);
+        assert_eq!(tape.values_f32(parts[0]).unwrap(), vec![1.0f32, 2.0]);
+        assert_eq!(tape.values_f32(parts[1]).unwrap(), vec![3.0f32, 4.0]);
+    }
+
+    #[test]
+    fn complex_permutation_shape_ops_preserve_imaginary_values() {
+        let mut tape = TensorTape::new();
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![2, 2], DType::Complex64, Device::Cpu),
+            TensorStorage::Complex64(Arc::new(vec![
+                Complex64::new(1.0, -1.0),
+                Complex64::new(2.0, -2.0),
+                Complex64::new(3.0, -3.0),
+                Complex64::new(4.0, -4.0),
+            ])),
+        )
+        .unwrap();
+        let a = tape.leaf_tensor(tensor, false);
+
+        let transposed = tape.transpose(a, 0, 1).unwrap();
+        assert_eq!(tape.dtype(transposed).unwrap(), DType::Complex64);
+        let storage = tape.node(transposed).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[
+                    Complex64::new(1.0, -1.0),
+                    Complex64::new(3.0, -3.0),
+                    Complex64::new(2.0, -2.0),
+                    Complex64::new(4.0, -4.0),
+                ]
+            );
+        }
+
+        let permuted = tape.permute(a, vec![1, 0]).unwrap();
+        assert_eq!(tape.dtype(permuted).unwrap(), DType::Complex64);
+        let storage = tape.node(permuted).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[
+                    Complex64::new(1.0, -1.0),
+                    Complex64::new(3.0, -3.0),
+                    Complex64::new(2.0, -2.0),
+                    Complex64::new(4.0, -4.0),
+                ]
+            );
+        }
+
+        let parts = tape.split(a, &[1, 1], 0).unwrap();
+        let storage = tape.node(parts[0]).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[Complex64::new(1.0, -1.0), Complex64::new(2.0, -2.0)]
             );
         }
     }

@@ -14321,6 +14321,143 @@ json.loads(sys.stdin.read())
     }
 
     #[test]
+    fn torch_shape_ops_preserve_float32_dtype_subprocess_conformance() {
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_shape_ops_preserve_float32_dtype_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json
+import sys
+import torch
+
+payload = json.loads(sys.stdin.read())
+x = torch.tensor(payload["values"], dtype=torch.float32).reshape(tuple(payload["shape"]))
+t = x.transpose(0, 1)
+p = x.permute(1, 0)
+parts = torch.split(x, [1, 1], dim=0)
+
+print(json.dumps({
+    "transpose_dtype": str(t.dtype),
+    "transpose_values": [float(v) for v in t.contiguous().view(-1).tolist()],
+    "permute_dtype": str(p.dtype),
+    "permute_values": [float(v) for v in p.contiguous().view(-1).tolist()],
+    "split_dtypes": [str(part.dtype) for part in parts],
+    "split_values": [[float(v) for v in part.contiguous().view(-1).tolist()] for part in parts],
+}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "values": [1.0, 2.0, 3.0, 4.0],
+            "shape": [2, 2],
+        });
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch shape-ops oracle should run");
+        assert_eq!(
+            oracle.get("transpose_dtype").and_then(Value::as_str),
+            Some("torch.float32")
+        );
+        assert_eq!(
+            oracle.get("permute_dtype").and_then(Value::as_str),
+            Some("torch.float32")
+        );
+        let split_dtypes = oracle
+            .get("split_dtypes")
+            .and_then(Value::as_array)
+            .expect("oracle split dtypes");
+        assert!(
+            split_dtypes
+                .iter()
+                .all(|dtype| dtype.as_str() == Some("torch.float32"))
+        );
+
+        let f32_vec = |key: &str| -> Vec<f32> {
+            oracle
+                .get(key)
+                .and_then(Value::as_array)
+                .expect("oracle f32 vector")
+                .iter()
+                .map(|value| value.as_f64().expect("oracle scalar") as f32)
+                .collect()
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("f32 input");
+
+        let transposed = session
+            .tensor_transpose(input, 0, 1)
+            .expect("transpose should succeed");
+        assert_eq!(
+            session.tensor_dtype(transposed).expect("transpose dtype"),
+            ft_core::DType::F32
+        );
+        assert_eq!(
+            session
+                .tensor_values_f32(transposed)
+                .expect("transpose values"),
+            f32_vec("transpose_values")
+        );
+
+        let permuted = session
+            .tensor_permute(input, vec![1, 0])
+            .expect("permute should succeed");
+        assert_eq!(
+            session.tensor_dtype(permuted).expect("permute dtype"),
+            ft_core::DType::F32
+        );
+        assert_eq!(
+            session.tensor_values_f32(permuted).expect("permute values"),
+            f32_vec("permute_values")
+        );
+
+        let parts = session
+            .tensor_split(input, &[1, 1], 0)
+            .expect("split should succeed");
+        let split_values = oracle
+            .get("split_values")
+            .and_then(Value::as_array)
+            .expect("oracle split values");
+        for (part, expected) in parts.iter().zip(split_values) {
+            assert_eq!(
+                session.tensor_dtype(*part).expect("split dtype"),
+                ft_core::DType::F32
+            );
+            let expected = expected
+                .as_array()
+                .expect("oracle split vector")
+                .iter()
+                .map(|value| value.as_f64().expect("oracle scalar") as f32)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                session.tensor_values_f32(*part).expect("split values"),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn torch_atan2_ieee754_subprocess_conformance() {
         // Subprocess-based diff test: FrankenTorch's atan2 (which calls
         // Rust's f64::atan2, which calls the platform libm atan2) MUST
