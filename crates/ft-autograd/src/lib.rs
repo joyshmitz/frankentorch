@@ -7976,11 +7976,8 @@ impl TensorTape {
             let output_shape = x_meta.shape().to_vec();
             let output_dtype = x_meta.dtype();
             let output_device = x_meta.device();
-            let meta = ft_core::TensorMeta::from_shape(
-                output_shape.clone(),
-                output_dtype,
-                output_device,
-            );
+            let meta =
+                ft_core::TensorMeta::from_shape(output_shape.clone(), output_dtype, output_device);
             let values = where_tensor_contiguous_f64(&cond_values, &x_values, &y_values, &meta)
                 .map_err(|e| AutogradError::Dispatch(e.into()))?;
             let storage = match output_dtype {
