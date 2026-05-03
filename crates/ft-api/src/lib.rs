@@ -5372,6 +5372,41 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Element-wise power with a tensor exponent: `input^exponent`.
+    ///
+    /// Equivalent to `torch.pow(input, exponent)` when `exponent` is
+    /// a tensor (element-wise; both inputs must have the same shape).
+    /// Composes via `exp(exponent * log(input))`. Autograd-aware on
+    /// both operands by the chain rule:
+    ///   d/dinput   = result * exponent / input
+    ///   d/dexponent = result * log(input)
+    /// Both fall out of the chain on the autograd-aware exp + mul + log.
+    ///
+    /// Well-defined for `input > 0`. For `input ≤ 0` the formula
+    /// produces NaN/inf — matches torch.pow's behavior for non-integer
+    /// exponents on negative bases. (Torch's signed-integer-exponent
+    /// branch is a separate slow path that we do not replicate here.)
+    /// Tracked under frankentorch-8gy3.
+    pub fn tensor_pow_tensor(
+        &mut self,
+        input: TensorNodeId,
+        exponent: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let in_shape = self.tensor_shape(input)?;
+        let exp_shape = self.tensor_shape(exponent)?;
+        if in_shape != exp_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: in_shape,
+                    rhs: exp_shape,
+                },
+            )));
+        }
+        let log_x = self.tensor_log(input)?;
+        let exp_times_log = self.tensor_mul(exponent, log_x)?;
+        self.tensor_exp(exp_times_log)
+    }
+
     pub fn tensor_min(
         &mut self,
         lhs: TensorNodeId,
@@ -39594,6 +39629,60 @@ mod tests {
         assert!((g[0] - (-2.0)).abs() < 1e-12, "got {}", g[0]);
         assert_eq!(g[1], 0.0);
         assert!((g[2] - 2.0).abs() < 1e-12, "got {}", g[2]);
+    }
+
+    // ── tensor_pow_tensor tests (frankentorch-8gy3) ────────────────────
+
+    #[test]
+    fn pow_tensor_known_values() {
+        // 2^3 = 8; 4^0.5 = 2; 5^0 = 1
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 4.0, 5.0], vec![3], false).unwrap();
+        let e = s.tensor_variable(vec![3.0, 0.5, 0.0], vec![3], false).unwrap();
+        let out = s.tensor_pow_tensor(x, e).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 8.0).abs() < 1e-12);
+        assert!((v[1] - 2.0).abs() < 1e-12);
+        assert!((v[2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn pow_tensor_propagates_gradient_to_input_and_exponent() {
+        // For y = x^e: ∂y/∂x = y * e / x; ∂y/∂e = y * log(x).
+        // Test at x=4, e=3: y = 64.
+        //   ∂y/∂x = 64 * 3 / 4 = 48
+        //   ∂y/∂e = 64 * log(4) ≈ 64 * 1.3863 ≈ 88.7227
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![4.0], vec![1], true).unwrap();
+        let e = s.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        let out = s.tensor_pow_tensor(x, e).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let g_x = s.tensor_gradient(&report, x).unwrap();
+        let g_e = s.tensor_gradient(&report, e).unwrap();
+        assert!((g_x[0] - 48.0).abs() < 1e-9, "got {}", g_x[0]);
+        let expected_ge = 64.0 * 4.0_f64.ln();
+        assert!((g_e[0] - expected_ge).abs() < 1e-9, "got {}", g_e[0]);
+    }
+
+    #[test]
+    fn pow_tensor_rejects_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 3.0, 4.0], vec![3], false).unwrap();
+        let e = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        assert!(s.tensor_pow_tensor(x, e).is_err());
+    }
+
+    #[test]
+    fn pow_tensor_negative_base_produces_nan() {
+        // The exp(e * log(x)) chain produces NaN for x < 0 since
+        // log(x) is undefined. Matches torch.pow's behavior for
+        // non-integer exponents on negative bases.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![-2.0], vec![1], false).unwrap();
+        let e = s.tensor_variable(vec![0.5], vec![1], false).unwrap();
+        let out = s.tensor_pow_tensor(x, e).unwrap();
+        let v = s.tensor_values(out).unwrap()[0];
+        assert!(v.is_nan(), "expected NaN for (-2)^0.5, got {v}");
     }
 
     #[test]
