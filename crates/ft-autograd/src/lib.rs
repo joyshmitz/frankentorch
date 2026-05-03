@@ -9113,13 +9113,12 @@ impl TensorTape {
             )));
         }
 
-        let (requires_grad, storage, shape, dtype, device) = {
+        let (requires_grad, storage, shape, device) = {
             let node = self.node(input)?;
             (
                 node.requires_grad,
-                node.tensor.contiguous_values_as_f64()?.to_vec(),
+                Self::compact_typed_storage(&node.tensor)?,
                 node.tensor.meta().shape().to_vec(),
-                node.tensor.meta().dtype(),
                 node.tensor.meta().device(),
             )
         };
@@ -9145,13 +9144,6 @@ impl TensorTape {
             out_shape[dim] = padded;
         }
 
-        let out_numel = Self::checked_shape_numel(&out_shape, "pad output shape volume overflow")?;
-        let mut output = vec![value; out_numel];
-
-        // Compute strides
-        let in_strides = ft_core::contiguous_strides(&shape);
-        let out_strides = ft_core::contiguous_strides(&out_shape);
-
         // Build per-dimension pad_before offsets
         let mut pad_before = vec![0usize; ndim];
         for i in 0..num_pad_dims {
@@ -9159,24 +9151,9 @@ impl TensorTape {
             pad_before[dim] = padding[i * 2];
         }
 
-        // Copy input values into padded output
-        let in_numel = Self::checked_shape_numel(&shape, "pad input shape volume overflow")?;
-        let mut coords = vec![0usize; ndim];
-        for (flat_in, &val) in storage.iter().enumerate().take(in_numel) {
-            let mut rem = flat_in;
-            for d in 0..ndim {
-                coords[d] = rem / in_strides[d];
-                rem %= in_strides[d];
-            }
-            let mut flat_out = 0;
-            for d in 0..ndim {
-                flat_out += (coords[d] + pad_before[d]) * out_strides[d];
-            }
-            output[flat_out] = val;
-        }
-
         let original_shape = shape;
-        let storage = Self::storage_from_f64_values_for_dtype(output, dtype);
+        let storage =
+            Self::pad_typed_storage(&storage, &original_shape, &out_shape, &pad_before, value)?;
         let dtype = storage.dtype();
         let new_meta = ft_core::TensorMeta::from_shape(out_shape.clone(), dtype, device);
         let out = TensorNodeId(self.nodes.len());
@@ -13962,14 +13939,95 @@ impl TensorTape {
         Ok(product)
     }
 
-    fn storage_from_f64_values_for_dtype(values: Vec<f64>, dtype: DType) -> TensorStorage {
-        match dtype {
-            DType::F32 => TensorStorage::F32(Arc::new(
-                values.into_iter().map(|value| value as f32).collect(),
-            )),
-            DType::F64 => TensorStorage::F64(Arc::new(values)),
-            _ => TensorStorage::F64(Arc::new(values)),
+    fn pad_typed_storage(
+        storage: &TensorStorage,
+        shape: &[usize],
+        out_shape: &[usize],
+        pad_before: &[usize],
+        value: f64,
+    ) -> Result<TensorStorage, AutogradError> {
+        Ok(match storage {
+            TensorStorage::F32(values) => TensorStorage::F32(Arc::new(Self::pad_slice(
+                values,
+                shape,
+                out_shape,
+                pad_before,
+                value as f32,
+            )?)),
+            TensorStorage::F64(values) => TensorStorage::F64(Arc::new(Self::pad_slice(
+                values, shape, out_shape, pad_before, value,
+            )?)),
+            TensorStorage::F16(values) => TensorStorage::F16(Arc::new(Self::pad_slice(
+                values,
+                shape,
+                out_shape,
+                pad_before,
+                ft_core::Float16::from_f32(value as f32),
+            )?)),
+            TensorStorage::BF16(values) => TensorStorage::BF16(Arc::new(Self::pad_slice(
+                values,
+                shape,
+                out_shape,
+                pad_before,
+                ft_core::BFloat16::from_f32(value as f32),
+            )?)),
+            TensorStorage::Complex64(values) => {
+                TensorStorage::Complex64(Arc::new(Self::pad_slice(
+                    values,
+                    shape,
+                    out_shape,
+                    pad_before,
+                    ft_core::Complex64::new(value as f32, 0.0),
+                )?))
+            }
+            TensorStorage::Complex128(values) => {
+                TensorStorage::Complex128(Arc::new(Self::pad_slice(
+                    values,
+                    shape,
+                    out_shape,
+                    pad_before,
+                    ft_core::Complex128::new(value, 0.0),
+                )?))
+            }
+        })
+    }
+
+    fn pad_slice<T: Clone>(
+        values: &[T],
+        shape: &[usize],
+        out_shape: &[usize],
+        pad_before: &[usize],
+        fill: T,
+    ) -> Result<Vec<T>, AutogradError> {
+        let out_numel = Self::checked_shape_numel(out_shape, "pad output shape volume overflow")?;
+        let in_numel = Self::checked_shape_numel(shape, "pad input shape volume overflow")?;
+        if values.len() < in_numel {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::InsufficientStorage {
+                    needed: in_numel,
+                    actual: values.len(),
+                },
+            ));
         }
+
+        let mut output = vec![fill; out_numel];
+        let in_strides = ft_core::contiguous_strides(shape);
+        let out_strides = ft_core::contiguous_strides(out_shape);
+        let ndim = shape.len();
+        let mut coords = vec![0usize; ndim];
+        for (flat_in, val) in values.iter().enumerate().take(in_numel) {
+            let mut rem = flat_in;
+            for d in 0..ndim {
+                coords[d] = rem / in_strides[d];
+                rem %= in_strides[d];
+            }
+            let mut flat_out = 0;
+            for d in 0..ndim {
+                flat_out += (coords[d] + pad_before[d]) * out_strides[d];
+            }
+            output[flat_out] = val.clone();
+        }
+        Ok(output)
     }
 
     fn compact_typed_storage(tensor: &DenseTensor) -> Result<TensorStorage, AutogradError> {
@@ -19548,6 +19606,77 @@ mod tests {
             tape.values_f32(out).unwrap(),
             vec![0.5f32, 1.0, 2.0, 3.0, 0.5, 0.5]
         );
+    }
+
+    #[test]
+    fn half_pad_preserves_dtype() {
+        let mut tape = TensorTape::new();
+        let f16_tensor = DenseTensor::from_contiguous_values_f16(
+            vec![Float16::from_f32(1.0), Float16::from_f32(2.0)],
+            vec![2],
+            Device::Cpu,
+        )
+        .unwrap();
+        let f16 = tape.leaf_tensor(f16_tensor, false);
+        let f16_padded = tape.pad(f16, &[1, 1], 0.5).unwrap();
+        assert_eq!(tape.dtype(f16_padded).unwrap(), DType::F16);
+        let f16_storage = tape.node(f16_padded).unwrap().tensor.typed_storage();
+        assert!(matches!(f16_storage, TensorStorage::F16(_)));
+        if let TensorStorage::F16(values) = f16_storage {
+            assert_eq!(
+                values
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect::<Vec<_>>(),
+                vec![0.5f32, 1.0, 2.0, 0.5]
+            );
+        }
+
+        let bf16_tensor = DenseTensor::from_contiguous_values_bf16(
+            vec![BFloat16::from_f32(3.0), BFloat16::from_f32(4.0)],
+            vec![2],
+            Device::Cpu,
+        )
+        .unwrap();
+        let bf16 = tape.leaf_tensor(bf16_tensor, false);
+        let bf16_padded = tape.pad(bf16, &[1, 1], -0.5).unwrap();
+        assert_eq!(tape.dtype(bf16_padded).unwrap(), DType::BF16);
+        let bf16_storage = tape.node(bf16_padded).unwrap().tensor.typed_storage();
+        assert!(matches!(bf16_storage, TensorStorage::BF16(_)));
+        if let TensorStorage::BF16(values) = bf16_storage {
+            assert_eq!(
+                values
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect::<Vec<_>>(),
+                vec![-0.5f32, 3.0, 4.0, -0.5]
+            );
+        }
+    }
+
+    #[test]
+    fn complex_pad_preserves_dtype_and_imaginary_values() {
+        let mut tape = TensorTape::new();
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![1], DType::Complex64, Device::Cpu),
+            TensorStorage::Complex64(Arc::new(vec![Complex64::new(1.0, -1.0)])),
+        )
+        .unwrap();
+        let input = tape.leaf_tensor(tensor, false);
+        let padded = tape.pad(input, &[1, 1], 0.5).unwrap();
+        assert_eq!(tape.dtype(padded).unwrap(), DType::Complex64);
+        let storage = tape.node(padded).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[
+                    Complex64::new(0.5, 0.0),
+                    Complex64::new(1.0, -1.0),
+                    Complex64::new(0.5, 0.0),
+                ]
+            );
+        }
     }
 
     #[test]
