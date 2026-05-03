@@ -17312,9 +17312,24 @@ print(json.dumps({"results": out}))
         let cases: Vec<(&str, Vec<f64>, Vec<usize>, usize)> = vec![
             // ----- 1-D, n=1 ----------
             ("len2_n1", vec![1.0, 4.0], vec![2], 1),
-            ("len5_n1_increasing", vec![1.0, 4.0, 9.0, 16.0, 25.0], vec![5], 1),
-            ("len5_n1_decreasing", vec![25.0, 16.0, 9.0, 4.0, 1.0], vec![5], 1),
-            ("len5_n1_alternating_signs", vec![1.0, -2.0, 3.0, -4.0, 5.0], vec![5], 1),
+            (
+                "len5_n1_increasing",
+                vec![1.0, 4.0, 9.0, 16.0, 25.0],
+                vec![5],
+                1,
+            ),
+            (
+                "len5_n1_decreasing",
+                vec![25.0, 16.0, 9.0, 4.0, 1.0],
+                vec![5],
+                1,
+            ),
+            (
+                "len5_n1_alternating_signs",
+                vec![1.0, -2.0, 3.0, -4.0, 5.0],
+                vec![5],
+                1,
+            ),
             // ----- 1-D, higher n ----------
             ("len5_n2", vec![1.0, 2.0, 4.0, 8.0, 16.0], vec![5], 2),
             ("len5_n3", vec![1.0, 2.0, 4.0, 8.0, 16.0], vec![5], 3),
@@ -17378,12 +17393,7 @@ print(json.dumps({"results": out}))
                 vec![5],
                 1,
             ),
-            (
-                "with_nan",
-                vec![0.0, f64::NAN, 2.0, 3.0],
-                vec![4],
-                1,
-            ),
+            ("with_nan", vec![0.0, f64::NAN, 2.0, 3.0], vec![4], 1),
             // ----- All zeros (gradient should propagate but values are 0) -----
             ("all_zeros_8_n1", vec![0.0; 8], vec![8], 1),
             ("all_zeros_8_n3", vec![0.0; 8], vec![8], 3),
@@ -17397,10 +17407,18 @@ print(json.dumps({"results": out}))
         ];
 
         assert!(
-            cases.len() >= 50 || cases.iter().map(|(_, vals, _, _)| vals.len()).sum::<usize>() >= 200,
+            cases.len() >= 50
+                || cases
+                    .iter()
+                    .map(|(_, vals, _, _)| vals.len())
+                    .sum::<usize>()
+                    >= 200,
             "diff conformance must have >= 50 cases or substantial input volume; got {} cases / {} total values",
             cases.len(),
-            cases.iter().map(|(_, vals, _, _)| vals.len()).sum::<usize>()
+            cases
+                .iter()
+                .map(|(_, vals, _, _)| vals.len())
+                .sum::<usize>()
         );
 
         // Encode payload.
@@ -17501,9 +17519,7 @@ print(json.dumps({"results": out}))
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|v| {
-                    f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap())
-                })
+                .map(|v| f64::from_bits(v.as_str().unwrap().parse::<u64>().unwrap()))
                 .collect();
 
             let xt = session
@@ -17599,8 +17615,20 @@ print(json.dumps({"results": out}))
         // Each case: (label, values, bins, min, max).
         let cases: Vec<(&str, Vec<f64>, usize, f64, f64)> = vec![
             // Trivial: all values inside, integer bin edges.
-            ("integers_in_range", vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 5, 0.0, 5.0),
-            ("ascending_floats", vec![0.5, 1.5, 2.5, 3.5, 4.5], 5, 0.0, 5.0),
+            (
+                "integers_in_range",
+                vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                5,
+                0.0,
+                5.0,
+            ),
+            (
+                "ascending_floats",
+                vec![0.5, 1.5, 2.5, 3.5, 4.5],
+                5,
+                0.0,
+                5.0,
+            ),
             // Out-of-range drop (the regression we just fixed).
             (
                 "drops_outliers_below_and_above",
@@ -17627,13 +17655,7 @@ print(json.dumps({"results": out}))
             // Single bin: every in-range value falls in bin 0.
             ("single_bin", vec![0.0, 0.25, 0.5, 0.75, 1.0], 1, 0.0, 1.0),
             // Many bins, sparse data.
-            (
-                "sparse_many_bins",
-                vec![0.5, 0.5, 5.5, 9.5],
-                10,
-                0.0,
-                10.0,
-            ),
+            ("sparse_many_bins", vec![0.5, 0.5, 5.5, 9.5], 10, 0.0, 10.0),
             // Empty input.
             ("empty_input", Vec::<f64>::new(), 5, 0.0, 5.0),
             // All values exactly at the lower boundary.
@@ -17641,7 +17663,13 @@ print(json.dumps({"results": out}))
             // All values exactly at the upper boundary.
             ("all_at_max", vec![4.0; 8], 4, 0.0, 4.0),
             // Negative range.
-            ("negative_range", vec![-3.0, -2.5, -1.5, -0.5, 0.0], 3, -3.0, 0.0),
+            (
+                "negative_range",
+                vec![-3.0, -2.5, -1.5, -0.5, 0.0],
+                3,
+                -3.0,
+                0.0,
+            ),
             // Asymmetric range with mixed signs.
             (
                 "asymmetric_mixed_sign",
@@ -18599,7 +18627,7 @@ print(json.dumps({"entr": out}))
             // Transcendental constants in (0, 1).
             std::f64::consts::FRAC_1_PI,
             std::f64::consts::FRAC_PI_4 / std::f64::consts::PI, // 0.25
-            std::f64::consts::E.recip(), // ≈ 0.3679
+            std::f64::consts::E.recip(),                        // ≈ 0.3679
             // Boundaries — poles.
             0.0,
             1.0,
@@ -18953,8 +18981,7 @@ print(json.dumps({"multigammaln": out}))
                         .tensor_variable(perturbed_plus, vec![*n, *n], false)
                         .expect("a+");
                     let det_plus_id = s_plus.tensor_linalg_det(a_plus).expect("det+");
-                    let det_plus =
-                        s_plus.tensor_values(det_plus_id).expect("det+ vals")[0];
+                    let det_plus = s_plus.tensor_values(det_plus_id).expect("det+ vals")[0];
 
                     let mut perturbed_minus = vals.clone();
                     perturbed_minus[idx] -= eps;
@@ -18963,8 +18990,7 @@ print(json.dumps({"multigammaln": out}))
                         .tensor_variable(perturbed_minus, vec![*n, *n], false)
                         .expect("a-");
                     let det_minus_id = s_minus.tensor_linalg_det(a_minus).expect("det-");
-                    let det_minus =
-                        s_minus.tensor_values(det_minus_id).expect("det- vals")[0];
+                    let det_minus = s_minus.tensor_values(det_minus_id).expect("det- vals")[0];
 
                     fd[idx] = (det_plus - det_minus) / (2.0 * eps);
                 }
@@ -19216,68 +19242,103 @@ print(json.dumps({"multigammaln": out}))
         // Each case: (label, flat_row_major, n) — the matrix is n×n.
         let cases: Vec<(&str, Vec<f64>, usize)> = vec![
             // Identity → det = 1.
-            ("identity_3x3", vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3),
-            ("identity_5x5", {
-                let mut m = vec![0.0; 25];
-                for i in 0..5 { m[i * 5 + i] = 1.0; }
-                m
-            }, 5),
+            (
+                "identity_3x3",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+            ),
+            (
+                "identity_5x5",
+                {
+                    let mut m = vec![0.0; 25];
+                    for i in 0..5 {
+                        m[i * 5 + i] = 1.0;
+                    }
+                    m
+                },
+                5,
+            ),
             // Scaled identity → det = scale^n.
-            ("scaled_identity_3x3", vec![2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0], 3),
+            (
+                "scaled_identity_3x3",
+                vec![2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0],
+                3,
+            ),
             // Diagonal → det = product of diag.
-            ("diagonal_4x4", {
-                let mut m = vec![0.0; 16];
-                m[0] = 2.0; m[5] = 3.0; m[10] = 5.0; m[15] = 7.0;
-                m
-            }, 4),
+            (
+                "diagonal_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    m[0] = 2.0;
+                    m[5] = 3.0;
+                    m[10] = 5.0;
+                    m[15] = 7.0;
+                    m
+                },
+                4,
+            ),
             // 2x2 specific matrices.
             ("matrix_2x2_pos_det", vec![1.0, 2.0, 3.0, 4.0], 2),
             ("matrix_2x2_neg_det", vec![1.0, 4.0, 3.0, 2.0], 2),
             ("matrix_2x2_zero_det", vec![1.0, 2.0, 2.0, 4.0], 2),
             // 3x3 with known determinant.
-            ("matrix_3x3_general", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0], 3),
+            (
+                "matrix_3x3_general",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0],
+                3,
+            ),
             // Singular: row 2 = 2 * row 0.
-            ("singular_3x3", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 2.0, 4.0, 6.0], 3),
+            (
+                "singular_3x3",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 2.0, 4.0, 6.0],
+                3,
+            ),
             // Upper triangular (det = product of diag).
-            ("upper_triangular_4x4", vec![
-                2.0, 1.0, 1.0, 1.0,
-                0.0, 3.0, 2.0, 1.0,
-                0.0, 0.0, 5.0, 3.0,
-                0.0, 0.0, 0.0, 7.0,
-            ], 4),
+            (
+                "upper_triangular_4x4",
+                vec![
+                    2.0, 1.0, 1.0, 1.0, 0.0, 3.0, 2.0, 1.0, 0.0, 0.0, 5.0, 3.0, 0.0, 0.0, 0.0, 7.0,
+                ],
+                4,
+            ),
             // Lower triangular.
-            ("lower_triangular_4x4", vec![
-                2.0, 0.0, 0.0, 0.0,
-                1.0, 3.0, 0.0, 0.0,
-                1.0, 2.0, 5.0, 0.0,
-                1.0, 1.0, 3.0, 7.0,
-            ], 4),
+            (
+                "lower_triangular_4x4",
+                vec![
+                    2.0, 0.0, 0.0, 0.0, 1.0, 3.0, 0.0, 0.0, 1.0, 2.0, 5.0, 0.0, 1.0, 1.0, 3.0, 7.0,
+                ],
+                4,
+            ),
             // Permutation (det = ±1).
-            ("permutation_3x3", vec![
-                0.0, 1.0, 0.0,
-                0.0, 0.0, 1.0,
-                1.0, 0.0, 0.0,
-            ], 3),
+            (
+                "permutation_3x3",
+                vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+                3,
+            ),
             // Negative entries.
-            ("negative_entries_3x3", vec![
-                -1.0,  2.0, -3.0,
-                 4.0, -5.0,  6.0,
-                -7.0,  8.0, -9.0,
-            ], 3),
+            (
+                "negative_entries_3x3",
+                vec![-1.0, 2.0, -3.0, 4.0, -5.0, 6.0, -7.0, 8.0, -9.0],
+                3,
+            ),
             // Scaled matrix where the determinant magnitude scales
             // as scale^n.
             ("scaled_2x2", vec![10.0, 0.0, 0.0, 10.0], 2),
             // Hilbert-like matrix (notoriously ill-conditioned but
             // small enough that LU is still accurate).
-            ("hilbert_3x3", {
-                let mut m = vec![0.0; 9];
-                for i in 0..3 {
-                    for j in 0..3 {
-                        m[i * 3 + j] = 1.0 / ((i + j + 1) as f64);
+            (
+                "hilbert_3x3",
+                {
+                    let mut m = vec![0.0; 9];
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            m[i * 3 + j] = 1.0 / ((i + j + 1) as f64);
+                        }
                     }
-                }
-                m
-            }, 3),
+                    m
+                },
+                3,
+            ),
             // 1x1 trivial.
             ("scalar_1x1", vec![7.5], 1),
             ("scalar_neg_1x1", vec![-3.0], 1),
@@ -19355,7 +19416,11 @@ print(json.dumps({"results": out}))
         for (i, (label, vals, n)) in cases.iter().enumerate() {
             let result_obj = &results[i];
             let want = f64::from_bits(
-                result_obj["det_bits"].as_str().unwrap().parse::<u64>().unwrap(),
+                result_obj["det_bits"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
             );
             let xt = session
                 .tensor_variable(vals.clone(), vec![*n, *n], false)
@@ -19417,50 +19482,93 @@ print(json.dumps({"results": out}))
         // log-space matters (large-magnitude determinant) and where
         // sign disentanglement matters (negative det).
         let cases: Vec<(&str, Vec<f64>, usize)> = vec![
-            ("identity_3x3", vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3),
-            ("scaled_identity_3x3", vec![2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0], 3),
-            ("diagonal_4x4_positive", {
-                let mut m = vec![0.0; 16];
-                m[0] = 2.0; m[5] = 3.0; m[10] = 5.0; m[15] = 7.0;
-                m
-            }, 4),
+            (
+                "identity_3x3",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+            ),
+            (
+                "scaled_identity_3x3",
+                vec![2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0],
+                3,
+            ),
+            (
+                "diagonal_4x4_positive",
+                {
+                    let mut m = vec![0.0; 16];
+                    m[0] = 2.0;
+                    m[5] = 3.0;
+                    m[10] = 5.0;
+                    m[15] = 7.0;
+                    m
+                },
+                4,
+            ),
             // sign = -1 case (negative det via row swap).
             ("matrix_2x2_neg_det", vec![1.0, 4.0, 3.0, 2.0], 2),
             // Singular: sign = 0, logabsdet = -inf.
             ("singular_2x2", vec![1.0, 2.0, 2.0, 4.0], 2),
-            ("singular_3x3", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 2.0, 4.0, 6.0], 3),
+            (
+                "singular_3x3",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 2.0, 4.0, 6.0],
+                3,
+            ),
             // Large-magnitude det that overflows direct det but
             // is well-defined in log space: 100 * I, n=8.
-            ("large_diag_8x8", {
-                let mut m = vec![0.0; 64];
-                for i in 0..8 { m[i * 8 + i] = 100.0; }
-                m
-            }, 8),
+            (
+                "large_diag_8x8",
+                {
+                    let mut m = vec![0.0; 64];
+                    for i in 0..8 {
+                        m[i * 8 + i] = 100.0;
+                    }
+                    m
+                },
+                8,
+            ),
             // Tiny-magnitude det that underflows direct det: 0.01 * I, n=8.
-            ("small_diag_8x8", {
-                let mut m = vec![0.0; 64];
-                for i in 0..8 { m[i * 8 + i] = 0.01; }
-                m
-            }, 8),
+            (
+                "small_diag_8x8",
+                {
+                    let mut m = vec![0.0; 64];
+                    for i in 0..8 {
+                        m[i * 8 + i] = 0.01;
+                    }
+                    m
+                },
+                8,
+            ),
             // Upper triangular: det = product of diag.
-            ("upper_triangular_4x4", vec![
-                2.0, 1.0, 1.0, 1.0,
-                0.0, 3.0, 1.0, 1.0,
-                0.0, 0.0, 5.0, 1.0,
-                0.0, 0.0, 0.0, 7.0,
-            ], 4),
+            (
+                "upper_triangular_4x4",
+                vec![
+                    2.0, 1.0, 1.0, 1.0, 0.0, 3.0, 1.0, 1.0, 0.0, 0.0, 5.0, 1.0, 0.0, 0.0, 0.0, 7.0,
+                ],
+                4,
+            ),
             // Negative diagonals — sign emerges from product of signs.
-            ("diagonal_neg_4x4", {
-                let mut m = vec![0.0; 16];
-                m[0] = -2.0; m[5] = 3.0; m[10] = -5.0; m[15] = 7.0;
-                m
-            }, 4),
+            (
+                "diagonal_neg_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    m[0] = -2.0;
+                    m[5] = 3.0;
+                    m[10] = -5.0;
+                    m[15] = 7.0;
+                    m
+                },
+                4,
+            ),
             // 1x1 corner cases.
             ("scalar_positive", vec![3.5], 1),
             ("scalar_negative", vec![-2.5], 1),
             ("scalar_zero", vec![0.0], 1),
             // General nonsingular 3x3.
-            ("matrix_3x3_general", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0], 3),
+            (
+                "matrix_3x3_general",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0],
+                3,
+            ),
         ];
 
         let payload = json!({
@@ -19541,10 +19649,18 @@ print(json.dumps({"slogdet": out}))
         for (i, (label, vals, n)) in cases.iter().enumerate() {
             let result_obj = &results[i];
             let want_sign = f64::from_bits(
-                result_obj["sign_bits"].as_str().unwrap().parse::<u64>().unwrap(),
+                result_obj["sign_bits"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
             );
             let want_logabsdet = f64::from_bits(
-                result_obj["logabsdet_bits"].as_str().unwrap().parse::<u64>().unwrap(),
+                result_obj["logabsdet_bits"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
             );
             let xt = session
                 .tensor_variable(vals.clone(), vec![*n, *n], false)
@@ -19552,9 +19668,7 @@ print(json.dumps({"slogdet": out}))
             let (sign_id, logabsdet_id) = session
                 .tensor_linalg_slogdet(xt)
                 .expect("tensor_linalg_slogdet");
-            let got_sign = session
-                .tensor_values(sign_id)
-                .expect("slogdet sign read")[0];
+            let got_sign = session.tensor_values(sign_id).expect("slogdet sign read")[0];
             let got_logabsdet = session
                 .tensor_values(logabsdet_id)
                 .expect("slogdet logabsdet read")[0];
@@ -19616,46 +19730,71 @@ print(json.dumps({"slogdet": out}))
         // singular matrix raises LinAlgError).
         let cases: Vec<(&str, Vec<f64>, usize)> = vec![
             // Identity → inverse is identity.
-            ("identity_3x3", vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3),
+            (
+                "identity_3x3",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+            ),
             // Diagonal → inverse is reciprocal-diagonal.
-            ("diagonal_4x4", {
-                let mut m = vec![0.0; 16];
-                m[0] = 2.0; m[5] = 4.0; m[10] = 5.0; m[15] = 8.0;
-                m
-            }, 4),
+            (
+                "diagonal_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    m[0] = 2.0;
+                    m[5] = 4.0;
+                    m[10] = 5.0;
+                    m[15] = 8.0;
+                    m
+                },
+                4,
+            ),
             // Scaled identity.
-            ("scaled_identity_3x3", vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0], 3),
+            (
+                "scaled_identity_3x3",
+                vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0],
+                3,
+            ),
             // Generic 2x2.
             ("general_2x2", vec![4.0, 7.0, 2.0, 6.0], 2),
             // Generic 3x3 (well-conditioned).
-            ("general_3x3", vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0], 3),
+            (
+                "general_3x3",
+                vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
+                3,
+            ),
             // Permutation matrix → inverse is its transpose.
-            ("permutation_3x3", vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0], 3),
+            (
+                "permutation_3x3",
+                vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+                3,
+            ),
             // Symmetric positive definite (build A = M^T M with random M).
-            ("spd_4x4", vec![
-                4.0, 1.0, 0.0, 0.0,
-                1.0, 4.0, 1.0, 0.0,
-                0.0, 1.0, 4.0, 1.0,
-                0.0, 0.0, 1.0, 4.0,
-            ], 4),
+            (
+                "spd_4x4",
+                vec![
+                    4.0, 1.0, 0.0, 0.0, 1.0, 4.0, 1.0, 0.0, 0.0, 1.0, 4.0, 1.0, 0.0, 0.0, 1.0, 4.0,
+                ],
+                4,
+            ),
             // Upper triangular nonsingular.
-            ("upper_triangular_3x3", vec![
-                2.0, 1.0, 1.0,
-                0.0, 3.0, 1.0,
-                0.0, 0.0, 5.0,
-            ], 3),
+            (
+                "upper_triangular_3x3",
+                vec![2.0, 1.0, 1.0, 0.0, 3.0, 1.0, 0.0, 0.0, 5.0],
+                3,
+            ),
             // 1x1 scalar.
             ("scalar_1x1", vec![5.0], 1),
             // Negative-determinant matrix.
             ("neg_det_2x2", vec![1.0, 2.0, 3.0, 1.0], 2),
             // 5x5 with mixed signs.
-            ("mixed_5x5", vec![
-                1.0, 0.0, -1.0, 0.0, 0.0,
-                0.0, 2.0, 0.0, -1.0, 0.0,
-                0.0, 0.0, 3.0, 0.0, -1.0,
-                -1.0, 0.0, 0.0, 4.0, 0.0,
-                0.0, -1.0, 0.0, 0.0, 5.0,
-            ], 5),
+            (
+                "mixed_5x5",
+                vec![
+                    1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 2.0, 0.0, -1.0, 0.0, 0.0, 0.0, 3.0, 0.0, -1.0,
+                    -1.0, 0.0, 0.0, 4.0, 0.0, 0.0, -1.0, 0.0, 0.0, 5.0,
+                ],
+                5,
+            ),
         ];
 
         let payload = json!({
@@ -19798,68 +19937,83 @@ print(json.dumps({"inv": out}))
         // nrhs). A is n×n, B is n×nrhs, output X is n×nrhs.
         type SolveCase = (&'static str, Vec<f64>, Vec<f64>, usize, usize);
         let cases: Vec<SolveCase> = vec![
-            ("identity_3x3_single_rhs",
+            (
+                "identity_3x3_single_rhs",
                 vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 vec![5.0, -3.0, 7.0],
-                3, 1),
-            ("identity_3x3_multi_rhs",
+                3,
+                1,
+            ),
+            (
+                "identity_3x3_multi_rhs",
                 vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0],
-                3, 2),
-            ("diagonal_4x4",
+                3,
+                2,
+            ),
+            (
+                "diagonal_4x4",
                 {
                     let mut m = vec![0.0; 16];
-                    m[0] = 2.0; m[5] = 4.0; m[10] = 5.0; m[15] = 8.0;
+                    m[0] = 2.0;
+                    m[5] = 4.0;
+                    m[10] = 5.0;
+                    m[15] = 8.0;
                     m
                 },
                 vec![10.0, 20.0, 30.0, 40.0],
-                4, 1),
-            ("general_2x2",
+                4,
+                1,
+            ),
+            (
+                "general_2x2",
                 vec![4.0, 7.0, 2.0, 6.0],
                 vec![15.0, 20.0],
-                2, 1),
-            ("general_3x3",
+                2,
+                1,
+            ),
+            (
+                "general_3x3",
                 vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
                 vec![1.0, 2.0, 3.0],
-                3, 1),
-            ("spd_4x4_multi_rhs", vec![
-                4.0, 1.0, 0.0, 0.0,
-                1.0, 4.0, 1.0, 0.0,
-                0.0, 1.0, 4.0, 1.0,
-                0.0, 0.0, 1.0, 4.0,
-            ],
-                vec![1.0, 0.0,
-                     0.0, 1.0,
-                     0.0, 0.0,
-                     0.0, 0.0],
-                4, 2),
-            ("upper_triangular_3x3",
+                3,
+                1,
+            ),
+            (
+                "spd_4x4_multi_rhs",
                 vec![
-                    2.0, 1.0, 1.0,
-                    0.0, 3.0, 1.0,
-                    0.0, 0.0, 5.0,
+                    4.0, 1.0, 0.0, 0.0, 1.0, 4.0, 1.0, 0.0, 0.0, 1.0, 4.0, 1.0, 0.0, 0.0, 1.0, 4.0,
                 ],
+                vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                4,
+                2,
+            ),
+            (
+                "upper_triangular_3x3",
+                vec![2.0, 1.0, 1.0, 0.0, 3.0, 1.0, 0.0, 0.0, 5.0],
                 vec![6.0, 7.0, 10.0],
-                3, 1),
+                3,
+                1,
+            ),
             ("scalar_1x1", vec![5.0], vec![15.0], 1, 1),
-            ("neg_det_2x2",
+            (
+                "neg_det_2x2",
                 vec![1.0, 2.0, 3.0, 1.0],
                 vec![3.0, 4.0],
-                2, 1),
+                2,
+                1,
+            ),
             // Multiple RHS with mixed-sign 5x5.
-            ("mixed_5x5_multi_rhs", vec![
-                1.0, 0.0, -1.0, 0.0, 0.0,
-                0.0, 2.0, 0.0, -1.0, 0.0,
-                0.0, 0.0, 3.0, 0.0, -1.0,
-                -1.0, 0.0, 0.0, 4.0, 0.0,
-                0.0, -1.0, 0.0, 0.0, 5.0,
-            ],
-                vec![1.0, 6.0,
-                     2.0, 7.0,
-                     3.0, 8.0,
-                     4.0, 9.0,
-                     5.0, 10.0],
-                5, 2),
+            (
+                "mixed_5x5_multi_rhs",
+                vec![
+                    1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 2.0, 0.0, -1.0, 0.0, 0.0, 0.0, 3.0, 0.0, -1.0,
+                    -1.0, 0.0, 0.0, 4.0, 0.0, 0.0, -1.0, 0.0, 0.0, 5.0,
+                ],
+                vec![1.0, 6.0, 2.0, 7.0, 3.0, 8.0, 4.0, 9.0, 5.0, 10.0],
+                5,
+                2,
+            ),
         ];
 
         let payload = json!({
@@ -19949,11 +20103,17 @@ print(json.dumps({"solve": out}))
             let at = session
                 .tensor_variable(a_vals.clone(), vec![*n, *n], false)
                 .expect("at");
-            let b_shape = if *nrhs == 1 { vec![*n] } else { vec![*n, *nrhs] };
+            let b_shape = if *nrhs == 1 {
+                vec![*n]
+            } else {
+                vec![*n, *nrhs]
+            };
             let bt = session
                 .tensor_variable(b_vals.clone(), b_shape, false)
                 .expect("bt");
-            let x_id = session.tensor_linalg_solve(at, bt).expect("tensor_linalg_solve");
+            let x_id = session
+                .tensor_linalg_solve(at, bt)
+                .expect("tensor_linalg_solve");
             let got = session.tensor_values(x_id).expect("got");
             assert_eq!(got.len(), want.len(), "{label}: shape mismatch");
 
@@ -20011,36 +20171,64 @@ print(json.dumps({"solve": out}))
         // standard examples).
         let cases: Vec<(&str, Vec<f64>, usize)> = vec![
             // Identity → L = identity.
-            ("identity_3x3", vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3),
+            (
+                "identity_3x3",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+            ),
             // Scaled identity → L = sqrt(scale) * identity.
-            ("scaled_identity_3x3", vec![4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 4.0], 3),
+            (
+                "scaled_identity_3x3",
+                vec![4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 4.0],
+                3,
+            ),
             // Diagonal SPD → L = diag(sqrt(diag(A))).
-            ("diagonal_4x4_spd", {
-                let mut m = vec![0.0; 16];
-                m[0] = 4.0; m[5] = 9.0; m[10] = 16.0; m[15] = 25.0;
-                m
-            }, 4),
+            (
+                "diagonal_4x4_spd",
+                {
+                    let mut m = vec![0.0; 16];
+                    m[0] = 4.0;
+                    m[5] = 9.0;
+                    m[10] = 16.0;
+                    m[15] = 25.0;
+                    m
+                },
+                4,
+            ),
             // Tridiagonal SPD (diagonally dominant).
-            ("spd_tridiag_4x4", vec![
-                4.0, 1.0, 0.0, 0.0,
-                1.0, 4.0, 1.0, 0.0,
-                0.0, 1.0, 4.0, 1.0,
-                0.0, 0.0, 1.0, 4.0,
-            ], 4),
+            (
+                "spd_tridiag_4x4",
+                vec![
+                    4.0, 1.0, 0.0, 0.0, 1.0, 4.0, 1.0, 0.0, 0.0, 1.0, 4.0, 1.0, 0.0, 0.0, 1.0, 4.0,
+                ],
+                4,
+            ),
             // Hilbert matrix (notoriously ill-conditioned but SPD up
             // to small n; n=3 is fine for f64).
-            ("hilbert_3x3", vec![
-                1.0,        1.0/2.0,    1.0/3.0,
-                1.0/2.0,    1.0/3.0,    1.0/4.0,
-                1.0/3.0,    1.0/4.0,    1.0/5.0,
-            ], 3),
+            (
+                "hilbert_3x3",
+                vec![
+                    1.0,
+                    1.0 / 2.0,
+                    1.0 / 3.0,
+                    1.0 / 2.0,
+                    1.0 / 3.0,
+                    1.0 / 4.0,
+                    1.0 / 3.0,
+                    1.0 / 4.0,
+                    1.0 / 5.0,
+                ],
+                3,
+            ),
             // Pascal-style SPD 4x4.
-            ("pascal_4x4", vec![
-                1.0,  1.0,  1.0,  1.0,
-                1.0,  2.0,  3.0,  4.0,
-                1.0,  3.0,  6.0, 10.0,
-                1.0,  4.0, 10.0, 20.0,
-            ], 4),
+            (
+                "pascal_4x4",
+                vec![
+                    1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 1.0, 3.0, 6.0, 10.0, 1.0, 4.0, 10.0,
+                    20.0,
+                ],
+                4,
+            ),
             // 1x1 scalar SPD.
             ("scalar_1x1", vec![25.0], 1),
             // 2x2 explicit SPD.
@@ -20196,33 +20384,47 @@ print(json.dumps({"cholesky": out}))
         type QrCase = (&'static str, Vec<f64>, usize, usize);
         let cases: Vec<QrCase> = vec![
             // Square 3x3.
-            ("square_3x3", vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0], 3, 3),
+            (
+                "square_3x3",
+                vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
+                3,
+                3,
+            ),
             // Identity → Q = I, R = I.
-            ("identity_4x4", {
-                let mut m = vec![0.0; 16];
-                for i in 0..4 { m[i * 4 + i] = 1.0; }
-                m
-            }, 4, 4),
+            (
+                "identity_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    for i in 0..4 {
+                        m[i * 4 + i] = 1.0;
+                    }
+                    m
+                },
+                4,
+                4,
+            ),
             // Tall (m > n).
-            ("tall_4x2", vec![
-                1.0, 2.0,
-                3.0, 4.0,
-                5.0, 6.0,
-                7.0, 8.0,
-            ], 4, 2),
-            ("tall_5x3", vec![
-                1.0, 2.0, 3.0,
-                4.0, 5.0, 6.0,
-                7.0, 8.0, 9.0,
-                10.0, 11.0, 12.0,
-                13.0, 14.0, 16.0,
-            ], 5, 3),
+            (
+                "tall_4x2",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                4,
+                2,
+            ),
+            (
+                "tall_5x3",
+                vec![
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 16.0,
+                ],
+                5,
+                3,
+            ),
             // Square upper-triangular → R = A, Q = I.
-            ("upper_triangular_3x3", vec![
-                2.0, 1.0, 1.0,
-                0.0, 3.0, 1.0,
-                0.0, 0.0, 5.0,
-            ], 3, 3),
+            (
+                "upper_triangular_3x3",
+                vec![2.0, 1.0, 1.0, 0.0, 3.0, 1.0, 0.0, 0.0, 5.0],
+                3,
+                3,
+            ),
             // 1x1.
             ("scalar_1x1", vec![5.0], 1, 1),
             // 2x2 with negative determinant.
@@ -20413,30 +20615,54 @@ print(json.dumps({"qr": out}))
 
         type SvdCase = (&'static str, Vec<f64>, usize, usize);
         let cases: Vec<SvdCase> = vec![
-            ("square_3x3", vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0], 3, 3),
-            ("identity_4x4", {
-                let mut m = vec![0.0; 16];
-                for i in 0..4 { m[i * 4 + i] = 1.0; }
-                m
-            }, 4, 4),
-            ("tall_4x2", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 4, 2),
-            ("wide_2x4", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 2, 4),
-            ("upper_triangular_3x3", vec![
-                2.0, 1.0, 1.0,
-                0.0, 3.0, 1.0,
-                0.0, 0.0, 5.0,
-            ], 3, 3),
+            (
+                "square_3x3",
+                vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
+                3,
+                3,
+            ),
+            (
+                "identity_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    for i in 0..4 {
+                        m[i * 4 + i] = 1.0;
+                    }
+                    m
+                },
+                4,
+                4,
+            ),
+            (
+                "tall_4x2",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                4,
+                2,
+            ),
+            (
+                "wide_2x4",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                2,
+                4,
+            ),
+            (
+                "upper_triangular_3x3",
+                vec![2.0, 1.0, 1.0, 0.0, 3.0, 1.0, 0.0, 0.0, 5.0],
+                3,
+                3,
+            ),
             ("scalar_1x1", vec![5.0], 1, 1),
             // Rank-deficient 3x3 — rows are linearly dependent so the
             // matrix has rank 2 (third singular value is 0). Both
             // numpy and FrankenTorch (post-zs8a fix) complete the
             // U basis with a unit vector orthogonal to the column
             // space, so U^T U = I_3 holds and reconstruction is fine.
-            ("rank_deficient_3x3", vec![
-                1.0, 2.0, 3.0,
-                4.0, 5.0, 6.0,
-                7.0, 8.0, 9.0,
-            ], 3, 3),
+            (
+                "rank_deficient_3x3",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                3,
+                3,
+            ),
         ];
 
         let payload = json!({
@@ -20663,31 +20889,58 @@ print(json.dumps({"svd": out}))
         type PinvCase = (&'static str, Vec<f64>, usize, usize);
         let cases: Vec<PinvCase> = vec![
             // Square nonsingular → pinv = inv.
-            ("square_3x3_nonsingular", vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0], 3, 3),
-            ("identity_4x4", {
-                let mut m = vec![0.0; 16];
-                for i in 0..4 { m[i * 4 + i] = 1.0; }
-                m
-            }, 4, 4),
-            ("scaled_identity_3x3", vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0], 3, 3),
+            (
+                "square_3x3_nonsingular",
+                vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
+                3,
+                3,
+            ),
+            (
+                "identity_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    for i in 0..4 {
+                        m[i * 4 + i] = 1.0;
+                    }
+                    m
+                },
+                4,
+                4,
+            ),
+            (
+                "scaled_identity_3x3",
+                vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0],
+                3,
+                3,
+            ),
             // Diagonal → pinv = reciprocal-diagonal.
-            ("diagonal_4x4", {
-                let mut m = vec![0.0; 16];
-                m[0] = 2.0; m[5] = 4.0; m[10] = 5.0; m[15] = 8.0;
-                m
-            }, 4, 4),
+            (
+                "diagonal_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    m[0] = 2.0;
+                    m[5] = 4.0;
+                    m[10] = 5.0;
+                    m[15] = 8.0;
+                    m
+                },
+                4,
+                4,
+            ),
             // Tall full column rank → A+ = (A^T A)^-1 A^T.
-            ("tall_4x2_full_rank", vec![
-                1.0, 2.0,
-                3.0, 4.0,
-                5.0, 6.0,
-                7.0, 8.0,
-            ], 4, 2),
+            (
+                "tall_4x2_full_rank",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                4,
+                2,
+            ),
             // Wide full row rank → A+ = A^T (A A^T)^-1.
-            ("wide_2x4_full_rank", vec![
-                1.0, 2.0, 3.0, 4.0,
-                5.0, 6.0, 7.0, 8.0,
-            ], 2, 4),
+            (
+                "wide_2x4_full_rank",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                2,
+                4,
+            ),
             // 1x1 scalar.
             ("scalar_1x1_nonzero", vec![5.0], 1, 1),
             // Rank-deficient 3x3 — pinv via SVD with the
@@ -20695,11 +20948,12 @@ print(json.dumps({"svd": out}))
             // pseudoinverse: zero singular values get reciprocals of
             // 0 (zeroed out), so the completed-basis U columns
             // contribute nothing to A+ and the result matches numpy.
-            ("rank_deficient_3x3", vec![
-                1.0, 2.0, 3.0,
-                4.0, 5.0, 6.0,
-                7.0, 8.0, 9.0,
-            ], 3, 3),
+            (
+                "rank_deficient_3x3",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                3,
+                3,
+            ),
         ];
 
         let payload = json!({
@@ -20843,30 +21097,46 @@ print(json.dumps({"pinv": out}))
         // and must be symmetric.
         let cases: Vec<(&str, Vec<f64>, usize)> = vec![
             // Identity → eigenvalues all 1.
-            ("identity_3x3", vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3),
+            (
+                "identity_3x3",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+            ),
             // Diagonal → eigenvalues are diagonal entries (sorted).
-            ("diagonal_4x4", {
-                let mut m = vec![0.0; 16];
-                m[0] = 5.0; m[5] = 2.0; m[10] = 8.0; m[15] = 1.0;
-                m
-            }, 4),
+            (
+                "diagonal_4x4",
+                {
+                    let mut m = vec![0.0; 16];
+                    m[0] = 5.0;
+                    m[5] = 2.0;
+                    m[10] = 8.0;
+                    m[15] = 1.0;
+                    m
+                },
+                4,
+            ),
             // Scaled identity → eigenvalues all == scale.
-            ("scaled_identity_3x3", vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0], 3),
+            (
+                "scaled_identity_3x3",
+                vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0],
+                3,
+            ),
             // Symmetric tridiagonal SPD.
-            ("spd_tridiag_4x4", vec![
-                4.0, 1.0, 0.0, 0.0,
-                1.0, 4.0, 1.0, 0.0,
-                0.0, 1.0, 4.0, 1.0,
-                0.0, 0.0, 1.0, 4.0,
-            ], 4),
+            (
+                "spd_tridiag_4x4",
+                vec![
+                    4.0, 1.0, 0.0, 0.0, 1.0, 4.0, 1.0, 0.0, 0.0, 1.0, 4.0, 1.0, 0.0, 0.0, 1.0, 4.0,
+                ],
+                4,
+            ),
             // Symmetric with mixed-sign eigenvalues.
             ("symmetric_2x2_mixed", vec![1.0, 2.0, 2.0, -1.0], 2),
             // Symmetric 3x3 with repeated eigenvalues (degenerate).
-            ("symmetric_3x3_repeated", vec![
-                2.0, 0.0, 0.0,
-                0.0, 2.0, 0.0,
-                0.0, 0.0, 1.0,
-            ], 3),
+            (
+                "symmetric_3x3_repeated",
+                vec![2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+            ),
             // 1x1 scalar (eigenvalue = the scalar itself).
             ("scalar_1x1", vec![3.0], 1),
             // 2x2 symmetric with real distinct eigenvalues.
@@ -20966,9 +21236,7 @@ print(json.dumps({"eigh": out}))
             let xt = session
                 .tensor_variable(vals.clone(), vec![*n, *n], false)
                 .expect("xt");
-            let (evals_id, evecs_id) = session
-                .tensor_linalg_eigh(xt)
-                .expect("tensor_linalg_eigh");
+            let (evals_id, evecs_id) = session.tensor_linalg_eigh(xt).expect("tensor_linalg_eigh");
             let evals = session.tensor_values(evals_id).expect("evals");
             let evecs = session.tensor_values(evecs_id).expect("evecs");
 
@@ -21069,51 +21337,52 @@ print(json.dumps({"eigh": out}))
         type LstsqCase = (&'static str, Vec<f64>, Vec<f64>, usize, usize, usize);
         let cases: Vec<LstsqCase> = vec![
             // Square nonsingular: lstsq reduces to solve.
-            ("square_nonsingular_3x3",
+            (
+                "square_nonsingular_3x3",
                 vec![1.0, 2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 0.0],
                 vec![1.0, 2.0, 3.0],
-                3, 3, 1),
+                3,
+                3,
+                1,
+            ),
             // Tall full column rank: classic overdetermined LS.
-            ("tall_4x2_overdetermined",
-                vec![
-                    1.0, 1.0,
-                    1.0, 2.0,
-                    1.0, 3.0,
-                    1.0, 4.0,
-                ],
+            (
+                "tall_4x2_overdetermined",
+                vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0],
                 // y = a + b*x. Use y = [1, 3, 5, 7] which is line a=−1, b=2.
                 vec![1.0, 3.0, 5.0, 7.0],
-                4, 2, 1),
-            ("tall_5x3_overdetermined",
+                4,
+                2,
+                1,
+            ),
+            (
+                "tall_5x3_overdetermined",
                 vec![
-                    1.0, 0.0, 0.0,
-                    1.0, 1.0, 0.0,
-                    1.0, 0.0, 1.0,
-                    1.0, 1.0, 1.0,
-                    1.0, 2.0, 0.0,
+                    1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 0.0,
                 ],
                 vec![1.0, 2.0, 3.0, 4.0, 5.0],
-                5, 3, 1),
+                5,
+                3,
+                1,
+            ),
             // Multi-RHS overdetermined.
-            ("tall_4x2_multi_rhs",
-                vec![
-                    1.0, 1.0,
-                    1.0, 2.0,
-                    1.0, 3.0,
-                    1.0, 4.0,
-                ],
-                vec![
-                    1.0, 0.0,
-                    3.0, 1.0,
-                    5.0, 2.0,
-                    7.0, 3.0,
-                ],
-                4, 2, 2),
+            (
+                "tall_4x2_multi_rhs",
+                vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0],
+                vec![1.0, 0.0, 3.0, 1.0, 5.0, 2.0, 7.0, 3.0],
+                4,
+                2,
+                2,
+            ),
             // Identity → X = B.
-            ("identity_3x3",
+            (
+                "identity_3x3",
                 vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 vec![5.0, -3.0, 7.0],
-                3, 3, 1),
+                3,
+                3,
+                1,
+            ),
             // 1x1 scalar.
             ("scalar_1x1", vec![5.0], vec![15.0], 1, 1, 1),
         ];
@@ -21209,7 +21478,11 @@ print(json.dumps({"lstsq": out}))
             let at = session
                 .tensor_variable(a_vals.clone(), vec![*m, *n], false)
                 .expect("at");
-            let b_shape = if *nrhs == 1 { vec![*m] } else { vec![*m, *nrhs] };
+            let b_shape = if *nrhs == 1 {
+                vec![*m]
+            } else {
+                vec![*m, *nrhs]
+            };
             let bt = session
                 .tensor_variable(b_vals.clone(), b_shape, false)
                 .expect("bt");
@@ -21273,27 +21546,49 @@ print(json.dumps({"lstsq": out}))
         type MnCase = (&'static str, &'static str, Vec<f64>, usize, usize);
         let cases: Vec<MnCase> = vec![
             // Frobenius across multiple shapes / sign patterns.
-            ("identity_3x3_fro", "fro",
-                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3, 3),
+            (
+                "identity_3x3_fro",
+                "fro",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+                3,
+            ),
             ("scaled_2x2_fro", "fro", vec![2.0, 0.0, 0.0, 2.0], 2, 2),
             ("mixed_2x2_fro", "fro", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
-            ("rectangular_3x4_fro", "fro", vec![
-                1.0, 2.0, 3.0, 4.0,
-                5.0, 6.0, 7.0, 8.0,
-                9.0, 10.0, 11.0, 12.0,
-            ], 3, 4),
+            (
+                "rectangular_3x4_fro",
+                "fro",
+                vec![
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+                ],
+                3,
+                4,
+            ),
             // Operator-1 norm (max abs column sum).
             ("simple_2x2_op1", "1", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
-            ("identity_3x3_op1", "1",
-                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3, 3),
-            ("rectangular_2x4_op1", "1", vec![
-                1.0, -2.0, 3.0, -4.0,
-                5.0, 6.0, -7.0, 8.0,
-            ], 2, 4),
+            (
+                "identity_3x3_op1",
+                "1",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+                3,
+            ),
+            (
+                "rectangular_2x4_op1",
+                "1",
+                vec![1.0, -2.0, 3.0, -4.0, 5.0, 6.0, -7.0, 8.0],
+                2,
+                4,
+            ),
             // Operator-inf norm (max abs row sum).
             ("simple_2x2_opinf", "inf", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
-            ("identity_3x3_opinf", "inf",
-                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], 3, 3),
+            (
+                "identity_3x3_opinf",
+                "inf",
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                3,
+                3,
+            ),
             // Min-column / min-row variants.
             ("simple_2x2_neg1", "-1", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
             ("simple_2x2_neginf", "-inf", vec![1.0, -2.0, 3.0, 4.0], 2, 2),
@@ -21388,7 +21683,11 @@ print(json.dumps({"matrix_norm": out}))
 
         for (i, (label, ord, vals, m, n)) in cases.iter().enumerate() {
             let want = f64::from_bits(
-                results[i]["value_bits"].as_str().unwrap().parse::<u64>().unwrap(),
+                results[i]["value_bits"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
             );
             let xt = session
                 .tensor_variable(vals.clone(), vec![*m, *n], false)
@@ -21459,24 +21758,49 @@ print(json.dumps({"matrix_norm": out}))
             // Single element (degenerate; should be 1.0).
             ("scalar_1d_1", vec![3.0], vec![1], 0),
             // Large positive — exp would overflow without max-subtraction.
-            ("large_positive_1d", vec![1000.0, 1001.0, 1002.0], vec![3], 0),
+            (
+                "large_positive_1d",
+                vec![1000.0, 1001.0, 1002.0],
+                vec![3],
+                0,
+            ),
             // Large negative — exp underflows to 0 without max-subtraction.
-            ("large_negative_1d", vec![-1000.0, -1001.0, -999.0], vec![3], 0),
+            (
+                "large_negative_1d",
+                vec![-1000.0, -1001.0, -999.0],
+                vec![3],
+                0,
+            ),
             // Mixed positive / negative.
             ("mixed_1d", vec![-5.0, 0.0, 5.0, 10.0], vec![4], 0),
             // 2-D along dim=1 (per-row softmax — the typical
             // classification-head case).
-            ("2d_along_dim1", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], 1),
+            (
+                "2d_along_dim1",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                vec![2, 3],
+                1,
+            ),
             // 2-D along dim=0 (per-column softmax — less common).
-            ("2d_along_dim0", vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], 0),
+            (
+                "2d_along_dim0",
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                vec![2, 3],
+                0,
+            ),
             // 3-D middle dim.
-            ("3d_middle_dim", {
-                let mut v = Vec::with_capacity(24);
-                for i in 0..24 {
-                    v.push(i as f64 * 0.1);
-                }
-                v
-            }, vec![2, 3, 4], 1),
+            (
+                "3d_middle_dim",
+                {
+                    let mut v = Vec::with_capacity(24);
+                    for i in 0..24 {
+                        v.push(i as f64 * 0.1);
+                    }
+                    v
+                },
+                vec![2, 3, 4],
+                1,
+            ),
         ];
 
         let payload = json!({
@@ -21650,19 +21974,36 @@ print(json.dumps({"softmax": out}))
         // collapse cleanly without overflow in the underlying exp.
         let inputs: Vec<f64> = vec![
             // Standard interior.
-            -10.0, -5.0, -2.0, -1.0, -0.5, -0.1,
-            -1e-3, -1e-15,
-            0.0, -0.0,
-            1e-15, 1e-3,
-            0.1, 0.5, 1.0, 2.0, 5.0, 10.0,
+            -10.0,
+            -5.0,
+            -2.0,
+            -1.0,
+            -0.5,
+            -0.1,
+            -1e-3,
+            -1e-15,
+            0.0,
+            -0.0,
+            1e-15,
+            1e-3,
+            0.1,
+            0.5,
+            1.0,
+            2.0,
+            5.0,
+            10.0,
             // Transcendental constants.
             std::f64::consts::E,
             std::f64::consts::PI,
             std::f64::consts::LN_2,
             std::f64::consts::SQRT_2,
             // Saturation.
-            -50.0, -100.0, -700.0,
-            50.0, 100.0, 700.0,
+            -50.0,
+            -100.0,
+            -700.0,
+            50.0,
+            100.0,
+            700.0,
             // Inf / NaN.
             f64::NEG_INFINITY,
             f64::INFINITY,
@@ -22528,14 +22869,8 @@ print(json.dumps({"softplus": sp_out}))
         let vocab = 6usize;
         let embed_dim = 4usize;
         let num_classes = 2usize;
-        let eb = EmbeddingBag::new(
-            &mut session,
-            vocab,
-            embed_dim,
-            EmbeddingBagMode::Mean,
-            None,
-        )
-        .expect("embedding bag");
+        let eb = EmbeddingBag::new(&mut session, vocab, embed_dim, EmbeddingBagMode::Mean, None)
+            .expect("embedding bag");
         let head = Linear::new(&mut session, embed_dim, num_classes, true).expect("linear");
 
         // Four bags split into two classes:
@@ -22543,11 +22878,7 @@ print(json.dumps({"softplus": sp_out}))
         //   bags [4]    and [5]    → class 1
         // Concat indices, mark offsets at each bag boundary.
         let indices = session
-            .tensor_variable(
-                vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-                vec![6],
-                false,
-            )
+            .tensor_variable(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], vec![6], false)
             .expect("indices");
         let offsets = session
             .tensor_variable(vec![0.0, 2.0, 4.0, 5.0], vec![4], false)
@@ -22569,7 +22900,9 @@ print(json.dumps({"softplus": sp_out}))
         let initial_loss = session
             .cross_entropy_loss(initial_logits, targets)
             .expect("initial loss");
-        let initial_loss_val = session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -22583,9 +22916,7 @@ print(json.dumps({"softplus": sp_out}))
                 .forward_with_offsets(&mut session, indices, offsets, None)
                 .expect("eb forward");
             let logits = head.forward(&mut session, emb).expect("head forward");
-            let loss = session
-                .cross_entropy_loss(logits, targets)
-                .expect("loss");
+            let loss = session.cross_entropy_loss(logits, targets).expect("loss");
             let loss_val = session.tensor_values(loss).expect("loss val")[0];
             if loss_val < best_loss {
                 best_loss = loss_val;
@@ -22619,8 +22950,7 @@ print(json.dumps({"softplus": sp_out}))
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let pad = ReflectionPad2d::new((1, 1, 1, 1));
-        let conv = Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (0, 0), true)
-            .expect("conv2d");
+        let conv = Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (0, 0), true).expect("conv2d");
 
         // 4x4 input image (single channel, single sample).
         let input_vals: Vec<f64> = (0..16).map(|i| (i as f64 - 7.5) / 4.0).collect();
@@ -22639,11 +22969,10 @@ print(json.dumps({"softplus": sp_out}))
         let initial_out = conv
             .forward(&mut session, initial_padded)
             .expect("initial conv");
-        let initial_loss = session
-            .mse_loss(initial_out, target)
-            .expect("initial loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_loss = session.mse_loss(initial_out, target).expect("initial loss");
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -22715,11 +23044,7 @@ print(json.dumps({"softplus": sp_out}))
 
         // Initial weight: small random values; decompose into (g, v).
         let init_w = session
-            .tensor_variable(
-                vec![0.1; 6],
-                vec![2, 3],
-                true,
-            )
+            .tensor_variable(vec![0.1; 6], vec![2, 3], true)
             .expect("init w");
         let (g, v) = weight_norm_decompose(&mut session, init_w, 0).expect("decompose");
         let mut optimizer = Adam::new(vec![g, v], 0.05);
@@ -22729,8 +23054,7 @@ print(json.dumps({"softplus": sp_out}))
         let w_t = session.tensor_transpose(initial_w, 0, 1).expect("w^T");
         let initial_pred = session.tensor_matmul(xs, w_t).expect("matmul");
         let initial_loss = session.mse_loss(initial_pred, targets).expect("loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("loss val")[0];
+        let initial_loss_val = session.tensor_values(initial_loss).expect("loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -22773,8 +23097,7 @@ print(json.dumps({"softplus": sp_out}))
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv = Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (1, 1), true)
-            .expect("conv2d");
+        let conv = Conv2d::new(&mut session, 1, 1, (3, 3), (1, 1), (1, 1), true).expect("conv2d");
 
         // 2x2 fixed input image.
         let input = session
@@ -22791,10 +23114,10 @@ print(json.dumps({"softplus": sp_out}))
         let initial_up = session
             .tensor_interpolate(initial_h, Some(vec![4, 4]), None, "bilinear", Some(true))
             .expect("initial upsample");
-        let initial_loss = session
-            .mse_loss(initial_up, target)
-            .expect("initial loss");
-        let initial_loss_val = session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_loss = session.mse_loss(initial_up, target).expect("initial loss");
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -22861,10 +23184,10 @@ print(json.dumps({"softplus": sp_out}))
         let initial_out = session
             .functional_conv3d(input, weight, None, (1, 1, 1), (0, 0, 0))
             .expect("initial conv3d");
-        let initial_loss = session
-            .mse_loss(initial_out, target)
-            .expect("initial loss");
-        let initial_loss_val = session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_loss = session.mse_loss(initial_out, target).expect("initial loss");
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -22910,8 +23233,7 @@ print(json.dumps({"softplus": sp_out}))
         let mha = MultiheadAttention::new(&mut session, 8, 2).expect("mha");
 
         // Fixed input sequence: batch=1, seq=4, embed=8.
-        let input_vals: Vec<f64> =
-            (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
+        let input_vals: Vec<f64> = (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
         let input = session
             .tensor_variable(input_vals, vec![1, 4, 8], false)
             .expect("input");
@@ -22923,14 +23245,11 @@ print(json.dumps({"softplus": sp_out}))
 
         let mut optimizer = Adam::new(mha.parameters(), 0.05);
 
-        let initial_out = mha
-            .forward(&mut session, input)
-            .expect("initial forward");
-        let initial_loss = session
-            .mse_loss(initial_out, target)
-            .expect("initial loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_out = mha.forward(&mut session, input).expect("initial forward");
+        let initial_loss = session.mse_loss(initial_out, target).expect("initial loss");
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -22965,15 +23284,14 @@ print(json.dumps({"softplus": sp_out}))
         // regression in any underlying op (matmul, sigmoid, tanh,
         // narrow, cat) would surface here as a failure to converge.
         use ft_api::FrankenTorchSession;
-        use ft_nn::{Module, LSTM};
+        use ft_nn::{LSTM, Module};
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let lstm = LSTM::new(&mut session, 4, 4, 1, false, 0.0, false).expect("lstm");
 
         // Input: seq=3, batch=1, input=4 (default time-first layout).
-        let input_vals: Vec<f64> =
-            (0..12).map(|i| ((i as f64 - 5.5) / 6.0) * 0.5).collect();
+        let input_vals: Vec<f64> = (0..12).map(|i| ((i as f64 - 5.5) / 6.0) * 0.5).collect();
         let input = session
             .tensor_variable(input_vals, vec![3, 1, 4], false)
             .expect("input");
@@ -22996,11 +23314,10 @@ print(json.dumps({"softplus": sp_out}))
         let initial_hn = session
             .tensor_squeeze(initial_result.h_n, 0)
             .expect("initial squeeze");
-        let initial_loss = session
-            .mse_loss(initial_hn, target)
-            .expect("initial loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_loss = session.mse_loss(initial_hn, target).expect("initial loss");
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -23020,10 +23337,7 @@ print(json.dumps({"softplus": sp_out}))
             optimizer.step(&mut session, &report).expect("optim step");
         }
 
-        assert!(
-            saw_loss_improvement,
-            "LSTM never improved the loss"
-        );
+        assert!(saw_loss_improvement, "LSTM never improved the loss");
         assert!(
             best_loss < initial_loss_val * 0.1,
             "LSTM should drop loss by 10x: initial={initial_loss_val}, best={best_loss}"
@@ -23059,8 +23373,7 @@ print(json.dumps({"softplus": sp_out}))
         layer.eval();
 
         // 1x4x8 input.
-        let input_vals: Vec<f64> =
-            (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
+        let input_vals: Vec<f64> = (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
         let input = session
             .tensor_variable(input_vals, vec![1, 4, 8], false)
             .expect("input");
@@ -23072,13 +23385,11 @@ print(json.dumps({"softplus": sp_out}))
 
         let mut optimizer = Adam::new(layer.parameters(), 0.05);
 
-        let initial_out = layer
-            .forward(&mut session, input)
-            .expect("initial forward");
-        let initial_loss = session
-            .mse_loss(initial_out, target)
-            .expect("initial loss");
-        let initial_loss_val = session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_out = layer.forward(&mut session, input).expect("initial forward");
+        let initial_loss = session.mse_loss(initial_out, target).expect("initial loss");
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -23113,15 +23424,14 @@ print(json.dumps({"softplus": sp_out}))
         // E2E (eets) but exercises the GRU gate equations
         // (reset/update/new) which are distinct from LSTM gates.
         use ft_api::FrankenTorchSession;
-        use ft_nn::{Module, GRU};
+        use ft_nn::{GRU, Module};
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let gru = GRU::new(&mut session, 4, 4, 1, false, 0.0, false).expect("gru");
 
         // Input: seq=3, batch=1, input=4 (default time-first).
-        let input_vals: Vec<f64> =
-            (0..12).map(|i| ((i as f64 - 5.5) / 6.0) * 0.5).collect();
+        let input_vals: Vec<f64> = (0..12).map(|i| ((i as f64 - 5.5) / 6.0) * 0.5).collect();
         let input = session
             .tensor_variable(input_vals, vec![3, 1, 4], false)
             .expect("input");
@@ -23141,19 +23451,16 @@ print(json.dumps({"softplus": sp_out}))
         let initial_hn = session
             .tensor_squeeze(initial_result.h_n, 0)
             .expect("initial squeeze");
-        let initial_loss = session
-            .mse_loss(initial_hn, target)
-            .expect("initial loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_loss = session.mse_loss(initial_hn, target).expect("initial loss");
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
         for _ in 0..200 {
             optimizer.zero_grad(&mut session).expect("zero_grad");
-            let result = gru
-                .forward_gru(&mut session, input, None)
-                .expect("gru");
+            let result = gru.forward_gru(&mut session, input, None).expect("gru");
             let h_n = session.tensor_squeeze(result.h_n, 0).expect("squeeze");
             let loss = session.mse_loss(h_n, target).expect("loss");
             let loss_val = session.tensor_values(loss).expect("loss val")[0];
@@ -23165,10 +23472,7 @@ print(json.dumps({"softplus": sp_out}))
             optimizer.step(&mut session, &report).expect("optim step");
         }
 
-        assert!(
-            saw_loss_improvement,
-            "GRU never improved the loss"
-        );
+        assert!(saw_loss_improvement, "GRU never improved the loss");
         assert!(
             best_loss < initial_loss_val * 0.1,
             "GRU should drop loss by 10x: initial={initial_loss_val}, best={best_loss}"
@@ -23215,8 +23519,9 @@ print(json.dumps({"softplus": sp_out}))
         let initial_loss = session
             .mse_loss(initial_pred, target)
             .expect("initial loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("initial loss val")[0];
+        let initial_loss_val = session
+            .tensor_values(initial_loss)
+            .expect("initial loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -23262,8 +23567,7 @@ print(json.dumps({"softplus": sp_out}))
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv = Conv2d::new(&mut session, 1, 2, (3, 3), (1, 1), (1, 1), true)
-            .expect("conv2d");
+        let conv = Conv2d::new(&mut session, 1, 2, (3, 3), (1, 1), (1, 1), true).expect("conv2d");
         let pool = MaxPool2d::new((2, 2), (2, 2));
         let flat = Flatten::new(1, 3);
         let head = Linear::new(&mut session, 8, 1, true).expect("linear");
@@ -23284,9 +23588,7 @@ print(json.dumps({"softplus": sp_out}))
         let initial_p = pool.forward(&mut session, initial_h).expect("initial pool");
         let initial_f = flat.forward(&mut session, initial_p).expect("initial flat");
         let initial_o = head.forward(&mut session, initial_f).expect("initial head");
-        let initial_loss = session
-            .mse_loss(initial_o, target)
-            .expect("initial loss");
+        let initial_loss = session.mse_loss(initial_o, target).expect("initial loss");
         let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
@@ -23328,17 +23630,9 @@ print(json.dumps({"softplus": sp_out}))
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let upsampler = ConvTranspose2d::new(
-            &mut session,
-            1,
-            1,
-            (2, 2),
-            (2, 2),
-            (0, 0),
-            (0, 0),
-            true,
-        )
-        .expect("conv_transpose2d");
+        let upsampler =
+            ConvTranspose2d::new(&mut session, 1, 1, (2, 2), (2, 2), (0, 0), (0, 0), true)
+                .expect("conv_transpose2d");
 
         // 1x1x2x2 fixed input.
         let input = session
@@ -23355,9 +23649,7 @@ print(json.dumps({"softplus": sp_out}))
         let initial_out = upsampler
             .forward(&mut session, input)
             .expect("initial forward");
-        let initial_loss = session
-            .mse_loss(initial_out, target)
-            .expect("initial loss");
+        let initial_loss = session.mse_loss(initial_out, target).expect("initial loss");
         let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
@@ -23396,8 +23688,7 @@ print(json.dumps({"softplus": sp_out}))
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv = Conv2d::new(&mut session, 4, 4, (3, 3), (1, 1), (1, 1), true)
-            .expect("conv2d");
+        let conv = Conv2d::new(&mut session, 4, 4, (3, 3), (1, 1), (1, 1), true).expect("conv2d");
         let gn = GroupNorm::new(&mut session, 2, 4, 1e-5, true).expect("groupnorm");
 
         // 1x4x4x4 input.
@@ -23415,9 +23706,7 @@ print(json.dumps({"softplus": sp_out}))
 
         let initial_h = conv.forward(&mut session, input).expect("initial conv");
         let initial_n = gn.forward(&mut session, initial_h).expect("initial gn");
-        let initial_loss = session
-            .mse_loss(initial_n, target)
-            .expect("initial loss");
+        let initial_loss = session.mse_loss(initial_n, target).expect("initial loss");
         let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
@@ -23533,8 +23822,7 @@ print(json.dumps({"softplus": sp_out}))
 
         // 4x8 input (4 tokens, embed=8). Linear expects 2-D
         // [batch, in_features].
-        let input_vals: Vec<f64> =
-            (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
+        let input_vals: Vec<f64> = (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
         let input = session
             .tensor_variable(input_vals, vec![4, 8], false)
             .expect("input");
@@ -23550,9 +23838,7 @@ print(json.dumps({"softplus": sp_out}))
         let initial_h = linear
             .forward(&mut session, initial_n)
             .expect("initial linear");
-        let initial_loss = session
-            .mse_loss(initial_h, target)
-            .expect("initial loss");
+        let initial_loss = session.mse_loss(initial_h, target).expect("initial loss");
         let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
@@ -23619,9 +23905,7 @@ print(json.dumps({"softplus": sp_out}))
 
         let initial_e = emb.forward(&mut session, tokens).expect("initial emb");
         // Pool over tokens (dim=1): [4, 3, 4] → [4, 4]
-        let initial_pooled = session
-            .tensor_mean_dim(initial_e, 1)
-            .expect("initial mean");
+        let initial_pooled = session.tensor_mean_dim(initial_e, 1).expect("initial mean");
         let initial_logits = head
             .forward(&mut session, initial_pooled)
             .expect("initial head");
@@ -23637,9 +23921,7 @@ print(json.dumps({"softplus": sp_out}))
             let e = emb.forward(&mut session, tokens).expect("emb");
             let pooled = session.tensor_mean_dim(e, 1).expect("mean");
             let logits = head.forward(&mut session, pooled).expect("head");
-            let loss = session
-                .cross_entropy_loss(logits, labels)
-                .expect("loss");
+            let loss = session.cross_entropy_loss(logits, labels).expect("loss");
             let loss_val = session.tensor_values(loss).expect("loss val")[0];
             if loss_val < best_loss {
                 best_loss = loss_val;
@@ -23666,7 +23948,7 @@ print(json.dumps({"softplus": sp_out}))
         // RNNCell forward (matmul + tanh) — the simplest of the
         // recurrent cell variants.
         use ft_api::FrankenTorchSession;
-        use ft_nn::{Module, RNNConfig, RNN};
+        use ft_nn::{Module, RNN, RNNConfig};
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
@@ -23685,8 +23967,7 @@ print(json.dumps({"softplus": sp_out}))
         .expect("rnn");
 
         // Input: seq=3, batch=1, input=4 (time-first).
-        let input_vals: Vec<f64> =
-            (0..12).map(|i| ((i as f64 - 5.5) / 6.0) * 0.5).collect();
+        let input_vals: Vec<f64> = (0..12).map(|i| ((i as f64 - 5.5) / 6.0) * 0.5).collect();
         let input = session
             .tensor_variable(input_vals, vec![3, 1, 4], false)
             .expect("input");
@@ -23704,19 +23985,14 @@ print(json.dumps({"softplus": sp_out}))
         let initial_hn = session
             .tensor_squeeze(initial_result.h_n, 0)
             .expect("initial squeeze");
-        let initial_loss = session
-            .mse_loss(initial_hn, target)
-            .expect("initial loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("initial val")[0];
+        let initial_loss = session.mse_loss(initial_hn, target).expect("initial loss");
+        let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
         for _ in 0..200 {
             optimizer.zero_grad(&mut session).expect("zero_grad");
-            let result = rnn
-                .forward_rnn(&mut session, input, None)
-                .expect("rnn");
+            let result = rnn.forward_rnn(&mut session, input, None).expect("rnn");
             let h_n = session.tensor_squeeze(result.h_n, 0).expect("squeeze");
             let loss = session.mse_loss(h_n, target).expect("loss");
             let loss_val = session.tensor_values(loss).expect("loss val")[0];
@@ -23728,10 +24004,7 @@ print(json.dumps({"softplus": sp_out}))
             optimizer.step(&mut session, &report).expect("optim step");
         }
 
-        assert!(
-            saw_loss_improvement,
-            "RNN never improved the loss"
-        );
+        assert!(saw_loss_improvement, "RNN never improved the loss");
         assert!(
             best_loss < initial_loss_val * 0.1,
             "RNN should drop loss by 10x: initial={initial_loss_val}, best={best_loss}"
@@ -23751,8 +24024,8 @@ print(json.dumps({"softplus": sp_out}))
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // Use kernel=3, stride=1 — the same config that nn.ConvTranspose1d
         // tests use, with l_out = (L_in - 1) * stride + kernel = 5.
-        let upsampler = ConvTranspose1d::new(&mut session, 1, 1, 3, 1, 0, true)
-            .expect("conv_transpose1d");
+        let upsampler =
+            ConvTranspose1d::new(&mut session, 1, 1, 3, 1, 0, true).expect("conv_transpose1d");
 
         // 1x1x3 fixed input.
         let input = session
@@ -23771,9 +24044,7 @@ print(json.dumps({"softplus": sp_out}))
         let initial_out = upsampler
             .forward(&mut session, input)
             .expect("initial forward");
-        let initial_loss = session
-            .mse_loss(initial_out, target)
-            .expect("initial loss");
+        let initial_loss = session.mse_loss(initial_out, target).expect("initial loss");
         let initial_loss_val = session.tensor_values(initial_loss).expect("initial val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
@@ -23852,8 +24123,7 @@ print(json.dumps({"softplus": sp_out}))
             .forward(&mut session, initial_conv_out)
             .expect("init shuffle");
         let initial_loss = session.mse_loss(initial_up, target).expect("init loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("init loss val")[0];
+        let initial_loss_val = session.tensor_values(initial_loss).expect("init loss val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -23918,8 +24188,7 @@ print(json.dumps({"softplus": sp_out}))
         let initial_loss = triplet
             .forward_triplet(&mut session, initial_a, initial_p, initial_n)
             .expect("init loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("init val")[0];
+        let initial_loss_val = session.tensor_values(initial_loss).expect("init val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -23970,25 +24239,23 @@ print(json.dumps({"softplus": sp_out}))
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let layer = TransformerDecoderLayer::new(
             &mut session,
-            8,    // d_model
-            2,    // nhead
-            16,   // dim_feedforward
-            0.0,  // dropout
+            8,   // d_model
+            2,   // nhead
+            16,  // dim_feedforward
+            0.0, // dropout
             TransformerActivation::Gelu,
             false, // norm_first (post-norm)
         )
         .expect("decoder layer");
 
         // 1x4x8 target sequence.
-        let tgt_vals: Vec<f64> =
-            (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
+        let tgt_vals: Vec<f64> = (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
         let tgt = session
             .tensor_variable(tgt_vals, vec![1, 4, 8], false)
             .expect("tgt");
         // 1x3x8 memory (different src_len from tgt to exercise the
         // cross-attention K, V dimensions properly).
-        let mem_vals: Vec<f64> =
-            (0..24).map(|i| ((i as f64 - 11.5) / 12.0) * 0.3).collect();
+        let mem_vals: Vec<f64> = (0..24).map(|i| ((i as f64 - 11.5) / 12.0) * 0.3).collect();
         let memory = session
             .tensor_variable(mem_vals, vec![1, 3, 8], false)
             .expect("memory");
@@ -24003,8 +24270,7 @@ print(json.dumps({"softplus": sp_out}))
             .forward_layer(&mut session, tgt, memory)
             .expect("init forward");
         let initial_loss = session.mse_loss(initial_out, target).expect("init loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("init val")[0];
+        let initial_loss_val = session.tensor_values(initial_loss).expect("init val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -24047,11 +24313,11 @@ print(json.dumps({"softplus": sp_out}))
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let encoder = TransformerEncoder::new(
             &mut session,
-            8,    // d_model
-            2,    // nhead
-            2,    // num_layers
-            16,   // dim_feedforward
-            0.0,  // dropout (deterministic)
+            8,   // d_model
+            2,   // nhead
+            2,   // num_layers
+            16,  // dim_feedforward
+            0.0, // dropout (deterministic)
             TransformerActivation::Gelu,
             false, // norm_first (post-norm)
             true,  // final_layer_norm
@@ -24060,8 +24326,7 @@ print(json.dumps({"softplus": sp_out}))
         encoder.train(false); // eval mode for deterministic dropout
 
         // 1x4x8 input.
-        let input_vals: Vec<f64> =
-            (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
+        let input_vals: Vec<f64> = (0..32).map(|i| ((i as f64 - 15.5) / 16.0) * 0.5).collect();
         let input = session
             .tensor_variable(input_vals, vec![1, 4, 8], false)
             .expect("input");
@@ -24074,8 +24339,7 @@ print(json.dumps({"softplus": sp_out}))
 
         let initial_out = encoder.forward(&mut session, input).expect("init forward");
         let initial_loss = session.mse_loss(initial_out, target).expect("init loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("init val")[0];
+        let initial_loss_val = session.tensor_values(initial_loss).expect("init val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -24130,8 +24394,7 @@ print(json.dumps({"softplus": sp_out}))
 
         let initial_out = conv.forward(&mut session, input).expect("init conv");
         let initial_loss = session.mse_loss(initial_out, target).expect("init loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("init val")[0];
+        let initial_loss_val = session.tensor_values(initial_loss).expect("init val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 
@@ -24168,8 +24431,7 @@ print(json.dumps({"softplus": sp_out}))
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let conv = Conv2d::new(&mut session, 3, 4, (3, 3), (1, 1), (1, 1), true)
-            .expect("conv2d");
+        let conv = Conv2d::new(&mut session, 3, 4, (3, 3), (1, 1), (1, 1), true).expect("conv2d");
         let pool = AdaptiveAvgPool2d::new((1, 1));
         let flatten = Flatten::new(1, 3);
         let head = Linear::new(&mut session, 4, 2, true).expect("linear");
@@ -24203,8 +24465,7 @@ print(json.dumps({"softplus": sp_out}))
         let initial_loss = session
             .cross_entropy_loss(initial_l, labels)
             .expect("init loss");
-        let initial_loss_val =
-            session.tensor_values(initial_loss).expect("init val")[0];
+        let initial_loss_val = session.tensor_values(initial_loss).expect("init val")[0];
         let mut best_loss = initial_loss_val;
         let mut saw_loss_improvement = false;
 

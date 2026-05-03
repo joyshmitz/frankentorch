@@ -1820,8 +1820,7 @@ mod tests {
             value: 1.0,
             grad: None,
         }];
-        let payload =
-            encode_checkpoint(&entries, CheckpointMode::Strict).expect("strict encode");
+        let payload = encode_checkpoint(&entries, CheckpointMode::Strict).expect("strict encode");
 
         // Just above the bound.
         let err = super::generate_raptorq_sidecar(&payload, super::MAX_RAPTORQ_REPAIR_SYMBOLS + 1)

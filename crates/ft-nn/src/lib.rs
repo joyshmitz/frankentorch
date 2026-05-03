@@ -2568,8 +2568,7 @@ impl EmbeddingBag {
                 let bag_id_2d_t =
                     session.tensor_variable(bag_id_2d, vec![n_indices, dim], false)?;
                 let zeros = session.full(vec![num_bags, dim], 0.0, false)?;
-                let summed =
-                    session.tensor_scatter_add(zeros, 0, bag_id_2d_t, weighted_rows)?;
+                let summed = session.tensor_scatter_add(zeros, 0, bag_id_2d_t, weighted_rows)?;
                 if matches!(self.mode, EmbeddingBagMode::Mean) {
                     // Divide by bag_size, with bag_size clamped to 1 to
                     // avoid division by zero on empty bags (PyTorch
@@ -2621,17 +2620,14 @@ impl EmbeddingBag {
                         r
                     })
                     .collect();
-                let argmax_t =
-                    session.tensor_variable(argmax_f64, vec![num_bags, dim], false)?;
+                let argmax_t = session.tensor_variable(argmax_f64, vec![num_bags, dim], false)?;
                 // gather over dim 0: output[bag, d] = weighted_rows[argmax[bag, d], d].
-                let gathered =
-                    session.tensor_gather(weighted_rows, 0, argmax_t)?;
+                let gathered = session.tensor_gather(weighted_rows, 0, argmax_t)?;
                 let real_mask_vals: Vec<f64> = bag_has_real
                     .iter()
                     .map(|&b| if b { 1.0 } else { 0.0 })
                     .collect();
-                let real_mask =
-                    session.tensor_variable(real_mask_vals, vec![num_bags], false)?;
+                let real_mask = session.tensor_variable(real_mask_vals, vec![num_bags], false)?;
                 let real_kd = session.tensor_unsqueeze(real_mask, 1)?;
                 let real_b = session.tensor_expand(real_kd, vec![num_bags, dim])?;
                 session.tensor_mul(gathered, real_b)
@@ -3785,9 +3781,7 @@ impl Module for PReLU {
             shape
         };
 
-        let weight_reshaped = if weight_pre_expand
-            == session.tensor_shape(self.weight)?
-        {
+        let weight_reshaped = if weight_pre_expand == session.tensor_shape(self.weight)? {
             self.weight
         } else {
             session.tensor_reshape(self.weight, weight_pre_expand)?
@@ -6367,8 +6361,7 @@ impl MaxUnpool1d {
                         for (l, &dst_pos) in indices_for_fwd.iter().enumerate().take(l_pooled) {
                             let src_idx = batch * c * l_pooled + ch * l_pooled + l;
                             if dst_pos < output_size {
-                                let dst_idx =
-                                    batch * c * output_size + ch * output_size + dst_pos;
+                                let dst_idx = batch * c * output_size + ch * output_size + dst_pos;
                                 output[dst_idx] = vals[src_idx];
                             }
                         }
@@ -6384,8 +6377,7 @@ impl MaxUnpool1d {
                         for (l, &dst_pos) in indices_for_bwd.iter().enumerate().take(l_pooled) {
                             let src_idx = batch * c * l_pooled + ch * l_pooled + l;
                             if dst_pos < output_size {
-                                let dst_idx =
-                                    batch * c * output_size + ch * output_size + dst_pos;
+                                let dst_idx = batch * c * output_size + ch * output_size + dst_pos;
                                 grad_in[src_idx] = g[dst_idx];
                             }
                         }
@@ -6619,8 +6611,7 @@ impl MaxUnpool3d {
                 let mut output = vec![0.0_f64; out_numel];
                 for batch in 0..n {
                     for ch in 0..c {
-                        for (i, &dst_pos) in
-                            indices_for_fwd.iter().enumerate().take(spatial_pooled)
+                        for (i, &dst_pos) in indices_for_fwd.iter().enumerate().take(spatial_pooled)
                         {
                             let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + i;
                             if dst_pos < out_spatial {
@@ -6637,8 +6628,7 @@ impl MaxUnpool3d {
                 let mut grad_in = vec![0.0_f64; in_numel];
                 for batch in 0..n {
                     for ch in 0..c {
-                        for (i, &dst_pos) in
-                            indices_for_bwd.iter().enumerate().take(spatial_pooled)
+                        for (i, &dst_pos) in indices_for_bwd.iter().enumerate().take(spatial_pooled)
                         {
                             let src_idx = batch * c * spatial_pooled + ch * spatial_pooled + i;
                             if dst_pos < out_spatial {
@@ -7462,14 +7452,18 @@ impl Module for ConvTranspose1d {
 
         // Output length: (L - 1) * stride - 2*padding + kernel_size.
         if l_in == 0 {
-            return Err(incompatible_error("ConvTranspose1d requires non-empty spatial dimensions"));
+            return Err(incompatible_error(
+                "ConvTranspose1d requires non-empty spatial dimensions",
+            ));
         }
         let length_overflow = "ConvTranspose1d output length overflow";
         let l_span = checked_mul(l_in - 1, self.stride, length_overflow)?;
         let l_base = checked_add(l_span, self.kernel_size, length_overflow)?;
         let padding = checked_mul(self.padding, 2, "ConvTranspose1d padding overflow")?;
         if l_base <= padding {
-            return Err(incompatible_error("ConvTranspose1d output size underflow from padding"));
+            return Err(incompatible_error(
+                "ConvTranspose1d output size underflow from padding",
+            ));
         }
         let l_out = l_base - padding;
 
@@ -12180,8 +12174,7 @@ impl LossModule for MultiLabelMarginLoss {
             .iter()
             .map(|&v| if v > 0.5 { 1.0 } else { 0.0 })
             .collect();
-        let non_target_mask_vals: Vec<f64> =
-            target_mask_vals.iter().map(|&v| 1.0 - v).collect();
+        let non_target_mask_vals: Vec<f64> = target_mask_vals.iter().map(|&v| 1.0 - v).collect();
         let target_mask = session.tensor_variable(target_mask_vals, vec![batch_size, c], false)?;
         let non_target_mask =
             session.tensor_variable(non_target_mask_vals, vec![batch_size, c], false)?;
@@ -13291,8 +13284,8 @@ impl Module for CircularPad2d {
 
         let mut col_indices: Vec<f64> = Vec::with_capacity(new_w);
         for col_out in 0..new_w {
-            let src_col = ((col_out as isize - self.pad_left as isize) % w as isize
-                + w as isize) as usize
+            let src_col = ((col_out as isize - self.pad_left as isize) % w as isize + w as isize)
+                as usize
                 % w;
             #[allow(clippy::cast_precision_loss)]
             col_indices.push(src_col as f64);
@@ -13302,9 +13295,8 @@ impl Module for CircularPad2d {
 
         let mut row_indices: Vec<f64> = Vec::with_capacity(new_h);
         for row_out in 0..new_h {
-            let src_row = ((row_out as isize - self.pad_top as isize) % h as isize
-                + h as isize) as usize
-                % h;
+            let src_row =
+                ((row_out as isize - self.pad_top as isize) % h as isize + h as isize) as usize % h;
             #[allow(clippy::cast_precision_loss)]
             row_indices.push(src_row as f64);
         }
@@ -13720,7 +13712,11 @@ pub fn pad_packed_sequence(
     // Then blend `gathered * mask + padding_value * (1 - mask)` so the
     // padding cells take the configured constant while autograd
     // routes only through active cells.
-    let total_out = checked_mul(batch_size, out_len, "pad_packed_sequence output size overflow")?;
+    let total_out = checked_mul(
+        batch_size,
+        out_len,
+        "pad_packed_sequence output size overflow",
+    )?;
     let mut dst_to_packed_row: Vec<f64> = vec![0.0; total_out];
     let mut mask_vals: Vec<f64> = vec![0.0; total_out];
 
@@ -20123,9 +20119,7 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ts = Tanhshrink;
         let xs = vec![-2.0, -0.5, 0.0, 0.5, 2.0];
-        let input = session
-            .tensor_variable(xs.clone(), vec![5], true)
-            .unwrap();
+        let input = session.tensor_variable(xs.clone(), vec![5], true).unwrap();
         let out = ts.forward(&mut session, input).unwrap();
         let loss = session.tensor_sum(out).unwrap();
         let report = session.tensor_backward(loss).unwrap();
@@ -20147,9 +20141,7 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ss = Softsign;
         let xs = vec![-3.0, -0.5, 0.0, 0.5, 3.0];
-        let input = session
-            .tensor_variable(xs.clone(), vec![5], true)
-            .unwrap();
+        let input = session.tensor_variable(xs.clone(), vec![5], true).unwrap();
         let out = ss.forward(&mut session, input).unwrap();
         let loss = session.tensor_sum(out).unwrap();
         let report = session.tensor_backward(loss).unwrap();
@@ -22708,9 +22700,7 @@ mod tests {
             -1.0, -2.0, 1.0,   // channel 0
              3.0, -4.0, 0.0,   // channel 1
         ];
-        let input = session
-            .tensor_variable(data, vec![1, 2, 3], true)
-            .unwrap();
+        let input = session.tensor_variable(data, vec![1, 2, 3], true).unwrap();
         let output = prelu.forward(&mut session, input).unwrap();
         let loss = session.tensor_sum(output).unwrap();
         let report = session.tensor_backward(loss).unwrap();
@@ -22722,8 +22712,8 @@ mod tests {
             .expect("PReLU multichannel must propagate gradient to weight");
 
         let expected_input = [
-            0.1, 0.1, 1.0,  // channel 0 gradient (mask=[F,F,T])
-            1.0, 0.1, 1.0,  // channel 1 gradient (mask=[T,F,T])
+            0.1, 0.1, 1.0, // channel 0 gradient (mask=[F,F,T])
+            1.0, 0.1, 1.0, // channel 1 gradient (mask=[T,F,T])
         ];
         for (i, (&g, &want)) in input_grad.iter().zip(expected_input.iter()).enumerate() {
             assert!(
@@ -22803,11 +22793,7 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let celu = CELU::new(ALPHA);
         let input = session
-            .tensor_variable(
-                vec![3.0, -1.5, 0.0, 0.5, -0.25],
-                vec![5],
-                true,
-            )
+            .tensor_variable(vec![3.0, -1.5, 0.0, 0.5, -0.25], vec![5], true)
             .unwrap();
         let out = celu.forward(&mut session, input).unwrap();
         let loss = session.tensor_sum(out).unwrap();
@@ -22816,13 +22802,7 @@ mod tests {
             .tensor_gradient(&report, input)
             .expect("input gradient must be tracked through CELU");
 
-        let expect = |x: f64| -> f64 {
-            if x >= 0.0 {
-                1.0
-            } else {
-                (x / ALPHA).exp()
-            }
-        };
+        let expect = |x: f64| -> f64 { if x >= 0.0 { 1.0 } else { (x / ALPHA).exp() } };
         let expected = [
             expect(3.0),
             expect(-1.5),
@@ -22848,9 +22828,9 @@ mod tests {
         let input = session
             .tensor_variable(vec![1.0, -1.0], vec![2], false)
             .unwrap();
-        let err = celu.forward(&mut session, input).expect_err(
-            "CELU::forward must reject alpha=0",
-        );
+        let err = celu
+            .forward(&mut session, input)
+            .expect_err("CELU::forward must reject alpha=0");
         let msg = format!("{err:?}");
         assert!(
             msg.contains("alpha"),
@@ -23518,15 +23498,14 @@ mod tests {
         let weight = session
             .tensor_variable(weight_vals, vec![4, 2], true)
             .unwrap();
-        let eb = EmbeddingBag {
-            weight,
-            ..eb
-        };
+        let eb = EmbeddingBag { weight, ..eb };
         // Two bags: bag 0 has indices [0, 1, 2], bag 1 has [3].
         let indices = session
             .tensor_variable(vec![0.0, 1.0, 2.0, 3.0], vec![4], false)
             .unwrap();
-        let offsets = session.tensor_variable(vec![0.0, 3.0], vec![2], false).unwrap();
+        let offsets = session
+            .tensor_variable(vec![0.0, 3.0], vec![2], false)
+            .unwrap();
         let out = eb
             .forward_with_offsets(&mut session, indices, offsets, None)
             .unwrap();
@@ -23560,14 +23539,13 @@ mod tests {
             .unwrap();
         let loss = session.tensor_sum(out).unwrap();
         let report = session.tensor_backward(loss).unwrap();
-        let w_grad = session.tensor_gradient(&report, weight).expect("weight grad");
+        let w_grad = session
+            .tensor_gradient(&report, weight)
+            .expect("weight grad");
         // Each row participates in the mean over 3 with weight 1/3,
         // and sum(out) propagates +1 per dim.
         for &g in w_grad {
-            assert!(
-                (g - (1.0 / 3.0)).abs() < 1e-12,
-                "expected 1/3, got {g}"
-            );
+            assert!((g - (1.0 / 3.0)).abs() < 1e-12, "expected 1/3, got {g}");
         }
     }
 
@@ -23584,7 +23562,9 @@ mod tests {
             .tensor_variable(vec![0.0, 1.0], vec![2], false)
             .unwrap();
         let offsets = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
-        let psw = session.tensor_variable(vec![0.5, 1.5], vec![2], true).unwrap();
+        let psw = session
+            .tensor_variable(vec![0.5, 1.5], vec![2], true)
+            .unwrap();
         let out = eb
             .forward_with_offsets(&mut session, indices, offsets, Some(psw))
             .unwrap();
@@ -23620,7 +23600,9 @@ mod tests {
             .unwrap();
         let loss = session.tensor_sum(out).unwrap();
         let report = session.tensor_backward(loss).unwrap();
-        let w_grad = session.tensor_gradient(&report, weight).expect("weight grad");
+        let w_grad = session
+            .tensor_gradient(&report, weight)
+            .expect("weight grad");
         // Max routes gradient only to argmax positions.
         // Col 0: argmax is row 1 (val 3) → grad 1; rows 0, 2 col 0 → 0.
         // Wait: weight = [[1,2],[3,4],[5,6]]. Per-col max:
@@ -25282,9 +25264,7 @@ mod tests {
         // tensor_values + rebuilt a non-grad leaf, severing gradients
         // through both g (magnitude) and v (direction).
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let g = s
-            .tensor_variable(vec![2.0, 3.0], vec![2], true)
-            .unwrap();
+        let g = s.tensor_variable(vec![2.0, 3.0], vec![2], true).unwrap();
         let v = s
             .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], true)
             .unwrap();

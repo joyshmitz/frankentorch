@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ft_serialize::{generate_raptorq_sidecar, MAX_RAPTORQ_REPAIR_SYMBOLS};
+use ft_serialize::{MAX_RAPTORQ_REPAIR_SYMBOLS, generate_raptorq_sidecar};
 use serde::Serialize;
 use serde_json::json;
 
