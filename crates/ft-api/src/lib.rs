@@ -183,6 +183,14 @@ struct GridSamplePlan {
     align_corners: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GridSamplePoint {
+    n: usize,
+    c: usize,
+    y: isize,
+    x: isize,
+}
+
 impl FrankenTorchSession {
     #[must_use]
     pub fn new(mode: ExecutionMode) -> Self {
@@ -8084,6 +8092,198 @@ impl FrankenTorchSession {
         output
     }
 
+    fn grid_sample_add_input_grad(
+        grad_input: &mut [f64],
+        plan: GridSamplePlan,
+        point: GridSamplePoint,
+        value: f64,
+    ) {
+        if point.y < 0
+            || point.y >= plan.in_h as isize
+            || point.x < 0
+            || point.x >= plan.in_w as isize
+        {
+            return;
+        }
+        let idx = ((point.n * plan.channels + point.c) * plan.in_h + point.y as usize) * plan.in_w
+            + point.x as usize;
+        grad_input[idx] += value;
+    }
+
+    fn grid_sample_coordinate_derivative(
+        raw_coord: f64,
+        size: usize,
+        align_corners: bool,
+        padding_mode: GridSamplePaddingMode,
+    ) -> f64 {
+        let base = if align_corners {
+            size.saturating_sub(1) as f64 / 2.0
+        } else {
+            size as f64 / 2.0
+        };
+        match padding_mode {
+            GridSamplePaddingMode::Zeros => base,
+            GridSamplePaddingMode::Border => {
+                let upper = size.saturating_sub(1) as f64;
+                if raw_coord < 0.0 || raw_coord > upper {
+                    0.0
+                } else {
+                    base
+                }
+            }
+            GridSamplePaddingMode::Reflection => 0.0,
+        }
+    }
+
+    fn grid_sample_bilinear_backward_f64(
+        input: &[f64],
+        grid: &[f64],
+        grad_output: &[f64],
+        plan: GridSamplePlan,
+    ) -> Result<(Vec<f64>, Vec<f64>), AutogradError> {
+        let expected_out = plan.batch * plan.channels * plan.out_h * plan.out_w;
+        if grad_output.len() != expected_out {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "grid_sample backward: incoming gradient shape mismatch",
+                },
+            )));
+        }
+
+        let mut grad_input = vec![0.0; input.len()];
+        let mut grad_grid = vec![0.0; grid.len()];
+        let sample_value = |n: usize, c: usize, y: isize, x: isize| -> f64 {
+            if y < 0 || y >= plan.in_h as isize || x < 0 || x >= plan.in_w as isize {
+                0.0
+            } else {
+                let idx =
+                    ((n * plan.channels + c) * plan.in_h + y as usize) * plan.in_w + x as usize;
+                input[idx]
+            }
+        };
+
+        for n in 0..plan.batch {
+            for h in 0..plan.out_h {
+                for w in 0..plan.out_w {
+                    let grid_base = ((n * plan.out_h + h) * plan.out_w + w) * 2;
+                    let mut x = grid[grid_base];
+                    let mut y = grid[grid_base + 1];
+                    if x.is_nan() {
+                        x = -1.0;
+                    }
+                    if y.is_nan() {
+                        y = -1.0;
+                    }
+
+                    let raw_ix = Self::grid_sampler_unnormalize(x, plan.in_w, plan.align_corners);
+                    let raw_iy = Self::grid_sampler_unnormalize(y, plan.in_h, plan.align_corners);
+                    let (ix, iy) = match plan.padding_mode {
+                        GridSamplePaddingMode::Zeros => (raw_ix, raw_iy),
+                        GridSamplePaddingMode::Border => (
+                            raw_ix.clamp(0.0, (plan.in_w.saturating_sub(1)) as f64),
+                            raw_iy.clamp(0.0, (plan.in_h.saturating_sub(1)) as f64),
+                        ),
+                        GridSamplePaddingMode::Reflection => {
+                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                    reason: "grid_sample backward: reflection padding is not supported",
+                                },
+                            )));
+                        }
+                    };
+
+                    let x0 = ix.floor();
+                    let y0 = iy.floor();
+                    let x1 = x0 + 1.0;
+                    let y1 = y0 + 1.0;
+                    let wx1 = ix - x0;
+                    let wy1 = iy - y0;
+                    let wx0 = 1.0 - wx1;
+                    let wy0 = 1.0 - wy1;
+                    let x0i = x0 as isize;
+                    let x1i = x1 as isize;
+                    let y0i = y0 as isize;
+                    let y1i = y1 as isize;
+
+                    let dix_dgrid = Self::grid_sample_coordinate_derivative(
+                        raw_ix,
+                        plan.in_w,
+                        plan.align_corners,
+                        plan.padding_mode,
+                    );
+                    let diy_dgrid = Self::grid_sample_coordinate_derivative(
+                        raw_iy,
+                        plan.in_h,
+                        plan.align_corners,
+                        plan.padding_mode,
+                    );
+
+                    let mut grad_x = 0.0;
+                    let mut grad_y = 0.0;
+                    for c in 0..plan.channels {
+                        let out_idx = ((n * plan.channels + c) * plan.out_h + h) * plan.out_w + w;
+                        let go = grad_output[out_idx];
+                        Self::grid_sample_add_input_grad(
+                            &mut grad_input,
+                            plan,
+                            GridSamplePoint {
+                                n,
+                                c,
+                                y: y0i,
+                                x: x0i,
+                            },
+                            go * wx0 * wy0,
+                        );
+                        Self::grid_sample_add_input_grad(
+                            &mut grad_input,
+                            plan,
+                            GridSamplePoint {
+                                n,
+                                c,
+                                y: y0i,
+                                x: x1i,
+                            },
+                            go * wx1 * wy0,
+                        );
+                        Self::grid_sample_add_input_grad(
+                            &mut grad_input,
+                            plan,
+                            GridSamplePoint {
+                                n,
+                                c,
+                                y: y1i,
+                                x: x0i,
+                            },
+                            go * wx0 * wy1,
+                        );
+                        Self::grid_sample_add_input_grad(
+                            &mut grad_input,
+                            plan,
+                            GridSamplePoint {
+                                n,
+                                c,
+                                y: y1i,
+                                x: x1i,
+                            },
+                            go * wx1 * wy1,
+                        );
+
+                        let v00 = sample_value(n, c, y0i, x0i);
+                        let v01 = sample_value(n, c, y0i, x1i);
+                        let v10 = sample_value(n, c, y1i, x0i);
+                        let v11 = sample_value(n, c, y1i, x1i);
+                        grad_x += go * ((v01 - v00) * wy0 + (v11 - v10) * wy1) * dix_dgrid;
+                        grad_y += go * ((v10 - v00) * wx0 + (v11 - v01) * wx1) * diy_dgrid;
+                    }
+                    grad_grid[grid_base] += grad_x;
+                    grad_grid[grid_base + 1] += grad_y;
+                }
+            }
+        }
+
+        Ok((grad_input, grad_grid))
+    }
+
     fn istft_reconstruct_f64(
         &self,
         spectrogram: Vec<ft_core::Complex128>,
@@ -9360,16 +9560,6 @@ impl FrankenTorchSession {
         padding_mode: GridSamplePaddingMode,
         align_corners: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        if self.tensor_tape.tensor_requires_grad(input)?
-            || self.tensor_tape.tensor_requires_grad(grid)?
-        {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "grid_sample: autograd is not supported",
-                },
-            )));
-        }
-
         let input_tensor = self.tensor_tape.tensor(input)?;
         let grid_tensor = self.tensor_tape.tensor(grid)?;
         let input_meta = input_tensor.meta().clone();
@@ -9429,6 +9619,69 @@ impl FrankenTorchSession {
             padding_mode,
             align_corners,
         };
+
+        let input_requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
+        let grid_requires_grad = self.tensor_tape.tensor_requires_grad(grid)?;
+        if input_requires_grad || grid_requires_grad {
+            if mode != GridSampleMode::Bilinear {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "grid_sample: autograd is only supported for bilinear mode",
+                    },
+                )));
+            }
+            if padding_mode == GridSamplePaddingMode::Reflection {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "grid_sample: autograd is not supported for reflection padding",
+                    },
+                )));
+            }
+            if !matches!(input_tensor.typed_storage(), TensorStorage::F64(_))
+                || !matches!(grid_tensor.typed_storage(), TensorStorage::F64(_))
+            {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "grid_sample: autograd is only supported for F64 input and grid tensors",
+                    },
+                )));
+            }
+
+            let plan_c = plan;
+            let output_shape_c = output_shape.clone();
+            let out = self.tensor_apply_function(
+                &[input, grid],
+                move |ctx, inputs| {
+                    let (input_values, input_shape) = inputs[0];
+                    let (grid_values, grid_shape) = inputs[1];
+                    let output = Self::grid_sample_f64(input_values, grid_values, plan_c);
+                    ctx.save_for_backward(input_values.to_vec(), input_shape.to_vec());
+                    ctx.save_for_backward(grid_values.to_vec(), grid_shape.to_vec());
+                    Ok((output, output_shape_c.clone()))
+                },
+                move |ctx, grad_outputs| {
+                    let saved = ctx.saved_tensors();
+                    let input_values = &saved[0];
+                    let grid_values = &saved[1];
+                    let (grad_input, grad_grid) = Self::grid_sample_bilinear_backward_f64(
+                        input_values,
+                        grid_values,
+                        grad_outputs[0],
+                        plan_c,
+                    )?;
+                    Ok(vec![Some(grad_input), Some(grad_grid)])
+                },
+            )?;
+            self.runtime.ledger_mut().record(
+                EvidenceKind::Dispatch,
+                format!(
+                    "grid_sample input={} grid={} out={} mode={mode:?} padding={padding_mode:?} align_corners={align_corners} (autograd)",
+                    input.0, grid.0, out.0
+                ),
+            );
+            return Ok(out);
+        }
+
         match input_tensor.typed_storage() {
             TensorStorage::F32(values) => {
                 let input_values = values.iter().map(|&v| f64::from(v)).collect::<Vec<_>>();
@@ -38747,13 +39000,8 @@ mod tests {
 
     #[test]
     fn tensor_grid_sample_fails_closed_for_grad_inputs() {
-        // grid_sample autograd is still tracked under
-        // frankentorch-3v6e (a separate child bead). This test
-        // locks the current fail-loud guard so the gap stays
-        // explicit. Removed the affine_grid half — that path
-        // now supports autograd (frankentorch-bfj5 fix). See
-        // tensor_affine_grid_propagates_gradient_through_theta
-        // for the new positive test.
+        // Nearest-mode grid_sample remains fail-loud for gradients:
+        // only the bilinear F64 slice has an analytical backward.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
@@ -38771,6 +39019,92 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn tensor_grid_sample_bilinear_propagates_gradients_to_input_and_grid() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
+            .unwrap();
+        let grid = s
+            .tensor_variable(vec![0.0, 0.0], vec![1, 1, 1, 2], true)
+            .unwrap();
+
+        let output = s
+            .tensor_grid_sample(
+                input,
+                grid,
+                GridSampleMode::Bilinear,
+                GridSamplePaddingMode::Zeros,
+                true,
+            )
+            .expect("bilinear F64 grid_sample should support autograd");
+        assert_eq!(s.tensor_values(output).unwrap(), vec![2.5]);
+
+        let loss = s.tensor_sum(output).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_input = s
+            .tensor_gradient(&report, input)
+            .expect("grid_sample should propagate input gradient");
+        let grad_grid = s
+            .tensor_gradient(&report, grid)
+            .expect("grid_sample should propagate grid gradient");
+
+        assert_eq!(grad_input.len(), 4);
+        for (i, &g) in grad_input.iter().enumerate() {
+            assert!(
+                (g - 0.25).abs() < 1e-12,
+                "grad_input[{i}] = {g}, expected 0.25"
+            );
+        }
+        assert_eq!(grad_grid.len(), 2);
+        assert!(
+            (grad_grid[0] - 0.5).abs() < 1e-12,
+            "grad_grid x = {}, expected 0.5",
+            grad_grid[0]
+        );
+        assert!(
+            (grad_grid[1] - 1.0).abs() < 1e-12,
+            "grad_grid y = {}, expected 1.0",
+            grad_grid[1]
+        );
+    }
+
+    #[test]
+    fn tensor_grid_sample_affine_grid_chain_propagates_gradient_to_theta() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .unwrap();
+        let theta = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], vec![1, 2, 3], true)
+            .unwrap();
+
+        let grid = s
+            .tensor_affine_grid(theta, vec![1, 1, 1, 1], true)
+            .expect("affine_grid must keep theta on the tape");
+        let output = s
+            .tensor_grid_sample(
+                input,
+                grid,
+                GridSampleMode::Bilinear,
+                GridSamplePaddingMode::Zeros,
+                true,
+            )
+            .expect("grid_sample must propagate through a tracked affine grid");
+        assert_eq!(s.tensor_values(output).unwrap(), vec![2.5]);
+
+        let loss = s.tensor_sum(output).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_theta = s
+            .tensor_gradient(&report, theta)
+            .expect("grid_sample must route grid gradients back to theta");
+
+        let expected = [0.0_f64, 0.0, 0.5, 0.0, 0.0, 1.0];
+        for (i, (&g, &e)) in grad_theta.iter().zip(expected.iter()).enumerate() {
+            assert!((g - e).abs() < 1e-12, "grad_theta[{i}] = {g}, expected {e}");
+        }
     }
 
     #[test]
