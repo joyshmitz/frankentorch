@@ -9036,12 +9036,21 @@ impl TensorTape {
             let meta = input_node.tensor.meta();
             let shape = meta.shape().to_vec();
             let ndim = shape.len();
+            let mut seen_dims = vec![false; ndim];
             for &d in &dims {
                 if d >= ndim {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
                         ft_kernel_cpu::KernelError::InvalidDimension { dim: d, ndim },
                     )));
                 }
+                if seen_dims[d] {
+                    return Err(AutogradError::Dispatch(DispatchError::Key(
+                        DispatchKeyError::IncompatibleSet {
+                            reason: "flip dims must not contain duplicates",
+                        },
+                    )));
+                }
+                seen_dims[d] = true;
             }
             (
                 input_node.requires_grad,
@@ -20023,6 +20032,16 @@ mod tests {
             tape.values_f32(rolled).unwrap(),
             vec![2.0f32, 1.0, 4.0, 3.0]
         );
+    }
+
+    #[test]
+    fn flip_rejects_duplicate_dims_like_torch() {
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+
+        assert!(tape.flip(input, vec![0, 0]).is_err());
     }
 
     #[test]
