@@ -14421,8 +14421,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use ft_core::{
-        BFloat16, Complex64, DType, DenseTensor, DenseTensorError, Device, ExecutionMode, Float16,
-        TensorMeta, TensorStorage,
+        BFloat16, Complex64, Complex128, DType, DenseTensor, DenseTensorError, Device,
+        ExecutionMode, Float16, TensorMeta, TensorStorage,
     };
     use ft_dispatch::DispatchError;
     use proptest::prelude::*;
@@ -19888,6 +19888,160 @@ mod tests {
                 &[Complex64::new(1.0, -1.0), Complex64::new(2.0, -2.0)]
             );
         }
+    }
+
+    // ── Metamorphic dtype-preservation across shape ops ────────────────
+    //
+    // Locks in the typed-storage migration from frankentorch-6y6o
+    // (commit 8f25235). The metamorphic invariant is:
+    //   for any shape-only op f and any tensor x,
+    //     dtype(f(x)) == dtype(x) AND storage_variant(f(x)) == storage_variant(x).
+    //
+    // Coverage matrix added here (the 6y6o commit covered narrow,
+    // squeeze, unsqueeze, reshape):
+    //   ops:    transpose, permute, flatten, unflatten, chunk, split
+    //           + transpose-twice roundtrip + numel partition invariants
+    //   dtypes: F16, BF16, Complex64, Complex128
+    //
+    // expand, flip, repeat, roll are deliberately NOT covered: they
+    // are still on the f64-upcast path and would erode dtype (and
+    // silently drop the imaginary part for Complex inputs). Tracked
+    // under frankentorch-gboq; once that fix lands, extend this
+    // harness to those four ops.
+
+    fn check_shape_ops_preserve_typed_storage(
+        tape: &mut TensorTape,
+        a: TensorNodeId,
+        expected_dtype: DType,
+        is_expected_storage: impl Fn(&TensorStorage) -> bool,
+    ) {
+        let assert_node = |tape: &TensorTape, n: TensorNodeId, ctx: &str| {
+            let dtype = tape.dtype(n).unwrap();
+            assert_eq!(
+                dtype, expected_dtype,
+                "{ctx}: dtype erosion (got {dtype:?}, expected {expected_dtype:?})"
+            );
+            let storage = tape.node(n).unwrap().tensor.typed_storage();
+            assert!(
+                is_expected_storage(storage),
+                "{ctx}: storage variant changed (got {:?})",
+                storage.dtype()
+            );
+        };
+        let a_numel = tape.tensor_meta(a).unwrap().numel();
+        let a_shape = tape.tensor_meta(a).unwrap().shape().to_vec();
+
+        // MR1: transpose preserves dtype + numel.
+        let t = tape.transpose(a, 0, 1).unwrap();
+        assert_node(tape, t, "transpose(a, 0, 1)");
+        assert_eq!(tape.tensor_meta(t).unwrap().numel(), a_numel);
+
+        // MR2 (invertive): transpose twice along the same axes ==
+        // identity. Dtype must round-trip; shape must equal input.
+        let t_twice = tape.transpose(t, 0, 1).unwrap();
+        assert_node(tape, t_twice, "transpose(transpose(a, 0, 1), 0, 1)");
+        assert_eq!(tape.tensor_meta(t_twice).unwrap().shape().to_vec(), a_shape);
+
+        // MR3: permute preserves dtype + numel.
+        let p = tape.permute(a, vec![2, 1, 0]).unwrap();
+        assert_node(tape, p, "permute(a, [2, 1, 0])");
+        assert_eq!(tape.tensor_meta(p).unwrap().numel(), a_numel);
+
+        // MR4: flatten preserves dtype; output shape changes but numel
+        // is conserved.
+        let f = tape.flatten(a, 0, 1).unwrap();
+        assert_node(tape, f, "flatten(a, 0, 1)");
+        assert_eq!(tape.tensor_meta(f).unwrap().shape().to_vec(), vec![4, 2]);
+        assert_eq!(tape.tensor_meta(f).unwrap().numel(), a_numel);
+
+        // MR5 (invertive): unflatten composed with flatten over the
+        // same dims is shape-identity (and dtype-preserving end-to-end).
+        let uf = tape.unflatten(f, 0, vec![2, 2]).unwrap();
+        assert_node(tape, uf, "unflatten(flatten(a, 0, 1), 0, [2, 2])");
+        assert_eq!(tape.tensor_meta(uf).unwrap().shape().to_vec(), a_shape);
+
+        // MR6: chunk partitions numel — sum of chunk sizes == input
+        // numel, each chunk preserves dtype.
+        let chunks = tape.chunk(a, 2, 0).unwrap();
+        let mut chunk_numel = 0usize;
+        for (i, c) in chunks.iter().enumerate() {
+            assert_node(tape, *c, &format!("chunk(a, 2, 0)[{i}]"));
+            chunk_numel += tape.tensor_meta(*c).unwrap().numel();
+        }
+        assert_eq!(
+            chunk_numel, a_numel,
+            "chunk(a, 2, 0): sum of chunk numel must equal input numel"
+        );
+
+        // MR7: split partitions numel similarly.
+        let parts = tape.split(a, &[1, 1], 0).unwrap();
+        let mut part_numel = 0usize;
+        for (i, c) in parts.iter().enumerate() {
+            assert_node(tape, *c, &format!("split(a, [1, 1], 0)[{i}]"));
+            part_numel += tape.tensor_meta(*c).unwrap().numel();
+        }
+        assert_eq!(
+            part_numel, a_numel,
+            "split(a, [1, 1], 0): sum of part numel must equal input numel"
+        );
+    }
+
+    #[test]
+    fn metamorphic_shape_ops_preserve_f16_dtype_and_storage() {
+        let mut tape = TensorTape::new();
+        let values: Vec<Float16> = (1..=8).map(|i| Float16::from_f32(i as f32)).collect();
+        let tensor =
+            DenseTensor::from_contiguous_values_f16(values, vec![2, 2, 2], Device::Cpu).unwrap();
+        let a = tape.leaf_tensor(tensor, false);
+        check_shape_ops_preserve_typed_storage(&mut tape, a, DType::F16, |s| {
+            matches!(s, TensorStorage::F16(_))
+        });
+    }
+
+    #[test]
+    fn metamorphic_shape_ops_preserve_bf16_dtype_and_storage() {
+        let mut tape = TensorTape::new();
+        let values: Vec<BFloat16> = (1..=8).map(|i| BFloat16::from_f32(i as f32)).collect();
+        let tensor =
+            DenseTensor::from_contiguous_values_bf16(values, vec![2, 2, 2], Device::Cpu).unwrap();
+        let a = tape.leaf_tensor(tensor, false);
+        check_shape_ops_preserve_typed_storage(&mut tape, a, DType::BF16, |s| {
+            matches!(s, TensorStorage::BF16(_))
+        });
+    }
+
+    #[test]
+    fn metamorphic_shape_ops_preserve_complex64_dtype_and_storage() {
+        let mut tape = TensorTape::new();
+        let vals: Vec<Complex64> = (1..=8)
+            .map(|i| Complex64::new(i as f32, -(i as f32)))
+            .collect();
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![2, 2, 2], DType::Complex64, Device::Cpu),
+            TensorStorage::Complex64(Arc::new(vals)),
+        )
+        .unwrap();
+        let a = tape.leaf_tensor(tensor, false);
+        check_shape_ops_preserve_typed_storage(&mut tape, a, DType::Complex64, |s| {
+            matches!(s, TensorStorage::Complex64(_))
+        });
+    }
+
+    #[test]
+    fn metamorphic_shape_ops_preserve_complex128_dtype_and_storage() {
+        let mut tape = TensorTape::new();
+        let vals: Vec<Complex128> = (1..=8)
+            .map(|i| Complex128::new(i as f64, -(i as f64)))
+            .collect();
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![2, 2, 2], DType::Complex128, Device::Cpu),
+            TensorStorage::Complex128(Arc::new(vals)),
+        )
+        .unwrap();
+        let a = tape.leaf_tensor(tensor, false);
+        check_shape_ops_preserve_typed_storage(&mut tape, a, DType::Complex128, |s| {
+            matches!(s, TensorStorage::Complex128(_))
+        });
     }
 
     // ── F32 autograd: forward f32 → backward gradients correct ────────
