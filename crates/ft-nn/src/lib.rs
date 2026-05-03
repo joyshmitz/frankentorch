@@ -7378,9 +7378,14 @@ impl ConvTranspose1d {
 
         // Weight shape: [in_channels, out_channels, kernel_size]
         // (transposed from Conv1d's [out_channels, in_channels, kernel_size])
-        let fan_in = in_channels * kernel_size;
+        let fan_in = checked_mul(in_channels, kernel_size, "ConvTranspose1d fan_in overflow")?;
         let bound = 1.0 / (fan_in as f64).sqrt();
-        let numel = in_channels * out_channels * kernel_size;
+        let numel = checked_mul(
+            in_channels,
+            out_channels,
+            "ConvTranspose1d weight size overflow",
+        )?;
+        let numel = checked_mul(numel, kernel_size, "ConvTranspose1d weight size overflow")?;
 
         let w_rand = session.rand(vec![numel], false)?;
         let w_scale = session.full(vec![numel], 2.0 * bound, false)?;
@@ -18539,9 +18544,55 @@ mod tests {
     }
 
     #[test]
+    fn conv_transpose1d_output_padding_only_extends_existing_output() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let base = ConvTranspose1d::new(&mut session, 1, 1, 3, 2, 0, 0, false).expect("base");
+        let extended =
+            ConvTranspose1d::new(&mut session, 1, 1, 3, 2, 0, 1, false).expect("extended");
+
+        session.no_grad_enter();
+        session
+            .tensor_fill_(base.weight(), 1.0)
+            .expect("base weight");
+        session
+            .tensor_fill_(extended.weight(), 1.0)
+            .expect("extended weight");
+        session.no_grad_exit();
+
+        let input = session
+            .tensor_variable(vec![1.0, -2.0], vec![1, 1, 2], false)
+            .expect("variable");
+        let base_out = base.forward(&mut session, input).expect("base forward");
+        let extended_out = extended
+            .forward(&mut session, input)
+            .expect("extended forward");
+
+        let (base_values, base_meta) = session.tensor_values_meta(base_out).expect("base vals");
+        let (extended_values, extended_meta) = session
+            .tensor_values_meta(extended_out)
+            .expect("extended vals");
+
+        assert_eq!(base_meta.shape(), &[1, 1, 5]);
+        assert_eq!(extended_meta.shape(), &[1, 1, 6]);
+        assert_eq!(
+            &extended_values[..base_values.len()],
+            base_values.as_slice()
+        );
+        assert_eq!(extended_values[base_values.len()], 0.0);
+    }
+
+    #[test]
     fn conv_transpose1d_output_padding_must_be_less_than_stride() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         assert!(ConvTranspose1d::new(&mut session, 1, 1, 3, 2, 0, 2, false).is_err());
+    }
+
+    #[test]
+    fn conv_transpose1d_rejects_dimension_products_that_overflow() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        assert!(ConvTranspose1d::new(&mut session, usize::MAX, 1, 2, 1, 0, 0, false).is_err());
+        assert!(ConvTranspose1d::new(&mut session, usize::MAX, 2, 1, 1, 0, 0, false).is_err());
     }
 
     #[test]
