@@ -8287,10 +8287,7 @@ impl TensorTape {
                     },
                 )));
             }
-            let storage = Self::storage_from_f64_values_for_dtype(
-                input_node.tensor.contiguous_values_as_f64()?,
-                meta.dtype(),
-            );
+            let storage = Self::compact_typed_storage(&input_node.tensor)?;
             let dtype = storage.dtype();
             (
                 input_node.requires_grad,
@@ -8338,10 +8335,7 @@ impl TensorTape {
                     new_shape.push(1);
                 }
             }
-            let storage = Self::storage_from_f64_values_for_dtype(
-                input_node.tensor.contiguous_values_as_f64()?,
-                meta.dtype(),
-            );
+            let storage = Self::compact_typed_storage(&input_node.tensor)?;
             let dtype = storage.dtype();
             (
                 input_node.requires_grad,
@@ -8381,10 +8375,7 @@ impl TensorTape {
             }
             let mut new_shape = shape.to_vec();
             new_shape.insert(dim, 1);
-            let storage = Self::storage_from_f64_values_for_dtype(
-                input_node.tensor.contiguous_values_as_f64()?,
-                meta.dtype(),
-            );
+            let storage = Self::compact_typed_storage(&input_node.tensor)?;
             let dtype = storage.dtype();
             (
                 input_node.requires_grad,
@@ -8622,30 +8613,7 @@ impl TensorTape {
             let meta = input_node.tensor.meta();
             let shape = meta.shape();
             let original_shape = shape.to_vec();
-            let storage = match meta.dtype() {
-                DType::F32 => {
-                    let values = ft_kernel_cpu::narrow_tensor_contiguous_f32(
-                        input_node.tensor.contiguous_values_f32()?,
-                        meta,
-                        dim,
-                        start,
-                        length,
-                    )
-                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
-                    TensorStorage::F32(Arc::new(values))
-                }
-                dtype => {
-                    let values = ft_kernel_cpu::narrow_tensor_contiguous_f64(
-                        &input_node.tensor.contiguous_values_as_f64()?,
-                        meta,
-                        dim,
-                        start,
-                        length,
-                    )
-                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
-                    Self::storage_from_f64_values_for_dtype(values, dtype)
-                }
-            };
+            let storage = Self::narrow_typed_storage(&input_node.tensor, dim, start, length)?;
             let dtype = storage.dtype();
 
             let mut new_shape = shape.to_vec();
@@ -13940,6 +13908,186 @@ impl TensorTape {
         }
     }
 
+    fn compact_typed_storage(tensor: &DenseTensor) -> Result<TensorStorage, AutogradError> {
+        let meta = tensor.meta();
+        if !meta.is_contiguous() {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::UnsupportedLayout,
+            ));
+        }
+        let start = meta.storage_offset();
+        let end = start
+            .checked_add(meta.numel())
+            .ok_or(DenseTensorError::StorageSpanOverflow {
+                storage_offset: start,
+                numel: meta.numel(),
+            })?;
+        Self::slice_typed_storage(tensor.typed_storage(), start, end)
+    }
+
+    fn narrow_typed_storage(
+        tensor: &DenseTensor,
+        dim: usize,
+        start: usize,
+        length: usize,
+    ) -> Result<TensorStorage, AutogradError> {
+        let meta = tensor.meta();
+        if !meta.is_contiguous() {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::UnsupportedLayout,
+            ));
+        }
+        let shape = meta.shape();
+        let ndim = shape.len();
+        if dim >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
+            )));
+        }
+        let end = start.checked_add(length).ok_or(AutogradError::Dispatch(
+            ft_dispatch::DispatchError::Kernel(ft_kernel_cpu::KernelError::InvalidDimension {
+                dim: start,
+                ndim: shape[dim],
+            }),
+        ))?;
+        if end > shape[dim] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: end,
+                    ndim: shape[dim],
+                },
+            )));
+        }
+        let (outer_size, inner_size, _) =
+            Self::checked_dim_loop_sizes(shape, dim, "narrow typed storage overflow")?;
+        let dim_size = shape[dim];
+        let storage_start = meta.storage_offset();
+        let storage_end = storage_start.checked_add(meta.numel()).ok_or(
+            DenseTensorError::StorageSpanOverflow {
+                storage_offset: storage_start,
+                numel: meta.numel(),
+            },
+        )?;
+
+        Ok(match tensor.typed_storage() {
+            TensorStorage::F32(values) => TensorStorage::F32(Arc::new(Self::narrow_slice(
+                Self::checked_storage_slice(values, storage_start, storage_end)?,
+                outer_size,
+                inner_size,
+                dim_size,
+                start,
+                length,
+            ))),
+            TensorStorage::F64(values) => TensorStorage::F64(Arc::new(Self::narrow_slice(
+                Self::checked_storage_slice(values, storage_start, storage_end)?,
+                outer_size,
+                inner_size,
+                dim_size,
+                start,
+                length,
+            ))),
+            TensorStorage::F16(values) => TensorStorage::F16(Arc::new(Self::narrow_slice(
+                Self::checked_storage_slice(values, storage_start, storage_end)?,
+                outer_size,
+                inner_size,
+                dim_size,
+                start,
+                length,
+            ))),
+            TensorStorage::BF16(values) => TensorStorage::BF16(Arc::new(Self::narrow_slice(
+                Self::checked_storage_slice(values, storage_start, storage_end)?,
+                outer_size,
+                inner_size,
+                dim_size,
+                start,
+                length,
+            ))),
+            TensorStorage::Complex64(values) => {
+                TensorStorage::Complex64(Arc::new(Self::narrow_slice(
+                    Self::checked_storage_slice(values, storage_start, storage_end)?,
+                    outer_size,
+                    inner_size,
+                    dim_size,
+                    start,
+                    length,
+                )))
+            }
+            TensorStorage::Complex128(values) => {
+                TensorStorage::Complex128(Arc::new(Self::narrow_slice(
+                    Self::checked_storage_slice(values, storage_start, storage_end)?,
+                    outer_size,
+                    inner_size,
+                    dim_size,
+                    start,
+                    length,
+                )))
+            }
+        })
+    }
+
+    fn slice_typed_storage(
+        storage: &TensorStorage,
+        start: usize,
+        end: usize,
+    ) -> Result<TensorStorage, AutogradError> {
+        match storage {
+            TensorStorage::F32(values) => Ok(TensorStorage::F32(Arc::new(
+                Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+            TensorStorage::F64(values) => Ok(TensorStorage::F64(Arc::new(
+                Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+            TensorStorage::F16(values) => Ok(TensorStorage::F16(Arc::new(
+                Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+            TensorStorage::BF16(values) => Ok(TensorStorage::BF16(Arc::new(
+                Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+            TensorStorage::Complex64(values) => Ok(TensorStorage::Complex64(Arc::new(
+                Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+            TensorStorage::Complex128(values) => Ok(TensorStorage::Complex128(Arc::new(
+                Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+        }
+    }
+
+    fn checked_storage_slice<T>(
+        values: &[T],
+        start: usize,
+        end: usize,
+    ) -> Result<&[T], AutogradError> {
+        if start > end || end > values.len() {
+            return Err(AutogradError::DenseTensor(
+                DenseTensorError::InsufficientStorage {
+                    needed: end,
+                    actual: values.len(),
+                },
+            ));
+        }
+        Ok(&values[start..end])
+    }
+
+    fn narrow_slice<T: Clone>(
+        values: &[T],
+        outer_size: usize,
+        inner_size: usize,
+        dim_size: usize,
+        start: usize,
+        length: usize,
+    ) -> Vec<T> {
+        let mut output = Vec::new();
+        for outer in 0..outer_size {
+            for r in 0..length {
+                for inner in 0..inner_size {
+                    let idx = outer * dim_size * inner_size + (start + r) * inner_size + inner;
+                    output.push(values[idx].clone());
+                }
+            }
+        }
+        output
+    }
+
     fn normalize_repeat_shape(
         input_shape: &[usize],
         repeats: &[usize],
@@ -14150,7 +14298,10 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    use ft_core::{DType, DenseTensor, DenseTensorError, Device, ExecutionMode, TensorMeta};
+    use ft_core::{
+        BFloat16, Complex64, DType, DenseTensor, DenseTensorError, Device, ExecutionMode, Float16,
+        TensorMeta, TensorStorage,
+    };
     use ft_dispatch::DispatchError;
     use proptest::prelude::*;
 
@@ -19351,6 +19502,113 @@ mod tests {
         assert_eq!(tape.dtype(unsqueezed).unwrap(), DType::F32);
         assert_eq!(tape.dtype(reshaped).unwrap(), DType::F32);
         assert_eq!(tape.values_f32(reshaped).unwrap(), vec![1.0f32, 3.0]);
+    }
+
+    #[test]
+    fn half_shape_ops_preserve_dtype() {
+        let mut tape = TensorTape::new();
+        let tensor = DenseTensor::from_contiguous_values_f16(
+            vec![
+                Float16::from_f32(1.0),
+                Float16::from_f32(2.0),
+                Float16::from_f32(3.0),
+                Float16::from_f32(4.0),
+            ],
+            vec![1, 2, 2],
+            Device::Cpu,
+        )
+        .unwrap();
+        let a = tape.leaf_tensor(tensor, false);
+        let narrowed = tape.narrow(a, 2, 0, 1).unwrap();
+        let squeezed = tape.squeeze(narrowed, 2).unwrap();
+        let unsqueezed = tape.unsqueeze(squeezed, 2).unwrap();
+        let reshaped = tape.reshape(unsqueezed, vec![2]).unwrap();
+
+        assert_eq!(tape.dtype(narrowed).unwrap(), DType::F16);
+        assert_eq!(tape.dtype(squeezed).unwrap(), DType::F16);
+        assert_eq!(tape.dtype(unsqueezed).unwrap(), DType::F16);
+        assert_eq!(tape.dtype(reshaped).unwrap(), DType::F16);
+        let storage = tape.node(reshaped).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::F16(_)));
+        if let TensorStorage::F16(values) = storage {
+            assert_eq!(
+                values
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect::<Vec<_>>(),
+                vec![1.0f32, 3.0]
+            );
+        }
+    }
+
+    #[test]
+    fn bf16_shape_ops_preserve_dtype() {
+        let mut tape = TensorTape::new();
+        let tensor = DenseTensor::from_contiguous_values_bf16(
+            vec![
+                BFloat16::from_f32(1.0),
+                BFloat16::from_f32(2.0),
+                BFloat16::from_f32(3.0),
+                BFloat16::from_f32(4.0),
+            ],
+            vec![1, 2, 2],
+            Device::Cpu,
+        )
+        .unwrap();
+        let a = tape.leaf_tensor(tensor, false);
+        let narrowed = tape.narrow(a, 2, 0, 1).unwrap();
+        let squeezed = tape.squeeze(narrowed, 2).unwrap();
+        let unsqueezed = tape.unsqueeze(squeezed, 2).unwrap();
+        let reshaped = tape.reshape(unsqueezed, vec![2]).unwrap();
+
+        assert_eq!(tape.dtype(narrowed).unwrap(), DType::BF16);
+        assert_eq!(tape.dtype(squeezed).unwrap(), DType::BF16);
+        assert_eq!(tape.dtype(unsqueezed).unwrap(), DType::BF16);
+        assert_eq!(tape.dtype(reshaped).unwrap(), DType::BF16);
+        let storage = tape.node(reshaped).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::BF16(_)));
+        if let TensorStorage::BF16(values) = storage {
+            assert_eq!(
+                values
+                    .iter()
+                    .map(|value| value.to_f32())
+                    .collect::<Vec<_>>(),
+                vec![1.0f32, 3.0]
+            );
+        }
+    }
+
+    #[test]
+    fn complex_shape_ops_preserve_dtype_and_imaginary_values() {
+        let mut tape = TensorTape::new();
+        let tensor = DenseTensor::from_typed_storage(
+            TensorMeta::from_shape(vec![1, 2, 2], DType::Complex64, Device::Cpu),
+            TensorStorage::Complex64(Arc::new(vec![
+                Complex64::new(1.0, -1.0),
+                Complex64::new(2.0, -2.0),
+                Complex64::new(3.0, -3.0),
+                Complex64::new(4.0, -4.0),
+            ])),
+        )
+        .unwrap();
+        let a = tape.leaf_tensor(tensor, false);
+        let narrowed = tape.narrow(a, 2, 0, 1).unwrap();
+        let squeezed = tape.squeeze(narrowed, 2).unwrap();
+        let unsqueezed = tape.unsqueeze(squeezed, 2).unwrap();
+        let reshaped = tape.reshape(unsqueezed, vec![2]).unwrap();
+
+        assert_eq!(tape.dtype(narrowed).unwrap(), DType::Complex64);
+        assert_eq!(tape.dtype(squeezed).unwrap(), DType::Complex64);
+        assert_eq!(tape.dtype(unsqueezed).unwrap(), DType::Complex64);
+        assert_eq!(tape.dtype(reshaped).unwrap(), DType::Complex64);
+        let storage = tape.node(reshaped).unwrap().tensor.typed_storage();
+        assert!(matches!(storage, TensorStorage::Complex64(_)));
+        if let TensorStorage::Complex64(values) = storage {
+            assert_eq!(
+                values.as_slice(),
+                &[Complex64::new(1.0, -1.0), Complex64::new(3.0, -3.0)]
+            );
+        }
     }
 
     // ── F32 autograd: forward f32 → backward gradients correct ────────
