@@ -14458,30 +14458,11 @@ print(json.dumps({
     }
 
     #[test]
-    fn torch_index_rearrange_ops_preserve_float32_dtype_subprocess_conformance() {
+    fn torch_index_rearrange_ops_preserve_float32_dtype_subprocess_conformance()
+    -> Result<(), String> {
         use ft_api::FrankenTorchSession;
 
-        let mut config = HarnessConfig::default_paths();
-        let python = config
-            .legacy_oracle_python
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("python3"));
-        let torch_available = Command::new(&python)
-            .arg("-c")
-            .arg("import torch")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false);
-        if !torch_available {
-            eprintln!(
-                "torch_index_rearrange_ops_preserve_float32_dtype_subprocess_conformance: torch unavailable, skipping"
-            );
-            return;
-        }
-        config.legacy_oracle_python = Some(python);
+        let config = HarnessConfig::default_paths();
 
         let script = r#"
 import json
@@ -14515,8 +14496,22 @@ print(json.dumps({
             "expand_shape": [1, 2],
             "expand_target": [2, 2],
         });
-        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
-            .expect("torch rearrange-ops oracle should run");
+        let oracle = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(oracle) => oracle,
+            Err(error)
+                if error.contains("ModuleNotFoundError")
+                    || error.contains("No module named 'torch'")
+                    || error.contains("failed to spawn legacy oracle") =>
+            {
+                eprintln!(
+                    "torch_index_rearrange_ops_preserve_float32_dtype_subprocess_conformance: oracle unavailable, skipping: {error}"
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(format!("torch rearrange-ops oracle should run: {error}"));
+            }
+        };
         for key in ["expand_dtype", "flip_dtype", "repeat_dtype", "roll_dtype"] {
             assert_eq!(
                 oracle.get(key).and_then(Value::as_str),
@@ -14589,6 +14584,7 @@ print(json.dumps({
             session.tensor_values_f32(rolled).expect("roll values"),
             f32_vec("roll_values")
         );
+        Ok(())
     }
 
     #[test]
