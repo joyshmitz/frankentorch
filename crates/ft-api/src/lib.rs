@@ -1690,46 +1690,17 @@ impl FrankenTorchSession {
     ///
     /// If input is 1-D of length n, returns a 2-D tensor of shape [n, n] with the input as diagonal.
     /// If input is 2-D of shape [m, n], returns a 1-D tensor of length min(m, n) with the diagonal.
+    ///
+    /// Delegates to `tensor_diag(input, 0)` for the main-diagonal case
+    /// (frankentorch-rikh). The previous 1-D path materialised a full
+    /// [n, n] identity matrix and did n² multiplications to place n
+    /// values; `tensor_diag_embed` (called via `tensor_diag`) writes
+    /// only the diagonal positions directly. The previous 2-D path
+    /// composed gather + narrow + reshape; `tensor_diagonal` is a
+    /// dedicated shape op. Same surface, fewer allocations, single
+    /// torch-parity path.
     pub fn diag(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        let shape = self.tensor_shape(input)?;
-
-        match shape.len() {
-            1 => {
-                // 1-D -> 2-D diagonal matrix: multiply input (broadcast) with identity mask
-                let n = shape[0];
-                let numel =
-                    Self::checked_square_numel(n, "diag shape volume overflow for matrix output")?;
-                let mut eye_data = vec![0.0; numel];
-                for i in 0..n {
-                    eye_data[i * n + i] = 1.0;
-                }
-                let eye_tensor = self.tensor_variable(eye_data, vec![n, n], false)?;
-                // Reshape input to [n, 1] for broadcasting then multiply element-wise
-                let reshaped = self.tensor_reshape(input, vec![n, 1])?;
-                let expanded = self.tensor_expand(reshaped, vec![n, n])?;
-                self.tensor_mul(expanded, eye_tensor)
-            }
-            2 => {
-                // 2-D -> 1-D diagonal extraction: use gather with diagonal indices
-                let m = shape[0];
-                let n = shape[1];
-                let diag_len = m.min(n);
-                let indices: Vec<f64> = (0..diag_len).map(|i| i as f64).collect();
-                let index = self.tensor_variable(indices, vec![diag_len, 1], false)?;
-                let narrow = if m > diag_len {
-                    self.tensor_narrow(input, 0, 0, diag_len)?
-                } else {
-                    input
-                };
-                let gathered = self.tensor_gather(narrow, 1, index)?;
-                self.tensor_reshape(gathered, vec![diag_len])
-            }
-            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "diag expects 1-D or 2-D input",
-                },
-            ))),
-        }
+        self.tensor_diag(input, 0)
     }
 
     /// Return the upper triangular part of a 2-D tensor.
