@@ -5053,10 +5053,13 @@ impl FrankenTorchSession {
         // IEEE 754 comparisons against NaN return false → both
         // pos_mask and zero_mask are 0 → step is 0. Route via
         // tensor_where with an isnan mask to recover NaN propagation.
+        // One zero constant shared between the gt and eq comparisons
+        // (frankentorch-cc2o). Both ops only read the comparand;
+        // reusing the TensorNodeId saves a redundant n-element
+        // allocation and one autograd-tape node per call.
         let zeros = self.full(in_shape.clone(), 0.0, false)?;
         let pos_mask = self.tensor_gt(input, zeros)?;
-        let zeros2 = self.full(in_shape.clone(), 0.0, false)?;
-        let zero_mask = self.tensor_eq(input, zeros2)?;
+        let zero_mask = self.tensor_eq(input, zeros)?;
         let zero_contrib = self.tensor_mul(zero_mask, values)?;
         let step = self.tensor_add(pos_mask, zero_contrib)?;
         let nan_mask = self.tensor_isnan(input)?;
@@ -5546,12 +5549,13 @@ impl FrankenTorchSession {
         let raw_result = self.tensor_exp(exp_times_log)?;
 
         // 0^0 → 1 via where-mask. Both masks are non-grad boolean
-        // tensors; their elementwise product is the logical AND.
-        let zeros_x = self.full(in_shape.clone(), 0.0, false)?;
-        let zeros_e = self.full(in_shape.clone(), 0.0, false)?;
+        // tensors; their elementwise product is the logical AND. One
+        // zero constant shared between the two equality comparisons
+        // (frankentorch-cc2o) — eq only reads its comparand.
+        let zeros = self.full(in_shape.clone(), 0.0, false)?;
         let ones_const = self.full(in_shape, 1.0, false)?;
-        let x_eq_zero = self.tensor_eq(input, zeros_x)?;
-        let e_eq_zero = self.tensor_eq(exponent, zeros_e)?;
+        let x_eq_zero = self.tensor_eq(input, zeros)?;
+        let e_eq_zero = self.tensor_eq(exponent, zeros)?;
         let both_zero = self.tensor_mul(x_eq_zero, e_eq_zero)?;
         self.tensor_where(both_zero, ones_const, raw_result)
     }
