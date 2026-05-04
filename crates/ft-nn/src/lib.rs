@@ -7378,7 +7378,7 @@ impl ConvTranspose1d {
 
         // Weight shape: [in_channels, out_channels, kernel_size]
         // (transposed from Conv1d's [out_channels, in_channels, kernel_size])
-        let fan_in = checked_mul(in_channels, kernel_size, "ConvTranspose1d fan_in overflow")?;
+        let fan_in = checked_mul(out_channels, kernel_size, "ConvTranspose1d fan_in overflow")?;
         let bound = 1.0 / (fan_in as f64).sqrt();
         let numel = checked_mul(
             in_channels,
@@ -18593,6 +18593,25 @@ mod tests {
 
         assert!(ConvTranspose1d::new(&mut session, usize::MAX, 1, 2, 1, 0, 0, false).is_err());
         assert!(ConvTranspose1d::new(&mut session, usize::MAX, 2, 1, 1, 0, 0, false).is_err());
+    }
+
+    #[test]
+    fn conv_transpose1d_init_uses_transposed_weight_fan_in_like_torch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv = ConvTranspose1d::new(&mut session, 2, 5, 3, 1, 0, 0, true).expect("new");
+        let expected_bound = 1.0 / (15.0f64).sqrt();
+
+        let weight_values = session.tensor_values(deconv.weight()).expect("weight");
+        let bias_values = session
+            .tensor_values(deconv.bias().expect("bias"))
+            .expect("bias values");
+
+        assert!(
+            weight_values
+                .iter()
+                .chain(bias_values.iter())
+                .all(|value| value.abs() <= expected_bound)
+        );
     }
 
     #[test]

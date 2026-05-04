@@ -23041,6 +23041,21 @@ mod tests {
     }
 
     #[test]
+    fn session_tensor_expand_prepends_dims_like_torch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // PyTorch allows Tensor.expand to target a higher rank by
+        // prepending broadcast singleton dimensions.
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .expect("x");
+        let y = session.tensor_expand(x, vec![3, 2]).expect("expand");
+        let vals = session.tensor_values(y).expect("values");
+        assert_eq!(vals, vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
+        let shape = session.tensor_shape(y).expect("shape");
+        assert_eq!(shape, vec![3, 2]);
+    }
+
+    #[test]
     fn session_tensor_expand_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // shape [1, 3] -> expand to [4, 3]
@@ -23054,6 +23069,19 @@ mod tests {
         let grads = report.gradient(x).expect("grad x");
         // sum of upstream grad (all 1s) along expanded dim 0 (size 4) -> 4.0 each
         assert_eq!(grads, &[4.0, 4.0, 4.0]);
+    }
+
+    #[test]
+    fn session_tensor_expand_prepended_dims_backward_sums_like_torch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], true)
+            .expect("x");
+        let y = session.tensor_expand(x, vec![3, 2]).expect("expand");
+        let s = session.tensor_sum(y).expect("sum");
+        let report = session.tensor_backward(s).expect("backward");
+        let grads = report.gradient(x).expect("grad x");
+        assert_eq!(grads, &[3.0, 3.0]);
     }
 
     // split tests

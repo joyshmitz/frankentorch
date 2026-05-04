@@ -14473,6 +14473,8 @@ payload = json.loads(sys.stdin.read())
 x = torch.tensor(payload["values"], dtype=torch.float32).reshape(tuple(payload["shape"]))
 expand_x = torch.tensor(payload["expand_values"], dtype=torch.float32).reshape(tuple(payload["expand_shape"]))
 expanded = expand_x.expand(tuple(payload["expand_target"]))
+higher_rank_expand_x = torch.tensor(payload["higher_rank_expand_values"], dtype=torch.float32).reshape(tuple(payload["higher_rank_expand_shape"]))
+higher_rank_expanded = higher_rank_expand_x.expand(tuple(payload["higher_rank_expand_target"]))
 flipped = torch.flip(x, dims=[1])
 repeated = x.repeat(1, 2)
 rolled = torch.roll(x, shifts=1, dims=1)
@@ -14482,6 +14484,8 @@ large_rolled = torch.roll(large_roll_x, shifts=(2**63 - 1), dims=0)
 print(json.dumps({
     "expand_dtype": str(expanded.dtype),
     "expand_values": [float(v) for v in expanded.contiguous().view(-1).tolist()],
+    "higher_rank_expand_dtype": str(higher_rank_expanded.dtype),
+    "higher_rank_expand_values": [float(v) for v in higher_rank_expanded.contiguous().view(-1).tolist()],
     "flip_dtype": str(flipped.dtype),
     "flip_values": [float(v) for v in flipped.contiguous().view(-1).tolist()],
     "repeat_dtype": str(repeated.dtype),
@@ -14499,6 +14503,9 @@ print(json.dumps({
             "expand_values": [1.0, 2.0],
             "expand_shape": [1, 2],
             "expand_target": [2, 2],
+            "higher_rank_expand_values": [1.0, 2.0],
+            "higher_rank_expand_shape": [2],
+            "higher_rank_expand_target": [3, 2],
             "large_roll_values": [1.0, 2.0],
         });
         let oracle = match super::run_legacy_oracle_script(&config, script, &payload) {
@@ -14519,6 +14526,7 @@ print(json.dumps({
         };
         for key in [
             "expand_dtype",
+            "higher_rank_expand_dtype",
             "flip_dtype",
             "repeat_dtype",
             "roll_dtype",
@@ -14558,6 +14566,25 @@ print(json.dumps({
         assert_eq!(
             session.tensor_values_f32(expanded).expect("expand values"),
             f32_vec("expand_values")
+        );
+
+        let higher_rank_expand_input = session
+            .tensor_variable_f32(vec![1.0, 2.0], vec![2], false)
+            .expect("f32 higher-rank expand input");
+        let higher_rank_expanded = session
+            .tensor_expand(higher_rank_expand_input, vec![3, 2])
+            .expect("higher-rank expand should succeed");
+        assert_eq!(
+            session
+                .tensor_dtype(higher_rank_expanded)
+                .expect("higher-rank expand dtype"),
+            ft_core::DType::F32
+        );
+        assert_eq!(
+            session
+                .tensor_values_f32(higher_rank_expanded)
+                .expect("higher-rank expand values"),
+            f32_vec("higher_rank_expand_values")
         );
 
         let flipped = session

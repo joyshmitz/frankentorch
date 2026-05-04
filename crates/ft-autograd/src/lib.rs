@@ -8901,7 +8901,7 @@ impl TensorTape {
         }
         let storage = Self::compact_typed_storage(tensor)?;
         let shape = meta.shape();
-        if target_shape.len() != shape.len() {
+        if target_shape.len() < shape.len() {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
                 ft_kernel_cpu::KernelError::ShapeMismatch {
                     lhs: shape.to_vec(),
@@ -8909,8 +8909,10 @@ impl TensorTape {
                 },
             )));
         }
+        let prefix = target_shape.len() - shape.len();
         for d in 0..shape.len() {
-            if shape[d] != target_shape[d] && shape[d] != 1 {
+            let target_dim = target_shape[prefix + d];
+            if shape[d] != target_dim && shape[d] != 1 {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
                     ft_kernel_cpu::KernelError::ShapeMismatch {
                         lhs: shape.to_vec(),
@@ -8942,10 +8944,20 @@ impl TensorTape {
         target_shape: &[usize],
         overflow_reason: &'static str,
     ) -> Result<Vec<usize>, AutogradError> {
+        if target_shape.len() < shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: shape.to_vec(),
+                    rhs: target_shape.to_vec(),
+                },
+            )));
+        }
         let strides = ft_core::contiguous_strides(shape);
-        let mut broadcast = Vec::with_capacity(shape.len());
+        let prefix = target_shape.len() - shape.len();
+        let mut broadcast = vec![0usize; prefix];
         for d in 0..shape.len() {
-            if shape[d] == target_shape[d] {
+            let target_dim = target_shape[prefix + d];
+            if shape[d] == target_dim {
                 broadcast.push(strides[d]);
             } else if shape[d] == 1 {
                 broadcast.push(0);
@@ -11802,6 +11814,16 @@ impl TensorTape {
                     // we reduce (sum) the gradient back along those dims.
                     let output_shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
                     let ndim = output_shape.len();
+                    let input_ndim = original_shape.len();
+                    if input_ndim > ndim {
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                            ft_kernel_cpu::KernelError::ShapeMismatch {
+                                lhs: original_shape.clone(),
+                                rhs: output_shape.clone(),
+                            },
+                        )));
+                    }
+                    let prefix = ndim - input_ndim;
                     let orig_numel = Self::checked_shape_numel(
                         original_shape,
                         "expand backward input shape volume overflow",
@@ -11822,8 +11844,11 @@ impl TensorTape {
                         let mut grad_idx = 0usize;
                         for d in 0..ndim {
                             grad_idx += coords[d] * grad_strides[d];
-                            if original_shape[d] != 1 {
-                                orig_idx += coords[d] * orig_strides[d];
+                            if d >= prefix {
+                                let input_dim = d - prefix;
+                                if original_shape[input_dim] != 1 {
+                                    orig_idx += coords[d] * orig_strides[input_dim];
+                                }
                             }
                         }
                         contrib[orig_idx] += incoming[grad_idx];
