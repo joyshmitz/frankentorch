@@ -1761,6 +1761,19 @@ mod tests {
     }
 
     #[test]
+    fn hardened_malformed_payload_diagnostic_snapshot() {
+        // Golden snapshot of the EXACT diagnostic for a fixed
+        // malformed input. The companion bounded-length contract
+        // (hardened_malformed_payload_returns_bounded_diagnostic)
+        // pins the < 320-char budget; this snapshot pins the
+        // wording. Downstream UIs and log scrapers may pattern-match
+        // on this diagnostic, so any change must go through snapshot
+        // review. Tracked under frankentorch-mkgv.
+        let err = decode_checkpoint("{ not json", DecodeMode::Hardened).expect_err("must fail");
+        insta::assert_snapshot!("hardened_malformed_payload_diagnostic", err.to_string());
+    }
+
+    #[test]
     fn version_mismatch_is_fail_closed() {
         let entries = vec![SnapshotEntry {
             node_id: 0,

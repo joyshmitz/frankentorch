@@ -1,0 +1,5 @@
+---
+source: crates/ft-serialize/src/lib.rs
+expression: err.to_string()
+---
+invalid json: key must be a string at line 1 column 3; payload_prefix={ not json
