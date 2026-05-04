@@ -14645,6 +14645,154 @@ print(json.dumps({
     }
 
     #[test]
+    fn torch_conv_transpose2d_output_shape_subprocess_conformance() {
+        // PyTorch parity for ConvTranspose2d output shape across the
+        // same configurations the hbm0 regression covers, plus a few
+        // standard upsampling configs. The subprocess oracle is
+        // torch.nn.ConvTranspose2d itself (not a hand-derived formula),
+        // so any drift in our shape arithmetic — including overlap-
+        // window underflows like hbm0 and the conv-transpose
+        // output-padding child of dh77 — surfaces immediately.
+        //
+        // Why only shape: torch and FrankenTorch both Kaiming-init
+        // their weights with different RNG seeds, so output values
+        // would not match bit-exactly without weight surgery. Shape
+        // parity is the strongest contract that does not require
+        // injecting torch weights into FrankenTorch (or vice versa).
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{ConvTranspose2d, Module};
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_conv_transpose2d_output_shape_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json
+import sys
+import torch
+
+cases = json.loads(sys.stdin.read())["cases"]
+out = []
+for case in cases:
+    layer = torch.nn.ConvTranspose2d(
+        in_channels=case["in_channels"],
+        out_channels=case["out_channels"],
+        kernel_size=tuple(case["kernel_size"]),
+        stride=tuple(case["stride"]),
+        padding=tuple(case["padding"]),
+        output_padding=tuple(case["output_padding"]),
+        bias=False,
+    )
+    x = torch.zeros(*case["input_shape"], dtype=torch.float32)
+    y = layer(x)
+    out.append({"shape": list(y.shape)})
+
+print(json.dumps({"results": out}, sort_keys=True))
+"#;
+
+        // (in_ch, out_ch, kernel, stride, padding, output_padding, input_shape)
+        // Case 0 is the hbm0 repro: kernel >> input + 2*padding
+        // forces late kernel rows past h_out. Case 4 has a non-square
+        // kernel/stride/padding combination that exercises the dh77
+        // output_padding shape arithmetic.
+        let cases = vec![
+            (1, 1, (5, 5), (1, 1), (2, 2), (0, 0), vec![1, 1, 1, 1]),
+            (1, 1, (3, 3), (1, 1), (1, 1), (0, 0), vec![1, 1, 4, 4]),
+            (1, 1, (4, 4), (2, 2), (1, 1), (0, 0), vec![1, 1, 3, 3]),
+            (1, 1, (3, 3), (2, 2), (0, 0), (1, 1), vec![1, 1, 2, 2]),
+            (2, 3, (3, 3), (2, 2), (1, 1), (1, 1), vec![1, 2, 4, 4]),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|c| {
+                json!({
+                    "in_channels": c.0,
+                    "out_channels": c.1,
+                    "kernel_size": [c.2.0, c.2.1],
+                    "stride": [c.3.0, c.3.1],
+                    "padding": [c.4.0, c.4.1],
+                    "output_padding": [c.5.0, c.5.1],
+                    "input_shape": c.6,
+                })
+            }).collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch ConvTranspose2d oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle ConvTranspose2d results");
+        assert_eq!(
+            results.len(),
+            cases.len(),
+            "oracle returned wrong number of results"
+        );
+
+        for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let (in_ch, out_ch, kernel, stride, padding, output_padding, ref input_shape) = *case;
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
+                .expect("oracle shape array")
+                .iter()
+                .map(|v| {
+                    usize::try_from(v.as_u64().expect("oracle shape entry"))
+                        .expect("oracle shape entry fits usize")
+                })
+                .collect();
+
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let deconv = ConvTranspose2d::new(
+                &mut session,
+                in_ch,
+                out_ch,
+                kernel,
+                stride,
+                padding,
+                output_padding,
+                false,
+            )
+            .expect("ConvTranspose2d::new should succeed");
+
+            let numel: usize = input_shape.iter().copied().product();
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+                .expect("input tensor");
+            let out = deconv
+                .forward(&mut session, x)
+                .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
+
+            let (_, meta) = session.tensor_values_meta(out).expect("output meta");
+            assert_eq!(
+                meta.shape(),
+                expected_shape.as_slice(),
+                "case {i}: ConvTranspose2d output shape diverges from torch (configuration: \
+                 in_ch={in_ch}, out_ch={out_ch}, kernel={kernel:?}, stride={stride:?}, \
+                 padding={padding:?}, output_padding={output_padding:?}, input={input_shape:?})"
+            );
+        }
+    }
+
+    #[test]
     fn torch_atan2_ieee754_subprocess_conformance() {
         // Subprocess-based diff test: FrankenTorch's atan2 (which calls
         // Rust's f64::atan2, which calls the platform libm atan2) MUST
