@@ -20116,6 +20116,28 @@ mod tests {
     }
 
     #[test]
+    fn roll_inverse_metamorphic_preserves_values_and_gradients() {
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf_f32(vec![1.0f32, -2.0, 3.5], vec![3], true)
+            .unwrap();
+        let shift = isize::MAX;
+
+        let rolled = tape.roll(input, shift, 0).unwrap();
+        let restored = tape.roll(rolled, -shift, 0).unwrap();
+        assert_eq!(tape.values_f32(restored).unwrap(), vec![1.0f32, -2.0, 3.5]);
+
+        let weights = tape
+            .leaf_f32(vec![0.5f32, -1.5, 2.0], vec![3], false)
+            .unwrap();
+        let (weighted, _) = tape.mul(restored, weights, ExecutionMode::Strict).unwrap();
+        let (loss, _) = tape.sum(weighted, ExecutionMode::Strict).unwrap();
+        let report = tape.backward(loss).unwrap();
+
+        assert_eq!(report.gradient(input).unwrap(), &[0.5, -1.5, 2.0]);
+    }
+
+    #[test]
     fn half_repeat_preserves_dtype() {
         let mut tape = TensorTape::new();
         let f16_tensor = DenseTensor::from_contiguous_values_f16(
