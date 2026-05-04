@@ -14793,6 +14793,225 @@ print(json.dumps({"results": out}, sort_keys=True))
     }
 
     #[test]
+    fn torch_ieee754_unary_edge_cases_subprocess_conformance() {
+        // Subprocess oracle that pins recent IEEE-edge fixes against
+        // upstream torch:
+        //   - tensor_copysign  (12b497b: sign-of-±0.0 preservation)
+        //   - tensor_heaviside (8a3173c: NaN propagation)
+        //   - tensor_pow_tensor (7eb74c0: 0^0 == 1)
+        //   - tensor_signbit   (7d14248: distinguishes ±0.0)
+        //
+        // Each unit test for the above encoded my interpretation of
+        // torch semantics. This oracle pins the actual upstream
+        // torch.* behavior; if torch ever changes (or my reading of
+        // it drifted) the failure surfaces here instead of at a
+        // downstream model-training-loop divergence.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_ieee754_unary_edge_cases_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // Edge-case grids. Each grid covers ±0.0, ±1, ±inf, NaN at
+        // the slots that the corresponding op's semantics actually
+        // distinguish.
+        let copysign_inputs: Vec<(f64, f64)> = vec![
+            (2.0, 0.0),
+            (2.0, -0.0),
+            (2.0, 3.0),
+            (2.0, -3.0),
+            (0.0, -3.0),
+            (-5.0, 0.0),
+            (f64::INFINITY, -1.0),
+            (1.0, f64::NEG_INFINITY),
+        ];
+        let heaviside_inputs: Vec<(f64, f64)> = vec![
+            (-1.0, 0.5),
+            (0.0, 0.5),
+            (1.0, 0.5),
+            (f64::NAN, 0.5),
+            (f64::INFINITY, 0.5),
+            (f64::NEG_INFINITY, 0.5),
+        ];
+        let pow_inputs: Vec<(f64, f64)> =
+            vec![(0.0, 0.0), (2.0, 3.0), (3.0, 2.0), (4.0, 0.5), (0.0, 1.0)];
+        let signbit_inputs: Vec<f64> = vec![
+            1.0,
+            -1.0,
+            0.0,
+            -0.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+payload = json.loads(sys.stdin.read())
+
+def encode_scalar(v):
+    # JSON has no NaN/inf — encode as tagged strings so the Rust side
+    # can reconstruct without lossy float coercion.
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+def torch_copysign(m, s):
+    return torch.copysign(torch.tensor(m, dtype=torch.float64),
+                          torch.tensor(s, dtype=torch.float64)).item()
+
+def torch_heaviside(x, v):
+    return torch.heaviside(torch.tensor(x, dtype=torch.float64),
+                           torch.tensor(v, dtype=torch.float64)).item()
+
+def torch_pow(x, e):
+    return torch.pow(torch.tensor(x, dtype=torch.float64),
+                     torch.tensor(e, dtype=torch.float64)).item()
+
+def torch_signbit(x):
+    return 1.0 if torch.signbit(torch.tensor(x, dtype=torch.float64)).item() else 0.0
+
+print(json.dumps({
+    "copysign": [encode_scalar(torch_copysign(m, s)) for m, s in payload["copysign"]],
+    "heaviside": [encode_scalar(torch_heaviside(x, v)) for x, v in payload["heaviside"]],
+    "pow": [encode_scalar(torch_pow(x, e)) for x, e in payload["pow"]],
+    "signbit": [encode_scalar(torch_signbit(x)) for x in payload["signbit"]],
+}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "copysign": copysign_inputs.iter()
+                .map(|(m, s)| vec![*m, *s]).collect::<Vec<_>>(),
+            "heaviside": heaviside_inputs.iter()
+                .map(|(x, v)| vec![*x, *v]).collect::<Vec<_>>(),
+            "pow": pow_inputs.iter()
+                .map(|(x, e)| vec![*x, *e]).collect::<Vec<_>>(),
+            "signbit": signbit_inputs.clone(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch IEEE edge oracle should run");
+
+        // Decode the oracle's tagged scalars back into f64 (handles
+        // NaN/±inf which JSON cannot represent natively).
+        fn decode_scalar(value: &Value) -> f64 {
+            if let Some(s) = value.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    _ => panic!("unexpected tagged scalar string: {s}"),
+                }
+            } else {
+                value
+                    .as_f64()
+                    .expect("oracle scalar should decode as f64 or tagged string")
+            }
+        }
+
+        // NaN-aware bit-equal: NaN matches NaN, signed zeros are
+        // distinguished by sign bit, finite values must be exactly
+        // equal (libm/torch contract).
+        fn ieee_bit_equal(a: f64, b: f64) -> bool {
+            if a.is_nan() && b.is_nan() {
+                true
+            } else if a == 0.0 && b == 0.0 {
+                a.is_sign_negative() == b.is_sign_negative()
+            } else {
+                a == b
+            }
+        }
+
+        let arr = |key: &str| -> Vec<f64> {
+            oracle
+                .get(key)
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| panic!("oracle missing key {key}"))
+                .iter()
+                .map(decode_scalar)
+                .collect()
+        };
+        let oracle_copysign = arr("copysign");
+        let oracle_heaviside = arr("heaviside");
+        let oracle_pow = arr("pow");
+        let oracle_signbit = arr("signbit");
+
+        // Run each op in FrankenTorch and compare elementwise to torch.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (i, ((m, s), expected)) in copysign_inputs
+            .iter()
+            .zip(oracle_copysign.iter())
+            .enumerate()
+        {
+            let mag = session.tensor_variable(vec![*m], vec![1], false).unwrap();
+            let sgn = session.tensor_variable(vec![*s], vec![1], false).unwrap();
+            let out = session.tensor_copysign(mag, sgn).unwrap();
+            let got = session.tensor_values(out).unwrap()[0];
+            assert!(
+                ieee_bit_equal(got, *expected),
+                "copysign case {i} ({m}, {s}): got {got}, torch {expected}"
+            );
+        }
+        for (i, ((x, v), expected)) in heaviside_inputs
+            .iter()
+            .zip(oracle_heaviside.iter())
+            .enumerate()
+        {
+            let xt = session.tensor_variable(vec![*x], vec![1], false).unwrap();
+            let vt = session.tensor_variable(vec![*v], vec![1], false).unwrap();
+            let out = session.tensor_heaviside(xt, vt).unwrap();
+            let got = session.tensor_values(out).unwrap()[0];
+            assert!(
+                ieee_bit_equal(got, *expected),
+                "heaviside case {i} ({x}, {v}): got {got}, torch {expected}"
+            );
+        }
+        for (i, ((x, e), expected)) in pow_inputs.iter().zip(oracle_pow.iter()).enumerate() {
+            let xt = session.tensor_variable(vec![*x], vec![1], false).unwrap();
+            let et = session.tensor_variable(vec![*e], vec![1], false).unwrap();
+            let out = session.tensor_pow_tensor(xt, et).unwrap();
+            let got = session.tensor_values(out).unwrap()[0];
+            assert!(
+                ieee_bit_equal(got, *expected),
+                "pow case {i} ({x}, {e}): got {got}, torch {expected}"
+            );
+        }
+        for (i, (x, expected)) in signbit_inputs.iter().zip(oracle_signbit.iter()).enumerate() {
+            let xt = session.tensor_variable(vec![*x], vec![1], false).unwrap();
+            let out = session.tensor_signbit(xt).unwrap();
+            let got = session.tensor_values(out).unwrap()[0];
+            assert!(
+                ieee_bit_equal(got, *expected),
+                "signbit case {i} ({x}): got {got}, torch {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn torch_atan2_ieee754_subprocess_conformance() {
         // Subprocess-based diff test: FrankenTorch's atan2 (which calls
         // Rust's f64::atan2, which calls the platform libm atan2) MUST
