@@ -1631,6 +1631,46 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_hardened_json_contract_snapshot() {
+        // Golden snapshot for the Hardened-mode checkpoint envelope.
+        // The Strict counterpart freezes the JSON contract for
+        // schema_version, entry canonicalization, and the det64
+        // source_hash; this companion locks the Hardened mode wire
+        // format so a future schema change to either mode is forced
+        // through a snapshot review. Reuses the same input fixture
+        // as the strict test so any divergence is purely
+        // mode-attributable (mode tag + a distinct det64 hash via
+        // the schema_version=2 path).
+        let entries = vec![
+            SnapshotEntry {
+                node_id: 7,
+                value: -0.5,
+                grad: Some(1.25),
+            },
+            SnapshotEntry {
+                node_id: 3,
+                value: 1.0,
+                grad: None,
+            },
+            SnapshotEntry {
+                node_id: 7,
+                value: 2.0,
+                grad: Some(-3.5),
+            },
+        ];
+
+        let encoded = encode_checkpoint(&entries, CheckpointMode::Hardened)
+            .expect("hardened encode should work");
+        let pretty = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(&encoded)
+                .expect("hardened checkpoint JSON must parse"),
+        )
+        .expect("pretty checkpoint JSON should serialize");
+
+        insta::assert_snapshot!("hardened_checkpoint_json_contract", pretty);
+    }
+
+    #[test]
     fn strict_decode_canonicalizes_entry_order() {
         let entries = vec![
             SnapshotEntry {
