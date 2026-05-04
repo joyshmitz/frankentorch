@@ -55,4 +55,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_core_tensor_meta"
+path = "fuzz_targets/ft_core_tensor_meta.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
