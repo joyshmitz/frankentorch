@@ -7888,7 +7888,8 @@ impl ConvTranspose2d {
         }
 
         // Weight shape: [in_channels, out_channels, kH, kW]
-        let fan_in = checked_mul(in_channels, kh, "ConvTranspose2d fan_in overflow")?;
+        // (transposed from Conv2d's [out_channels, in_channels, kH, kW])
+        let fan_in = checked_mul(out_channels, kh, "ConvTranspose2d fan_in overflow")?;
         let fan_in = checked_mul(fan_in, kw, "ConvTranspose2d fan_in overflow")?;
         let bound = 1.0 / (fan_in as f64).sqrt();
         let numel = checked_mul(
@@ -8369,9 +8370,19 @@ impl ConvTranspose3d {
         }
 
         // Weight shape: [in_channels, out_channels, kD, kH, kW]
-        let fan_in = in_channels * kd * kh * kw;
+        // (transposed from Conv3d's [out_channels, in_channels, kD, kH, kW])
+        let fan_in = checked_mul(out_channels, kd, "ConvTranspose3d fan_in overflow")?;
+        let fan_in = checked_mul(fan_in, kh, "ConvTranspose3d fan_in overflow")?;
+        let fan_in = checked_mul(fan_in, kw, "ConvTranspose3d fan_in overflow")?;
         let bound = 1.0 / (fan_in as f64).sqrt();
-        let numel = in_channels * out_channels * kd * kh * kw;
+        let numel = checked_mul(
+            in_channels,
+            out_channels,
+            "ConvTranspose3d weight size overflow",
+        )?;
+        let numel = checked_mul(numel, kd, "ConvTranspose3d weight size overflow")?;
+        let numel = checked_mul(numel, kh, "ConvTranspose3d weight size overflow")?;
+        let numel = checked_mul(numel, kw, "ConvTranspose3d weight size overflow")?;
 
         let w_rand = session.rand(vec![numel], false)?;
         let w_scale = session.full(vec![numel], 2.0 * bound, false)?;
@@ -18868,6 +18879,28 @@ mod tests {
     }
 
     #[test]
+    fn conv_transpose2d_init_uses_transposed_weight_fan_in_like_torch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv =
+            ConvTranspose2d::new(&mut session, 1, 64, (1, 1), (1, 1), (0, 0), (0, 0), true)
+                .expect("new");
+        let expected_bound = 1.0 / 64.0f64.sqrt();
+
+        let weight_values = session.tensor_values(deconv.weight()).expect("weight");
+        let bias_values = session
+            .tensor_values(deconv.bias().expect("bias"))
+            .expect("bias values");
+
+        assert!(
+            weight_values
+                .iter()
+                .chain(bias_values.iter())
+                .all(|value| value.abs() <= expected_bound),
+            "ConvTranspose2d values should be initialized within PyTorch transposed fan_in bound"
+        );
+    }
+
+    #[test]
     fn conv_transpose2d_backward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let deconv = ConvTranspose2d::new(&mut session, 1, 1, (2, 2), (1, 1), (0, 0), (0, 0), true)
@@ -19023,6 +19056,36 @@ mod tests {
     }
 
     #[test]
+    fn conv_transpose3d_init_uses_transposed_weight_fan_in_like_torch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv = ConvTranspose3d::new(
+            &mut session,
+            1,
+            64,
+            (1, 1, 1),
+            (1, 1, 1),
+            (0, 0, 0),
+            (0, 0, 0),
+            true,
+        )
+        .expect("new");
+        let expected_bound = 1.0 / 64.0f64.sqrt();
+
+        let weight_values = session.tensor_values(deconv.weight()).expect("weight");
+        let bias_values = session
+            .tensor_values(deconv.bias().expect("bias"))
+            .expect("bias values");
+
+        assert!(
+            weight_values
+                .iter()
+                .chain(bias_values.iter())
+                .all(|value| value.abs() <= expected_bound),
+            "ConvTranspose3d values should be initialized within PyTorch transposed fan_in bound"
+        );
+    }
+
+    #[test]
     fn conv_transpose3d_output_padding_must_be_less_than_stride() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         assert!(
@@ -19034,6 +19097,38 @@ mod tests {
                 (2, 2, 2),
                 (0, 0, 0),
                 (2, 2, 2),
+                false,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn conv_transpose3d_rejects_dimension_products_that_overflow() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        assert!(
+            ConvTranspose3d::new(
+                &mut session,
+                usize::MAX,
+                2,
+                (2, 1, 1),
+                (1, 1, 1),
+                (0, 0, 0),
+                (0, 0, 0),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            ConvTranspose3d::new(
+                &mut session,
+                1,
+                usize::MAX,
+                (2, 1, 1),
+                (1, 1, 1),
+                (0, 0, 0),
+                (0, 0, 0),
                 false,
             )
             .is_err()
