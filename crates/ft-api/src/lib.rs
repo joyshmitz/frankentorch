@@ -5017,9 +5017,28 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let abs_m = self.tensor_abs(magnitude)?;
-        let sign_s = self.tensor_sign(sign)?;
-        self.tensor_mul(abs_m, sign_s)
+        // Compute via f64::copysign on the raw values rather than
+        // composing |m| * sign(s): tensor_sign returns 0 for both +0.0
+        // and -0.0, so the previous abs * sign composition produced 0
+        // when `sign` had any zero element. torch.copysign preserves
+        // the IEEE 754 sign-of-zero (copysign(2.0, -0.0) == -2.0),
+        // and so does Rust's f64::copysign. Dtype is preserved by
+        // dispatching on the magnitude's dtype.
+        let m_dtype = self.tensor_dtype(magnitude)?;
+        let m_vals = self.tensor_values(magnitude)?;
+        let s_vals = self.tensor_values(sign)?;
+        let result: Vec<f64> = m_vals
+            .iter()
+            .zip(s_vals.iter())
+            .map(|(&m, &s)| m.copysign(s))
+            .collect();
+        match m_dtype {
+            DType::F32 => {
+                let f32_result: Vec<f32> = result.into_iter().map(|v| v as f32).collect();
+                self.tensor_variable_f32(f32_result, m_shape, false)
+            }
+            _ => self.tensor_variable(result, m_shape, false),
+        }
     }
 
     /// Heaviside step function: `0 if x<0, 1 if x>0, values[i] if x==0`.
@@ -29396,9 +29415,11 @@ mod tests {
 
     #[test]
     fn copysign_known_values() {
-        // |magnitude| with sign of sign_tensor.
-        // mag = [-3, 4, -5, 6], sign = [1, -1, 0, -2]
-        // → [3, -4, 0, -6]   (sign(0) = 0 in our tensor_sign convention)
+        // |magnitude| with the IEEE 754 sign of sign_tensor — matches
+        // torch.copysign and Rust's f64::copysign. +0.0 has positive
+        // sign (so |-5| · sign(+0.0) = +5), -0.0 has negative sign.
+        // mag = [-3, 4, -5, 6], sign = [1, -1, +0.0, -2]
+        // → [3, -4, +5, -6]
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let mag = s
             .tensor_variable(vec![-3.0, 4.0, -5.0, 6.0], vec![4], false)
@@ -29407,7 +29428,35 @@ mod tests {
             .tensor_variable(vec![1.0, -1.0, 0.0, -2.0], vec![4], false)
             .unwrap();
         let out = s.tensor_copysign(mag, sign).unwrap();
-        assert_eq!(s.tensor_values(out).unwrap(), vec![3.0, -4.0, 0.0, -6.0]);
+        assert_eq!(s.tensor_values(out).unwrap(), vec![3.0, -4.0, 5.0, -6.0]);
+    }
+
+    #[test]
+    fn copysign_preserves_ieee754_sign_of_zero() {
+        // Regression: the previous abs(m) * sign(s) composition lost
+        // the sign of zero because tensor_sign(±0.0) = 0, so the
+        // multiplication erased the magnitude. torch.copysign is
+        // IEEE 754-compliant — the sign bit of the second argument
+        // determines the result's sign even for ±0.0.
+        //
+        // copysign(2.0, +0.0) =  2.0
+        // copysign(2.0, -0.0) = -2.0
+        // copysign(0.0, -3.0) = -0.0  (a real, signed zero, not zero)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mag = s
+            .tensor_variable(vec![2.0, 2.0, 0.0], vec![3], false)
+            .unwrap();
+        let sign = s
+            .tensor_variable(vec![0.0, -0.0, -3.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_copysign(mag, sign).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals[0], 2.0);
+        assert_eq!(vals[1], -2.0);
+        // copysign(0.0, -3.0) is -0.0; bit-compare to confirm the
+        // sign bit, since -0.0 == 0.0 by value.
+        assert_eq!(vals[2], 0.0);
+        assert!(vals[2].is_sign_negative(), "expected -0.0, got {}", vals[2]);
     }
 
     #[test]
