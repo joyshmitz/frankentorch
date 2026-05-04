@@ -24428,6 +24428,60 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn conv_transpose_nd_init_fan_in_matches_pytorch_weight_shape_contract() -> Result<(), String> {
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{ConvTranspose2d, ConvTranspose3d};
+
+        // PyTorch's ConvTransposeNd weight contract is
+        // [in_channels, out_channels / groups, ...kernel]. Its reset path
+        // computes fan_in from weight.shape[1] times receptive field.
+        // Use in_channels=1, out_channels=64 to make the old forward-conv
+        // fan_in basis produce a much wider interval.
+        let conv2d_bound = 1.0 / 64.0f64.sqrt();
+        let conv3d_bound = 1.0 / 64.0f64.sqrt();
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv2d =
+            ConvTranspose2d::new(&mut session, 1, 64, (1, 1), (1, 1), (0, 0), (0, 0), true)
+                .map_err(|error| format!("conv transpose 2d constructor failed: {error}"))?;
+        let conv3d = ConvTranspose3d::new(
+            &mut session,
+            1,
+            64,
+            (1, 1, 1),
+            (1, 1, 1),
+            (0, 0, 0),
+            (0, 0, 0),
+            true,
+        )
+        .map_err(|error| format!("conv transpose 3d constructor failed: {error}"))?;
+
+        let conv2d_bias = conv2d
+            .bias()
+            .ok_or_else(|| "conv2d bias missing".to_string())?;
+        let conv3d_bias = conv3d
+            .bias()
+            .ok_or_else(|| "conv3d bias missing".to_string())?;
+
+        for (name, bound, tensor) in [
+            ("conv2d weight", conv2d_bound, conv2d.weight()),
+            ("conv2d bias", conv2d_bound, conv2d_bias),
+            ("conv3d weight", conv3d_bound, conv3d.weight()),
+            ("conv3d bias", conv3d_bound, conv3d_bias),
+        ] {
+            let values = session
+                .tensor_values(tensor)
+                .map_err(|error| format!("{name} values unavailable: {error}"))?;
+            assert!(
+                values.iter().all(|value| value.abs() <= bound),
+                "{name} initialized outside PyTorch fan_in bound {bound}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn conv2d_pixel_shuffle_super_resolution_trains_end_to_end_with_adam() {
         // E2E regression for frankentorch-rr7i. Tiny super-resolution
         // stack: Conv2d(in_ch → out_ch * r^2) → PixelShuffle(r). The
