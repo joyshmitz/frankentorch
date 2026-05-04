@@ -3565,6 +3565,44 @@ impl FrankenTorchSession {
         )
     }
 
+    /// `torch.diag(input, diagonal=0)` parity dispatch.
+    ///
+    /// torch.diag is overloaded: a 1-D input becomes a 2-D matrix with
+    /// the input on the requested diagonal (delegates to
+    /// `tensor_diag_embed`); a 2-D input returns the requested diagonal
+    /// as a 1-D tensor (delegates to `tensor_diagonal`). Higher-rank
+    /// inputs are rejected — torch raises a `RuntimeError` for them.
+    /// Both delegate paths are autograd-aware via the existing
+    /// implementations.
+    pub fn tensor_diag(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        match shape.len() {
+            1 => {
+                let offset_i32 = i32::try_from(diagonal).map_err(|_| {
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "diag: 1-D diagonal offset out of i32 range",
+                        },
+                    ))
+                })?;
+                self.tensor_diag_embed(input, offset_i32)
+            }
+            2 => self.tensor_diagonal(input, diagonal),
+            _ => Err(AutogradError::Dispatch(
+                ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::InvalidDimension {
+                        dim: shape.len(),
+                        ndim: 2,
+                    },
+                ),
+            )),
+        }
+    }
+
     /// Return unique elements from a 1D tensor.
     ///
     /// If `sorted` is true (default), output is sorted ascending.
@@ -34525,6 +34563,101 @@ mod tests {
                 "diag_embed grad[{i}] = {g}, expected {e}"
             );
         }
+    }
+
+    // ── tensor_diag dispatch tests ─────────────────────────────────────
+
+    #[test]
+    fn diag_1d_input_embeds_as_main_diagonal() {
+        // torch.diag([1, 2, 3]) = [[1,0,0], [0,2,0], [0,0,3]]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let d = s.tensor_diag(v, 0).unwrap();
+        assert_eq!(s.tensor_shape(d).unwrap(), vec![3, 3]);
+        assert_eq!(
+            s.tensor_values(d).unwrap(),
+            vec![1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn diag_1d_input_embeds_with_offset() {
+        // torch.diag([1, 2], 1) = [[0,1,0], [0,0,2], [0,0,0]]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let d = s.tensor_diag(v, 1).unwrap();
+        assert_eq!(s.tensor_shape(d).unwrap(), vec![3, 3]);
+        assert_eq!(
+            s.tensor_values(d).unwrap(),
+            vec![0.0, 1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn diag_2d_input_extracts_main_diagonal() {
+        // torch.diag([[1,2,3],[4,5,6],[7,8,9]]) = [1, 5, 9]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![3, 3],
+                false,
+            )
+            .unwrap();
+        let v = s.tensor_diag(m, 0).unwrap();
+        assert_eq!(s.tensor_shape(v).unwrap(), vec![3]);
+        assert_eq!(s.tensor_values(v).unwrap(), vec![1.0, 5.0, 9.0]);
+    }
+
+    #[test]
+    fn diag_2d_input_extracts_super_diagonal() {
+        // torch.diag([[1,2,3],[4,5,6],[7,8,9]], 1) = [2, 6]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![3, 3],
+                false,
+            )
+            .unwrap();
+        let v = s.tensor_diag(m, 1).unwrap();
+        assert_eq!(s.tensor_shape(v).unwrap(), vec![2]);
+        assert_eq!(s.tensor_values(v).unwrap(), vec![2.0, 6.0]);
+    }
+
+    #[test]
+    fn diag_rejects_higher_rank_input() {
+        // torch.diag raises RuntimeError on inputs with rank > 2.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0; 8], vec![2, 2, 2], false)
+            .unwrap();
+        assert!(s.tensor_diag(t, 0).is_err());
+    }
+
+    #[test]
+    fn diag_propagates_gradient_through_2d_extraction() {
+        // 2-D path delegates to tensor_diagonal which is already
+        // autograd-aware. Pin the gradient: under sum loss on the
+        // diagonal, only diagonal entries see grad = 1.0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s
+            .tensor_variable(
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![3, 3],
+                true,
+            )
+            .unwrap();
+        let v = s.tensor_diag(m, 0).unwrap();
+        let loss = s.tensor_sum(v).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, m).unwrap();
+        assert_eq!(
+            grad,
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        );
     }
 
     // ── tril_indices / triu_indices tests ─────────────────────────────
