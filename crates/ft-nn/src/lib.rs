@@ -8202,13 +8202,27 @@ impl Module for ConvTranspose2d {
                 // It needs to be placed starting at (kh - padding_h, kw - padding_w)
                 // in the h_out x w_out output.
 
-                // Compute the valid region overlap with output
+                // Compute the valid region overlap with output. Late
+                // kernel rows/cols (kh > h_out + padding_h) sit
+                // entirely past the output and contribute nothing — use
+                // saturating arithmetic so the later
+                // `src_h_start >= src_h_end` check triggers cleanly
+                // instead of usize underflow. Tracked under
+                // frankentorch-hbm0.
                 let src_h_start = self.padding_h.saturating_sub(kh);
                 let dst_h_start = kh.saturating_sub(self.padding_h);
-                let src_h_end = up_h.min(h_out + self.padding_h - kh);
+                let src_h_end = up_h.min(
+                    h_out
+                        .saturating_add(self.padding_h)
+                        .saturating_sub(kh),
+                );
                 let src_w_start = self.padding_w.saturating_sub(kw);
                 let dst_w_start = kw.saturating_sub(self.padding_w);
-                let src_w_end = up_w.min(w_out + self.padding_w - kw);
+                let src_w_end = up_w.min(
+                    w_out
+                        .saturating_add(self.padding_w)
+                        .saturating_sub(kw),
+                );
 
                 if src_h_start >= src_h_end || src_w_start >= src_w_end {
                     continue;
@@ -18834,6 +18848,29 @@ mod tests {
             .tensor_variable(vec![1.0], vec![1, 1, 1, 1], false)
             .expect("variable");
         let out = deconv.forward(&mut session, x).expect("forward");
+        let (_, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn conv_transpose2d_cropped_large_kernel_singleton_spatial() {
+        // Regression for frankentorch-hbm0: cropped transposed conv with
+        // kernel >> input + 2*padding. Late kernel rows/cols index past
+        // the output, and the overlap window math used unchecked usize
+        // subtraction. PyTorch's torch.nn.ConvTranspose2d returns shape
+        // [1,1,1,1] for this configuration; FrankenTorch must match
+        // (and not panic with usize underflow in debug builds).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv =
+            ConvTranspose2d::new(&mut session, 1, 1, (5, 5), (1, 1), (2, 2), (0, 0), false)
+                .expect("new");
+
+        let x = session
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1], false)
+            .expect("variable");
+        let out = deconv
+            .forward(&mut session, x)
+            .expect("forward should match PyTorch crop semantics");
         let (_, meta) = session.tensor_values_meta(out).expect("vals");
         assert_eq!(meta.shape(), &[1, 1, 1, 1]);
     }
