@@ -5990,6 +5990,53 @@ impl FrankenTorchSession {
         self.tensor_float_classify(UnaryOp::IsFinite, input)
     }
 
+    /// 0/1 mask of the IEEE 754 sign bit of `input`.
+    ///
+    /// Equivalent to `torch.signbit(input)` — true (1.0) where the
+    /// sign bit is set: negative numbers, `-0.0`, `-inf`, and the
+    /// negative-NaN bit pattern. Composing through `tensor_lt`
+    /// against zero would silently drop `-0.0` (since `-0.0 < 0.0`
+    /// is false in IEEE 754), so this routes through Rust's
+    /// `f64::is_sign_negative` on the raw values to preserve
+    /// torch parity.
+    ///
+    /// Non-differentiable (boolean mask); fail-loud on requires_grad
+    /// like the other classification ops. Tracked under
+    /// frankentorch-z50h.
+    pub fn tensor_signbit(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "signbit: autograd not supported (boolean mask is non-differentiable). Tracked under frankentorch-z50h.",
+                },
+            )));
+        }
+        let dtype = self.tensor_dtype(input)?;
+        if !matches!(dtype, DType::F32 | DType::F64) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "signbit requires f32 or f64 tensors",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let vals = self.tensor_values(input)?;
+        let result: Vec<f64> = vals
+            .iter()
+            .map(|&v| if v.is_sign_negative() { 1.0 } else { 0.0 })
+            .collect();
+        match dtype {
+            DType::F32 => {
+                let f32_result: Vec<f32> = result.into_iter().map(|v| v as f32).collect();
+                self.tensor_variable_f32(f32_result, shape, false)
+            }
+            _ => self.tensor_variable(result, shape, false),
+        }
+    }
+
     pub fn tensor_eq(
         &mut self,
         lhs: TensorNodeId,
@@ -40557,6 +40604,57 @@ mod tests {
         for (p, n) in v_pos.iter().zip(v_neg.iter()) {
             assert!(p * n == 0.0, "isposinf and isneginf must be disjoint");
         }
+    }
+
+    // ── tensor_signbit tests (frankentorch-z50h) ────────────────────────
+
+    #[test]
+    fn signbit_known_values_including_signed_zero() {
+        // Sign bit set for: negative numbers, -0.0, -inf. Clear for:
+        // positive numbers, +0.0, +inf. NaN: depends on bit pattern;
+        // f64::NAN in Rust is the canonical positive NaN, signbit=0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(
+                vec![
+                    1.0,
+                    -1.0,
+                    0.0,
+                    -0.0,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NAN,
+                ],
+                vec![7],
+                false,
+            )
+            .unwrap();
+        let mask = s.tensor_signbit(x).unwrap();
+        assert_eq!(
+            s.tensor_values(mask).unwrap(),
+            vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn signbit_distinguishes_negative_zero_from_positive_zero() {
+        // The whole point of signbit (vs `x < 0`): -0.0 and +0.0 both
+        // compare equal to zero, but signbit(-0.0)=1 and signbit(+0.0)=0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-0.0, 0.0], vec![2], false)
+            .unwrap();
+        let mask = s.tensor_signbit(x).unwrap();
+        assert_eq!(s.tensor_values(mask).unwrap(), vec![1.0, 0.0]);
+    }
+
+    #[test]
+    fn signbit_fails_loud_on_requires_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, -1.0], vec![2], true)
+            .unwrap();
+        assert!(s.tensor_signbit(x).is_err());
     }
 
     // ── tensor_matrix_transpose tests (frankentorch-1mcj) ──────────────
