@@ -5076,13 +5076,21 @@ impl FrankenTorchSession {
         // x == 0 → values[i]. Compose:
         //   pos_mask  = (x > 0)              // 1 where x > 0, else 0
         //   zero_mask = (x == 0)             // 1 where x == 0, else 0
-        //   out = pos_mask + zero_mask * values
+        //   step = pos_mask + zero_mask * values
+        // Then NaN-propagate: torch.heaviside(NaN, _) == NaN, but the
+        // mask composition above silently swallows NaN because all
+        // IEEE 754 comparisons against NaN return false → both
+        // pos_mask and zero_mask are 0 → step is 0. Route via
+        // tensor_where with an isnan mask to recover NaN propagation.
         let zeros = self.full(in_shape.clone(), 0.0, false)?;
         let pos_mask = self.tensor_gt(input, zeros)?;
-        let zeros2 = self.full(in_shape, 0.0, false)?;
+        let zeros2 = self.full(in_shape.clone(), 0.0, false)?;
         let zero_mask = self.tensor_eq(input, zeros2)?;
         let zero_contrib = self.tensor_mul(zero_mask, values)?;
-        self.tensor_add(pos_mask, zero_contrib)
+        let step = self.tensor_add(pos_mask, zero_contrib)?;
+        let nan_mask = self.tensor_isnan(input)?;
+        let nan_const = self.full(in_shape, f64::NAN, false)?;
+        self.tensor_where(nan_mask, nan_const, step)
     }
 
     /// Normalized sinc function: `sin(pi*x) / (pi*x)`, with `sinc(0) = 1`.
@@ -29570,6 +29578,32 @@ mod tests {
         let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
         let v = s.tensor_variable(vec![0.5], vec![1], false).unwrap();
         assert!(s.tensor_heaviside(x, v).is_err());
+    }
+
+    #[test]
+    fn heaviside_propagates_nan_input() {
+        // torch.heaviside(NaN, _) == NaN. The mask composition
+        // (pos_mask + zero_mask * values) silently produces 0 for
+        // NaN inputs because IEEE 754 comparisons against NaN are
+        // false; the implementation routes through tensor_where on
+        // an isnan mask to restore NaN propagation parity with torch.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![f64::NAN, 1.0, -1.0, 0.0], vec![4], false)
+            .unwrap();
+        let vals = s
+            .tensor_variable(vec![0.5, 0.5, 0.5, 0.5], vec![4], false)
+            .unwrap();
+        let out = s.tensor_heaviside(x, vals).unwrap();
+        let result = s.tensor_values(out).unwrap();
+        assert!(
+            result[0].is_nan(),
+            "heaviside(NaN, _) should be NaN, got {}",
+            result[0]
+        );
+        assert_eq!(result[1], 1.0);
+        assert_eq!(result[2], 0.0);
+        assert_eq!(result[3], 0.5);
     }
 
     #[test]
