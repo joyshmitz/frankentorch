@@ -5741,6 +5741,46 @@ impl FrankenTorchSession {
         self.tensor_div(lhs, rhs)
     }
 
+    /// `torch.true_divide(lhs, rhs)` parity alias for `torch.div`.
+    ///
+    /// PyTorch exposes `true_divide` as a verbatim alias of `div`
+    /// (and of `divide`). Provided so torch code using `true_divide`
+    /// ports verbatim. Autograd-aware via `tensor_div`. Tracked under
+    /// frankentorch-uw1c.
+    pub fn tensor_true_divide(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_div(lhs, rhs)
+    }
+
+    /// `torch.floor_divide(lhs, rhs)` parity: `floor(lhs / rhs)`
+    /// elementwise.
+    ///
+    /// Composes through autograd-aware `tensor_div` then `tensor_floor`.
+    /// `floor` is non-differentiable at integer points (zero gradient
+    /// elsewhere), so the op fails loud on `requires_grad` to avoid
+    /// silently severing the autograd tape — matches the
+    /// `tensor_round` / `tensor_trunc` family policy. Users who need
+    /// differentiable rounding should wrap manually with a
+    /// straight-through estimator. Tracked under frankentorch-uw1c.
+    pub fn tensor_floor_divide(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(lhs)? || self.tensor_requires_grad(rhs)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "floor_divide: autograd not supported (floor is non-differentiable at integer points). Tracked under frankentorch-uw1c.",
+                },
+            )));
+        }
+        let q = self.tensor_div(lhs, rhs)?;
+        self.tensor_floor(q)
+    }
+
     /// Alias for `tensor_linalg_inv`. Equivalent to `torch.inverse(input)`,
     /// the deprecated-but-still-used alias for torch.linalg.inv.
     /// Tracked under frankentorch-5man.
@@ -34818,6 +34858,55 @@ mod tests {
             grad,
             &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         );
+    }
+
+    // ── tensor_true_divide / tensor_floor_divide tests (frankentorch-uw1c) ──
+
+    #[test]
+    fn true_divide_matches_div_with_gradient() {
+        // torch.true_divide is a verbatim alias of torch.div: same
+        // values, same gradient. d(a/b)/da = 1/b; d(a/b)/db = -a/b^2.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![6.0, 9.0], vec![2], true).unwrap();
+        let b = s.tensor_variable(vec![2.0, 3.0], vec![2], true).unwrap();
+        let q = s.tensor_true_divide(a, b).unwrap();
+        assert_eq!(s.tensor_values(q).unwrap(), vec![3.0, 3.0]);
+        let loss = s.tensor_sum(q).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        // d(sum(a/b))/da = [1/2, 1/3]
+        let g_a = s.tensor_gradient(&report, a).unwrap();
+        assert!((g_a[0] - 0.5).abs() < 1e-12);
+        assert!((g_a[1] - (1.0 / 3.0)).abs() < 1e-12);
+        // d(sum(a/b))/db = [-6/4, -9/9] = [-1.5, -1.0]
+        let g_b = s.tensor_gradient(&report, b).unwrap();
+        assert!((g_b[0] - (-1.5)).abs() < 1e-12);
+        assert!((g_b[1] - (-1.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn floor_divide_matches_floor_of_quotient() {
+        // torch.floor_divide(7, 3) = 2; floor(-7/3) = -3 (toward -inf).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![7.0, -7.0, 6.0, -1.5], vec![4], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![3.0, 3.0, 2.0, 1.0], vec![4], false)
+            .unwrap();
+        let q = s.tensor_floor_divide(a, b).unwrap();
+        // floor(7/3)=2, floor(-7/3)=-3, floor(6/2)=3, floor(-1.5/1)=-2.
+        assert_eq!(s.tensor_values(q).unwrap(), vec![2.0, -3.0, 3.0, -2.0]);
+    }
+
+    #[test]
+    fn floor_divide_fails_loud_on_requires_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![7.0], vec![1], true).unwrap();
+        let b = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        assert!(s.tensor_floor_divide(a, b).is_err());
+        let a2 = s.tensor_variable(vec![7.0], vec![1], false).unwrap();
+        let b2 = s.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        assert!(s.tensor_floor_divide(a2, b2).is_err());
     }
 
     // ── tensor_fix / absolute / negative / positive alias tests ────────
