@@ -11204,6 +11204,114 @@ mod tests {
             }
         }
 
+        // logaddexp is symmetric in its arguments: logaddexp(a, b) ==
+        // logaddexp(b, a) bit-exactly. log(exp(a)+exp(b)) is unchanged
+        // by argument order, and the max-subtraction stabilization
+        // pivots on max(a, b) which is also symmetric. A regression
+        // here would signal that the implementation accidentally
+        // privileged one argument (e.g. always pivoting on `a` rather
+        // than max(a, b)). Frankentorch-jex8.
+        #[test]
+        fn fuzz_metamorphic_logaddexp_is_commutative(
+            (lhs_samples, rhs_samples) in (
+                prop::collection::vec(-512i16..512i16, 1..32),
+                prop::collection::vec(-512i16..512i16, 1..32),
+            ).prop_filter(
+                "lhs and rhs must share length",
+                |(l, r)| l.len() == r.len(),
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let lhs: Vec<f64> = lhs_samples.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let rhs: Vec<f64> = rhs_samples.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let n = lhs.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s
+                .tensor_variable(lhs.clone(), vec![n], false)
+                .expect("variable a");
+            let b = s
+                .tensor_variable(rhs.clone(), vec![n], false)
+                .expect("variable b");
+            let ab = s.tensor_logaddexp(a, b).expect("logaddexp(a, b)");
+            let a2 = s
+                .tensor_variable(lhs, vec![n], false)
+                .expect("variable a2");
+            let b2 = s
+                .tensor_variable(rhs, vec![n], false)
+                .expect("variable b2");
+            let ba = s.tensor_logaddexp(b2, a2).expect("logaddexp(b, a)");
+            let v_ab = s.tensor_values(ab).expect("v_ab");
+            let v_ba = s.tensor_values(ba).expect("v_ba");
+            for (i, (x, y)) in v_ab.iter().zip(v_ba.iter()).enumerate() {
+                prop_assert_eq!(
+                    x.to_bits(),
+                    y.to_bits(),
+                    "logaddexp must be bit-exactly commutative; idx {} got {} vs {}",
+                    i, x, y,
+                );
+            }
+        }
+
+        // logaddexp under a shared additive shift: logaddexp(a+c, b+c)
+        // == logaddexp(a, b) + c (within a few ULPs). The
+        // max-subtraction trick exploits exactly this identity, so a
+        // ULP-bounded violation signals stability drift in the kernel.
+        // Frankentorch-jex8.
+        #[test]
+        fn fuzz_metamorphic_logaddexp_translation_invariance(
+            (lhs_samples, rhs_samples, shift_raw) in (
+                prop::collection::vec(-256i16..256i16, 1..16),
+                prop::collection::vec(-256i16..256i16, 1..16),
+                -1024i16..1024i16,
+            ).prop_filter(
+                "lhs and rhs must share length",
+                |(l, r, _)| l.len() == r.len(),
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let lhs: Vec<f64> = lhs_samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let rhs: Vec<f64> = rhs_samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let shift = f64::from(shift_raw) / 11.0;
+            let lhs_s: Vec<f64> = lhs.iter().map(|v| v + shift).collect();
+            let rhs_s: Vec<f64> = rhs.iter().map(|v| v + shift).collect();
+            let n = lhs.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s
+                .tensor_variable(lhs, vec![n], false)
+                .expect("variable a");
+            let b = s
+                .tensor_variable(rhs, vec![n], false)
+                .expect("variable b");
+            let base = s.tensor_logaddexp(a, b).expect("logaddexp(a, b)");
+            let v_base = s.tensor_values(base).expect("base values");
+
+            let a_s = s
+                .tensor_variable(lhs_s, vec![n], false)
+                .expect("variable a+c");
+            let b_s = s
+                .tensor_variable(rhs_s, vec![n], false)
+                .expect("variable b+c");
+            let shifted = s
+                .tensor_logaddexp(a_s, b_s)
+                .expect("logaddexp(a+c, b+c)");
+            let v_shifted = s.tensor_values(shifted).expect("shifted values");
+
+            for (i, (base_val, shifted_val)) in
+                v_base.iter().zip(v_shifted.iter()).enumerate()
+            {
+                let expected = base_val + shift;
+                let scale = expected.abs().max(shifted_val.abs()).max(1.0);
+                let diff = (expected - shifted_val).abs();
+                prop_assert!(
+                    diff <= 1e-12 || diff <= 32.0 * scale * f64::EPSILON,
+                    "logaddexp(a+c, b+c) at idx {i}: expected {expected}, got {shifted_val}, diff = {diff:e}",
+                );
+            }
+        }
+
         // neg(neg(x)) bit-exactly equals x: negation is a sign-bit flip
         // and applying it twice restores both the value and the bit
         // representation. Frankentorch-kznr.
