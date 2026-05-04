@@ -546,6 +546,11 @@ enum TensorNodeOp {
         input: TensorNodeId,
         original_shape: Vec<usize>,
     },
+    SumToShape {
+        input: TensorNodeId,
+        input_shape: Vec<usize>,
+        target_shape: Vec<usize>,
+    },
     Split {
         input: TensorNodeId,
         chunk_index: usize,
@@ -11871,6 +11876,27 @@ impl TensorTape {
                         rule: "d(expand(x))/dx=sum_broadcast_dims(grad)",
                     });
                 }
+                TensorNodeOp::SumToShape {
+                    input,
+                    ref input_shape,
+                    ref target_shape,
+                } => {
+                    let expected_incoming = Self::checked_shape_numel(
+                        target_shape,
+                        "sum_to_shape backward target shape volume overflow",
+                    )?;
+                    Self::ensure_tensor_len(node_id, expected_incoming, incoming.len())?;
+                    let contrib =
+                        Self::expand_sum_to_shape_gradient(&incoming, input_shape, target_shape)?;
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(sum_to_shape(x))/dx=expand_grad_to_input_shape",
+                    });
+                }
                 TensorNodeOp::Split {
                     input,
                     dim,
@@ -13222,21 +13248,40 @@ impl TensorTape {
                         rule: "d(|x|)/dx=sign(x)*grad (cg)",
                     });
                 }
-                TensorNodeOp::Expand { input, .. } => {
-                    // d(expand(x))/dx = sum(grad)
-                    let incoming_vals = self.nodes[incoming_id.0]
-                        .tensor
-                        .contiguous_values_as_f64()?
-                        .to_vec();
-                    let sum_val: f64 = incoming_vals.iter().sum();
-                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
-                    let sum_node = self.leaf(vec![sum_val], input_shape, false)?;
-                    self.cg_accumulate(input, &mut grad_nodes, sum_node)?;
+                TensorNodeOp::Expand {
+                    input,
+                    ref original_shape,
+                } => {
+                    let grad_in = self.cg_sum_to_shape(incoming_id, original_shape)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
                         node: node_id,
                         incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
-                        rule: "d(expand(x))/dx=sum(grad) (cg)",
+                        rule: "d(expand(x))/dx=sum_to_original_shape(grad) (cg)",
+                    });
+                }
+                TensorNodeOp::SumToShape {
+                    input,
+                    ref input_shape,
+                    ref target_shape,
+                } => {
+                    let incoming_vals = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()?;
+                    let expanded_data = Self::expand_sum_to_shape_gradient(
+                        &incoming_vals,
+                        input_shape,
+                        target_shape,
+                    )?;
+                    let grad_in =
+                        self.cg_expand(incoming_id, expanded_data, input_shape.clone())?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(sum_to_shape(x))/dx=expand_grad_to_input_shape (cg)",
                     });
                 }
                 // For unsupported ops, fall back to non-differentiable gradient
@@ -13619,6 +13664,154 @@ impl TensorTape {
         Ok(out)
     }
 
+    fn cg_sum_to_shape(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (requires_grad, result, input_shape, dtype, device) = {
+            let node = self.node(input)?;
+            let input_shape = node.tensor.meta().shape().to_vec();
+            let input_data = node.tensor.contiguous_values_as_f64()?;
+            let result = Self::sum_to_shape_values(&input_data, &input_shape, target_shape)?;
+            (
+                node.requires_grad,
+                result,
+                input_shape,
+                node.tensor.meta().dtype(),
+                node.tensor.meta().device(),
+            )
+        };
+
+        let meta = ft_core::TensorMeta::from_shape(target_shape.to_vec(), dtype, device);
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(meta, result)?,
+            requires_grad,
+            op: TensorNodeOp::SumToShape {
+                input,
+                input_shape,
+                target_shape: target_shape.to_vec(),
+            },
+        });
+        Ok(out)
+    }
+
+    fn sum_to_shape_values(
+        values: &[f64],
+        input_shape: &[usize],
+        target_shape: &[usize],
+    ) -> Result<Vec<f64>, AutogradError> {
+        if target_shape.len() > input_shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: input_shape.to_vec(),
+                    rhs: target_shape.to_vec(),
+                },
+            )));
+        }
+        let input_numel =
+            Self::checked_shape_numel(input_shape, "sum_to_shape input shape volume overflow")?;
+        Self::ensure_tensor_len(TensorNodeId(0), input_numel, values.len())?;
+        Self::ensure_sum_to_shape_compatible(input_shape, target_shape)?;
+
+        let target_numel =
+            Self::checked_shape_numel(target_shape, "sum_to_shape target shape volume overflow")?;
+        let mut result = vec![0.0; target_numel];
+        let input_strides = ft_core::contiguous_strides(input_shape);
+        let target_strides = ft_core::contiguous_strides(target_shape);
+        let prefix = input_shape.len() - target_shape.len();
+        let mut coords = vec![0usize; input_shape.len()];
+
+        for (flat, value) in values.iter().enumerate().take(input_numel) {
+            let mut remaining = flat;
+            for d in 0..input_shape.len() {
+                coords[d] = remaining / input_strides[d];
+                remaining %= input_strides[d];
+            }
+
+            let mut target_flat = 0usize;
+            for (d, &coord) in coords.iter().enumerate().skip(prefix) {
+                let target_dim = d - prefix;
+                if target_shape[target_dim] != 1 {
+                    target_flat += coord * target_strides[target_dim];
+                }
+            }
+            result[target_flat] += *value;
+        }
+
+        Ok(result)
+    }
+
+    fn expand_sum_to_shape_gradient(
+        incoming: &[f64],
+        input_shape: &[usize],
+        target_shape: &[usize],
+    ) -> Result<Vec<f64>, AutogradError> {
+        let target_numel = Self::checked_shape_numel(
+            target_shape,
+            "sum_to_shape backward target shape volume overflow",
+        )?;
+        Self::ensure_tensor_len(TensorNodeId(0), target_numel, incoming.len())?;
+        Self::ensure_sum_to_shape_compatible(input_shape, target_shape)?;
+
+        let input_numel = Self::checked_shape_numel(
+            input_shape,
+            "sum_to_shape backward input shape volume overflow",
+        )?;
+        let mut result = vec![0.0; input_numel];
+        let input_strides = ft_core::contiguous_strides(input_shape);
+        let target_strides = ft_core::contiguous_strides(target_shape);
+        let prefix = input_shape.len() - target_shape.len();
+        let mut coords = vec![0usize; input_shape.len()];
+
+        for (flat, value) in result.iter_mut().enumerate() {
+            let mut remaining = flat;
+            for d in 0..input_shape.len() {
+                coords[d] = remaining / input_strides[d];
+                remaining %= input_strides[d];
+            }
+
+            let mut target_flat = 0usize;
+            for (d, &coord) in coords.iter().enumerate().skip(prefix) {
+                let target_dim = d - prefix;
+                if target_shape[target_dim] != 1 {
+                    target_flat += coord * target_strides[target_dim];
+                }
+            }
+            *value = incoming[target_flat];
+        }
+
+        Ok(result)
+    }
+
+    fn ensure_sum_to_shape_compatible(
+        input_shape: &[usize],
+        target_shape: &[usize],
+    ) -> Result<(), AutogradError> {
+        if target_shape.len() > input_shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: input_shape.to_vec(),
+                    rhs: target_shape.to_vec(),
+                },
+            )));
+        }
+        let prefix = input_shape.len() - target_shape.len();
+        for (target_dim, &target) in target_shape.iter().enumerate() {
+            let input = input_shape[prefix + target_dim];
+            if target != input && target != 1 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: input_shape.to_vec(),
+                        rhs: target_shape.to_vec(),
+                    },
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Helper: expand a scalar node to a larger shape for create_graph backward.
     /// Creates an Expand node so the second backward can sum gradients back.
     fn cg_expand(
@@ -13745,6 +13938,7 @@ impl TensorTape {
                 | TensorNodeOp::Permute { input, .. }
                 | TensorNodeOp::Narrow { input, .. }
                 | TensorNodeOp::Expand { input, .. }
+                | TensorNodeOp::SumToShape { input, .. }
                 | TensorNodeOp::Split { input, .. }
                 | TensorNodeOp::MaxDim { input, .. }
                 | TensorNodeOp::MinDim { input, .. }
@@ -13910,6 +14104,7 @@ impl TensorTape {
                 | TensorNodeOp::Permute { input, .. }
                 | TensorNodeOp::Narrow { input, .. }
                 | TensorNodeOp::Expand { input, .. }
+                | TensorNodeOp::SumToShape { input, .. }
                 | TensorNodeOp::Split { input, .. }
                 | TensorNodeOp::MaxDim { input, .. }
                 | TensorNodeOp::MinDim { input, .. }
@@ -19770,6 +19965,72 @@ mod tests {
                 v
             );
         }
+    }
+
+    #[test]
+    fn create_graph_expand_prepended_dim_sums_gradients_per_input_element() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let expanded = tape.expand(x, vec![3, 2]).expect("expand");
+        let (squared, _) = tape
+            .mul(expanded, expanded, ExecutionMode::Strict)
+            .expect("expanded squared");
+        let (loss, _) = tape.sum(squared, ExecutionMode::Strict).expect("loss");
+
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+
+        assert_eq!(report1.gradient(x).expect("first gradient"), &[6.0, 12.0]);
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        assert_eq!(
+            tape.values(dx_node).expect("gradient values"),
+            vec![6.0, 12.0]
+        );
+
+        let report2 = tape.backward(dx_node).expect("second backward");
+        assert_eq!(report2.gradient(x).expect("second gradient"), &[6.0, 6.0]);
+    }
+
+    #[test]
+    fn create_graph_expand_size_one_dim_preserves_original_gradient_shape() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![1, 2], true).expect("x");
+        let expanded = tape.expand(x, vec![3, 2]).expect("expand");
+        let (squared, _) = tape
+            .mul(expanded, expanded, ExecutionMode::Strict)
+            .expect("expanded squared");
+        let (loss, _) = tape.sum(squared, ExecutionMode::Strict).expect("loss");
+
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+
+        assert_eq!(report1.gradient(x).expect("first gradient"), &[6.0, 12.0]);
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        assert_eq!(
+            tape.node(dx_node)
+                .expect("gradient node")
+                .tensor
+                .meta()
+                .shape(),
+            &[1, 2]
+        );
+
+        let report2 = tape.backward(dx_node).expect("second backward");
+        assert_eq!(report2.gradient(x).expect("second gradient"), &[6.0, 6.0]);
     }
 
     #[test]
