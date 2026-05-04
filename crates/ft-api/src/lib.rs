@@ -5547,6 +5547,13 @@ impl FrankenTorchSession {
     /// produces NaN/inf — matches torch.pow's behavior for non-integer
     /// exponents on negative bases. (Torch's signed-integer-exponent
     /// branch is a separate slow path that we do not replicate here.)
+    ///
+    /// Special case `0^0 == 1` (frankentorch-7gy5): torch follows
+    /// the IEEE 754 / numpy convention that 0^0 is 1 even though
+    /// `exp(0 * log(0)) = exp(0 * -inf) = NaN`. Route those positions
+    /// through a constant 1.0 via `tensor_where` so we match torch
+    /// instead of leaking NaN. Gradient at (0, 0) is 0 (the local
+    /// constant has no gradient), which also matches torch.
     /// Tracked under frankentorch-8gy3.
     pub fn tensor_pow_tensor(
         &mut self,
@@ -5565,7 +5572,17 @@ impl FrankenTorchSession {
         }
         let log_x = self.tensor_log(input)?;
         let exp_times_log = self.tensor_mul(exponent, log_x)?;
-        self.tensor_exp(exp_times_log)
+        let raw_result = self.tensor_exp(exp_times_log)?;
+
+        // 0^0 → 1 via where-mask. Both masks are non-grad boolean
+        // tensors; their elementwise product is the logical AND.
+        let zeros_x = self.full(in_shape.clone(), 0.0, false)?;
+        let zeros_e = self.full(in_shape.clone(), 0.0, false)?;
+        let ones_const = self.full(in_shape, 1.0, false)?;
+        let x_eq_zero = self.tensor_eq(input, zeros_x)?;
+        let e_eq_zero = self.tensor_eq(exponent, zeros_e)?;
+        let both_zero = self.tensor_mul(x_eq_zero, e_eq_zero)?;
+        self.tensor_where(both_zero, ones_const, raw_result)
     }
 
     pub fn tensor_min(
@@ -40898,6 +40915,31 @@ mod tests {
         let out = s.tensor_pow_tensor(x, e).unwrap();
         let v = s.tensor_values(out).unwrap()[0];
         assert!(v.is_nan(), "expected NaN for (-2)^0.5, got {v}");
+    }
+
+    #[test]
+    fn pow_tensor_zero_to_zero_is_one() {
+        // torch.pow(0, 0) == 1 by IEEE 754 / numpy convention. The
+        // exp(e * log(x)) chain alone gives exp(0 * -inf) = NaN, so
+        // tensor_pow_tensor routes (input==0 AND exponent==0) through
+        // a constant 1 via tensor_where to match torch.
+        // Tracked under frankentorch-7gy5.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Mix in non-edge cases on the same axis to catch where-mask
+        // off-by-ones: index 0 is the 0^0 case; the rest are vanilla.
+        let x = s
+            .tensor_variable(vec![0.0, 2.0, 3.0, 0.0], vec![4], false)
+            .unwrap();
+        let e = s
+            .tensor_variable(vec![0.0, 3.0, 2.0, 1.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_pow_tensor(x, e).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        // 0^0 = 1, 2^3 = 8, 3^2 = 9, 0^1 = 0.
+        assert_eq!(v[0], 1.0, "0^0 should be 1");
+        assert!((v[1] - 8.0).abs() < 1e-12, "2^3 expected 8, got {}", v[1]);
+        assert!((v[2] - 9.0).abs() < 1e-12, "3^2 expected 9, got {}", v[2]);
+        assert_eq!(v[3], 0.0, "0^1 should be 0");
     }
 
     #[test]
