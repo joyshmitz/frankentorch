@@ -4892,6 +4892,48 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// `torch.fix(input)` parity alias: round toward zero.
+    ///
+    /// torch.fix is documented as identical to torch.trunc — both
+    /// chop the fractional part. Provided so torch code using `fix`
+    /// ports to FrankenTorch verbatim. Autograd-aware via tensor_trunc
+    /// (zero-gradient on the integer step, matching torch).
+    pub fn tensor_fix(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_trunc(input)
+    }
+
+    /// `torch.absolute(input)` parity alias for `torch.abs`.
+    ///
+    /// PyTorch exposes `absolute` as a verbatim alias of `abs`. Common
+    /// in code ported from numpy where `np.absolute` is the canonical
+    /// spelling. Autograd-aware via tensor_abs.
+    pub fn tensor_absolute(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_abs(input)
+    }
+
+    /// `torch.negative(input)` parity alias for `torch.neg`.
+    ///
+    /// PyTorch exposes `negative` as a verbatim alias of `neg`. Common
+    /// in code ported from numpy where `np.negative` is the canonical
+    /// spelling. Autograd-aware via tensor_neg.
+    pub fn tensor_negative(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_neg(input)
+    }
+
+    /// `torch.positive(input)` parity: returns the input unchanged
+    /// (identity for floating-point dtypes).
+    ///
+    /// Mirrors numpy's `np.positive`. PyTorch's `torch.positive`
+    /// raises on Bool tensors; FrankenTorch has no Bool dtype, so
+    /// for every supported dtype this is the identity. Autograd
+    /// flows unchanged because the same TensorNodeId is returned.
+    pub fn tensor_positive(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        // Touch the tape to validate the node exists; preserves the
+        // error surface of the other unary ops.
+        let _ = self.tensor_shape(input)?;
+        Ok(input)
+    }
+
     pub fn tensor_asin(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.asin(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
@@ -34658,6 +34700,65 @@ mod tests {
             grad,
             &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         );
+    }
+
+    // ── tensor_fix / absolute / negative / positive alias tests ────────
+
+    #[test]
+    fn fix_alias_matches_trunc_on_signed_fractions() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.7, -1.7, 2.3, -0.5], vec![4], false)
+            .unwrap();
+        let fixed = s.tensor_fix(x).unwrap();
+        // torch.fix matches torch.trunc bit-exactly:
+        //   1.7 → 1.0; -1.7 → -1.0; 2.3 → 2.0; -0.5 → -0.0 → 0.0.
+        assert_eq!(s.tensor_values(fixed).unwrap(), vec![1.0, -1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn absolute_alias_matches_abs_with_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-2.0, 3.0, -4.0], vec![3], true)
+            .unwrap();
+        let abs_x = s.tensor_absolute(x).unwrap();
+        assert_eq!(s.tensor_values(abs_x).unwrap(), vec![2.0, 3.0, 4.0]);
+        // Gradient: d|x|/dx = sign(x); under sum loss → [-1, 1, -1].
+        let loss = s.tensor_sum(abs_x).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        assert_eq!(
+            s.tensor_gradient(&report, x).unwrap(),
+            &[-1.0, 1.0, -1.0]
+        );
+    }
+
+    #[test]
+    fn negative_alias_matches_neg_with_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, -2.0, 3.0], vec![3], true)
+            .unwrap();
+        let neg_x = s.tensor_negative(x).unwrap();
+        assert_eq!(s.tensor_values(neg_x).unwrap(), vec![-1.0, 2.0, -3.0]);
+        // d(-x)/dx = -1; under sum loss → [-1, -1, -1].
+        let loss = s.tensor_sum(neg_x).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        assert_eq!(s.tensor_gradient(&report, x).unwrap(), &[-1.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn positive_alias_is_identity_with_gradient_passthrough() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, -2.0, 3.0], vec![3], true)
+            .unwrap();
+        let pos_x = s.tensor_positive(x).unwrap();
+        assert_eq!(s.tensor_values(pos_x).unwrap(), vec![1.0, -2.0, 3.0]);
+        // Identity → d(+x)/dx = 1; under sum loss → [1, 1, 1].
+        let loss = s.tensor_sum(pos_x).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        assert_eq!(s.tensor_gradient(&report, x).unwrap(), &[1.0, 1.0, 1.0]);
     }
 
     // ── tril_indices / triu_indices tests ─────────────────────────────
