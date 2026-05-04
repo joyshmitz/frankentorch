@@ -7400,13 +7400,13 @@ impl ConvTranspose1d {
         )?;
 
         let bias = if use_bias {
-            let b_rand = session.rand(vec![1, out_channels], false)?;
-            let b_scale = session.full(vec![1, out_channels], 2.0 * bound, false)?;
+            let b_rand = session.rand(vec![out_channels], false)?;
+            let b_scale = session.full(vec![out_channels], 2.0 * bound, false)?;
             let b_scaled = session.tensor_mul(b_rand, b_scale)?;
-            let b_shift = session.full(vec![1, out_channels], bound, false)?;
+            let b_shift = session.full(vec![out_channels], bound, false)?;
             let b_shifted = session.tensor_sub(b_scaled, b_shift)?;
             let b_values = session.tensor_values(b_shifted)?;
-            Some(session.tensor_variable(b_values, vec![1, out_channels], true)?)
+            Some(session.tensor_variable(b_values, vec![out_channels], true)?)
         } else {
             None
         };
@@ -7524,11 +7524,9 @@ impl Module for ConvTranspose1d {
             }
         }
 
-        // Add bias if present. bias shape is [1, out_channels];
+        // Add bias if present. bias shape is [out_channels];
         // reshape to [1, out_channels, 1] before expanding to the
-        // full [batch, out_channels, l_out] output (tensor_expand
-        // only broadcasts size-1 dims; it does not add new dims).
-        // Tracked under frankentorch-ru7u.
+        // full [batch, out_channels, l_out] output.
         if let Some(bias) = self.bias {
             let bias_shape = vec![batch_size, self.out_channels, l_out];
             let bias_3d = session.tensor_reshape(bias, vec![1, self.out_channels, 1])?;
@@ -18623,6 +18621,15 @@ mod tests {
                 .chain(bias_values.iter())
                 .all(|value| value.abs() <= expected_bound)
         );
+    }
+
+    #[test]
+    fn conv_transpose1d_bias_shape_matches_torch_parameter_contract() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv = ConvTranspose1d::new(&mut session, 2, 3, 3, 1, 0, 0, true).expect("new");
+        let bias = deconv.bias().expect("bias");
+
+        assert_eq!(session.tensor_shape(bias).expect("bias shape"), vec![3]);
     }
 
     #[test]

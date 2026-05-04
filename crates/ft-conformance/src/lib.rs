@@ -24428,6 +24428,72 @@ print(json.dumps({"softplus": sp_out}))
     }
 
     #[test]
+    fn conv_transpose1d_bias_shape_matches_pytorch_parameter_contract() -> Result<(), String> {
+        use ft_api::FrankenTorchSession;
+        use ft_nn::ConvTranspose1d;
+
+        let config = HarnessConfig::default_paths();
+        let script = r#"
+import json
+import sys
+import torch
+
+payload = json.loads(sys.stdin.read())
+module = torch.nn.ConvTranspose1d(
+    payload["in_channels"],
+    payload["out_channels"],
+    payload["kernel_size"],
+    bias=True,
+)
+print(json.dumps({"bias_shape": list(module.bias.shape)}, sort_keys=True))
+"#;
+        let payload = json!({
+            "in_channels": 2,
+            "out_channels": 3,
+            "kernel_size": 3,
+        });
+        let expected_shape = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(oracle) => oracle
+                .get("bias_shape")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "torch oracle missing bias_shape".to_string())?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .ok_or_else(|| format!("non-integer bias shape entry: {value}"))
+                        .and_then(|dim| {
+                            usize::try_from(dim)
+                                .map_err(|error| format!("bias shape conversion failed: {error}"))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Err(error)
+                if error.contains("ModuleNotFoundError")
+                    || error.contains("No module named 'torch'")
+                    || error.contains("failed to spawn legacy oracle") =>
+            {
+                eprintln!(
+                    "conv_transpose1d_bias_shape_matches_pytorch_parameter_contract: oracle unavailable, using documented PyTorch parameter contract: {error}"
+                );
+                vec![3]
+            }
+            Err(error) => return Err(format!("torch ConvTranspose1d oracle should run: {error}")),
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let module = ConvTranspose1d::new(&mut session, 2, 3, 3, 1, 0, 0, true)
+            .map_err(|error| format!("ConvTranspose1d constructor failed: {error}"))?;
+        let bias = module.bias().ok_or_else(|| "bias missing".to_string())?;
+        let actual_shape = session
+            .tensor_shape(bias)
+            .map_err(|error| format!("bias shape unavailable: {error}"))?;
+
+        assert_eq!(actual_shape, expected_shape);
+        Ok(())
+    }
+
+    #[test]
     fn conv_transpose_nd_init_fan_in_matches_pytorch_weight_shape_contract() -> Result<(), String> {
         use ft_api::FrankenTorchSession;
         use ft_nn::{ConvTranspose2d, ConvTranspose3d};
