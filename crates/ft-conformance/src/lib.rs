@@ -11416,6 +11416,56 @@ mod tests {
             }
         }
 
+        // atan2 polar inversion: atan2(sin(θ), cos(θ)) == θ within
+        // a few ULPs for θ in the open interval (-π, π). Joint-tests
+        // atan2 + sin + cos in a single chain — a regression in any
+        // of the three (libm quadrant wrapping, atan2 quadrant
+        // misclassification, sin/cos sign drift) surfaces here.
+        //
+        // Independence rationale (per MR strength matrix):
+        // orthogonal to sin_squared_plus_cos_squared_equals_one
+        // (iora) which doesn't touch atan2 and would mask a sin
+        // sign-error under squaring; orthogonal to tanh_is_odd
+        // (z9qz) and exp/log roundtrips (b27s, i462) which are
+        // different op families. Catches a fourth distinct failure
+        // class: angle-decomposition / quadrant routing.
+        // Frankentorch-a2ze.
+        #[test]
+        fn fuzz_metamorphic_atan2_polar_inversion(
+            samples in prop::collection::vec(-1000i16..1000i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Scale into the open interval (-π, π). Use 1004 as
+            // denominator so even at the extreme samples we stay
+            // strictly inside the interval (max angle ≈ π * 1000 / 1004
+            // ≈ 0.996π), avoiding the wrap-around singularity at ±π
+            // where atan2 is allowed to return either +π or -π.
+            let theta: Vec<f64> = samples
+                .iter()
+                .map(|v| f64::from(*v) * std::f64::consts::PI / 1004.0)
+                .collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = theta.len();
+            let theta_t = s
+                .tensor_variable(theta.clone(), vec![n], false)
+                .expect("variable theta");
+            let sin_t = s.tensor_sin(theta_t).expect("sin(theta)");
+            let cos_t = s.tensor_cos(theta_t).expect("cos(theta)");
+            let recovered = s.tensor_atan2(sin_t, cos_t).expect("atan2");
+            let v = s.tensor_values(recovered).expect("recovered values");
+            for (i, (got, &expected)) in v.iter().zip(theta.iter()).enumerate() {
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 1e-12 || diff <= 32.0 * scale * f64::EPSILON,
+                    "atan2(sin({}), cos({})) recovered {} but expected {}, diff = {:e}",
+                    expected, expected, got, expected, diff,
+                );
+                let _ = i;
+            }
+        }
+
         // Sorting an already-sorted tensor yields the same values.
         // The first sort produces a fully ordered slice; the second
         // pass cannot reorder anything further. Even if the kernel
