@@ -3563,14 +3563,12 @@ impl FrankenTorchSession {
                 self.tensor_diag_embed(input, offset_i32)
             }
             2 => self.tensor_diagonal(input, diagonal),
-            _ => Err(AutogradError::Dispatch(
-                ft_dispatch::DispatchError::Kernel(
-                    ft_kernel_cpu::KernelError::InvalidDimension {
-                        dim: shape.len(),
-                        ndim: 2,
-                    },
-                ),
-            )),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 2,
+                },
+            ))),
         }
     }
 
@@ -4863,13 +4861,11 @@ impl FrankenTorchSession {
         let dtype = self.tensor_dtype(input)?;
         match dtype {
             DType::F32 | DType::F64 => self.tensor_sign(input),
-            DType::Complex64 | DType::Complex128 => {
-                Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                    ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "sgn: complex inputs not supported (would require x/|x| with Wirtinger semantics). Tracked under frankentorch-naub.",
-                    },
-                )))
-            }
+            DType::Complex64 | DType::Complex128 => Err(AutogradError::Dispatch(
+                ft_dispatch::DispatchError::Key(ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "sgn: complex inputs not supported (would require x/|x| with Wirtinger semantics). Tracked under frankentorch-naub.",
+                }),
+            )),
             _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "sgn requires f32, f64, or complex tensors",
@@ -5047,6 +5043,9 @@ impl FrankenTorchSession {
     /// semantics: NaN propagates, `nextafter(x, x) == x`,
     /// `nextafter(±inf, _)` saturates correctly.
     ///
+    /// Broadcasts operands with the same NumPy/PyTorch shape rules as
+    /// other elementwise ops. Tracked under frankentorch-izkh.
+    ///
     /// Non-differentiable (discontinuous at every representable f64
     /// step); fails loud on `requires_grad` like the other
     /// floor/round/discrete ops. Tracked under frankentorch-uh6t.
@@ -5064,14 +5063,6 @@ impl FrankenTorchSession {
         }
         let in_shape = self.tensor_shape(input)?;
         let oth_shape = self.tensor_shape(other)?;
-        if in_shape != oth_shape {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
-                ft_kernel_cpu::KernelError::ShapeMismatch {
-                    lhs: in_shape,
-                    rhs: oth_shape,
-                },
-            )));
-        }
         let dtype = self.tensor_dtype(input)?;
         let oth_dtype = self.tensor_dtype(other)?;
         if dtype != oth_dtype {
@@ -5088,26 +5079,11 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let in_vals = self.tensor_values(input)?;
-        let oth_vals = self.tensor_values(other)?;
-
-        // f64::next_up / next_down: IEEE 754-aware single-step
-        // neighbors with correct NaN / ±inf semantics.
-        let stepped: Vec<f64> = in_vals
-            .iter()
-            .zip(oth_vals.iter())
-            .map(|(&x, &y)| {
-                if x.is_nan() || y.is_nan() {
-                    f64::NAN
-                } else if x == y {
-                    y
-                } else if x < y {
-                    x.next_up()
-                } else {
-                    x.next_down()
-                }
-            })
-            .collect();
+        let out_shape = Self::broadcast_shape(&in_shape, &oth_shape)?;
+        let input_b = self.tensor_broadcast_to(input, out_shape.clone())?;
+        let other_b = self.tensor_broadcast_to(other, out_shape.clone())?;
+        let in_vals = self.tensor_values(input_b)?;
+        let oth_vals = self.tensor_values(other_b)?;
 
         match dtype {
             DType::F32 => {
@@ -5131,10 +5107,28 @@ impl FrankenTorchSession {
                         }
                     })
                     .collect();
-                let _ = stepped; // f64 path computed above is unused for F32
-                self.tensor_variable_f32(stepped_f32, in_shape, false)
+                self.tensor_variable_f32(stepped_f32, out_shape, false)
             }
-            _ => self.tensor_variable(stepped, in_shape, false),
+            _ => {
+                // f64::next_up / next_down: IEEE 754-aware single-step
+                // neighbors with correct NaN / ±inf semantics.
+                let stepped: Vec<f64> = in_vals
+                    .iter()
+                    .zip(oth_vals.iter())
+                    .map(|(&x, &y)| {
+                        if x.is_nan() || y.is_nan() {
+                            f64::NAN
+                        } else if x == y {
+                            y
+                        } else if x < y {
+                            x.next_up()
+                        } else {
+                            x.next_down()
+                        }
+                    })
+                    .collect();
+                self.tensor_variable(stepped, out_shape, false)
+            }
         }
     }
 
@@ -6172,10 +6166,7 @@ impl FrankenTorchSession {
     /// Non-differentiable (boolean mask); fail-loud on requires_grad
     /// like the other classification ops. Tracked under
     /// frankentorch-z50h.
-    pub fn tensor_signbit(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_signbit(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         if self.tensor_requires_grad(input)? {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -35027,10 +35018,7 @@ mod tests {
         let loss = s.tensor_sum(v).unwrap();
         let report = s.tensor_backward(loss).unwrap();
         let grad = s.tensor_gradient(&report, m).unwrap();
-        assert_eq!(
-            grad,
-            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-        );
+        assert_eq!(grad, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
     }
 
     // ── tensor_nextafter tests (frankentorch-uh6t) ─────────────────────
@@ -35052,6 +35040,24 @@ mod tests {
         assert_eq!(v[1].to_bits(), 2.0_f64.next_down().to_bits());
         // x == y → returns y exactly.
         assert_eq!(v[2], 5.0);
+    }
+
+    #[test]
+    fn nextafter_broadcasts_operands_like_torch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0_f64, 2.0], vec![2, 1], false)
+            .unwrap();
+        let y = s
+            .tensor_variable(vec![3.0_f64, 1.0], vec![2], false)
+            .unwrap();
+        let out = s.tensor_nextafter(x, y).unwrap();
+        let (v, meta) = s.tensor_values_meta(out).unwrap();
+        assert_eq!(meta.shape(), &[2, 2]);
+        assert_eq!(v[0].to_bits(), 1.0_f64.next_up().to_bits());
+        assert_eq!(v[1].to_bits(), 1.0_f64.to_bits());
+        assert_eq!(v[2].to_bits(), 2.0_f64.next_up().to_bits());
+        assert_eq!(v[3].to_bits(), 2.0_f64.next_down().to_bits());
     }
 
     #[test]
@@ -35108,7 +35114,10 @@ mod tests {
             .unwrap();
         let out = s.tensor_sgn(x).unwrap();
         // torch.sgn on real tensor matches torch.sign element-wise.
-        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, -1.0, 0.0, 1.0, -1.0]);
+        assert_eq!(
+            s.tensor_values(out).unwrap(),
+            vec![1.0, -1.0, 0.0, 1.0, -1.0]
+        );
     }
 
     #[test]
@@ -35206,10 +35215,7 @@ mod tests {
         // Gradient: d|x|/dx = sign(x); under sum loss → [-1, 1, -1].
         let loss = s.tensor_sum(abs_x).unwrap();
         let report = s.tensor_backward(loss).unwrap();
-        assert_eq!(
-            s.tensor_gradient(&report, x).unwrap(),
-            &[-1.0, 1.0, -1.0]
-        );
+        assert_eq!(s.tensor_gradient(&report, x).unwrap(), &[-1.0, 1.0, -1.0]);
     }
 
     #[test]
@@ -40990,9 +40996,7 @@ mod tests {
         // The whole point of signbit (vs `x < 0`): -0.0 and +0.0 both
         // compare equal to zero, but signbit(-0.0)=1 and signbit(+0.0)=0.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s
-            .tensor_variable(vec![-0.0, 0.0], vec![2], false)
-            .unwrap();
+        let x = s.tensor_variable(vec![-0.0, 0.0], vec![2], false).unwrap();
         let mask = s.tensor_signbit(x).unwrap();
         assert_eq!(s.tensor_values(mask).unwrap(), vec![1.0, 0.0]);
     }
@@ -41000,9 +41004,7 @@ mod tests {
     #[test]
     fn signbit_fails_loud_on_requires_grad() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s
-            .tensor_variable(vec![1.0, -1.0], vec![2], true)
-            .unwrap();
+        let x = s.tensor_variable(vec![1.0, -1.0], vec![2], true).unwrap();
         assert!(s.tensor_signbit(x).is_err());
     }
 
