@@ -19568,10 +19568,13 @@ impl FrankenTorchSession {
         let corr_unsafe = self.tensor_div(cov, denom)?;
 
         // mask = (denom == 0); where mask is true, output 0.
-        let zeros_for_eq = self.full(vec![n, n], 0.0, false)?;
-        let mask = self.tensor_eq(denom, zeros_for_eq)?;
-        let zero_branch = self.full(vec![n, n], 0.0, false)?;
-        let out = self.tensor_where(mask, zero_branch, corr_unsafe)?;
+        // Single shared zeros tensor across the eq mask and the
+        // where-true branch (frankentorch-z3rb) — both ops only
+        // READ their constant operand. -1 full() + -1 tape node;
+        // saves an n² f64 allocation per call.
+        let zeros = self.full(vec![n, n], 0.0, false)?;
+        let mask = self.tensor_eq(denom, zeros)?;
+        let out = self.tensor_where(mask, zeros, corr_unsafe)?;
 
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
