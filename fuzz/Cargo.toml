@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+ft-api = { path = "../crates/ft-api" }
 ft-core = { path = "../crates/ft-core" }
 ft-dispatch = { path = "../crates/ft-dispatch" }
 ft-kernel-cpu = { path = "../crates/ft-kernel-cpu" }
@@ -80,6 +81,13 @@ bench = false
 [[bin]]
 name = "ft_kernel_cpu_expand"
 path = "fuzz_targets/ft_kernel_cpu_expand.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ft_api_round_decimals"
+path = "fuzz_targets/ft_api_round_decimals.rs"
 test = false
 doc = false
 bench = false

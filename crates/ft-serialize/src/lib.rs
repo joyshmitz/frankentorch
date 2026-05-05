@@ -1671,6 +1671,25 @@ mod tests {
     }
 
     #[test]
+    fn decode_proof_artifact_json_contract_snapshot() {
+        // Companion to raptorq_sidecar_json_contract_snapshot (uptn).
+        // DecodeProofArtifact is the deterministic proof half of the
+        // pair returned by generate_raptorq_sidecar — same fixture,
+        // different struct. The existing raptorq fuzz target asserts
+        // proof == proof_repeat across re-invocations, so this
+        // snapshot is stable. Pins schema_version, source_hash,
+        // proof_hash, proof_hash_hex, received_symbol_count,
+        // recovered_bytes. Tracked under frankentorch-6jfc.
+        let (_sidecar, proof) = generate_raptorq_sidecar("hello frankentorch", 4)
+            .expect("raptorq sidecar generation should succeed");
+        let pretty = serde_json::to_string_pretty(
+            &serde_json::to_value(&proof).expect("proof serializes to Value"),
+        )
+        .expect("pretty proof JSON should serialize");
+        insta::assert_snapshot!("decode_proof_artifact_json_contract", pretty);
+    }
+
+    #[test]
     fn raptorq_sidecar_json_contract_snapshot() {
         // Golden snapshot of the RaptorQSidecar wire-format contract
         // for a fixed payload + repair_symbols. generate_raptorq_sidecar

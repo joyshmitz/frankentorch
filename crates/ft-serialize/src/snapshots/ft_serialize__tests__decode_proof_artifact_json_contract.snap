@@ -1,0 +1,12 @@
+---
+source: crates/ft-serialize/src/lib.rs
+expression: pretty
+---
+{
+  "proof_hash": 7443900393698568621,
+  "proof_hash_hex": "det64:674e0bf7f5cb29ad",
+  "received_symbol_count": 27,
+  "recovered_bytes": 18,
+  "schema_version": 1,
+  "source_hash": "det64:9b8068c7763b8a1f"
+}
