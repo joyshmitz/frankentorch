@@ -15101,6 +15101,174 @@ print(json.dumps({"results": out}, sort_keys=True))
     }
 
     #[test]
+    fn torch_round_decimals_subprocess_conformance() {
+        // Subprocess oracle for tensor_round_decimals against
+        // torch.round(x, decimals=N). Pin the actual upstream values
+        // across half-tie cases (0.5, 1.5, 2.5 — where torch uses
+        // banker's rounding / round-half-to-even), positive/negative
+        // decimals, and IEEE specials. A regression that flipped
+        // tie-breaking would silently diverge in benchmark reporting,
+        // quantization calibration, or display formatting code.
+        // Tracked under frankentorch-rjqb.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_round_decimals_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // (input, decimals) pairs covering the corner space:
+        //   - positive decimals + non-tie fractions
+        //   - half-tie cases at decimals=0 (0.5, 1.5, 2.5, -0.5)
+        //   - negative decimals (round to nearest 100 / 1000)
+        //   - exact integers (no-op)
+        //   - NaN / inf passthrough
+        let cases: Vec<(f64, i32)> = vec![
+            (1.2345, 2),
+            (1.236, 2),
+            (-1.2345, 2),
+            (1234.5, -2),
+            (1267.0, -2),
+            (-1267.0, -2),
+            // Half-tie boundaries (torch uses round-half-to-even):
+            (0.5, 0),
+            (1.5, 0),
+            (2.5, 0),
+            (-0.5, 0),
+            (-1.5, 0),
+            (3.5, 0),
+            // Exact integer (no-op):
+            (5.0, 2),
+            // IEEE specials: NaN/inf pass through.
+            (f64::NAN, 0),
+            (f64::INFINITY, 2),
+            (f64::NEG_INFINITY, -1),
+        ];
+
+        // Tagged-string encoding for NaN/inf on the wire (same trick
+        // as the diqi nextafter oracle).
+        fn encode_in(v: f64) -> Value {
+            if v.is_nan() {
+                Value::String("nan".to_string())
+            } else if v.is_infinite() {
+                Value::String(if v > 0.0 { "inf".to_string() } else { "-inf".to_string() })
+            } else {
+                json!(v)
+            }
+        }
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"), "-inf": float("-inf")}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+def rd(x, n):
+    return torch.round(
+        torch.tensor(decode_scalar(x), dtype=torch.float64),
+        decimals=n,
+    ).item()
+
+cases = json.loads(sys.stdin.read())["cases"]
+results = [encode_scalar(rd(x, n)) for x, n in cases]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "cases": cases.iter()
+                .map(|(x, n)| Value::Array(vec![encode_in(*x), json!(*n)]))
+                .collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch.round(decimals) oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        assert_eq!(results.len(), cases.len(), "oracle returned wrong count");
+
+        fn decode(value: &Value) -> f64 {
+            if let Some(s) = value.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    _ => panic!("unexpected tagged scalar: {s}"),
+                }
+            } else {
+                value.as_f64().expect("oracle scalar")
+            }
+        }
+
+        // bit_eq for IEEE-aware comparison (NaN==NaN, ±0 by sign bit,
+        // finite values exact-equal). Round semantics for non-integer
+        // outputs are exact at f64 precision (rounding is to a
+        // representable f64), so bit-equal is the right contract.
+        fn bit_eq(a: f64, b: f64) -> bool {
+            if a.is_nan() && b.is_nan() {
+                true
+            } else if a == 0.0 && b == 0.0 {
+                a.is_sign_negative() == b.is_sign_negative()
+            } else {
+                a == b
+            }
+        }
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (i, ((x, n), oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let expected = decode(oracle_entry);
+            let xt = session
+                .tensor_variable(vec![*x], vec![1], false)
+                .unwrap_or_else(|err| panic!("case {i} variable failed: {err:?}"));
+            let out = session
+                .tensor_round_decimals(xt, *n)
+                .unwrap_or_else(|err| panic!("case {i} round_decimals failed: {err:?}"));
+            let got = session.tensor_values(out).expect("got values")[0];
+            // The 50-to-nearest-100 / similar half-tie cases at
+            // negative decimals: torch's round-half-to-even may give
+            // either 0 or 100 depending on the upstream version; do
+            // a relaxed accept for those cases via comparison
+            // against round(x/2)*2 logic. But the typical torch
+            // build returns the round-half-to-even result, which is
+            // exactly what bit_eq matches against the oracle.
+            assert!(
+                bit_eq(got, expected),
+                "case {i} ({x}, decimals={n}): tensor_round_decimals = {got} ({:#x}) but torch.round = {expected} ({:#x})",
+                got.to_bits(),
+                expected.to_bits(),
+            );
+        }
+    }
+
+    #[test]
     fn torch_nextafter_subprocess_conformance() {
         // Subprocess oracle for tensor_nextafter against torch.nextafter.
         // The op has fiddly IEEE 754 corners — denormal-to-zero
