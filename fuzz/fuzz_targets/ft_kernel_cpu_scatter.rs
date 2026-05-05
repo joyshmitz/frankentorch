@@ -76,8 +76,7 @@ fuzz_target!(|data: &[u8]| {
     // the indexed-write path.
     let src: Vec<f64> = (0..idx_numel).map(|i| i as f64).collect();
 
-    if let Ok(output) =
-        scatter_tensor_contiguous_f64(&storage, &meta, dim, &index, &idx_meta, &src)
+    if let Ok(output) = scatter_tensor_contiguous_f64(&storage, &meta, dim, &index, &idx_meta, &src)
     {
         // On success, output length must equal input numel —
         // recompute independently to catch allocation off-by-ones.
