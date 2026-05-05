@@ -11145,36 +11145,37 @@ impl TripletMarginLoss {
         positive: TensorNodeId,
         negative: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        // d(a, p) - d(a, n) + margin, clamped to >= 0
-        // Using L2 distance: d(x, y) = ||x - y||_p
+        // d(a, p) - d(a, n) + margin, clamped to >= 0.
+        // Currently only the L2 (p == 2) path is implemented. The
+        // previous else branch claimed to handle p != 2 via "power
+        // operations" but was a byte-for-byte copy of the L2 branch
+        // — silently mis-computing L_p as L2 for any non-default p.
+        // Fail loud instead of silently diverging from torch's
+        // L_p semantics. Tracked under frankentorch-9c06; future
+        // L_p path: tensor_pow(|diff|, p) + tensor_sum +
+        // tensor_pow(_, 1/p).
+        if (self.p - 2.0).abs() >= f64::EPSILON {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "TripletMarginLoss: only p == 2 (L2) is currently implemented; non-L2 norms tracked under frankentorch-9c06",
+                },
+            )));
+        }
+
         let diff_pos = session.tensor_sub(anchor, positive)?;
         let diff_neg = session.tensor_sub(anchor, negative)?;
-
-        // For p=2 (default): squared differences, sum, sqrt
+        // L2: sqrt(sum(diff²))
         let sq_pos = session.tensor_mul(diff_pos, diff_pos)?;
         let sq_neg = session.tensor_mul(diff_neg, diff_neg)?;
         let sum_pos = session.tensor_sum(sq_pos)?;
         let sum_neg = session.tensor_sum(sq_neg)?;
-
-        if (self.p - 2.0).abs() < f64::EPSILON {
-            // L2: sqrt of sum of squares
-            let dist_pos = session.tensor_sqrt(sum_pos)?;
-            let dist_neg = session.tensor_sqrt(sum_neg)?;
-            let diff = session.tensor_sub(dist_pos, dist_neg)?;
-            let shape = session.tensor_shape(diff)?;
-            let margin_t = session.full(shape, self.margin, false)?;
-            let raw = session.tensor_add(diff, margin_t)?;
-            session.tensor_relu(raw)
-        } else {
-            // For other p values, use power operations
-            let dist_pos = session.tensor_sqrt(sum_pos)?;
-            let dist_neg = session.tensor_sqrt(sum_neg)?;
-            let diff = session.tensor_sub(dist_pos, dist_neg)?;
-            let shape = session.tensor_shape(diff)?;
-            let margin_t = session.full(shape, self.margin, false)?;
-            let raw = session.tensor_add(diff, margin_t)?;
-            session.tensor_relu(raw)
-        }
+        let dist_pos = session.tensor_sqrt(sum_pos)?;
+        let dist_neg = session.tensor_sqrt(sum_neg)?;
+        let diff = session.tensor_sub(dist_pos, dist_neg)?;
+        let shape = session.tensor_shape(diff)?;
+        let margin_t = session.full(shape, self.margin, false)?;
+        let raw = session.tensor_add(diff, margin_t)?;
+        session.tensor_relu(raw)
     }
 }
 
