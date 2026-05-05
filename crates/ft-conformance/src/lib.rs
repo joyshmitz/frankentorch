@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, BackwardOptions, ReentrantPolicy, SchedulerTelemetry, Tape};
@@ -9230,7 +9230,14 @@ fn wait_for_legacy_oracle_exit(
                 "legacy oracle process timed out after {timeout_millis}ms"
             ));
         }
-        std::thread::yield_now();
+        // Sleep 2 ms instead of yield_now to avoid pegging the CPU
+        // at ~100% per oracle invocation. The existing timeout
+        // budget is in seconds (default 30 s) and overflow-detection
+        // latency increases by at most 2 ms — negligible relative
+        // to the measured cost of the bare yield_now spin in earlier
+        // pljo (early-overflow break). Tracked under
+        // frankentorch-tb4f.
+        std::thread::sleep(Duration::from_millis(2));
     }
 }
 
