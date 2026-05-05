@@ -14916,6 +14916,155 @@ print(json.dumps({"results": out}, sort_keys=True))
     }
 
     #[test]
+    fn torch_diag_subprocess_conformance() {
+        // Subprocess oracle for tensor_diag against torch.diag.
+        // tensor_diag dispatches by rank (1-D → 2-D matrix on the
+        // requested diagonal; 2-D → 1-D extraction). Both paths have
+        // off-by-one traps in the diagonal-offset arithmetic that lib
+        // unit tests can pass while diverging from torch (e.g. flipping
+        // super and sub diagonal direction, or the rectangular 2-D
+        // case with m != n). This oracle pins the actual torch.diag
+        // values for both paths across both diagonal directions.
+        // Tracked under frankentorch-1prj.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_diag_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // Each case: (values, shape, diagonal). 1-D inputs produce a
+        // square matrix (n + |diag|) x (n + |diag|); 2-D inputs
+        // produce a 1-D vector of length min(rows, cols) shifted by
+        // the diagonal offset (positive offset → above main diagonal,
+        // negative → below).
+        let cases: Vec<(Vec<f64>, Vec<usize>, i64)> = vec![
+            // 1-D embed: main, super, sub (covers offset signs)
+            (vec![1.0, 2.0, 3.0], vec![3], 0),
+            (vec![1.0, 2.0], vec![2], 1),
+            (vec![1.0, 2.0], vec![2], -1),
+            // 2-D extract square: main, super, sub
+            (
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![3, 3],
+                0,
+            ),
+            (
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![3, 3],
+                1,
+            ),
+            (
+                vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+                vec![3, 3],
+                -1,
+            ),
+            // 2-D extract rectangular (m != n): main and super
+            (vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], 0),
+            (vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], 1),
+        ];
+
+        let script = r#"
+import json
+import sys
+import torch
+
+cases = json.loads(sys.stdin.read())["cases"]
+out = []
+for case in cases:
+    x = torch.tensor(case["values"], dtype=torch.float64).reshape(tuple(case["shape"]))
+    y = torch.diag(x, case["diagonal"])
+    out.append({
+        "shape": list(y.shape),
+        "values": y.contiguous().view(-1).tolist(),
+    })
+
+print(json.dumps({"results": out}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "cases": cases.iter().map(|(v, s, d)| {
+                json!({ "values": v, "shape": s, "diagonal": d })
+            }).collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch.diag oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        assert_eq!(
+            results.len(),
+            cases.len(),
+            "oracle returned wrong number of results"
+        );
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (i, ((values, shape, diagonal), oracle_entry)) in
+            cases.iter().zip(results.iter()).enumerate()
+        {
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
+                .expect("oracle shape")
+                .iter()
+                .map(|v| {
+                    usize::try_from(v.as_u64().expect("oracle shape entry"))
+                        .expect("oracle shape fits usize")
+                })
+                .collect();
+            let expected_values: Vec<f64> = oracle_entry
+                .get("values")
+                .and_then(Value::as_array)
+                .expect("oracle values")
+                .iter()
+                .map(|v| v.as_f64().expect("oracle scalar"))
+                .collect();
+
+            let x = session
+                .tensor_variable(values.clone(), shape.clone(), false)
+                .unwrap_or_else(|err| panic!("case {i} input variable failed: {err:?}"));
+            let y = session
+                .tensor_diag(x, *diagonal)
+                .unwrap_or_else(|err| panic!("case {i} tensor_diag failed: {err:?}"));
+            let got_shape = session.tensor_shape(y).expect("got shape");
+            assert_eq!(
+                got_shape, expected_shape,
+                "case {i} shape mismatch (input shape {shape:?}, diagonal {diagonal})"
+            );
+            let got_values = session.tensor_values(y).expect("got values");
+            assert_eq!(
+                got_values.len(),
+                expected_values.len(),
+                "case {i} values length mismatch"
+            );
+            for (j, (g, e)) in got_values.iter().zip(expected_values.iter()).enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    e.to_bits(),
+                    "case {i} idx {j}: tensor_diag = {g} but torch.diag = {e}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn torch_ieee754_unary_edge_cases_subprocess_conformance() {
         // Subprocess oracle that pins recent IEEE-edge fixes against
         // upstream torch:
