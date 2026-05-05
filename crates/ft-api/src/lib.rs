@@ -5987,6 +5987,55 @@ impl FrankenTorchSession {
         self.tensor_clamp(input, f64::NEG_INFINITY, max_val)
     }
 
+    /// `torch.clamp(input, min=min_tensor, max=max_tensor)` parity:
+    /// per-element clamp with tensor bounds.
+    ///
+    /// Equivalent to `torch.clamp` when both `min` and `max` are
+    /// tensors. Composes through autograd-aware
+    /// `tensor_maximum(input, min)` followed by
+    /// `tensor_minimum(result, max)` — gradients route to whichever
+    /// operand achieved the per-element extremum at each step.
+    /// NaN in any operand propagates to the output (matches the
+    /// `min_tensor_contiguous_f64` / `max_tensor_contiguous_f64`
+    /// kernel-level NaN handling).
+    ///
+    /// All three tensors must share the same shape (broadcasting is
+    /// available via the existing `tensor_broadcast_to` if a caller
+    /// needs differently-shaped bounds).
+    ///
+    /// Tracked under frankentorch-zbi2.
+    pub fn tensor_clamp_tensor(
+        &mut self,
+        input: TensorNodeId,
+        min: TensorNodeId,
+        max: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let in_shape = self.tensor_shape(input)?;
+        let min_shape = self.tensor_shape(min)?;
+        let max_shape = self.tensor_shape(max)?;
+        if in_shape != min_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: in_shape,
+                    rhs: min_shape,
+                },
+            )));
+        }
+        if in_shape != max_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: in_shape,
+                    rhs: max_shape,
+                },
+            )));
+        }
+        // tensor_maximum(x, min) lifts each element to at least
+        // min[i]; tensor_minimum then caps at max[i]. Both ops are
+        // autograd-aware and propagate NaN.
+        let lifted = self.tensor_maximum(input, min)?;
+        self.tensor_minimum(lifted, max)
+    }
+
     /// Per-tensor affine quantization: `q = clamp(round(x/scale) + zero_point, qmin, qmax)`.
     ///
     /// Output values are q-space integers in `[qmin, qmax]` but stored in
@@ -35111,6 +35160,84 @@ mod tests {
         let report = s.tensor_backward(loss).unwrap();
         let grad = s.tensor_gradient(&report, m).unwrap();
         assert_eq!(grad, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    // ── tensor_clamp_tensor tests (frankentorch-zbi2) ───────────────────
+
+    #[test]
+    fn clamp_tensor_clips_above_and_below_tensor_bounds() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-5.0, 0.0, 5.0, 10.0], vec![4], false)
+            .unwrap();
+        let lo = s
+            .tensor_variable(vec![-1.0, 0.0, 0.0, 7.0], vec![4], false)
+            .unwrap();
+        let hi = s
+            .tensor_variable(vec![1.0, 1.0, 3.0, 9.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_clamp_tensor(x, lo, hi).unwrap();
+        // -5 clipped to lo[0]=-1; 0 in [0,1] passthrough;
+        // 5 clipped to hi[2]=3; 10 clipped to hi[3]=9.
+        assert_eq!(s.tensor_values(out).unwrap(), vec![-1.0, 0.0, 3.0, 9.0]);
+    }
+
+    #[test]
+    fn clamp_tensor_propagates_nan_from_any_operand() {
+        // NaN in input, min, or max should propagate (matches torch
+        // and the underlying min/max kernel's NaN policy).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![f64::NAN, 1.0, 1.0], vec![3], false)
+            .unwrap();
+        let lo = s
+            .tensor_variable(vec![0.0, f64::NAN, 0.0], vec![3], false)
+            .unwrap();
+        let hi = s
+            .tensor_variable(vec![2.0, 2.0, f64::NAN], vec![3], false)
+            .unwrap();
+        let out = s.tensor_clamp_tensor(x, lo, hi).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].is_nan(), "NaN in input should propagate");
+        assert!(v[1].is_nan(), "NaN in min should propagate");
+        assert!(v[2].is_nan(), "NaN in max should propagate");
+    }
+
+    #[test]
+    fn clamp_tensor_rejects_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let lo = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let hi = s.tensor_variable(vec![3.0, 3.0], vec![2], false).unwrap();
+        assert!(s.tensor_clamp_tensor(x, lo, hi).is_err());
+        let x2 = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let lo2 = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let hi2 = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        assert!(s.tensor_clamp_tensor(x2, lo2, hi2).is_err());
+    }
+
+    #[test]
+    fn clamp_tensor_propagates_gradient_to_in_bounds_input() {
+        // Gradient flows through tensor_minimum + tensor_maximum.
+        // For x in [lo, hi] (both bounds non-active), the gradient
+        // w.r.t. input is 1 per element under sum loss.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.5, 1.0, -0.5], vec![3], true)
+            .unwrap();
+        let lo = s
+            .tensor_variable(vec![-1.0, -1.0, -1.0], vec![3], false)
+            .unwrap();
+        let hi = s
+            .tensor_variable(vec![2.0, 2.0, 2.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_clamp_tensor(x, lo, hi).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        // All x values are inside (lo, hi), so neither bound is
+        // active: gradient must be 1.0 per element under sum loss.
+        assert_eq!(g, &[1.0, 1.0, 1.0]);
     }
 
     // ── tensor_round_decimals tests (frankentorch-prt5) ─────────────────
