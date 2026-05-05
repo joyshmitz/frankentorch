@@ -12024,6 +12024,42 @@ mod tests {
             }
         }
 
+        // abs(neg(x)) bit-exactly equals abs(x). neg flips the sign
+        // bit, abs strips it; the result is identical to abs(x) on
+        // every f64 representable value. Independent of
+        // abs_product_equals_product_of_abs (multiplicative property,
+        // doesn't catch sign-flip bugs) and neg_neg_is_identity
+        // (doesn't touch abs). Frankentorch-ipz0.
+        #[test]
+        fn fuzz_metamorphic_abs_of_neg_equals_abs(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable x");
+            let neg_x = s.tensor_neg(x).expect("neg x");
+            let abs_neg_x = s.tensor_abs(neg_x).expect("abs(neg x)");
+            let x2 = s
+                .tensor_variable(input, vec![n], false)
+                .expect("variable x2");
+            let abs_x = s.tensor_abs(x2).expect("abs x");
+            let v_lhs = s.tensor_values(abs_neg_x).expect("lhs values");
+            let v_rhs = s.tensor_values(abs_x).expect("rhs values");
+            for (i, (a, b)) in v_lhs.iter().zip(v_rhs.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "abs(neg(x)) must equal abs(x) bit-exactly at idx {}: got {} vs {}",
+                    i, a, b,
+                );
+            }
+        }
+
         // abs(x * y) bit-exactly equals abs(x) * abs(y): both are
         // sign-bit operations on the same magnitude product.
         // Frankentorch-b27s.
