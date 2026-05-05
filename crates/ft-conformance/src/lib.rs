@@ -9293,6 +9293,15 @@ fn read_stream_capped<R: Read>(
         }
         if total_bytes > max_bytes {
             overflow_flag.store(true, Ordering::Relaxed);
+            // Break out of the read loop as soon as overflow is
+            // detected — wait_for_legacy_oracle_exit already polls
+            // the same flag and will kill the child, so further
+            // reads only burn CPU on bytes we'll discard. Releasing
+            // the reader thread early lets stdout_reader.join() /
+            // stderr_reader.join() complete without waiting for
+            // child SIGKILL → stream EOF.
+            // Tracked under frankentorch-pljo.
+            break;
         }
     }
 
