@@ -15015,6 +15015,170 @@ print(json.dumps({"results": out}, sort_keys=True))
     }
 
     #[test]
+    fn torch_nextafter_subprocess_conformance() {
+        // Subprocess oracle for tensor_nextafter against torch.nextafter.
+        // The op has fiddly IEEE 754 corners — denormal-to-zero
+        // transitions, ±inf saturation, NaN propagation, ±0 sign-bit
+        // transitions — and Rust's f64::next_up / next_down may not
+        // be bit-exact with platform libm nextafter on every edge.
+        // Pin the actual upstream torch.nextafter values so any
+        // divergence surfaces here instead of in numerical-analysis
+        // code where one-ULP drift is otherwise invisible.
+        // Tracked under frankentorch-diqi.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_nextafter_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // (input, other) pairs covering the IEEE 754 corner space:
+        //   - same-magnitude x<y, x>y, x==y
+        //   - ±inf saturation in either direction
+        //   - NaN in either argument
+        //   - ±0 sign-bit transitions
+        //   - denormal boundary
+        //   - large-magnitude finite step
+        let cases: Vec<(f64, f64)> = vec![
+            (1.0, 2.0),
+            (2.0, 1.0),
+            (5.0, 5.0),
+            (0.0, f64::NEG_INFINITY),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, 0.0),
+            (1.0, f64::NAN),
+            (f64::NAN, 1.0),
+            (0.0, 1.0),
+            (-0.0, 1.0),
+            (0.0, -1.0),
+            (f64::MIN_POSITIVE, 0.0),
+            (1e300, f64::INFINITY),
+            (-1e300, f64::NEG_INFINITY),
+        ];
+
+        // Encode NaN/inf as tagged strings on both sides — JSON has
+        // no native NaN/inf representation, so passing f64::NAN
+        // through serde_json silently turns into null and breaks
+        // Python's torch.tensor(None, dtype=...).
+        fn encode_in(v: f64) -> Value {
+            if v.is_nan() {
+                Value::String("nan".to_string())
+            } else if v.is_infinite() {
+                Value::String(if v > 0.0 {
+                    "inf".to_string()
+                } else {
+                    "-inf".to_string()
+                })
+            } else {
+                json!(v)
+            }
+        }
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"), "-inf": float("-inf")}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+def na(a, b):
+    return torch.nextafter(
+        torch.tensor(decode_scalar(a), dtype=torch.float64),
+        torch.tensor(decode_scalar(b), dtype=torch.float64),
+    ).item()
+
+cases = json.loads(sys.stdin.read())["cases"]
+results = [encode_scalar(na(a, b)) for a, b in cases]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "cases": cases.iter()
+                .map(|(a, b)| Value::Array(vec![encode_in(*a), encode_in(*b)]))
+                .collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch.nextafter oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        assert_eq!(results.len(), cases.len(), "oracle returned wrong count");
+
+        fn decode(value: &Value) -> f64 {
+            if let Some(s) = value.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    _ => panic!("unexpected tagged scalar: {s}"),
+                }
+            } else {
+                value.as_f64().expect("oracle scalar")
+            }
+        }
+
+        // Bit-equal comparison: NaN==NaN, ±0 by sign bit, finite values
+        // exact by to_bits() — nextafter must agree with torch on the
+        // exact next-representable f64.
+        fn bit_eq(a: f64, b: f64) -> bool {
+            if a.is_nan() && b.is_nan() {
+                true
+            } else {
+                a.to_bits() == b.to_bits()
+            }
+        }
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (i, ((a, b), oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let expected = decode(oracle_entry);
+            let xa = session
+                .tensor_variable(vec![*a], vec![1], false)
+                .unwrap_or_else(|err| panic!("case {i} a failed: {err:?}"));
+            let xb = session
+                .tensor_variable(vec![*b], vec![1], false)
+                .unwrap_or_else(|err| panic!("case {i} b failed: {err:?}"));
+            let out = session
+                .tensor_nextafter(xa, xb)
+                .unwrap_or_else(|err| panic!("case {i} nextafter failed: {err:?}"));
+            let got = session.tensor_values(out).expect("got values")[0];
+            assert!(
+                bit_eq(got, expected),
+                "case {i} ({a}, {b}): tensor_nextafter = {got} ({:#x}) but torch.nextafter = {expected} ({:#x})",
+                got.to_bits(),
+                expected.to_bits(),
+            );
+        }
+    }
+
+    #[test]
     fn torch_floor_divide_subprocess_conformance() {
         // Subprocess oracle for tensor_floor_divide against
         // torch.floor_divide. The semantics are non-trivial:
@@ -15052,16 +15216,16 @@ print(json.dumps({"results": out}, sort_keys=True))
         // cases are the ones that distinguish floor (-inf) from
         // truncation (toward 0): -7/3 = -3 (floor) vs -2 (trunc).
         let cases: Vec<(f64, f64)> = vec![
-            (7.0, 3.0),     // 2 (positive both, non-exact)
-            (-7.0, 3.0),    // -3 (floor, NOT -2)
-            (7.0, -3.0),    // -3 (floor, NOT -2)
-            (-7.0, -3.0),   // 2 (negative both → positive)
-            (6.0, 2.0),     // 3 (exact)
-            (-6.0, 2.0),    // -3 (exact)
-            (-1.5, 1.0),    // -2 (non-integer dividend)
-            (1.5, -1.0),    // -2 (non-integer dividend)
-            (0.0, 5.0),     // 0
-            (0.0, -5.0),    // -0.0 — torch returns 0.0 here in practice
+            (7.0, 3.0),   // 2 (positive both, non-exact)
+            (-7.0, 3.0),  // -3 (floor, NOT -2)
+            (7.0, -3.0),  // -3 (floor, NOT -2)
+            (-7.0, -3.0), // 2 (negative both → positive)
+            (6.0, 2.0),   // 3 (exact)
+            (-6.0, 2.0),  // -3 (exact)
+            (-1.5, 1.0),  // -2 (non-integer dividend)
+            (1.5, -1.0),  // -2 (non-integer dividend)
+            (0.0, 5.0),   // 0
+            (0.0, -5.0),  // -0.0 — torch returns 0.0 here in practice
         ];
 
         let script = r#"
