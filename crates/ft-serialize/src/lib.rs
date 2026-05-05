@@ -1852,6 +1852,29 @@ mod tests {
     }
 
     #[test]
+    fn version_mismatch_diagnostic_snapshot() {
+        // Companion to the existing version_mismatch_is_fail_closed
+        // substring test. Pin the EXACT diagnostic — downstream
+        // loaders may pattern-match on the wording (offering
+        // 'upgrade to schema vN' guidance), and a wording change
+        // would ship silently if only the contains() check were
+        // present. Tracked under frankentorch-yfpo.
+        let entries = vec![SnapshotEntry {
+            node_id: 0,
+            value: 2.0,
+            grad: Some(1.0),
+        }];
+        let encoded =
+            encode_checkpoint(&entries, CheckpointMode::Strict).expect("strict encode should work");
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&encoded).expect("valid encoded checkpoint");
+        payload["schema_version"] = json!(2);
+        let err = decode_checkpoint(payload.to_string().as_str(), DecodeMode::Strict)
+            .expect_err("version mismatch should fail");
+        insta::assert_snapshot!("version_mismatch_diagnostic", err.to_string());
+    }
+
+    #[test]
     fn checksum_mismatch_is_fail_closed() {
         let entries = vec![SnapshotEntry {
             node_id: 0,
