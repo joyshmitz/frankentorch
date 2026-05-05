@@ -11235,6 +11235,182 @@ mod tests {
             }
         }
 
+        // ── tensor_logsumexp metamorphic suite (frankentorch-uxoj) ────
+        //
+        // logsumexp is a numerically-stable reduction with a rich set
+        // of oracle-free metamorphic relations. Each MR below targets
+        // a different bug class:
+        //   - translation: catches max-subtract / shift-bias bugs
+        //   - permutation along reduce axis: catches stride bugs
+        //   - lower bound: catches sign-flip / wrong-direction bugs
+        //   - -inf augmentation: catches NaN-from-(-inf - -inf)
+        //     cancellation in the max-subtract path
+        // Independence: each MR exercises a different code path on
+        // potentially-shared inputs, so a regression in any one
+        // surfaces in only its corresponding test.
+
+        // MR (equivalence, translation): logsumexp(x + c) =
+        // logsumexp(x) + c. Pivots on the max-subtract trick, since
+        // shifting all inputs by c shifts the pivot by c and the
+        // exponentials are unchanged. Bound generously (32 ULPs) to
+        // tolerate one rebucketing of the max in (x + c) at large c.
+        #[test]
+        fn fuzz_metamorphic_logsumexp_translation_invariance(
+            (samples, shift_raw) in (
+                prop::collection::vec(-500i16..500i16, 2..16),
+                -1000i16..1000i16,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 11.0).collect();
+            let shift = f64::from(shift_raw) / 7.0;
+            let shifted: Vec<f64> = input.iter().map(|x| x + shift).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s.tensor_variable(input, vec![n], false).expect("var x");
+            let lse_x = s.tensor_logsumexp(x, 0).expect("lse x");
+            let v_x = s.tensor_values(lse_x).expect("v_x")[0];
+
+            let xs = s.tensor_variable(shifted, vec![n], false).expect("var xs");
+            let lse_xs = s.tensor_logsumexp(xs, 0).expect("lse xs");
+            let v_xs = s.tensor_values(lse_xs).expect("v_xs")[0];
+
+            let expected = v_x + shift;
+            let diff = (v_xs - expected).abs();
+            let scale = v_xs.abs().max(expected.abs()).max(1.0);
+            prop_assert!(
+                diff <= 1e-12 || diff <= 32.0 * scale * f64::EPSILON,
+                "logsumexp(x+{shift}) = {v_xs} but logsumexp(x) + {shift} = {expected}, diff = {diff:e}"
+            );
+        }
+
+        // MR (equivalence, permutation along reduce axis): the order
+        // of inputs inside a sum-of-exps can't matter. Differences
+        // here would point to an order-dependent bug — e.g. an
+        // incorrect early-exit in the inner loop, or a stride
+        // miscalculation that visits some elements out of bounds.
+        // Bound generously since real-arithmetic addition is not
+        // perfectly associative.
+        #[test]
+        fn fuzz_metamorphic_logsumexp_permutation_invariance(
+            (samples, shuffle_seed) in (
+                prop::collection::vec(-512i16..512i16, 2..32),
+                0u64..1024u64,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let n = input.len();
+            // Deterministic Fisher-Yates with a seed-derived index
+            // sequence — avoids adding a chacha/rand_seedable dep to
+            // the dev tree.
+            let mut shuffled = input.clone();
+            let mut state = shuffle_seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+            for i in (1..n).rev() {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let j = (state >> 33) as usize % (i + 1);
+                shuffled.swap(i, j);
+            }
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("var x");
+            let lse_x = s.tensor_logsumexp(x, 0).expect("lse x");
+            let v_x = s.tensor_values(lse_x).expect("v_x")[0];
+
+            let xp = s.tensor_variable(shuffled, vec![n], false).expect("var xp");
+            let lse_xp = s.tensor_logsumexp(xp, 0).expect("lse xp");
+            let v_xp = s.tensor_values(lse_xp).expect("v_xp")[0];
+
+            let diff = (v_x - v_xp).abs();
+            let scale = v_x.abs().max(v_xp.abs()).max(1.0);
+            // 64 ULPs absorbs reorder-driven floating-point
+            // associativity drift across n up to 32.
+            prop_assert!(
+                diff <= 1e-12 || diff <= 64.0 * scale * f64::EPSILON,
+                "logsumexp(x) = {v_x} but logsumexp(permute(x)) = {v_xp}, diff = {diff:e}"
+            );
+        }
+
+        // MR (inclusive, lower bound): logsumexp(x) >= max(x). Each
+        // exp(x_i - max) >= 0, sum >= 1 (at least the max term
+        // contributes 1), so log >= 0, and we add max back. A
+        // violation here would point to a sign-flipped reduction or
+        // a missing max-add-back — both critical correctness bugs.
+        // Upper bound max + log(n) is also testable but more
+        // sensitive to FP slack near the boundary, so skip it for
+        // independence-of-MR purposes.
+        #[test]
+        fn fuzz_metamorphic_logsumexp_lower_bound_max(
+            samples in prop::collection::vec(-512i16..512i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let max_val = input.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("var x");
+            let out = s.tensor_logsumexp(x, 0).expect("lse");
+            let v = s.tensor_values(out).expect("values")[0];
+
+            // Allow a few ULPs of slack at the boundary (when n=1,
+            // logsumexp = max exactly; when n>1, logsumexp >
+            // max strictly).
+            let scale = v.abs().max(max_val.abs()).max(1.0);
+            prop_assert!(
+                v + 16.0 * scale * f64::EPSILON >= max_val,
+                "logsumexp(x) = {v} but max(x) = {max_val} — logsumexp must be >= max"
+            );
+        }
+
+        // MR (augmentation, -inf insertion): augmenting x with one
+        // or more -inf entries doesn't change the result, since
+        // exp(-inf) = 0. Catches NaN-from-(-inf - -inf) cancellation
+        // in the max-subtract path: if the inserted -inf became the
+        // pivot, every subtraction would produce NaN. The op must
+        // pick the true max (not -inf) to stay finite.
+        #[test]
+        fn fuzz_metamorphic_logsumexp_neg_inf_augmentation(
+            (samples, num_neg_inf) in (
+                prop::collection::vec(-512i16..512i16, 1..16),
+                1usize..4,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 19.0).collect();
+            let mut augmented = input.clone();
+            for _ in 0..num_neg_inf {
+                augmented.push(f64::NEG_INFINITY);
+            }
+
+            let n = input.len();
+            let m = augmented.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("var x");
+            let lse_x = s.tensor_logsumexp(x, 0).expect("lse x");
+            let v_x = s.tensor_values(lse_x).expect("v_x")[0];
+
+            let xa = s.tensor_variable(augmented, vec![m], false).expect("var xa");
+            let lse_xa = s.tensor_logsumexp(xa, 0).expect("lse xa");
+            let v_xa = s.tensor_values(lse_xa).expect("v_xa")[0];
+
+            // Must be bit-exact: -inf entries contribute exactly 0
+            // to the sum-of-exps, and the implementation must pivot
+            // on the actual maximum (not -inf), so the arithmetic
+            // proceeds identically.
+            prop_assert!(
+                v_x.is_finite() && v_xa.is_finite(),
+                "both must be finite: lse(x) = {v_x}, lse([x, -inf...]) = {v_xa}"
+            );
+            prop_assert_eq!(v_x, v_xa,
+                "logsumexp must be invariant to -inf augmentation"
+            );
+        }
+
         // logaddexp is symmetric in its arguments: logaddexp(a, b) ==
         // logaddexp(b, a) bit-exactly. log(exp(a)+exp(b)) is unchanged
         // by argument order, and the max-subtraction stabilization
