@@ -86,6 +86,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ft_kernel_cpu_gather"
+path = "fuzz_targets/ft_kernel_cpu_gather.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ft_api_round_decimals"
 path = "fuzz_targets/ft_api_round_decimals.rs"
 test = false
