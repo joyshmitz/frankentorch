@@ -5540,6 +5540,22 @@ impl FrankenTorchSession {
         self.tensor_exp(scaled)
     }
 
+    /// Multiply input by `2^other`: `ldexp(x, n) = x * 2^n`.
+    ///
+    /// Equivalent to `torch.ldexp(input, other)`, the inverse-frexp
+    /// companion. Composes through `tensor_mul(input, tensor_exp2(other))`
+    /// so autograd flows through the existing exp2 / mul nodes:
+    /// gradient w.r.t. input is `2^other`, gradient w.r.t. other is
+    /// `input * 2^other * ln(2)`. Tracked under frankentorch-4gbs.
+    pub fn tensor_ldexp(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let two_pow = self.tensor_exp2(other)?;
+        self.tensor_mul(input, two_pow)
+    }
+
     /// Numerically stable log-sigmoid: `log(sigmoid(x)) = -softplus(-x)`.
     ///
     /// Equivalent to `torch.nn.functional.logsigmoid(input)`. Avoids
@@ -30425,6 +30441,84 @@ mod tests {
         // -softplus(-(-1000)) = -softplus(1000) ≈ -1000.
         assert!(v.is_finite(), "logsigmoid(-1000) should be finite, got {v}");
         assert!((v - (-1000.0)).abs() < 1e-6, "got {v}");
+    }
+
+    // ── tensor_ldexp tests (frankentorch-4gbs) ────────────────────────
+
+    #[test]
+    fn ldexp_identity_when_other_is_zero() {
+        // ldexp(x, 0) = x * 2^0 = x.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-3.5, 0.0, 1.25, 7.0], vec![4], false)
+            .unwrap();
+        let n = s
+            .tensor_variable(vec![0.0, 0.0, 0.0, 0.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_ldexp(x, n).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        let expected = [-3.5, 0.0, 1.25, 7.0];
+        for (a, b) in v.iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-12, "got {a}, expected {b}");
+        }
+    }
+
+    #[test]
+    fn ldexp_positive_and_negative_powers() {
+        // ldexp(1, 3) = 8; ldexp(1, -2) = 0.25; ldexp(-3, 4) = -48.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 1.0, -3.0], vec![3], false)
+            .unwrap();
+        let n = s
+            .tensor_variable(vec![3.0, -2.0, 4.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_ldexp(x, n).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 8.0).abs() < 1e-12);
+        assert!((v[1] - 0.25).abs() < 1e-12);
+        assert!((v[2] - (-48.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ldexp_propagates_gradient_to_input_as_two_pow_n() {
+        // d/dx (x * 2^n) = 2^n. At n=3, gradient should be 8.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![5.0], vec![1], true).unwrap();
+        let n = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
+        let out = s.tensor_ldexp(x, n).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert!((g[0] - 8.0).abs() < 1e-12, "got {}", g[0]);
+    }
+
+    #[test]
+    fn ldexp_propagates_gradient_to_other_as_input_times_two_pow_n_times_ln2() {
+        // d/dn (x * 2^n) = x * 2^n * ln(2). At x=5, n=3: 5 * 8 * ln(2).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![5.0], vec![1], false).unwrap();
+        let n = s.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        let out = s.tensor_ldexp(x, n).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, n).unwrap();
+        let expected = 5.0 * 8.0 * std::f64::consts::LN_2;
+        assert!((g[0] - expected).abs() < 1e-10, "got {}, expected {}", g[0], expected);
+    }
+
+    #[test]
+    fn ldexp_rejects_shape_mismatch() {
+        // input and other must broadcast to the same shape; shape
+        // mismatch flows through tensor_mul/tensor_exp2 and surfaces
+        // as an autograd error instead of silently truncating.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let n = s
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .unwrap();
+        let result = s.tensor_ldexp(x, n);
+        assert!(result.is_err(), "expected shape mismatch, got Ok");
     }
 
     // ── tensor_asinh / acosh / atanh tests (frankentorch-2vc0) ────────
