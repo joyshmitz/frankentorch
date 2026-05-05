@@ -14962,6 +14962,139 @@ print(json.dumps({"results": out}, sort_keys=True))
     }
 
     #[test]
+    fn torch_floor_divide_subprocess_conformance() {
+        // Subprocess oracle for tensor_floor_divide against
+        // torch.floor_divide. The semantics are non-trivial:
+        // floor_divide rounds toward -inf (NOT toward zero like C
+        // integer division), so floor_divide(-7, 3) = -3 (not -2).
+        // A regression flipping to truncation would pass positive-
+        // operand lib tests while diverging from torch on every
+        // mixed-sign case. This oracle pins the rounding direction
+        // across positive/negative pairs and non-integer dividends.
+        // Tracked under frankentorch-lahu.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_floor_divide_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // (lhs, rhs) pairs covering all sign combinations + non-integer
+        // dividends + an exact-divide case. The negative-numerator
+        // cases are the ones that distinguish floor (-inf) from
+        // truncation (toward 0): -7/3 = -3 (floor) vs -2 (trunc).
+        let cases: Vec<(f64, f64)> = vec![
+            (7.0, 3.0),     // 2 (positive both, non-exact)
+            (-7.0, 3.0),    // -3 (floor, NOT -2)
+            (7.0, -3.0),    // -3 (floor, NOT -2)
+            (-7.0, -3.0),   // 2 (negative both → positive)
+            (6.0, 2.0),     // 3 (exact)
+            (-6.0, 2.0),    // -3 (exact)
+            (-1.5, 1.0),    // -2 (non-integer dividend)
+            (1.5, -1.0),    // -2 (non-integer dividend)
+            (0.0, 5.0),     // 0
+            (0.0, -5.0),    // -0.0 — torch returns 0.0 here in practice
+        ];
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+def fd(a, b):
+    return torch.floor_divide(
+        torch.tensor(a, dtype=torch.float64),
+        torch.tensor(b, dtype=torch.float64),
+    ).item()
+
+cases = json.loads(sys.stdin.read())["cases"]
+results = [encode_scalar(fd(lhs, rhs)) for lhs, rhs in cases]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "cases": cases.iter()
+                .map(|(a, b)| vec![*a, *b])
+                .collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch.floor_divide oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        assert_eq!(results.len(), cases.len(), "oracle returned wrong count");
+
+        fn decode(value: &Value) -> f64 {
+            if let Some(s) = value.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    _ => panic!("unexpected tagged scalar: {s}"),
+                }
+            } else {
+                value.as_f64().expect("oracle scalar")
+            }
+        }
+
+        // Bit-equal comparison: floor_divide returns f64; ±0.0
+        // distinguished by sign bit, NaN==NaN, finite values exact.
+        fn bit_eq(a: f64, b: f64) -> bool {
+            if a.is_nan() && b.is_nan() {
+                true
+            } else if a == 0.0 && b == 0.0 {
+                a.is_sign_negative() == b.is_sign_negative()
+            } else {
+                a == b
+            }
+        }
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (i, ((lhs, rhs), oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let expected = decode(oracle_entry);
+            let a = session
+                .tensor_variable(vec![*lhs], vec![1], false)
+                .unwrap_or_else(|err| panic!("case {i} lhs failed: {err:?}"));
+            let b = session
+                .tensor_variable(vec![*rhs], vec![1], false)
+                .unwrap_or_else(|err| panic!("case {i} rhs failed: {err:?}"));
+            let q = session
+                .tensor_floor_divide(a, b)
+                .unwrap_or_else(|err| panic!("case {i} floor_divide failed: {err:?}"));
+            let got = session.tensor_values(q).expect("got values")[0];
+            assert!(
+                bit_eq(got, expected),
+                "case {i} ({lhs}, {rhs}): tensor_floor_divide = {got} but torch.floor_divide = {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn torch_diag_subprocess_conformance() {
         // Subprocess oracle for tensor_diag against torch.diag.
         // tensor_diag dispatches by rank (1-D → 2-D matrix on the
