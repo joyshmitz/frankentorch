@@ -5039,6 +5039,105 @@ impl FrankenTorchSession {
         }
     }
 
+    /// `torch.nextafter(input, other)` parity: per-element next IEEE
+    /// 754 representable value of `input` toward `other`.
+    ///
+    /// Routes through Rust's `f64::next_up` / `next_down` (and
+    /// `f32` analogues for F32 inputs), which respect IEEE 754
+    /// semantics: NaN propagates, `nextafter(x, x) == x`,
+    /// `nextafter(±inf, _)` saturates correctly.
+    ///
+    /// Non-differentiable (discontinuous at every representable f64
+    /// step); fails loud on `requires_grad` like the other
+    /// floor/round/discrete ops. Tracked under frankentorch-uh6t.
+    pub fn tensor_nextafter(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(other)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nextafter: autograd not supported (discontinuous at every IEEE 754 representable step). Tracked under frankentorch-uh6t.",
+                },
+            )));
+        }
+        let in_shape = self.tensor_shape(input)?;
+        let oth_shape = self.tensor_shape(other)?;
+        if in_shape != oth_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: in_shape,
+                    rhs: oth_shape,
+                },
+            )));
+        }
+        let dtype = self.tensor_dtype(input)?;
+        let oth_dtype = self.tensor_dtype(other)?;
+        if dtype != oth_dtype {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nextafter: input and other must have the same dtype",
+                },
+            )));
+        }
+        if !matches!(dtype, DType::F32 | DType::F64) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nextafter requires f32 or f64 tensors",
+                },
+            )));
+        }
+        let in_vals = self.tensor_values(input)?;
+        let oth_vals = self.tensor_values(other)?;
+
+        // f64::next_up / next_down: IEEE 754-aware single-step
+        // neighbors with correct NaN / ±inf semantics.
+        let stepped: Vec<f64> = in_vals
+            .iter()
+            .zip(oth_vals.iter())
+            .map(|(&x, &y)| {
+                if x.is_nan() || y.is_nan() {
+                    f64::NAN
+                } else if x == y {
+                    y
+                } else if x < y {
+                    x.next_up()
+                } else {
+                    x.next_down()
+                }
+            })
+            .collect();
+
+        match dtype {
+            DType::F32 => {
+                // Round-trip via f32 to preserve dtype. f32 has its own
+                // next_up/next_down; recompute on f32 to avoid f64↔f32
+                // boundary mismatches at the next-representable step.
+                let in_f32: Vec<f32> = in_vals.into_iter().map(|v| v as f32).collect();
+                let oth_f32: Vec<f32> = oth_vals.into_iter().map(|v| v as f32).collect();
+                let stepped_f32: Vec<f32> = in_f32
+                    .iter()
+                    .zip(oth_f32.iter())
+                    .map(|(&x, &y)| {
+                        if x.is_nan() || y.is_nan() {
+                            f32::NAN
+                        } else if x == y {
+                            y
+                        } else if x < y {
+                            x.next_up()
+                        } else {
+                            x.next_down()
+                        }
+                    })
+                    .collect();
+                let _ = stepped; // f64 path computed above is unused for F32
+                self.tensor_variable_f32(stepped_f32, in_shape, false)
+            }
+            _ => self.tensor_variable(stepped, in_shape, false),
+        }
+    }
+
     /// Heaviside step function: `0 if x<0, 1 if x>0, values[i] if x==0`.
     ///
     /// Equivalent to `torch.heaviside(input, values)`. `values` must
@@ -34913,6 +35012,71 @@ mod tests {
             grad,
             &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         );
+    }
+
+    // ── tensor_nextafter tests (frankentorch-uh6t) ─────────────────────
+
+    #[test]
+    fn nextafter_steps_toward_other_in_both_directions() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // x = [1.0, 2.0, 5.0], y = [2.0, 1.0, 5.0]
+        // expected: [1.0.next_up(), 2.0.next_down(), 5.0]
+        let x = s
+            .tensor_variable(vec![1.0_f64, 2.0, 5.0], vec![3], false)
+            .unwrap();
+        let y = s
+            .tensor_variable(vec![2.0_f64, 1.0, 5.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_nextafter(x, y).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert_eq!(v[0].to_bits(), 1.0_f64.next_up().to_bits());
+        assert_eq!(v[1].to_bits(), 2.0_f64.next_down().to_bits());
+        // x == y → returns y exactly.
+        assert_eq!(v[2], 5.0);
+    }
+
+    #[test]
+    fn nextafter_propagates_nan_in_either_argument() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![f64::NAN, 1.0], vec![2], false)
+            .unwrap();
+        let y = s
+            .tensor_variable(vec![1.0, f64::NAN], vec![2], false)
+            .unwrap();
+        let out = s.tensor_nextafter(x, y).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].is_nan() && v[1].is_nan());
+    }
+
+    #[test]
+    fn nextafter_handles_signed_zero_and_infinities() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 0.0 toward -inf → -0.0.next_down() = -smallest subnormal.
+        // f64::INFINITY toward 0.0 → MAX (largest finite f64).
+        let x = s
+            .tensor_variable(vec![0.0_f64, f64::INFINITY], vec![2], false)
+            .unwrap();
+        let y = s
+            .tensor_variable(vec![f64::NEG_INFINITY, 0.0], vec![2], false)
+            .unwrap();
+        let out = s.tensor_nextafter(x, y).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        // 0.0 < -inf is false; 0.0 > -inf is true → next_down(0.0)
+        assert_eq!(v[0].to_bits(), 0.0_f64.next_down().to_bits());
+        // INFINITY > 0.0 → next_down(INFINITY) = f64::MAX.
+        assert_eq!(v[1], f64::MAX);
+    }
+
+    #[test]
+    fn nextafter_fails_loud_on_requires_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let y = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        assert!(s.tensor_nextafter(x, y).is_err());
+        let x2 = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let y2 = s.tensor_variable(vec![2.0], vec![1], true).unwrap();
+        assert!(s.tensor_nextafter(x2, y2).is_err());
     }
 
     // ── tensor_sgn tests (frankentorch-naub) ───────────────────────────
