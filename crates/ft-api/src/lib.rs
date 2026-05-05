@@ -6616,10 +6616,12 @@ impl FrankenTorchSession {
         let shape = self.tensor_shape(input)?;
         let ndim = shape.len();
         if dim >= ndim {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "normalize: dim out of range",
-                },
+            // KernelError::InvalidDimension carries dim + ndim in
+            // the diagnostic; matches the policy used by tensor_glu
+            // (frankentorch-oagi) and tensor_diag. Tracked under
+            // frankentorch-6zyy.
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
             )));
         }
 
@@ -9057,10 +9059,10 @@ impl FrankenTorchSession {
 
         let ndim = shape.len();
         if dim >= ndim {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "index_add: dim out of range",
-                },
+            // Migrate to InvalidDimension to surface dim + ndim in
+            // the diagnostic (frankentorch-6zyy).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
             )));
         }
 
@@ -9212,10 +9214,9 @@ impl FrankenTorchSession {
 
         let ndim = shape.len();
         if dim >= ndim {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "index_copy: dim out of range",
-                },
+            // Migrate to InvalidDimension (frankentorch-6zyy).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
             )));
         }
 
@@ -9339,10 +9340,9 @@ impl FrankenTorchSession {
 
         let ndim = shape.len();
         if dim >= ndim {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "index_fill: dim out of range",
-                },
+            // Migrate to InvalidDimension (frankentorch-6zyy).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
             )));
         }
 
