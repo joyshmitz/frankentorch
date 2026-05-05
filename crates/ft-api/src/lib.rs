@@ -4037,10 +4037,14 @@ impl FrankenTorchSession {
                             },
                         )));
                     }
+                    // Row-by-row memcpy via copy_from_slice. Both
+                    // src and dst are contiguous slices of length
+                    // `cols` per row (frankentorch-i7mv).
                     for r in 0..rows {
-                        for c in 0..cols {
-                            data[(row_off + r) * total_cols + col_off + c] = vals[r * cols + c];
-                        }
+                        let dst_start = (row_off + r) * total_cols + col_off;
+                        let src_start = r * cols;
+                        data[dst_start..dst_start + cols]
+                            .copy_from_slice(&vals[src_start..src_start + cols]);
                     }
                 }
                 Ok((data, vec![total_rows, total_cols]))
@@ -4050,11 +4054,13 @@ impl FrankenTorchSession {
                 let mut grads: Vec<Option<Vec<f64>>> = Vec::with_capacity(block_meta_bwd.len());
                 for (rows, cols, row_off, col_off, original_shape) in &block_meta_bwd {
                     let mut grad_block = vec![0.0_f64; rows * cols];
+                    // Row-by-row memcpy via copy_from_slice
+                    // (frankentorch-i7mv).
                     for r in 0..*rows {
-                        for c in 0..*cols {
-                            grad_block[r * cols + c] =
-                                grad_y[(row_off + r) * total_cols + col_off + c];
-                        }
+                        let src_start = (row_off + r) * total_cols + col_off;
+                        let dst_start = r * cols;
+                        grad_block[dst_start..dst_start + *cols]
+                            .copy_from_slice(&grad_y[src_start..src_start + *cols]);
                     }
                     // Original 1-D inputs deserve a flat-1-D gradient
                     // (rows == 1 && shape.len() == 1) — the storage
