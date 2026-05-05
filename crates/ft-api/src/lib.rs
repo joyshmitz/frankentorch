@@ -1790,14 +1790,19 @@ impl FrankenTorchSession {
         col: usize,
         offset: i64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let mut rows = Vec::new();
-        let mut cols = Vec::new();
+        // Range-derived push (frankentorch-nyzz): per row i, the
+        // lower-triangle column range is [0, min(col, max(0, i+offset+1))).
+        // Skip the per-cell branch and pre-allocate with the
+        // worst-case capacity to avoid Vec realloc churn.
+        let cap = row.saturating_mul(col);
+        let mut rows = Vec::with_capacity(cap);
+        let mut cols = Vec::with_capacity(cap);
         for i in 0..row {
-            for j in 0..col {
-                if (j as i64) <= (i as i64) + offset {
-                    rows.push(i as f64);
-                    cols.push(j as f64);
-                }
+            let end_signed = (i as i64) + offset + 1;
+            let end = end_signed.max(0).min(col as i64) as usize;
+            for j in 0..end {
+                rows.push(i as f64);
+                cols.push(j as f64);
             }
         }
         let n = rows.len();
@@ -1816,14 +1821,19 @@ impl FrankenTorchSession {
         col: usize,
         offset: i64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let mut rows = Vec::new();
-        let mut cols = Vec::new();
+        // Range-derived push (frankentorch-nyzz): per row i, the
+        // upper-triangle column range is [max(0, i+offset), col).
+        // Skip the per-cell branch and pre-allocate with worst-case
+        // capacity.
+        let cap = row.saturating_mul(col);
+        let mut rows = Vec::with_capacity(cap);
+        let mut cols = Vec::with_capacity(cap);
         for i in 0..row {
-            for j in 0..col {
-                if (j as i64) >= (i as i64) + offset {
-                    rows.push(i as f64);
-                    cols.push(j as f64);
-                }
+            let start_signed = (i as i64) + offset;
+            let start = start_signed.max(0).min(col as i64) as usize;
+            for j in start..col {
+                rows.push(i as f64);
+                cols.push(j as f64);
             }
         }
         let n = rows.len();
