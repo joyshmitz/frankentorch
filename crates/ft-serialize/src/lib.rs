@@ -1671,6 +1671,24 @@ mod tests {
     }
 
     #[test]
+    fn raptorq_sidecar_json_contract_snapshot() {
+        // Golden snapshot of the RaptorQSidecar wire-format contract
+        // for a fixed payload + repair_symbols. generate_raptorq_sidecar
+        // is deterministic (the existing raptorq fuzz target asserts
+        // sidecar == sidecar_repeat across re-invocations) so this
+        // snapshot is stable. Companion to the strict/hardened
+        // checkpoint envelope snapshots (mkgv/it5r/cn68v).
+        // Tracked under frankentorch-uptn.
+        let (sidecar, _proof) = generate_raptorq_sidecar("hello frankentorch", 4)
+            .expect("raptorq sidecar generation should succeed");
+        let pretty = serde_json::to_string_pretty(
+            &serde_json::to_value(&sidecar).expect("sidecar serializes to Value"),
+        )
+        .expect("pretty sidecar JSON should serialize");
+        insta::assert_snapshot!("raptorq_sidecar_json_contract", pretty);
+    }
+
+    #[test]
     fn strict_decode_canonicalizes_entry_order() {
         let entries = vec![
             SnapshotEntry {
