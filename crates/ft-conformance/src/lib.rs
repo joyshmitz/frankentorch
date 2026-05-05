@@ -11480,6 +11480,43 @@ mod tests {
             }
         }
 
+        // expm1(log1p(x)) ≈ x for x > -1 within ~16 ULPs.
+        // log1p / expm1 are paired numerical-stability primitives —
+        // log1p(x) = log(1+x) avoids catastrophic cancellation near
+        // zero, expm1(x) = exp(x)-1 likewise. Their composition is
+        // identity, and the inputs that expose precision loss
+        // (values near zero where 1+x ≈ 1 in f64) are exactly where
+        // the stable formulation pays off, so this MR is orthogonal
+        // to exp_log_roundtrip even though both are exp/log family.
+        // Frankentorch-i462.
+        #[test]
+        fn fuzz_metamorphic_expm1_log1p_roundtrip(
+            samples in prop::collection::vec(-1000i16..2000i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Scale into [-0.5, 1.0] so log1p(x) is finite (requires
+            // x > -1) and includes a dense band near zero where the
+            // stable formulation matters most.
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 2000.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable");
+            let log1p_x = s.tensor_log1p(x).expect("log1p");
+            let roundtrip = s.tensor_expm1(log1p_x).expect("expm1");
+            let v = s.tensor_values(roundtrip).expect("vals");
+            for (a, b) in v.iter().zip(input.iter()) {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * scale * f64::EPSILON,
+                    "expm1(log1p(x)) = {a} but x = {b}, diff = {diff:e}"
+                );
+            }
+        }
+
         // clamp(x, lo, hi) bit-exactly equals x when x is already in
         // [lo, hi]. Use input * 0.4 to keep all values inside [-1, 1]
         // so the [-1, 1] clamp is a no-op. Frankentorch-yg6k.
