@@ -8211,18 +8211,10 @@ impl Module for ConvTranspose2d {
                 // frankentorch-hbm0.
                 let src_h_start = self.padding_h.saturating_sub(kh);
                 let dst_h_start = kh.saturating_sub(self.padding_h);
-                let src_h_end = up_h.min(
-                    h_out
-                        .saturating_add(self.padding_h)
-                        .saturating_sub(kh),
-                );
+                let src_h_end = up_h.min(h_out.saturating_add(self.padding_h).saturating_sub(kh));
                 let src_w_start = self.padding_w.saturating_sub(kw);
                 let dst_w_start = kw.saturating_sub(self.padding_w);
-                let src_w_end = up_w.min(
-                    w_out
-                        .saturating_add(self.padding_w)
-                        .saturating_sub(kw),
-                );
+                let src_w_end = up_w.min(w_out.saturating_add(self.padding_w).saturating_sub(kw));
 
                 if src_h_start >= src_h_end || src_w_start >= src_w_end {
                     continue;
@@ -15954,6 +15946,25 @@ mod tests {
                 "fake_quantize must be idempotent: {a} vs {b}"
             );
         }
+    }
+
+    #[test]
+    fn fake_quantize_backward_matches_pytorch_cachemask_contract() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![-1.5, -1.0, -0.25, 0.25, 0.75, 1.0, 1.5], vec![7], true)
+            .expect("variable");
+
+        let y = session
+            .tensor_fake_quantize_per_tensor(x, 0.5, 0, -2, 2)
+            .expect("fake-quantize");
+        let y_vals = session.tensor_values(y).expect("fake-quant values");
+        assert_eq!(y_vals, &[-1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+
+        let loss = session.tensor_sum(y).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session.tensor_gradient(&report, x).expect("input gradient");
+        assert_eq!(grad, &[0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]);
     }
 
     #[test]

@@ -14935,7 +14935,7 @@ print(json.dumps({"results": out}, sort_keys=True))
         // forces late kernel rows past h_out. Case 4 has a non-square
         // kernel/stride/padding combination that exercises the dh77
         // output_padding shape arithmetic.
-        let cases = vec![
+        let cases = [
             (1, 1, (5, 5), (1, 1), (2, 2), (0, 0), vec![1, 1, 1, 1]),
             (1, 1, (3, 3), (1, 1), (1, 1), (0, 0), vec![1, 1, 4, 4]),
             (1, 1, (4, 4), (2, 2), (1, 1), (0, 0), vec![1, 1, 3, 3]),

@@ -5947,12 +5947,10 @@ impl FrankenTorchSession {
 
     /// Per-tensor affine quantization: `q = clamp(round(x/scale) + zero_point, qmin, qmax)`.
     ///
-    /// Output values are integers in `[qmin, qmax]` but stored in the input
-    /// dtype — this is the "fake quantization" representation used by
-    /// PyTorch for quantization-aware training and post-training
-    /// quantization. `tensor_round` uses a straight-through estimator on
-    /// the backward pass, so gradients flow through as if quantization
-    /// were the identity.
+    /// Output values are q-space integers in `[qmin, qmax]` but stored in
+    /// the input dtype. Backward uses the PyTorch fake-quantization
+    /// cachemask contract: unclamped values receive a straight-through
+    /// gradient scaled by `1 / scale`, while clamped values receive zero.
     ///
     /// # Errors
     /// - `scale` must be finite and `> 0.0`
@@ -5966,16 +5964,40 @@ impl FrankenTorchSession {
         qmax: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         Self::validate_qparams(scale, zero_point, qmin, qmax)?;
-        let inv_scale = self.full_like(input, 1.0 / scale, false)?;
-        let scaled = self.tensor_mul(input, inv_scale)?;
-        let rounded = self.tensor_round(scaled)?;
-        let zp = self.full_like(rounded, zero_point as f64, false)?;
-        let shifted = self.tensor_add(rounded, zp)?;
         #[allow(clippy::cast_precision_loss)]
-        let lo = qmin as f64;
+        let qmin_f = qmin as f64;
         #[allow(clippy::cast_precision_loss)]
-        let hi = qmax as f64;
-        self.tensor_clamp(shifted, lo, hi)
+        let qmax_f = qmax as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let zero_point_f = zero_point as f64;
+        let inv_scale = 1.0 / scale;
+
+        self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                let mut mask = Vec::with_capacity(vals.len());
+                let q_vals = vals
+                    .iter()
+                    .map(|&x| {
+                        let q = (x * inv_scale).round_ties_even() + zero_point_f;
+                        mask.push(if q >= qmin_f && q <= qmax_f { 1.0 } else { 0.0 });
+                        q.clamp(qmin_f, qmax_f)
+                    })
+                    .collect::<Vec<_>>();
+                ctx.save_for_backward(mask, shape.to_vec());
+                Ok((q_vals, shape.to_vec()))
+            },
+            move |ctx, grad_outputs| {
+                let mask = &ctx.saved_tensors()[0];
+                let grad = grad_outputs[0]
+                    .iter()
+                    .zip(mask.iter())
+                    .map(|(grad, &keep)| grad * keep * inv_scale)
+                    .collect::<Vec<_>>();
+                Ok(vec![Some(grad)])
+            },
+        )
     }
 
     /// Per-tensor affine dequantization: `x = (q - zero_point) * scale`.
@@ -6004,8 +6026,9 @@ impl FrankenTorchSession {
 
     /// Fake-quantize: `dequantize(quantize_per_tensor(x))`. Simulates
     /// the precision loss of `[qmin, qmax]` quantization while keeping
-    /// values in the input dtype. The composition is differentiable
-    /// (round is straight-through), making this suitable for QAT.
+    /// values in the input dtype. The composition is differentiable for
+    /// unclamped values and masks gradients for clamped values, matching
+    /// PyTorch's fake-quantization cachemask backward contract.
     ///
     /// # Errors
     /// - `scale` must be finite and `> 0.0`
