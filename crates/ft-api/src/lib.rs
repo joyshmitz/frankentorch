@@ -5524,6 +5524,19 @@ impl FrankenTorchSession {
         self.tensor_exp(scaled)
     }
 
+    /// Base-10 exponential: `10^x`.
+    ///
+    /// Equivalent to `torch.special.exp10(input)`. Companion to
+    /// `tensor_exp2`. Composes through `tensor_exp(input * ln(10))`.
+    /// Autograd-aware; gradient is `10^x * ln(10)`.
+    /// Tracked under frankentorch-fvt1.
+    pub fn tensor_exp10(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ln10 = self.full(shape, std::f64::consts::LN_10, false)?;
+        let scaled = self.tensor_mul(input, ln10)?;
+        self.tensor_exp(scaled)
+    }
+
     /// Numerically stable log-sigmoid: `log(sigmoid(x)) = -softplus(-x)`.
     ///
     /// Equivalent to `torch.nn.functional.logsigmoid(input)`. Avoids
@@ -35187,6 +35200,40 @@ mod tests {
         let report = s.tensor_backward(loss).unwrap();
         let grad = s.tensor_gradient(&report, m).unwrap();
         assert_eq!(grad, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    // ── tensor_exp10 tests (frankentorch-fvt1) ──────────────────────────
+
+    #[test]
+    fn exp10_known_values() {
+        // 10^0 = 1; 10^1 = 10; 10^-1 = 0.1; 10^2 = 100.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 1.0, -1.0, 2.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_exp10(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 1.0).abs() < 1e-12, "10^0 expected 1, got {}", v[0]);
+        assert!((v[1] - 10.0).abs() < 1e-12, "10^1 expected 10, got {}", v[1]);
+        assert!((v[2] - 0.1).abs() < 1e-12, "10^-1 expected 0.1, got {}", v[2]);
+        assert!((v[3] - 100.0).abs() < 1e-10, "10^2 expected 100, got {}", v[3]);
+    }
+
+    #[test]
+    fn exp10_propagates_gradient_via_chain_rule() {
+        // d(10^x)/dx = 10^x * ln(10). At x=1, 10^1 * ln(10) =
+        // 10 * 2.302585... = 23.02585...
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let out = s.tensor_exp10(x).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        let expected = 10.0_f64 * std::f64::consts::LN_10;
+        assert!(
+            (g[0] - expected).abs() < 1e-10,
+            "d(10^x)/dx at x=1 expected {expected}, got {}",
+            g[0]
+        );
     }
 
     // ── tensor_clamp_tensor tests (frankentorch-zbi2) ───────────────────
