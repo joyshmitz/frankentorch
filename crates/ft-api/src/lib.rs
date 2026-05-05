@@ -4819,6 +4819,39 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// `torch.round(input, decimals=N)` parity: round to N decimal places.
+    ///
+    /// For decimals=0 this is equivalent to `tensor_round`. For positive
+    /// `decimals`, rounds to `decimals` places after the decimal point
+    /// (e.g. decimals=2 → round to nearest 0.01). For negative
+    /// `decimals`, rounds to `10^|decimals|` (e.g. decimals=-2 → round
+    /// to nearest 100).
+    ///
+    /// Composes via `round(x * 10^decimals) / 10^decimals`. Backward
+    /// returns zero gradient (matching torch.round, which is
+    /// non-differentiable as a step function). For QAT/STE use cases
+    /// where a non-zero gradient is wanted, see
+    /// `tensor_quantize_per_tensor` which explicitly wraps round in
+    /// a straight-through estimator. Tracked under frankentorch-prt5.
+    pub fn tensor_round_decimals(
+        &mut self,
+        input: TensorNodeId,
+        decimals: i32,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if decimals == 0 {
+            return self.tensor_round(input);
+        }
+        let shape = self.tensor_shape(input)?;
+        let factor = 10.0_f64.powi(decimals);
+        // Single shared factor tensor across the scale-up and the
+        // unscale (frankentorch-prt5): tensor_mul / tensor_div only
+        // READ their constant operand. -1 full() vs the naive form.
+        let factor_t = self.full(shape, factor, false)?;
+        let scaled = self.tensor_mul(input, factor_t)?;
+        let rounded = self.tensor_round(scaled)?;
+        self.tensor_div(rounded, factor_t)
+    }
+
     pub fn tensor_log2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.log2(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
@@ -35042,6 +35075,76 @@ mod tests {
         let report = s.tensor_backward(loss).unwrap();
         let grad = s.tensor_gradient(&report, m).unwrap();
         assert_eq!(grad, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    // ── tensor_round_decimals tests (frankentorch-prt5) ─────────────────
+
+    #[test]
+    fn round_decimals_zero_matches_tensor_round() {
+        // decimals=0 must be identical to tensor_round.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.4, 1.6, -1.4, -1.6, 0.5], vec![5], false)
+            .unwrap();
+        let r0 = s.tensor_round_decimals(x, 0).unwrap();
+        let r_default = s
+            .tensor_variable(vec![1.4, 1.6, -1.4, -1.6, 0.5], vec![5], false)
+            .unwrap();
+        let r_default = s.tensor_round(r_default).unwrap();
+        assert_eq!(s.tensor_values(r0).unwrap(), s.tensor_values(r_default).unwrap());
+    }
+
+    #[test]
+    fn round_decimals_positive_rounds_to_n_places() {
+        // round(1.2345, 2) = 1.23; round(1.236, 2) = 1.24;
+        // round(0.005, 2) = 0.0 (banker's / half-even in some kernels).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.2345, 1.236, 0.999, -1.2345], vec![4], false)
+            .unwrap();
+        let r = s.tensor_round_decimals(x, 2).unwrap();
+        let v = s.tensor_values(r).unwrap();
+        assert!((v[0] - 1.23).abs() < 1e-12, "got {}", v[0]);
+        assert!((v[1] - 1.24).abs() < 1e-12, "got {}", v[1]);
+        assert!((v[2] - 1.0).abs() < 1e-12, "got {}", v[2]);
+        assert!((v[3] - (-1.23)).abs() < 1e-12, "got {}", v[3]);
+    }
+
+    #[test]
+    fn round_decimals_negative_rounds_to_powers_of_ten() {
+        // round(1234.5, -2) = 1200; round(1267.0, -2) = 1300;
+        // round(-1267.0, -2) = -1300.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1234.5, 1267.0, -1267.0, 50.0], vec![4], false)
+            .unwrap();
+        let r = s.tensor_round_decimals(x, -2).unwrap();
+        let v = s.tensor_values(r).unwrap();
+        assert!((v[0] - 1200.0).abs() < 1e-9, "got {}", v[0]);
+        assert!((v[1] - 1300.0).abs() < 1e-9, "got {}", v[1]);
+        assert!((v[2] - (-1300.0)).abs() < 1e-9, "got {}", v[2]);
+        // 50 to nearest 100: kernel may use round-half-even (→ 0)
+        // or round-half-away-from-zero (→ 100). Accept either.
+        assert!(v[3] == 0.0 || v[3] == 100.0, "got {}", v[3]);
+    }
+
+    #[test]
+    fn round_decimals_zero_gradient_matches_round_semantics() {
+        // tensor_round backward returns 0 (the mathematical-truth
+        // gradient of a step function) — same as torch.round. The
+        // scale-round-unscale chain therefore propagates zero
+        // gradient end-to-end. tensor_quantize_per_tensor adds an
+        // explicit STE on top for QAT use cases; tensor_round_decimals
+        // intentionally does NOT, matching torch.round(x, decimals=N).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.234, 5.678], vec![2], true)
+            .unwrap();
+        let r = s.tensor_round_decimals(x, 2).unwrap();
+        let loss = s.tensor_sum(r).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert_eq!(g, &[0.0, 0.0]);
     }
 
     // ── tensor_nextafter tests (frankentorch-uh6t) ─────────────────────
