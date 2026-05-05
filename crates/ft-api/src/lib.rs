@@ -16136,11 +16136,11 @@ impl FrankenTorchSession {
         }
         let log_y = self.tensor_log(y)?;
         let prod = self.tensor_mul(x, log_y)?;
-        let zeros = self.full(x_shape.clone(), 0.0, false)?;
-        // mask = (x == 0) — 1.0 where x is exactly zero, 0.0 elsewhere.
+        // Single zeros tensor shared between the eq mask and the
+        // where-true branch (frankentorch-rbhb).
+        let zeros = self.full(x_shape, 0.0, false)?;
         let mask = self.tensor_eq(x, zeros)?;
-        let zero_branch = self.full(x_shape, 0.0, false)?;
-        let out = self.tensor_where(mask, zero_branch, prod)?;
+        let out = self.tensor_where(mask, zeros, prod)?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("xlogy x={} y={} out={}", x.0, y.0, out.0),
@@ -16502,6 +16502,8 @@ impl FrankenTorchSession {
         }
         let log1p_y = self.tensor_log1p(y)?;
         let prod = self.tensor_mul(x, log1p_y)?;
+        // Single zeros tensor shared between the eq mask and the
+        // where-true branch below (frankentorch-rbhb).
         let zeros = self.full(x_shape.clone(), 0.0, false)?;
         let mask_x_zero = self.tensor_eq(x, zeros)?;
         // scipy.special.xlog1py propagates NaN from y when x == 0 —
@@ -16512,11 +16514,12 @@ impl FrankenTorchSession {
         // (x == 0), which short-circuited even at y=NaN and yielded
         // a spurious 0.
         let isnan_y = self.tensor_isnan(y)?;
-        let ones = self.full(x_shape.clone(), 1.0, false)?;
+        let ones = self.full(x_shape, 1.0, false)?;
         let not_isnan_y = self.tensor_sub(ones, isnan_y)?;
         let mask = self.tensor_mul(mask_x_zero, not_isnan_y)?;
-        let zero_branch = self.full(x_shape, 0.0, false)?;
-        let out = self.tensor_where(mask, zero_branch, prod)?;
+        // Reuse the zeros tensor allocated above for the where-true
+        // branch (frankentorch-rbhb).
+        let out = self.tensor_where(mask, zeros, prod)?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("xlog1py x={} y={} out={}", x.0, y.0, out.0),
