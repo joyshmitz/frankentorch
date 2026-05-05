@@ -5372,17 +5372,20 @@ impl FrankenTorchSession {
             )));
         }
         let shape = self.tensor_shape(input)?;
+        // Single shared lambd_t across the gt mask, sub-shift, and
+        // add-shift call sites (frankentorch-10mv) — tensor_gt /
+        // tensor_sub / tensor_add only READ their operands, so one
+        // full(shape, lambd) suffices for all three. -2 full() +
+        // -2 tape nodes per call.
         let zeros = self.full(shape.clone(), 0.0, false)?;
         let lambd_t = self.full(shape.clone(), lambd, false)?;
-        let neg_lambd_t = self.full(shape.clone(), -lambd, false)?;
+        let neg_lambd_t = self.full(shape, -lambd, false)?;
 
         let pos_mask = self.tensor_gt(input, lambd_t)?;
         let neg_mask = self.tensor_lt(input, neg_lambd_t)?;
 
-        let lambd_const = self.full(shape.clone(), lambd, false)?;
-        let shifted_pos = self.tensor_sub(input, lambd_const)?;
-        let lambd_const2 = self.full(shape, lambd, false)?;
-        let shifted_neg = self.tensor_add(input, lambd_const2)?;
+        let shifted_pos = self.tensor_sub(input, lambd_t)?;
+        let shifted_neg = self.tensor_add(input, lambd_t)?;
 
         // First branch: positive side
         let step1 = self.tensor_where(pos_mask, shifted_pos, zeros)?;
