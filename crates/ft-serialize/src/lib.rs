@@ -1753,6 +1753,29 @@ mod tests {
     }
 
     #[test]
+    fn strict_unknown_field_diagnostic_snapshot() {
+        // Companion to hardened_malformed_payload_diagnostic_snapshot:
+        // pin the EXACT strict-mode unknown-field diagnostic for the
+        // same {extra: "boom"} fixture used by
+        // strict_unknown_field_fail_closed. Strict mode flows the
+        // payload through serde with deny_unknown_fields, so the
+        // wording is determined by serde — a serde upgrade or
+        // deserializer swap could reword the diagnostic without
+        // breaking the contains() substring check upstream.
+        // Tracked under frankentorch-it5r.
+        let payload = json!({
+            "schema_version": 1,
+            "mode": "strict",
+            "entries": [],
+            "source_hash": "det64:0000000000000000",
+            "extra": "boom"
+        })
+        .to_string();
+        let err = decode_checkpoint(&payload, DecodeMode::Strict).expect_err("must fail");
+        insta::assert_snapshot!("strict_unknown_field_diagnostic", err.to_string());
+    }
+
+    #[test]
     fn hardened_malformed_payload_returns_bounded_diagnostic() {
         let err = decode_checkpoint("{ not json", DecodeMode::Hardened).expect_err("must fail");
         let msg = err.to_string();
