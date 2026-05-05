@@ -15157,6 +15157,145 @@ print(json.dumps({"results": out}, sort_keys=True))
     }
 
     #[test]
+    fn torch_clamp_tensor_subprocess_conformance() {
+        // Subprocess oracle for tensor_clamp_tensor (zbi2) against
+        // torch.clamp(input, min=lo_tensor, max=hi_tensor). Three-
+        // operand semantics — NaN in any of input / min / max,
+        // mixed in-bounds vs clipped, ±inf bounds — make this a
+        // worthwhile parity surface beyond the lib unit tests.
+        // Tracked under frankentorch-r32t.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_clamp_tensor_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // Each row: (input, lo, hi). Cases cover passthrough,
+        // clipped-above, clipped-below, NaN in each operand, ±inf.
+        let cases: Vec<(f64, f64, f64)> = vec![
+            (0.5, -1.0, 1.0),                          // passthrough
+            (5.0, -1.0, 1.0),                          // clipped above
+            (-5.0, -1.0, 1.0),                         // clipped below
+            (0.0, 0.0, 0.0),                           // exact-bound passthrough
+            (f64::NAN, -1.0, 1.0),                     // NaN input
+            (1.0, f64::NAN, 1.0),                      // NaN min
+            (1.0, -1.0, f64::NAN),                     // NaN max
+            (1e10, f64::NEG_INFINITY, f64::INFINITY),  // unbounded
+            (1e10, f64::NEG_INFINITY, 100.0),          // upper bound active
+            (-1e10, -100.0, f64::INFINITY),            // lower bound active
+        ];
+
+        fn encode_in(v: f64) -> Value {
+            if v.is_nan() {
+                Value::String("nan".to_string())
+            } else if v.is_infinite() {
+                Value::String(if v > 0.0 { "inf".to_string() } else { "-inf".to_string() })
+            } else {
+                json!(v)
+            }
+        }
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"), "-inf": float("-inf")}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+def cl(x, lo, hi):
+    return torch.clamp(
+        torch.tensor(decode_scalar(x), dtype=torch.float64),
+        min=torch.tensor(decode_scalar(lo), dtype=torch.float64),
+        max=torch.tensor(decode_scalar(hi), dtype=torch.float64),
+    ).item()
+
+cases = json.loads(sys.stdin.read())["cases"]
+results = [encode_scalar(cl(x, lo, hi)) for x, lo, hi in cases]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "cases": cases.iter()
+                .map(|(x, lo, hi)| Value::Array(vec![encode_in(*x), encode_in(*lo), encode_in(*hi)]))
+                .collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch.clamp tensor-bound oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        assert_eq!(results.len(), cases.len(), "oracle returned wrong count");
+
+        fn decode(value: &Value) -> f64 {
+            if let Some(s) = value.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    _ => panic!("unexpected tagged scalar: {s}"),
+                }
+            } else {
+                value.as_f64().expect("oracle scalar")
+            }
+        }
+
+        fn bit_eq(a: f64, b: f64) -> bool {
+            if a.is_nan() && b.is_nan() {
+                true
+            } else if a == 0.0 && b == 0.0 {
+                a.is_sign_negative() == b.is_sign_negative()
+            } else {
+                a == b
+            }
+        }
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (i, ((x, lo, hi), oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let expected = decode(oracle_entry);
+            let xt = session.tensor_variable(vec![*x], vec![1], false).unwrap();
+            let lot = session.tensor_variable(vec![*lo], vec![1], false).unwrap();
+            let hit = session.tensor_variable(vec![*hi], vec![1], false).unwrap();
+            let out = session
+                .tensor_clamp_tensor(xt, lot, hit)
+                .unwrap_or_else(|err| panic!("case {i} clamp_tensor failed: {err:?}"));
+            let got = session.tensor_values(out).expect("got values")[0];
+            assert!(
+                bit_eq(got, expected),
+                "case {i} (x={x}, lo={lo}, hi={hi}): tensor_clamp_tensor = {got} but torch.clamp = {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn torch_round_decimals_subprocess_conformance() {
         // Subprocess oracle for tensor_round_decimals against
         // torch.round(x, decimals=N). Pin the actual upstream values
