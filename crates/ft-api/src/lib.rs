@@ -8246,9 +8246,19 @@ impl FrankenTorchSession {
             let std_exp = self.tensor_expand(std_us, vec![batch_size, channels])?;
             let normalized = self.tensor_div(diff, std_exp)?;
 
-            let updated_mean = if let Some(running_mean) = running_mean {
+            // Hoist momentum / one_minus tensors so the running_mean
+            // and running_var branches share them (frankentorch-q6ed).
+            let momentum_pair = if running_mean.is_some() || running_var.is_some() {
                 let one_minus = self.full(vec![channels], 1.0 - momentum, false)?;
                 let momentum_t = self.full(vec![channels], momentum, false)?;
+                Some((one_minus, momentum_t))
+            } else {
+                None
+            };
+
+            let updated_mean = if let Some(running_mean) = running_mean {
+                let (one_minus, momentum_t) =
+                    momentum_pair.expect("allocated when running_mean.is_some()");
                 let prev_term = self.tensor_mul(running_mean, one_minus)?;
                 let batch_term = self.tensor_mul(batch_mean, momentum_t)?;
                 Some(self.tensor_add(prev_term, batch_term)?)
@@ -8264,8 +8274,8 @@ impl FrankenTorchSession {
                 };
                 let bessel_t = self.full(vec![channels], bessel, false)?;
                 let unbiased_batch_var = self.tensor_mul(batch_var, bessel_t)?;
-                let one_minus = self.full(vec![channels], 1.0 - momentum, false)?;
-                let momentum_t = self.full(vec![channels], momentum, false)?;
+                let (one_minus, momentum_t) =
+                    momentum_pair.expect("allocated when running_var.is_some()");
                 let prev_term = self.tensor_mul(running_var, one_minus)?;
                 let batch_term = self.tensor_mul(unbiased_batch_var, momentum_t)?;
                 Some(self.tensor_add(prev_term, batch_term)?)
@@ -8346,9 +8356,23 @@ impl FrankenTorchSession {
             let std_exp = self.tensor_expand(std_us, vec![sample_count, channels])?;
             let normalized = self.tensor_div(diff, std_exp)?;
 
-            let updated_mean = if let Some(running_mean) = running_mean {
+            // Hoist the momentum / one_minus tensors so the
+            // running_mean and running_var branches share them
+            // (frankentorch-q6ed). Each branch's tensor_mul only
+            // reads its constant operand. Allocate lazily — only
+            // pay the full() cost when at least one running stat is
+            // tracked.
+            let momentum_pair = if running_mean.is_some() || running_var.is_some() {
                 let one_minus = self.full(vec![channels], 1.0 - momentum, false)?;
                 let momentum_t = self.full(vec![channels], momentum, false)?;
+                Some((one_minus, momentum_t))
+            } else {
+                None
+            };
+
+            let updated_mean = if let Some(running_mean) = running_mean {
+                let (one_minus, momentum_t) =
+                    momentum_pair.expect("allocated when running_mean.is_some()");
                 let prev_term = self.tensor_mul(running_mean, one_minus)?;
                 let batch_term = self.tensor_mul(batch_mean, momentum_t)?;
                 Some(self.tensor_add(prev_term, batch_term)?)
@@ -8364,8 +8388,8 @@ impl FrankenTorchSession {
                 };
                 let bessel_t = self.full(vec![channels], bessel, false)?;
                 let unbiased_batch_var = self.tensor_mul(batch_var, bessel_t)?;
-                let one_minus = self.full(vec![channels], 1.0 - momentum, false)?;
-                let momentum_t = self.full(vec![channels], momentum, false)?;
+                let (one_minus, momentum_t) =
+                    momentum_pair.expect("allocated when running_var.is_some()");
                 let prev_term = self.tensor_mul(running_var, one_minus)?;
                 let batch_term = self.tensor_mul(unbiased_batch_var, momentum_t)?;
                 Some(self.tensor_add(prev_term, batch_term)?)
