@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 ft-core = { path = "../crates/ft-core" }
 ft-dispatch = { path = "../crates/ft-dispatch" }
+ft-kernel-cpu = { path = "../crates/ft-kernel-cpu" }
 ft-serialize = { path = "../crates/ft-serialize" }
 libfuzzer-sys = "0.4.7"
 
@@ -65,6 +66,13 @@ bench = false
 [[bin]]
 name = "ft_core_dense_view"
 path = "fuzz_targets/ft_core_dense_view.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ft_kernel_cpu_narrow"
+path = "fuzz_targets/ft_kernel_cpu_narrow.rs"
 test = false
 doc = false
 bench = false
