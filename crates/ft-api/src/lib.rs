@@ -5418,11 +5418,13 @@ impl FrankenTorchSession {
     /// Tracked under frankentorch-2vc0.
     pub fn tensor_atanh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
+        // Single ones tensor shared between tensor_add (1+x) and
+        // tensor_sub (1-x) — both ops only read their operands.
+        // Tracked under frankentorch-4w7g.
         let one = self.full(shape.clone(), 1.0, false)?;
-        let one2 = self.full(shape.clone(), 1.0, false)?;
         let half = self.full(shape, 0.5, false)?;
         let num = self.tensor_add(one, input)?;
-        let den = self.tensor_sub(one2, input)?;
+        let den = self.tensor_sub(one, input)?;
         let ratio = self.tensor_div(num, den)?;
         let log_ratio = self.tensor_log(ratio)?;
         self.tensor_mul(log_ratio, half)
@@ -12405,11 +12407,14 @@ impl FrankenTorchSession {
         //   per_elem   = -alpha_t * inner
         //   loss       = mean(per_elem)
         // target is treated as a {0, 1} mask (binary labels).
+        // Single ones tensor shared across all three (1 - x) sub
+        // call sites (frankentorch-4w7g): tensor_sub only reads its
+        // operands. Saves 2 full() allocations + 2 tape nodes per
+        // focal_loss call.
         let p = self.tensor_sigmoid(input)?;
-        let ones1 = self.full(in_shape.clone(), 1.0, false)?;
-        let one_minus_p = self.tensor_sub(ones1, p)?;
-        let ones2 = self.full(in_shape.clone(), 1.0, false)?;
-        let one_minus_target = self.tensor_sub(ones2, target)?;
+        let ones = self.full(in_shape.clone(), 1.0, false)?;
+        let one_minus_p = self.tensor_sub(ones, p)?;
+        let one_minus_target = self.tensor_sub(ones, target)?;
 
         // p_t = target * p + (1 - target) * (1 - p)
         let term_pos = self.tensor_mul(target, p)?;
@@ -12418,14 +12423,13 @@ impl FrankenTorchSession {
 
         // alpha_t = target * alpha + (1 - target) * (1 - alpha)
         let alpha_t_pos = self.full(in_shape.clone(), alpha, false)?;
-        let alpha_t_neg = self.full(in_shape.clone(), 1.0 - alpha, false)?;
+        let alpha_t_neg = self.full(in_shape, 1.0 - alpha, false)?;
         let alpha_pos_term = self.tensor_mul(target, alpha_t_pos)?;
         let alpha_neg_term = self.tensor_mul(one_minus_target, alpha_t_neg)?;
         let alpha_t = self.tensor_add(alpha_pos_term, alpha_neg_term)?;
 
         // inner = (1 - p_t)^gamma * log(clamp_min(p_t, 1e-15))
-        let ones3 = self.full(in_shape, 1.0, false)?;
-        let one_minus_p_t = self.tensor_sub(ones3, p_t)?;
+        let one_minus_p_t = self.tensor_sub(ones, p_t)?;
         let focal_factor = self.tensor_pow(one_minus_p_t, gamma)?;
         let p_t_clamped = self.tensor_clamp_min(p_t, 1e-15)?;
         let log_p_t = self.tensor_log(p_t_clamped)?;
