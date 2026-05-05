@@ -4851,6 +4851,33 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// `torch.sgn(input)` parity: unified sign op for real and complex.
+    ///
+    /// For real-valued tensors this is exactly `torch.sign` (returns
+    /// -1, 0, or +1). For complex inputs torch.sgn returns x/|x|
+    /// (preserving angle, with 0 for x=0); FrankenTorch's complex-
+    /// autograd surface is fail-loud, so the complex path here is
+    /// also fail-loud with a tracking-bead reference rather than a
+    /// silent partial implementation. Tracked under frankentorch-naub.
+    pub fn tensor_sgn(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let dtype = self.tensor_dtype(input)?;
+        match dtype {
+            DType::F32 | DType::F64 => self.tensor_sign(input),
+            DType::Complex64 | DType::Complex128 => {
+                Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "sgn: complex inputs not supported (would require x/|x| with Wirtinger semantics). Tracked under frankentorch-naub.",
+                    },
+                )))
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "sgn requires f32, f64, or complex tensors",
+                },
+            ))),
+        }
+    }
+
     pub fn tensor_trunc(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.trunc(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
@@ -34881,6 +34908,40 @@ mod tests {
         assert_eq!(
             grad,
             &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        );
+    }
+
+    // ── tensor_sgn tests (frankentorch-naub) ───────────────────────────
+
+    #[test]
+    fn sgn_real_path_matches_sign() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![3.0, -2.0, 0.0, 1.5, -0.5], vec![5], false)
+            .unwrap();
+        let out = s.tensor_sgn(x).unwrap();
+        // torch.sgn on real tensor matches torch.sign element-wise.
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, -1.0, 0.0, 1.0, -1.0]);
+    }
+
+    #[test]
+    fn sgn_complex_input_fails_loud() {
+        // FrankenTorch's complex autograd surface is fail-loud; sgn
+        // mirrors that policy instead of silently routing complex
+        // inputs to a partial implementation.
+        use std::sync::Arc;
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let cplx = ft_core::DenseTensor::from_typed_storage(
+            ft_core::TensorMeta::from_shape(vec![1], DType::Complex64, ft_core::Device::Cpu),
+            ft_core::TensorStorage::Complex64(Arc::new(vec![ft_core::Complex64::new(1.0, 1.0)])),
+        )
+        .unwrap();
+        let id = s.tensor_variable_from_storage(cplx, false);
+        let err = s.tensor_sgn(id).expect_err("complex sgn must fail loud");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("complex"),
+            "complex sgn rejection should mention complex, got {msg}"
         );
     }
 
