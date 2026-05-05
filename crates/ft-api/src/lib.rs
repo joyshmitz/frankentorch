@@ -1710,9 +1710,12 @@ impl FrankenTorchSession {
     pub fn triu(&mut self, input: TensorNodeId, k: i64) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "triu expects 2-D input",
+            // Migrate to InvalidDimension to surface actual rank +
+            // expected rank (frankentorch-qaux).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 2,
                 },
             )));
         }
@@ -1743,9 +1746,11 @@ impl FrankenTorchSession {
     pub fn tril(&mut self, input: TensorNodeId, k: i64) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "tril expects 2-D input",
+            // Migrate to InvalidDimension (frankentorch-qaux).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 2,
                 },
             )));
         }
@@ -4061,9 +4066,11 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 1 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "vander: input must be 1-D",
+            // Migrate to InvalidDimension (frankentorch-qaux).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 1,
                 },
             )));
         }
@@ -4267,9 +4274,11 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 1 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "combinations: input must be 1-D",
+            // Migrate to InvalidDimension (frankentorch-qaux).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 1,
                 },
             )));
         }
