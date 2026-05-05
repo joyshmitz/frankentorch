@@ -4037,9 +4037,7 @@ impl FrankenTorchSession {
                             },
                         )));
                     }
-                    // Row-by-row memcpy via copy_from_slice. Both
-                    // src and dst are contiguous slices of length
-                    // `cols` per row (frankentorch-i7mv).
+                    // Copy each contiguous row as a slice to avoid per-cell scatter.
                     for r in 0..rows {
                         let dst_start = (row_off + r) * total_cols + col_off;
                         let src_start = r * cols;
@@ -4054,8 +4052,7 @@ impl FrankenTorchSession {
                 let mut grads: Vec<Option<Vec<f64>>> = Vec::with_capacity(block_meta_bwd.len());
                 for (rows, cols, row_off, col_off, original_shape) in &block_meta_bwd {
                     let mut grad_block = vec![0.0_f64; rows * cols];
-                    // Row-by-row memcpy via copy_from_slice
-                    // (frankentorch-i7mv).
+                    // Copy each contiguous gradient row back into the source block.
                     for r in 0..*rows {
                         let src_start = (row_off + r) * total_cols + col_off;
                         let dst_start = r * cols;
@@ -35220,9 +35217,21 @@ mod tests {
         let out = s.tensor_exp10(x).unwrap();
         let v = s.tensor_values(out).unwrap();
         assert!((v[0] - 1.0).abs() < 1e-12, "10^0 expected 1, got {}", v[0]);
-        assert!((v[1] - 10.0).abs() < 1e-12, "10^1 expected 10, got {}", v[1]);
-        assert!((v[2] - 0.1).abs() < 1e-12, "10^-1 expected 0.1, got {}", v[2]);
-        assert!((v[3] - 100.0).abs() < 1e-10, "10^2 expected 100, got {}", v[3]);
+        assert!(
+            (v[1] - 10.0).abs() < 1e-12,
+            "10^1 expected 10, got {}",
+            v[1]
+        );
+        assert!(
+            (v[2] - 0.1).abs() < 1e-12,
+            "10^-1 expected 0.1, got {}",
+            v[2]
+        );
+        assert!(
+            (v[3] - 100.0).abs() < 1e-10,
+            "10^2 expected 100, got {}",
+            v[3]
+        );
     }
 
     #[test]
@@ -35334,7 +35343,10 @@ mod tests {
             .tensor_variable(vec![1.4, 1.6, -1.4, -1.6, 0.5], vec![5], false)
             .unwrap();
         let r_default = s.tensor_round(r_default).unwrap();
-        assert_eq!(s.tensor_values(r0).unwrap(), s.tensor_values(r_default).unwrap());
+        assert_eq!(
+            s.tensor_values(r0).unwrap(),
+            s.tensor_values(r_default).unwrap()
+        );
     }
 
     #[test]
