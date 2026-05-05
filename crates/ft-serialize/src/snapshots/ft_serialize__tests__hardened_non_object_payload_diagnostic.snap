@@ -1,0 +1,5 @@
+---
+source: crates/ft-serialize/src/lib.rs
+expression: err.to_string()
+---
+incompatible payload: top-level checkpoint payload must be a JSON object

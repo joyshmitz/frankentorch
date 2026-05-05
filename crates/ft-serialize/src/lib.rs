@@ -2289,6 +2289,21 @@ mod tests {
     }
 
     #[test]
+    fn hardened_non_object_payload_diagnostic_snapshot() {
+        // Companion to hardened_malformed_payload_diagnostic_snapshot
+        // (frankentorch-mkgv) and strict_unknown_field_diagnostic_snapshot
+        // (frankentorch-it5r): pin the EXACT hardened diagnostic for
+        // a structurally-wrong payload (JSON array instead of an
+        // object). The existing matches!() check guarantees the error
+        // VARIANT but not the wording — a refactor of the hardened
+        // decoder's payload-shape check could silently reword without
+        // breaking the variant assertion. Tracked under frankentorch-cn68v.
+        let err = decode_checkpoint("[1, 2, 3]", DecodeMode::Hardened)
+            .expect_err("JSON array should fail hardened decode");
+        insta::assert_snapshot!("hardened_non_object_payload_diagnostic", err.to_string());
+    }
+
+    #[test]
     fn hardened_decode_rejects_unknown_field() {
         let payload = r#"{"schema_version":1,"mode":"strict","entries":[],"source_hash":"det64:placeholder","extra":1}"#;
         let err = decode_checkpoint(payload, DecodeMode::Hardened)
