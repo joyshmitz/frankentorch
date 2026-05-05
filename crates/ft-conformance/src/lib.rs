@@ -15189,23 +15189,27 @@ print(json.dumps({"results": out}, sort_keys=True))
         // Each row: (input, lo, hi). Cases cover passthrough,
         // clipped-above, clipped-below, NaN in each operand, ±inf.
         let cases: Vec<(f64, f64, f64)> = vec![
-            (0.5, -1.0, 1.0),                          // passthrough
-            (5.0, -1.0, 1.0),                          // clipped above
-            (-5.0, -1.0, 1.0),                         // clipped below
-            (0.0, 0.0, 0.0),                           // exact-bound passthrough
-            (f64::NAN, -1.0, 1.0),                     // NaN input
-            (1.0, f64::NAN, 1.0),                      // NaN min
-            (1.0, -1.0, f64::NAN),                     // NaN max
-            (1e10, f64::NEG_INFINITY, f64::INFINITY),  // unbounded
-            (1e10, f64::NEG_INFINITY, 100.0),          // upper bound active
-            (-1e10, -100.0, f64::INFINITY),            // lower bound active
+            (0.5, -1.0, 1.0),                         // passthrough
+            (5.0, -1.0, 1.0),                         // clipped above
+            (-5.0, -1.0, 1.0),                        // clipped below
+            (0.0, 0.0, 0.0),                          // exact-bound passthrough
+            (f64::NAN, -1.0, 1.0),                    // NaN input
+            (1.0, f64::NAN, 1.0),                     // NaN min
+            (1.0, -1.0, f64::NAN),                    // NaN max
+            (1e10, f64::NEG_INFINITY, f64::INFINITY), // unbounded
+            (1e10, f64::NEG_INFINITY, 100.0),         // upper bound active
+            (-1e10, -100.0, f64::INFINITY),           // lower bound active
         ];
 
         fn encode_in(v: f64) -> Value {
             if v.is_nan() {
                 Value::String("nan".to_string())
             } else if v.is_infinite() {
-                Value::String(if v > 0.0 { "inf".to_string() } else { "-inf".to_string() })
+                Value::String(if v > 0.0 {
+                    "inf".to_string()
+                } else {
+                    "-inf".to_string()
+                })
             } else {
                 json!(v)
             }
@@ -15361,7 +15365,11 @@ print(json.dumps({"results": results}, sort_keys=True))
             if v.is_nan() {
                 Value::String("nan".to_string())
             } else if v.is_infinite() {
-                Value::String(if v > 0.0 { "inf".to_string() } else { "-inf".to_string() })
+                Value::String(if v > 0.0 {
+                    "inf".to_string()
+                } else {
+                    "-inf".to_string()
+                })
             } else {
                 json!(v)
             }
@@ -15457,6 +15465,164 @@ print(json.dumps({"results": results}, sort_keys=True))
             assert!(
                 bit_eq(got, expected),
                 "case {i} ({x}, decimals={n}): tensor_round_decimals = {got} ({:#x}) but torch.round = {expected} ({:#x})",
+                got.to_bits(),
+                expected.to_bits(),
+            );
+        }
+    }
+
+    #[test]
+    fn torch_exp10_subprocess_conformance() {
+        // Subprocess oracle for tensor_exp10 against torch.special.exp10 when
+        // present, with torch.pow(10, x) as the same-version fallback.
+        // This pins base-10 exponential behavior across smooth interior
+        // values, f64 overflow/underflow cliffs, signed zero, and IEEE
+        // specials. Tracked under frankentorch-lp19.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_exp10_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let inputs: Vec<f64> = vec![
+            -400.0,
+            -324.0,
+            -308.0,
+            -100.0,
+            -10.0,
+            -2.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.5,
+            1.0,
+            2.0,
+            10.0,
+            100.0,
+            300.0,
+            308.0,
+            308.25,
+            309.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        fn encode_in(v: f64) -> Value {
+            if v.is_nan() {
+                Value::String("nan".to_string())
+            } else if v.is_infinite() {
+                Value::String(if v > 0.0 {
+                    "inf".to_string()
+                } else {
+                    "-inf".to_string()
+                })
+            } else {
+                json!(v)
+            }
+        }
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"), "-inf": float("-inf")}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+inputs = json.loads(sys.stdin.read())["inputs"]
+
+def torch_exp10(x):
+    value = torch.tensor(decode_scalar(x), dtype=torch.float64)
+    if hasattr(torch.special, "exp10"):
+        return torch.special.exp10(value)
+    return torch.pow(torch.tensor(10.0, dtype=torch.float64), value)
+
+results = [
+    encode_scalar(torch_exp10(x).item())
+    for x in inputs
+]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let payload = json!({
+            "inputs": inputs.iter().map(|x| encode_in(*x)).collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch.special.exp10 oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        assert_eq!(results.len(), inputs.len(), "oracle returned wrong count");
+
+        fn decode(value: &Value) -> f64 {
+            if let Some(s) = value.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    _ => panic!("unexpected tagged scalar: {s}"),
+                }
+            } else {
+                value.as_f64().expect("oracle scalar")
+            }
+        }
+
+        fn close_enough(actual: f64, expected: f64) -> bool {
+            if actual.is_nan() && expected.is_nan() {
+                return true;
+            }
+            if actual.is_infinite() || expected.is_infinite() {
+                return actual == expected;
+            }
+            if actual == 0.0 && expected == 0.0 {
+                return true;
+            }
+            let scale = actual.abs().max(expected.abs()).max(1.0);
+            (actual - expected).abs() <= 2e-12 * scale
+        }
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (i, (x, oracle_entry)) in inputs.iter().zip(results.iter()).enumerate() {
+            let expected = decode(oracle_entry);
+            let xt = session
+                .tensor_variable(vec![*x], vec![1], false)
+                .unwrap_or_else(|err| panic!("case {i} variable failed: {err:?}"));
+            let out = session
+                .tensor_exp10(xt)
+                .unwrap_or_else(|err| panic!("case {i} exp10 failed: {err:?}"));
+            let got = session.tensor_values(out).expect("got values")[0];
+            assert!(
+                close_enough(got, expected),
+                "case {i} ({x:?}): tensor_exp10 = {got:?} ({:#x}) but torch.special.exp10 = {expected:?} ({:#x})",
                 got.to_bits(),
                 expected.to_bits(),
             );
