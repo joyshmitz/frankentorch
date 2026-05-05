@@ -12060,6 +12060,62 @@ mod tests {
             }
         }
 
+        // tensor_clamp (scalar bounds, kernel path) and
+        // tensor_clamp_tensor (tensor bounds, compose-through-
+        // min/max path) must agree bit-exactly when fed the same
+        // numeric bounds. zbi2 shipped tensor_clamp_tensor as a
+        // separate composition; this MR catches regressions where
+        // the two paths diverge silently. Frankentorch-jwvk.
+        #[test]
+        fn fuzz_metamorphic_clamp_scalar_matches_tensor_bound(
+            (samples, lo_raw, hi_raw) in (
+                prop::collection::vec(-2048i16..2048i16, 1..32),
+                -1024i16..1024i16,
+                -1024i16..1024i16,
+            ).prop_filter(
+                "lo <= hi to avoid undefined empty-range behavior",
+                |(_, lo, hi)| lo <= hi,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let lo = f64::from(lo_raw) / 31.0;
+            let hi = f64::from(hi_raw) / 31.0;
+            if lo > hi {
+                // prop_filter should have already pruned this, but
+                // belt-and-suspenders for the f64-after-scaling case.
+                return Ok(());
+            }
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            // Scalar-bound path.
+            let x_scalar = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable x_scalar");
+            let scalar_out = s.tensor_clamp(x_scalar, lo, hi).expect("scalar clamp");
+            let v_scalar = s.tensor_values(scalar_out).expect("scalar values");
+
+            // Tensor-bound path with broadcast scalar tensors.
+            let x_tensor = s
+                .tensor_variable(input, vec![n], false)
+                .expect("variable x_tensor");
+            let lo_t = s.full(vec![n], lo, false).expect("lo full");
+            let hi_t = s.full(vec![n], hi, false).expect("hi full");
+            let tensor_out = s.tensor_clamp_tensor(x_tensor, lo_t, hi_t).expect("tensor clamp");
+            let v_tensor = s.tensor_values(tensor_out).expect("tensor values");
+
+            for (i, (a, b)) in v_scalar.iter().zip(v_tensor.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "tensor_clamp(x, {}, {}) and tensor_clamp_tensor with full() bounds must agree bit-exactly at idx {}: got {} vs {}",
+                    lo, hi, i, a, b,
+                );
+            }
+        }
+
         // abs(x * y) bit-exactly equals abs(x) * abs(y): both are
         // sign-bit operations on the same magnitude product.
         // Frankentorch-b27s.
