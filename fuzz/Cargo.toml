@@ -62,4 +62,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_core_dense_view"
+path = "fuzz_targets/ft_core_dense_view.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
