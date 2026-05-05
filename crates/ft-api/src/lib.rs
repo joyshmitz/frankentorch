@@ -16453,13 +16453,13 @@ impl FrankenTorchSession {
         let neg_input = self.tensor_neg(input)?;
         let neg_x_log_x = self.tensor_mul(neg_input, log_x)?;
 
+        // Single zeros tensor shared across the eq mask, where-true
+        // branch, and lt mask (frankentorch-x8r1) — tensor_eq /
+        // tensor_where / tensor_lt only READ their operands.
         let zeros = self.full(shape.clone(), 0.0, false)?;
         let mask_zero = self.tensor_eq(input, zeros)?;
-        let zero_branch = self.full(shape.clone(), 0.0, false)?;
-        let inner = self.tensor_where(mask_zero, zero_branch, neg_x_log_x)?;
-
-        let zeros_for_lt = self.full(shape.clone(), 0.0, false)?;
-        let mask_neg = self.tensor_lt(input, zeros_for_lt)?;
+        let inner = self.tensor_where(mask_zero, zeros, neg_x_log_x)?;
+        let mask_neg = self.tensor_lt(input, zeros)?;
         let neg_inf = self.full(shape, f64::NEG_INFINITY, false)?;
         let out = self.tensor_where(mask_neg, neg_inf, inner)?;
 
