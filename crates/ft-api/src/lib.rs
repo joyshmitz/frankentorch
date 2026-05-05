@@ -5086,19 +5086,22 @@ impl FrankenTorchSession {
         // denominator is pi*x where x != 0, and 1 where x == 0 — the
         // exact value at masked positions doesn't matter because
         // tensor_where will discard it.
+        //
+        // Single zero / ones / zero_mask shared across both
+        // tensor_where stages (frankentorch-d521): tensor_mul /
+        // tensor_eq / tensor_where only READ their constant inputs,
+        // and pi_x_safe_a was identical to pi_x — feeding pi_x into
+        // both safe_denom and ratio drops one tensor_mul. Saves 3
+        // full() allocations + 1 tensor_mul + 1 tensor_eq + 5 graph
+        // nodes per sinc call, no behavior change.
         let zeros = self.full(shape.clone(), 0.0, false)?;
         let zero_mask = self.tensor_eq(input, zeros)?;
-        let pi_t2 = self.full(shape.clone(), std::f64::consts::PI, false)?;
-        let pi_x_safe_a = self.tensor_mul(input, pi_t2)?;
-        let ones = self.full(shape.clone(), 1.0, false)?;
-        let safe_denom = self.tensor_where(zero_mask, ones, pi_x_safe_a)?;
+        let ones = self.full(shape, 1.0, false)?;
+        let safe_denom = self.tensor_where(zero_mask, ones, pi_x)?;
         let ratio = self.tensor_div(sin_pi_x, safe_denom)?;
 
         // Final select: at x = 0 → 1.0; otherwise the ratio.
-        let zeros2 = self.full(shape.clone(), 0.0, false)?;
-        let zero_mask2 = self.tensor_eq(input, zeros2)?;
-        let ones2 = self.full(shape, 1.0, false)?;
-        self.tensor_where(zero_mask2, ones2, ratio)
+        self.tensor_where(zero_mask, ones, ratio)
     }
 
     /// L2 hypotenuse.
