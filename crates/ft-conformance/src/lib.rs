@@ -10264,11 +10264,21 @@ fn serialization_generate_sidecar_with_retry_inner(
     use_cache: bool,
 ) -> Result<(RaptorQSidecar, DecodeProofArtifact), String> {
     let cache_key = (payload.to_string(), repair_symbols);
-    if use_cache
-        && let Ok(cache_guard) = serialization_sidecar_cache().lock()
-        && let Some(cached) = cache_guard.get(&cache_key)
-    {
-        return Ok(cached.clone());
+    if use_cache {
+        // Recover from PoisonError by taking the inner map: the
+        // (RaptorQSidecar, DecodeProofArtifact) cache has no
+        // cross-entry invariants and BTreeMap insert/get are
+        // panic-atomic, so any panic that poisoned the lock left
+        // the map in a consistent state. Previously this site used
+        // `if let Ok(g) = lock()` which silently fell through on
+        // poison and turned every subsequent call in the same
+        // process into a cache miss. Tracked under frankentorch-wvnj.
+        let cache_guard = serialization_sidecar_cache()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(cached) = cache_guard.get(&cache_key) {
+            return Ok(cached.clone());
+        }
     }
 
     let mut budgets = Vec::with_capacity(7);
@@ -10283,9 +10293,14 @@ fn serialization_generate_sidecar_with_retry_inner(
     for budget in budgets {
         match generate_raptorq_sidecar(payload, budget) {
             Ok(result) => {
-                if let Ok(mut cache_guard) = serialization_sidecar_cache().lock() {
-                    cache_guard.insert(cache_key, result.clone());
-                }
+                // Same poison-recovery rationale as the read site
+                // above (frankentorch-wvnj): on PoisonError, take
+                // the inner map and continue; the BTreeMap is
+                // consistent across panics.
+                let mut cache_guard = serialization_sidecar_cache()
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                cache_guard.insert(cache_key, result.clone());
                 return Ok(result);
             }
             Err(error) => last_error = Some(error),
