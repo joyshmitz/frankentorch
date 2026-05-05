@@ -6521,9 +6521,17 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if dim >= shape.len() {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "glu: dim out of range",
+            // KernelError::InvalidDimension carries the offending dim
+            // and the input rank in the diagnostic, matching the
+            // dim-bounds error policy used by tensor_diag,
+            // tensor_diag_embed, tensor_dot, etc. The previous
+            // IncompatibleSet { reason: &'static str } path forced
+            // callers to print their own dim/rank to debug.
+            // Tracked under frankentorch-oagi.
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim,
+                    ndim: shape.len(),
                 },
             )));
         }
@@ -29399,7 +29407,16 @@ mod tests {
     fn glu_rejects_dim_out_of_range() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
-        assert!(s.tensor_glu(x, 1).is_err());
+        let err = s.tensor_glu(x, 5).expect_err("dim 5 on rank 1 must err");
+        // Diagnostic must carry the offending dim AND the input rank
+        // (frankentorch-oagi). The previous opaque IncompatibleSet
+        // reason gave neither, forcing callers to print their own
+        // shape to debug.
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains('5') && msg.contains('1'),
+            "diagnostic should include dim=5 and ndim=1, got: {msg}"
+        );
     }
 
     #[test]
