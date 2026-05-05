@@ -11363,6 +11363,52 @@ mod tests {
             }
         }
 
+        // tanh is an odd function: tanh(-x) == -tanh(x) bit-exactly
+        // for finite x. libm's tanh is defined via (e^x - e^-x) /
+        // (e^x + e^-x) and the implementation preserves sign
+        // symmetry exactly, so we can assert to_bits()-equality —
+        // the tightest possible envelope.
+        //
+        // Independence rationale: this MR is orthogonal to the
+        // existing tanh_equals_two_sigmoid_two_x_minus_one (5wr1) —
+        // a regression to the tanh kernel that flipped sign on the
+        // negative-x path would still satisfy the sigmoid identity
+        // (which uses positive 2x as input on either side of zero
+        // independently) but fail this odd-function check.
+        // Frankentorch-z9qz.
+        #[test]
+        fn fuzz_metamorphic_tanh_is_odd_function(
+            samples in prop::collection::vec(-1024i16..1024i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Scale into [-32, 32]: tanh saturates around |x|=20 at
+            // ±1.0 in f64, so the saturation branch is exercised
+            // for the larger samples while small samples land in
+            // the smooth interior. Bit-exact symmetry must hold in
+            // both regimes.
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 32.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s
+                .tensor_variable(input.clone(), vec![n], false)
+                .expect("variable x");
+            let neg_x = s.tensor_neg(x).expect("neg x");
+            let tanh_x = s.tensor_tanh(x).expect("tanh x");
+            let tanh_neg_x = s.tensor_tanh(neg_x).expect("tanh(-x)");
+            let neg_tanh_x = s.tensor_neg(tanh_x).expect("-tanh(x)");
+            let v_lhs = s.tensor_values(tanh_neg_x).expect("lhs values");
+            let v_rhs = s.tensor_values(neg_tanh_x).expect("rhs values");
+            for (i, (a, b)) in v_lhs.iter().zip(v_rhs.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "tanh(-x) must equal -tanh(x) bit-exactly at idx {}: got {} vs {}",
+                    i, a, b,
+                );
+            }
+        }
+
         // Sorting an already-sorted tensor yields the same values.
         // The first sort produces a fully ordered slice; the second
         // pass cannot reorder anything further. Even if the kernel
