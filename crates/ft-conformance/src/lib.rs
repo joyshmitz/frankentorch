@@ -12116,6 +12116,59 @@ mod tests {
             }
         }
 
+        // log(pow(x, n)) ≈ n * log(x) for x > 0 within ~64 ULPs.
+        // Joint test of log + pow + mul; catches log domain bugs,
+        // pow negative-base traps, and mul broadcast issues that
+        // single-op MRs miss. Independent of exp_log_roundtrip
+        // (b27s, single op pair), expm1_log1p_roundtrip (i462,
+        // near-zero domain), and pow_two_equals_self_mul (zt03,
+        // fixed exponent). Frankentorch-wn0o.
+        #[test]
+        fn fuzz_metamorphic_log_pow_equals_n_times_log(
+            (samples, n_raw) in (
+                prop::collection::vec(1i16..2048i16, 1..32),
+                -64i16..64i16,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x in (0, ~120]; n in [-2.0, 2.0] keeps x^n representable
+            // even at the upper-magnitude end and avoids the
+            // negative-base path where log(x^n) would diverge from
+            // n*log(x) on principal-branch grounds.
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n_val = f64::from(n_raw) / 31.0;
+            let len = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            // LHS: log(pow(x, n)).
+            let x_lhs = s
+                .tensor_variable(input.clone(), vec![len], false)
+                .expect("x_lhs");
+            let pow_x = s.tensor_pow(x_lhs, n_val).expect("pow(x, n)");
+            let log_pow = s.tensor_log(pow_x).expect("log(pow(x, n))");
+            let v_lhs = s.tensor_values(log_pow).expect("lhs values");
+
+            // RHS: n * log(x).
+            let x_rhs = s
+                .tensor_variable(input, vec![len], false)
+                .expect("x_rhs");
+            let log_x = s.tensor_log(x_rhs).expect("log(x)");
+            let n_t = s.full(vec![len], n_val, false).expect("n full");
+            let n_log_x = s.tensor_mul(log_x, n_t).expect("n * log(x)");
+            let v_rhs = s.tensor_values(n_log_x).expect("rhs values");
+
+            for (i, (a, b)) in v_lhs.iter().zip(v_rhs.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 1e-12 || diff <= 64.0 * scale * f64::EPSILON,
+                    "log(pow(x, n)) at idx {i} = {a} but n*log(x) = {b}, diff = {:e}",
+                    diff,
+                );
+            }
+        }
+
         // abs(x * y) bit-exactly equals abs(x) * abs(y): both are
         // sign-bit operations on the same magnitude product.
         // Frankentorch-b27s.
