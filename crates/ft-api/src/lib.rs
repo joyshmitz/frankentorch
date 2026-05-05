@@ -1728,13 +1728,16 @@ impl FrankenTorchSession {
                 },
             ))
         })?;
+        // Range-derived fill (frankentorch-98kt): per row i, the
+        // upper-triangle column range is [max(0, i + k), n). Skip
+        // the per-cell branch and let .fill() compile to memset
+        // over the contiguous slice. -O(m*n / 2) iterations + no
+        // mispredicts on attention-mask shapes.
         let mut mask = vec![0.0; numel];
         for i in 0..m {
-            for j in 0..n {
-                if j as i64 >= i as i64 + k {
-                    mask[i * n + j] = 1.0;
-                }
-            }
+            let start_signed = i as i64 + k;
+            let start = start_signed.max(0).min(n as i64) as usize;
+            mask[i * n + start..i * n + n].fill(1.0);
         }
         let mask_tensor = self.tensor_variable(mask, vec![m, n], false)?;
         self.tensor_mul(input, mask_tensor)
@@ -1763,13 +1766,14 @@ impl FrankenTorchSession {
                 },
             ))
         })?;
+        // Range-derived fill (frankentorch-98kt): per row i, the
+        // lower-triangle column range is [0, min(n, max(0, i+k+1))).
+        // .fill() compiles to memset over the contiguous slice.
         let mut mask = vec![0.0; numel];
         for i in 0..m {
-            for j in 0..n {
-                if j as i64 <= i as i64 + k {
-                    mask[i * n + j] = 1.0;
-                }
-            }
+            let end_signed = i as i64 + k + 1;
+            let end = end_signed.max(0).min(n as i64) as usize;
+            mask[i * n..i * n + end].fill(1.0);
         }
         let mask_tensor = self.tensor_variable(mask, vec![m, n], false)?;
         self.tensor_mul(input, mask_tensor)
