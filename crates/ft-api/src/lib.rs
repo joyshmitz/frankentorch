@@ -5276,9 +5276,12 @@ impl FrankenTorchSession {
                 let (x_vals, x_shape) = inputs[0];
                 let (y_vals, y_shape) = inputs[1];
                 if x_shape != y_shape {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "hypot: input and other must have the same shape",
+                    // Migrate to ShapeMismatch to surface lhs + rhs
+                    // shapes in the diagnostic (frankentorch-c991).
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                        ft_kernel_cpu::KernelError::ShapeMismatch {
+                            lhs: x_shape.to_vec(),
+                            rhs: y_shape.to_vec(),
                         },
                     )));
                 }
@@ -12493,9 +12496,11 @@ impl FrankenTorchSession {
         let in_shape = self.tensor_shape(input)?;
         let tgt_shape = self.tensor_shape(target)?;
         if in_shape != tgt_shape {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "focal_loss: input and target must have the same shape",
+            // Migrate to ShapeMismatch (frankentorch-c991).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: in_shape,
+                    rhs: tgt_shape,
                 },
             )));
         }
@@ -15941,9 +15946,11 @@ impl FrankenTorchSession {
             (t.storage()?.to_vec(), t.meta().shape().to_vec())
         };
         if a_meta.shape() != b_shape.as_slice() {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "logaddexp: inputs must have the same shape",
+            // Migrate to ShapeMismatch (frankentorch-c991).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: a_meta.shape().to_vec(),
+                    rhs: b_shape,
                 },
             )));
         }
@@ -15994,9 +16001,11 @@ impl FrankenTorchSession {
         };
 
         if a_shape != b_shape {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "logaddexp2: inputs must have the same shape",
+            // Migrate to ShapeMismatch (frankentorch-c991).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: a_shape,
+                    rhs: b_shape,
                 },
             )));
         }
@@ -16051,9 +16060,11 @@ impl FrankenTorchSession {
                 let (a_vals, a_shape) = inputs[0];
                 let (b_vals, b_shape) = inputs[1];
                 if a_shape != b_shape {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "logaddexp: inputs must have the same shape",
+                    // Migrate to ShapeMismatch (frankentorch-c991).
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                        ft_kernel_cpu::KernelError::ShapeMismatch {
+                            lhs: a_shape.to_vec(),
+                            rhs: b_shape.to_vec(),
                         },
                     )));
                 }
@@ -16128,9 +16139,11 @@ impl FrankenTorchSession {
         let x_shape = self.tensor_shape(x)?;
         let y_shape = self.tensor_shape(y)?;
         if x_shape != y_shape {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "xlogy: input and other must have the same shape",
+            // Migrate to ShapeMismatch (frankentorch-c991).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: x_shape,
+                    rhs: y_shape,
                 },
             )));
         }
