@@ -4527,9 +4527,11 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "pdist: input must be 2-D",
+            // Migrate to InvalidDimension (frankentorch-oitu).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 2,
                 },
             )));
         }
@@ -4736,16 +4738,19 @@ impl FrankenTorchSession {
         let m_shape = self.tensor_shape(input)?;
         let v_shape = self.tensor_shape(vec_input)?;
         if m_shape.len() != 2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "mv: matrix input must be 2-D",
+            // Migrate to InvalidDimension (frankentorch-oitu).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: m_shape.len(),
+                    ndim: 2,
                 },
             )));
         }
         if v_shape.len() != 1 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "mv: vector input must be 1-D",
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: v_shape.len(),
+                    ndim: 1,
                 },
             )));
         }
@@ -13415,9 +13420,11 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 1 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "repeat_interleave: input must be 1-D",
+            // Migrate to InvalidDimension (frankentorch-oitu).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 1,
                 },
             )));
         }
@@ -14495,9 +14502,11 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "matrix_norm: input must be 2-D",
+            // Migrate to InvalidDimension (frankentorch-oitu).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 2,
                 },
             )));
         }
@@ -15136,9 +15145,11 @@ impl FrankenTorchSession {
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 1 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "kthvalue: input must be 1-D",
+            // Migrate to InvalidDimension (frankentorch-oitu).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: shape.len(),
+                    ndim: 1,
                 },
             )));
         }
@@ -15261,9 +15272,11 @@ impl FrankenTorchSession {
         let b_shape = self.tensor_shape(b)?;
 
         if a_shape.len() != 2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "lstsq: A must be 2-D",
+            // Migrate to InvalidDimension (frankentorch-oitu).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: a_shape.len(),
+                    ndim: 2,
                 },
             )));
         }
