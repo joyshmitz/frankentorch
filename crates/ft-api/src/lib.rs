@@ -5740,6 +5740,31 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Element-wise threshold activation.
+    ///
+    /// Equivalent to `torch.threshold(input, threshold, value)` and
+    /// `torch.nn.functional.threshold(input, threshold, value)`:
+    /// returns `x` where `x > threshold`, else `value`. The
+    /// distinguishing trait from `tensor_relu` is that the cutoff
+    /// and the replacement are independent parameters — useful for
+    /// gating layers in inference and for sparsifying logits with a
+    /// custom sentinel. Composes through autograd-aware
+    /// `tensor_gt` + `tensor_where`; gradient is 1 where x >
+    /// threshold and 0 elsewhere (matches torch). Tracked under
+    /// frankentorch-hptx.
+    pub fn tensor_threshold(
+        &mut self,
+        input: TensorNodeId,
+        threshold: f64,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let threshold_t = self.full(shape.clone(), threshold, false)?;
+        let value_t = self.full(shape, value, false)?;
+        let mask = self.tensor_gt(input, threshold_t)?;
+        self.tensor_where(mask, input, value_t)
+    }
+
     pub fn tensor_softplus(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.softplus(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
@@ -31030,6 +31055,74 @@ mod tests {
         let out = s.tensor_angle(x).unwrap();
         let v = s.tensor_values(out).unwrap();
         assert!(v[0].is_nan(), "got {}", v[0]);
+    }
+
+    // ── tensor_threshold tests (frankentorch-hptx) ─────────────────────
+
+    #[test]
+    fn threshold_passes_through_above_threshold() {
+        // x > threshold → x; x <= threshold → value.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-2.0, 0.0, 0.5, 1.0, 1.5, 5.0], vec![6], false)
+            .unwrap();
+        let out = s.tensor_threshold(x, 1.0, -99.0).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        // threshold = 1.0, value = -99.0: only x > 1.0 passes through.
+        assert_eq!(v[0], -99.0, "x=-2 below");
+        assert_eq!(v[1], -99.0, "x=0 below");
+        assert_eq!(v[2], -99.0, "x=0.5 below");
+        assert_eq!(v[3], -99.0, "x=1.0 not strictly greater");
+        assert_eq!(v[4], 1.5);
+        assert_eq!(v[5], 5.0);
+    }
+
+    #[test]
+    fn threshold_with_zero_threshold_matches_relu_with_custom_replacement() {
+        // threshold(x, 0, 0) == relu(x).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-1.0, 0.0, 1.0, 2.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_threshold(x, 0.0, 0.0).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        let relu_expected = [0.0, 0.0, 1.0, 2.0];
+        for (got, expected) in v.iter().zip(relu_expected.iter()) {
+            assert_eq!(got, expected, "threshold(x, 0, 0) must match relu(x)");
+        }
+    }
+
+    #[test]
+    fn threshold_with_negative_threshold_and_value() {
+        // Below-threshold cells get replaced by `value`, even when
+        // value is negative.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-3.0, -2.0, -1.0, 0.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_threshold(x, -1.5, -42.0).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert_eq!(v[0], -42.0, "x=-3 < -1.5");
+        assert_eq!(v[1], -42.0, "x=-2 < -1.5");
+        assert_eq!(v[2], -1.0, "x=-1 > -1.5");
+        assert_eq!(v[3], 0.0, "x=0 > -1.5");
+    }
+
+    #[test]
+    fn threshold_propagates_gradient_only_above_threshold() {
+        // Gradient is 1 where x > threshold, 0 elsewhere — the
+        // value branch is a no-grad constant.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-1.0, 0.5, 1.5], vec![3], true)
+            .unwrap();
+        let out = s.tensor_threshold(x, 1.0, 0.0).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert_eq!(g[0], 0.0, "below threshold → no grad");
+        assert_eq!(g[1], 0.0, "below threshold → no grad");
+        assert_eq!(g[2], 1.0, "above threshold → grad of 1");
     }
 
     // ── tensor_amax / amin tests (frankentorch-wehk) ───────────────────
