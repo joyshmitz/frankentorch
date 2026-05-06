@@ -11753,6 +11753,140 @@ mod tests {
             }
         }
 
+        // ── tensor_threshold metamorphic suite (frankentorch-sbup) ────
+        //
+        // tensor_threshold (frankentorch-hptx) selects between
+        // pass-through (x > threshold) and a fixed replacement
+        // value. Three independent MRs cover different bug classes:
+        //   - idempotence: catches bugs where the where-chain
+        //     doesn't actually fix the output to the {x, v} set
+        //     (e.g. interpolated or arithmetic intermediate)
+        //   - translation: catches bugs where threshold or value
+        //     is mis-routed (e.g. dropped from the comparison)
+        //   - value-set membership: catches bugs that produce
+        //     intermediate or computed values instead of clean
+        //     selection from {x, v}
+
+        // MR (idempotence): threshold(threshold(x, t, v), t, v)
+        // bit-equals threshold(x, t, v). Above threshold: x > t
+        // → first pass yields x, second pass also yields x. Below
+        // threshold: first pass yields v, second pass yields v
+        // either by pass-through (v > t) or replacement (v <= t)
+        // — both are still bit-equal to v.
+        #[test]
+        fn fuzz_metamorphic_threshold_idempotence(
+            (samples, t_raw, v_raw) in (
+                prop::collection::vec(-128i16..128i16, 1..16),
+                -128i16..128i16,
+                -128i16..128i16,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let x: Vec<f64> = samples.iter().map(|s| f64::from(*s) / 7.0).collect();
+            let t = f64::from(t_raw) / 11.0;
+            let v = f64::from(v_raw) / 11.0;
+            let n = x.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(x.clone(), vec![n], false).expect("xt");
+            let once = s.tensor_threshold(xt, t, v).expect("threshold once");
+            let twice = s.tensor_threshold(once, t, v).expect("threshold twice");
+            let v_once = s.tensor_values(once).expect("v_once");
+            let v_twice = s.tensor_values(twice).expect("v_twice");
+
+            for (i, (a, b)) in v_once.iter().zip(v_twice.iter()).enumerate() {
+                prop_assert_eq!(a.to_bits(), b.to_bits(),
+                    "threshold(threshold(x[{}], {}, {}), {}, {}) = {} but threshold(x[{}], {}, {}) = {}",
+                    i, t, v, t, v, b, i, t, v, a);
+            }
+        }
+
+        // MR (translation): threshold(x + c, t + c, v + c) =
+        // threshold(x, t, v) + c. Adding c to all of {x, t, v}
+        // shifts every comparison by c so each branch's output
+        // shifts uniformly. Bit-exactness is reasonable because
+        // f64 + f64 is exact for the magnitudes used here, and
+        // tensor_where doesn't mutate the selected operand.
+        #[test]
+        fn fuzz_metamorphic_threshold_translation_invariance(
+            (samples, t_raw, v_raw, c_raw) in (
+                prop::collection::vec(-128i16..128i16, 1..16),
+                -128i16..128i16,
+                -128i16..128i16,
+                -64i16..64i16,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let x: Vec<f64> = samples.iter().map(|s| f64::from(*s) / 7.0).collect();
+            let t = f64::from(t_raw) / 11.0;
+            let v = f64::from(v_raw) / 11.0;
+            let c = f64::from(c_raw) / 13.0;
+
+            // Shifted inputs.
+            let x_shifted: Vec<f64> = x.iter().map(|val| val + c).collect();
+            let n = x.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            let xt = s.tensor_variable(x, vec![n], false).expect("xt");
+            let direct = s.tensor_threshold(xt, t, v).expect("direct");
+            let v_direct = s.tensor_values(direct).expect("v_direct");
+
+            let xt_shifted = s.tensor_variable(x_shifted, vec![n], false).expect("xt_shifted");
+            let shifted = s.tensor_threshold(xt_shifted, t + c, v + c).expect("shifted");
+            let v_shifted = s.tensor_values(shifted).expect("v_shifted");
+
+            // Compare shifted output to direct + c with a small
+            // ULP slack — c addition is exact at small magnitudes
+            // but the comparison branch in tensor_where is
+            // determined at f64 precision so a tiny rounding
+            // difference at the boundary is allowed.
+            for (i, (sh, dir)) in v_shifted.iter().zip(v_direct.iter()).enumerate() {
+                let expected = dir + c;
+                let diff = (sh - expected).abs();
+                let scale = sh.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 1e-12 || diff <= 8.0 * scale * f64::EPSILON,
+                    "threshold(x[{}]+{c}, {t}+{c}, {v}+{c}) = {} but threshold(x, {t}, {v})[{}] + {c} = {}, diff = {:e}",
+                    i, sh, i, expected, diff
+                );
+            }
+        }
+
+        // MR (value-set membership): every output element is
+        // bit-exactly x[i] or bit-exactly value. Catches any bug
+        // where the where-chain emits an intermediate or computed
+        // value instead of a clean selection.
+        #[test]
+        fn fuzz_metamorphic_threshold_value_set_membership(
+            (samples, t_raw, v_raw) in (
+                prop::collection::vec(-128i16..128i16, 1..16),
+                -128i16..128i16,
+                -128i16..128i16,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let x: Vec<f64> = samples.iter().map(|s| f64::from(*s) / 7.0).collect();
+            let t = f64::from(t_raw) / 11.0;
+            let v = f64::from(v_raw) / 11.0;
+            let n = x.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(x.clone(), vec![n], false).expect("xt");
+            let out = s.tensor_threshold(xt, t, v).expect("out");
+            let v_out = s.tensor_values(out).expect("v_out");
+
+            for (i, val) in v_out.iter().enumerate() {
+                let is_x = val.to_bits() == x[i].to_bits();
+                let is_v = val.to_bits() == v.to_bits();
+                prop_assert!(
+                    is_x || is_v,
+                    "threshold(x, {t}, {v})[{}] = {} (bits {:#x}) but expected to bit-equal x[{}] = {} (bits {:#x}) or value = {} (bits {:#x})",
+                    i, val, val.to_bits(), i, x[i], x[i].to_bits(), v, v.to_bits()
+                );
+            }
+        }
+
         // logaddexp is symmetric in its arguments: logaddexp(a, b) ==
         // logaddexp(b, a) bit-exactly. log(exp(a)+exp(b)) is unchanged
         // by argument order, and the max-subtraction stabilization
