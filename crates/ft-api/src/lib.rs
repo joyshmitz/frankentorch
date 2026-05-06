@@ -1173,16 +1173,27 @@ impl FrankenTorchSession {
 
         let shape = meta.shape().to_vec();
         let Some((&last_dim, leading_dims)) = shape.split_last() else {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "view_as_complex: input must have at least one dimension",
+            // ndim=0 explicitly signals 'no dimensions exist' so
+            // the caller can distinguish rank-0 from a regular
+            // dim-out-of-range rejection (frankentorch-8c9m).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: 0,
+                    ndim: 0,
                 },
             )));
         };
         if last_dim != 2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "view_as_complex: last dimension must have size 2",
+            // ShapeMismatch carries both the actual shape and the
+            // expected shape (same leading dims, final 2) so the
+            // caller can pinpoint exactly which dim was wrong
+            // (frankentorch-8c9m).
+            let mut expected_shape = leading_dims.to_vec();
+            expected_shape.push(2);
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: shape,
+                    rhs: expected_shape,
                 },
             )));
         }
