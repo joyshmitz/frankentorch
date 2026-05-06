@@ -9113,6 +9113,19 @@ fn run_legacy_oracle_script_with_timeout(
             )
         })?;
 
+    // Take all three pipe handles up-front and spawn the
+    // stdout/stderr reader threads BEFORE writing to stdin.
+    // This avoids a classic UNIX pipe deadlock: with stdin
+    // payloads up to 1 MB and the Linux default pipe buffer
+    // at 64 KB, write_all on stdin blocks waiting for the
+    // child to drain. If the child (python + torch import)
+    // writes anything to stdout or stderr during that window
+    // (torch import-time warnings on stderr are common), its
+    // pipe buffer fills, the child blocks on the stderr write,
+    // and neither side makes progress until the timeout
+    // reaper kicks in. Spawning the readers first ensures all
+    // three pipes drain concurrently. Tracked under
+    // frankentorch-3fvh.
     let mut stdin = match child.stdin.take() {
         Some(stdin) => stdin,
         None => {
@@ -9120,12 +9133,6 @@ fn run_legacy_oracle_script_with_timeout(
             return Err("legacy oracle stdin stream unavailable".to_string());
         }
     };
-    if let Err(error) = stdin.write_all(body.as_slice()) {
-        terminate_and_reap_child(&mut child);
-        return Err(format!("failed writing oracle stdin payload: {error}"));
-    }
-    drop(stdin);
-
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
@@ -9161,6 +9168,15 @@ fn run_legacy_oracle_script_with_timeout(
             "stderr",
         )
     });
+
+    // Now safe to write the payload — both reader threads are
+    // draining stdout/stderr concurrently, so the child will
+    // never block on its output pipes while we're writing.
+    if let Err(error) = stdin.write_all(body.as_slice()) {
+        terminate_and_reap_child(&mut child);
+        return Err(format!("failed writing oracle stdin payload: {error}"));
+    }
+    drop(stdin);
 
     let status = wait_for_legacy_oracle_exit(
         &mut child,
