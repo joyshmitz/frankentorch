@@ -1,0 +1,5 @@
+---
+source: crates/ft-serialize/src/lib.rs
+expression: err.to_string()
+---
+unsupported format version 99 (max supported: 1)

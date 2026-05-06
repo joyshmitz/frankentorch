@@ -2634,6 +2634,46 @@ mod tests {
         ));
     }
 
+    // Pin the exact diagnostic strings for the FT-native state-file
+    // error variants. These messages are the contract that downstream
+    // tooling (log scrapers, corruption-recovery scripts, alerting)
+    // relies on to discriminate failure modes — silently reformatting
+    // them is a contract break. Tracked under frankentorch-1s57.
+
+    #[test]
+    fn invalid_magic_diagnostic_snapshot() {
+        let err = load_state_dict_from_bytes(b"NOPE0000")
+            .expect_err("invalid magic bytes must fail");
+        assert!(matches!(err, TensorIOError::InvalidMagic));
+        insta::assert_snapshot!("invalid_magic_diagnostic", err.to_string());
+    }
+
+    #[test]
+    fn unsupported_version_diagnostic_snapshot() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&99u32.to_le_bytes());
+        let err = load_state_dict_from_bytes(&data)
+            .expect_err("future version must fail");
+        assert!(matches!(err, TensorIOError::UnsupportedVersion { .. }));
+        insta::assert_snapshot!("unsupported_version_diagnostic", err.to_string());
+    }
+
+    #[test]
+    fn truncated_shape_dims_diagnostic_snapshot() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u64.to_le_bytes());
+        data.extend_from_slice(&5u64.to_le_bytes());
+        data.extend_from_slice(b"abcde");
+        data.extend_from_slice(&2u64.to_le_bytes());
+        let err = load_state_dict_from_bytes(&data)
+            .expect_err("truncated shape dims must fail");
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        insta::assert_snapshot!("truncated_shape_dims_diagnostic", err.to_string());
+    }
+
     #[test]
     fn load_state_dict_rejects_trailing_bytes() {
         let mut sd = BTreeMap::new();

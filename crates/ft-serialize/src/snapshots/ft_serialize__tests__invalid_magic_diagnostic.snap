@@ -1,0 +1,5 @@
+---
+source: crates/ft-serialize/src/lib.rs
+expression: err.to_string()
+---
+invalid magic bytes: not a FrankenTorch state file

@@ -1,0 +1,5 @@
+---
+source: crates/ft-serialize/src/lib.rs
+expression: err.to_string()
+---
+corrupt state file: truncated shape data for tensor 'abcde'
