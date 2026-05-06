@@ -19186,11 +19186,15 @@ impl FrankenTorchSession {
                 // Tracked under frankentorch-uzca.
                 let src_shape = self.tensor_shape(src)?;
                 let ones_src = self.full(src_shape.clone(), 1.0, false)?;
-                let zeros_for_count = self.full(input_shape.clone(), 0.0, false)?;
-                let count = self.tensor_scatter_add(zeros_for_count, dim, index, ones_src)?;
+                // Seed the divisor with ones-of-input-shape so the
+                // scatter_add directly produces 1 + count_per_position
+                // (frankentorch-ix9k). This removes a separate
+                // full(input_shape, 1.0) allocation and the trailing
+                // tensor_add(count, one_t) node — the +1 represents
+                // the include_self=True input contribution.
+                let ones_input = self.full(input_shape, 1.0, false)?;
+                let divisor = self.tensor_scatter_add(ones_input, dim, index, ones_src)?;
                 let summed = self.tensor_scatter_add(input, dim, index, src)?;
-                let one_t = self.full(input_shape, 1.0, false)?;
-                let divisor = self.tensor_add(count, one_t)?;
                 return self.tensor_div(summed, divisor);
             }
             if reduce == "amax" || reduce == "amin" {
