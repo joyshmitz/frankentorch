@@ -12648,15 +12648,16 @@ impl FrankenTorchSession {
         // Build mask: 1.0 where |diff| < beta, 0.0 otherwise.
         // tensor_gt returns 1.0 where lhs > rhs. We want |diff| < beta,
         // i.e. beta > |diff|, so: mask = tensor_gt(beta_tensor, abs_diff).
-        let beta_tensor = self.full(shape.clone(), beta, false)?;
+        let beta_tensor = self.full(shape, beta, false)?;
         let mask = self.tensor_gt(beta_tensor, abs_diff)?;
 
-        // Blend: mask * quadratic + (1 - mask) * linear
-        let masked_quad = self.tensor_mul(mask, quadratic)?;
-        let ones = self.full(shape, 1.0, false)?;
-        let one_minus_mask = self.tensor_sub(ones, mask)?;
-        let masked_lin = self.tensor_mul(one_minus_mask, linear)?;
-        let huber = self.tensor_add(masked_quad, masked_lin)?;
+        // Blend via autograd-aware tensor_where instead of the
+        // textbook mask*quadratic + (1-mask)*linear chain.
+        // tensor_where routes gradients to whichever branch the
+        // mask selects, matching the original backward semantics
+        // exactly. -1 full() allocation, -1 sub + -2 mul + -1 add
+        // collapsed into one where. Tracked under frankentorch-uqtq.
+        let huber = self.tensor_where(mask, quadratic, linear)?;
 
         self.tensor_mean(huber)
     }
