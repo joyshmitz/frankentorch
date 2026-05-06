@@ -1685,10 +1685,17 @@ pub fn dot_tensor_contiguous_f64(
     // O(log N · ε) precision contract as the matmul fix.
     let lhs_slice = &lhs[lhs_start..lhs_start + n];
     let rhs_slice = &rhs[rhs_start..rhs_start + n];
-    let mut scratch = vec![0.0_f64; n];
-    for (i, slot) in scratch.iter_mut().enumerate() {
-        *slot = lhs_slice[i] * rhs_slice[i];
-    }
+    // zip+map+collect skips the memset of the previous
+    // vec![0.0; n] + iter_mut overwrite pattern; the scratch
+    // is single-use so there's no cross-iteration buffer to
+    // preserve. Same O(log N · ε) precision contract — collect
+    // builds a contiguous Vec that pairwise_sum_f64 reads as a
+    // slice. Tracked under frankentorch-cunc.
+    let scratch: Vec<f64> = lhs_slice
+        .iter()
+        .zip(rhs_slice)
+        .map(|(&l, &r)| l * r)
+        .collect();
     Ok(pairwise_sum_f64(&scratch))
 }
 
@@ -5348,10 +5355,14 @@ pub fn dot_tensor_contiguous_f32(
     let rhs_start = rhs_meta.storage_offset();
     let lhs_slice = &lhs[lhs_start..lhs_start + n];
     let rhs_slice = &rhs[rhs_start..rhs_start + n];
-    let mut scratch = vec![0.0f32; n];
-    for (i, slot) in scratch.iter_mut().enumerate() {
-        *slot = lhs_slice[i] * rhs_slice[i];
-    }
+    // zip+map+collect mirrors the f64 fix (frankentorch-cunc):
+    // skip the zero-init memset since the scratch is single-use
+    // and every cell is unconditionally overwritten.
+    let scratch: Vec<f32> = lhs_slice
+        .iter()
+        .zip(rhs_slice)
+        .map(|(&l, &r)| l * r)
+        .collect();
     Ok(pairwise_sum_f32(&scratch))
 }
 
