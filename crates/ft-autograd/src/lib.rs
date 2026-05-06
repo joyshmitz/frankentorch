@@ -15243,6 +15243,41 @@ mod tests {
         insta::assert_snapshot!("graph_consumed_diagnostic", err.to_string());
     }
 
+    // Three more AutogradError diagnostics pinned under
+    // frankentorch-02rj — completing coverage of the user-facing
+    // variants. The TensorRequiresGradNonFloating snapshot also
+    // catches changes to the DType Debug derive that would
+    // otherwise silently shift the dtype rendering.
+
+    #[test]
+    fn tensor_root_does_not_require_grad_diagnostic_snapshot() {
+        let err = AutogradError::TensorRootDoesNotRequireGrad {
+            node: TensorNodeId(0),
+        };
+        insta::assert_snapshot!(
+            "tensor_root_does_not_require_grad_diagnostic",
+            err.to_string()
+        );
+    }
+
+    #[test]
+    fn tensor_graph_consumed_diagnostic_snapshot() {
+        let err = AutogradError::TensorGraphConsumed;
+        insta::assert_snapshot!("tensor_graph_consumed_diagnostic", err.to_string());
+    }
+
+    #[test]
+    fn tensor_requires_grad_non_floating_diagnostic_snapshot() {
+        let err = AutogradError::TensorRequiresGradNonFloating {
+            node: TensorNodeId(5),
+            dtype: DType::I32,
+        };
+        insta::assert_snapshot!(
+            "tensor_requires_grad_non_floating_diagnostic",
+            err.to_string()
+        );
+    }
+
     fn render_tensor_scheduler_log(
         test_id: &str,
         mode: ExecutionMode,

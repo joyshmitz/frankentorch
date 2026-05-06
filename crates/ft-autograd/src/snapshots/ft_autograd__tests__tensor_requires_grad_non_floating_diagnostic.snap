@@ -1,0 +1,5 @@
+---
+source: crates/ft-autograd/src/lib.rs
+expression: err.to_string()
+---
+requires_grad_ expects floating-point dtype at node 5 but found I32
