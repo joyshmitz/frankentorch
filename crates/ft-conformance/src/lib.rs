@@ -15738,6 +15738,167 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_fmax_fmin_subprocess_conformance() {
+        // Subprocess oracle for tensor_fmax / tensor_fmin
+        // (frankentorch-suux) against torch.fmax / torch.fmin.
+        // Pins the IEEE 754-2008 maxNum / minNum semantics against
+        // upstream torch directly. The metamorphic suite
+        // (frankentorch-fhcd) cross-validates internally; this
+        // catches the orthogonal class of regressions where a
+        // future refactor of the where chain diverges from torch
+        // at boundary cases (signed zero, signed NaN bits, ±inf
+        // vs finite). Tracked under frankentorch-vlhz.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_fmax_fmin_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // Tagged-string wire format: NaN / ±inf / -0.0 can't
+        // survive plain JSON round-trips, so encode as strings on
+        // the python side and decode on the Rust side.
+        let case_payload = json!({
+            "cases": [
+                // (a, b)
+                [1.0, 2.0],          // no NaN, finite
+                [-3.0, -7.0],        // no NaN, negative
+                [5.0, 5.0],          // tie, both finite
+                ["nan", 4.0],        // lhs NaN -> take rhs
+                [4.0, "nan"],        // rhs NaN -> take lhs
+                ["nan", "nan"],      // both NaN -> NaN
+                ["inf", 1.0],        // ±inf vs finite
+                [1.0, "-inf"],
+                ["-inf", "inf"],     // both ±inf
+                [0.0, "-0.0"],       // signed zero
+                ["-0.0", 0.0],       // signed zero (other order)
+                [1e308, 1e-308],     // huge magnitude diff
+                [1e-300, "nan"],     // tiny + NaN
+                ["nan", "-inf"],     // NaN + -inf -> -inf
+            ]
+        });
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"),
+                "-inf": float("-inf"), "-0.0": -0.0}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    if v == 0.0 and math.copysign(1.0, v) < 0:
+        return "-0.0"
+    return v
+
+cases = json.loads(sys.stdin.read())["cases"]
+results = []
+for raw_a, raw_b in cases:
+    a = torch.tensor(decode_scalar(raw_a), dtype=torch.float64)
+    b = torch.tensor(decode_scalar(raw_b), dtype=torch.float64)
+    fmax_v = torch.fmax(a, b).item()
+    fmin_v = torch.fmin(a, b).item()
+    results.append([encode_scalar(fmax_v), encode_scalar(fmin_v)])
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &case_payload)
+            .expect("torch.fmax/fmin oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        let cases_arr = case_payload
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("cases array");
+        assert_eq!(results.len(), cases_arr.len(), "oracle case count");
+
+        fn decode(v: &Value) -> f64 {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    "-0.0" => -0.0,
+                    other => panic!("unexpected tagged scalar: {other}"),
+                }
+            } else {
+                v.as_f64().expect("oracle scalar")
+            }
+        }
+
+        for (i, (case, oracle_pair)) in cases_arr.iter().zip(results.iter()).enumerate() {
+            let case_arr = case.as_array().expect("case pair");
+            let a_in = decode(&case_arr[0]);
+            let b_in = decode(&case_arr[1]);
+            let oracle_pair = oracle_pair.as_array().expect("oracle pair");
+            let exp_fmax = decode(&oracle_pair[0]);
+            let exp_fmin = decode(&oracle_pair[1]);
+
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let at = session.tensor_variable(vec![a_in], vec![1], false).unwrap();
+            let bt = session.tensor_variable(vec![b_in], vec![1], false).unwrap();
+            let max_id = session.tensor_fmax(at, bt).unwrap();
+            let got_fmax = session.tensor_values(max_id).unwrap()[0];
+            let min_id = session.tensor_fmin(at, bt).unwrap();
+            let got_fmin = session.tensor_values(min_id).unwrap()[0];
+
+            // NaN bit-equality (any NaN is f64::NAN.to_bits()
+            // pattern-equivalent for our purposes since neither
+            // torch nor frankentorch produces signaling NaN here).
+            let check = |name: &str, got: f64, expected: f64| {
+                if expected.is_nan() {
+                    assert!(
+                        got.is_nan(),
+                        "case {i} (a={a_in}, b={b_in}) {name}: expected NaN, got {got}"
+                    );
+                } else if expected == 0.0 {
+                    assert_eq!(
+                        got.to_bits(),
+                        expected.to_bits(),
+                        "case {i} (a={a_in}, b={b_in}) {name}: expected zero with bits {:#x}, got {got} with bits {:#x}",
+                        expected.to_bits(),
+                        got.to_bits()
+                    );
+                } else {
+                    let diff = (got - expected).abs();
+                    let scale = got.abs().max(expected.abs()).max(1.0);
+                    assert!(
+                        diff <= 1e-12 || diff <= 4.0 * scale * f64::EPSILON,
+                        "case {i} (a={a_in}, b={b_in}) {name}: got {got}, expected {expected}"
+                    );
+                }
+            };
+            check("fmax", got_fmax, exp_fmax);
+            check("fmin", got_fmin, exp_fmin);
+        }
+    }
+
+    #[test]
     fn torch_frac_subprocess_conformance() {
         // Subprocess oracle for tensor_frac (4955) against torch.frac.
         // The op is IEEE-edge-sensitive in ways the kernel unit
