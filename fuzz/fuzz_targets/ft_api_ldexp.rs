@@ -10,11 +10,14 @@ const MAX_DIM: u8 = 4;
 const MAX_NUMEL: usize = 64;
 
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 2 || data.len() > MAX_INPUT_BYTES {
+    if data.is_empty() {
         return;
     }
+    let data = &data[..data.len().min(MAX_INPUT_BYTES)];
+    let shape_header = data[0];
+    let mode_header = data.get(1).copied().unwrap_or(0);
 
-    let input_rank = usize::from(data[0] % (MAX_RANK as u8 + 1));
+    let input_rank = usize::from(shape_header % (MAX_RANK as u8 + 1));
     let input_shape_start = 2;
     let input_shape = decode_shape(data, input_shape_start, input_rank, 0x31);
     let input_numel = match checked_numel(input_shape.as_slice()) {
@@ -23,11 +26,11 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let input_values_start = input_shape_start + input_rank;
-    let other_shape_same_as_input = data[1] & 0x80 == 0;
+    let other_shape_same_as_input = mode_header & 0x80 == 0;
     let other_rank = if other_shape_same_as_input {
         input_rank
     } else {
-        usize::from((data[1] >> 4) % (MAX_RANK as u8 + 1))
+        usize::from((mode_header >> 4) % (MAX_RANK as u8 + 1))
     };
     let other_shape_start = input_values_start + input_numel;
     let other_shape = if other_shape_same_as_input {
