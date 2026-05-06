@@ -15545,6 +15545,190 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_frac_subprocess_conformance() {
+        // Subprocess oracle for tensor_frac (4955) against torch.frac.
+        // The op is IEEE-edge-sensitive in ways the kernel unit
+        // tests may not pin: signed-zero preservation through
+        // x - trunc(x), NaN propagation, ±inf collapse to NaN,
+        // and the magnitude-precision boundary near |x| = 2^52
+        // where f64 can no longer represent any fractional part.
+        // Tracked under frankentorch-m00e.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_frac_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // Tagged-string wire format for IEEE specials: NaN/±inf
+        // can't survive plain JSON, so encode as strings on the
+        // python side and decode on the Rust side.
+        #[derive(Clone, Copy)]
+        enum Case {
+            Finite(f64),
+            Nan,
+            PosInf,
+            NegInf,
+            NegZero,
+        }
+
+        let cases: Vec<Case> = vec![
+            Case::Finite(0.0),
+            Case::NegZero,
+            Case::Finite(0.5),
+            Case::Finite(-0.5),
+            Case::Finite(1.25),
+            Case::Finite(-1.25),
+            Case::Finite(3.0),     // exact integer; frac == 0
+            Case::Finite(-3.0),    // exact integer; frac == 0 (sign per torch)
+            Case::Finite(1e-300),  // very small; frac == self
+            Case::Finite(-1e-300),
+            // Magnitude-precision boundary: at 2^52 every f64 is
+            // an integer, so frac == 0 by f64 representability,
+            // not by computation.
+            Case::Finite(4503599627370496.0),  // 2^52
+            Case::Finite(-4503599627370496.0),
+            Case::Finite(9007199254740992.0),  // 2^53, also integer in f64
+            Case::Nan,
+            Case::PosInf,
+            Case::NegInf,
+        ];
+
+        let case_payload: Vec<Value> = cases
+            .iter()
+            .map(|c| match c {
+                Case::Finite(v) => json!(v),
+                Case::Nan => json!("nan"),
+                Case::PosInf => json!("inf"),
+                Case::NegInf => json!("-inf"),
+                Case::NegZero => json!("-0.0"),
+            })
+            .collect();
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"),
+                "-inf": float("-inf"), "-0.0": -0.0}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    # Preserve signed zero in the wire encoding so the Rust
+    # comparison can distinguish +0 from -0 via copysign.
+    if v == 0.0 and math.copysign(1.0, v) < 0:
+        return "-0.0"
+    return v
+
+cases = [decode_scalar(c) for c in json.loads(sys.stdin.read())["cases"]]
+results = [
+    encode_scalar(torch.frac(torch.tensor(c, dtype=torch.float64)).item())
+    for c in cases
+]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let payload = json!({ "cases": case_payload });
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch.frac oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        assert_eq!(results.len(), cases.len(), "oracle case count");
+
+        fn decode(v: &Value) -> f64 {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    "-0.0" => -0.0,
+                    other => panic!("unexpected tagged scalar: {other}"),
+                }
+            } else {
+                v.as_f64().expect("oracle scalar")
+            }
+        }
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (i, (case, expected_value)) in cases.iter().zip(results.iter()).enumerate() {
+            let input_val = match case {
+                Case::Finite(v) => *v,
+                Case::Nan => f64::NAN,
+                Case::PosInf => f64::INFINITY,
+                Case::NegInf => f64::NEG_INFINITY,
+                Case::NegZero => -0.0,
+            };
+            let xt = session
+                .tensor_variable(vec![input_val], vec![1], false)
+                .unwrap();
+            let out = session
+                .tensor_frac(xt)
+                .unwrap_or_else(|err| panic!("case {i} frac failed: {err:?}"));
+            let got = session.tensor_values(out).expect("got values")[0];
+            let expected = decode(expected_value);
+
+            // NaN compares as not-equal-to-self; check for NaN-NaN
+            // parity explicitly.
+            if expected.is_nan() {
+                assert!(
+                    got.is_nan(),
+                    "case {i} (input={input_val}): expected NaN, got {got}"
+                );
+                continue;
+            }
+            // Signed-zero parity: 0.0 != -0.0 in IEEE bits even
+            // though they're == under PartialEq. Compare via bit
+            // identity for zeros to catch sign drops.
+            if expected == 0.0 {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "case {i} (input={input_val}): expected zero with sign \
+                     bits {:#x}, got {got} with bits {:#x}",
+                    expected.to_bits(),
+                    got.to_bits()
+                );
+                continue;
+            }
+            // Smooth-interior cases: 4 ULPs of slack covers any
+            // libm rounding boundary while still catching real
+            // bugs.
+            let diff = (got - expected).abs();
+            let scale = got.abs().max(expected.abs()).max(1.0);
+            assert!(
+                diff <= 1e-12 || diff <= 4.0 * scale * f64::EPSILON,
+                "case {i} (input={input_val}): tensor_frac = {got} but \
+                 torch.frac = {expected}, diff = {diff:e}"
+            );
+        }
+    }
+
+    #[test]
     fn torch_round_decimals_subprocess_conformance() {
         // Subprocess oracle for tensor_round_decimals against
         // torch.round(x, decimals=N). Pin the actual upstream values
