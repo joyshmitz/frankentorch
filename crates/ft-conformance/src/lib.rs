@@ -15871,6 +15871,149 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_angle_subprocess_conformance() {
+        // Subprocess oracle for tensor_angle (frankentorch-66hu)
+        // against torch.angle for real-valued inputs. Pins the
+        // libm-specific behavior of atan2(0, x) at boundary cases:
+        // signed zero (atan2(0, -0.0) might be ±π depending on
+        // libm), NaN, ±inf. The metamorphic suite (wncp) covers
+        // sign-pair sum / scale invariance / value range without
+        // needing torch — this oracle catches drift in libm
+        // particulars no MR can see. Tracked under
+        // frankentorch-kuum.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_angle_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let case_payload = json!({
+            "cases": [
+                0.5, 1.0, 100.0,             // positive finite
+                -0.5, -1.0, -100.0,          // negative finite
+                0.0, "-0.0",                 // signed zero
+                1e-300, -1e-300,             // tiny magnitudes
+                1e308, -1e308,               // huge magnitudes
+                "inf", "-inf",               // ±inf
+                "nan",                       // NaN
+            ]
+        });
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"),
+                "-inf": float("-inf"), "-0.0": -0.0}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    if v == 0.0 and math.copysign(1.0, v) < 0:
+        return "-0.0"
+    return v
+
+cases = [decode_scalar(c) for c in json.loads(sys.stdin.read())["cases"]]
+results = [
+    encode_scalar(torch.angle(torch.tensor(c, dtype=torch.float64)).item())
+    for c in cases
+]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &case_payload)
+            .expect("torch.angle oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        let cases_arr = case_payload
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("cases array");
+        assert_eq!(results.len(), cases_arr.len(), "oracle case count");
+
+        fn decode(v: &Value) -> f64 {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    "-0.0" => -0.0,
+                    other => panic!("unexpected tagged scalar: {other}"),
+                }
+            } else {
+                v.as_f64().expect("oracle scalar")
+            }
+        }
+
+        for (i, (case, expected_value)) in cases_arr.iter().zip(results.iter()).enumerate() {
+            let input = decode(case);
+            let expected = decode(expected_value);
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let out = session
+                .tensor_angle(xt)
+                .unwrap_or_else(|err| panic!("case {i} angle failed: {err:?}"));
+            let got = session.tensor_values(out).expect("got values")[0];
+
+            if expected.is_nan() {
+                assert!(
+                    got.is_nan(),
+                    "case {i} (input={input}): expected NaN, got {got}"
+                );
+                continue;
+            }
+            if expected == 0.0 {
+                // Bit-identity for signed zero. torch.angle on
+                // +0 / -0 returns +0 in CPython torch (atan2's
+                // libm behavior); pin whichever it returns.
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "case {i} (input={input}): expected zero with bits {:#x}, got {got} with bits {:#x}",
+                    expected.to_bits(),
+                    got.to_bits()
+                );
+                continue;
+            }
+            // Smooth-interior: 8 ULPs covers any libm rounding
+            // boundary while still catching real bugs (atan2 is a
+            // single libm call, ULP error is small).
+            let diff = (got - expected).abs();
+            let scale = got.abs().max(expected.abs()).max(1.0);
+            assert!(
+                diff <= 1e-12 || diff <= 8.0 * scale * f64::EPSILON,
+                "case {i} (input={input}): tensor_angle = {got} but \
+                 torch.angle = {expected}, diff = {diff:e}"
+            );
+        }
+    }
+
+    #[test]
     fn torch_fmax_fmin_subprocess_conformance() {
         // Subprocess oracle for tensor_fmax / tensor_fmin
         // (frankentorch-suux) against torch.fmax / torch.fmin.
