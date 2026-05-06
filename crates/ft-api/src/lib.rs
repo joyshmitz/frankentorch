@@ -5926,6 +5926,59 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// IEEE 754-2008 maxNum: NaN-tolerant element-wise maximum.
+    ///
+    /// Equivalent to `torch.fmax(input, other)`. Differs from
+    /// `tensor_maximum` (torch.maximum) in NaN handling: if exactly
+    /// one operand is NaN at a given position, the non-NaN operand
+    /// is returned; only when BOTH operands are NaN does the output
+    /// hold NaN. This is the variant used in NaN-as-sentinel
+    /// pipelines for safe clamping. Composes through autograd-aware
+    /// where + isnan + maximum, so gradients flow through whichever
+    /// operand wins (zero through the loser, including the NaN
+    /// branches). Tracked under frankentorch-suux.
+    pub fn tensor_fmax(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // Broadcast first so the where masks have the same shape
+        // as the operands (matches the maximum/minimum convention).
+        let lhs_shape = self.tensor_shape(lhs)?;
+        let rhs_shape = self.tensor_shape(rhs)?;
+        let out_shape = Self::broadcast_shape(&lhs_shape, &rhs_shape)?;
+        let lhs_b = self.tensor_broadcast_to(lhs, out_shape.clone())?;
+        let rhs_b = self.tensor_broadcast_to(rhs, out_shape)?;
+        let raw_max = self.tensor_max(lhs_b, rhs_b)?;
+        let nan_lhs = self.tensor_isnan(lhs_b)?;
+        let nan_rhs = self.tensor_isnan(rhs_b)?;
+        // step1: when rhs is NaN, take lhs (which may be NaN -> handled below).
+        let step1 = self.tensor_where(nan_rhs, lhs_b, raw_max)?;
+        // step2: when lhs is NaN, take rhs (NaN preserved iff both NaN).
+        self.tensor_where(nan_lhs, rhs_b, step1)
+    }
+
+    /// IEEE 754-2008 minNum: NaN-tolerant element-wise minimum.
+    ///
+    /// Sister to `tensor_fmax`; equivalent to `torch.fmin(input, other)`.
+    /// Tracked under frankentorch-suux.
+    pub fn tensor_fmin(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let lhs_shape = self.tensor_shape(lhs)?;
+        let rhs_shape = self.tensor_shape(rhs)?;
+        let out_shape = Self::broadcast_shape(&lhs_shape, &rhs_shape)?;
+        let lhs_b = self.tensor_broadcast_to(lhs, out_shape.clone())?;
+        let rhs_b = self.tensor_broadcast_to(rhs, out_shape)?;
+        let raw_min = self.tensor_min(lhs_b, rhs_b)?;
+        let nan_lhs = self.tensor_isnan(lhs_b)?;
+        let nan_rhs = self.tensor_isnan(rhs_b)?;
+        let step1 = self.tensor_where(nan_rhs, lhs_b, raw_min)?;
+        self.tensor_where(nan_lhs, rhs_b, step1)
+    }
+
     pub fn tensor_fmod(
         &mut self,
         lhs: TensorNodeId,
@@ -30786,6 +30839,95 @@ mod tests {
         assert_eq!(g_b[1], 0.0);
         // Tie at idx 2: exactly one of the two operands receives the gradient.
         assert_eq!(g_a[2] + g_b[2], 1.0, "tie should distribute exactly 1.0");
+    }
+
+    // ── tensor_fmax / tensor_fmin tests (frankentorch-suux) ───────────
+
+    #[test]
+    fn fmax_returns_non_nan_when_one_operand_is_nan() {
+        // The NaN-tolerant variant returns the non-NaN operand
+        // when exactly one operand is NaN. This is the
+        // distinguishing behavior from torch.maximum.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, f64::NAN, 3.0, f64::NAN], vec![4], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![f64::NAN, 2.0, 5.0, f64::NAN], vec![4], false)
+            .unwrap();
+        let out = s.tensor_fmax(a, b).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert_eq!(v[0], 1.0, "rhs NaN -> take lhs");
+        assert_eq!(v[1], 2.0, "lhs NaN -> take rhs");
+        assert_eq!(v[2], 5.0, "neither NaN -> standard max");
+        assert!(v[3].is_nan(), "both NaN -> NaN preserved");
+    }
+
+    #[test]
+    fn fmin_returns_non_nan_when_one_operand_is_nan() {
+        // Sister test for fmin: same NaN-tolerant semantics with
+        // standard min as the non-NaN reduction.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, f64::NAN, 3.0, f64::NAN], vec![4], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![f64::NAN, 2.0, 5.0, f64::NAN], vec![4], false)
+            .unwrap();
+        let out = s.tensor_fmin(a, b).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert_eq!(v[0], 1.0, "rhs NaN -> take lhs");
+        assert_eq!(v[1], 2.0, "lhs NaN -> take rhs");
+        assert_eq!(v[2], 3.0, "neither NaN -> standard min");
+        assert!(v[3].is_nan(), "both NaN -> NaN preserved");
+    }
+
+    #[test]
+    fn fmax_no_nans_matches_maximum() {
+        // When neither operand has NaN, tensor_fmax is bit-equal
+        // to tensor_maximum — same broadcasting, same winner
+        // selection.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 5.0, 3.0], vec![3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![4.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let f_out = s.tensor_fmax(a, b).unwrap();
+        let m_out = s.tensor_maximum(a, b).unwrap();
+        assert_eq!(s.tensor_values(f_out).unwrap(), s.tensor_values(m_out).unwrap());
+    }
+
+    #[test]
+    fn fmax_broadcasts_scalar_against_vector() {
+        // Scalar broadcast: fmax([1, NaN, -2], 0) = [1, 0, 0].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, f64::NAN, -2.0], vec![3], false)
+            .unwrap();
+        let b = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let out = s.tensor_fmax(a, b).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert_eq!(v[0], 1.0);
+        assert_eq!(v[1], 0.0, "lhs NaN -> take broadcast 0");
+        assert_eq!(v[2], 0.0, "lhs negative -> take 0");
+    }
+
+    #[test]
+    fn fmax_propagates_gradient_through_winning_operand_when_no_nans() {
+        // With no NaN, fmax reduces to maximum; gradient
+        // semantics inherit from tensor_max + tensor_where.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![5.0], vec![1], true).unwrap();
+        let b = s.tensor_variable(vec![3.0], vec![1], true).unwrap();
+        let out = s.tensor_fmax(a, b).unwrap();
+        let scalar = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(scalar).unwrap();
+        let g_a = s.tensor_gradient(&report, a).unwrap().to_vec();
+        let g_b = s.tensor_gradient(&report, b).unwrap().to_vec();
+        assert_eq!(g_a[0], 1.0, "a (=5) wins");
+        assert_eq!(g_b[0], 0.0);
     }
 
     // ── tensor_amax / amin tests (frankentorch-wehk) ───────────────────
