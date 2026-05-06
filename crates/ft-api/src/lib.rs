@@ -5517,14 +5517,37 @@ impl FrankenTorchSession {
 
     /// Power-of-two exponential: `2^x`.
     ///
-    /// Equivalent to `torch.exp2(input)`. Composes through
-    /// `tensor_exp(input * ln(2))`. Autograd-aware; gradient is
-    /// `2^x * ln(2)`. Tracked under frankentorch-lcxs.
+    /// Equivalent to `torch.exp2(input)`. Uses the native base-2 exponential
+    /// so f64 overflow/underflow cliffs match power-of-two semantics instead
+    /// of rounded `exp(input * ln(2))` composition. Autograd-aware; gradient
+    /// is `2^x * ln(2)`. Tracked under frankentorch-lcxs.
     pub fn tensor_exp2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        let shape = self.tensor_shape(input)?;
-        let ln2 = self.full(shape, std::f64::consts::LN_2, false)?;
-        let scaled = self.tensor_mul(input, ln2)?;
-        self.tensor_exp(scaled)
+        self.tensor_apply_function(
+            &[input],
+            |ctx, inputs| {
+                let (values, shape) = inputs[0];
+                ctx.save_for_backward(values.to_vec(), shape.to_vec());
+                let output = values.iter().map(|value| value.exp2()).collect();
+                Ok((output, shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let input_values = &ctx.saved_tensors()[0];
+                if grad_out.len() != input_values.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "exp2 backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+                let grad = grad_out
+                    .iter()
+                    .zip(input_values.iter())
+                    .map(|(&go, &value)| go * value.exp2() * std::f64::consts::LN_2)
+                    .collect::<Vec<_>>();
+                Ok(vec![ctx.needs_input_grad()[0].then_some(grad)])
+            },
+        )
     }
 
     /// Base-10 exponential: `10^x`.
@@ -30401,6 +30424,18 @@ mod tests {
     }
 
     #[test]
+    fn exp2_overflows_at_f64_power_of_two_boundary() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1024.0], vec![1], false).unwrap();
+        let out = s.tensor_exp2(x).unwrap();
+        let value = s.tensor_values(out).unwrap()[0];
+        assert!(
+            value.is_infinite() && value.is_sign_positive(),
+            "exp2(1024) should overflow to +inf, got {value:?}"
+        );
+    }
+
+    #[test]
     fn exp2_propagates_gradient_2x_ln2() {
         // d/dx 2^x = 2^x * ln(2). At x=3: 8 * ln(2).
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
@@ -30506,7 +30541,12 @@ mod tests {
         let report = s.tensor_backward(out).unwrap();
         let g = s.tensor_gradient(&report, n).unwrap();
         let expected = 5.0 * 8.0 * std::f64::consts::LN_2;
-        assert!((g[0] - expected).abs() < 1e-10, "got {}, expected {}", g[0], expected);
+        assert!(
+            (g[0] - expected).abs() < 1e-10,
+            "got {}, expected {}",
+            g[0],
+            expected
+        );
     }
 
     #[test]
@@ -30518,9 +30558,7 @@ mod tests {
         let x = s
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .unwrap();
-        let n = s
-            .tensor_variable(vec![1.0, 2.0], vec![2], false)
-            .unwrap();
+        let n = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
         let result = s.tensor_ldexp(x, n);
         assert!(result.is_err(), "expected shape mismatch, got Ok");
     }
