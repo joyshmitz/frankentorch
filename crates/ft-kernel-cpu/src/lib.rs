@@ -1785,7 +1785,12 @@ pub fn bmm_tensor_contiguous_f64(
 
     let lhs_start = lhs_meta.storage_offset();
     let rhs_start = rhs_meta.storage_offset();
-    let mut out = vec![0.0; out_numel];
+    // Push-based output skips the batch*m*n zero-init memset
+    // that every cell would immediately overwrite (frankentorch-mg2p);
+    // also avoids pre-touching the output tensor before the
+    // real computation begins, easing cache pressure on the
+    // attention-BMM hot path.
+    let mut out = Vec::with_capacity(out_numel);
 
     // One scratch buffer for the entire bmm, reused across all
     // (batch, row, col) cells. Same pairwise dot-product pattern as
@@ -1795,16 +1800,16 @@ pub fn bmm_tensor_contiguous_f64(
     for b in 0..batch {
         let lhs_base = lhs_start + b * lhs_batch_stride;
         let rhs_base = rhs_start + b * rhs_batch_stride;
-        let out_base = b * out_batch_stride;
         for row in 0..m {
             for col in 0..n {
                 for (inner, slot) in scratch.iter_mut().enumerate() {
                     *slot = lhs[lhs_base + row * k + inner] * rhs[rhs_base + inner * n + col];
                 }
-                out[out_base + row * n + col] = pairwise_sum_f64(&scratch);
+                out.push(pairwise_sum_f64(&scratch));
             }
         }
     }
+    let _ = out_batch_stride;
     Ok(out)
 }
 
@@ -5437,21 +5442,24 @@ pub fn bmm_tensor_contiguous_f32(
     ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
     let lhs_start = lhs_meta.storage_offset();
     let rhs_start = rhs_meta.storage_offset();
-    let mut out = vec![0.0f32; out_numel];
+    // Push-based output mirrors the f64 fix (frankentorch-mg2p):
+    // skip the batch*m*n zero-init memset since every cell gets
+    // unconditionally overwritten in row-major order.
+    let mut out = Vec::with_capacity(out_numel);
     let mut scratch = vec![0.0f32; k];
     for b in 0..batch {
         let lhs_base = lhs_start + b * lhs_batch_stride;
         let rhs_base = rhs_start + b * rhs_batch_stride;
-        let out_base = b * out_batch_stride;
         for row in 0..m {
             for col in 0..n {
                 for (inner, slot) in scratch.iter_mut().enumerate() {
                     *slot = lhs[lhs_base + row * k + inner] * rhs[rhs_base + inner * n + col];
                 }
-                out[out_base + row * n + col] = pairwise_sum_f32(&scratch);
+                out.push(pairwise_sum_f32(&scratch));
             }
         }
     }
+    let _ = out_batch_stride;
     Ok(out)
 }
 
