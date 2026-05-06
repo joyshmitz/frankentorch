@@ -10309,15 +10309,31 @@ fn serialization_generate_sidecar_with_retry_inner(
     for budget in budgets {
         match generate_raptorq_sidecar(payload, budget) {
             Ok(result) => {
+                if !use_cache {
+                    // _uncached callers must not touch the shared
+                    // cache: the previous unconditional insert turned
+                    // 'skip cache' into 'skip read, still write',
+                    // polluting the cache and creating a race-clobber
+                    // window with concurrent _cached writers.
+                    // Tracked under frankentorch-q8hw.
+                    return Ok(result);
+                }
                 // Same poison-recovery rationale as the read site
                 // above (frankentorch-wvnj): on PoisonError, take
                 // the inner map and continue; the BTreeMap is
-                // consistent across panics.
+                // consistent across panics. Use entry().or_insert
+                // semantics so a concurrent inserter that beat us
+                // here doesn't have its value clobbered (encoding
+                // is deterministic, so the existing entry is
+                // already a valid result for the same key).
                 let mut cache_guard = serialization_sidecar_cache()
                     .lock()
                     .unwrap_or_else(|err| err.into_inner());
-                cache_guard.insert(cache_key, result.clone());
-                return Ok(result);
+                let stored = cache_guard
+                    .entry(cache_key)
+                    .or_insert_with(|| result.clone())
+                    .clone();
+                return Ok(stored);
             }
             Err(error) => last_error = Some(error),
         }
