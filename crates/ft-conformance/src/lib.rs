@@ -11620,6 +11620,126 @@ mod tests {
             }
         }
 
+        // ── tensor_angle metamorphic suite (frankentorch-wncp) ────────
+        //
+        // Real-valued tensor_angle has a small but high-leverage MR
+        // surface. Each MR below targets a different bug class:
+        //   - sign-pair sum: catches sign-branch bugs that misroute
+        //     negative inputs
+        //   - positive-scale invariance: catches scaling-dependence
+        //     bugs in the underlying atan2(zeros, k*x) compose
+        //   - value range: catches any bug that produces an
+        //     intermediate value outside {0, π}
+        //
+        // Inputs are constructed to exclude zero (the boundary
+        // case where atan2 returns 0 regardless of sign-of-zero
+        // — uninteresting for these MRs).
+
+        // MR (sign-pair sum): angle(x) + angle(-x) = π for any
+        // non-zero finite x. One of {x, -x} is positive (angle
+        // = 0) and the other is negative (angle = π), so the
+        // sum is always π. Bound: 32 ULPs covers any rounding
+        // drift in the underlying atan2(0, ·) compose.
+        #[test]
+        fn fuzz_metamorphic_angle_sign_pair_sums_to_pi(
+            samples in prop::collection::vec(-512i16..512i16, 1..16)
+                .prop_filter(
+                    "non-zero values only — zero collapses both branches to 0",
+                    |samples| samples.iter().all(|v| *v != 0),
+                )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let pos: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 7.0).collect();
+            let neg: Vec<f64> = pos.iter().map(|x| -x).collect();
+            let n = pos.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(pos, vec![n], false).expect("xt");
+            let nx = s.tensor_variable(neg, vec![n], false).expect("nxt");
+            let a = s.tensor_angle(xt).expect("angle(x)");
+            let b = s.tensor_angle(nx).expect("angle(-x)");
+            let v_a = s.tensor_values(a).expect("v_a");
+            let v_b = s.tensor_values(b).expect("v_b");
+
+            for (i, (av, bv)) in v_a.iter().zip(v_b.iter()).enumerate() {
+                let sum = av + bv;
+                let diff = (sum - std::f64::consts::PI).abs();
+                let scale = sum.abs().max(std::f64::consts::PI).max(1.0);
+                prop_assert!(
+                    diff <= 1e-12 || diff <= 32.0 * scale * f64::EPSILON,
+                    "angle(x[{}]) + angle(-x[{}]) = {} but expected π, diff = {}",
+                    i, i, sum, diff
+                );
+            }
+        }
+
+        // MR (positive-scale invariance): angle(k*x) = angle(x) for
+        // any k > 0. The underlying atan2(0, k*x) is a function of
+        // the sign of (k*x), which equals sign(x) when k > 0.
+        // Catches bugs where the magnitude of k leaks into the
+        // angle output.
+        #[test]
+        fn fuzz_metamorphic_angle_positive_scale_invariance(
+            (samples, k_raw) in (
+                prop::collection::vec(-512i16..512i16, 1..16)
+                    .prop_filter(
+                        "non-zero values only",
+                        |samples| samples.iter().all(|v| *v != 0),
+                    ),
+                1u16..200u16,  // strictly positive scale
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let x: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 11.0).collect();
+            let k = f64::from(k_raw) / 13.0;
+            let kx: Vec<f64> = x.iter().map(|v| v * k).collect();
+            let n = x.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(x, vec![n], false).expect("xt");
+            let kxt = s.tensor_variable(kx, vec![n], false).expect("kxt");
+            let a = s.tensor_angle(xt).expect("angle(x)");
+            let b = s.tensor_angle(kxt).expect("angle(k*x)");
+            let v_a = s.tensor_values(a).expect("v_a");
+            let v_b = s.tensor_values(b).expect("v_b");
+
+            // Bit-exact: angle is a function of sign only, no
+            // arithmetic that depends on k. Multiplication by k
+            // preserves sign for k > 0.
+            for (i, (av, bv)) in v_a.iter().zip(v_b.iter()).enumerate() {
+                prop_assert_eq!(av.to_bits(), bv.to_bits(),
+                    "angle(x[{}]) = {} but angle({}*x[{}]) = {}", i, av, k, i, bv);
+            }
+        }
+
+        // MR (value range): angle(x) ∈ {0, π} for any non-NaN
+        // real-valued x. Catches bugs where atan2(zeros, x)
+        // produces an intermediate value (e.g. ±π/2 if the zeros
+        // lhs is mis-built and ends up non-zero).
+        #[test]
+        fn fuzz_metamorphic_angle_takes_only_zero_or_pi(
+            samples in prop::collection::vec(-512i16..512i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let x: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 9.0).collect();
+            let n = x.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(x, vec![n], false).expect("xt");
+            let a = s.tensor_angle(xt).expect("angle(x)");
+            let v = s.tensor_values(a).expect("v");
+
+            for (i, val) in v.iter().enumerate() {
+                let near_zero = val.abs() < 32.0 * f64::EPSILON;
+                let near_pi = (val - std::f64::consts::PI).abs() < 32.0 * std::f64::consts::PI * f64::EPSILON;
+                prop_assert!(
+                    near_zero || near_pi,
+                    "angle(x[{}]) = {} is neither near 0 nor near π",
+                    i, val
+                );
+            }
+        }
+
         // logaddexp is symmetric in its arguments: logaddexp(a, b) ==
         // logaddexp(b, a) bit-exactly. log(exp(a)+exp(b)) is unchanged
         // by argument order, and the max-subtraction stabilization
