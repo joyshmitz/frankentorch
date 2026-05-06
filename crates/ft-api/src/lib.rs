@@ -5937,6 +5937,32 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Element-wise angle (in radians) for real tensors.
+    ///
+    /// Equivalent to `torch.angle(input)` for real-valued tensors:
+    /// returns 0 where `x >= 0`, `π` where `x < 0`, and NaN where
+    /// `x` is NaN. Composes through autograd-aware `tensor_atan2`
+    /// with a zero left operand: `angle(x) = atan2(0, x)`. Useful
+    /// in pipelines that ingest signed-magnitude data and need
+    /// the phase channel separately. Tracked under
+    /// frankentorch-66hu.
+    pub fn tensor_angle(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let dtype = self.tensor_dtype(input)?;
+        if matches!(dtype, DType::Complex64 | DType::Complex128) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "angle: complex inputs not supported (would require atan2(imag, real) with Wirtinger semantics). Tracked under frankentorch-66hu.",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let zeros = self.full(shape, 0.0, false)?;
+        self.tensor_atan2(zeros, input)
+    }
+
     /// IEEE 754-2008 maxNum: NaN-tolerant element-wise maximum.
     ///
     /// Equivalent to `torch.fmax(input, other)`. Differs from
@@ -30943,6 +30969,56 @@ mod tests {
         let g_b = s.tensor_gradient(&report, b).unwrap().to_vec();
         assert_eq!(g_a[0], 1.0, "a (=5) wins");
         assert_eq!(g_b[0], 0.0);
+    }
+
+    // ── tensor_angle tests (frankentorch-66hu) ────────────────────────
+
+    #[test]
+    fn angle_returns_zero_for_positive_inputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.5, 1.0, 100.0, f64::INFINITY], vec![4], false)
+            .unwrap();
+        let out = s.tensor_angle(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        for (i, val) in v.iter().enumerate() {
+            assert!(val.abs() < 1e-12, "v[{i}] = {val}, expected 0");
+        }
+    }
+
+    #[test]
+    fn angle_returns_pi_for_negative_inputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![-0.5, -1.0, -100.0, f64::NEG_INFINITY], vec![4], false)
+            .unwrap();
+        let out = s.tensor_angle(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        for (i, val) in v.iter().enumerate() {
+            assert!(
+                (val - std::f64::consts::PI).abs() < 1e-12,
+                "v[{i}] = {val}, expected π"
+            );
+        }
+    }
+
+    #[test]
+    fn angle_returns_zero_for_zero_input() {
+        // atan2(0, 0) = 0 in libm — torch matches.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let out = s.tensor_angle(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].abs() < 1e-12, "got {}", v[0]);
+    }
+
+    #[test]
+    fn angle_propagates_nan() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![f64::NAN], vec![1], false).unwrap();
+        let out = s.tensor_angle(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].is_nan(), "got {}", v[0]);
     }
 
     // ── tensor_amax / amin tests (frankentorch-wehk) ───────────────────
