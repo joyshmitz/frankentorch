@@ -4577,10 +4577,23 @@ pub fn run_packet_e2e_microbench(
     packet_id: &str,
 ) -> Result<BenchReport, String> {
     let mut samples = Vec::with_capacity(iterations.max(1));
+    // Path includes both pid AND thread id so concurrent test
+    // threads (cargo test parallelism) with the same packet_id
+    // don't race on a shared temp file. The earlier {pid}-only
+    // form collided when packet_e2e_microbench_cpu_kernel_*
+    // and the legacy-vs-optimized comparison test both used
+    // FT-P2C-005 (and similarly FT-P2C-008). Tracked under
+    // frankentorch-pjln.
+    let thread_id = format!("{:?}", std::thread::current().id());
+    let thread_id_sanitized: String = thread_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
     let output_path = std::env::temp_dir().join(format!(
-        "ft_conformance_packet_e2e_microbench_{}_{}.jsonl",
+        "ft_conformance_packet_e2e_microbench_{}_{}_{}.jsonl",
         packet_id.to_ascii_lowercase(),
-        std::process::id()
+        std::process::id(),
+        thread_id_sanitized,
     ));
 
     for _ in 0..iterations.max(1) {
