@@ -120,4 +120,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_kernel_cpu_cumsum"
+path = "fuzz_targets/ft_kernel_cpu_cumsum.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
