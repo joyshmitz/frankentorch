@@ -15169,6 +15169,40 @@ mod tests {
         );
     }
 
+    // Pin the exact diagnostic strings for the user-facing
+    // AutogradError variants. These messages are the contract
+    // that downstream tooling (test failure messages, IDE
+    // quick-fix code, monitoring rules, retry logic on
+    // ReentrantDepthExceeded) keys on — silently rewording any
+    // of them is a contract break. Tracked under
+    // frankentorch-hcyx.
+
+    #[test]
+    fn root_does_not_require_grad_diagnostic_snapshot() {
+        let err = AutogradError::RootDoesNotRequireGrad { node: NodeId(7) };
+        insta::assert_snapshot!("root_does_not_require_grad_diagnostic", err.to_string());
+    }
+
+    #[test]
+    fn reentrant_depth_exceeded_diagnostic_snapshot() {
+        let err = AutogradError::ReentrantDepthExceeded {
+            current: 2,
+            max: 1,
+        };
+        insta::assert_snapshot!("reentrant_depth_exceeded_diagnostic", err.to_string());
+    }
+
+    #[test]
+    fn tensor_requires_grad_non_leaf_diagnostic_snapshot() {
+        let err = AutogradError::TensorRequiresGradNonLeaf {
+            node: TensorNodeId(11),
+        };
+        insta::assert_snapshot!(
+            "tensor_requires_grad_non_leaf_diagnostic",
+            err.to_string()
+        );
+    }
+
     fn render_tensor_scheduler_log(
         test_id: &str,
         mode: ExecutionMode,
