@@ -158,7 +158,23 @@ fn e2e_model_save_load_produces_identical_predictions() {
 
     // 3. Save state dict
     let sd = linear.state_dict(&session).expect("state_dict");
-    let path = std::env::temp_dir().join("ft_e2e_save_load_test.ftsv");
+    // Path includes pid + thread_id so concurrent cargo test
+    // invocations (developer running tests while CI runs the
+    // same test, or any rerun) don't race on the same on-disk
+    // file. ft_serialize::save_state_dict / load_state_dict
+    // are non-atomic, so interleaved writes from two processes
+    // would corrupt the format. Mirror of the pjln pattern from
+    // run_packet_e2e_microbench. Tracked under frankentorch-xrcb.
+    let thread_id = format!("{:?}", std::thread::current().id());
+    let thread_id_sanitized: String = thread_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let path = std::env::temp_dir().join(format!(
+        "ft_e2e_save_load_test_{}_{}.ftsv",
+        std::process::id(),
+        thread_id_sanitized,
+    ));
     ft_serialize::save_state_dict(&sd, &path).expect("save");
 
     // 4. Load into a fresh model
