@@ -4406,9 +4406,12 @@ impl FrankenTorchSession {
             (2, 2) => (1, x1_shape[0], x1_shape[1], x2_shape[0], x2_shape[1], false),
             (3, 3) => {
                 if x1_shape[0] != x2_shape[0] {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "cdist: batch dimensions must match",
+                    // Surface both shapes so the caller can see the
+                    // actual batch sizes (frankentorch-zf6b).
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                        ft_kernel_cpu::KernelError::ShapeMismatch {
+                            lhs: x1_shape,
+                            rhs: x2_shape,
                         },
                     )));
                 }
@@ -4422,18 +4425,25 @@ impl FrankenTorchSession {
                 )
             }
             _ => {
-                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                    ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "cdist: inputs must be 2-D or 3-D with matching batch",
+                // Surface the actual x1 rank that was given so the
+                // caller sees 'expected 2 or 3 but got N' instead
+                // of an opaque static reason (frankentorch-zf6b).
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::InvalidDimension {
+                        dim: 0,
+                        ndim: x1_shape.len(),
                     },
                 )));
             }
         };
 
         if m1 != m2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "cdist: last dimension (feature dim) must match",
+            // Caller compares lhs/rhs at the last dim to see which
+            // feature size disagreed (frankentorch-zf6b).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: x1_shape,
+                    rhs: x2_shape,
                 },
             )));
         }
