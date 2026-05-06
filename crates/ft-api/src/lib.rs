@@ -3756,9 +3756,13 @@ impl FrankenTorchSession {
         let vals = self.tensor_values(input)?;
         let input_shape = self.tensor_shape(input)?;
         if input_shape.len() != 1 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "bincount: input must be 1-dimensional",
+            // Surface the actual rank so callers see 'expected 1-D
+            // but got N-D' instead of an opaque static reason
+            // (frankentorch-8sct).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim: 0,
+                    ndim: input_shape.len(),
                 },
             )));
         }
@@ -3766,9 +3770,13 @@ impl FrankenTorchSession {
         if let Some(w) = weights {
             let w_shape = self.tensor_shape(w)?;
             if w_shape.len() != 1 || w_shape[0] != input_shape[0] {
-                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                    ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "bincount: weights must be 1-D with same length as input",
+                // ShapeMismatch carries both shapes so the caller can
+                // distinguish 'wrong rank' from 'wrong length' without
+                // reparsing a static string (frankentorch-8sct).
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: input_shape.clone(),
+                        rhs: w_shape,
                     },
                 )));
             }
