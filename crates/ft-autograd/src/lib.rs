@@ -15203,6 +15203,46 @@ mod tests {
         );
     }
 
+    // Three more user-facing AutogradError variants pinned under
+    // frankentorch-5zjw — TensorGradientShapeMismatch surfaces
+    // when a custom backward closure produces a wrong-shape grad,
+    // TensorMatMulShapeMismatch is one of the most-common
+    // autograd-time user errors, and GraphConsumed is the
+    // double-backward confusion. All three are parsed by
+    // downstream test/IDE tooling and silently rewording any
+    // would be a contract break.
+
+    #[test]
+    fn tensor_gradient_shape_mismatch_diagnostic_snapshot() {
+        let err = AutogradError::TensorGradientShapeMismatch {
+            node: TensorNodeId(3),
+            expected: 12,
+            actual: 8,
+        };
+        insta::assert_snapshot!(
+            "tensor_gradient_shape_mismatch_diagnostic",
+            err.to_string()
+        );
+    }
+
+    #[test]
+    fn tensor_matmul_shape_mismatch_diagnostic_snapshot() {
+        let err = AutogradError::TensorMatMulShapeMismatch {
+            lhs: vec![3, 4],
+            rhs: vec![5, 2],
+        };
+        insta::assert_snapshot!(
+            "tensor_matmul_shape_mismatch_diagnostic",
+            err.to_string()
+        );
+    }
+
+    #[test]
+    fn graph_consumed_diagnostic_snapshot() {
+        let err = AutogradError::GraphConsumed;
+        insta::assert_snapshot!("graph_consumed_diagnostic", err.to_string());
+    }
+
     fn render_tensor_scheduler_log(
         test_id: &str,
         mode: ExecutionMode,

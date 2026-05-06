@@ -1,0 +1,5 @@
+---
+source: crates/ft-autograd/src/lib.rs
+expression: err.to_string()
+---
+tensor matmul shape mismatch: lhs=[3, 4], rhs=[5, 2]

@@ -1,0 +1,5 @@
+---
+source: crates/ft-autograd/src/lib.rs
+expression: err.to_string()
+---
+tensor gradient shape mismatch at node 3: expected=12, actual=8
