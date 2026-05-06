@@ -4137,9 +4137,14 @@ impl FrankenTorchSession {
             move |ctx, inputs| {
                 let (vals, _in_shape) = inputs[0];
                 if vals.len() != rows {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "vander: input length mismatch",
+                    // Surface both actual lengths so the caller
+                    // can diagnose the closure-time mismatch
+                    // without grepping a static reason
+                    // (frankentorch-zurt).
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                        ft_kernel_cpu::KernelError::ShapeMismatch {
+                            lhs: vec![vals.len()],
+                            rhs: vec![rows],
                         },
                     )));
                 }
