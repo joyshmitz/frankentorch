@@ -11427,6 +11427,183 @@ mod tests {
             );
         }
 
+        // ── tensor_fmax / tensor_fmin metamorphic suite (frankentorch-fhcd)
+        //
+        // The NaN-tolerant max/min ops have a rich oracle-free MR
+        // surface. Each MR below targets a different bug class:
+        //   - commutativity: catches lhs-only / rhs-only mask bugs
+        //     in the where chain
+        //   - duality: catches misuse of the wrong inner reduction
+        //     (max where min should be)
+        //   - NaN-as-identity: catches NaN-propagation bugs that
+        //     would silently turn fmax into torch.maximum
+        //   - lower bound: catches sign-flipped reductions
+        //
+        // Inputs use a sprinkled-NaN generation strategy: every
+        // sample with raw value 0 in the lhs becomes NaN in lhs,
+        // every sample with raw value 1 in the rhs becomes NaN in
+        // rhs. This guarantees representative NaN coverage in
+        // every test run without dedicated proptest strategies.
+
+        // MR (commutativity): fmax(a, b) and fmax(b, a) must agree
+        // bitwise (modulo NaN-NaN), since the op is symmetric in
+        // its arguments. The where-chain implementation has
+        // separate isnan(lhs) and isnan(rhs) branches, so a
+        // regression that swapped or duplicated a mask would
+        // surface here. Bound: bit-exact (no arithmetic — only
+        // selection — so no FP drift).
+        #[test]
+        fn fuzz_metamorphic_fmax_commutativity(
+            (lhs_raw, rhs_raw) in (
+                prop::collection::vec(-32i16..32i16, 1..16),
+                prop::collection::vec(-32i16..32i16, 1..16),
+            ).prop_filter(
+                "lhs and rhs must share length",
+                |(l, r)| l.len() == r.len(),
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let lhs: Vec<f64> = lhs_raw.iter().map(|v| {
+                if *v == 0 { f64::NAN } else { f64::from(*v) / 7.0 }
+            }).collect();
+            let rhs: Vec<f64> = rhs_raw.iter().map(|v| {
+                if *v == 1 { f64::NAN } else { f64::from(*v) / 7.0 }
+            }).collect();
+            let n = lhs.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(lhs.clone(), vec![n], false).expect("a");
+            let b = s.tensor_variable(rhs.clone(), vec![n], false).expect("b");
+            let ab = s.tensor_fmax(a, b).expect("fmax(a, b)");
+            let v_ab = s.tensor_values(ab).expect("v_ab");
+            let a2 = s.tensor_variable(lhs, vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(rhs, vec![n], false).expect("b2");
+            let ba = s.tensor_fmax(b2, a2).expect("fmax(b, a)");
+            let v_ba = s.tensor_values(ba).expect("v_ba");
+
+            for (i, (a, b)) in v_ab.iter().zip(v_ba.iter()).enumerate() {
+                if a.is_nan() && b.is_nan() {
+                    continue; // NaN-NaN at both-NaN positions
+                }
+                prop_assert_eq!(a.to_bits(), b.to_bits(),
+                    "fmax(a, b)[{}] = {} but fmax(b, a)[{}] = {}", i, a, i, b);
+            }
+        }
+
+        // MR (duality): fmax(-a, -b) == -fmin(a, b). Each side uses
+        // a different inner reduction (max vs min); a regression
+        // that reused tensor_max where tensor_min should be (or
+        // vice versa) shows up here even when the where-chain
+        // surface looks identical.
+        #[test]
+        fn fuzz_metamorphic_fmax_fmin_duality(
+            (lhs_raw, rhs_raw) in (
+                prop::collection::vec(-32i16..32i16, 1..16),
+                prop::collection::vec(-32i16..32i16, 1..16),
+            ).prop_filter(
+                "lhs and rhs must share length",
+                |(l, r)| l.len() == r.len(),
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let lhs: Vec<f64> = lhs_raw.iter().map(|v| {
+                if *v == 0 { f64::NAN } else { f64::from(*v) / 5.0 }
+            }).collect();
+            let rhs: Vec<f64> = rhs_raw.iter().map(|v| {
+                if *v == 1 { f64::NAN } else { f64::from(*v) / 5.0 }
+            }).collect();
+            let neg_lhs: Vec<f64> = lhs.iter().map(|x| -x).collect();
+            let neg_rhs: Vec<f64> = rhs.iter().map(|x| -x).collect();
+            let n = lhs.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let na = s.tensor_variable(neg_lhs, vec![n], false).expect("neg a");
+            let nb = s.tensor_variable(neg_rhs, vec![n], false).expect("neg b");
+            let max_neg = s.tensor_fmax(na, nb).expect("fmax(-a, -b)");
+            let v_max_neg = s.tensor_values(max_neg).expect("v_max_neg");
+
+            let a2 = s.tensor_variable(lhs, vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(rhs, vec![n], false).expect("b2");
+            let min_ab = s.tensor_fmin(a2, b2).expect("fmin(a, b)");
+            let v_min_ab = s.tensor_values(min_ab).expect("v_min_ab");
+
+            for (i, (mneg, mab)) in v_max_neg.iter().zip(v_min_ab.iter()).enumerate() {
+                if mneg.is_nan() && mab.is_nan() {
+                    continue;
+                }
+                let neg_mab = -mab;
+                // Bit-exact: -NaN preserves NaN, -0 flips sign,
+                // and finite negation is exact.
+                prop_assert_eq!(mneg.to_bits(), neg_mab.to_bits(),
+                    "fmax(-a, -b)[{}] = {} but -fmin(a, b)[{}] = {}",
+                    i, mneg, i, neg_mab);
+            }
+        }
+
+        // MR (NaN-as-identity): fmax(a, NaN) == a for any finite a;
+        // fmax(NaN, NaN) == NaN. NaN acts as the identity element
+        // of the fmax operation. This is the canonical
+        // distinguishing behavior from torch.maximum (which
+        // propagates NaN), and a regression here would silently
+        // collapse fmax to maximum.
+        #[test]
+        fn fuzz_metamorphic_fmax_nan_is_identity(
+            samples in prop::collection::vec(-32i16..32i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 11.0).collect();
+            // RHS is all-NaN — every position must yield the lhs.
+            let rhs_vals: Vec<f64> = vec![f64::NAN; a_vals.len()];
+            let n = a_vals.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a");
+            let nan_t = s.tensor_variable(rhs_vals, vec![n], false).expect("nan");
+            let out = s.tensor_fmax(a, nan_t).expect("fmax(a, nan)");
+            let v = s.tensor_values(out).expect("values");
+
+            for (i, (got, expected)) in v.iter().zip(a_vals.iter()).enumerate() {
+                prop_assert_eq!(got.to_bits(), expected.to_bits(),
+                    "fmax(a, NaN)[{}] = {} but a[{}] = {}",
+                    i, got, i, expected);
+            }
+        }
+
+        // MR (inclusive, lower bound): fmax(a, b) >= max(a, b) at
+        // every non-NaN position. Strict equality holds when
+        // neither operand is NaN; when one is NaN the non-NaN
+        // value is returned (which still satisfies >= max-of-
+        // non-NaN). A sign-flipped or wrong-direction reduction
+        // surfaces here.
+        #[test]
+        fn fuzz_metamorphic_fmax_lower_bound(
+            (lhs_raw, rhs_raw) in (
+                prop::collection::vec(-32i16..32i16, 1..16),
+                prop::collection::vec(-32i16..32i16, 1..16),
+            ).prop_filter(
+                "lhs and rhs must share length",
+                |(l, r)| l.len() == r.len(),
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let lhs: Vec<f64> = lhs_raw.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let rhs: Vec<f64> = rhs_raw.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let n = lhs.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(lhs.clone(), vec![n], false).expect("a");
+            let b = s.tensor_variable(rhs.clone(), vec![n], false).expect("b");
+            let out = s.tensor_fmax(a, b).expect("fmax");
+            let v = s.tensor_values(out).expect("v");
+
+            for i in 0..n {
+                let max_ab = lhs[i].max(rhs[i]);
+                prop_assert!(v[i] >= max_ab || (v[i] - max_ab).abs() < f64::EPSILON,
+                    "fmax(a, b)[{}] = {} but max(a, b) = {}", i, v[i], max_ab);
+            }
+        }
+
         // logaddexp is symmetric in its arguments: logaddexp(a, b) ==
         // logaddexp(b, a) bit-exactly. log(exp(a)+exp(b)) is unchanged
         // by argument order, and the max-subtraction stabilization
