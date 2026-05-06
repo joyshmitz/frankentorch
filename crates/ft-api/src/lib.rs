@@ -16807,8 +16807,12 @@ impl FrankenTorchSession {
         // (x == 0), which short-circuited even at y=NaN and yielded
         // a spurious 0.
         let isnan_y = self.tensor_isnan(y)?;
-        let ones = self.full(x_shape, 1.0, false)?;
-        let not_isnan_y = self.tensor_sub(ones, isnan_y)?;
+        // NOT(isnan_y) via eq against the existing zeros tensor:
+        // tensor_isnan emits exact 0.0/1.0, so (isnan_y == 0) is
+        // bit-exactly the boolean negation, with no need for a
+        // separate ones-filled tensor and tensor_sub. -1 full()
+        // allocation per call (frankentorch-me8s).
+        let not_isnan_y = self.tensor_eq(isnan_y, zeros)?;
         let mask = self.tensor_mul(mask_x_zero, not_isnan_y)?;
         // Reuse the zeros tensor allocated above for the where-true
         // branch (frankentorch-rbhb).
