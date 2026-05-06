@@ -1712,12 +1712,17 @@ pub fn outer_tensor_contiguous_f64(
     ensure_storage_len(rhs, rhs_meta, "rhs")?;
     let lhs_start = lhs_meta.storage_offset();
     let rhs_start = rhs_meta.storage_offset();
-    let mut out = vec![0.0; out_numel];
-
-    for i in 0..m {
-        for j in 0..n {
-            out[i * n + j] = lhs[lhs_start + i] * rhs[rhs_start + j];
-        }
+    // Capacity-alloc + extend instead of zero-init + indexed
+    // overwrite (frankentorch-we9f). Saves a full memset of
+    // m*n cells that would be unconditionally overwritten, and
+    // hoisting the lhs[i] load outside the inner loop with an
+    // rhs slice gives the compiler a known-length iteration to
+    // vectorize.
+    let mut out = Vec::with_capacity(out_numel);
+    let lhs_slice = &lhs[lhs_start..lhs_start + m];
+    let rhs_slice = &rhs[rhs_start..rhs_start + n];
+    for &l in lhs_slice {
+        out.extend(rhs_slice.iter().map(|&r| l * r));
     }
     Ok(out)
 }
@@ -5370,11 +5375,13 @@ pub fn outer_tensor_contiguous_f32(
     ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
     let lhs_start = lhs_meta.storage_offset();
     let rhs_start = rhs_meta.storage_offset();
-    let mut out = vec![0.0f32; out_numel];
-    for i in 0..m {
-        for j in 0..n {
-            out[i * n + j] = lhs[lhs_start + i] * rhs[rhs_start + j];
-        }
+    // Capacity-alloc + extend instead of zero-init + indexed
+    // overwrite (frankentorch-we9f, f32 mirror of the f64 fix).
+    let mut out = Vec::with_capacity(out_numel);
+    let lhs_slice = &lhs[lhs_start..lhs_start + m];
+    let rhs_slice = &rhs[rhs_start..rhs_start + n];
+    for &l in lhs_slice {
+        out.extend(rhs_slice.iter().map(|&r| l * r));
     }
     Ok(out)
 }
