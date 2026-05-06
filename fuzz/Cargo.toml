@@ -113,4 +113,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_kernel_cpu_index_select"
+path = "fuzz_targets/ft_kernel_cpu_index_select.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
