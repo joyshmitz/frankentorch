@@ -1177,10 +1177,7 @@ impl FrankenTorchSession {
             // the caller can distinguish rank-0 from a regular
             // dim-out-of-range rejection (frankentorch-8c9m).
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
-                ft_kernel_cpu::KernelError::InvalidDimension {
-                    dim: 0,
-                    ndim: 0,
-                },
+                ft_kernel_cpu::KernelError::InvalidDimension { dim: 0, ndim: 0 },
             )));
         };
         if last_dim != 2 {
@@ -5986,10 +5983,7 @@ impl FrankenTorchSession {
     /// in pipelines that ingest signed-magnitude data and need
     /// the phase channel separately. Tracked under
     /// frankentorch-66hu.
-    pub fn tensor_angle(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let dtype = self.tensor_dtype(input)?;
         if matches!(dtype, DType::Complex64 | DType::Complex128) {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -30980,7 +30974,10 @@ mod tests {
             .unwrap();
         let f_out = s.tensor_fmax(a, b).unwrap();
         let m_out = s.tensor_maximum(a, b).unwrap();
-        assert_eq!(s.tensor_values(f_out).unwrap(), s.tensor_values(m_out).unwrap());
+        assert_eq!(
+            s.tensor_values(f_out).unwrap(),
+            s.tensor_values(m_out).unwrap()
+        );
     }
 
     #[test]
@@ -41563,6 +41560,20 @@ mod tests {
     }
 
     #[test]
+    fn nansum_f32_requires_grad_masks_nan_positions() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![1.0, f32::NAN, 3.0], vec![3], true)
+            .unwrap();
+        let out = s.tensor_nansum(x).unwrap();
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(out).unwrap(), vec![4.0]);
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert_eq!(g, &[1.0, 0.0, 1.0]);
+    }
+
+    #[test]
     fn nansum_passes_through_inf() {
         // PyTorch: nansum only masks NaN, not ±inf. sum([1, +inf]) = +inf.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
@@ -41616,6 +41627,24 @@ mod tests {
         assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
         assert_eq!(v.len(), 1);
         assert!((v[0] - 2.0).abs() < 1e-6, "got {}", v[0]);
+    }
+
+    #[test]
+    fn nanmean_f32_requires_grad_scales_non_nan_positions() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![1.0, f32::NAN, 3.0], vec![3], true)
+            .unwrap();
+        let out = s.tensor_nanmean(x).unwrap();
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
+        let v = s.tensor_values_f32(out).unwrap();
+        assert_eq!(v.len(), 1);
+        assert!((v[0] - 2.0).abs() < 1e-6, "got {}", v[0]);
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert!((g[0] - 0.5).abs() < 1e-12, "got {}", g[0]);
+        assert_eq!(g[1], 0.0);
+        assert!((g[2] - 0.5).abs() < 1e-12, "got {}", g[2]);
     }
 
     #[test]
@@ -41674,6 +41703,24 @@ mod tests {
     }
 
     #[test]
+    fn nanvar_f32_requires_grad_masks_nan_positions() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![1.0, f32::NAN, 5.0], vec![3], true)
+            .unwrap();
+        let out = s.tensor_nanvar(x, 0).unwrap();
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
+        let v = s.tensor_values_f32(out).unwrap();
+        assert_eq!(v.len(), 1);
+        assert!((v[0] - 4.0).abs() < 1e-6, "got {}", v[0]);
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert!((g[0] + 2.0).abs() < 1e-12, "got {}", g[0]);
+        assert_eq!(g[1], 0.0);
+        assert!((g[2] - 2.0).abs() < 1e-12, "got {}", g[2]);
+    }
+
+    #[test]
     fn nanvar_unbiased_matches_bessel_corrected() {
         // Same data; unbiased var = 8/(3-1) = 4.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
@@ -41708,6 +41755,24 @@ mod tests {
         assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
         assert_eq!(v.len(), 1);
         assert!((v[0] - 2.0).abs() < 1e-6, "got {}", v[0]);
+    }
+
+    #[test]
+    fn nanstd_f32_requires_grad_uses_nanvar_backward() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![1.0, f32::NAN, 5.0], vec![3], true)
+            .unwrap();
+        let out = s.tensor_nanstd(x, 0).unwrap();
+        assert_eq!(s.tensor_dtype(out).unwrap(), DType::F32);
+        let v = s.tensor_values_f32(out).unwrap();
+        assert_eq!(v.len(), 1);
+        assert!((v[0] - 2.0).abs() < 1e-6, "got {}", v[0]);
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        assert!((g[0] + 0.5).abs() < 1e-12, "got {}", g[0]);
+        assert_eq!(g[1], 0.0);
+        assert!((g[2] - 0.5).abs() < 1e-12, "got {}", g[2]);
     }
 
     #[test]
