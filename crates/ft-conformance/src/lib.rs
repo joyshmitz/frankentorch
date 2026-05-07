@@ -16005,6 +16005,159 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_threshold_subprocess_conformance() {
+        // Subprocess oracle for tensor_threshold (frankentorch-hptx)
+        // against torch.threshold. The MR suite (sbup) cross-
+        // validates internally; this oracle catches drift in the
+        // comparison-boundary specifics: strict > vs >=, NaN
+        // routing (NaN > t is false → value branch), ±inf
+        // handling, and signed zero at threshold = 0. Tracked
+        // under frankentorch-j6xv.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_threshold_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // (input, threshold, value) triples covering boundary,
+        // NaN, ±inf, signed zero, and large magnitudes.
+        let case_payload = json!({
+            "cases": [
+                // Pass-through above threshold.
+                [2.0, 1.0, -99.0],
+                [100.0, 0.0, -1.0],
+                // Below threshold → value.
+                [-2.0, 1.0, -99.0],
+                [0.5, 1.0, -99.0],
+                // Boundary x == t: torch.threshold uses strict >
+                // so x == t goes to value branch.
+                [1.0, 1.0, -99.0],
+                [0.0, 0.0, 7.0],
+                // NaN input: NaN > t is false → value branch.
+                ["nan", 1.0, -99.0],
+                ["nan", 0.0, 0.0],
+                // +inf input: +inf > t is true → pass-through.
+                ["inf", 1.0, -99.0],
+                // -inf input: -inf > t is false → value branch.
+                ["-inf", 1.0, -99.0],
+                // Signed zero at threshold = 0.
+                ["-0.0", 0.0, -99.0],
+                [0.0, "-0.0", -99.0],
+                // Value branch with ±inf as the replacement.
+                [-1.0, 0.0, "inf"],
+                [-1.0, 0.0, "-inf"],
+                [-1.0, 0.0, "nan"],
+            ]
+        });
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"),
+                "-inf": float("-inf"), "-0.0": -0.0}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    if v == 0.0 and math.copysign(1.0, v) < 0:
+        return "-0.0"
+    return v
+
+cases = json.loads(sys.stdin.read())["cases"]
+results = []
+for raw_x, raw_t, raw_v in cases:
+    x = torch.tensor(decode_scalar(raw_x), dtype=torch.float64)
+    out = torch.nn.functional.threshold(x, decode_scalar(raw_t), decode_scalar(raw_v)).item()
+    results.append(encode_scalar(out))
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &case_payload)
+            .expect("torch.threshold oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        let cases_arr = case_payload
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("cases array");
+        assert_eq!(results.len(), cases_arr.len(), "oracle case count");
+
+        fn decode(v: &Value) -> f64 {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    "-0.0" => -0.0,
+                    other => panic!("unexpected tagged scalar: {other}"),
+                }
+            } else {
+                v.as_f64().expect("oracle scalar")
+            }
+        }
+
+        for (i, (case, expected_value)) in cases_arr.iter().zip(results.iter()).enumerate() {
+            let case_arr = case.as_array().expect("case triple");
+            let x_in = decode(&case_arr[0]);
+            let t_in = decode(&case_arr[1]);
+            let v_in = decode(&case_arr[2]);
+            let expected = decode(expected_value);
+
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = session.tensor_variable(vec![x_in], vec![1], false).unwrap();
+            let out = session
+                .tensor_threshold(xt, t_in, v_in)
+                .unwrap_or_else(|err| panic!("case {i} threshold failed: {err:?}"));
+            let got = session.tensor_values(out).expect("got values")[0];
+
+            // threshold is a clean selection between x and v with
+            // no arithmetic, so bit-identity is the right contract
+            // (modulo NaN which fails self-comparison).
+            if expected.is_nan() {
+                assert!(
+                    got.is_nan(),
+                    "case {i} (x={x_in}, t={t_in}, v={v_in}): expected NaN, got {got}"
+                );
+                continue;
+            }
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "case {i} (x={x_in}, t={t_in}, v={v_in}): tensor_threshold = {got} (bits {:#x}) but \
+                 torch.threshold = {expected} (bits {:#x})",
+                got.to_bits(),
+                expected.to_bits()
+            );
+        }
+    }
+
+    #[test]
     fn torch_angle_subprocess_conformance() {
         // Subprocess oracle for tensor_angle (frankentorch-66hu)
         // against torch.angle for real-valued inputs. Pins the
