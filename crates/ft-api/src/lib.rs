@@ -5721,6 +5721,35 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Standard normal cumulative distribution function.
+    ///
+    /// Equivalent to `torch.special.ndtr(input)`. Composes through
+    /// the autograd-aware tensor_erf:
+    ///
+    ///   ndtr(x) = 0.5 * (1 + erf(x / sqrt(2)))
+    ///
+    /// Used in Gaussian probability calculations, importance-
+    /// sampling weights, Bayesian inference, and Black-Scholes
+    /// pricing. Gradient is the standard normal PDF
+    /// (1/sqrt(2π)) * exp(-x²/2), which flows automatically
+    /// through the erf chain. Tracked under frankentorch-7qh9.
+    pub fn tensor_special_ndtr(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        // x / sqrt(2) — multiply by 1/sqrt(2) instead of dividing
+        // since the autograd-aware path is tensor_mul + a constant.
+        const INV_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;
+        let inv_sqrt2 = self.full(shape.clone(), INV_SQRT_2, false)?;
+        let scaled = self.tensor_mul(input, inv_sqrt2)?;
+        let erf_val = self.tensor_erf(scaled)?;
+        let one = self.full(shape.clone(), 1.0, false)?;
+        let summed = self.tensor_add(one, erf_val)?;
+        let half = self.full(shape, 0.5, false)?;
+        self.tensor_mul(summed, half)
+    }
+
     pub fn tensor_hardswish(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.hardswish(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
@@ -38602,6 +38631,75 @@ mod tests {
                 g = grad[i]
             );
         }
+    }
+
+    // ── tensor_special_ndtr tests (frankentorch-7qh9) ─────────────────
+
+    #[test]
+    fn ndtr_returns_half_at_zero() {
+        // Standard normal CDF at the mean is 0.5.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let out = s.tensor_special_ndtr(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 0.5).abs() < 1e-12, "got {}", v[0]);
+    }
+
+    #[test]
+    fn ndtr_saturates_at_infinities() {
+        // ndtr(+inf) = 1, ndtr(-inf) = 0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![f64::INFINITY, f64::NEG_INFINITY], vec![2], false)
+            .unwrap();
+        let out = s.tensor_special_ndtr(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 1.0).abs() < 1e-12, "ndtr(+inf) = {}", v[0]);
+        assert!(v[1].abs() < 1e-12, "ndtr(-inf) = {}", v[1]);
+    }
+
+    #[test]
+    fn ndtr_propagates_nan() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![f64::NAN], vec![1], false).unwrap();
+        let out = s.tensor_special_ndtr(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].is_nan(), "ndtr(NaN) = {}", v[0]);
+    }
+
+    #[test]
+    fn ndtr_known_values_match_closed_form() {
+        // ndtr(1) ≈ 0.8413447460685429 (standard table).
+        // ndtr(-1) = 1 - ndtr(1) ≈ 0.1586552539314571.
+        // ndtr(2) ≈ 0.9772498680518208.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, -1.0, 2.0], vec![3], false)
+            .unwrap();
+        let out = s.tensor_special_ndtr(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        // 8 ULPs slack absorbs the libm erf rounding boundary.
+        assert!((v[0] - 0.8413447460685429).abs() < 1e-12, "ndtr(1) = {}", v[0]);
+        assert!((v[1] - 0.1586552539314571).abs() < 1e-12, "ndtr(-1) = {}", v[1]);
+        assert!((v[2] - 0.9772498680518208).abs() < 1e-12, "ndtr(2) = {}", v[2]);
+    }
+
+    #[test]
+    fn ndtr_propagates_gradient_via_normal_pdf() {
+        // d/dx ndtr(x) = (1/sqrt(2π)) * exp(-x²/2) = standard
+        // normal PDF. At x = 0: 1/sqrt(2π) ≈ 0.3989422804014327.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0], vec![1], true).unwrap();
+        let out = s.tensor_special_ndtr(x).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let g = s.tensor_gradient(&report, x).unwrap();
+        let expected = 1.0 / (2.0 * std::f64::consts::PI).sqrt();
+        assert!(
+            (g[0] - expected).abs() < 1e-12,
+            "ndtr grad at x=0 = {}, expected {}",
+            g[0],
+            expected
+        );
     }
 
     #[test]
