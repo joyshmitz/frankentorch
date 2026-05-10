@@ -14346,26 +14346,43 @@ pub fn init_orthogonal_(
     let rows = shape[0];
     let cols = checked_shape_numel(&shape[1..], "orthogonal_: column shape overflow")?;
 
-    // Generate random matrix and compute QR
-    let rand_node = session.randn(vec![rows, cols], false)?;
-    let (q, _r) = session.tensor_linalg_qr(rand_node, true)?;
-    let q_shape = session.tensor_shape(q)?;
+    // Match torch.nn.init.orthogonal_: run QR on the transposed
+    // flattened shape for wide matrices, then transpose Q back.
+    let flat_shape = if rows >= cols {
+        vec![rows, cols]
+    } else {
+        vec![cols, rows]
+    };
+    let rand_node = session.randn(flat_shape.clone(), false)?;
+    let (q, r) = session.tensor_linalg_qr(rand_node, true)?;
+    let mut q_vals = session.tensor_values(q)?;
+    let r_vals = session.tensor_values(r)?;
+    let k = flat_shape[1];
 
-    // If rows < cols, Q is [rows, rows]; we need to pad or use the transpose approach
-    // If rows >= cols, Q is [rows, cols] which is what we want
-    let q_vals = session.tensor_values(q)?;
-    let q_rows = q_shape[0];
-    let q_cols = q_shape[1];
-
-    let numel = checked_shape_numel(&shape, "orthogonal_: shape volume overflow")?;
-    let mut values = vec![0.0; numel];
-
-    // Copy Q into the result, scaling by gain
-    for r in 0..rows.min(q_rows) {
-        for c in 0..cols.min(q_cols) {
-            values[r * cols + c] = gain * q_vals[r * q_cols + c];
+    // Make Q deterministic with PyTorch's sign convention: columns of Q
+    // follow the sign of R's diagonal.
+    for j in 0..k {
+        if r_vals[j * k + j] < 0.0 {
+            for row in 0..flat_shape[0] {
+                q_vals[row * k + j] = -q_vals[row * k + j];
+            }
         }
     }
+
+    let final_values = if rows < cols {
+        let mut transposed = vec![0.0; checked_mul(rows, cols, "orthogonal_: transpose overflow")?];
+        for r in 0..cols {
+            for c in 0..rows {
+                transposed[c * cols + r] = q_vals[r * rows + c];
+            }
+        }
+        transposed
+    } else {
+        q_vals
+    };
+
+    let numel = checked_shape_numel(&shape, "orthogonal_: shape volume overflow")?;
+    let values: Vec<f64> = final_values[..numel].iter().map(|&v| gain * v).collect();
 
     session.tensor_update_param_values(tensor, values)?;
     Ok(tensor)
@@ -25718,6 +25735,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn init_orthogonal_wide_matrix_preserves_row_orthonormality() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(vec![0.0; 8], vec![2, 4], true).unwrap();
+        init_orthogonal_(&mut s, t, 1.0).unwrap();
+        let vals = s.tensor_values(t).unwrap();
+
+        for i in 0..2 {
+            for j in 0..2 {
+                let dot: f64 = (0..4).map(|k| vals[i * 4 + k] * vals[j * 4 + k]).sum();
+                if i == j {
+                    assert!(
+                        (dot - 1.0).abs() < 1e-8,
+                        "row norm dot({i},{j})={dot}, expected 1"
+                    );
+                } else {
+                    assert!(dot.abs() < 1e-8, "row dot({i},{j})={dot}, expected 0");
+                }
+            }
+        }
+
+        let tail_norm: f64 = vals[2..4]
+            .iter()
+            .chain(vals[6..8].iter())
+            .map(|v| v * v)
+            .sum();
+        assert!(
+            tail_norm > 1e-12,
+            "wide orthogonal_ must not leave the trailing columns zero-padded"
+        );
     }
 
     #[test]
