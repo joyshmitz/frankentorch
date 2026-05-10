@@ -644,6 +644,18 @@ fn checked_mul(lhs: usize, rhs: usize, context: &'static str) -> Result<usize, K
         .ok_or(KernelError::ShapeOverflow { context })
 }
 
+fn checked_contiguous_range(
+    outer: usize,
+    block_len: usize,
+    context: &'static str,
+) -> Result<std::ops::Range<usize>, KernelError> {
+    let start = checked_mul(outer, block_len, context)?;
+    let end = start
+        .checked_add(block_len)
+        .ok_or(KernelError::ShapeOverflow { context })?;
+    Ok(start..end)
+}
+
 fn checked_dim_loop_sizes(
     shape: &[usize],
     dim: usize,
@@ -2490,11 +2502,9 @@ pub fn cat_tensor_contiguous_f64(
             }
             let offset = meta.storage_offset();
             let d = &data[offset..];
-            for r in 0..cat_size {
-                for inner in 0..inner_size {
-                    output.push(d[outer * cat_size * inner_size + r * inner_size + inner]);
-                }
-            }
+            let block_len = checked_mul(cat_size, inner_size, "cat slice range overflow")?;
+            let range = checked_contiguous_range(outer, block_len, "cat slice range overflow")?;
+            output.extend_from_slice(&d[range]);
         }
     }
 
@@ -2552,9 +2562,8 @@ pub fn stack_tensor_contiguous_f64(
         for (data, meta) in inputs {
             let offset = meta.storage_offset();
             let d = &data[offset..];
-            for inner in 0..inner_size {
-                output.push(d[outer * inner_size + inner]);
-            }
+            let range = checked_contiguous_range(outer, inner_size, "stack slice range overflow")?;
+            output.extend_from_slice(&d[range]);
         }
     }
 
@@ -6058,11 +6067,9 @@ pub fn cat_tensor_contiguous_f32(
             }
             let offset = meta.storage_offset();
             let d = &data[offset..];
-            for r in 0..cat_size {
-                for inner in 0..inner_size {
-                    output.push(d[outer * cat_size * inner_size + r * inner_size + inner]);
-                }
-            }
+            let block_len = checked_mul(cat_size, inner_size, "cat_f32 slice range overflow")?;
+            let range = checked_contiguous_range(outer, block_len, "cat_f32 slice range overflow")?;
+            output.extend_from_slice(&d[range]);
         }
     }
     Ok(output)
@@ -6111,9 +6118,9 @@ pub fn stack_tensor_contiguous_f32(
         for (data, meta) in inputs {
             let offset = meta.storage_offset();
             let d = &data[offset..];
-            for inner in 0..inner_size {
-                output.push(d[outer * inner_size + inner]);
-            }
+            let range =
+                checked_contiguous_range(outer, inner_size, "stack_f32 slice range overflow")?;
+            output.extend_from_slice(&d[range]);
         }
     }
     Ok(output)
@@ -7498,9 +7505,9 @@ mod tests {
         acos_tensor_contiguous_f64, add_scalar, add_tensor_contiguous_f64,
         argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64, asin_scalar,
         asin_tensor_contiguous_f64, atan_scalar, atan_tensor_contiguous_f64,
-        bmm_tensor_contiguous_f64, cat_tensor_contiguous_f64, ceil_scalar,
-        ceil_tensor_contiguous_f64, clamp_scalar, clamp_tensor_contiguous_f64, cos_scalar,
-        cos_tensor_contiguous_f64, cosh_scalar, cosh_tensor_contiguous_f64, div_scalar,
+        bmm_tensor_contiguous_f64, cat_tensor_contiguous_f32, cat_tensor_contiguous_f64,
+        ceil_scalar, ceil_tensor_contiguous_f64, clamp_scalar, clamp_tensor_contiguous_f64,
+        cos_scalar, cos_tensor_contiguous_f64, cosh_scalar, cosh_tensor_contiguous_f64, div_scalar,
         div_tensor_contiguous_f64, dot_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64,
         exp_scalar, exp_tensor_contiguous_f64, expand_tensor_contiguous_f64, expm1_scalar,
         expm1_tensor_contiguous_f64, floor_scalar, floor_tensor_contiguous_f64,
@@ -7523,10 +7530,11 @@ mod tests {
         silu_tensor_contiguous_f64, sinh_scalar, sinh_tensor_contiguous_f64,
         softmax_dim_tensor_contiguous_f64, sparse_coo_add, sparse_coo_coalesce,
         sparse_coo_matmul_dense_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
-        stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64, sub_scalar,
-        sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f32, sum_dim_tensor_contiguous_f64,
-        sum_tensor_contiguous_f64, tanh_scalar, tanh_tensor_contiguous_f64, trunc_scalar,
-        trunc_tensor_contiguous_f64, var_dim_tensor_contiguous_f64,
+        stack_tensor_contiguous_f32, stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64,
+        sub_scalar, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f32,
+        sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
+        tanh_tensor_contiguous_f64, trunc_scalar, trunc_tensor_contiguous_f64,
+        var_dim_tensor_contiguous_f64,
     };
     use super::{pairwise_sum_f64, pairwise_sum_map_f64};
 
@@ -9458,6 +9466,19 @@ mod tests {
     }
 
     #[test]
+    fn cat_along_dim1_f32() {
+        let m0 = TensorMeta::from_shape(vec![2, 2], DType::F32, Device::Cpu);
+        let d0 = vec![1.0f32, 2.0, 3.0, 4.0];
+        let m1 = TensorMeta::from_shape(vec![2, 3], DType::F32, Device::Cpu);
+        let d1 = vec![5.0f32, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let out = cat_tensor_contiguous_f32(&[(&d0, &m0), (&d1, &m1)], 1).expect("cat dim 1");
+        assert_eq!(
+            out,
+            vec![1.0f32, 2.0, 5.0, 6.0, 7.0, 3.0, 4.0, 8.0, 9.0, 10.0]
+        );
+    }
+
+    #[test]
     fn cat_skips_empty_input_with_offset() {
         let m0 = TensorMeta::from_shape(vec![0, 2], DType::F64, Device::Cpu).with_storage_offset(5);
         let d0: Vec<f64> = Vec::new();
@@ -9513,6 +9534,16 @@ mod tests {
         let out = stack_tensor_contiguous_f64(&[(&d0, &m0), (&d1, &m1)], 1).expect("stack dim 1");
         // shape [2,2,2]: [[[1,2],[5,6]],[[3,4],[7,8]]]
         assert_eq!(out, vec![1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn stack_along_dim1_f32() {
+        let m0 = TensorMeta::from_shape(vec![2, 2], DType::F32, Device::Cpu);
+        let d0 = vec![1.0f32, 2.0, 3.0, 4.0];
+        let m1 = TensorMeta::from_shape(vec![2, 2], DType::F32, Device::Cpu);
+        let d1 = vec![5.0f32, 6.0, 7.0, 8.0];
+        let out = stack_tensor_contiguous_f32(&[(&d0, &m0), (&d1, &m1)], 1).expect("stack dim 1");
+        assert_eq!(out, vec![1.0f32, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0]);
     }
 
     #[test]
