@@ -1260,6 +1260,44 @@ impl FrankenTorchSession {
         self.tensor_variable(values, vec![window_length], requires_grad)
     }
 
+    /// Hamming window for signal processing.
+    ///
+    /// Equivalent to `torch.hamming_window(window_length,
+    /// periodic=True, alpha=0.54, beta=0.46)`. Sister of
+    /// `hann_window` with the canonical Hamming coefficients:
+    ///
+    ///   w[n] = 0.54 - 0.46 * cos(2πn / denom)
+    ///
+    /// `denom = window_length` when `periodic=true` (matches
+    /// torch's default for spectral analysis); `denom =
+    /// window_length - 1` when `periodic=false` (symmetric form).
+    /// Tracked under frankentorch-lg75.
+    pub fn hamming_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if window_length == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "hamming_window: window_length must be > 0",
+                },
+            )));
+        }
+        let denom = if periodic {
+            window_length as f64
+        } else if window_length == 1 {
+            1.0
+        } else {
+            (window_length - 1) as f64
+        };
+        let values: Vec<f64> = (0..window_length)
+            .map(|n| 0.54 - 0.46 * (2.0 * std::f64::consts::PI * n as f64 / denom).cos())
+            .collect();
+        self.tensor_variable(values, vec![window_length], requires_grad)
+    }
+
     /// Short-time Fourier transform for 1-D real signals.
     pub fn tensor_stft(
         &mut self,
@@ -42075,6 +42113,57 @@ mod tests {
         assert!((vals[1] - 0.75).abs() < 1e-10);
         assert!((vals[2] - 0.75).abs() < 1e-10);
         assert!((vals[3] - 0.0).abs() < 1e-10);
+    }
+
+    // ── hamming_window tests (frankentorch-lg75) ──────────────────────
+
+    #[test]
+    fn hamming_window_non_periodic_matches_expected_values() {
+        // hamming_window(4, periodic=false): denom = 3.
+        // n=0: 0.54 - 0.46*cos(0) = 0.08
+        // n=1: 0.54 - 0.46*cos(2π/3) = 0.54 - 0.46*(-0.5) = 0.77
+        // n=2: same as n=1 by symmetry = 0.77
+        // n=3: same as n=0 by symmetry = 0.08
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.hamming_window(4, false, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        assert!((vals[0] - 0.08).abs() < 1e-10, "endpoint 0 = {}", vals[0]);
+        assert!((vals[1] - 0.77).abs() < 1e-10, "n=1 = {}", vals[1]);
+        assert!((vals[2] - 0.77).abs() < 1e-10, "n=2 = {}", vals[2]);
+        assert!((vals[3] - 0.08).abs() < 1e-10, "endpoint 3 = {}", vals[3]);
+    }
+
+    #[test]
+    fn hamming_window_periodic_uses_n_denominator() {
+        // periodic=true: denom = N. For N=4: cos(2πn/4) = cos(πn/2).
+        // n=0: 0.54 - 0.46*1 = 0.08
+        // n=1: 0.54 - 0.46*0 = 0.54
+        // n=2: 0.54 - 0.46*(-1) = 1.0
+        // n=3: 0.54 - 0.46*0 = 0.54
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.hamming_window(4, true, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        assert!((vals[0] - 0.08).abs() < 1e-10);
+        assert!((vals[1] - 0.54).abs() < 1e-10);
+        assert!((vals[2] - 1.0).abs() < 1e-10);
+        assert!((vals[3] - 0.54).abs() < 1e-10);
+    }
+
+    #[test]
+    fn hamming_window_length_one_returns_constant() {
+        // Length-1 edge case: cos(0) = 1, so single value = 0.08.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.hamming_window(1, false, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        assert_eq!(vals.len(), 1);
+        assert!((vals[0] - 0.08).abs() < 1e-10);
+    }
+
+    #[test]
+    fn hamming_window_rejects_zero_length() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let result = s.hamming_window(0, false, false);
+        assert!(result.is_err(), "hamming_window(0) must fail closed");
     }
 
     #[test]
