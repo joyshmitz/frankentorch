@@ -1260,6 +1260,58 @@ impl FrankenTorchSession {
         self.tensor_variable(values, vec![window_length], requires_grad)
     }
 
+    /// Kaiser window (Bessel-shaped) for signal processing.
+    ///
+    /// Equivalent to `torch.kaiser_window(window_length, periodic,
+    /// beta)`. Parametric window with adjustable side-lobe
+    /// suppression via beta:
+    ///
+    ///   w[n] = i0(beta * sqrt(1 - (2n/denom - 1)²)) / i0(beta)
+    ///
+    /// `denom = window_length` (periodic) or `window_length - 1`
+    /// (symmetric). beta=0 gives a rectangular window;
+    /// beta=14 gives ~120 dB side-lobe suppression. Tracked under
+    /// frankentorch-8moo. Composes through bessel_i0_scalar (the
+    /// helper from 2vxa).
+    pub fn kaiser_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+        beta: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if window_length == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "kaiser_window: window_length must be > 0",
+                },
+            )));
+        }
+        if !beta.is_finite() || beta < 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "kaiser_window: beta must be finite and non-negative",
+                },
+            )));
+        }
+        let denom = if periodic {
+            window_length as f64
+        } else if window_length == 1 {
+            1.0
+        } else {
+            (window_length - 1) as f64
+        };
+        let i0_beta = bessel_i0_scalar(beta);
+        let values: Vec<f64> = (0..window_length)
+            .map(|n| {
+                let t = 2.0 * n as f64 / denom - 1.0;
+                let arg = beta * (1.0 - t * t).max(0.0).sqrt();
+                bessel_i0_scalar(arg) / i0_beta
+            })
+            .collect();
+        self.tensor_variable(values, vec![window_length], requires_grad)
+    }
+
     /// Bartlett (triangular) window for signal processing.
     ///
     /// Equivalent to `torch.bartlett_window(window_length,
@@ -42340,6 +42392,80 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let result = s.bartlett_window(0, false, false);
         assert!(result.is_err(), "bartlett_window(0) must fail closed");
+    }
+
+    // ── kaiser_window tests (frankentorch-8moo) ───────────────────────
+
+    #[test]
+    fn kaiser_window_beta_zero_is_rectangular() {
+        // beta=0: i0(0) = 1 everywhere, so all values = 1.
+        // (Kaiser window collapses to a rectangular window.)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.kaiser_window(8, false, 0.0, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        for (i, v) in vals.iter().enumerate() {
+            assert!((v - 1.0).abs() < 1e-7, "i={i}: kaiser β=0 = {v}");
+        }
+    }
+
+    #[test]
+    fn kaiser_window_endpoints_smaller_than_peak_for_positive_beta() {
+        // For beta > 0, kaiser is bell-shaped: endpoints are
+        // smaller than the center.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.kaiser_window(7, false, 8.6, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        // Center peak is at index 3 (length 7, denom 6).
+        assert!(vals[3] > vals[0], "center {} not > endpoint {}", vals[3], vals[0]);
+        assert!(vals[3] > vals[6], "center {} not > endpoint {}", vals[3], vals[6]);
+        // Symmetric around the center.
+        assert!((vals[0] - vals[6]).abs() < 1e-7);
+        assert!((vals[1] - vals[5]).abs() < 1e-7);
+        assert!((vals[2] - vals[4]).abs() < 1e-7);
+        // All values in [0, 1] (since i0 is monotone and we
+        // divide by the maximum).
+        for (i, v) in vals.iter().enumerate() {
+            assert!(*v >= 0.0 && *v <= 1.0 + 1e-7, "i={i}: out of range = {v}");
+        }
+    }
+
+    #[test]
+    fn kaiser_window_length_one_returns_one() {
+        // Length-1: argument is 0, i0(0)/i0(beta) ratio with the
+        // numerator forced to 1 — but the formula evaluates at
+        // n=0, denom=1, so 2n/denom - 1 = -1, sqrt(1 - 1) = 0,
+        // arg = 0, i0(0) = 1. Then divide by i0(beta).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.kaiser_window(1, false, 5.0, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        assert_eq!(vals.len(), 1);
+        // i0(5) ≈ 27.24, so 1/i0(5) ≈ 0.0367.
+        let expected = 1.0 / super::bessel_i0_scalar(5.0);
+        assert!(
+            (vals[0] - expected).abs() < 1e-7,
+            "kaiser(1, β=5) = {}, expected {}",
+            vals[0],
+            expected
+        );
+    }
+
+    #[test]
+    fn kaiser_window_rejects_invalid_beta() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            let result = s.kaiser_window(4, false, bad, false);
+            assert!(
+                result.is_err(),
+                "kaiser_window with β={bad} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn kaiser_window_rejects_zero_length() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let result = s.kaiser_window(0, false, 5.0, false);
+        assert!(result.is_err(), "kaiser_window(0) must fail closed");
     }
 
     #[test]
