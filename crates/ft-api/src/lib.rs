@@ -25622,6 +25622,81 @@ mod tests {
     }
 
     #[test]
+    fn cosine_similarity_scale_and_sign_metamorphic() {
+        // Metamorphic relations outside the eps-clamp region:
+        //   cos(k*x, y) == cos(x, y) for k > 0
+        //   cos(-x, y)  == -cos(x, y)
+        // These generated cases stress numerator and denominator
+        // scaling together across batched dim=1 reductions.
+        let positive_scales = [0.25, 0.5, 2.0, 13.0];
+
+        for rows in 1..4 {
+            for cols in 2..6 {
+                let x_values: Vec<f64> = (0..rows * cols)
+                    .map(|i| ((i * 19 + rows * 7 + cols * 3) % 23) as f64 / 5.0 + 0.2)
+                    .collect();
+                let y_values: Vec<f64> = (0..rows * cols)
+                    .map(|i| ((i * 31 + rows * 5 + cols * 11) % 29) as f64 / 7.0 + 0.3)
+                    .collect();
+
+                let mut base_session = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = base_session
+                    .tensor_variable(x_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                let y = base_session
+                    .tensor_variable(y_values.clone(), vec![rows, cols], false)
+                    .unwrap();
+                let base = base_session.cosine_similarity(x, y, 1, 1e-12).unwrap();
+                let base_vals = base_session.tensor_values(base).unwrap();
+
+                for &scale in &positive_scales {
+                    let scaled_x: Vec<f64> = x_values.iter().map(|value| value * scale).collect();
+                    let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let xs = s
+                        .tensor_variable(scaled_x, vec![rows, cols], false)
+                        .unwrap();
+                    let ys = s
+                        .tensor_variable(y_values.clone(), vec![rows, cols], false)
+                        .unwrap();
+                    let scaled = s.cosine_similarity(xs, ys, 1, 1e-12).unwrap();
+                    let scaled_vals = s.tensor_values(scaled).unwrap();
+
+                    for (idx, (&base, &scaled)) in
+                        base_vals.iter().zip(scaled_vals.iter()).enumerate()
+                    {
+                        let diff = (base - scaled).abs();
+                        let tol = 32.0 * base.abs().max(scaled.abs()).max(1.0) * f64::EPSILON;
+                        assert!(
+                            diff <= 1e-12 || diff <= tol,
+                            "cos(k*x,y)[{idx}] = {scaled}, cos(x,y) = {base}, \
+                             scale={scale}, diff={diff:e}, tol={tol:e}"
+                        );
+                    }
+                }
+
+                let neg_x: Vec<f64> = x_values.iter().map(|value| -value).collect();
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xn = s.tensor_variable(neg_x, vec![rows, cols], false).unwrap();
+                let y = s
+                    .tensor_variable(y_values, vec![rows, cols], false)
+                    .unwrap();
+                let neg = s.cosine_similarity(xn, y, 1, 1e-12).unwrap();
+                let neg_vals = s.tensor_values(neg).unwrap();
+                for (idx, (&base, &neg)) in base_vals.iter().zip(neg_vals.iter()).enumerate() {
+                    let expected = -base;
+                    let diff = (neg - expected).abs();
+                    let tol = 32.0 * neg.abs().max(expected.abs()).max(1.0) * f64::EPSILON;
+                    assert!(
+                        diff <= 1e-12 || diff <= tol,
+                        "cos(-x,y)[{idx}] = {neg}, expected {expected}, \
+                         diff={diff:e}, tol={tol:e}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cosine_similarity_backward_produces_gradients() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x1 = s
