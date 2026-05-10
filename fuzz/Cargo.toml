@@ -114,6 +114,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ft_api_pad_mode"
+path = "fuzz_targets/ft_api_pad_mode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ft_kernel_cpu_index_select"
 path = "fuzz_targets/ft_kernel_cpu_index_select.rs"
 test = false
