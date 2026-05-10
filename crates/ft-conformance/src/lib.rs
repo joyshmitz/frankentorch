@@ -11887,6 +11887,102 @@ mod tests {
             }
         }
 
+        // ── tensor_special_ndtr metamorphic suite (frankentorch-fv7x) ──
+        //
+        // Three independent MRs covering different bug classes:
+        //   - sign symmetry (ndtr(x) + ndtr(-x) = 1): catches sign-
+        //     routing bugs in the erf compose chain
+        //   - monotonicity (x1 < x2 → ndtr(x1) <= ndtr(x2)): catches
+        //     sign-flip in the 0.5 * (1 + erf) arithmetic
+        //   - range bound (0 <= ndtr <= 1): catches numerical drift
+        //     at the tails (ndtr is a probability)
+
+        // MR (sign symmetry): ndtr(x) + ndtr(-x) = 1 for any
+        // real x. ULP-bounded since erf(x) and erf(-x) are
+        // libm-computed and have small but nonzero rounding
+        // drift relative to bit-exact symmetry.
+        #[test]
+        fn fuzz_metamorphic_ndtr_sign_symmetry(
+            samples in prop::collection::vec(-512i16..512i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let xs: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let neg_xs: Vec<f64> = xs.iter().map(|x| -x).collect();
+            let n = xs.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(xs, vec![n], false).expect("xt");
+            let nx = s.tensor_variable(neg_xs, vec![n], false).expect("nxt");
+            let out_pos = s.tensor_special_ndtr(xt).expect("ndtr(x)");
+            let out_neg = s.tensor_special_ndtr(nx).expect("ndtr(-x)");
+            let v_pos = s.tensor_values(out_pos).expect("v_pos");
+            let v_neg = s.tensor_values(out_neg).expect("v_neg");
+
+            for (i, (a, b)) in v_pos.iter().zip(v_neg.iter()).enumerate() {
+                let sum = a + b;
+                let diff = (sum - 1.0).abs();
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON,
+                    "ndtr(x[{}]) + ndtr(-x[{}]) = {} but expected 1.0, diff = {:e}",
+                    i, i, sum, diff
+                );
+            }
+        }
+
+        // MR (monotonicity): ndtr is non-decreasing. Build a
+        // sorted input vector and check the output is also
+        // sorted (within a small ULP margin to absorb rounding
+        // at near-tie points).
+        #[test]
+        fn fuzz_metamorphic_ndtr_monotonicity(
+            samples in prop::collection::vec(-512i16..512i16, 2..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let mut xs: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = xs.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(xs, vec![n], false).expect("xt");
+            let out = s.tensor_special_ndtr(xt).expect("ndtr");
+            let v = s.tensor_values(out).expect("values");
+
+            for i in 1..n {
+                // Monotone within ~16 ULPs to tolerate near-tie
+                // libm rounding. ndtr is bounded so absolute
+                // tolerance against the [0, 1] range works.
+                prop_assert!(
+                    v[i] + 16.0 * f64::EPSILON >= v[i - 1],
+                    "ndtr is non-monotone: v[{}] = {}, v[{}] = {}",
+                    i - 1, v[i - 1], i, v[i]
+                );
+            }
+        }
+
+        // MR (range bound): 0 <= ndtr(x) <= 1 for all non-NaN x.
+        // Allow a few ULPs of slack at the boundaries.
+        #[test]
+        fn fuzz_metamorphic_ndtr_range_bound(
+            samples in prop::collection::vec(-512i16..512i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let xs: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 11.0).collect();
+            let n = xs.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(xs, vec![n], false).expect("xt");
+            let out = s.tensor_special_ndtr(xt).expect("ndtr");
+            let v = s.tensor_values(out).expect("values");
+
+            for (i, val) in v.iter().enumerate() {
+                prop_assert!(
+                    *val >= -16.0 * f64::EPSILON && *val <= 1.0 + 16.0 * f64::EPSILON,
+                    "ndtr(x[{}]) = {} is outside [0, 1]",
+                    i, val
+                );
+            }
+        }
+
         // logaddexp is symmetric in its arguments: logaddexp(a, b) ==
         // logaddexp(b, a) bit-exactly. log(exp(a)+exp(b)) is unchanged
         // by argument order, and the max-subtraction stabilization
