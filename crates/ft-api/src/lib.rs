@@ -1260,6 +1260,47 @@ impl FrankenTorchSession {
         self.tensor_variable(values, vec![window_length], requires_grad)
     }
 
+    /// Blackman window for signal processing.
+    ///
+    /// Equivalent to `torch.blackman_window(window_length,
+    /// periodic=True)`. Three-term cosine window with lower
+    /// side-lobe levels than Hann/Hamming:
+    ///
+    ///   w[n] = 0.42 - 0.5*cos(2πn/denom) + 0.08*cos(4πn/denom)
+    ///
+    /// `denom = window_length` (periodic) or `window_length - 1`
+    /// (symmetric). Tracked under frankentorch-fhrd.
+    pub fn blackman_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if window_length == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "blackman_window: window_length must be > 0",
+                },
+            )));
+        }
+        let denom = if periodic {
+            window_length as f64
+        } else if window_length == 1 {
+            1.0
+        } else {
+            (window_length - 1) as f64
+        };
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let four_pi = 4.0 * std::f64::consts::PI;
+        let values: Vec<f64> = (0..window_length)
+            .map(|n| {
+                let x = n as f64 / denom;
+                0.42 - 0.5 * (two_pi * x).cos() + 0.08 * (four_pi * x).cos()
+            })
+            .collect();
+        self.tensor_variable(values, vec![window_length], requires_grad)
+    }
+
     /// Hamming window for signal processing.
     ///
     /// Equivalent to `torch.hamming_window(window_length,
@@ -42164,6 +42205,52 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let result = s.hamming_window(0, false, false);
         assert!(result.is_err(), "hamming_window(0) must fail closed");
+    }
+
+    // ── blackman_window tests (frankentorch-fhrd) ─────────────────────
+
+    #[test]
+    fn blackman_window_non_periodic_matches_expected_values() {
+        // blackman_window(4, periodic=false): denom = 3.
+        // n=0: 0.42 - 0.5*cos(0) + 0.08*cos(0) = 0.42 - 0.5 + 0.08 = 0
+        // n=3: same as n=0 by symmetry = 0
+        // Interior values are higher.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.blackman_window(4, false, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        assert!(vals[0].abs() < 1e-10, "endpoint 0 = {}", vals[0]);
+        assert!(vals[3].abs() < 1e-10, "endpoint 3 = {}", vals[3]);
+        assert!(vals[1] > 0.5 && vals[1] < 1.0, "n=1 interior = {}", vals[1]);
+        assert!(vals[2] > 0.5 && vals[2] < 1.0, "n=2 interior = {}", vals[2]);
+        // Symmetric: vals[1] == vals[2].
+        assert!((vals[1] - vals[2]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn blackman_window_periodic_uses_n_denominator() {
+        // periodic=true, N=4: denom = 4. cos(2π·0/4) = 1, cos(4π·0/4) = 1.
+        // n=0: 0.42 - 0.5 + 0.08 = 0
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.blackman_window(4, true, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        assert!(vals[0].abs() < 1e-10, "n=0 periodic = {}", vals[0]);
+    }
+
+    #[test]
+    fn blackman_window_length_one_returns_constant() {
+        // Length-1: cos(0) = 1 across both terms; w = 0.42 - 0.5 + 0.08 = 0.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let window = s.blackman_window(1, false, false).unwrap();
+        let vals = s.tensor_values(window).unwrap();
+        assert_eq!(vals.len(), 1);
+        assert!(vals[0].abs() < 1e-10);
+    }
+
+    #[test]
+    fn blackman_window_rejects_zero_length() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let result = s.blackman_window(0, false, false);
+        assert!(result.is_err(), "blackman_window(0) must fail closed");
     }
 
     #[test]
