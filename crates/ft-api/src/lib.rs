@@ -5788,49 +5788,66 @@ impl FrankenTorchSession {
     /// `i1(-x) = -i1(x)`. Used in von Mises gradients and
     /// heat-equation kernels. Tracked under frankentorch-ner6.
     ///
-    /// Autograd: not yet supported. The analytical backward
-    /// `d/dx i1(x) = (i0(x) + i2(x)) / 2` would need both `i0`
-    /// (have it) and `i2` (not ported). Fail-loud on
-    /// `requires_grad=true` until the chain is wired.
+    /// Autograd-aware via the analytical backward
+    /// `d/dx i1(x) = i0(x) - i1(x) / x`, with the removable
+    /// zero-limit set to 0.5.
     pub fn tensor_special_i1(
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        if self.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "i1: autograd not yet supported (d/dx i1 = (i0 + i2) / 2 needs i2). Tracked under frankentorch-ner6.",
-                },
-            )));
-        }
-        let vals = self.tensor_values(input)?;
-        let shape = self.tensor_shape(input)?;
-        let result: Vec<f64> = vals.iter().map(|&x| bessel_i1_scalar(x)).collect();
-        self.tensor_variable(result, shape, false)
+        self.tensor_apply_function(
+            &[input],
+            |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                let result: Vec<f64> = vals.iter().map(|&x| bessel_i1_scalar(x)).collect();
+                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                Ok((result, shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let saved = ctx.saved_tensors();
+                let x_vals = &saved[0];
+                let grad_y = grad_outputs[0];
+                let grad_x: Vec<f64> = x_vals
+                    .iter()
+                    .zip(grad_y.iter())
+                    .map(|(&x, &gy)| gy * bessel_i1_derivative_scalar(x))
+                    .collect();
+                Ok(vec![Some(grad_x)])
+            },
+        )
     }
 
     /// Exponentially scaled modified Bessel of the first kind,
     /// order 1: `i1e(x) = exp(-|x|) * i1(x)`.
     ///
     /// Equivalent to `torch.special.i1e(input)`. Stays bounded for
-    /// large `|x|` where `i1(x)` would overflow. Same fail-loud
-    /// autograd policy as `tensor_special_i1`. Tracked under
-    /// frankentorch-ner6.
+    /// large `|x|` where `i1(x)` would overflow. Autograd-aware
+    /// via the scaled analytical backward. Tracked under
+    /// frankentorch-ner6 and frankentorch-ar9i.
     pub fn tensor_special_i1e(
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        if self.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "i1e: autograd not yet supported. Tracked under frankentorch-ner6.",
-                },
-            )));
-        }
-        let vals = self.tensor_values(input)?;
-        let shape = self.tensor_shape(input)?;
-        let result: Vec<f64> = vals.iter().map(|&x| bessel_i1e_scalar(x)).collect();
-        self.tensor_variable(result, shape, false)
+        self.tensor_apply_function(
+            &[input],
+            |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                let result: Vec<f64> = vals.iter().map(|&x| bessel_i1e_scalar(x)).collect();
+                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                Ok((result, shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let saved = ctx.saved_tensors();
+                let x_vals = &saved[0];
+                let grad_y = grad_outputs[0];
+                let grad_x: Vec<f64> = x_vals
+                    .iter()
+                    .zip(grad_y.iter())
+                    .map(|(&x, &gy)| gy * bessel_i1e_derivative_scalar(x))
+                    .collect();
+                Ok(vec![Some(grad_x)])
+            },
+        )
     }
 
     /// Numerically stable log of the standard normal CDF.
@@ -20473,15 +20490,7 @@ fn bessel_i0_scalar(x: f64) -> f64 {
         let t = (x / 3.75).powi(2);
         eval_poly_f64(
             t,
-            &[
-                1.0,
-                3.5156229,
-                3.0899424,
-                1.2067492,
-                0.2659732,
-                0.0360768,
-                0.0045813,
-            ],
+            &[1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813],
         )
     } else {
         // A&S 9.8.2: i0(x) ≈ (exp(|x|)/sqrt(|x|)) * P(3.75/|x|).
@@ -20554,15 +20563,7 @@ fn bessel_i1_scalar(x: f64) -> f64 {
         let t = (x / 3.75).powi(2);
         ax * eval_poly_f64(
             t,
-            &[
-                0.5,
-                0.87890594,
-                0.51498869,
-                0.15084934,
-                0.02658733,
-                0.00301532,
-                0.00032411,
-            ],
+            &[0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411],
         )
     } else {
         // A&S 9.8.4: i1(x) ≈ exp(|x|)/sqrt(|x|) * P(3.75/|x|).
@@ -20584,6 +20585,19 @@ fn bessel_i1_scalar(x: f64) -> f64 {
         ax.exp() / ax.sqrt() * poly
     };
     if x < 0.0 { -result } else { result }
+}
+
+fn bessel_i1_derivative_scalar(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return 0.5;
+    }
+    if x.is_infinite() {
+        return f64::INFINITY;
+    }
+    bessel_i0_scalar(x) - bessel_i1_scalar(x) / x
 }
 
 /// Exponentially scaled I1: `exp(-|x|) * i1(x)`. Same A&S
@@ -20619,6 +20633,17 @@ fn bessel_i1e_scalar(x: f64) -> f64 {
         poly / ax.sqrt()
     };
     if x < 0.0 { -result } else { result }
+}
+
+fn bessel_i1e_derivative_scalar(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return 0.5;
+    }
+    let i1e = bessel_i1e_scalar(x);
+    bessel_i0e_scalar(x) - i1e / x - x.signum() * i1e
 }
 
 /// Numerically stable scalar log_ndtr (frankentorch-2mb1).
@@ -21062,7 +21087,7 @@ mod tests {
 
     use super::{
         FrankenTorchSession, GridSampleMode, GridSamplePaddingMode, IstftOptions, StftOptions,
-        TensorNodeId,
+        TensorNodeId, bessel_i1_derivative_scalar, bessel_i1e_derivative_scalar,
     };
 
     #[test]
@@ -39139,8 +39164,16 @@ mod tests {
             .unwrap();
         let out = s.tensor_special_i1(x).unwrap();
         let v = s.tensor_values(out).unwrap();
-        assert!((v[0] + v[1]).abs() < 1e-7, "i1(2) + i1(-2) = {}", v[0] + v[1]);
-        assert!((v[2] + v[3]).abs() < 1e-7, "i1(5) + i1(-5) = {}", v[2] + v[3]);
+        assert!(
+            (v[0] + v[1]).abs() < 1e-7,
+            "i1(2) + i1(-2) = {}",
+            v[0] + v[1]
+        );
+        assert!(
+            (v[2] + v[3]).abs() < 1e-7,
+            "i1(5) + i1(-5) = {}",
+            v[2] + v[3]
+        );
     }
 
     #[test]
@@ -39153,11 +39186,22 @@ mod tests {
     }
 
     #[test]
-    fn i1_fails_loud_on_requires_grad() {
+    fn i1_propagates_gradient() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
-        let result = s.tensor_special_i1(x);
-        assert!(result.is_err(), "i1 with requires_grad must fail closed");
+        let xs = vec![-2.0, 0.0, 1.0];
+        let x = s.tensor_variable(xs.clone(), vec![3], true).unwrap();
+        let out = s.tensor_special_i1(x).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, x).unwrap();
+        for (i, &x_val) in xs.iter().enumerate() {
+            let expected = bessel_i1_derivative_scalar(x_val);
+            assert!(
+                (grad[i] - expected).abs() < 1e-10,
+                "i1 grad at x={x_val} = {}, expected {expected}",
+                grad[i]
+            );
+        }
     }
 
     #[test]
@@ -39178,11 +39222,26 @@ mod tests {
         let out = s.tensor_special_i1e(x).unwrap();
         let v = s.tensor_values(out).unwrap();
         assert!(v[0].is_finite(), "i1e(100) must stay finite, got {}", v[0]);
-        assert!(
-            v[0] > 0.0 && v[0] < 0.05,
-            "i1e(100) ≈ 0.0398, got {}",
-            v[0]
-        );
+        assert!(v[0] > 0.0 && v[0] < 0.05, "i1e(100) ≈ 0.0398, got {}", v[0]);
+    }
+
+    #[test]
+    fn i1e_propagates_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs = vec![-2.0, 0.0, 1.0, 100.0];
+        let x = s.tensor_variable(xs.clone(), vec![4], true).unwrap();
+        let out = s.tensor_special_i1e(x).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, x).unwrap();
+        for (i, &x_val) in xs.iter().enumerate() {
+            let expected = bessel_i1e_derivative_scalar(x_val);
+            assert!(
+                (grad[i] - expected).abs() < 1e-10,
+                "i1e grad at x={x_val} = {}, expected {expected}",
+                grad[i]
+            );
+        }
     }
 
     // ── tensor_special_i0 / i0e tests (frankentorch-2vxa) ─────────────
