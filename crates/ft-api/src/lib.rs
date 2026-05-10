@@ -16845,6 +16845,16 @@ impl FrankenTorchSession {
     /// previously this had a fail-loud guard rejecting tracked
     /// inputs because the body just computed values and rebuilt a
     /// requires_grad=false leaf.
+    /// `torch.lgamma(input)` parity alias for `tensor_gammaln`.
+    ///
+    /// torch exposes both `torch.lgamma` and `torch.special.gammaln`
+    /// as the same op; ft-api had only `tensor_gammaln`. Code ported
+    /// from PyTorch using `torch.lgamma` fails to compile without
+    /// this alias. Tracked under frankentorch-ae41.
+    pub fn tensor_lgamma(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gammaln(input)
+    }
+
     pub fn tensor_gammaln(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let out = self.tensor_apply_function(
             &[input],
@@ -39552,6 +39562,43 @@ mod tests {
             (g[0] - expected).abs() < 1e-12,
             "ndtr grad at x=0 = {}, expected {}",
             g[0],
+            expected
+        );
+    }
+
+    #[test]
+    fn lgamma_alias_matches_gammaln() {
+        // tensor_lgamma is a thin alias of tensor_gammaln
+        // (frankentorch-ae41). Both must produce identical
+        // values for the same input.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs = vec![1.0, 2.0, 0.5, 5.5];
+        let n = xs.len();
+        let a = s
+            .tensor_variable(xs.clone(), vec![n], false)
+            .unwrap();
+        let b = s.tensor_variable(xs, vec![n], false).unwrap();
+        let lg = s.tensor_lgamma(a).unwrap();
+        let gn = s.tensor_gammaln(b).unwrap();
+        let v_lg = s.tensor_values(lg).unwrap();
+        let v_gn = s.tensor_values(gn).unwrap();
+        for (i, (a, b)) in v_lg.iter().zip(v_gn.iter()).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "i={i}: lgamma={a}, gammaln={b}");
+        }
+    }
+
+    #[test]
+    fn lgamma_at_half_matches_known_value() {
+        // lgamma(0.5) = log(sqrt(pi)) ≈ 0.5723649429.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.5], vec![1], false).unwrap();
+        let out = s.tensor_lgamma(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        let expected = std::f64::consts::PI.sqrt().ln();
+        assert!(
+            (v[0] - expected).abs() < 1e-10,
+            "lgamma(0.5) = {}, expected {}",
+            v[0],
             expected
         );
     }
