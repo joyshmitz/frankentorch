@@ -17013,6 +17013,22 @@ impl FrankenTorchSession {
     /// analytical backward
     ///     d/dx multigammaln(x, p) = sum_{i=0..p-1} digamma(x - i/2)
     /// computed via digamma_approx. Tracked under frankentorch-1tax.
+    /// `torch.mvlgamma(input, p)` parity alias for
+    /// `tensor_multigammaln`.
+    ///
+    /// torch exposes both `torch.mvlgamma` and
+    /// `torch.special.multigammaln` for the multivariate log-gamma
+    /// function. ft-api had only the torch.special name; PyTorch
+    /// code using `torch.mvlgamma` fails to compile without this
+    /// alias. Tracked under frankentorch-abhu.
+    pub fn tensor_mvlgamma(
+        &mut self,
+        input: TensorNodeId,
+        p: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multigammaln(input, p)
+    }
+
     pub fn tensor_multigammaln(
         &mut self,
         input: TensorNodeId,
@@ -39824,6 +39840,31 @@ mod tests {
                 v.is_nan(),
                 "ψ at negative-integer pole {i} must be NaN, got {v}"
             );
+        }
+    }
+
+    #[test]
+    fn mvlgamma_alias_matches_multigammaln() {
+        // tensor_mvlgamma is a thin alias of tensor_multigammaln
+        // (frankentorch-abhu). Both must produce identical
+        // values for the same (input, p).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs = vec![1.5, 2.5, 3.5];
+        let n = xs.len();
+        let a = s.tensor_variable(xs.clone(), vec![n], false).unwrap();
+        let b = s.tensor_variable(xs, vec![n], false).unwrap();
+        for p in [1usize, 2, 3] {
+            let alias_out = s.tensor_mvlgamma(a, p).unwrap();
+            let canon_out = s.tensor_multigammaln(b, p).unwrap();
+            let v_alias = s.tensor_values(alias_out).unwrap();
+            let v_canon = s.tensor_values(canon_out).unwrap();
+            for (i, (x, y)) in v_alias.iter().zip(v_canon.iter()).enumerate() {
+                assert_eq!(
+                    x.to_bits(),
+                    y.to_bits(),
+                    "p={p} i={i}: mvlgamma={x}, multigammaln={y}"
+                );
+            }
         }
     }
 
