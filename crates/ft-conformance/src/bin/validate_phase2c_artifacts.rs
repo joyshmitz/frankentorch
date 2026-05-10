@@ -934,7 +934,10 @@ mod tests {
 
     #[test]
     fn packet_worker_count_ignores_invalid_cap_values() {
-        assert_eq!(select_packet_worker_count(8, false, Some("not-a-number"), 4), 4);
+        assert_eq!(
+            select_packet_worker_count(8, false, Some("not-a-number"), 4),
+            4
+        );
         assert_eq!(select_packet_worker_count(8, false, Some("0"), 4), 4);
         assert_eq!(select_packet_worker_count(8, false, Some(" 3 "), 4), 3);
     }

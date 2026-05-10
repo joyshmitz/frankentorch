@@ -16631,7 +16631,9 @@ print(json.dumps({"results": results}, sort_keys=True))
             let exp_i1e = decode(&pair[1]);
 
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let xt = session
+                .tensor_variable(vec![input], vec![1], false)
+                .unwrap();
             let i1_id = session.tensor_special_i1(xt).unwrap();
             let i1e_id = session.tensor_special_i1e(xt).unwrap();
             let got_i1 = session.tensor_values(i1_id).expect("i1")[0];
@@ -16766,7 +16768,9 @@ print(json.dumps({"results": results}, sort_keys=True))
             let exp_i0e = decode(&pair[1]);
 
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let xt = session
+                .tensor_variable(vec![input], vec![1], false)
+                .unwrap();
             let i0_id = session.tensor_special_i0(xt).unwrap();
             let i0e_id = session.tensor_special_i0e(xt).unwrap();
             let got_i0 = session.tensor_values(i0_id).expect("i0")[0];
@@ -17049,7 +17053,9 @@ print(json.dumps({"results": results}, sort_keys=True))
             let input = decode(case);
             let expected = decode(expected_value);
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let xt = session
+                .tensor_variable(vec![input], vec![1], false)
+                .unwrap();
             let out = session.tensor_special_log_ndtr(xt).unwrap();
             let got = session.tensor_values(out).expect("got")[0];
 
@@ -17069,7 +17075,11 @@ print(json.dumps({"results": results}, sort_keys=True))
             let diff = (got - expected).abs();
             let scale = got.abs().max(expected.abs()).max(1.0);
             let in_asymptotic = input < -1.0 && input.is_finite();
-            let rel_tol = if in_asymptotic { 1e-3 } else { 8.0 * f64::EPSILON };
+            let rel_tol = if in_asymptotic {
+                1e-3
+            } else {
+                8.0 * f64::EPSILON
+            };
             assert!(
                 diff <= 1e-12 || diff <= rel_tol * scale,
                 "case {i} (input={input}): tensor_special_log_ndtr = {got}, torch = {expected}, diff = {diff:e}, rel_tol = {rel_tol}"
@@ -17172,7 +17182,9 @@ print(json.dumps({"results": results}, sort_keys=True))
             let input = decode(case);
             let expected = decode(expected_value);
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let xt = session
+                .tensor_variable(vec![input], vec![1], false)
+                .unwrap();
             let out = session.tensor_special_ndtr(xt).unwrap();
             let got = session.tensor_values(out).expect("got")[0];
 
@@ -17452,7 +17464,9 @@ print(json.dumps({"results": results}, sort_keys=True))
             let input = decode(case);
             let expected = decode(expected_value);
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let xt = session
+                .tensor_variable(vec![input], vec![1], false)
+                .unwrap();
             let out = session
                 .tensor_angle(xt)
                 .unwrap_or_else(|err| panic!("case {i} angle failed: {err:?}"));
@@ -17702,16 +17716,16 @@ print(json.dumps({"results": results}, sort_keys=True))
             Case::Finite(-0.5),
             Case::Finite(1.25),
             Case::Finite(-1.25),
-            Case::Finite(3.0),     // exact integer; frac == 0
-            Case::Finite(-3.0),    // exact integer; frac == 0 (sign per torch)
-            Case::Finite(1e-300),  // very small; frac == self
+            Case::Finite(3.0),    // exact integer; frac == 0
+            Case::Finite(-3.0),   // exact integer; frac == 0 (sign per torch)
+            Case::Finite(1e-300), // very small; frac == self
             Case::Finite(-1e-300),
             // Magnitude-precision boundary: at 2^52 every f64 is
             // an integer, so frac == 0 by f64 representability,
             // not by computation.
-            Case::Finite(4503599627370496.0),  // 2^52
+            Case::Finite(4503599627370496.0), // 2^52
             Case::Finite(-4503599627370496.0),
-            Case::Finite(9007199254740992.0),  // 2^53, also integer in f64
+            Case::Finite(9007199254740992.0), // 2^53, also integer in f64
             Case::Nan,
             Case::PosInf,
             Case::NegInf,
@@ -18828,6 +18842,218 @@ print(json.dumps({
                 ieee_bit_equal(got, *expected),
                 "signbit case {i} ({x}): got {got}, torch {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn torch_float_power_subprocess_conformance() {
+        // tensor_float_power is a PyTorch parity alias for torch.float_power.
+        // Unit tests already prove it delegates to tensor_pow; this oracle
+        // pins the public alias against upstream torch on scalar-exponent
+        // edge cases that distinguish NaN/inf and signed zero behavior.
+        use ft_api::FrankenTorchSession;
+
+        #[derive(Debug)]
+        struct FloatPowerCase {
+            name: &'static str,
+            input: Vec<f64>,
+            exponent: f64,
+        }
+
+        fn encode_scalar(value: f64) -> Value {
+            if value.is_nan() {
+                Value::String("nan".to_string())
+            } else if value == f64::INFINITY {
+                Value::String("inf".to_string())
+            } else if value == f64::NEG_INFINITY {
+                Value::String("-inf".to_string())
+            } else if value.to_bits() == (-0.0f64).to_bits() {
+                Value::String("-0.0".to_string())
+            } else {
+                json!(value)
+            }
+        }
+
+        fn decode_scalar(value: &Value) -> f64 {
+            match value {
+                Value::String(tag) if tag == "nan" => f64::NAN,
+                Value::String(tag) if tag == "inf" => f64::INFINITY,
+                Value::String(tag) if tag == "-inf" => f64::NEG_INFINITY,
+                Value::String(tag) if tag == "-0.0" => -0.0,
+                Value::Number(number) => number.as_f64().unwrap_or(f64::NAN),
+                _ => f64::NAN,
+            }
+        }
+
+        fn assert_float_power_close(case_name: &str, index: usize, got: f64, want: f64) {
+            if got.is_nan() || want.is_nan() {
+                assert!(
+                    got.is_nan() && want.is_nan(),
+                    "{case_name}: value[{index}] got {got:?}, want {want:?}"
+                );
+                return;
+            }
+            let got_is_zero = got.to_bits() == 0 || got.to_bits() == (-0.0f64).to_bits();
+            let want_is_zero = want.to_bits() == 0 || want.to_bits() == (-0.0f64).to_bits();
+            if got_is_zero || want_is_zero {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "{case_name}: value[{index}] signed zero mismatch"
+                );
+                return;
+            }
+            if got.is_infinite() || want.is_infinite() {
+                assert_eq!(
+                    got, want,
+                    "{case_name}: value[{index}] got {got:?}, want {want:?}"
+                );
+                return;
+            }
+            let diff = (got - want).abs();
+            let scale = got.abs().max(want.abs()).max(1.0);
+            assert!(
+                diff <= 1e-12 * scale,
+                "{case_name}: value[{index}] got {got:?}, want {want:?}, diff {diff:e}"
+            );
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_float_power_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let cases = [
+            FloatPowerCase {
+                name: "positive_negative_integer_exponent",
+                input: vec![-2.0, -0.0, 0.0, 0.5, 2.0],
+                exponent: 3.0,
+            },
+            FloatPowerCase {
+                name: "negative_exponent",
+                input: vec![-2.0, -0.0, 0.0, 0.5, 2.0],
+                exponent: -1.0,
+            },
+            FloatPowerCase {
+                name: "fractional_exponent_and_specials",
+                input: vec![-4.0, -0.0, 0.0, 4.0, f64::INFINITY, f64::NAN],
+                exponent: 0.5,
+            },
+            FloatPowerCase {
+                name: "zero_exponent",
+                input: vec![-0.0, 0.0, -2.0, f64::INFINITY, f64::NAN],
+                exponent: 0.0,
+            },
+        ];
+
+        let payload = json!({
+            "cases": cases
+                .iter()
+                .map(|case| {
+                    json!({
+                        "name": case.name,
+                        "input": case.input.iter().copied().map(encode_scalar).collect::<Vec<_>>(),
+                        "exponent": encode_scalar(case.exponent),
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(value):
+    if isinstance(value, str):
+        if value == "nan":
+            return float("nan")
+        if value == "inf":
+            return float("inf")
+        if value == "-inf":
+            return float("-inf")
+        if value == "-0.0":
+            return -0.0
+    return float(value)
+
+def encode_scalar(value):
+    if math.isnan(value):
+        return "nan"
+    if math.isinf(value):
+        return "inf" if value > 0 else "-inf"
+    if value == 0.0 and math.copysign(1.0, value) < 0:
+        return "-0.0"
+    return value
+
+payload = json.loads(sys.stdin.read())
+out = []
+for case in payload["cases"]:
+    input_tensor = torch.tensor(
+        [decode_scalar(value) for value in case["input"]],
+        dtype=torch.float64,
+    )
+    exponent = decode_scalar(case["exponent"])
+    result = torch.float_power(input_tensor, exponent)
+    out.append({
+        "name": case["name"],
+        "values": [encode_scalar(float(value)) for value in result.flatten().tolist()],
+    })
+
+print(json.dumps({"cases": out}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch.float_power oracle should run");
+        let oracle_cases = oracle
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("torch response should include cases");
+        assert_eq!(oracle_cases.len(), cases.len());
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (case, oracle_case) in cases.iter().zip(oracle_cases) {
+            let oracle_name = oracle_case
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            assert_eq!(oracle_name, case.name);
+            let expected = oracle_case
+                .get("values")
+                .and_then(Value::as_array)
+                .expect("oracle values")
+                .iter()
+                .map(decode_scalar)
+                .collect::<Vec<_>>();
+
+            let input = session
+                .tensor_variable(case.input.clone(), vec![case.input.len()], false)
+                .expect("float_power input should be constructible");
+            let output = session
+                .tensor_float_power(input, case.exponent)
+                .expect("float_power should run");
+            let actual = session
+                .tensor_values(output)
+                .expect("float_power values should be readable");
+            assert_eq!(actual.len(), expected.len());
+            for (index, (got, want)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_float_power_close(case.name, index, *got, *want);
+            }
         }
     }
 

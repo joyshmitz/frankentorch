@@ -382,7 +382,37 @@ pub fn isfinite_scalar(input: &ScalarTensor) -> ScalarTensor {
 }
 
 pub fn pow_scalar(input: &ScalarTensor, exponent: f64) -> ScalarTensor {
-    input.with_value(input.value().powf(exponent))
+    input.with_value(powf_torch_signed_zero_f64(input.value(), exponent))
+}
+
+fn powf_torch_signed_zero_f64(value: f64, exponent: f64) -> f64 {
+    let result = value.powf(exponent);
+    if value == 0.0
+        && value.is_sign_negative()
+        && exponent.is_finite()
+        && exponent > 0.0
+        && exponent.fract() != 0.0
+        && result == 0.0
+    {
+        -0.0
+    } else {
+        result
+    }
+}
+
+fn powf_torch_signed_zero_f32(value: f32, exponent: f32) -> f32 {
+    let result = value.powf(exponent);
+    if value == 0.0
+        && value.is_sign_negative()
+        && exponent.is_finite()
+        && exponent > 0.0
+        && exponent.fract() != 0.0
+        && result == 0.0
+    {
+        -0.0
+    } else {
+        result
+    }
 }
 
 pub fn clamp_scalar(input: &ScalarTensor, min_val: f64, max_val: f64) -> ScalarTensor {
@@ -1088,7 +1118,10 @@ pub fn pow_tensor_contiguous_f64(
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    Ok(window.iter().map(|value| value.powf(exponent)).collect())
+    Ok(window
+        .iter()
+        .map(|value| powf_torch_signed_zero_f64(*value, exponent))
+        .collect())
 }
 
 pub fn clamp_tensor_contiguous_f64(
@@ -5149,7 +5182,10 @@ pub fn pow_tensor_contiguous_f32(
     }
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
-    Ok(window.iter().map(|value| value.powf(exponent)).collect())
+    Ok(window
+        .iter()
+        .map(|value| powf_torch_signed_zero_f32(*value, exponent))
+        .collect())
 }
 
 pub fn clamp_tensor_contiguous_f32(
@@ -7523,13 +7559,13 @@ mod tests {
         min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64,
         narrow_tensor_contiguous_f64, ne_scalar, ne_tensor_contiguous_f64, neg_scalar,
         neg_tensor_contiguous_f64, norm_tensor_contiguous_f64, outer_tensor_contiguous_f64,
-        pow_scalar, pow_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64, reciprocal_scalar,
-        reciprocal_tensor_contiguous_f64, relu_scalar, relu_tensor_contiguous_f64,
-        scatter_tensor_contiguous_f32, scatter_tensor_contiguous_f64, sigmoid_scalar,
-        sigmoid_tensor_contiguous_f64, sign_scalar, sign_tensor_contiguous_f64, silu_scalar,
-        silu_tensor_contiguous_f64, sinh_scalar, sinh_tensor_contiguous_f64,
-        softmax_dim_tensor_contiguous_f64, sparse_coo_add, sparse_coo_coalesce,
-        sparse_coo_matmul_dense_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
+        pow_scalar, pow_tensor_contiguous_f32, pow_tensor_contiguous_f64,
+        prod_dim_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
+        relu_scalar, relu_tensor_contiguous_f64, scatter_tensor_contiguous_f32,
+        scatter_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sign_scalar,
+        sign_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64, sinh_scalar,
+        sinh_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64, sparse_coo_add,
+        sparse_coo_coalesce, sparse_coo_matmul_dense_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
         stack_tensor_contiguous_f32, stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64,
         sub_scalar, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f32,
         sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
@@ -8944,6 +8980,13 @@ mod tests {
     }
 
     #[test]
+    fn pow_scalar_preserves_negative_zero_for_fractional_exponent() {
+        let input = ScalarTensor::new(-0.0, DType::F64, Device::Cpu);
+        let out = pow_scalar(&input, 0.5);
+        assert_eq!(out.value().to_bits(), (-0.0f64).to_bits());
+    }
+
+    #[test]
     fn pow_tensor_contiguous_returns_expected_values() {
         let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0];
@@ -8959,6 +9002,26 @@ mod tests {
         let out = pow_tensor_contiguous_f64(&input, &meta, -1.0)
             .expect("pow with negative exponent should succeed");
         assert_eq!(out, vec![0.5, 0.25]);
+    }
+
+    #[test]
+    fn pow_tensor_preserves_negative_zero_for_fractional_exponent() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let input = vec![-0.0, 0.0];
+        let out =
+            pow_tensor_contiguous_f64(&input, &meta, 0.5).expect("fractional pow should succeed");
+        assert_eq!(out[0].to_bits(), (-0.0f64).to_bits());
+        assert_eq!(out[1].to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn pow_tensor_f32_preserves_negative_zero_for_fractional_exponent() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu);
+        let input = vec![-0.0f32, 0.0f32];
+        let out =
+            pow_tensor_contiguous_f32(&input, &meta, 0.5).expect("fractional pow should succeed");
+        assert_eq!(out[0].to_bits(), (-0.0f32).to_bits());
+        assert_eq!(out[1].to_bits(), 0.0f32.to_bits());
     }
 
     #[test]
