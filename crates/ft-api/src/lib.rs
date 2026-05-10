@@ -14310,6 +14310,14 @@ impl FrankenTorchSession {
         }
 
         let out_numel = Self::checked_shape_numel(&out_shape, "pad: output shape volume overflow")?;
+        if out_numel > 0 && shape.iter().any(|dim| *dim == 0) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pad: non-constant padding requires non-empty input dimensions",
+                },
+            )));
+        }
+
         let out_strides = ft_core::contiguous_strides(&out_shape);
         let in_strides = ft_core::contiguous_strides(shape);
 
@@ -34738,6 +34746,35 @@ mod tests {
             .tensor_pad_mode(input, &[usize::MAX, 0], "reflect", 0.0)
             .expect_err("overflow should fail closed");
         assert!(format!("{err}").contains("pad: output shape overflow"));
+    }
+
+    #[test]
+    fn pad_nonconstant_rejects_zero_size_input_that_would_read() {
+        for mode in ["reflect", "replicate", "circular"] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s
+                .tensor_variable(Vec::<f64>::new(), vec![0], false)
+                .unwrap();
+            let err = s
+                .tensor_pad_mode(input, &[1, 0], mode, 0.0)
+                .expect_err("non-constant padding over empty input must fail closed");
+            assert!(
+                format!("{err}")
+                    .contains("pad: non-constant padding requires non-empty input dimensions"),
+                "mode={mode} returned unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn pad_constant_allows_zero_size_input_padding() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(Vec::<f64>::new(), vec![0], false)
+            .unwrap();
+        let out = s.tensor_pad_mode(input, &[1, 0], "constant", 7.0).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![1]);
+        assert_eq!(s.tensor_values(out).unwrap(), vec![7.0]);
     }
 
     #[test]

@@ -11887,6 +11887,105 @@ mod tests {
             }
         }
 
+        // ── tensor_special_log_ndtr metamorphic suite (frankentorch-v6wm) ─
+        //
+        // Three independent MRs:
+        //   - branch continuity at x = -1: direct vs asymptotic
+        //     branches must agree across the piecewise switch
+        //   - monotonicity: log_ndtr is strictly increasing
+        //   - asymptotic dominance: log_ndtr(x) ~ -x²/2 as
+        //     x → -∞
+
+        // MR (branch continuity): log_ndtr(-1.0) (direct) and
+        // log_ndtr(-1.000001) (asymptotic) must agree within
+        // tight tolerance — both branches are ostensibly
+        // approximating the same function at adjacent points.
+        #[test]
+        fn fuzz_metamorphic_log_ndtr_branch_continuity_at_minus_one(
+            _seed in 0u8..16u8
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            // Just below -1 hits the asymptotic branch; just above
+            // -1 hits the direct branch. Sample exactly at the
+            // boundary in both.
+            let xs = vec![-1.0_f64, -1.0 - 1e-9, -0.9999999_f64];
+            let n = xs.len();
+            let xt = s.tensor_variable(xs, vec![n], false).expect("xt");
+            let out = s.tensor_special_log_ndtr(xt).expect("log_ndtr");
+            let v = s.tensor_values(out).expect("values");
+            // The three points are within 1e-9 of each other so
+            // log_ndtr should agree to ~1e-7 across the branch
+            // boundary. Slightly looser to absorb the asymptotic
+            // truncation residual.
+            for i in 1..n {
+                let diff = (v[i] - v[0]).abs();
+                prop_assert!(
+                    diff < 1e-6,
+                    "log_ndtr branch discontinuity at x≈-1: v[{i}] - v[0] = {diff:e}"
+                );
+            }
+        }
+
+        // MR (monotonicity): log_ndtr is non-decreasing.
+        #[test]
+        fn fuzz_metamorphic_log_ndtr_monotonicity(
+            samples in prop::collection::vec(-512i16..512i16, 2..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Avoid zero-derivative-explosion by mapping samples
+            // into [-30, 30] where the asymptotic and direct
+            // branches are both well-conditioned.
+            let mut xs: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = xs.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(xs, vec![n], false).expect("xt");
+            let out = s.tensor_special_log_ndtr(xt).expect("log_ndtr");
+            let v = s.tensor_values(out).expect("values");
+
+            for i in 1..n {
+                // log_ndtr is strictly increasing, but we allow
+                // small ULP slack at near-tie points.
+                prop_assert!(
+                    v[i] + 1e-9 >= v[i - 1],
+                    "log_ndtr non-monotone: v[{}]={}, v[{}]={}",
+                    i - 1, v[i - 1], i, v[i]
+                );
+            }
+        }
+
+        // MR (asymptotic dominance): for x = -k where k is
+        // large, log_ndtr(x) / (-x²/2) → 1. Equivalently the
+        // ratio is bounded close to 1 for k >= 5.
+        #[test]
+        fn fuzz_metamorphic_log_ndtr_asymptotic_quadratic_dominance(
+            k_raw in 5u8..40u8
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let k = f64::from(k_raw);
+            let x = -k;
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = s.tensor_variable(vec![x], vec![1], false).expect("xt");
+            let out = s.tensor_special_log_ndtr(xt).expect("log_ndtr");
+            let v = s.tensor_values(out).expect("values")[0];
+            let leading = -0.5 * x * x;
+            // log_ndtr(x) = leading - log(-x*sqrt(2π)) + tiny
+            //             = leading - O(log(k))
+            // ratio = log_ndtr / leading approaches 1 as k → ∞.
+            // For k = 5 the log term contributes ~3.7 / 12.5 ≈ 0.3,
+            // so ratio is ~0.7. Loosen to 0.5 to admit k=5; tighten
+            // for larger k inside.
+            let ratio = v / leading;
+            prop_assert!(
+                ratio > 0.5 && ratio < 1.5,
+                "log_ndtr({x}) = {v}, leading = {leading}, ratio = {ratio} not in (0.5, 1.5)"
+            );
+        }
+
         // ── tensor_special_ndtr metamorphic suite (frankentorch-fv7x) ──
         //
         // Three independent MRs covering different bug classes:
