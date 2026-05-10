@@ -4764,11 +4764,12 @@ impl FrankenTorchSession {
         }
         let m = m1;
 
-        // Autograd path for finite p > 0: compose through broadcasted
-        // sub + abs + pow + sum_dim + pow. Tracked under
-        // frankentorch-tdqo. p == 0 / p == +inf still fail-loud on
-        // requires_grad (sister of frankentorch-0i8u behavior).
-        if p.is_finite() && p > 0.0 && batch * p_dim * r_dim > 0 {
+        // Autograd path for finite p > 0 composes through broadcasted
+        // sub + abs + pow + sum_dim + pow. p == +inf uses the same
+        // broadcasted difference and reduces through tensor_amax so
+        // gradients route to the max-distance coordinate. p == 0 stays
+        // fail-loud below because the count metric is not differentiable.
+        if ((p.is_finite() && p > 0.0) || p == f64::INFINITY) && batch * p_dim * r_dim > 0 {
             let (x1_b, x2_b, expand_target, sum_dim_idx, out_shape) = if batched {
                 // x1: [B, P, M], x2: [B, R, M]
                 // x1_b: [B, P, 1, M], x2_b: [B, 1, R, M], target: [B, P, R, M]
@@ -4792,6 +4793,10 @@ impl FrankenTorchSession {
             let x2_e = self.tensor_expand(x2_b, expand_target)?;
             let diff = self.tensor_sub(x1_e, x2_e)?;
             let abs_diff = self.tensor_abs(diff)?;
+            if p == f64::INFINITY {
+                let result = self.tensor_amax(abs_diff, sum_dim_idx)?;
+                return self.tensor_reshape(result, out_shape);
+            }
             let pow_diff = self.tensor_pow(abs_diff, p)?;
             let sum = self.tensor_sum_dim(pow_diff, sum_dim_idx)?;
             let result = self.tensor_pow(sum, 1.0 / p)?;
@@ -4801,13 +4806,13 @@ impl FrankenTorchSession {
             return self.tensor_reshape(result, out_shape);
         }
 
-        if (p == f64::INFINITY || p == 0.0)
+        if p == 0.0
             && (self.tensor_tape.tensor_requires_grad(x1)?
                 || self.tensor_tape.tensor_requires_grad(x2)?)
         {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "cdist: autograd is not yet implemented for p=0 or p=inf",
+                    reason: "cdist: autograd not supported for p=0 counting metric",
                 },
             )));
         }
@@ -4889,11 +4894,11 @@ impl FrankenTorchSession {
         // For finite p > 0, compose through index_select + sub + abs +
         // pow + sum_dim + pow primitives so gradients flow to the
         // input. PyTorch's torch.nn.functional.pdist IS differentiable
-        // for finite p > 0 (sub-gradient at the abs corner). p == 0
-        // (counting metric) and p == +inf (max-routing) follow
-        // separate paths and stay severed; for now they fail-loud
-        // when requires_grad is set. Tracked under frankentorch-0i8u.
-        if p.is_finite() && p > 0.0 && out_len > 0 {
+        // for finite p > 0 (sub-gradient at the abs corner). p == +inf
+        // uses the same row-pair diff and tensor_amax for max-routing
+        // gradients. p == 0 (counting metric) remains fail-loud below.
+        // Tracked under frankentorch-0i8u and frankentorch-hzc6.
+        if ((p.is_finite() && p > 0.0) || p == f64::INFINITY) && out_len > 0 {
             // Build row_i and row_j index tensors of length out_len.
             #[allow(clippy::cast_precision_loss)]
             let mut row_i_idx = Vec::with_capacity(out_len);
@@ -4911,15 +4916,18 @@ impl FrankenTorchSession {
             let right = self.tensor_index_select(input, 0, row_j_t)?;
             let diff = self.tensor_sub(left, right)?;
             let abs_diff = self.tensor_abs(diff)?;
+            if p == f64::INFINITY {
+                return self.tensor_amax(abs_diff, 1);
+            }
             let pow_diff = self.tensor_pow(abs_diff, p)?;
             let sum = self.tensor_sum_dim(pow_diff, 1)?; // [out_len]
             return self.tensor_pow(sum, 1.0 / p);
         }
 
-        if (p == f64::INFINITY || p == 0.0) && self.tensor_tape.tensor_requires_grad(input)? {
+        if p == 0.0 && self.tensor_tape.tensor_requires_grad(input)? {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "pdist: autograd is not yet implemented for p=0 or p=inf",
+                    reason: "pdist: autograd not supported for p=0 counting metric",
                 },
             )));
         }
@@ -33563,6 +33571,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cdist_linf_propagates_gradient_to_max_coordinate() {
+        // Regression test for frankentorch-hzc6. p=inf used to fail
+        // on requires_grad inputs even though the value path existed.
+        // The composed path routes the gradient through tensor_amax to
+        // the coordinate with the largest absolute distance.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x1 = s.tensor_variable(vec![0.0, 0.0], vec![1, 2], true).unwrap();
+        let x2 = s.tensor_variable(vec![3.0, 4.0], vec![1, 2], true).unwrap();
+        let out = s.tensor_cdist(x1, x2, f64::INFINITY).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 4.0).abs() < 1e-12);
+
+        let report = s.tensor_backward(out).unwrap();
+        let grad_x1 = s
+            .tensor_gradient(&report, x1)
+            .expect("cdist p=inf must propagate gradient through x1");
+        let grad_x2 = s
+            .tensor_gradient(&report, x2)
+            .expect("cdist p=inf must propagate gradient through x2");
+        assert_eq!(grad_x1, vec![0.0, -1.0]);
+        assert_eq!(grad_x2, vec![0.0, 1.0]);
+    }
+
     // ── pdist tests ────────────────────────────────────────────────────
 
     #[test]
@@ -33625,6 +33657,26 @@ mod tests {
                 "pdist L2 grad[{i}] = {g}, expected {e}"
             );
         }
+    }
+
+    #[test]
+    fn pdist_linf_propagates_gradient_to_max_coordinate() {
+        // Regression test for frankentorch-hzc6. p=inf can be composed
+        // from row-pair selection, abs, and amax, so it should not
+        // sever gradients for ordinary non-tie max coordinates.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![0.0, 0.0, 3.0, 4.0], vec![2, 2], true)
+            .unwrap();
+        let out = s.tensor_pdist(x, f64::INFINITY).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![4.0]);
+
+        let report = s.tensor_backward(out).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("pdist p=inf must propagate gradient through input");
+        assert_eq!(grad, vec![0.0, -1.0, 0.0, 1.0]);
     }
 
     // ── matrix_power / matrix_exp tests (bd-2drq.10) ──────────────────
