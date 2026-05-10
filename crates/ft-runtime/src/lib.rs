@@ -248,7 +248,7 @@ mod tests {
             "schema_version": 1,
             "mode": "strict",
             "entries": [],
-            "source_hash": "det64:placeholder",
+            "source_hash": "det64:0000000000000000",
             "extra": 1
         }"#;
 

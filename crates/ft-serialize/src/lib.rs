@@ -2365,11 +2365,12 @@ mod tests {
 
     #[test]
     fn hardened_decode_rejects_unknown_field() {
-        let payload = r#"{"schema_version":1,"mode":"strict","entries":[],"source_hash":"det64:placeholder","extra":1}"#;
+        let payload = r#"{"schema_version":1,"mode":"strict","entries":[],"source_hash":"det64:0000000000000000","extra":1}"#;
         let err = decode_checkpoint(payload, DecodeMode::Hardened)
             .expect_err("unknown field should fail hardened decode");
+        let expected_fields = ["extra"];
         assert!(
-            matches!(err, SerializeError::UnknownField { ref field } if field == "extra"),
+            matches!(err, SerializeError::UnknownField { ref field } if expected_fields.contains(&field.as_str())),
             "expected UnknownField 'extra', got {err:?}"
         );
     }

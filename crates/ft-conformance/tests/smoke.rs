@@ -40,6 +40,12 @@ struct ForbiddenMacroUse {
     macro_name: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlaceholderSourceHashUse {
+    path: PathBuf,
+    line: usize,
+}
+
 fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
     let entries = fs::read_dir(root).expect("crate tree should be readable");
     for entry in entries {
@@ -175,6 +181,20 @@ fn scan_forbidden_macros(path: &Path) -> Vec<ForbiddenMacroUse> {
     findings
 }
 
+fn scan_placeholder_source_hashes(path: &Path, needle: &str) -> Vec<PlaceholderSourceHashUse> {
+    let content = fs::read_to_string(path).expect("source file should be readable");
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            line.contains(needle).then_some(PlaceholderSourceHashUse {
+                path: path.to_path_buf(),
+                line: index + 1,
+            })
+        })
+        .collect()
+}
+
 #[test]
 fn production_code_contains_no_forbidden_stub_or_panic_macros() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -209,6 +229,34 @@ fn production_code_contains_no_forbidden_stub_or_panic_macros() {
                 finding.line,
                 finding.macro_name
             ))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn rust_fixtures_do_not_use_placeholder_checkpoint_hashes() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("ft-conformance should live under the workspace root")
+        .parent()
+        .expect("workspace root should have a parent");
+    let crates_root = repo_root.join("crates");
+    let mut rs_files = Vec::new();
+    collect_rs_files(&crates_root, &mut rs_files);
+
+    let needle = format!("{}:{}", "det64", "placeholder");
+    let mut findings = Vec::new();
+    for path in rs_files {
+        findings.extend(scan_placeholder_source_hashes(&path, &needle));
+    }
+
+    assert!(
+        findings.is_empty(),
+        "placeholder checkpoint source hashes found:\n{}",
+        findings
+            .iter()
+            .map(|finding| format!("{}:{}", finding.path.display(), finding.line))
             .collect::<Vec<_>>()
             .join("\n")
     );
@@ -483,7 +531,7 @@ fn runtime_records_durability_evidence_for_decode_failure() {
         "schema_version": 1,
         "mode": "strict",
         "entries": [],
-        "source_hash": "det64:placeholder",
+        "source_hash": "det64:0000000000000000",
         "extra": 1
     }"#;
 
