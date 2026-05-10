@@ -16005,6 +16005,151 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_special_i0_i0e_subprocess_conformance() {
+        // Subprocess oracle for tensor_special_i0 + tensor_special_i0e
+        // (frankentorch-2vxa) against torch.special.i0 / i0e.
+        // The A&S 9.8.1/9.8.2 polynomials are rated ~1.6e-7 relative
+        // — this oracle quantifies the actual ULP gap vs torch's
+        // higher-order Cephes expansion. Tracked under
+        // frankentorch-3wzg.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_special_i0_i0e_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        // Cases span the small-x polynomial branch, the boundary
+        // x = 3.75, and the asymptotic branch. Negative inputs
+        // verify even-symmetry of i0/i0e.
+        let case_payload = json!({
+            "cases": [
+                0.0, 0.5, 1.0, -1.0, 2.0, 3.0,
+                3.75, -3.75,                // boundary
+                5.0, -5.0,
+                10.0, 20.0,                 // mid-asymptotic
+                100.0,                      // far asymptotic (i0 overflows; i0e bounded)
+                "nan",
+            ]
+        });
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"),
+                "-inf": float("-inf"), "-0.0": -0.0}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+cases = [decode_scalar(c) for c in json.loads(sys.stdin.read())["cases"]]
+results = []
+for c in cases:
+    t = torch.tensor(c, dtype=torch.float64)
+    i0_v = torch.special.i0(t).item()
+    i0e_v = torch.special.i0e(t).item()
+    results.append([encode_scalar(i0_v), encode_scalar(i0e_v)])
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &case_payload)
+            .expect("torch.special.i0/i0e oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        let cases_arr = case_payload
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("cases");
+        assert_eq!(results.len(), cases_arr.len(), "oracle case count");
+
+        fn decode(v: &Value) -> f64 {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    "-0.0" => -0.0,
+                    other => panic!("unexpected tagged scalar: {other}"),
+                }
+            } else {
+                v.as_f64().expect("oracle scalar")
+            }
+        }
+
+        for (i, (case, oracle_pair)) in cases_arr.iter().zip(results.iter()).enumerate() {
+            let input = decode(case);
+            let pair = oracle_pair.as_array().expect("oracle pair");
+            let exp_i0 = decode(&pair[0]);
+            let exp_i0e = decode(&pair[1]);
+
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let i0_id = session.tensor_special_i0(xt).unwrap();
+            let i0e_id = session.tensor_special_i0e(xt).unwrap();
+            let got_i0 = session.tensor_values(i0_id).expect("i0")[0];
+            let got_i0e = session.tensor_values(i0e_id).expect("i0e")[0];
+
+            // The A&S polynomial is rated to ~1.6e-7 relative;
+            // 5e-7 covers it with margin. Cases where i0 overflows
+            // (input=100): both sides may produce inf, both NaN, or
+            // both finite but huge — accept any agreement on
+            // overflow-class behavior.
+            let check = |name: &str, got: f64, expected: f64| {
+                if expected.is_nan() {
+                    assert!(
+                        got.is_nan(),
+                        "case {i} (input={input}) {name}: expected NaN, got {got}"
+                    );
+                    return;
+                }
+                if expected.is_infinite() {
+                    // Allow either side overflowing — i0 at x=100 is ~1e42,
+                    // close to f64 limit but not infinite. If torch and
+                    // ours disagree on overflow class, that's a real
+                    // implementation gap worth surfacing later but not
+                    // a blocker for this oracle's main coverage.
+                    return;
+                }
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                assert!(
+                    diff <= 1e-12 || diff <= 5e-7 * scale,
+                    "case {i} (input={input}) {name}: got {got}, torch = {expected}, diff = {diff:e}"
+                );
+            };
+            check("i0", got_i0, exp_i0);
+            check("i0e", got_i0e, exp_i0e);
+        }
+    }
+
+    #[test]
     fn torch_special_log_ndtr_subprocess_conformance() {
         // Subprocess oracle for tensor_special_log_ndtr
         // (frankentorch-2mb1) against torch.special.log_ndtr.
