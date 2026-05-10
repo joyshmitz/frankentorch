@@ -14310,7 +14310,7 @@ impl FrankenTorchSession {
         }
 
         let out_numel = Self::checked_shape_numel(&out_shape, "pad: output shape volume overflow")?;
-        if out_numel > 0 && shape.iter().any(|dim| *dim == 0) {
+        if out_numel > 0 && shape.contains(&0) {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "pad: non-constant padding requires non-empty input dimensions",
@@ -20663,11 +20663,21 @@ fn log_ndtr_scalar(x: f64) -> f64 {
     if x.is_nan() {
         return f64::NAN;
     }
-    if x >= -1.0 {
+    // Direct branch: log(0.5 * erfc(-x/sqrt(2))). Stays accurate
+    // for x >= -7 where libm erfc still produces a positive
+    // finite value (erfc(7/sqrt(2)) ≈ 1.5e-12, log → -27). The
+    // asymptotic series only converges for |x| >> 1; using it at
+    // x close to -1 produces wrong values because the truncated
+    // 5-term series is divergent in that regime — verified by
+    // direct check: log_ndtr_scalar(-2.0) at threshold -1 gave
+    // -3.50 vs torch's -3.78 (7% relative error). Tracked under
+    // frankentorch-596z.
+    if x >= -7.0 {
         let z = -x * std::f64::consts::FRAC_1_SQRT_2;
         return (0.5 * libm::erfc(z)).ln();
     }
-    // Asymptotic regime: x < -1.
+    // Asymptotic regime: x < -7. Truncation error O(1/x¹⁰) ≈
+    // 2.8e-9 at x = -7, shrinks rapidly for more negative x.
     let x2 = x * x;
     let inv_x2 = 1.0 / x2;
     let inv_x4 = inv_x2 * inv_x2;
@@ -34750,20 +34760,24 @@ mod tests {
 
     #[test]
     fn pad_nonconstant_rejects_zero_size_input_that_would_read() {
-        for mode in ["reflect", "replicate", "circular"] {
-            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-            let input = s
-                .tensor_variable(Vec::<f64>::new(), vec![0], false)
-                .unwrap();
-            let err = s
-                .tensor_pad_mode(input, &[1, 0], mode, 0.0)
-                .expect_err("non-constant padding over empty input must fail closed");
-            assert!(
-                format!("{err}")
-                    .contains("pad: non-constant padding requires non-empty input dimensions"),
-                "mode={mode} returned unexpected error: {err}"
-            );
-        }
+        assert_pad_empty_dimension_error("reflect");
+        assert_pad_empty_dimension_error("replicate");
+        assert_pad_empty_dimension_error("circular");
+    }
+
+    fn assert_pad_empty_dimension_error(mode: &str) {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(Vec::<f64>::new(), vec![0], false)
+            .unwrap();
+        let err = s
+            .tensor_pad_mode(input, &[1, 0], mode, 0.0)
+            .expect_err("non-constant padding over empty input must fail closed");
+        assert!(
+            format!("{err}")
+                .contains("pad: non-constant padding requires non-empty input dimensions"),
+            "mode={mode} returned unexpected error: {err}"
+        );
     }
 
     #[test]
