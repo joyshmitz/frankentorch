@@ -11190,31 +11190,33 @@ impl TripletMarginLoss {
         negative: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         // d(a, p) - d(a, n) + margin, clamped to >= 0.
-        // Currently only the L2 (p == 2) path is implemented. The
-        // previous else branch claimed to handle p != 2 via "power
-        // operations" but was a byte-for-byte copy of the L2 branch
-        // — silently mis-computing L_p as L2 for any non-default p.
-        // Fail loud instead of silently diverging from torch's
-        // L_p semantics. Tracked under frankentorch-9c06; future
-        // L_p path: tensor_pow(|diff|, p) + tensor_sum +
-        // tensor_pow(_, 1/p).
-        if (self.p - 2.0).abs() >= f64::EPSILON {
-            return Err(AutogradError::Dispatch(DispatchError::Key(
-                DispatchKeyError::IncompatibleSet {
-                    reason: "TripletMarginLoss: only p == 2 (L2) is currently implemented; non-L2 norms tracked under frankentorch-9c06",
-                },
-            )));
+        if !self.p.is_finite() || self.p <= 0.0 {
+            return Err(incompatible_error(
+                "TripletMarginLoss: p must be finite and greater than 0",
+            ));
         }
 
         let diff_pos = session.tensor_sub(anchor, positive)?;
         let diff_neg = session.tensor_sub(anchor, negative)?;
-        // L2: sqrt(sum(diff²))
-        let sq_pos = session.tensor_mul(diff_pos, diff_pos)?;
-        let sq_neg = session.tensor_mul(diff_neg, diff_neg)?;
-        let sum_pos = session.tensor_sum(sq_pos)?;
-        let sum_neg = session.tensor_sum(sq_neg)?;
-        let dist_pos = session.tensor_sqrt(sum_pos)?;
-        let dist_neg = session.tensor_sqrt(sum_neg)?;
+        let (dist_pos, dist_neg) = if (self.p - 2.0).abs() < f64::EPSILON {
+            // Preserve the existing L2 composition exactly.
+            let sq_pos = session.tensor_mul(diff_pos, diff_pos)?;
+            let sq_neg = session.tensor_mul(diff_neg, diff_neg)?;
+            let sum_pos = session.tensor_sum(sq_pos)?;
+            let sum_neg = session.tensor_sum(sq_neg)?;
+            (session.tensor_sqrt(sum_pos)?, session.tensor_sqrt(sum_neg)?)
+        } else {
+            let abs_pos = session.tensor_abs(diff_pos)?;
+            let abs_neg = session.tensor_abs(diff_neg)?;
+            let pow_pos = session.tensor_pow(abs_pos, self.p)?;
+            let pow_neg = session.tensor_pow(abs_neg, self.p)?;
+            let sum_pos = session.tensor_sum(pow_pos)?;
+            let sum_neg = session.tensor_sum(pow_neg)?;
+            (
+                session.tensor_pow(sum_pos, 1.0 / self.p)?,
+                session.tensor_pow(sum_neg, 1.0 / self.p)?,
+            )
+        };
         let diff = session.tensor_sub(dist_pos, dist_neg)?;
         let shape = session.tensor_shape(diff)?;
         let margin_t = session.full(shape, self.margin, false)?;
@@ -15093,6 +15095,75 @@ mod tests {
             (vals[0] - 3.0).abs() < 1e-10,
             "expected 3.0, got {}",
             vals[0]
+        );
+    }
+
+    #[test]
+    fn triplet_margin_loss_l1_uses_requested_norm_and_backpropagates() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0, 0.0], vec![2], true).unwrap();
+        let p = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let n = s.tensor_variable(vec![3.0, -1.0], vec![2], false).unwrap();
+        let loss = TripletMarginLoss::new(5.0, 1.0);
+        let l = loss.forward_triplet(&mut s, a, p, n).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        assert!(
+            (vals[0] - 4.0).abs() < 1e-10,
+            "expected L1 triplet loss 4.0, got {}",
+            vals[0]
+        );
+
+        let report = s.tensor_backward(l).unwrap();
+        let grad = s.tensor_gradient(&report, a).unwrap();
+        assert!((grad[0] - 0.0).abs() < 1e-10, "grad[0]={}", grad[0]);
+        assert!((grad[1] + 2.0).abs() < 1e-10, "grad[1]={}", grad[1]);
+    }
+
+    #[test]
+    fn triplet_margin_loss_p3_uses_lp_distance_and_backpropagates() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0, 0.0], vec![2], true).unwrap();
+        let p = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let n = s.tensor_variable(vec![4.0, 0.0], vec![2], false).unwrap();
+        let loss = TripletMarginLoss::new(3.0, 3.0);
+        let l = loss.forward_triplet(&mut s, a, p, n).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        let dist_pos = 9.0f64.powf(1.0 / 3.0);
+        let expected = dist_pos - 4.0 + 3.0;
+        assert!(
+            (vals[0] - expected).abs() < 1e-10,
+            "expected p=3 triplet loss {expected}, got {}",
+            vals[0]
+        );
+
+        let report = s.tensor_backward(l).unwrap();
+        let grad = s.tensor_gradient(&report, a).unwrap();
+        let dist_pos_sq = dist_pos * dist_pos;
+        let expected_grad0 = 1.0 - 1.0 / dist_pos_sq;
+        let expected_grad1 = -4.0 / dist_pos_sq;
+        assert!(
+            (grad[0] - expected_grad0).abs() < 1e-9,
+            "grad[0]={}, expected {expected_grad0}",
+            grad[0]
+        );
+        assert!(
+            (grad[1] - expected_grad1).abs() < 1e-9,
+            "grad[1]={}, expected {expected_grad1}",
+            grad[1]
+        );
+    }
+
+    #[test]
+    fn triplet_margin_loss_rejects_non_positive_p() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let p = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let n = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        let loss = TripletMarginLoss::new(1.0, 0.0);
+        let err = loss.forward_triplet(&mut s, a, p, n).unwrap_err();
+        assert!(
+            err.to_string().contains("p must be finite"),
+            "unexpected error: {err}"
         );
     }
 
