@@ -4140,6 +4140,153 @@ impl FrankenTorchSession {
         self.tensor_variable(counts, vec![bins], false)
     }
 
+    /// Compute a histogram and return `(hist, bin_edges)`.
+    ///
+    /// Equivalent to `torch.histogram(input, bins, range=(min, max),
+    /// weight=weight, density=density)` for integer `bins`. The input is
+    /// flattened, values outside the range are ignored, and the rightmost
+    /// edge is inclusive for the final bin.
+    pub fn tensor_histogram(
+        &mut self,
+        input: TensorNodeId,
+        bins: usize,
+        min_val: f64,
+        max_val: f64,
+        weight: Option<TensorNodeId>,
+        density: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "histogram: autograd not supported (integer counts are non-differentiable). Tracked under frankentorch-jk0k.",
+                },
+            )));
+        }
+        if let Some(weight_id) = weight
+            && self.tensor_requires_grad(weight_id)?
+        {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "histogram: autograd not supported for weight. Tracked under frankentorch-jk0k.",
+                },
+            )));
+        }
+        if bins == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "histogram: bins must be > 0",
+                },
+            )));
+        }
+        if !min_val.is_finite() || !max_val.is_finite() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "histogram: min and max must be finite",
+                },
+            )));
+        }
+        if min_val > max_val {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "histogram: min must be <= max",
+                },
+            )));
+        }
+
+        let vals = self.tensor_values(input)?;
+        for &v in &vals {
+            if !v.is_finite() {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "histogram: input values must be finite",
+                    },
+                )));
+            }
+        }
+
+        let weight_vals = if let Some(weight_id) = weight {
+            let weights = self.tensor_values(weight_id)?;
+            if weights.len() != vals.len() {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "histogram: weight must have the same number of elements as input",
+                    },
+                )));
+            }
+            for &w in &weights {
+                if !w.is_finite() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "histogram: weight values must be finite",
+                        },
+                    )));
+                }
+            }
+            Some(weights)
+        } else {
+            None
+        };
+
+        let (lo, hi) = if (min_val - max_val).abs() < f64::EPSILON {
+            if vals.is_empty() {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "histogram: auto range requires non-empty input",
+                    },
+                )));
+            }
+            let mut data_min = f64::INFINITY;
+            let mut data_max = f64::NEG_INFINITY;
+            for &v in &vals {
+                if v < data_min {
+                    data_min = v;
+                }
+                if v > data_max {
+                    data_max = v;
+                }
+            }
+            if data_min == data_max {
+                (data_min - 0.5, data_max + 0.5)
+            } else {
+                (data_min, data_max)
+            }
+        } else {
+            (min_val, max_val)
+        };
+
+        let bin_width = (hi - lo) / bins as f64;
+        let mut counts = vec![0.0f64; bins];
+
+        for (idx, &v) in vals.iter().enumerate() {
+            if v < lo || v > hi {
+                continue;
+            }
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let raw_bin = ((v - lo) / bin_width) as usize;
+            let bin = raw_bin.min(bins - 1);
+            let contribution = weight_vals.as_ref().map_or(1.0, |weights| weights[idx]);
+            counts[bin] += contribution;
+        }
+
+        if density {
+            let total: f64 = counts.iter().sum();
+            let scale = total * bin_width;
+            for count in &mut counts {
+                *count /= scale;
+            }
+        }
+
+        let edge_count = Self::checked_add(bins, 1, "histogram: edge count overflow")?;
+        let mut edges = Vec::with_capacity(edge_count);
+        for i in 0..edge_count {
+            edges.push(lo + bin_width * i as f64);
+        }
+
+        let hist = self.tensor_variable(counts, vec![bins], false)?;
+        let bin_edges = self.tensor_variable(edges, vec![edge_count], false)?;
+        Ok((hist, bin_edges))
+    }
+
     /// Create a block diagonal matrix from provided 2-D tensors.
     ///
     /// Equivalent to `torch.block_diag(*tensors)`. Each tensor is placed
@@ -32724,6 +32871,62 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let t = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
         assert!(s.tensor_histc(t, 2, 2.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn histogram_returns_counts_and_uniform_edges() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], vec![6], false)
+            .unwrap();
+        let (hist, edges) = s.tensor_histogram(t, 5, 0.0, 5.0, None, false).unwrap();
+        assert_eq!(
+            s.tensor_values(hist).unwrap(),
+            vec![1.0, 1.0, 1.0, 1.0, 2.0]
+        );
+        assert_eq!(
+            s.tensor_values(edges).unwrap(),
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+        );
+    }
+
+    #[test]
+    fn histogram_applies_weights() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.25, 0.75, 1.25, 2.0], vec![4], false)
+            .unwrap();
+        let w = s
+            .tensor_variable(vec![1.0, 2.0, 4.0, 8.0], vec![4], false)
+            .unwrap();
+        let (hist, edges) = s.tensor_histogram(t, 2, 0.0, 2.0, Some(w), false).unwrap();
+        assert_eq!(s.tensor_values(hist).unwrap(), vec![3.0, 12.0]);
+        assert_eq!(s.tensor_values(edges).unwrap(), vec![0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn histogram_density_normalizes_bin_integral() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![0.0, 1.0, 2.0, 3.0], vec![4], false)
+            .unwrap();
+        let (hist, edges) = s.tensor_histogram(t, 2, 0.0, 4.0, None, true).unwrap();
+        let vals = s.tensor_values(hist).unwrap();
+        assert_eq!(vals, vec![0.25, 0.25]);
+        assert_eq!(s.tensor_values(edges).unwrap(), vec![0.0, 2.0, 4.0]);
+        let integral = vals.iter().sum::<f64>() * 2.0;
+        assert!((integral - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn histogram_drops_values_outside_range() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![-10.0, 0.5, 1.5, 100.0], vec![4], false)
+            .unwrap();
+        let (hist, edges) = s.tensor_histogram(t, 2, 0.0, 2.0, None, false).unwrap();
+        assert_eq!(s.tensor_values(hist).unwrap(), vec![1.0, 1.0]);
+        assert_eq!(s.tensor_values(edges).unwrap(), vec![0.0, 1.0, 2.0]);
     }
 
     // ── count_nonzero tests ──────────────────────────────────────────
