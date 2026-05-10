@@ -4660,17 +4660,8 @@ pub fn run_packet_e2e_microbench(
     // and the legacy-vs-optimized comparison test both used
     // FT-P2C-005 (and similarly FT-P2C-008). Tracked under
     // frankentorch-pjln.
-    let thread_id = format!("{:?}", std::thread::current().id());
-    let thread_id_sanitized: String = thread_id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let output_path = std::env::temp_dir().join(format!(
-        "ft_conformance_packet_e2e_microbench_{}_{}_{}.jsonl",
-        packet_id.to_ascii_lowercase(),
-        std::process::id(),
-        thread_id_sanitized,
-    ));
+    let output_path =
+        packet_e2e_microbench_temp_path("ft_conformance_packet_e2e_microbench", packet_id);
 
     for _ in 0..iterations.max(1) {
         let started = Instant::now();
@@ -4710,11 +4701,8 @@ fn run_packet_e2e_microbench_legacy(
     packet_id: &str,
 ) -> Result<BenchReport, String> {
     let mut samples = Vec::with_capacity(iterations.max(1));
-    let output_path = std::env::temp_dir().join(format!(
-        "ft_conformance_packet_e2e_microbench_legacy_{}_{}.jsonl",
-        packet_id.to_ascii_lowercase(),
-        std::process::id()
-    ));
+    let output_path =
+        packet_e2e_microbench_temp_path("ft_conformance_packet_e2e_microbench_legacy", packet_id);
 
     for _ in 0..iterations.max(1) {
         let started = Instant::now();
@@ -4745,6 +4733,23 @@ fn run_packet_e2e_microbench_legacy(
         p99_ns: percentile(&samples, 99),
         mean_ns: mean,
     })
+}
+
+fn packet_e2e_microbench_temp_path(prefix: &str, packet_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "{}_{}_{}_{}.jsonl",
+        prefix,
+        packet_id.to_ascii_lowercase(),
+        std::process::id(),
+        current_thread_id_path_fragment(),
+    ))
+}
+
+fn current_thread_id_path_fragment() -> String {
+    format!("{:?}", std::thread::current().id())
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 fn run_scalar_case(case: &ScalarCase, mode: ExecutionMode) -> Result<CaseReport, String> {
@@ -14974,6 +14979,35 @@ mod tests {
         assert!(report.p50_ns > 0);
         assert!(report.p95_ns >= report.p50_ns);
         assert!(report.p99_ns >= report.p95_ns);
+    }
+
+    #[test]
+    fn packet_e2e_microbench_legacy_temp_path_is_thread_scoped() {
+        let main_path = super::packet_e2e_microbench_temp_path(
+            "ft_conformance_packet_e2e_microbench_legacy",
+            "FT-P2C-005",
+        );
+        let worker_path = std::thread::spawn(|| {
+            super::packet_e2e_microbench_temp_path(
+                "ft_conformance_packet_e2e_microbench_legacy",
+                "FT-P2C-005",
+            )
+        })
+        .join()
+        .expect("worker should return temp path");
+
+        assert_ne!(
+            main_path, worker_path,
+            "same-packet legacy microbench paths must not collide across test threads"
+        );
+        assert!(
+            main_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("path should have utf8 file name")
+                .contains(std::process::id().to_string().as_str()),
+            "path should include process id"
+        );
     }
 
     #[test]
