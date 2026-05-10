@@ -5721,6 +5721,60 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Modified Bessel function of the first kind, order 0.
+    ///
+    /// Equivalent to `torch.special.i0(input)`. Uses the
+    /// Abramowitz & Stegun 9.8.1 / 9.8.2 piecewise polynomial:
+    /// Chebyshev expansion in `(x/3.75)²` for `|x| < 3.75` and
+    /// an asymptotic expansion for `|x| >= 3.75`. Even in `x`
+    /// (so `i0(-x) = i0(x)`). Used in the von Mises distribution
+    /// PDF. Tracked under frankentorch-2vxa.
+    ///
+    /// Autograd: not yet supported (needs `tensor_special_i1` for
+    /// the analytical backward `d/dx i0(x) = i1(x)`). Fail-loud
+    /// on `requires_grad=true` rather than silently severing the
+    /// tape (matches `tensor_sgn` / `tensor_copysign` pattern).
+    pub fn tensor_special_i0(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "i0: autograd not yet supported (needs tensor_special_i1 for analytical backward). Tracked under frankentorch-2vxa.",
+                },
+            )));
+        }
+        let vals = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_i0_scalar(x)).collect();
+        self.tensor_variable(result, shape, false)
+    }
+
+    /// Exponentially scaled modified Bessel of the first kind,
+    /// order 0: `i0e(x) = exp(-|x|) * i0(x)`.
+    ///
+    /// Equivalent to `torch.special.i0e(input)`. Stays bounded
+    /// for large `|x|` where `i0(x)` would overflow. Same
+    /// fail-loud autograd policy as `tensor_special_i0`. Tracked
+    /// under frankentorch-2vxa.
+    pub fn tensor_special_i0e(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "i0e: autograd not yet supported (needs tensor_special_i1). Tracked under frankentorch-2vxa.",
+                },
+            )));
+        }
+        let vals = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_i0e_scalar(x)).collect();
+        self.tensor_variable(result, shape, false)
+    }
+
     /// Numerically stable log of the standard normal CDF.
     ///
     /// Equivalent to `torch.special.log_ndtr(input)`. Uses
@@ -8190,11 +8244,8 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         output_size: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (storage, meta) = {
-            let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage()?.to_vec(), tensor.meta().clone())
-        };
-        let shape = meta.shape();
+        self.require_f64_tensor_storage(input)?;
+        let shape = self.tensor_shape(input)?;
         if shape.len() != 3 {
             return Err(Self::incompatible_tensor_args(
                 "adaptive_avg_pool1d: input must be 3-D [N, C, L]",
@@ -8202,32 +8253,27 @@ impl FrankenTorchSession {
         }
         let (n, c, l_in) = (shape[0], shape[1], shape[2]);
         let l_out = output_size;
-        let out_numel = Self::checked_mul(n, c, "adaptive_avg_pool1d output size overflow")?;
-        let out_numel =
-            Self::checked_mul(out_numel, l_out, "adaptive_avg_pool1d output size overflow")?;
-        let mut output = Vec::with_capacity(out_numel);
-
-        for b in 0..n {
-            for ch in 0..c {
-                let bc = Self::checked_mul(b, c, "adaptive_avg_pool1d base overflow")?;
-                let bc = Self::checked_add(bc, ch, "adaptive_avg_pool1d base overflow")?;
-                let base = Self::checked_mul(bc, l_in, "adaptive_avg_pool1d base overflow")?;
-                for ol in 0..l_out {
-                    let start_num =
-                        Self::checked_mul(ol, l_in, "adaptive_avg_pool1d index overflow")?;
-                    let start = start_num / l_out;
-                    let next = Self::checked_add(ol, 1, "adaptive_avg_pool1d index overflow")?;
-                    let end_num =
-                        Self::checked_mul(next, l_in, "adaptive_avg_pool1d index overflow")?;
-                    let end = end_num / l_out;
-                    let count = end - start;
-                    let sum: f64 = (start..end).map(|i| storage[base + i]).sum();
-                    output.push(sum / count as f64);
-                }
-            }
+        if l_out == 0 {
+            return self.empty(vec![n, c, 0], false);
         }
 
-        self.tensor_variable(output, vec![n, c, l_out], false)
+        let mut patches = Vec::with_capacity(l_out);
+        for ol in 0..l_out {
+            let (start, end) = Self::adaptive_avg_pool_window(
+                ol,
+                l_in,
+                l_out,
+                "adaptive_avg_pool1d index overflow",
+            )?;
+            let len = end - start;
+            let patch = self.tensor_narrow(input, 2, start, len)?;
+            let summed = self.tensor_sum_dim(patch, 2)?;
+            let divisor = self.full_like(summed, len as f64, false)?;
+            let avg = self.tensor_div(summed, divisor)?;
+            patches.push(self.tensor_unsqueeze(avg, 2)?);
+        }
+
+        self.tensor_cat(&patches, 2)
     }
 
     /// Adaptive average pooling for 2-D input `[N, C, H, W]`.
@@ -8238,11 +8284,8 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         output_size: (usize, usize),
     ) -> Result<TensorNodeId, AutogradError> {
-        let (storage, meta) = {
-            let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage()?.to_vec(), tensor.meta().clone())
-        };
-        let shape = meta.shape();
+        self.require_f64_tensor_storage(input)?;
+        let shape = self.tensor_shape(input)?;
         if shape.len() != 4 {
             return Err(Self::incompatible_tensor_args(
                 "adaptive_avg_pool2d: input must be 4-D [N, C, H, W]",
@@ -8250,53 +8293,46 @@ impl FrankenTorchSession {
         }
         let (n, c, h_in, w_in) = (shape[0], shape[1], shape[2], shape[3]);
         let (h_out, w_out) = output_size;
-        let out_numel = Self::checked_mul(n, c, "adaptive_avg_pool2d output size overflow")?;
-        let out_numel =
-            Self::checked_mul(out_numel, h_out, "adaptive_avg_pool2d output size overflow")?;
-        let out_numel =
-            Self::checked_mul(out_numel, w_out, "adaptive_avg_pool2d output size overflow")?;
-        let mut output = Vec::with_capacity(out_numel);
+        if h_out == 0 || w_out == 0 {
+            return self.empty(vec![n, c, h_out, w_out], false);
+        }
+        let patch_count =
+            Self::checked_mul(h_out, w_out, "adaptive_avg_pool2d patch count overflow")?;
+        let mut patches = Vec::with_capacity(patch_count);
 
-        for b in 0..n {
-            for ch in 0..c {
-                let bc = Self::checked_mul(b, c, "adaptive_avg_pool2d base overflow")?;
-                let bc = Self::checked_add(bc, ch, "adaptive_avg_pool2d base overflow")?;
-                let base = Self::checked_mul(bc, h_in, "adaptive_avg_pool2d base overflow")?;
-                let base = Self::checked_mul(base, w_in, "adaptive_avg_pool2d base overflow")?;
-                for oh in 0..h_out {
-                    let h_start_num =
-                        Self::checked_mul(oh, h_in, "adaptive_avg_pool2d index overflow")?;
-                    let h_start = h_start_num / h_out;
-                    let next = Self::checked_add(oh, 1, "adaptive_avg_pool2d index overflow")?;
-                    let h_end_num =
-                        Self::checked_mul(next, h_in, "adaptive_avg_pool2d index overflow")?;
-                    let h_end = h_end_num / h_out;
-                    for ow in 0..w_out {
-                        let w_start_num =
-                            Self::checked_mul(ow, w_in, "adaptive_avg_pool2d index overflow")?;
-                        let w_start = w_start_num / w_out;
-                        let next = Self::checked_add(ow, 1, "adaptive_avg_pool2d index overflow")?;
-                        let w_end_num =
-                            Self::checked_mul(next, w_in, "adaptive_avg_pool2d index overflow")?;
-                        let w_end = w_end_num / w_out;
-                        let count = Self::checked_mul(
-                            h_end - h_start,
-                            w_end - w_start,
-                            "adaptive_avg_pool2d count overflow",
-                        )?;
-                        let mut sum = 0.0;
-                        for h in h_start..h_end {
-                            for w in w_start..w_end {
-                                sum += storage[base + h * w_in + w];
-                            }
-                        }
-                        output.push(sum / count as f64);
-                    }
-                }
+        for oh in 0..h_out {
+            let (h_start, h_end) = Self::adaptive_avg_pool_window(
+                oh,
+                h_in,
+                h_out,
+                "adaptive_avg_pool2d index overflow",
+            )?;
+            let h_len = h_end - h_start;
+            let row_slice = self.tensor_narrow(input, 2, h_start, h_len)?;
+            for ow in 0..w_out {
+                let (w_start, w_end) = Self::adaptive_avg_pool_window(
+                    ow,
+                    w_in,
+                    w_out,
+                    "adaptive_avg_pool2d index overflow",
+                )?;
+                let w_len = w_end - w_start;
+                let patch = self.tensor_narrow(row_slice, 3, w_start, w_len)?;
+                let summed_w = self.tensor_sum_dim(patch, 3)?;
+                let summed = self.tensor_sum_dim(summed_w, 2)?;
+                let count = Self::checked_mul(
+                    h_len,
+                    w_len,
+                    "adaptive_avg_pool2d count overflow",
+                )?;
+                let divisor = self.full_like(summed, count as f64, false)?;
+                let avg = self.tensor_div(summed, divisor)?;
+                patches.push(self.tensor_reshape(avg, vec![n, c, 1])?);
             }
         }
 
-        self.tensor_variable(output, vec![n, c, h_out, w_out], false)
+        let pooled = self.tensor_cat(&patches, 2)?;
+        self.tensor_reshape(pooled, vec![n, c, h_out, w_out])
     }
 
     /// Adaptive average pooling for 3-D input `[N, C, D, H, W]`.
@@ -8307,11 +8343,8 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         output_size: (usize, usize, usize),
     ) -> Result<TensorNodeId, AutogradError> {
-        let (storage, meta) = {
-            let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage()?.to_vec(), tensor.meta().clone())
-        };
-        let shape = meta.shape();
+        self.require_f64_tensor_storage(input)?;
+        let shape = self.tensor_shape(input)?;
         if shape.len() != 5 {
             return Err(Self::incompatible_tensor_args(
                 "adaptive_avg_pool3d: input must be 5-D [N, C, D, H, W]",
@@ -8319,41 +8352,64 @@ impl FrankenTorchSession {
         }
         let (n, c, d_in, h_in, w_in) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
         let (d_out, h_out, w_out) = output_size;
-        let output_len = Self::checked_shape_numel(
-            &[n, c, d_out, h_out, w_out],
-            "adaptive_avg_pool3d: output shape volume overflow",
+        if d_out == 0 || h_out == 0 || w_out == 0 {
+            return self.empty(vec![n, c, d_out, h_out, w_out], false);
+        }
+        let patch_count = Self::checked_shape_numel(
+            &[d_out, h_out, w_out],
+            "adaptive_avg_pool3d patch count overflow",
         )?;
-        let mut output = Vec::with_capacity(output_len);
+        let mut patches = Vec::with_capacity(patch_count);
 
-        for b in 0..n {
-            for ch in 0..c {
-                let base = (b * c + ch) * d_in * h_in * w_in;
-                for od in 0..d_out {
-                    let d_start = (od * d_in) / d_out;
-                    let d_end = ((od + 1) * d_in) / d_out;
-                    for oh in 0..h_out {
-                        let h_start = (oh * h_in) / h_out;
-                        let h_end = ((oh + 1) * h_in) / h_out;
-                        for ow in 0..w_out {
-                            let w_start = (ow * w_in) / w_out;
-                            let w_end = ((ow + 1) * w_in) / w_out;
-                            let count = (d_end - d_start) * (h_end - h_start) * (w_end - w_start);
-                            let mut sum = 0.0;
-                            for d in d_start..d_end {
-                                for h in h_start..h_end {
-                                    for w in w_start..w_end {
-                                        sum += storage[base + d * h_in * w_in + h * w_in + w];
-                                    }
-                                }
-                            }
-                            output.push(sum / count as f64);
-                        }
-                    }
+        for od in 0..d_out {
+            let (d_start, d_end) = Self::adaptive_avg_pool_window(
+                od,
+                d_in,
+                d_out,
+                "adaptive_avg_pool3d index overflow",
+            )?;
+            let d_len = d_end - d_start;
+            let depth_slice = self.tensor_narrow(input, 2, d_start, d_len)?;
+            for oh in 0..h_out {
+                let (h_start, h_end) = Self::adaptive_avg_pool_window(
+                    oh,
+                    h_in,
+                    h_out,
+                    "adaptive_avg_pool3d index overflow",
+                )?;
+                let h_len = h_end - h_start;
+                let row_slice = self.tensor_narrow(depth_slice, 3, h_start, h_len)?;
+                for ow in 0..w_out {
+                    let (w_start, w_end) = Self::adaptive_avg_pool_window(
+                        ow,
+                        w_in,
+                        w_out,
+                        "adaptive_avg_pool3d index overflow",
+                    )?;
+                    let w_len = w_end - w_start;
+                    let patch = self.tensor_narrow(row_slice, 4, w_start, w_len)?;
+                    let summed_w = self.tensor_sum_dim(patch, 4)?;
+                    let summed_h = self.tensor_sum_dim(summed_w, 3)?;
+                    let summed = self.tensor_sum_dim(summed_h, 2)?;
+                    let hw_len = Self::checked_mul(
+                        h_len,
+                        w_len,
+                        "adaptive_avg_pool3d count overflow",
+                    )?;
+                    let count = Self::checked_mul(
+                        d_len,
+                        hw_len,
+                        "adaptive_avg_pool3d count overflow",
+                    )?;
+                    let divisor = self.full_like(summed, count as f64, false)?;
+                    let avg = self.tensor_div(summed, divisor)?;
+                    patches.push(self.tensor_reshape(avg, vec![n, c, 1])?);
                 }
             }
         }
 
-        self.tensor_variable(output, vec![n, c, d_out, h_out, w_out], false)
+        let pooled = self.tensor_cat(&patches, 2)?;
+        self.tensor_reshape(pooled, vec![n, c, d_out, h_out, w_out])
     }
 
     /// Apply layer normalization over the trailing `normalized_shape` dimensions.
@@ -11433,6 +11489,35 @@ impl FrankenTorchSession {
                 },
             ))
         })
+    }
+
+    fn require_f64_tensor_storage(&self, input: TensorNodeId) -> Result<(), AutogradError> {
+        let dtype = self.tensor_tape.tensor_meta(input)?.dtype();
+        if dtype != DType::F64 {
+            return Err(AutogradError::DenseTensor(
+                ft_core::DenseTensorError::UnsupportedStorageAccess { dtype },
+            ));
+        }
+        Ok(())
+    }
+
+    fn adaptive_avg_pool_window(
+        output_index: usize,
+        input_size: usize,
+        output_size: usize,
+        overflow_reason: &'static str,
+    ) -> Result<(usize, usize), AutogradError> {
+        let start_num = Self::checked_mul(output_index, input_size, overflow_reason)?;
+        let start = start_num / output_size;
+        let next_output_index = Self::checked_add(output_index, 1, overflow_reason)?;
+        let end_num = Self::checked_mul(next_output_index, input_size, overflow_reason)?;
+        let end = end_num.div_ceil(output_size);
+        if end <= start {
+            return Err(Self::incompatible_tensor_args(
+                "adaptive_avg_pool: pooling window contains no input elements",
+            ));
+        }
+        Ok((start, end))
     }
 
     fn checked_conv_transpose_output_dim(
@@ -20352,6 +20437,86 @@ fn erfinv_approx(x: f64) -> f64 {
     let p = x.abs();
     let q = 1.0 - p;
     sign * erfinv_positive_approx(p, q)
+}
+
+/// Scalar modified Bessel I0 via Abramowitz & Stegun 9.8.1 / 9.8.2
+/// (frankentorch-2vxa). Even in x; the polynomial pieces stay
+/// accurate to ~1.6e-7 relative — adequate for f32-equivalent
+/// precision. f64 callers needing tighter accuracy should switch
+/// to a higher-order Cephes expansion in a follow-up.
+fn bessel_i0_scalar(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let ax = x.abs();
+    if ax < 3.75 {
+        // A&S 9.8.1: i0(x) ≈ Σ a_k * t^k where t = (x/3.75)².
+        let t = (x / 3.75).powi(2);
+        eval_poly_f64(
+            t,
+            &[
+                1.0,
+                3.5156229,
+                3.0899424,
+                1.2067492,
+                0.2659732,
+                0.0360768,
+                0.0045813,
+            ],
+        )
+    } else {
+        // A&S 9.8.2: i0(x) ≈ (exp(|x|)/sqrt(|x|)) * P(3.75/|x|).
+        let u = 3.75 / ax;
+        let poly = eval_poly_f64(
+            u,
+            &[
+                0.39894228,
+                0.01328592,
+                0.00225319,
+                -0.00157565,
+                0.00916281,
+                -0.02057706,
+                0.02635537,
+                -0.01647633,
+                0.00392377,
+            ],
+        );
+        ax.exp() / ax.sqrt() * poly
+    }
+}
+
+/// Exponentially scaled I0: `exp(-|x|) * i0(x)`. Uses the same
+/// polynomial pieces but applies the scaling inside the small-x
+/// branch and folds it into the large-x branch's prefactor so the
+/// large-x result stays bounded for arbitrary x. Tracked under
+/// frankentorch-2vxa.
+fn bessel_i0e_scalar(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let ax = x.abs();
+    if ax < 3.75 {
+        // i0e(x) = exp(-|x|) * i0_polynomial(t).
+        bessel_i0_scalar(x) * (-ax).exp()
+    } else {
+        // exp(|x|) cancels: i0e(x) = (1/sqrt(|x|)) * P(3.75/|x|).
+        let u = 3.75 / ax;
+        let poly = eval_poly_f64(
+            u,
+            &[
+                0.39894228,
+                0.01328592,
+                0.00225319,
+                -0.00157565,
+                0.00916281,
+                -0.02057706,
+                0.02635537,
+                -0.01647633,
+                0.00392377,
+            ],
+        );
+        poly / ax.sqrt()
+    }
 }
 
 /// Numerically stable scalar log_ndtr (frankentorch-2mb1).
@@ -35253,6 +35418,20 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_avg_pool1d_non_divisible_uses_ceil_end_windows() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // PyTorch windows for 5 -> 2 are [0, 3) and [2, 5), so
+        // the center element contributes to both output cells.
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![1, 1, 5], false)
+            .unwrap();
+        let out = s.functional_adaptive_avg_pool1d(input, 2).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 2.0).abs() < 1e-10);
+        assert!((vals[1] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
     fn adaptive_avg_pool1d_identity() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Same size -> identity
@@ -35279,6 +35458,26 @@ mod tests {
                 dtype: DType::F32
             })
         ));
+    }
+
+    #[test]
+    fn adaptive_avg_pool1d_backward_preserves_overlap_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![1, 1, 5], true)
+            .unwrap();
+        let out = s.functional_adaptive_avg_pool1d(input, 2).unwrap();
+        assert!(s.tensor_requires_grad(out).unwrap());
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, input).expect("input grad");
+        let expected = [1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+        for (i, (&got, &want)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-10,
+                "grad[{i}]={got}, want {want}"
+            );
+        }
     }
 
     #[test]
@@ -35311,6 +35510,22 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_avg_pool2d_global_backward_distributes_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
+            .unwrap();
+        let out = s.functional_adaptive_avg_pool2d(input, (1, 1)).unwrap();
+        assert!(s.tensor_requires_grad(out).unwrap());
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, input).expect("input grad");
+        for (i, &got) in grad.iter().enumerate() {
+            assert!((got - 0.25).abs() < 1e-10, "grad[{i}]={got}");
+        }
+    }
+
+    #[test]
     fn adaptive_avg_pool3d_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 2, 2, 2] -> [1, 1, 1, 1, 1]: global pooling
@@ -35322,6 +35537,22 @@ mod tests {
         assert_eq!(shape, vec![1, 1, 1, 1, 1]);
         let vals = s.tensor_values(out).unwrap();
         assert!((vals[0] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn adaptive_avg_pool3d_global_backward_distributes_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], true)
+            .unwrap();
+        let out = s.functional_adaptive_avg_pool3d(input, (1, 1, 1)).unwrap();
+        assert!(s.tensor_requires_grad(out).unwrap());
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, input).expect("input grad");
+        for (i, &got) in grad.iter().enumerate() {
+            assert!((got - 0.125).abs() < 1e-10, "grad[{i}]={got}");
+        }
     }
 
     // ── tensor creation op tests ──────────────────────────────────────
@@ -38729,6 +38960,90 @@ mod tests {
                 g = grad[i]
             );
         }
+    }
+
+    // ── tensor_special_i0 / i0e tests (frankentorch-2vxa) ─────────────
+
+    #[test]
+    fn i0_at_zero_is_one() {
+        // i0(0) = 1 by series expansion (only the leading 1 term contributes).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let out = s.tensor_special_i0(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 1.0).abs() < 1e-7, "i0(0) = {}", v[0]);
+    }
+
+    #[test]
+    fn i0_at_one_matches_known_value() {
+        // i0(1) ≈ 1.2660658732 (standard reference).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let out = s.tensor_special_i0(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        // A&S polynomial is rated to ~1.6e-7 relative; loose tolerance.
+        assert!((v[0] - 1.26606587).abs() < 5e-7, "i0(1) = {}", v[0]);
+    }
+
+    #[test]
+    fn i0_is_even() {
+        // i0 is even: i0(-x) bit-equals i0(x) since the
+        // implementation uses |x| internally.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![2.0, -2.0, 5.0, -5.0], vec![4], false)
+            .unwrap();
+        let out = s.tensor_special_i0(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert_eq!(v[0].to_bits(), v[1].to_bits(), "i0(2) vs i0(-2)");
+        assert_eq!(v[2].to_bits(), v[3].to_bits(), "i0(5) vs i0(-5)");
+    }
+
+    #[test]
+    fn i0_propagates_nan() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![f64::NAN], vec![1], false).unwrap();
+        let out = s.tensor_special_i0(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].is_nan());
+    }
+
+    #[test]
+    fn i0_fails_loud_on_requires_grad() {
+        // Until tensor_special_i1 lands for the analytical
+        // backward, requires_grad must fail closed rather than
+        // silently sever the tape.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+        let result = s.tensor_special_i0(x);
+        assert!(result.is_err(), "i0 with requires_grad must fail closed");
+    }
+
+    #[test]
+    fn i0e_at_zero_is_one() {
+        // i0e(0) = exp(0) * i0(0) = 1.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let out = s.tensor_special_i0e(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!((v[0] - 1.0).abs() < 1e-7, "i0e(0) = {}", v[0]);
+    }
+
+    #[test]
+    fn i0e_stays_bounded_for_large_input() {
+        // i0e(100) is finite and roughly 1/sqrt(2π * 100) ≈ 0.04;
+        // i0(100) would be ~1e42 (overflow risk).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![100.0], vec![1], false).unwrap();
+        let out = s.tensor_special_i0e(x).unwrap();
+        let v = s.tensor_values(out).unwrap();
+        assert!(v[0].is_finite(), "i0e(100) must stay finite, got {}", v[0]);
+        // Asymptotic: i0e(x) ≈ 1/sqrt(2π*x) ≈ 0.0398942 at x=100.
+        assert!(
+            (v[0] - 0.03989).abs() < 1e-3,
+            "i0e(100) ≈ 0.03989, got {}",
+            v[0]
+        );
     }
 
     // ── tensor_special_log_ndtr tests (frankentorch-2mb1) ─────────────
