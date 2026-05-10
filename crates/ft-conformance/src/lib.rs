@@ -16005,6 +16005,138 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_special_i1_i1e_subprocess_conformance() {
+        // Subprocess oracle for tensor_special_i1 + i1e
+        // (frankentorch-ner6) against torch.special.i1 / i1e.
+        // Mirrors the i0 oracle structure but with explicit
+        // odd-symmetry validation since i1(-x) = -i1(x). Tracked
+        // under frankentorch-4mkt.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_special_i1_i1e_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let case_payload = json!({
+            "cases": [
+                0.0,                        // odd parity: i1(0) = 0
+                0.5, 1.0, -1.0, 2.0, 3.0,
+                3.75, -3.75,                // boundary
+                5.0, -5.0,
+                10.0, 20.0,                 // mid-asymptotic
+                100.0,                      // far asymptotic
+                "nan",
+            ]
+        });
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"),
+                "-inf": float("-inf"), "-0.0": -0.0}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+cases = [decode_scalar(c) for c in json.loads(sys.stdin.read())["cases"]]
+results = []
+for c in cases:
+    t = torch.tensor(c, dtype=torch.float64)
+    i1_v = torch.special.i1(t).item()
+    i1e_v = torch.special.i1e(t).item()
+    results.append([encode_scalar(i1_v), encode_scalar(i1e_v)])
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &case_payload)
+            .expect("torch.special.i1/i1e oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        let cases_arr = case_payload
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("cases");
+        assert_eq!(results.len(), cases_arr.len(), "oracle case count");
+
+        fn decode(v: &Value) -> f64 {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    "-0.0" => -0.0,
+                    other => panic!("unexpected tagged scalar: {other}"),
+                }
+            } else {
+                v.as_f64().expect("oracle scalar")
+            }
+        }
+
+        for (i, (case, oracle_pair)) in cases_arr.iter().zip(results.iter()).enumerate() {
+            let input = decode(case);
+            let pair = oracle_pair.as_array().expect("oracle pair");
+            let exp_i1 = decode(&pair[0]);
+            let exp_i1e = decode(&pair[1]);
+
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let i1_id = session.tensor_special_i1(xt).unwrap();
+            let i1e_id = session.tensor_special_i1e(xt).unwrap();
+            let got_i1 = session.tensor_values(i1_id).expect("i1")[0];
+            let got_i1e = session.tensor_values(i1e_id).expect("i1e")[0];
+
+            let check = |name: &str, got: f64, expected: f64| {
+                if expected.is_nan() {
+                    assert!(
+                        got.is_nan(),
+                        "case {i} (input={input}) {name}: expected NaN, got {got}"
+                    );
+                    return;
+                }
+                if expected.is_infinite() {
+                    return;
+                }
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                assert!(
+                    diff <= 1e-12 || diff <= 5e-7 * scale,
+                    "case {i} (input={input}) {name}: got {got}, torch = {expected}, diff = {diff:e}"
+                );
+            };
+            check("i1", got_i1, exp_i1);
+            check("i1e", got_i1e, exp_i1e);
+        }
+    }
+
+    #[test]
     fn torch_special_i0_i0e_subprocess_conformance() {
         // Subprocess oracle for tensor_special_i0 + tensor_special_i0e
         // (frankentorch-2vxa) against torch.special.i0 / i0e.
