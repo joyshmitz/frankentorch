@@ -765,9 +765,27 @@ pub fn parameters_to_vector(
 ) -> Result<TensorNodeId, AutogradError> {
     let mut flattened = Vec::new();
     for &parameter in parameters {
-        flattened.extend(session.tensor_values(parameter)?);
+        let shape = session.tensor_shape(parameter)?;
+        let mut numel = 1usize;
+        for dim in shape {
+            if dim == 0 {
+                numel = 0;
+                break;
+            }
+            numel = numel
+                .checked_mul(dim)
+                .ok_or_else(|| gradient_utils_error("parameters_to_vector shape overflow"))?;
+        }
+        if numel == 0 {
+            continue;
+        }
+        flattened.push(session.tensor_reshape(parameter, vec![numel])?);
     }
-    session.tensor_variable(flattened.clone(), vec![flattened.len()], false)
+    match flattened.as_slice() {
+        [] => session.tensor_variable(Vec::new(), vec![0], false),
+        [single] => Ok(*single),
+        _ => session.tensor_cat(&flattened, 0),
+    }
 }
 
 /// Copy values from a flat 1D tensor back into parameter tensors.
@@ -20945,6 +20963,40 @@ mod tests {
             let restored = session.tensor_values(param).expect("restored");
             assert_eq!(restored, original_values[idx]);
         }
+    }
+
+    #[test]
+    fn parameters_to_vector_preserves_parameter_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let weight = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+            .expect("weight");
+        let bias = session
+            .tensor_variable(vec![0.5, -0.5], vec![2], true)
+            .expect("bias");
+
+        let vector =
+            parameters_to_vector(&mut session, &[weight, bias]).expect("parameters_to_vector");
+        assert!(
+            session
+                .tensor_requires_grad(vector)
+                .expect("vector grad flag")
+        );
+        assert_eq!(
+            session.tensor_values(vector).expect("vector values"),
+            vec![1.0, 2.0, 3.0, 4.0, 0.5, -0.5]
+        );
+
+        let loss = session.tensor_sum(vector).expect("sum vector");
+        let report = session.tensor_backward(loss).expect("backward");
+        let weight_grad = session
+            .tensor_gradient(&report, weight)
+            .expect("weight gradient");
+        let bias_grad = session
+            .tensor_gradient(&report, bias)
+            .expect("bias gradient");
+        assert_eq!(weight_grad, &[1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(bias_grad, &[1.0, 1.0]);
     }
 
     #[test]
