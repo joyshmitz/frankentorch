@@ -16005,6 +16005,136 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_special_log_ndtr_subprocess_conformance() {
+        // Subprocess oracle for tensor_special_log_ndtr
+        // (frankentorch-2mb1) against torch.special.log_ndtr.
+        // Pins both the direct branch (x >= -1) and the
+        // asymptotic series (x < -1) including the far-tail
+        // regime where naive log(ndtr(x)) underflows. Tracked
+        // under frankentorch-hb51.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_special_log_ndtr_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let case_payload = json!({
+            "cases": [
+                // Direct branch (x >= -1): tight tolerance.
+                0.0, 0.5, -0.5, 1.0, -1.0, 2.0, 5.0,
+                // Boundary x = -1.
+                -1.0,
+                // Asymptotic regime (x < -1): truncated A&S series
+                // is accurate but loosens vs torch's higher-order
+                // expansion.
+                -2.0, -7.0, -10.0, -20.0,
+                // NaN / +inf.
+                "nan", "inf",
+            ]
+        });
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"),
+                "-inf": float("-inf"), "-0.0": -0.0}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+cases = [decode_scalar(c) for c in json.loads(sys.stdin.read())["cases"]]
+results = [
+    encode_scalar(torch.special.log_ndtr(torch.tensor(c, dtype=torch.float64)).item())
+    for c in cases
+]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &case_payload)
+            .expect("torch.special.log_ndtr oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        let cases_arr = case_payload
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("cases");
+        assert_eq!(results.len(), cases_arr.len(), "oracle case count");
+
+        fn decode(v: &Value) -> f64 {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    "-0.0" => -0.0,
+                    other => panic!("unexpected tagged scalar: {other}"),
+                }
+            } else {
+                v.as_f64().expect("oracle scalar")
+            }
+        }
+
+        for (i, (case, expected_value)) in cases_arr.iter().zip(results.iter()).enumerate() {
+            let input = decode(case);
+            let expected = decode(expected_value);
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let out = session.tensor_special_log_ndtr(xt).unwrap();
+            let got = session.tensor_values(out).expect("got")[0];
+
+            if expected.is_nan() {
+                assert!(
+                    got.is_nan(),
+                    "case {i} (input={input}): expected NaN, got {got}"
+                );
+                continue;
+            }
+            // Tolerance: 1e-12 absolute for direct-branch cases
+            // (x >= -1) where libm parity is tight; 1e-3 relative
+            // for the asymptotic regime where our truncated 5-term
+            // series is intentionally less accurate than torch's
+            // higher-order Cephes expansion. Both regimes share
+            // the same ULP fallback to keep boundary cases happy.
+            let diff = (got - expected).abs();
+            let scale = got.abs().max(expected.abs()).max(1.0);
+            let in_asymptotic = input < -1.0 && input.is_finite();
+            let rel_tol = if in_asymptotic { 1e-3 } else { 8.0 * f64::EPSILON };
+            assert!(
+                diff <= 1e-12 || diff <= rel_tol * scale,
+                "case {i} (input={input}): tensor_special_log_ndtr = {got}, torch = {expected}, diff = {diff:e}, rel_tol = {rel_tol}"
+            );
+        }
+    }
+
+    #[test]
     fn torch_special_ndtr_subprocess_conformance() {
         // Subprocess oracle for tensor_special_ndtr (frankentorch-7qh9)
         // against torch.special.ndtr. Pins the 0.5 * (1 + erf(x/sqrt(2)))
