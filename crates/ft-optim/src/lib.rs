@@ -29,6 +29,19 @@ fn checked_next_step_count(
         .ok_or_else(|| optimizer_state_error(overflow_reason))
 }
 
+fn advance_param_step_count(
+    step_counts: &mut [u64],
+    param_idx: usize,
+    overflow_reason: &'static str,
+) -> Result<u64, AutogradError> {
+    let counter = step_counts
+        .get_mut(param_idx)
+        .ok_or_else(|| optimizer_state_error("optimizer step state length mismatch"))?;
+    let next = checked_next_step_count(*counter, overflow_reason)?;
+    *counter = next;
+    Ok(next)
+}
+
 fn checked_shape_numel(
     shape: &[usize],
     overflow_reason: &'static str,
@@ -334,7 +347,7 @@ pub struct Adam {
     beta2: f64,
     eps: f64,
     weight_decay: f64,
-    step_count: u64,
+    step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
 }
@@ -352,7 +365,7 @@ impl Adam {
             beta2: 0.999,
             eps: 1e-8,
             weight_decay: 0.0,
-            step_count: 0,
+            step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
         }
@@ -419,14 +432,14 @@ impl Optimizer for Adam {
         _report: &TensorBackwardReport,
     ) -> Result<(), AutogradError> {
         self.validate_hyperparams()?;
-        let t = checked_next_step_count(self.step_count, "adam step counter overflow")?;
-        self.step_count = t;
 
         for (i, &param) in self.params.iter().enumerate() {
             let grad = match load_param_gradient(session, param)? {
                 Some(g) => g,
                 None => continue,
             };
+            let t =
+                advance_param_step_count(&mut self.step_counts, i, "adam step counter overflow")?;
 
             let param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
@@ -500,7 +513,7 @@ pub struct AdamW {
     beta2: f64,
     eps: f64,
     weight_decay: f64,
-    step_count: u64,
+    step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
 }
@@ -518,7 +531,7 @@ impl AdamW {
             beta2: 0.999,
             eps: 1e-8,
             weight_decay: 0.01,
-            step_count: 0,
+            step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
         }
@@ -585,14 +598,14 @@ impl Optimizer for AdamW {
         _report: &TensorBackwardReport,
     ) -> Result<(), AutogradError> {
         self.validate_hyperparams()?;
-        let t = checked_next_step_count(self.step_count, "adamw step counter overflow")?;
-        self.step_count = t;
 
         for (i, &param) in self.params.iter().enumerate() {
             let grad = match load_param_gradient(session, param)? {
                 Some(g) => g,
                 None => continue,
             };
+            let t =
+                advance_param_step_count(&mut self.step_counts, i, "adamw step counter overflow")?;
 
             let param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
@@ -1042,7 +1055,7 @@ pub struct RAdam {
     beta2: f64,
     eps: f64,
     weight_decay: f64,
-    step_count: u64,
+    step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
 }
@@ -1060,7 +1073,7 @@ impl RAdam {
             beta2: 0.999,
             eps: 1e-8,
             weight_decay: 0.0,
-            step_count: 0,
+            step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
         }
@@ -1127,8 +1140,6 @@ impl Optimizer for RAdam {
         _report: &TensorBackwardReport,
     ) -> Result<(), AutogradError> {
         self.validate_hyperparams()?;
-        let t = checked_next_step_count(self.step_count, "radam step counter overflow")?;
-        self.step_count = t;
 
         // Maximum length of the approximated SMA
         let rho_inf = 2.0 / (1.0 - self.beta2) - 1.0;
@@ -1138,6 +1149,8 @@ impl Optimizer for RAdam {
                 Some(g) => g,
                 None => continue,
             };
+            let t =
+                advance_param_step_count(&mut self.step_counts, i, "radam step counter overflow")?;
 
             let param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
@@ -3947,7 +3960,7 @@ pub struct Adamax {
     beta2: f64,
     eps: f64,
     weight_decay: f64,
-    step_count: u64,
+    step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     u: Vec<Option<Vec<f64>>>,
 }
@@ -3965,7 +3978,7 @@ impl Adamax {
             beta2: 0.999,
             eps: 1e-8,
             weight_decay: 0.0,
-            step_count: 0,
+            step_counts: vec![0; n],
             m: vec![None; n],
             u: vec![None; n],
         }
@@ -4029,14 +4042,14 @@ impl Optimizer for Adamax {
         _report: &TensorBackwardReport,
     ) -> Result<(), AutogradError> {
         self.validate_hyperparams()?;
-        let t = checked_next_step_count(self.step_count, "adamax step counter overflow")?;
-        self.step_count = t;
 
         for (i, &param) in self.params.iter().enumerate() {
             let grad = match load_param_gradient(session, param)? {
                 Some(g) => g,
                 None => continue,
             };
+            let t =
+                advance_param_step_count(&mut self.step_counts, i, "adamax step counter overflow")?;
 
             let param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
@@ -4255,7 +4268,7 @@ pub struct NAdam {
     eps: f64,
     weight_decay: f64,
     momentum_decay: f64,
-    step_count: u64,
+    step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
 }
@@ -4275,7 +4288,7 @@ impl NAdam {
             eps: 1e-8,
             weight_decay: 0.0,
             momentum_decay: 0.004,
-            step_count: 0,
+            step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
         }
@@ -4345,18 +4358,19 @@ impl Optimizer for NAdam {
         _report: &TensorBackwardReport,
     ) -> Result<(), AutogradError> {
         self.validate_hyperparams()?;
-        let t = checked_next_step_count(self.step_count, "nadam step counter overflow")?;
-        self.step_count = t;
-
-        // Momentum schedule: mu_t = beta1 * (1 - 0.5 * 0.96^(t * momentum_decay))
-        let mu_t = self.beta1 * (1.0 - 0.5 * 0.96f64.powf(t as f64 * self.momentum_decay));
-        let mu_t1 = self.beta1 * (1.0 - 0.5 * 0.96f64.powf((t as f64 + 1.0) * self.momentum_decay));
 
         for (i, &param) in self.params.iter().enumerate() {
             let grad = match load_param_gradient(session, param)? {
                 Some(g) => g,
                 None => continue,
             };
+            let t =
+                advance_param_step_count(&mut self.step_counts, i, "nadam step counter overflow")?;
+
+            // Momentum schedule: mu_t = beta1 * (1 - 0.5 * 0.96^(t * momentum_decay))
+            let mu_t = self.beta1 * (1.0 - 0.5 * 0.96f64.powf(t as f64 * self.momentum_decay));
+            let mu_t1 =
+                self.beta1 * (1.0 - 0.5 * 0.96f64.powf((t as f64 + 1.0) * self.momentum_decay));
 
             let param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
@@ -4743,14 +4757,14 @@ impl Optimizer for Rprop {
 ///
 /// The key difference from dense Adam: moment estimates `m` and `v` are only
 /// updated at indices where the gradient is non-zero. Bias correction uses
-/// the global step count.
+/// each parameter's applied-step count.
 pub struct SparseAdam {
     params: Vec<TensorNodeId>,
     lr: f64,
     beta1: f64,
     beta2: f64,
     eps: f64,
-    step_count: u64,
+    step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
 }
@@ -4767,7 +4781,7 @@ impl SparseAdam {
             beta1: 0.9,
             beta2: 0.999,
             eps: 1e-8,
-            step_count: 0,
+            step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
         }
@@ -4823,11 +4837,6 @@ impl Optimizer for SparseAdam {
         report: &TensorBackwardReport,
     ) -> Result<(), AutogradError> {
         self.validate_hyperparams()?;
-        let t = checked_next_step_count(self.step_count, "sparse_adam step counter overflow")?;
-        self.step_count = t;
-
-        let bias_correction1 = adam_bias_correction(self.beta1, t);
-        let bias_correction2 = adam_bias_correction(self.beta2, t);
 
         let num_params = self.params.len();
         for i in 0..num_params {
@@ -4835,6 +4844,13 @@ impl Optimizer for SparseAdam {
 
             // Check for sparse gradient in the report first (more efficient)
             if let Some(sparse_grad) = report.sparse_gradient(param) {
+                let t = advance_param_step_count(
+                    &mut self.step_counts,
+                    i,
+                    "sparse_adam step counter overflow",
+                )?;
+                let bias_correction1 = adam_bias_correction(self.beta1, t);
+                let bias_correction2 = adam_bias_correction(self.beta2, t);
                 self.step_sparse_gradient(
                     session,
                     param,
@@ -4851,6 +4867,13 @@ impl Optimizer for SparseAdam {
                 Some(g) => g,
                 None => continue,
             };
+            let t = advance_param_step_count(
+                &mut self.step_counts,
+                i,
+                "sparse_adam step counter overflow",
+            )?;
+            let bias_correction1 = adam_bias_correction(self.beta1, t);
+            let bias_correction2 = adam_bias_correction(self.beta2, t);
 
             let param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
@@ -5792,7 +5815,7 @@ mod tests {
             .tensor_variable(vec![4.0], vec![1], true)
             .expect("var");
         let mut optimizer = Adam::new(vec![x], 0.1);
-        optimizer.step_count = i32::MAX as u64;
+        optimizer.step_counts[0] = i32::MAX as u64;
 
         let loss = session.tensor_mul(x, x).expect("mul");
         let loss_sum = session.tensor_sum(loss).expect("sum");
@@ -5818,7 +5841,7 @@ mod tests {
             .tensor_variable(vec![4.0], vec![1], true)
             .expect("var");
         let mut optimizer = Adam::new(vec![x], 0.1);
-        optimizer.step_count = u64::MAX;
+        optimizer.step_counts[0] = u64::MAX;
 
         let loss = session.tensor_mul(x, x).expect("mul");
         let loss_sum = session.tensor_sum(loss).expect("sum");
@@ -5950,6 +5973,58 @@ mod tests {
             (y_val - 2.0).abs() < 1e-10,
             "y should be unchanged without gradient: expected 2.0, got {}",
             y_val
+        );
+    }
+
+    #[test]
+    fn adam_late_first_gradient_uses_first_step_bias_correction() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let first = session
+            .tensor_variable(vec![4.0], vec![1], true)
+            .expect("first param");
+        let late = session
+            .tensor_variable(vec![2.0], vec![1], true)
+            .expect("late param");
+
+        let mut optimizer = Adam::new(vec![first, late], 0.1);
+
+        let first_loss = session.tensor_mul(first, first).expect("mul");
+        let first_loss_sum = session.tensor_sum(first_loss).expect("sum");
+        let first_report = session
+            .tensor_backward(first_loss_sum)
+            .expect("backward first");
+        optimizer
+            .step(&mut session, &first_report)
+            .expect("first step");
+
+        assert_eq!(
+            optimizer.step_counts,
+            vec![1, 0],
+            "param without gradient must not advance Adam bias-correction state"
+        );
+
+        optimizer
+            .zero_grad(&mut session)
+            .expect("zero gradients before second step");
+        let late_loss = session.tensor_mul(late, late).expect("mul");
+        let late_loss_sum = session.tensor_sum(late_loss).expect("sum");
+        let late_report = session
+            .tensor_backward(late_loss_sum)
+            .expect("backward late");
+        optimizer
+            .step(&mut session, &late_report)
+            .expect("late first-gradient step");
+
+        let late_value = session.tensor_values(late).expect("late value")[0];
+        assert!(
+            (late_value - 1.9).abs() < 1e-8,
+            "late param first Adam update should use t=1 bias correction: got {late_value}"
+        );
+        assert_eq!(
+            optimizer.step_counts,
+            vec![2, 1],
+            "each Adam param tracks only its own applied steps"
         );
     }
 
@@ -6274,7 +6349,7 @@ mod tests {
             .tensor_variable(vec![4.0], vec![1], true)
             .expect("var");
         let mut optimizer = AdamW::new(vec![x], 0.1);
-        optimizer.step_count = i32::MAX as u64;
+        optimizer.step_counts[0] = i32::MAX as u64;
 
         let loss = session.tensor_mul(x, x).expect("mul");
         let loss_sum = session.tensor_sum(loss).expect("sum");
@@ -6300,7 +6375,7 @@ mod tests {
             .tensor_variable(vec![4.0], vec![1], true)
             .expect("var");
         let mut optimizer = AdamW::new(vec![x], 0.1);
-        optimizer.step_count = u64::MAX;
+        optimizer.step_counts[0] = u64::MAX;
 
         let loss = session.tensor_mul(x, x).expect("mul");
         let loss_sum = session.tensor_sum(loss).expect("sum");
