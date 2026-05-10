@@ -16005,6 +16005,124 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_special_ndtr_subprocess_conformance() {
+        // Subprocess oracle for tensor_special_ndtr (frankentorch-7qh9)
+        // against torch.special.ndtr. Pins the 0.5 * (1 + erf(x/sqrt(2)))
+        // compose chain at 13 boundary cases — catches drift at the
+        // libm erf ULP boundary or in the (0.5, 1.0) constant arithmetic.
+        // Tracked under frankentorch-va7e.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_special_ndtr_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let case_payload = json!({
+            "cases": [
+                0.0, "-0.0",
+                0.5, -0.5, 1.0, -1.0,
+                2.0, -2.0, 5.0, -5.0,
+                "inf", "-inf", "nan",
+            ]
+        });
+
+        let script = r#"
+import json
+import math
+import sys
+import torch
+
+def decode_scalar(v):
+    if isinstance(v, str):
+        return {"nan": float("nan"), "inf": float("inf"),
+                "-inf": float("-inf"), "-0.0": -0.0}[v]
+    return float(v)
+
+def encode_scalar(v):
+    if math.isnan(v):
+        return "nan"
+    if math.isinf(v):
+        return "inf" if v > 0 else "-inf"
+    return v
+
+cases = [decode_scalar(c) for c in json.loads(sys.stdin.read())["cases"]]
+results = [
+    encode_scalar(torch.special.ndtr(torch.tensor(c, dtype=torch.float64)).item())
+    for c in cases
+]
+print(json.dumps({"results": results}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &case_payload)
+            .expect("torch.special.ndtr oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle results");
+        let cases_arr = case_payload
+            .get("cases")
+            .and_then(Value::as_array)
+            .expect("cases");
+        assert_eq!(results.len(), cases_arr.len(), "oracle case count");
+
+        fn decode(v: &Value) -> f64 {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "nan" => f64::NAN,
+                    "inf" => f64::INFINITY,
+                    "-inf" => f64::NEG_INFINITY,
+                    "-0.0" => -0.0,
+                    other => panic!("unexpected tagged scalar: {other}"),
+                }
+            } else {
+                v.as_f64().expect("oracle scalar")
+            }
+        }
+
+        for (i, (case, expected_value)) in cases_arr.iter().zip(results.iter()).enumerate() {
+            let input = decode(case);
+            let expected = decode(expected_value);
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xt = session.tensor_variable(vec![input], vec![1], false).unwrap();
+            let out = session.tensor_special_ndtr(xt).unwrap();
+            let got = session.tensor_values(out).expect("got")[0];
+
+            if expected.is_nan() {
+                assert!(
+                    got.is_nan(),
+                    "case {i} (input={input}): expected NaN, got {got}"
+                );
+                continue;
+            }
+            // ndtr passes through tensor_erf which uses libm; 8 ULPs
+            // covers the libm rounding boundary while still catching
+            // real drift.
+            let diff = (got - expected).abs();
+            let scale = got.abs().max(expected.abs()).max(1.0);
+            assert!(
+                diff <= 1e-12 || diff <= 8.0 * scale * f64::EPSILON,
+                "case {i} (input={input}): tensor_special_ndtr = {got}, torch.special.ndtr = {expected}, diff = {diff:e}"
+            );
+        }
+    }
+
+    #[test]
     fn torch_threshold_subprocess_conformance() {
         // Subprocess oracle for tensor_threshold (frankentorch-hptx)
         // against torch.threshold. The MR suite (sbup) cross-
