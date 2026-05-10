@@ -39,8 +39,8 @@ Validated threat controls mapped in `artifacts/phase2c/FT-P2C-001/risk_note.md`:
 - `THR-002`: storage-offset overflow fail-closed
 - `THR-004`: forensic/replay evidence chain integrity
 
-Remaining deferred gap:
-- `GAP-UX-001` (`THR-005` dtype/device mismatch adversarial fixture candidate)
+Closed gap:
+- `GAP-UX-001` (`THR-005` dtype/device mismatch adversarial fixture candidate) is now covered by tensor-meta strict+hardened compatibility fixtures added under `frankentorch-99pl`.
 
 ## Method-Stack Status for This Bead
 

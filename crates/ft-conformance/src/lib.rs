@@ -518,13 +518,14 @@ pub struct TensorMetaCaseReport {
     pub meta_ok: bool,
     pub index_ok: bool,
     pub alias_ok: bool,
+    pub compatibility_ok: bool,
     pub forensic_log: StructuredCaseLog,
 }
 
 impl TensorMetaCaseReport {
     #[must_use]
     pub fn passed(&self) -> bool {
-        self.meta_ok && self.index_ok && self.alias_ok
+        self.meta_ok && self.index_ok && self.alias_ok && self.compatibility_ok
     }
 }
 
@@ -1245,6 +1246,12 @@ struct TensorMetaCase {
     expected_contiguous: Option<bool>,
     expect_valid: Option<bool>,
     alias_offset: Option<usize>,
+    lhs_dtype: Option<String>,
+    rhs_dtype: Option<String>,
+    lhs_device: Option<String>,
+    rhs_device: Option<String>,
+    expect_compat_error: Option<bool>,
+    expected_compat_error_contains: Option<String>,
     #[serde(default)]
     contract_ids: Vec<String>,
     #[serde(default)]
@@ -1474,6 +1481,7 @@ struct TensorMetaObservation {
     contiguous: Option<bool>,
     linear_index: Option<usize>,
     alias_ok: bool,
+    compat_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7299,7 +7307,18 @@ fn run_tensor_meta_case(
         (meta_ok, index_ok, local.alias_ok)
     };
 
-    let passed = meta_ok && index_ok && alias_ok;
+    let expect_compat_error = case.expect_compat_error.unwrap_or(false);
+    let compatibility_ok = match (expect_compat_error, local.compat_error.as_ref()) {
+        (true, Some(error)) => case
+            .expected_compat_error_contains
+            .as_ref()
+            .is_none_or(|needle| error.contains(needle)),
+        (true, None) => false,
+        (false, None) => true,
+        (false, Some(_)) => false,
+    };
+
+    let passed = meta_ok && index_ok && alias_ok && compatibility_ok;
 
     Ok(TensorMetaCaseReport {
         name: case.name.clone(),
@@ -7307,6 +7326,7 @@ fn run_tensor_meta_case(
         meta_ok,
         index_ok,
         alias_ok,
+        compatibility_ok,
         forensic_log: StructuredCaseLog::new(
             "tensor_meta",
             "tensor_meta_cases.json",
@@ -7361,12 +7381,14 @@ fn evaluate_tensor_meta_observation(
             } else {
                 true
             };
+            let compat_error = evaluate_tensor_compat_error(case)?;
             Ok(TensorMetaObservation {
                 valid: true,
                 numel: Some(meta.numel()),
                 contiguous: Some(meta.is_contiguous()),
                 linear_index,
                 alias_ok,
+                compat_error,
             })
         }
         Err(_error) => Ok(TensorMetaObservation {
@@ -7375,8 +7397,33 @@ fn evaluate_tensor_meta_observation(
             contiguous: None,
             linear_index: None,
             alias_ok: true,
+            compat_error: evaluate_tensor_compat_error(case)?,
         }),
     }
+}
+
+fn evaluate_tensor_compat_error(case: &TensorMetaCase) -> Result<Option<String>, String> {
+    let Some(lhs_dtype_raw) = case.lhs_dtype.as_deref() else {
+        return Ok(None);
+    };
+    let rhs_dtype_raw = case.rhs_dtype.as_deref().unwrap_or(lhs_dtype_raw);
+    let lhs_device_raw = case.lhs_device.as_deref().unwrap_or("Cpu");
+    let rhs_device_raw = case.rhs_device.as_deref().unwrap_or(lhs_device_raw);
+
+    let lhs = ScalarTensor::new(
+        1.0,
+        parse_dtype(lhs_dtype_raw)?,
+        parse_device(lhs_device_raw)?,
+    );
+    let rhs = ScalarTensor::new(
+        2.0,
+        parse_dtype(rhs_dtype_raw)?,
+        parse_device(rhs_device_raw)?,
+    );
+
+    Ok(ft_core::ensure_compatible(&lhs, &rhs)
+        .err()
+        .map(|error| error.to_string()))
 }
 
 const LEGACY_TENSOR_META_ORACLE_MAX_ELEMENTS: usize = 1_000_000;
@@ -9009,6 +9056,7 @@ fn query_legacy_tensor_meta_oracle(
         contiguous: Some(contiguous),
         linear_index: Some(linear_index),
         alias_ok: true,
+        compat_error: None,
     })
 }
 
@@ -9770,6 +9818,22 @@ fn tensor_meta_forensic_fields(
         json!(case.expect_valid.unwrap_or(true)),
     );
     fields.insert("actual_valid".to_string(), json!(observed.valid));
+    fields.insert("lhs_dtype".to_string(), json!(case.lhs_dtype));
+    fields.insert("rhs_dtype".to_string(), json!(case.rhs_dtype));
+    fields.insert("lhs_device".to_string(), json!(case.lhs_device));
+    fields.insert("rhs_device".to_string(), json!(case.rhs_device));
+    fields.insert(
+        "expect_compat_error".to_string(),
+        json!(case.expect_compat_error.unwrap_or(false)),
+    );
+    fields.insert(
+        "expected_compat_error_contains".to_string(),
+        json!(case.expected_compat_error_contains),
+    );
+    fields.insert(
+        "actual_compat_error".to_string(),
+        json!(observed.compat_error.as_ref()),
+    );
     fields.insert("pass".to_string(), json!(passed));
     fields.insert(
         "selected_kernel".to_string(),
@@ -13565,7 +13629,7 @@ mod tests {
             .expect("tensor-meta should run");
         let failed_cases: Vec<&str> = cases
             .iter()
-            .filter(|case| !(case.meta_ok && case.index_ok && case.alias_ok))
+            .filter(|case| !case.passed())
             .map(|case| case.name.as_str())
             .collect();
 
@@ -13587,7 +13651,7 @@ mod tests {
             .expect("tensor-meta should run");
         let failed_cases: Vec<&str> = cases
             .iter()
-            .filter(|case| !(case.meta_ok && case.index_ok && case.alias_ok))
+            .filter(|case| !case.passed())
             .map(|case| case.name.as_str())
             .collect();
 

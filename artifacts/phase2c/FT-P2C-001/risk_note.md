@@ -35,7 +35,7 @@ Primary attack surfaces:
 | `THR-002` | offset/index overflow pressure | linear index arithmetic path | OOB or wrapped index | `StrideOverflow` / `StorageOffsetOverflow` fail-closed gate | strict=fail, hardened=fail | `ft_core::custom_strides_validate_and_index_into_storage` + invalid overflow fixture | `tensor_meta/strict:invalid_storage_offset_overflow`=`11931105988727078667`, `tensor_meta/hardened:invalid_storage_offset_overflow`=`1156477838142738040` |
 | `THR-003` | mode-split dispatch abuse | composite route fallback branch | strict drift hidden by fallback | strict hard-fail; hardened bounded fallback + explicit telemetry | strict=fail, hardened=fallback allowed by policy | `ft_dispatch::strict_mode_rejects_composite_fallback`, `ft_dispatch::hardened_mode_allows_composite_fallback` | `dispatch_key/strict:composite_route_mode_split` (seed in e2e matrix), `dispatch_key/hardened:composite_route_mode_split` |
 | `THR-004` | replay evidence omission/tampering | structured forensic logs | unreplayable failures and audit loss | reliability gate enforces required fields and reason taxonomy | same in both modes | `check_reliability_budgets` + forensics index tests | `e2e_matrix_full_v1.jsonl` full-window gate run |
-| `THR-005` | dtype/device mismatch bypass | compatibility boundary (`ensure_compatible`, device guard) | semantic mismatch may propagate | explicit fail-closed mismatch errors | strict=fail, hardened=fail | candidate negative fixtures pending | candidate seeds: `tensor_meta/strict:compat_device_mismatch_candidate`=`1609459201001`, `tensor_meta/hardened:compat_device_mismatch_candidate`=`1609459201002` |
+| `THR-005` | dtype/device mismatch bypass | compatibility boundary (`ensure_compatible`, device guard) | semantic mismatch may propagate | explicit fail-closed mismatch errors | strict=fail, hardened=fail | tensor-meta fixture cases `compat_dtype_mismatch_gap_ux_001_fail_closed` and `compat_device_mismatch_gap_ux_001_fail_closed` | `tensor_meta/strict:compat_device_mismatch_fail_closed`, `tensor_meta/hardened:compat_device_mismatch_fail_closed` |
 
 ## 4) Mandatory Forensic Logging + Replay Artifacts for Incidents
 
@@ -58,11 +58,9 @@ Required artifact linkage chain:
 ## 5) Residual Risks and Deferred Controls
 
 Residual risks:
-- device/dtype mismatch adversarial scenarios are still represented as candidates, not active fixtures.
 - symbolic-shape parity and large-shape oracle timeout envelopes are deferred outside this packet.
 
 Deferred controls and ownership:
-- close `THR-005` fixture gap via `bd-3v0.23.10` follow-on and packet closeout `bd-3v0.12.9`.
 - integrate packet-level timeout/cancel abuse taxonomy under `bd-3v0.21` follow-on.
 - continue RaptorQ durability-evidence coupling under `bd-3v0.9` and packet final evidence bead `bd-3v0.12.9`.
 
@@ -84,7 +82,7 @@ Execution evidence link status:
 
 Threat-control status:
 - `THR-001`, `THR-002`, and `THR-004` are covered by active unit/property + differential + forensics artifacts.
-- `THR-005` remains explicitly deferred under `GAP-UX-001` until mismatch fixtures are added to packet differential/e2e suites.
+- `THR-005` / `GAP-UX-001` is covered by tensor-meta strict+hardened dtype/device compatibility fixtures added under `frankentorch-99pl`.
 
 ## 7) Optimization/Performance Evidence Refresh (bd-3v0.12.8 linkage)
 
