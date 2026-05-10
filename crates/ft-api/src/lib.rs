@@ -20906,7 +20906,9 @@ fn bessel_i0_scalar(x: f64) -> f64 {
         let t = (x / 3.75).powi(2);
         eval_poly_f64(
             t,
-            &[1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813],
+            &[
+                1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813,
+            ],
         )
     } else {
         // A&S 9.8.2: i0(x) ≈ (exp(|x|)/sqrt(|x|)) * P(3.75/|x|).
@@ -20979,7 +20981,9 @@ fn bessel_i1_scalar(x: f64) -> f64 {
         let t = (x / 3.75).powi(2);
         ax * eval_poly_f64(
             t,
-            &[0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411],
+            &[
+                0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411,
+            ],
         )
     } else {
         // A&S 9.8.4: i1(x) ≈ exp(|x|)/sqrt(|x|) * P(3.75/|x|).
@@ -37789,6 +37793,58 @@ mod tests {
     }
 
     #[test]
+    fn functional_normalize_positive_scale_invariant() {
+        // Metamorphic relation: for positive finite k and nonzero
+        // slices, normalize(k*x, p, dim) == normalize(x, p, dim).
+        // This catches denominator, dim-broadcast, and eps-clamp drift
+        // without relying on a PyTorch oracle.
+        let scales = [0.25, 0.5, 3.0, 17.0];
+        let ps = [1.0, 2.0];
+
+        for rows in 1..4 {
+            for cols in 2..6 {
+                let values: Vec<f64> = (0..rows * cols)
+                    .map(|i| {
+                        let raw = ((i * 37 + rows * 11 + cols * 5) % 29) as f64;
+                        raw / 7.0 + 0.25
+                    })
+                    .collect();
+
+                for &p in &ps {
+                    for &scale in &scales {
+                        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                        let x = s
+                            .tensor_variable(values.clone(), vec![rows, cols], false)
+                            .unwrap();
+                        let scaled_values: Vec<f64> =
+                            values.iter().map(|value| value * scale).collect();
+                        let xs = s
+                            .tensor_variable(scaled_values, vec![rows, cols], false)
+                            .unwrap();
+
+                        let normalized = s.functional_normalize(x, p, 1).unwrap();
+                        let normalized_scaled = s.functional_normalize(xs, p, 1).unwrap();
+                        let base_vals = s.tensor_values(normalized).unwrap();
+                        let scaled_vals = s.tensor_values(normalized_scaled).unwrap();
+
+                        for (idx, (&base, &scaled)) in
+                            base_vals.iter().zip(scaled_vals.iter()).enumerate()
+                        {
+                            let diff = (base - scaled).abs();
+                            let tol = 32.0 * base.abs().max(scaled.abs()).max(1.0) * f64::EPSILON;
+                            assert!(
+                                diff <= 1e-12 || diff <= tol,
+                                "normalize(k*x, p={p}, dim=1)[{idx}] = {scaled}, \
+                                 normalize(x) = {base}, scale={scale}, diff={diff:e}, tol={tol:e}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn functional_normalize_propagates_gradient_through_input() {
         // Regression test for frankentorch-c5g4. functional_normalize
         // used to extract values, divide in plain f64, and rebuild
@@ -39893,9 +39949,7 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let xs = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
         let n = xs.len();
-        let x = s
-            .tensor_variable(xs.clone(), vec![n], false)
-            .unwrap();
+        let x = s.tensor_variable(xs.clone(), vec![n], false).unwrap();
         let direct = s.tensor_special_log_ndtr(x).unwrap();
         let v_direct = s.tensor_values(direct).unwrap();
         let x2 = s.tensor_variable(xs, vec![n], false).unwrap();
@@ -39965,7 +40019,11 @@ mod tests {
         let out = s.tensor_special_log_ndtr(x).unwrap();
         let report = s.tensor_backward(out).unwrap();
         let g = s.tensor_gradient(&report, x).unwrap();
-        assert!(g[0].is_finite(), "log_ndtr grad at x=-10 must be finite, got {}", g[0]);
+        assert!(
+            g[0].is_finite(),
+            "log_ndtr grad at x=-10 must be finite, got {}",
+            g[0]
+        );
         // Asymptotic prediction: -x * (1 - 1/x² + 3/x⁴ - 15/x⁶) = 10 * (1 - 0.01 + 0.00003 - ...)
         // ≈ 9.9003... Looser tolerance because we're comparing
         // against the same truncated series the implementation
@@ -40001,16 +40059,8 @@ mod tests {
             .unwrap();
         let out = s.tensor_special_ndtri(x).unwrap();
         let v = s.tensor_values(out).unwrap();
-        assert!(
-            (v[0] + 1.95996398).abs() < 1e-4,
-            "ndtri(0.025) = {}",
-            v[0]
-        );
-        assert!(
-            (v[1] - 1.95996398).abs() < 1e-4,
-            "ndtri(0.975) = {}",
-            v[1]
-        );
+        assert!((v[0] + 1.95996398).abs() < 1e-4, "ndtri(0.025) = {}", v[0]);
+        assert!((v[1] - 1.95996398).abs() < 1e-4, "ndtri(0.975) = {}", v[1]);
     }
 
     #[test]
@@ -40079,9 +40129,21 @@ mod tests {
         let out = s.tensor_special_ndtr(x).unwrap();
         let v = s.tensor_values(out).unwrap();
         // 8 ULPs slack absorbs the libm erf rounding boundary.
-        assert!((v[0] - 0.8413447460685429).abs() < 1e-12, "ndtr(1) = {}", v[0]);
-        assert!((v[1] - 0.1586552539314571).abs() < 1e-12, "ndtr(-1) = {}", v[1]);
-        assert!((v[2] - 0.9772498680518208).abs() < 1e-12, "ndtr(2) = {}", v[2]);
+        assert!(
+            (v[0] - 0.8413447460685429).abs() < 1e-12,
+            "ndtr(1) = {}",
+            v[0]
+        );
+        assert!(
+            (v[1] - 0.1586552539314571).abs() < 1e-12,
+            "ndtr(-1) = {}",
+            v[1]
+        );
+        assert!(
+            (v[2] - 0.9772498680518208).abs() < 1e-12,
+            "ndtr(2) = {}",
+            v[2]
+        );
     }
 
     #[test]
@@ -40110,9 +40172,7 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let xs = vec![1.0, 2.0, 0.5, 5.5];
         let n = xs.len();
-        let a = s
-            .tensor_variable(xs.clone(), vec![n], false)
-            .unwrap();
+        let a = s.tensor_variable(xs.clone(), vec![n], false).unwrap();
         let b = s.tensor_variable(xs, vec![n], false).unwrap();
         let lg = s.tensor_lgamma(a).unwrap();
         let gn = s.tensor_gammaln(b).unwrap();
@@ -40131,9 +40191,7 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let xs = vec![2.0_f64, 0.5, 4.0, 9.0];
         let n = xs.len();
-        let a = s
-            .tensor_variable(xs.clone(), vec![n], false)
-            .unwrap();
+        let a = s.tensor_variable(xs.clone(), vec![n], false).unwrap();
         let b = s.tensor_variable(xs, vec![n], false).unwrap();
         for exp in [3.0, -1.0, 0.5, 2.0] {
             let p = s.tensor_pow(a, exp).unwrap();
@@ -42754,8 +42812,18 @@ mod tests {
         let window = s.kaiser_window(7, false, 8.6, false).unwrap();
         let vals = s.tensor_values(window).unwrap();
         // Center peak is at index 3 (length 7, denom 6).
-        assert!(vals[3] > vals[0], "center {} not > endpoint {}", vals[3], vals[0]);
-        assert!(vals[3] > vals[6], "center {} not > endpoint {}", vals[3], vals[6]);
+        assert!(
+            vals[3] > vals[0],
+            "center {} not > endpoint {}",
+            vals[3],
+            vals[0]
+        );
+        assert!(
+            vals[3] > vals[6],
+            "center {} not > endpoint {}",
+            vals[3],
+            vals[6]
+        );
         // Symmetric around the center.
         assert!((vals[0] - vals[6]).abs() < 1e-7);
         assert!((vals[1] - vals[5]).abs() < 1e-7);
