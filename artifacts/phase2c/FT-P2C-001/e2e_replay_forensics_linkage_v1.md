@@ -9,13 +9,14 @@
 ## Outcomes
 
 - packet filter recorded: `FT-P2C-001`
-- total entries: `14` (strict=7, hardened=7)
+- total entries: `40` (strict=20, hardened=20)
 - failed entries: `0`
 - triaged incidents: `0`
 
 Suites exercised:
 - `scalar_dac`
 - `tensor_meta`
+- `legacy_oracle`
 
 ## Deterministic Replay Contract Status
 
@@ -34,6 +35,11 @@ Required fields are present for every log entry:
   - `artifacts/phase2c/conformance/differential_report_v1.json`
   - `artifacts/phase2c/FT-P2C-001/differential_packet_report_v1.json`
   - `artifacts/phase2c/FT-P2C-001/differential_reconciliation_v1.md`
+- GAP-UX-001 dtype/device compatibility linkage:
+  - `tensor_meta/strict:compat_dtype_mismatch_gap_ux_001_fail_closed`
+  - `tensor_meta/strict:compat_device_mismatch_gap_ux_001_fail_closed`
+  - `tensor_meta/hardened:compat_dtype_mismatch_gap_ux_001_fail_closed`
+  - `tensor_meta/hardened:compat_device_mismatch_gap_ux_001_fail_closed`
 - risk linkage: `artifacts/phase2c/FT-P2C-001/risk_note.md`
 
 ## Method-Stack Note

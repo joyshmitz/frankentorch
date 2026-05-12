@@ -23,9 +23,75 @@
       ]
     },
     {
+      "id": "scalar_sub_basic",
+      "file": "crates/ft-conformance/fixtures/scalar_autograd_cases.json",
+      "case_name": "sub_basic",
+      "oracle_family": "autograd_scalar",
+      "assertions": [
+        "output",
+        "lhs_grad",
+        "rhs_grad"
+      ]
+    },
+    {
+      "id": "scalar_div_basic",
+      "file": "crates/ft-conformance/fixtures/scalar_autograd_cases.json",
+      "case_name": "div_basic",
+      "oracle_family": "autograd_scalar",
+      "assertions": [
+        "output",
+        "lhs_grad",
+        "rhs_grad"
+      ]
+    },
+    {
       "id": "scalar_mul_basic",
       "file": "crates/ft-conformance/fixtures/scalar_autograd_cases.json",
       "case_name": "mul_basic",
+      "oracle_family": "autograd_scalar",
+      "assertions": [
+        "output",
+        "lhs_grad",
+        "rhs_grad"
+      ]
+    },
+    {
+      "id": "scalar_add_negative_rhs",
+      "file": "crates/ft-conformance/fixtures/scalar_autograd_cases.json",
+      "case_name": "add_negative_rhs",
+      "oracle_family": "autograd_scalar",
+      "assertions": [
+        "output",
+        "lhs_grad",
+        "rhs_grad"
+      ]
+    },
+    {
+      "id": "scalar_add_zero_identity",
+      "file": "crates/ft-conformance/fixtures/scalar_autograd_cases.json",
+      "case_name": "add_zero_identity",
+      "oracle_family": "autograd_scalar",
+      "assertions": [
+        "output",
+        "lhs_grad",
+        "rhs_grad"
+      ]
+    },
+    {
+      "id": "scalar_mul_zero_absorber",
+      "file": "crates/ft-conformance/fixtures/scalar_autograd_cases.json",
+      "case_name": "mul_zero_absorber",
+      "oracle_family": "autograd_scalar",
+      "assertions": [
+        "output",
+        "lhs_grad",
+        "rhs_grad"
+      ]
+    },
+    {
+      "id": "scalar_mul_negative_lhs",
+      "file": "crates/ft-conformance/fixtures/scalar_autograd_cases.json",
+      "case_name": "mul_negative_lhs",
       "oracle_family": "autograd_scalar",
       "assertions": [
         "output",
@@ -70,6 +136,18 @@
       ]
     },
     {
+      "id": "tensor_meta_broadcast_stride_zero_valid",
+      "file": "crates/ft-conformance/fixtures/tensor_meta_cases.json",
+      "case_name": "broadcast_stride_zero_valid",
+      "oracle_family": "tensor_meta_contract",
+      "assertions": [
+        "numel",
+        "contiguous",
+        "storage_index",
+        "alias_storage_identity"
+      ]
+    },
+    {
       "id": "tensor_meta_invalid_rank_stride_mismatch",
       "file": "crates/ft-conformance/fixtures/tensor_meta_cases.json",
       "case_name": "invalid_rank_stride_mismatch",
@@ -85,6 +163,56 @@
       "oracle_family": "tensor_meta_contract",
       "assertions": [
         "expect_fail_closed"
+      ]
+    },
+    {
+      "id": "tensor_meta_invalid_rank_stride_extra_fail_closed",
+      "file": "crates/ft-conformance/fixtures/tensor_meta_cases.json",
+      "case_name": "invalid_rank_stride_extra_fail_closed",
+      "oracle_family": "tensor_meta_contract",
+      "assertions": [
+        "expect_fail_closed"
+      ]
+    },
+    {
+      "id": "tensor_meta_invalid_storage_offset_overflow_large",
+      "file": "crates/ft-conformance/fixtures/tensor_meta_cases.json",
+      "case_name": "invalid_storage_offset_overflow_large",
+      "oracle_family": "tensor_meta_contract",
+      "assertions": [
+        "expect_fail_closed"
+      ]
+    },
+    {
+      "id": "tensor_meta_compat_dtype_mismatch_gap_ux_001_fail_closed",
+      "file": "crates/ft-conformance/fixtures/tensor_meta_cases.json",
+      "case_name": "compat_dtype_mismatch_gap_ux_001_fail_closed",
+      "oracle_family": "tensor_meta_contract",
+      "assertions": [
+        "expect_compat_error",
+        "diagnostic_contains"
+      ]
+    },
+    {
+      "id": "tensor_meta_compat_device_mismatch_gap_ux_001_fail_closed",
+      "file": "crates/ft-conformance/fixtures/tensor_meta_cases.json",
+      "case_name": "compat_device_mismatch_gap_ux_001_fail_closed",
+      "oracle_family": "tensor_meta_contract",
+      "assertions": [
+        "expect_compat_error",
+        "diagnostic_contains"
+      ]
+    },
+    {
+      "id": "tensor_meta_compat_same_dtype_device_gap_ux_001_passes",
+      "file": "crates/ft-conformance/fixtures/tensor_meta_cases.json",
+      "case_name": "compat_same_dtype_device_gap_ux_001_passes",
+      "oracle_family": "tensor_meta_contract",
+      "assertions": [
+        "no_compat_error",
+        "numel",
+        "contiguous",
+        "storage_index"
       ]
     }
   ],
@@ -107,23 +235,65 @@
   ],
   "scenario_seed_map": {
     "scalar_dac/strict:add_basic": 11230214846748554265,
+    "scalar_dac/strict:sub_basic": 3574586045385454086,
+    "scalar_dac/strict:div_basic": 6198571941862949208,
     "scalar_dac/strict:mul_basic": 1767315763877827661,
+    "scalar_dac/strict:add_negative_rhs": 15692353619400148685,
+    "scalar_dac/strict:add_zero_identity": 11078420518121838950,
+    "scalar_dac/strict:mul_zero_absorber": 4504344144296684562,
+    "scalar_dac/strict:mul_negative_lhs": 5721708277362537946,
     "scalar_dac/hardened:add_basic": 7472292100909643468,
+    "scalar_dac/hardened:sub_basic": 1944661470896580632,
+    "scalar_dac/hardened:div_basic": 4940151900432395853,
     "scalar_dac/hardened:mul_basic": 17290219769398318397,
+    "scalar_dac/hardened:add_negative_rhs": 14550295218413127613,
+    "scalar_dac/hardened:add_zero_identity": 3859222409772008146,
+    "scalar_dac/hardened:mul_zero_absorber": 14985553239636733940,
+    "scalar_dac/hardened:mul_negative_lhs": 1767179565422725043,
     "tensor_meta/strict:contiguous_basic_index": 4395520818158430929,
     "tensor_meta/strict:strided_offset_index": 14323049674851941302,
     "tensor_meta/strict:scalar_offset_index": 2717510909112554909,
+    "tensor_meta/strict:broadcast_stride_zero_valid": 7531410272450316287,
     "tensor_meta/strict:invalid_rank_stride_mismatch": 9353830229903822145,
     "tensor_meta/strict:invalid_storage_offset_overflow": 11931105988727078667,
+    "tensor_meta/strict:invalid_rank_stride_extra_fail_closed": 4440588310153235739,
+    "tensor_meta/strict:invalid_storage_offset_overflow_large": 1637645330328804021,
+    "tensor_meta/strict:compat_dtype_mismatch_gap_ux_001_fail_closed": 1842718880843239974,
+    "tensor_meta/strict:compat_device_mismatch_gap_ux_001_fail_closed": 13021796749821807033,
+    "tensor_meta/strict:compat_same_dtype_device_gap_ux_001_passes": 3311157949404044176,
+    "legacy_oracle/strict:legacy_oracle_timeout_kill_path_gw_002": 13885451313548497654,
     "tensor_meta/hardened:contiguous_basic_index": 7837796412515040673,
     "tensor_meta/hardened:strided_offset_index": 9223797700649824762,
     "tensor_meta/hardened:scalar_offset_index": 12558646690359430722,
+    "tensor_meta/hardened:broadcast_stride_zero_valid": 634254168715078431,
     "tensor_meta/hardened:invalid_rank_stride_mismatch": 5997540812546318856,
-    "tensor_meta/hardened:invalid_storage_offset_overflow": 1156477838142738040
+    "tensor_meta/hardened:invalid_storage_offset_overflow": 1156477838142738040,
+    "tensor_meta/hardened:invalid_rank_stride_extra_fail_closed": 11391839597860741616,
+    "tensor_meta/hardened:invalid_storage_offset_overflow_large": 6502779527114064346,
+    "tensor_meta/hardened:compat_dtype_mismatch_gap_ux_001_fail_closed": 11117632721649379430,
+    "tensor_meta/hardened:compat_device_mismatch_gap_ux_001_fail_closed": 10113865283063571441,
+    "tensor_meta/hardened:compat_same_dtype_device_gap_ux_001_passes": 16720316451553976834,
+    "legacy_oracle/hardened:legacy_oracle_timeout_kill_path_gw_002": 16818657955751541663
   },
-  "deferred_seed_candidates": {
-    "tensor_meta/strict:compat_device_mismatch_candidate": 1609459201001,
-    "tensor_meta/hardened:compat_device_mismatch_candidate": 1609459201002
+  "closed_gap_coverage": {
+    "gap_id": "GAP-UX-001",
+    "closed_by": "frankentorch-99pl",
+    "refreshed_by": "frankentorch-5js0",
+    "fixtures": [
+      "compat_dtype_mismatch_gap_ux_001_fail_closed",
+      "compat_device_mismatch_gap_ux_001_fail_closed",
+      "compat_same_dtype_device_gap_ux_001_passes"
+    ],
+    "strict_scenario_ids": [
+      "tensor_meta/strict:compat_dtype_mismatch_gap_ux_001_fail_closed",
+      "tensor_meta/strict:compat_device_mismatch_gap_ux_001_fail_closed",
+      "tensor_meta/strict:compat_same_dtype_device_gap_ux_001_passes"
+    ],
+    "hardened_scenario_ids": [
+      "tensor_meta/hardened:compat_dtype_mismatch_gap_ux_001_fail_closed",
+      "tensor_meta/hardened:compat_device_mismatch_gap_ux_001_fail_closed",
+      "tensor_meta/hardened:compat_same_dtype_device_gap_ux_001_passes"
+    ]
   },
   "performance_baseline_artifacts": [
     "artifacts/optimization/2026-02-14_foundation_perf_rebaseline.md",

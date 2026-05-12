@@ -461,10 +461,29 @@
     "threat_ids_covered": [
       "THR-001",
       "THR-002",
-      "THR-004"
+      "THR-004",
+      "THR-005"
     ],
-    "deferred_gap_ids": [
+    "closed_gap_ids": [
       "GAP-UX-001"
+    ],
+    "coverage_notes": [
+      {
+        "gap_id": "GAP-UX-001",
+        "closed_by": "frankentorch-99pl",
+        "refreshed_by": "frankentorch-5js0",
+        "fixtures": [
+          "compat_dtype_mismatch_gap_ux_001_fail_closed",
+          "compat_device_mismatch_gap_ux_001_fail_closed",
+          "compat_same_dtype_device_gap_ux_001_passes"
+        ],
+        "scenario_ids": [
+          "tensor_meta/strict:compat_dtype_mismatch_gap_ux_001_fail_closed",
+          "tensor_meta/strict:compat_device_mismatch_gap_ux_001_fail_closed",
+          "tensor_meta/hardened:compat_dtype_mismatch_gap_ux_001_fail_closed",
+          "tensor_meta/hardened:compat_device_mismatch_gap_ux_001_fail_closed"
+        ]
+      }
     ],
     "risk_note_path": "artifacts/phase2c/FT-P2C-001/risk_note.md"
   }

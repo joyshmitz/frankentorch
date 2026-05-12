@@ -15185,10 +15185,7 @@ mod tests {
 
     #[test]
     fn reentrant_depth_exceeded_diagnostic_snapshot() {
-        let err = AutogradError::ReentrantDepthExceeded {
-            current: 2,
-            max: 1,
-        };
+        let err = AutogradError::ReentrantDepthExceeded { current: 2, max: 1 };
         insta::assert_snapshot!("reentrant_depth_exceeded_diagnostic", err.to_string());
     }
 
@@ -15197,10 +15194,7 @@ mod tests {
         let err = AutogradError::TensorRequiresGradNonLeaf {
             node: TensorNodeId(11),
         };
-        insta::assert_snapshot!(
-            "tensor_requires_grad_non_leaf_diagnostic",
-            err.to_string()
-        );
+        insta::assert_snapshot!("tensor_requires_grad_non_leaf_diagnostic", err.to_string());
     }
 
     // Three more user-facing AutogradError variants pinned under
@@ -15219,10 +15213,7 @@ mod tests {
             expected: 12,
             actual: 8,
         };
-        insta::assert_snapshot!(
-            "tensor_gradient_shape_mismatch_diagnostic",
-            err.to_string()
-        );
+        insta::assert_snapshot!("tensor_gradient_shape_mismatch_diagnostic", err.to_string());
     }
 
     #[test]
@@ -15231,10 +15222,7 @@ mod tests {
             lhs: vec![3, 4],
             rhs: vec![5, 2],
         };
-        insta::assert_snapshot!(
-            "tensor_matmul_shape_mismatch_diagnostic",
-            err.to_string()
-        );
+        insta::assert_snapshot!("tensor_matmul_shape_mismatch_diagnostic", err.to_string());
     }
 
     #[test]

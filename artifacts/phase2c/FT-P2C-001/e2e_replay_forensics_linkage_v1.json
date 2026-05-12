@@ -1,30 +1,34 @@
 {
   "schema_version": "ft-p2c-e2e-linkage-v1",
   "packet_id": "FT-P2C-001",
-  "generated_at": "2026-02-14T17:11:17Z",
+  "generated_at": "2026-05-12T01:22:44Z",
   "source_e2e_log": "artifacts/phase2c/e2e_forensics/e2e_matrix_ft_p2c_001.jsonl",
   "source_triage": "artifacts/phase2c/e2e_forensics/crash_triage_ft_p2c_001_v1.json",
   "source_failure_index": "artifacts/phase2c/e2e_forensics/failure_forensics_index_ft_p2c_001_v1.json",
-  "total_entries": 14,
+  "total_entries": 40,
   "failed_entries": 0,
   "suite_breakdown": [
     {
+      "suite_id": "legacy_oracle",
+      "count": 2
+    },
+    {
       "suite_id": "scalar_dac",
-      "count": 4
+      "count": 16
     },
     {
       "suite_id": "tensor_meta",
-      "count": 10
+      "count": 22
     }
   ],
   "mode_breakdown": [
     {
       "mode": "hardened",
-      "count": 7
+      "count": 20
     },
     {
       "mode": "strict",
-      "count": 7
+      "count": 20
     }
   ],
   "deterministic_replay_field_coverage": {
@@ -43,17 +47,43 @@
   ],
   "scenario_ids": [
     "scalar_dac/hardened:add_basic",
+    "scalar_dac/hardened:add_negative_rhs",
+    "scalar_dac/hardened:add_zero_identity",
+    "scalar_dac/hardened:div_basic",
     "scalar_dac/hardened:mul_basic",
+    "scalar_dac/hardened:mul_negative_lhs",
+    "scalar_dac/hardened:mul_zero_absorber",
+    "scalar_dac/hardened:sub_basic",
     "scalar_dac/strict:add_basic",
+    "scalar_dac/strict:add_negative_rhs",
+    "scalar_dac/strict:add_zero_identity",
+    "scalar_dac/strict:div_basic",
     "scalar_dac/strict:mul_basic",
+    "scalar_dac/strict:mul_negative_lhs",
+    "scalar_dac/strict:mul_zero_absorber",
+    "scalar_dac/strict:sub_basic",
+    "legacy_oracle/hardened:legacy_oracle_timeout_kill_path_gw_002",
+    "legacy_oracle/strict:legacy_oracle_timeout_kill_path_gw_002",
+    "tensor_meta/hardened:broadcast_stride_zero_valid",
+    "tensor_meta/hardened:compat_device_mismatch_gap_ux_001_fail_closed",
+    "tensor_meta/hardened:compat_dtype_mismatch_gap_ux_001_fail_closed",
+    "tensor_meta/hardened:compat_same_dtype_device_gap_ux_001_passes",
     "tensor_meta/hardened:contiguous_basic_index",
+    "tensor_meta/hardened:invalid_rank_stride_extra_fail_closed",
     "tensor_meta/hardened:invalid_rank_stride_mismatch",
     "tensor_meta/hardened:invalid_storage_offset_overflow",
+    "tensor_meta/hardened:invalid_storage_offset_overflow_large",
     "tensor_meta/hardened:scalar_offset_index",
     "tensor_meta/hardened:strided_offset_index",
+    "tensor_meta/strict:broadcast_stride_zero_valid",
+    "tensor_meta/strict:compat_device_mismatch_gap_ux_001_fail_closed",
+    "tensor_meta/strict:compat_dtype_mismatch_gap_ux_001_fail_closed",
+    "tensor_meta/strict:compat_same_dtype_device_gap_ux_001_passes",
     "tensor_meta/strict:contiguous_basic_index",
+    "tensor_meta/strict:invalid_rank_stride_extra_fail_closed",
     "tensor_meta/strict:invalid_rank_stride_mismatch",
     "tensor_meta/strict:invalid_storage_offset_overflow",
+    "tensor_meta/strict:invalid_storage_offset_overflow_large",
     "tensor_meta/strict:scalar_offset_index",
     "tensor_meta/strict:strided_offset_index"
   ],
@@ -68,6 +98,11 @@
       "artifacts/phase2c/conformance/differential_report_v1.json",
       "artifacts/phase2c/FT-P2C-001/differential_packet_report_v1.json",
       "artifacts/phase2c/FT-P2C-001/differential_reconciliation_v1.md"
+    ],
+    "gap_ux_001_conformance": [
+      "crates/ft-conformance/fixtures/tensor_meta_cases.json",
+      "cargo test -p ft-conformance strict_tensor_meta_conformance_is_green -- --nocapture",
+      "cargo test -p ft-conformance hardened_tensor_meta_conformance_is_green -- --nocapture"
     ],
     "risk_note": "artifacts/phase2c/FT-P2C-001/risk_note.md"
   },

@@ -12,7 +12,7 @@ Legacy anchor map: `artifacts/phase2c/FT-P2C-001/legacy_anchor_map.md`
 | `FTP2C001-B03` | edge | version/storage alias fields (`version_counter_`, `storage_`) | out-of-place bumps version; alias preserves storage identity | same | `ft_core::out_of_place_result_gets_new_storage_and_version_bump`, `ft_core::alias_view_shares_storage_identity` | `tensor_meta/strict:scalar_offset_index`=`2717510909112554909` |
 | `FTP2C001-B04` | adversarial | rank/stride guard surface (`sizes_and_strides_`) | fail closed with `RankStrideMismatch` | same fail-closed outcome | `ft_core::index_rank_and_bounds_are_guarded` + tensor-meta invalid fixture assertion | `tensor_meta/strict:invalid_rank_stride_mismatch`=`9353830229903822145`, `tensor_meta/hardened:invalid_rank_stride_mismatch`=`5997540812546318856` |
 | `FTP2C001-B05` | adversarial | overflow-sensitive offset/index path | fail closed with overflow error family | same fail-closed outcome | `ft_core::custom_strides_validate_and_index_into_storage` overflow branch + conformance invalid overflow case | `tensor_meta/strict:invalid_storage_offset_overflow`=`11931105988727078667`, `tensor_meta/hardened:invalid_storage_offset_overflow`=`1156477838142738040` |
-| `FTP2C001-B06` | deferred/compat edge | device/dtype compatibility boundary (`device()`, `data_type_`) | fail closed on mismatch | same (no repair) | add explicit negative fixture coverage for `TensorCompatError`/`DeviceError` | candidate seeds: `tensor_meta/strict:compat_device_mismatch_candidate`=`1609459201001`, `tensor_meta/hardened:compat_device_mismatch_candidate`=`1609459201002` (tracked in `GAP-UX-001`) |
+| `FTP2C001-B06` | adversarial compat edge | device/dtype compatibility boundary (`device()`, `data_type_`) | fail closed on mismatch; compatible pair passes | same (no repair) | `compat_dtype_mismatch_gap_ux_001_fail_closed`, `compat_device_mismatch_gap_ux_001_fail_closed`, `compat_same_dtype_device_gap_ux_001_passes` | `tensor_meta/strict:compat_dtype_mismatch_gap_ux_001_fail_closed`=`1842718880843239974`, `tensor_meta/strict:compat_device_mismatch_gap_ux_001_fail_closed`=`13021796749821807033`, `tensor_meta/hardened:compat_dtype_mismatch_gap_ux_001_fail_closed`=`11117632721649379430`, `tensor_meta/hardened:compat_device_mismatch_gap_ux_001_fail_closed`=`10113865283063571441` |
 
 ## Logging Field Expectations by Behavior Family
 
@@ -31,7 +31,7 @@ Mandatory deterministic replay fields (all behavior families):
 Behavior-family additions:
 - nominal scalar/tensor paths: include differential comparator family (`oracle.scalar_*` / `oracle.tensor_meta`) in linked artifacts.
 - adversarial fail-closed paths: require explicit fail reason category (`*_expectation_mismatch` or `expected_error_observed`).
-- deferred compatibility paths: must emit gap linkage bead IDs in artifact refs until scenario IDs are added.
+- compatibility paths: emit explicit dtype/device mismatch scenario IDs and retain `GAP-UX-001` as closed coverage linkage.
 
 Anchors:
 - `crates/ft-conformance/src/logging.rs:11`
