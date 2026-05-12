@@ -11695,19 +11695,7 @@ impl LossModule for PoissonNLLLoss {
         input: TensorNodeId,
         target: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        if self.log_input {
-            // loss = exp(input) - target * input
-            let exp_input = session.tensor_exp(input)?;
-            let target_times_input = session.tensor_mul(target, input)?;
-            let loss = session.tensor_sub(exp_input, target_times_input)?;
-            session.tensor_mean(loss)
-        } else {
-            // loss = input - target * log(input)
-            let log_input = session.tensor_log(input)?;
-            let target_times_log = session.tensor_mul(target, log_input)?;
-            let loss = session.tensor_sub(input, target_times_log)?;
-            session.tensor_mean(loss)
-        }
+        session.poisson_nll_loss(input, target, self.log_input, false, 1e-8)
     }
 }
 
@@ -15943,6 +15931,26 @@ mod tests {
         assert!(
             (vals[0] - expected).abs() < 1e-8,
             "expected {expected}, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn poisson_nll_loss_non_log_input_uses_eps_at_zero() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let target = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let loss = PoissonNLLLoss::new(false);
+        let l = loss.forward(&mut s, input, target).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        assert!(
+            vals[0].is_finite(),
+            "zero input with zero target should use eps-stabilized log, got {}",
+            vals[0]
+        );
+        assert!(
+            vals[0].abs() < 1e-12,
+            "zero input with zero target should have zero loss, got {}",
             vals[0]
         );
     }
