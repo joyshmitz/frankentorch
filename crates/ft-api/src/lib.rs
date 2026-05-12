@@ -2208,7 +2208,13 @@ impl FrankenTorchSession {
         }
         let numel =
             Self::checked_shape_numel(&shape, "tensor factory shape volume overflow in randint")?;
-        let range = (high - low) as f64;
+        let range = high.checked_sub(low).ok_or({
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "randint: high - low range overflow",
+                },
+            ))
+        })? as f64;
         let values: Vec<f64> = (0..numel)
             .map(|_| (self.rng.next_f64() * range).floor() + low as f64)
             .collect();
@@ -39747,6 +39753,12 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         assert!(s.randint(5, 5, vec![10]).is_err());
         assert!(s.randint(10, 5, vec![10]).is_err());
+    }
+
+    #[test]
+    fn randint_rejects_range_overflow() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        assert!(s.randint(i64::MIN, i64::MAX, vec![1]).is_err());
     }
 
     #[test]
