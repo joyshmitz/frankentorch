@@ -3770,6 +3770,11 @@ impl FrankenTorchSession {
                 },
             )));
         }
+        if a_shape.is_empty() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim: 0, ndim: 1 },
+            )));
+        }
         if a_shape.len() == 1 {
             return self.tensor_dot(a, b);
         }
@@ -37179,6 +37184,21 @@ mod tests {
         let vals = s.tensor_values(d).unwrap();
         assert!((vals[0] - 17.0).abs() < 1e-10);
         assert!((vals[1] - 53.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vecdot_rejects_scalar_inputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![2.0], vec![], false).unwrap();
+        let b = s.tensor_variable(vec![3.0], vec![], false).unwrap();
+
+        let err = s
+            .tensor_vecdot(a, b)
+            .expect_err("scalar vecdot inputs must fail closed");
+        assert!(
+            format!("{err:?}").contains("InvalidDimension"),
+            "unexpected scalar vecdot error: {err:?}"
+        );
     }
 
     #[test]
