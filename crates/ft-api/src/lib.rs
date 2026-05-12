@@ -16119,10 +16119,17 @@ impl FrankenTorchSession {
         // (used in normalization layers, regularization, gradient
         // clipping, etc).
         let shape = self.tensor_shape(input)?;
-        let numel = shape.iter().product::<usize>();
+        let numel = Self::checked_shape_numel(&shape, "vector_norm: input shape volume overflow")?;
         if numel == 0 {
-            // Empty input: every norm is 0 by convention.
-            return self.tensor_variable(vec![0.0], vec![1], false);
+            // Empty input: every norm is 0 by convention, but tracked
+            // empty tensors must still keep a tape edge so backward
+            // yields an empty gradient rather than failing on a fresh
+            // non-grad zero leaf. Tracked under frankentorch-ivel.
+            return self.tensor_apply_function(
+                &[input],
+                |_ctx, _inputs| Ok((vec![0.0], vec![1])),
+                |_ctx, _grad_outputs| Ok(vec![Some(Vec::new())]),
+            );
         }
         // Flatten so the reduction has a single axis.
         let flat = self.tensor_reshape(input, vec![numel])?;
@@ -34483,6 +34490,24 @@ mod tests {
         //   grad = [3/5, 4/5] = [0.6, 0.8]
         assert!((grad[0] - 0.6).abs() < 1e-10);
         assert!((grad[1] - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_empty_preserves_autograd_edge() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s.tensor_variable(Vec::<f64>::new(), vec![0], true).unwrap();
+        let norm = s.tensor_linalg_vector_norm(t, 2.0).unwrap();
+        assert_eq!(s.tensor_values(norm).unwrap(), &[0.0]);
+        assert!(
+            s.tensor_requires_grad(norm).unwrap(),
+            "empty vector_norm output should stay on the tape"
+        );
+
+        let report = s.tensor_backward(norm).unwrap();
+        let grad = s
+            .tensor_gradient(&report, t)
+            .expect("empty input gradient should exist");
+        assert!(grad.is_empty());
     }
 
     #[test]
