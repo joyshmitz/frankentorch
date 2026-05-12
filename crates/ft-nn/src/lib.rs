@@ -34,6 +34,13 @@ fn validate_positive_pooling_dims(
     Ok(())
 }
 
+fn validate_positive_finite(value: f64, reason: &'static str) -> Result<(), AutogradError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(incompatible_error(reason));
+    }
+    Ok(())
+}
+
 fn checked_mul(a: usize, b: usize, reason: &'static str) -> Result<usize, AutogradError> {
     a.checked_mul(b).ok_or(overflow_error(reason))
 }
@@ -12435,6 +12442,11 @@ impl Module for LPPool1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        validate_positive_finite(
+            self.norm_type,
+            "LPPool1d norm_type must be finite and greater than zero",
+        )?;
+
         let shape = session.tensor_shape(input)?;
         if shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -12511,6 +12523,11 @@ impl Module for LPPool2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        validate_positive_finite(
+            self.norm_type,
+            "LPPool2d norm_type must be finite and greater than zero",
+        )?;
+
         let shape = session.tensor_shape(input)?;
         if shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -25501,6 +25518,35 @@ mod tests {
     fn lp_pool1d_no_params() {
         let pool = LPPool1d::new(2.0, 2);
         assert!(pool.parameters().is_empty());
+    }
+
+    #[test]
+    fn lp_pool_rejects_invalid_norm_type() {
+        for norm_type in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            let input_1d = session
+                .tensor_variable(vec![1.0, 2.0], vec![1, 1, 2], false)
+                .expect("1d input");
+            let err = LPPool1d::new(norm_type, 2)
+                .forward(&mut session, input_1d)
+                .expect_err("invalid LPPool1d norm_type must fail closed");
+            assert!(
+                format!("{err:?}").contains("LPPool1d norm_type"),
+                "unexpected LPPool1d norm_type error: {err:?}"
+            );
+
+            let input_2d = session
+                .tensor_variable(vec![1.0; 4], vec![1, 1, 2, 2], false)
+                .expect("2d input");
+            let err = LPPool2d::new(norm_type, (2, 2))
+                .forward(&mut session, input_2d)
+                .expect_err("invalid LPPool2d norm_type must fail closed");
+            assert!(
+                format!("{err:?}").contains("LPPool2d norm_type"),
+                "unexpected LPPool2d norm_type error: {err:?}"
+            );
+        }
     }
 
     // ── LPPool2d Tests ──────────────────────────────────────────────────
