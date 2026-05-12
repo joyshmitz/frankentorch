@@ -11719,20 +11719,7 @@ impl GaussianNLLLoss {
         target: TensorNodeId,
         var: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        // 0.5 * (log(var) + (input - target)^2 / var + log(2*pi))
-        let diff = session.tensor_sub(input, target)?;
-        let sq_diff = session.tensor_mul(diff, diff)?;
-        let ratio = session.tensor_div(sq_diff, var)?;
-        let log_var = session.tensor_log(var)?;
-        let sum = session.tensor_add(log_var, ratio)?;
-        let shape = session.tensor_shape(sum)?;
-        let log_2pi = (2.0 * std::f64::consts::PI).ln();
-        let log_2pi_t = session.full(shape, log_2pi, false)?;
-        let total = session.tensor_add(sum, log_2pi_t)?;
-        let shape2 = session.tensor_shape(total)?;
-        let half = session.full(shape2, 0.5, false)?;
-        let loss = session.tensor_mul(half, total)?;
-        session.tensor_mean(loss)
+        session.gaussian_nll_loss(input, target, var, true, 1e-6)
     }
 }
 
@@ -15966,6 +15953,28 @@ mod tests {
         let vals = s.tensor_values(l).unwrap();
         // 0.5 * (log(1) + 0/1 + log(2pi)) = 0.5 * log(2pi)
         let expected = 0.5 * (2.0 * std::f64::consts::PI).ln();
+        assert!(
+            (vals[0] - expected).abs() < 1e-8,
+            "expected {expected}, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn gaussian_nll_loss_zero_variance_uses_eps() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let target = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let var = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let loss = GaussianNLLLoss;
+        let l = loss.forward_with_var(&mut s, input, target, var).unwrap();
+        let vals = s.tensor_values(l).unwrap();
+        let expected = 0.5 * (1e-6_f64.ln() + (2.0 * std::f64::consts::PI).ln());
+        assert!(
+            vals[0].is_finite(),
+            "zero variance should be eps-clamped, got {}",
+            vals[0]
+        );
         assert!(
             (vals[0] - expected).abs() < 1e-8,
             "expected {expected}, got {}",
