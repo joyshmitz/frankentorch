@@ -13666,6 +13666,27 @@ impl PairwiseDistance {
         self
     }
 
+    fn distance_from_diff(
+        &self,
+        session: &mut FrankenTorchSession,
+        diff: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = session.tensor_shape(diff)?;
+        let last_dim = shape.len().saturating_sub(1);
+        let shifted = if self.eps == 0.0 {
+            diff
+        } else {
+            let eps = session.full(shape, self.eps, false)?;
+            session.tensor_add(diff, eps)?
+        };
+        let distance = session.tensor_norm_dim(shifted, self.p, last_dim)?;
+        if self.keepdim {
+            session.tensor_unsqueeze(distance, last_dim)
+        } else {
+            Ok(distance)
+        }
+    }
+
     /// Compute pairwise distance between two tensors.
     pub fn forward_pair(
         &self,
@@ -13674,9 +13695,7 @@ impl PairwiseDistance {
         x2: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let diff = session.tensor_sub(x1, x2)?;
-        let shape = session.tensor_shape(diff)?;
-        let last_dim = shape.len().saturating_sub(1);
-        session.tensor_norm_dim(diff, self.p, last_dim)
+        self.distance_from_diff(session, diff)
     }
 }
 
@@ -13692,9 +13711,7 @@ impl Module for PairwiseDistance {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let shape = session.tensor_shape(input)?;
-        let last_dim = shape.len().saturating_sub(1);
-        session.tensor_norm_dim(input, self.p, last_dim)
+        self.distance_from_diff(session, input)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -25371,7 +25388,7 @@ mod tests {
     #[test]
     fn pairwise_distance_identical() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let pd = PairwiseDistance::new();
+        let pd = PairwiseDistance::new().with_eps(0.0);
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
             .unwrap();
@@ -25390,7 +25407,7 @@ mod tests {
     #[test]
     fn pairwise_distance_known_l2() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let pd = PairwiseDistance::new().with_p(2.0);
+        let pd = PairwiseDistance::new().with_p(2.0).with_eps(0.0);
         let x = session
             .tensor_variable(vec![0.0, 0.0], vec![1, 2], false)
             .unwrap();
@@ -25409,7 +25426,7 @@ mod tests {
     #[test]
     fn pairwise_distance_l1() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let pd = PairwiseDistance::new().with_p(1.0);
+        let pd = PairwiseDistance::new().with_p(1.0).with_eps(0.0);
         let x = session
             .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
             .unwrap();
@@ -25423,6 +25440,47 @@ mod tests {
             "L1 distance should be 7.0, got {}",
             vals[0]
         );
+    }
+
+    #[test]
+    fn pairwise_distance_applies_eps_before_norm() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pd = PairwiseDistance::new().with_p(2.0).with_eps(0.5);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
+        let y = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 2], false)
+            .unwrap();
+        let out = pd.forward_pair(&mut session, x, y).unwrap();
+        let vals = session.tensor_values(out).unwrap();
+        let expected = (0.5_f64.powi(2) + 0.5_f64.powi(2)).sqrt();
+        assert!(
+            (vals[0] - expected).abs() < 1e-6,
+            "eps should be added before the p-norm, got {}",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn pairwise_distance_keepdim_preserves_reduced_axis() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pd = PairwiseDistance::new()
+            .with_p(2.0)
+            .with_eps(0.0)
+            .with_keepdim(true);
+        let x = session
+            .tensor_variable(vec![0.0, 0.0, 0.0, 0.0], vec![2, 2], false)
+            .unwrap();
+        let y = session
+            .tensor_variable(vec![0.0, 0.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let out = pd.forward_pair(&mut session, x, y).unwrap();
+        let shape = session.tensor_shape(out).unwrap();
+        assert_eq!(shape, &[2, 1]);
+        let vals = session.tensor_values(out).unwrap();
+        assert!(vals[0].abs() < 1e-6);
+        assert!((vals[1] - 5.0).abs() < 1e-6);
     }
 
     // ── MultiLabelMarginLoss Tests ──────────────────────────────────────
