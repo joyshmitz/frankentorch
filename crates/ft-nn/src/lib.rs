@@ -12606,7 +12606,25 @@ impl LossModule for MultiLabelMarginLoss {
                 },
             )));
         }
+
+        let target_shape = session.tensor_shape(target)?;
+        if !target_shape.as_slice().eq(shape.as_slice()) {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MultiLabelMarginLoss: target shape must match input shape",
+                },
+            )));
+        }
+
         let c = *shape.last().unwrap();
+        if c == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MultiLabelMarginLoss: class dimension must be greater than zero",
+                },
+            )));
+        }
+
         let batch_size = checked_shape_numel(
             &shape[..shape.len() - 1],
             "MultiLabelMarginLoss batch shape overflow",
@@ -26175,6 +26193,44 @@ mod tests {
         let val = session.tensor_values(loss).unwrap()[0];
         // With equal scores, margin = 1 for each non-target, divided by C=3
         assert!(val > 0.0, "loss with margin violations should be positive");
+    }
+
+    #[test]
+    fn multi_label_margin_loss_rejects_target_shape_mismatch() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let loss_fn = MultiLabelMarginLoss::new(Reduction::Mean);
+        let input = session
+            .tensor_variable(vec![0.0; 6], vec![2, 3], false)
+            .unwrap();
+        let target = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0], vec![6], false)
+            .unwrap();
+        let err = loss_fn
+            .forward(&mut session, input, target)
+            .expect_err("target shape mismatch must fail closed");
+        assert!(
+            format!("{err:?}").contains("target shape must match input shape"),
+            "unexpected target-shape error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn multi_label_margin_loss_rejects_empty_class_dimension() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let loss_fn = MultiLabelMarginLoss::new(Reduction::Mean);
+        let input = session
+            .tensor_variable(Vec::new(), vec![1, 0], false)
+            .unwrap();
+        let target = session
+            .tensor_variable(Vec::new(), vec![1, 0], false)
+            .unwrap();
+        let err = loss_fn
+            .forward(&mut session, input, target)
+            .expect_err("empty class dimension must fail closed");
+        assert!(
+            format!("{err:?}").contains("class dimension must be greater than zero"),
+            "unexpected class-dimension error: {err:?}"
+        );
     }
 
     // ── LPPool1d Tests ──────────────────────────────────────────────────
