@@ -9151,6 +9151,11 @@ impl LSTM {
                 },
             )));
         }
+        if !dropout.is_finite() || !(0.0..=1.0).contains(&dropout) {
+            return Err(incompatible_error(
+                "LSTM dropout probability must be finite and in [0, 1]",
+            ));
+        }
 
         let num_directions: usize = if bidirectional { 2 } else { 1 };
         let total_layers = checked_mul(num_layers, num_directions, "LSTM layer count overflow")?;
@@ -9520,6 +9525,11 @@ impl GRU {
                 },
             )));
         }
+        if !dropout.is_finite() || !(0.0..=1.0).contains(&dropout) {
+            return Err(incompatible_error(
+                "GRU dropout probability must be finite and in [0, 1]",
+            ));
+        }
 
         let num_directions: usize = if bidirectional { 2 } else { 1 };
         let total_layers = checked_mul(num_layers, num_directions, "GRU layer count overflow")?;
@@ -9858,6 +9868,11 @@ impl RNN {
                     reason: "RNN num_layers must be >= 1",
                 },
             )));
+        }
+        if !dropout.is_finite() || !(0.0..=1.0).contains(&dropout) {
+            return Err(incompatible_error(
+                "RNN dropout probability must be finite and in [0, 1]",
+            ));
         }
 
         let num_directions: usize = if bidirectional { 2 } else { 1 };
@@ -21640,6 +21655,47 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let err = LSTM::new(&mut session, 3, 4, 0, false, 0.0, false);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn recurrent_modules_reject_invalid_dropout_probabilities() {
+        for p in [-0.1, 1.1, f64::NAN] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            for num_layers in [1, 2] {
+                let err = LSTM::new(&mut session, 3, 4, num_layers, false, p, false)
+                    .err()
+                    .expect("invalid LSTM dropout must fail closed");
+                assert!(
+                    format!("{err:?}").contains("LSTM dropout probability"),
+                    "unexpected LSTM dropout error: {err:?}"
+                );
+
+                let err = GRU::new(&mut session, 3, 4, num_layers, false, p, false)
+                    .err()
+                    .expect("invalid GRU dropout must fail closed");
+                assert!(
+                    format!("{err:?}").contains("GRU dropout probability"),
+                    "unexpected GRU dropout error: {err:?}"
+                );
+
+                let err = RNN::new(
+                    &mut session,
+                    3,
+                    4,
+                    RNNConfig {
+                        num_layers,
+                        dropout: p,
+                        ..RNNConfig::default()
+                    },
+                )
+                .err()
+                .expect("invalid RNN dropout must fail closed");
+                assert!(
+                    format!("{err:?}").contains("RNN dropout probability"),
+                    "unexpected RNN dropout error: {err:?}"
+                );
+            }
+        }
     }
 
     #[test]
