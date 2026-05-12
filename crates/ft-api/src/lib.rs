@@ -11404,58 +11404,17 @@ impl FrankenTorchSession {
             let diag_len = n.min(m - row_start);
             (row_start, 0, diag_len)
         };
-        // Extract diagonal elements using index_select on flattened tensor.
-        match dtype {
-            DType::F64 => {
-                // Wrap in tensor_apply_function with diagonal-extraction
-                // forward + scatter backward (the inverse of
-                // diag_embed). Tracked under frankentorch-sirh.
-                let n_c = n;
-                let m_c = m;
-                let row_start_c = row_start;
-                let col_start_c = col_start;
-                let diag_len_c = diag_len;
-                self.tensor_apply_function(
-                    &[input],
-                    move |_ctx, inputs| {
-                        let (vals, _shape) = inputs[0];
-                        let mut diag_vals = Vec::with_capacity(diag_len_c);
-                        for i in 0..diag_len_c {
-                            diag_vals.push(vals[(row_start_c + i) * n_c + col_start_c + i]);
-                        }
-                        Ok((diag_vals, vec![diag_len_c]))
-                    },
-                    move |_ctx, grad_outputs| {
-                        let g = grad_outputs[0];
-                        let mut grad_in = vec![0.0_f64; m_c * n_c];
-                        for i in 0..diag_len_c {
-                            grad_in[(row_start_c + i) * n_c + col_start_c + i] = g[i];
-                        }
-                        Ok(vec![Some(grad_in)])
-                    },
-                )
-            }
-            DType::F32 => {
-                if self.tensor_tape.tensor_requires_grad(input)? {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "tensor_diagonal: autograd is only supported for F64",
-                        },
-                    )));
-                }
-                let vals = self.tensor_tape.values_f32(input)?;
-                let mut diag_vals = Vec::with_capacity(diag_len);
-                for i in 0..diag_len {
-                    diag_vals.push(vals[(row_start + i) * n + col_start + i]);
-                }
-                self.tensor_variable_f32(diag_vals, vec![diag_len], false)
-            }
-            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "tensor_diagonal requires f32 or f64 tensors",
-                },
-            ))),
-        }
+        // Extract diagonal elements by gathering flat indices. This
+        // composes through reshape + index_select, so dtype and
+        // autograd behavior are inherited from the shared tensor tape
+        // path for both F64 and F32.
+        let flat_len = Self::checked_mul(m, n, "tensor_diagonal input shape overflow")?;
+        let flat = self.tensor_reshape(input, vec![flat_len])?;
+        let indices: Vec<f64> = (0..diag_len)
+            .map(|i| ((row_start + i) * n + col_start + i) as f64)
+            .collect();
+        let index_node = self.tensor_variable(indices, vec![diag_len], false)?;
+        self.tensor_index_select(flat, 0, index_node)
     }
 
     pub fn tensor_values(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
@@ -29298,8 +29257,47 @@ mod tests {
             )
             .expect("x");
         let d0 = session.tensor_diagonal(x, 0).expect("d0");
+        assert_eq!(session.tensor_dtype(d0).expect("dtype"), DType::F32);
         let v0 = session.tensor_values_f32(d0).expect("v0");
         assert_eq!(v0, vec![1.0f32, 5.0, 9.0]);
+    }
+
+    #[test]
+    fn diagonal_propagates_gradient_for_f32_offset() {
+        // Regression for frankentorch-m559: the F32 path used to
+        // fail-loud on requires_grad because tensor_diagonal used an
+        // F64-only custom autograd closure. The composed
+        // reshape+index_select path preserves F32 dtype and scatters
+        // gradients back to the selected diagonal positions.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(
+                vec![
+                    1.0f32, 2.0, 3.0, 4.0, //
+                    5.0, 6.0, 7.0, 8.0, //
+                    9.0, 10.0, 11.0, 12.0,
+                ],
+                vec![3, 4],
+                true,
+            )
+            .unwrap();
+        let d = s.tensor_diagonal(x, 1).unwrap();
+        assert_eq!(s.tensor_dtype(d).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(d).unwrap(), vec![2.0f32, 7.0, 12.0]);
+
+        let loss = s.tensor_sum(d).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, x)
+            .expect("F32 diagonal must propagate gradient via scatter");
+        assert_eq!(
+            grad,
+            &[
+                0.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ]
+        );
     }
 
     // ---- argsort tests ----
