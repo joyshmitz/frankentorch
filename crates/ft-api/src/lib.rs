@@ -9707,7 +9707,7 @@ impl FrankenTorchSession {
             GridSamplePaddingMode::Zeros => base,
             GridSamplePaddingMode::Border => {
                 let upper = size.saturating_sub(1) as f64;
-                if raw_coord < 0.0 || raw_coord > upper {
+                if raw_coord <= 0.0 || raw_coord >= upper {
                     0.0
                 } else {
                     base
@@ -43567,6 +43567,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(s.tensor_values(output).unwrap(), vec![4.0]);
+    }
+
+    #[test]
+    fn tensor_grid_sample_border_padding_zeroes_grid_grad_at_exact_boundary() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 1, 3], true)
+            .unwrap();
+        let grid = s
+            .tensor_variable(vec![-1.0, 0.0], vec![1, 1, 1, 2], true)
+            .unwrap();
+
+        let out = s
+            .tensor_grid_sample(
+                input,
+                grid,
+                GridSampleMode::Bilinear,
+                GridSamplePaddingMode::Border,
+                true,
+            )
+            .expect("border grid_sample should support autograd");
+        assert_eq!(s.tensor_values(out).unwrap(), &[1.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_input = s
+            .tensor_gradient(&report, input)
+            .expect("border grid_sample should propagate input gradient");
+        let grad_grid = s
+            .tensor_gradient(&report, grid)
+            .expect("border grid_sample should produce grid gradient");
+
+        assert_eq!(grad_input, &[1.0, 0.0, 0.0]);
+        assert_eq!(grad_grid, &[0.0, 0.0]);
     }
 
     #[test]
