@@ -7755,9 +7755,11 @@ impl Conv3d {
             )));
         }
 
-        let fan_in = in_channels * kd * kh * kw;
+        let kernel_plane = checked_mul(kd, kh, "Conv3d kernel size overflow")?;
+        let kernel_volume = checked_mul(kernel_plane, kw, "Conv3d kernel size overflow")?;
+        let fan_in = checked_mul(in_channels, kernel_volume, "Conv3d fan_in overflow")?;
         let bound = 1.0 / (fan_in as f64).sqrt();
-        let numel = out_channels * in_channels * kd * kh * kw;
+        let numel = checked_mul(out_channels, fan_in, "Conv3d weight size overflow")?;
 
         let w_rand = session.rand(vec![numel], false)?;
         let w_scale = session.full(vec![numel], 2.0 * bound, false)?;
@@ -19421,6 +19423,36 @@ mod tests {
             .tensor_variable(vec![1.0; 16], vec![1, 1, 4, 4], false)
             .expect("variable");
         assert!(conv.forward(&mut session, x).is_err());
+    }
+
+    #[test]
+    fn conv3d_rejects_overflowing_weight_shape() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        assert!(
+            Conv3d::new(
+                &mut session,
+                usize::MAX,
+                2,
+                (2, 2, 2),
+                (1, 1, 1),
+                (0, 0, 0),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            Conv3d::new(
+                &mut session,
+                2,
+                usize::MAX,
+                (2, 2, 2),
+                (1, 1, 1),
+                (0, 0, 0),
+                false
+            )
+            .is_err()
+        );
     }
 
     // ── ConvTranspose2d Tests ──────────────────────────────────────────
