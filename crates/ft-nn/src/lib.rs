@@ -17,6 +17,13 @@ fn overflow_error(reason: &'static str) -> AutogradError {
     incompatible_error(reason)
 }
 
+fn validate_dropout_probability(dropout: f64, reason: &'static str) -> Result<(), AutogradError> {
+    if !dropout.is_finite() || !(0.0..=1.0).contains(&dropout) {
+        return Err(incompatible_error(reason));
+    }
+    Ok(())
+}
+
 fn checked_mul(a: usize, b: usize, reason: &'static str) -> Result<usize, AutogradError> {
     a.checked_mul(b).ok_or(overflow_error(reason))
 }
@@ -10192,6 +10199,10 @@ impl TransformerEncoderLayer {
         activation: TransformerActivation,
         norm_first: bool,
     ) -> Result<Self, AutogradError> {
+        validate_dropout_probability(
+            dropout_p,
+            "TransformerEncoderLayer dropout probability must be finite and in [0, 1]",
+        )?;
         let self_attn = MultiheadAttention::new(session, d_model, nhead)?;
         let linear1 = Linear::new(session, d_model, dim_feedforward, true)?;
         let linear2 = Linear::new(session, dim_feedforward, d_model, true)?;
@@ -10361,6 +10372,10 @@ impl TransformerEncoder {
         norm_first: bool,
         final_layer_norm: bool,
     ) -> Result<Self, AutogradError> {
+        validate_dropout_probability(
+            dropout,
+            "TransformerEncoder dropout probability must be finite and in [0, 1]",
+        )?;
         let mut layers = Vec::with_capacity(num_layers);
         for _ in 0..num_layers {
             layers.push(TransformerEncoderLayer::new(
@@ -10478,6 +10493,10 @@ impl TransformerDecoderLayer {
         activation: TransformerActivation,
         norm_first: bool,
     ) -> Result<Self, AutogradError> {
+        validate_dropout_probability(
+            dropout_p,
+            "TransformerDecoderLayer dropout probability must be finite and in [0, 1]",
+        )?;
         let self_attn = MultiheadAttention::new(session, d_model, nhead)?;
         let cross_attn = MultiheadAttention::new(session, d_model, nhead)?;
         let linear1 = Linear::new(session, d_model, dim_feedforward, true)?;
@@ -10666,6 +10685,10 @@ impl TransformerDecoder {
         norm_first: bool,
         final_layer_norm: bool,
     ) -> Result<Self, AutogradError> {
+        validate_dropout_probability(
+            dropout,
+            "TransformerDecoder dropout probability must be finite and in [0, 1]",
+        )?;
         let mut layers = Vec::with_capacity(num_layers);
         for _ in 0..num_layers {
             layers.push(TransformerDecoderLayer::new(
@@ -10794,6 +10817,10 @@ impl Transformer {
         activation: TransformerActivation,
         norm_first: bool,
     ) -> Result<Self, AutogradError> {
+        validate_dropout_probability(
+            dropout,
+            "Transformer dropout probability must be finite and in [0, 1]",
+        )?;
         let encoder = TransformerEncoder::new(
             session,
             d_model,
@@ -22542,6 +22569,99 @@ mod tests {
         assert!(!encoder.is_training());
         encoder.train(true);
         assert!(encoder.is_training());
+    }
+
+    #[test]
+    fn transformer_modules_reject_invalid_dropout_probabilities() {
+        for p in [-0.1, 1.1, f64::NAN] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            let err = TransformerEncoderLayer::new(
+                &mut session,
+                8,
+                2,
+                32,
+                p,
+                TransformerActivation::Relu,
+                false,
+            )
+            .err()
+            .expect("invalid transformer encoder layer dropout must fail closed");
+            assert!(
+                format!("{err:?}").contains("TransformerEncoderLayer dropout probability"),
+                "unexpected transformer encoder layer dropout error: {err:?}"
+            );
+
+            let err = TransformerEncoder::new(
+                &mut session,
+                8,
+                2,
+                0,
+                32,
+                p,
+                TransformerActivation::Relu,
+                false,
+                false,
+            )
+            .err()
+            .expect("invalid transformer encoder dropout must fail closed");
+            assert!(
+                format!("{err:?}").contains("TransformerEncoder dropout probability"),
+                "unexpected transformer encoder dropout error: {err:?}"
+            );
+
+            let err = TransformerDecoderLayer::new(
+                &mut session,
+                8,
+                2,
+                32,
+                p,
+                TransformerActivation::Relu,
+                false,
+            )
+            .err()
+            .expect("invalid transformer decoder layer dropout must fail closed");
+            assert!(
+                format!("{err:?}").contains("TransformerDecoderLayer dropout probability"),
+                "unexpected transformer decoder layer dropout error: {err:?}"
+            );
+
+            let err = TransformerDecoder::new(
+                &mut session,
+                8,
+                2,
+                0,
+                32,
+                p,
+                TransformerActivation::Relu,
+                false,
+                false,
+            )
+            .err()
+            .expect("invalid transformer decoder dropout must fail closed");
+            assert!(
+                format!("{err:?}").contains("TransformerDecoder dropout probability"),
+                "unexpected transformer decoder dropout error: {err:?}"
+            );
+
+            let err = Transformer::new(
+                &mut session,
+                8,
+                2,
+                0,
+                0,
+                32,
+                p,
+                TransformerActivation::Relu,
+                false,
+            )
+            .err()
+            .expect("invalid transformer dropout must fail closed");
+            assert!(
+                format!("{err:?}").contains("Transformer dropout probability"),
+                "unexpected transformer dropout error: {err:?}"
+            );
+        }
     }
 
     #[test]
