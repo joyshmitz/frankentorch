@@ -12585,9 +12585,8 @@ impl LossModule for SoftMarginLoss {
 /// indices (padded with -1) and computes:
 ///   `loss = (1/C) * sum_{j not in target} max(0, 1 - (x[y] - x[j]))` for each y in target.
 ///
-/// In the simplified version here, target is a binary mask {0, 1} of the same
-/// shape as input. Loss penalizes non-target classes scoring close to or above
-/// target classes.
+/// Target rows contain class indices padded with `-1`, matching
+/// `torch.nn.MultiLabelMarginLoss`.
 pub struct MultiLabelMarginLoss {
     reduction: Reduction,
 }
@@ -12648,14 +12647,27 @@ impl LossModule for MultiLabelMarginLoss {
         let input_flat = session.tensor_reshape(input, vec![batch_size, c])?;
         let target_flat = session.tensor_reshape(target, vec![batch_size, c])?;
 
-        // Build target_mask (1 where y > 0.5) and non_target_mask
-        // (1 where y <= 0.5). Use the f64 values directly (the body
-        // expects target to be a binary {0, 1} mask).
         let target_vals = session.tensor_values(target_flat)?;
-        let target_mask_vals: Vec<f64> = target_vals
-            .iter()
-            .map(|&v| if v > 0.5 { 1.0 } else { 0.0 })
-            .collect();
+        let mut target_mask_vals = vec![0.0; batch_size * c];
+        for batch in 0..batch_size {
+            for slot in 0..c {
+                let target_value = target_vals[batch * c + slot];
+                if !target_value.is_finite() || target_value.fract().abs() > f64::EPSILON {
+                    return Err(incompatible_error(
+                        "MultiLabelMarginLoss: target entries must be integer class indices or -1",
+                    ));
+                }
+                if target_value.to_bits().eq(&(-1.0_f64).to_bits()) {
+                    continue;
+                }
+                if target_value < 0.0 || target_value >= c as f64 {
+                    return Err(incompatible_error(
+                        "MultiLabelMarginLoss: target class index out of range",
+                    ));
+                }
+                target_mask_vals[batch * c + target_value as usize] = 1.0;
+            }
+        }
         let non_target_mask_vals: Vec<f64> = target_mask_vals.iter().map(|&v| 1.0 - v).collect();
         let target_mask = session.tensor_variable(target_mask_vals, vec![batch_size, c], false)?;
         let non_target_mask =
@@ -26359,7 +26371,7 @@ mod tests {
             .tensor_variable(vec![10.0, -10.0, -10.0], vec![1, 3], false)
             .unwrap();
         let target = session
-            .tensor_variable(vec![1.0, 0.0, 0.0], vec![1, 3], false)
+            .tensor_variable(vec![0.0, -1.0, -1.0], vec![1, 3], false)
             .unwrap();
         let loss = loss_fn.forward(&mut session, input, target).unwrap();
         let val = session.tensor_values(loss).unwrap()[0];
@@ -26378,7 +26390,7 @@ mod tests {
             .tensor_variable(vec![-5.0, 5.0, 5.0], vec![1, 3], false)
             .unwrap();
         let target = session
-            .tensor_variable(vec![1.0, 0.0, 0.0], vec![1, 3], false)
+            .tensor_variable(vec![0.0, -1.0, -1.0], vec![1, 3], false)
             .unwrap();
         let loss = loss_fn.forward(&mut session, input, target).unwrap();
         let val = session.tensor_values(loss).unwrap()[0];
@@ -26396,7 +26408,7 @@ mod tests {
             .tensor_variable(vec![0.0, 0.0, 0.0], vec![1, 3], false)
             .unwrap();
         let target = session
-            .tensor_variable(vec![1.0, 0.0, 0.0], vec![1, 3], false)
+            .tensor_variable(vec![0.0, -1.0, -1.0], vec![1, 3], false)
             .unwrap();
         let loss = loss_fn.forward(&mut session, input, target).unwrap();
         let val = session.tensor_values(loss).unwrap()[0];
@@ -26439,6 +26451,39 @@ mod tests {
         assert!(
             format!("{err:?}").contains("class dimension must be greater than zero"),
             "unexpected class-dimension error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn multi_label_margin_loss_rejects_invalid_target_indices() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let loss_fn = MultiLabelMarginLoss::new(Reduction::Mean);
+        let input = session
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let fractional_target = session
+            .tensor_variable(vec![0.5, -1.0, -1.0], vec![1, 3], false)
+            .unwrap();
+        let err = loss_fn
+            .forward(&mut session, input, fractional_target)
+            .expect_err("fractional target index must fail closed");
+        assert!(
+            format!("{err:?}").contains("target entries must be integer class indices or -1"),
+            "unexpected fractional-target error: {err:?}"
+        );
+
+        let input = session
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let out_of_range_target = session
+            .tensor_variable(vec![3.0, -1.0, -1.0], vec![1, 3], false)
+            .unwrap();
+        let err = loss_fn
+            .forward(&mut session, input, out_of_range_target)
+            .expect_err("out-of-range target index must fail closed");
+        assert!(
+            format!("{err:?}").contains("target class index out of range"),
+            "unexpected out-of-range-target error: {err:?}"
         );
     }
 
