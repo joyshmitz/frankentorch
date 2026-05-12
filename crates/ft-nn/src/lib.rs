@@ -7360,6 +7360,12 @@ impl Module for Upsample1d {
             )));
         }
 
+        if self.scale_factor == 0 {
+            return Err(incompatible_error(
+                "Upsample1d scale_factor must be positive",
+            ));
+        }
+
         if self.scale_factor <= 1 {
             return Ok(input);
         }
@@ -7367,7 +7373,7 @@ impl Module for Upsample1d {
         let batch_size = input_shape[0];
         let channels = input_shape[1];
         let l_in = input_shape[2];
-        let l_out = l_in * self.scale_factor;
+        let l_out = checked_mul(l_in, self.scale_factor, "Upsample1d output length overflow")?;
 
         // Nearest-neighbor: unsqueeze last dim, expand, then reshape
         // [N, C, L] → [N, C, L, 1]
@@ -7422,6 +7428,12 @@ impl Module for Upsample2d {
             )));
         }
 
+        if self.scale_h == 0 || self.scale_w == 0 {
+            return Err(incompatible_error(
+                "Upsample2d scale factors must be positive",
+            ));
+        }
+
         if self.scale_h <= 1 && self.scale_w <= 1 {
             return Ok(input);
         }
@@ -7430,8 +7442,8 @@ impl Module for Upsample2d {
         let channels = input_shape[1];
         let h_in = input_shape[2];
         let w_in = input_shape[3];
-        let h_out = h_in * self.scale_h;
-        let w_out = w_in * self.scale_w;
+        let h_out = checked_mul(h_in, self.scale_h, "Upsample2d output height overflow")?;
+        let w_out = checked_mul(w_in, self.scale_w, "Upsample2d output width overflow")?;
 
         // Nearest-neighbor for 2D:
         // [N, C, H, W] → [N, C, H, 1, W, 1]
@@ -18998,6 +19010,17 @@ mod tests {
     }
 
     #[test]
+    fn upsample1d_rejects_zero_scale_factor() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample1d::new(0);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 1, 2], false)
+            .expect("variable");
+        assert!(up.forward(&mut session, x).is_err());
+    }
+
+    #[test]
     fn upsample1d_backward_produces_gradients() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let up = Upsample1d::new(2);
@@ -19050,6 +19073,20 @@ mod tests {
                 1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0
             ]
         );
+    }
+
+    #[test]
+    fn upsample2d_rejects_zero_scale_factors() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .expect("variable");
+
+        let zero_height = Upsample2d::new(0, 2);
+        assert!(zero_height.forward(&mut session, x).is_err());
+
+        let zero_width = Upsample2d::new(2, 0);
+        assert!(zero_width.forward(&mut session, x).is_err());
     }
 
     #[test]
