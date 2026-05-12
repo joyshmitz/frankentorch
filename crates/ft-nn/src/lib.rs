@@ -1244,12 +1244,43 @@ impl Unfold {
         self
     }
 
-    fn output_positions(&self, h: usize, w: usize) -> (usize, usize) {
-        let eff_kh = self.dilation_h * (self.kernel_h - 1) + 1;
-        let eff_kw = self.dilation_w * (self.kernel_w - 1) + 1;
-        let out_h = (h + 2 * self.padding_h).saturating_sub(eff_kh) / self.stride_h + 1;
-        let out_w = (w + 2 * self.padding_w).saturating_sub(eff_kw) / self.stride_w + 1;
-        (out_h, out_w)
+    fn output_positions(&self, h: usize, w: usize) -> Result<(usize, usize), AutogradError> {
+        let out_h = Self::output_position_dim(
+            h,
+            self.kernel_h,
+            self.dilation_h,
+            self.padding_h,
+            self.stride_h,
+        )?;
+        let out_w = Self::output_position_dim(
+            w,
+            self.kernel_w,
+            self.dilation_w,
+            self.padding_w,
+            self.stride_w,
+        )?;
+        Ok((out_h, out_w))
+    }
+
+    fn output_position_dim(
+        input: usize,
+        kernel: usize,
+        dilation: usize,
+        padding: usize,
+        stride: usize,
+    ) -> Result<usize, AutogradError> {
+        if kernel == 0 || dilation == 0 || stride == 0 {
+            return Err(incompatible_error(
+                "unfold: kernel_size, dilation, and stride dimensions must be greater than zero",
+            ));
+        }
+
+        let effective_span = checked_mul(dilation, kernel - 1, "unfold effective kernel overflow")?;
+        let effective_kernel = checked_add(effective_span, 1, "unfold effective kernel overflow")?;
+        let pad = checked_mul(2, padding, "unfold padded input overflow")?;
+        let padded = checked_add(input, pad, "unfold padded input overflow")?;
+        let positions = padded.saturating_sub(effective_kernel) / stride;
+        checked_add(positions, 1, "unfold output positions overflow")
     }
 }
 
@@ -1302,12 +1333,15 @@ impl Module for Unfold {
             )));
         }
         let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
-        let (out_h, out_w) = self.output_positions(h, w);
-        let l = out_h * out_w;
-        let block_size = c * self.kernel_h * self.kernel_w;
+        let (out_h, out_w) = self.output_positions(h, w)?;
+        let l = checked_mul(out_h, out_w, "unfold output positions overflow")?;
+        let kernel_area = checked_mul(self.kernel_h, self.kernel_w, "unfold kernel area overflow")?;
+        let block_size = checked_mul(c, kernel_area, "unfold block size overflow")?;
 
-        let padded_h = h + 2 * self.padding_h;
-        let padded_w = w + 2 * self.padding_w;
+        let pad_h = checked_mul(2, self.padding_h, "unfold padded height overflow")?;
+        let pad_w = checked_mul(2, self.padding_w, "unfold padded width overflow")?;
+        let padded_h = checked_add(h, pad_h, "unfold padded height overflow")?;
+        let padded_w = checked_add(w, pad_w, "unfold padded width overflow")?;
 
         // Step 1: Pad along H and W. tensor_pad uses [left, right]
         // per dim, innermost-first → [pad_w, pad_w, pad_h, pad_h]
@@ -1328,14 +1362,17 @@ impl Module for Unfold {
         };
 
         // Step 2: Flatten to 1-D.
-        let flat_total = n * c * padded_h * padded_w;
+        let flat_total = checked_shape_numel(
+            &[n, c, padded_h, padded_w],
+            "unfold flat input shape overflow",
+        )?;
         let flat_padded = session.tensor_reshape(padded_input, vec![flat_total])?;
 
         // Step 3: Build the gather index. The output [N, block_size, L]
         // is laid out contiguously, so iterate batch → row → col_idx in
         // lexicographic order to match. row decomposes as
         // (ci, kh_idx, kw_idx) and col_idx as (oh, ow).
-        let out_numel = n * block_size * l;
+        let out_numel = checked_shape_numel(&[n, block_size, l], "unfold output shape overflow")?;
         let mut index_vals = Vec::with_capacity(out_numel);
         for batch in 0..n {
             for ci in 0..c {
@@ -18743,6 +18780,21 @@ mod tests {
         assert!(
             Unfold::new((2, 2))
                 .dilation((0, 1))
+                .forward(&mut session, input)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unfold_rejects_overflowing_padding_shape() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1], false)
+            .unwrap();
+
+        assert!(
+            Unfold::new((1, 1))
+                .padding((usize::MAX, 0))
                 .forward(&mut session, input)
                 .is_err()
         );
