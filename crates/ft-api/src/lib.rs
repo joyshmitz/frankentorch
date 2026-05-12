@@ -7755,7 +7755,6 @@ impl FrankenTorchSession {
 
         // Compose through autograd primitives so gradients flow.
         // Math: y = x / max(||x||_p along dim, eps)
-        //         = x / max((sum_d |x_d|^p)^(1/p), 1e-12)
         // Tracked under frankentorch-c5g4. Previously this body
         // extracted values, divided in plain f64, and rebuilt a
         // requires_grad=false leaf — silently severing the tape
@@ -7767,10 +7766,7 @@ impl FrankenTorchSession {
         // the subsequent expand + div work uniformly across 1-D
         // and higher-rank inputs without needing a separate path
         // for the rank-1 case.
-        let abs_x = self.tensor_abs(input)?;
-        let pow_x = self.tensor_pow(abs_x, p)?;
-        let sum_x = self.tensor_sum_dim(pow_x, dim)?;
-        let norm = self.tensor_pow(sum_x, 1.0 / p)?;
+        let norm = self.tensor_norm_dim(input, p, dim)?;
         let norm_c = self.tensor_clamp_min(norm, 1e-12)?;
         let mut broadcast_shape = shape.clone();
         broadcast_shape[dim] = 1;
@@ -38393,6 +38389,45 @@ mod tests {
         assert!((vals[0] - 1.0 / 6.0).abs() < 1e-10);
         assert!((vals[1] - 2.0 / 6.0).abs() < 1e-10);
         assert!((vals[2] - 3.0 / 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn functional_normalize_l0_uses_nonzero_count_norm() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 2.0, 0.0, 0.0, 0.0, 5.0], vec![2, 3], false)
+            .unwrap();
+        let out = s.functional_normalize(t, 0.0, 1).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![0.5, 1.0, 0.0, 0.0, 0.0, 5.0]);
+    }
+
+    #[test]
+    fn functional_normalize_inf_uses_max_abs_norm() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, -3.0, -2.0, 0.5], vec![2, 2], false)
+            .unwrap();
+        let out = s.functional_normalize(t, f64::INFINITY, 1).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        let expected = [1.0 / 3.0, -1.0, -1.0, 0.25];
+        for (idx, (&actual, &expected)) in vals.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "vals[{idx}] = {actual}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn functional_normalize_neg_inf_uses_min_abs_norm() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = s
+            .tensor_variable(vec![1.0, 3.0, 2.0, -4.0], vec![2, 2], false)
+            .unwrap();
+        let out = s.functional_normalize(t, f64::NEG_INFINITY, 1).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![1.0, 3.0, 1.0, -2.0]);
     }
 
     #[test]
