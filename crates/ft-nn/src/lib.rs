@@ -1473,12 +1473,43 @@ impl Fold {
         self
     }
 
-    fn output_positions(&self) -> (usize, usize) {
-        let eff_kh = self.dilation_h * (self.kernel_h - 1) + 1;
-        let eff_kw = self.dilation_w * (self.kernel_w - 1) + 1;
-        let out_h = (self.output_h + 2 * self.padding_h).saturating_sub(eff_kh) / self.stride_h + 1;
-        let out_w = (self.output_w + 2 * self.padding_w).saturating_sub(eff_kw) / self.stride_w + 1;
-        (out_h, out_w)
+    fn output_positions(&self) -> Result<(usize, usize), AutogradError> {
+        let out_h = Self::output_position_dim(
+            self.output_h,
+            self.kernel_h,
+            self.dilation_h,
+            self.padding_h,
+            self.stride_h,
+        )?;
+        let out_w = Self::output_position_dim(
+            self.output_w,
+            self.kernel_w,
+            self.dilation_w,
+            self.padding_w,
+            self.stride_w,
+        )?;
+        Ok((out_h, out_w))
+    }
+
+    fn output_position_dim(
+        output: usize,
+        kernel: usize,
+        dilation: usize,
+        padding: usize,
+        stride: usize,
+    ) -> Result<usize, AutogradError> {
+        if kernel == 0 || dilation == 0 || stride == 0 {
+            return Err(incompatible_error(
+                "fold: kernel_size, dilation, and stride dimensions must be greater than zero",
+            ));
+        }
+
+        let effective_span = checked_mul(dilation, kernel - 1, "fold effective kernel overflow")?;
+        let effective_kernel = checked_add(effective_span, 1, "fold effective kernel overflow")?;
+        let pad = checked_mul(2, padding, "fold padded output overflow")?;
+        let padded = checked_add(output, pad, "fold padded output overflow")?;
+        let positions = padded.saturating_sub(effective_kernel) / stride;
+        checked_add(positions, 1, "fold output positions overflow")
     }
 }
 
@@ -1509,8 +1540,8 @@ impl Module for Fold {
             )));
         }
         let (n, block_size, l) = (shape[0], shape[1], shape[2]);
-        let (out_h, out_w) = self.output_positions();
-        let expected_l = out_h * out_w;
+        let (out_h, out_w) = self.output_positions()?;
+        let expected_l = checked_mul(out_h, out_w, "fold expected L overflow")?;
         if l != expected_l {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -1519,17 +1550,20 @@ impl Module for Fold {
             )));
         }
 
-        let c = block_size / (self.kernel_h * self.kernel_w);
-        if c * self.kernel_h * self.kernel_w != block_size {
+        let kernel_area = checked_mul(self.kernel_h, self.kernel_w, "fold kernel area overflow")?;
+        if block_size % kernel_area != 0 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
                     reason: "fold: block_size must be divisible by kH*kW",
                 },
             )));
         }
+        let c = block_size / kernel_area;
 
         let h = self.output_h;
         let w = self.output_w;
+        let padded_h = checked_add(h, self.padding_h, "fold padded height overflow")?;
+        let padded_w = checked_add(w, self.padding_w, "fold padded width overflow")?;
         let output_numel = checked_shape_numel(&[n, c, h, w], "fold output shape overflow")?;
         let input_numel = checked_shape_numel(&[n, block_size, l], "fold input shape overflow")?;
 
@@ -1566,9 +1600,9 @@ impl Module for Fold {
                                 let ih = oh * self.stride_h + kh * self.dilation_h;
                                 let iw = ow * self.stride_w + kw * self.dilation_w;
                                 if ih >= self.padding_h
-                                    && ih < h + self.padding_h
+                                    && ih < padded_h
                                     && iw >= self.padding_w
-                                    && iw < w + self.padding_w
+                                    && iw < padded_w
                                 {
                                     let dst_h = ih - self.padding_h;
                                     let dst_w = iw - self.padding_w;
@@ -18821,6 +18855,21 @@ mod tests {
         assert!(
             Fold::new((2, 2), (2, 2))
                 .dilation((0, 1))
+                .forward(&mut session, input)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fold_rejects_overflowing_padding_shape() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0], vec![1, 1, 1], false)
+            .unwrap();
+
+        assert!(
+            Fold::new((1, 1), (1, 1))
+                .padding((usize::MAX, 0))
                 .forward(&mut session, input)
                 .is_err()
         );
