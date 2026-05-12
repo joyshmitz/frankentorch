@@ -204,8 +204,8 @@ Objective: complete `FT-P2C-002`, `FT-P2C-004`, and `FT-P2C-006` end-to-end (cod
 - [x] Post graph-uplift summary comment on primary bead `bd-3v0`.
 
 ### 10.4 Multi-Agent Coordination
-- [ ] Fetch/respond to Agent Mail inbox messages (blocked: MCP transport decode failure in this environment).
-- [ ] Broadcast optimization + bead changes to agent peers after MCP transport recovery.
+- [x] Fetch/respond to Agent Mail inbox messages after MCP transport recovery (verified 2026-05-12; follow-up work now uses per-bead Agent Mail threads).
+- [x] Supersede the stale optimization-wave broadcast item after MCP recovery; current swarm coordination is recorded on each active bead thread.
 
 ## 11. Structured Logging + E2E Matrix + Validator Parallelism (Current Pass)
 
@@ -264,7 +264,7 @@ Objective: complete `FT-P2C-002`, `FT-P2C-004`, and `FT-P2C-006` end-to-end (cod
 - [x] Add in-place version bump path and out-of-place version/storage behavior tests.
 - [x] Expand `ft-core` unit suite to 10 tests with new invariant coverage.
 - [x] Re-run workspace gates after core changes.
-- [ ] Close packet contract/threat-model prerequisite beads (`bd-3v0.12.2`, `bd-3v0.12.3`) so child implementation beads can be claimed.
+- [x] Reconcile stale legacy prerequisite row: `bd-3v0.12.2` and `bd-3v0.12.3` are absent from the current `br --no-db` JSONL, and no ready/open prerequisite beads remain (verified 2026-05-12).
 
 ### 12.4 Essence Extraction Ledger (`bd-3v0.1`)
 - [x] Create `artifacts/phase2c/ESSENCE_EXTRACTION_LEDGER_V1.md` with row-level anchors, uncertainty tags, and test/e2e traceability.
@@ -275,4 +275,4 @@ Objective: complete `FT-P2C-002`, `FT-P2C-004`, and `FT-P2C-006` end-to-end (cod
 ### 12.5 Coordination + Residuals
 - [x] Keep active bead status/comments synchronized via `br`.
 - [x] Record Agent Mail transport unavailability and fallback coordination approach in bead comments.
-- [ ] Resume direct agent-mail inbox/reply workflow once MCP transport is available.
+- [x] Resume direct Agent Mail inbox/reply workflow once MCP transport is available (verified 2026-05-12).
