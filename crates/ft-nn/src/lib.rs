@@ -13670,6 +13670,11 @@ impl Module for CircularPad1d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = session.tensor_shape(input)?;
         let ndim = input_shape.len();
+        if ndim == 0 {
+            return Err(incompatible_error(
+                "CircularPad1d requires at least 1D input",
+            ));
+        }
         let l = input_shape[ndim - 1];
 
         if self.padding_left == 0 && self.padding_right == 0 {
@@ -24758,6 +24763,17 @@ mod tests {
         let vals = session.tensor_values(output).unwrap();
         // [3, 4, 1, 2, 3, 4, 1, 2]
         assert_eq!(vals, vec![3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn circular_pad1d_rejects_scalar_input() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session.tensor_variable(vec![1.0], vec![], false).unwrap();
+        let pad = CircularPad1d::new((0, 0));
+        let err = pad
+            .forward(&mut session, input)
+            .expect_err("scalar input must fail closed");
+        assert!(format!("{err:?}").contains("CircularPad1d requires at least 1D input"));
     }
 
     #[test]
