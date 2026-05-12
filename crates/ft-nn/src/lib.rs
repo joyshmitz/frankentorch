@@ -24,6 +24,16 @@ fn validate_dropout_probability(dropout: f64, reason: &'static str) -> Result<()
     Ok(())
 }
 
+fn validate_positive_pooling_dims(
+    dims: &[usize],
+    reason: &'static str,
+) -> Result<(), AutogradError> {
+    if dims.contains(&0) {
+        return Err(incompatible_error(reason));
+    }
+    Ok(())
+}
+
 fn checked_mul(a: usize, b: usize, reason: &'static str) -> Result<usize, AutogradError> {
     a.checked_mul(b).ok_or(overflow_error(reason))
 }
@@ -3346,6 +3356,11 @@ impl Module for AvgPool1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        validate_positive_pooling_dims(
+            &[self.kernel_size, self.stride],
+            "AvgPool1d kernel_size and stride must be greater than zero",
+        )?;
+
         let input_shape = {
             let (_, meta) = session.tensor_values_meta(input)?;
             meta.shape().to_vec()
@@ -4905,6 +4920,11 @@ impl Module for MaxPool1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        validate_positive_pooling_dims(
+            &[self.kernel_size, self.stride],
+            "MaxPool1d kernel_size and stride must be greater than zero",
+        )?;
+
         let input_shape = {
             let (_, meta) = session.tensor_values_meta(input)?;
             meta.shape().to_vec()
@@ -5247,6 +5267,11 @@ impl Module for MaxPool2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        validate_positive_pooling_dims(
+            &[self.kernel_h, self.kernel_w, self.stride_h, self.stride_w],
+            "MaxPool2d kernel_size and stride dimensions must be greater than zero",
+        )?;
+
         let input_shape = {
             let (_, meta) = session.tensor_values_meta(input)?;
             meta.shape().to_vec()
@@ -5670,6 +5695,18 @@ impl Module for AvgPool3d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        validate_positive_pooling_dims(
+            &[
+                self.kernel_d,
+                self.kernel_h,
+                self.kernel_w,
+                self.stride_d,
+                self.stride_h,
+                self.stride_w,
+            ],
+            "AvgPool3d kernel_size and stride dimensions must be greater than zero",
+        )?;
+
         let input_shape = {
             let (_, meta) = session.tensor_values_meta(input)?;
             meta.shape().to_vec()
@@ -5786,6 +5823,18 @@ impl Module for MaxPool3d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        validate_positive_pooling_dims(
+            &[
+                self.kernel_d,
+                self.kernel_h,
+                self.kernel_w,
+                self.stride_d,
+                self.stride_h,
+                self.stride_w,
+            ],
+            "MaxPool3d kernel_size and stride dimensions must be greater than zero",
+        )?;
+
         let input_shape = {
             let (_, meta) = session.tensor_values_meta(input)?;
             meta.shape().to_vec()
@@ -17498,6 +17547,66 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .expect("variable");
         assert!(pool.forward(&mut session, x).is_err());
+    }
+
+    #[test]
+    fn pooling_zero_kernel_or_stride_fails_closed() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let x1 = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false)
+            .expect("1d input");
+        let err = AvgPool1d::new(0, 0)
+            .forward(&mut session, x1)
+            .expect_err("AvgPool1d zero kernel must fail closed");
+        assert!(
+            format!("{err:?}").contains("AvgPool1d kernel_size"),
+            "unexpected AvgPool1d zero-kernel error: {err:?}"
+        );
+
+        let x1 = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 1, 3], false)
+            .expect("1d input");
+        let err = MaxPool1d::new(0, 0)
+            .forward(&mut session, x1)
+            .expect_err("MaxPool1d zero kernel must fail closed");
+        assert!(
+            format!("{err:?}").contains("MaxPool1d kernel_size"),
+            "unexpected MaxPool1d zero-kernel error: {err:?}"
+        );
+
+        let x2 = session
+            .tensor_variable(vec![1.0; 4], vec![1, 1, 2, 2], false)
+            .expect("2d input");
+        let err = MaxPool2d::new((0, 2), (0, 0))
+            .forward(&mut session, x2)
+            .expect_err("MaxPool2d zero kernel must fail closed");
+        assert!(
+            format!("{err:?}").contains("MaxPool2d kernel_size"),
+            "unexpected MaxPool2d zero-kernel error: {err:?}"
+        );
+
+        let x3 = session
+            .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], false)
+            .expect("3d input");
+        let err = AvgPool3d::new((0, 2, 2), (0, 0, 0))
+            .forward(&mut session, x3)
+            .expect_err("AvgPool3d zero kernel must fail closed");
+        assert!(
+            format!("{err:?}").contains("AvgPool3d kernel_size"),
+            "unexpected AvgPool3d zero-kernel error: {err:?}"
+        );
+
+        let x3 = session
+            .tensor_variable(vec![1.0; 8], vec![1, 1, 2, 2, 2], false)
+            .expect("3d input");
+        let err = MaxPool3d::new((0, 2, 2), (0, 0, 0))
+            .forward(&mut session, x3)
+            .expect_err("MaxPool3d zero kernel must fail closed");
+        assert!(
+            format!("{err:?}").contains("MaxPool3d kernel_size"),
+            "unexpected MaxPool3d zero-kernel error: {err:?}"
+        );
     }
 
     // ---- BatchNorm2d tests ----
