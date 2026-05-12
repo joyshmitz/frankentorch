@@ -1115,18 +1115,22 @@ impl Bilinear {
         if x1_shape.is_empty() || x2_shape.is_empty() {
             return Err(incompatible_error("bilinear: inputs must be at least 1-D"));
         }
+        let x1_batch_shape = &x1_shape[..x1_shape.len() - 1];
+        let x2_batch_shape = &x2_shape[..x2_shape.len() - 1];
+        if !x1_batch_shape.iter().eq(x2_batch_shape.iter()) {
+            return Err(incompatible_error(
+                "bilinear: input batch dimensions must match",
+            ));
+        }
         let in1 = self.in1_features;
         let in2 = self.in2_features;
         let out = self.out_features;
 
         // Handle batched inputs
-        let batch = if x1_shape.len() == 1 {
+        let batch = if x1_batch_shape.is_empty() {
             1
         } else {
-            checked_shape_numel(
-                &x1_shape[..x1_shape.len() - 1],
-                "bilinear: batch shape overflow",
-            )?
+            checked_shape_numel(x1_batch_shape, "bilinear: batch shape overflow")?
         };
         let x1_last = *x1_shape.last().unwrap_or(&0);
         let x2_last = *x2_shape.last().unwrap_or(&0);
@@ -19091,6 +19095,26 @@ mod tests {
         assert!(
             format!("{err:?}").contains("bilinear: inputs must be at least 1-D"),
             "unexpected scalar-x2 error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn bilinear_rejects_mismatched_batch_shapes() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bilinear = Bilinear::new(&mut session, 2, 2, 1, false).unwrap();
+
+        let x1 = session
+            .tensor_variable(vec![1.0; 12], vec![2, 3, 2], false)
+            .unwrap();
+        let x2 = session
+            .tensor_variable(vec![1.0; 12], vec![6, 2], false)
+            .unwrap();
+        let err = bilinear
+            .forward_bilinear(&mut session, x1, x2)
+            .expect_err("same-numel mismatched batch shapes must fail closed");
+        assert!(
+            format!("{err:?}").contains("bilinear: input batch dimensions must match"),
+            "unexpected mismatched-batch error: {err:?}"
         );
     }
 
