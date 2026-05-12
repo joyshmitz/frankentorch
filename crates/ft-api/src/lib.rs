@@ -2359,6 +2359,9 @@ impl FrankenTorchSession {
         }
         let probs = self.tensor_values(input)?;
         let shape = self.tensor_shape(input)?;
+        for &p in &probs {
+            Self::validate_probability(p, "bernoulli: probabilities must be finite and in [0, 1]")?;
+        }
         let values: Vec<f64> = probs
             .iter()
             .map(|&p| if self.rng.next_f64() < p { 1.0 } else { 0.0 })
@@ -2375,6 +2378,7 @@ impl FrankenTorchSession {
         shape: Vec<usize>,
         p: f64,
     ) -> Result<TensorNodeId, AutogradError> {
+        Self::validate_probability(p, "bernoulli_p: p must be finite and in [0, 1]")?;
         let numel =
             Self::checked_shape_numel(&shape, "tensor factory shape volume overflow in bernoulli")?;
         let values: Vec<f64> = (0..numel)
@@ -12956,6 +12960,13 @@ impl FrankenTorchSession {
         AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
             ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
         ))
+    }
+
+    fn validate_probability(probability: f64, reason: &'static str) -> Result<(), AutogradError> {
+        if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+            return Err(Self::incompatible_tensor_args(reason));
+        }
+        Ok(())
     }
 
     fn validate_pool1d_output_len(
@@ -39911,6 +39922,15 @@ mod tests {
     }
 
     #[test]
+    fn bernoulli_rejects_invalid_probabilities() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        for p in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let probs = s.tensor_variable(vec![p], vec![1], false).unwrap();
+            assert!(s.bernoulli(probs).is_err(), "accepted probability {p}");
+        }
+    }
+
+    #[test]
     fn bernoulli_p_uniform() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let result = s.bernoulli_p(vec![1000], 0.5).unwrap();
@@ -39922,6 +39942,17 @@ mod tests {
             ones > 300.0 && ones < 700.0,
             "expected ~500 ones, got {ones}"
         );
+    }
+
+    #[test]
+    fn bernoulli_p_rejects_invalid_probability() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        for p in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            assert!(
+                s.bernoulli_p(vec![1], p).is_err(),
+                "accepted probability {p}"
+            );
+        }
     }
 
     #[test]
