@@ -12394,11 +12394,18 @@ impl LossModule for FocalLoss {
 
         let num_classes = *input_shape.last().unwrap();
         let last_dim = input_shape.len() - 1;
+        let sample_shape = input_shape[..last_dim].to_vec();
+        let target_shape = session.tensor_shape(target)?;
+        if !target_shape.as_slice().eq(sample_shape.as_slice()) {
+            return Err(incompatible_error(
+                "FocalLoss: target shape must match input shape without the class dimension",
+            ));
+        }
+
         // Validate target indices via session.tensor_values (target is
         // a non-differentiable label tensor). We still rebuild a
         // non-grad index leaf below for tensor_gather.
         let target_vals = session.tensor_values(target)?;
-        let batch = target_vals.len();
         for &t in &target_vals {
             let class_idx = t as usize;
             if !t.is_finite() || t < 0.0 || t.fract() != 0.0 || class_idx >= num_classes {
@@ -12424,14 +12431,14 @@ impl LossModule for FocalLoss {
         index_shape[last_dim] = 1;
         let index = session.tensor_variable(target_vals, index_shape.clone(), false)?;
         let gathered = session.tensor_gather(log_probs, last_dim, index)?;
-        let log_pt = session.tensor_squeeze(gathered, last_dim)?; // shape [batch]
+        let log_pt = session.tensor_squeeze(gathered, last_dim)?; // sample_shape
         let pt = session.tensor_exp(log_pt)?;
-        let ones = session.full(vec![batch], 1.0, false)?;
+        let ones = session.full(sample_shape.clone(), 1.0, false)?;
         let one_minus_pt = session.tensor_sub(ones, pt)?;
         let focal_factor = session.tensor_pow(one_minus_pt, self.gamma)?;
         let weighted = session.tensor_mul(focal_factor, log_pt)?;
-        let alpha_t = session.full(vec![batch], -self.alpha, false)?;
-        let per_sample = session.tensor_mul(alpha_t, weighted)?; // [batch]
+        let alpha_t = session.full(sample_shape, -self.alpha, false)?;
+        let per_sample = session.tensor_mul(alpha_t, weighted)?; // sample_shape
 
         match self.reduction {
             Reduction::None => Ok(per_sample),
@@ -25919,6 +25926,47 @@ mod tests {
         let loss = fl.forward(&mut session, logits, target).unwrap();
         let val = session.tensor_values(loss).unwrap()[0];
         assert!(val > 0.0, "focal loss sum should be positive");
+    }
+
+    #[test]
+    fn focal_loss_rejects_reshaped_target() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let fl = FocalLoss::new(0.25, 2.0, Reduction::Mean);
+        let logits = session
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let target = session
+            .tensor_variable(vec![0.0, 1.0], vec![1, 2], false)
+            .unwrap();
+        let err = fl
+            .forward(&mut session, logits, target)
+            .expect_err("target rank must match the input sample shape");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(DispatchError::Key(DispatchKeyError::IncompatibleSet {
+                reason: "FocalLoss: target shape must match input shape without the class dimension"
+            }))
+        ));
+    }
+
+    #[test]
+    fn focal_loss_none_reduction_preserves_kd_sample_shape() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let fl = FocalLoss::new(0.25, 2.0, Reduction::None);
+        let logits = session
+            .tensor_variable(
+                vec![2.0, 0.5, 0.1, 0.0, 1.5, 0.2, 0.1, 0.4, 2.0, 1.0, 0.3, 0.0],
+                vec![2, 2, 3],
+                false,
+            )
+            .unwrap();
+        let target = session
+            .tensor_variable(vec![0.0, 1.0, 2.0, 0.0], vec![2, 2], false)
+            .unwrap();
+        let loss = fl.forward(&mut session, logits, target).unwrap();
+        let (vals, meta) = session.tensor_values_meta(loss).unwrap();
+        assert_eq!(meta.shape(), &[2, 2]);
+        assert!(vals.iter().all(|v| v.is_finite()));
     }
 
     // ── MultiMarginLoss Tests ──────────────────────────────────────────
