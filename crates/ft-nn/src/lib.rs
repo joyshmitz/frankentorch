@@ -13178,6 +13178,11 @@ impl Module for ReflectionPad1d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = session.tensor_shape(input)?;
         let ndim = input_shape.len();
+        if ndim == 0 {
+            return Err(incompatible_error(
+                "ReflectionPad1d requires at least 1D input",
+            ));
+        }
         let l = input_shape[ndim - 1];
 
         if self.padding_left >= l || self.padding_right >= l {
@@ -13359,6 +13364,11 @@ impl Module for ReplicationPad1d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = session.tensor_shape(input)?;
         let ndim = input_shape.len();
+        if ndim == 0 {
+            return Err(incompatible_error(
+                "ReplicationPad1d requires at least 1D input",
+            ));
+        }
         let l = input_shape[ndim - 1];
 
         if self.padding_left == 0 && self.padding_right == 0 {
@@ -24631,6 +24641,17 @@ mod tests {
     }
 
     #[test]
+    fn reflection_pad1d_rejects_scalar_input() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session.tensor_variable(vec![1.0], vec![], false).unwrap();
+        let pad = ReflectionPad1d::new((0, 0));
+        let err = pad
+            .forward(&mut session, input)
+            .expect_err("scalar input must fail closed");
+        assert!(format!("{err:?}").contains("ReflectionPad1d requires at least 1D input"));
+    }
+
+    #[test]
     fn reflection_pad2d_basic() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // [1, 1, 3, 3] with pad=(1,1,1,1) -> [1, 1, 5, 5]
@@ -24665,6 +24686,17 @@ mod tests {
         let vals = session.tensor_values(output).unwrap();
         // [1, 1, 1, 2, 3, 4, 4, 4, 4]
         assert_eq!(vals, vec![1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0, 4.0]);
+    }
+
+    #[test]
+    fn replication_pad1d_rejects_scalar_input() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session.tensor_variable(vec![1.0], vec![], false).unwrap();
+        let pad = ReplicationPad1d::new((0, 0));
+        let err = pad
+            .forward(&mut session, input)
+            .expect_err("scalar input must fail closed");
+        assert!(format!("{err:?}").contains("ReplicationPad1d requires at least 1D input"));
     }
 
     #[test]
