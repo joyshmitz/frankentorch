@@ -2402,13 +2402,13 @@ impl FrankenTorchSession {
         }
         let rates = self.tensor_values(input)?;
         let shape = self.tensor_shape(input)?;
+        for &lambda in &rates {
+            Self::validate_poisson_rate(lambda)?;
+        }
 
         let values: Vec<f64> = rates
             .iter()
             .map(|&lambda| {
-                if lambda < 0.0 {
-                    return f64::NAN;
-                }
                 if lambda == 0.0 {
                     return 0.0;
                 }
@@ -12965,6 +12965,15 @@ impl FrankenTorchSession {
     fn validate_probability(probability: f64, reason: &'static str) -> Result<(), AutogradError> {
         if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
             return Err(Self::incompatible_tensor_args(reason));
+        }
+        Ok(())
+    }
+
+    fn validate_poisson_rate(rate: f64) -> Result<(), AutogradError> {
+        if !rate.is_finite() || rate < 0.0 {
+            return Err(Self::incompatible_tensor_args(
+                "poisson: rates must be finite and non-negative",
+            ));
         }
         Ok(())
     }
@@ -39983,12 +39992,12 @@ mod tests {
     }
 
     #[test]
-    fn poisson_negative_rate_gives_nan() {
+    fn poisson_rejects_invalid_rates() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let rates = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
-        let result = s.poisson(rates).unwrap();
-        let vals = s.tensor_values(result).unwrap();
-        assert!(vals[0].is_nan());
+        for rate in [-1.0, f64::NAN, f64::INFINITY] {
+            let rates = s.tensor_variable(vec![rate], vec![1], false).unwrap();
+            assert!(s.poisson(rates).is_err(), "accepted rate {rate}");
+        }
     }
 
     #[test]
