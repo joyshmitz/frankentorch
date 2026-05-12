@@ -13875,15 +13875,29 @@ impl FrankenTorchSession {
         p: f64,
         margin: f64,
     ) -> Result<TensorNodeId, AutogradError> {
+        let make_err = |reason: &'static str| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet { reason },
+            ))
+        };
+
+        let p_bits = p.to_bits();
+        if ![1.0_f64.to_bits(), 2.0_f64.to_bits()].contains(&p_bits) {
+            return Err(make_err("multi_margin_loss: p must be 1 or 2"));
+        }
+
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "multi_margin_loss: input must be 2-D [batch, classes]",
-                },
-            )));
+            return Err(make_err(
+                "multi_margin_loss: input must be 2-D [batch, classes]",
+            ));
         }
         let (batch, classes) = (shape[0], shape[1]);
+        if classes < 1 {
+            return Err(make_err(
+                "multi_margin_loss: class dimension must be greater than zero",
+            ));
+        }
 
         // Compose through autograd primitives. The forward formula is
         //     loss = mean over batch of [sum_{j != y_i} relu(margin - x[i, y_i] + x[i, j])^p / classes]
@@ -13919,8 +13933,6 @@ impl FrankenTorchSession {
         let clamped = self.tensor_relu(diff)?;
         let masked = self.tensor_mul(clamped, mask_others)?;
 
-        // tensor_pow(_, p) supports general f64 exponents; for p == 1
-        // we'd duplicate work but the result is correct.
         let powered = self.tensor_pow(masked, p)?;
 
         let per_sample_sum = self.tensor_sum_dim(powered, 1)?; // [batch]
@@ -36314,6 +36326,36 @@ mod tests {
             .unwrap();
         let target = s.tensor_variable(vec![3.0], vec![1], false).unwrap();
         assert!(s.multi_margin_loss(input, target, 1.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn multi_margin_loss_rejects_invalid_p() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![3.0, 1.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let target = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let err = s
+            .multi_margin_loss(input, target, 3.0, 1.0)
+            .expect_err("unsupported p must fail closed");
+        assert!(
+            format!("{err:?}").contains("p must be 1 or 2"),
+            "unexpected invalid-p error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn multi_margin_loss_rejects_empty_class_dimension() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(Vec::new(), vec![0, 0], false).unwrap();
+        let target = s.tensor_variable(Vec::new(), vec![0], false).unwrap();
+        let err = s
+            .multi_margin_loss(input, target, 1.0, 1.0)
+            .expect_err("empty class dimension must fail closed");
+        assert!(
+            format!("{err:?}").contains("class dimension must be greater than zero"),
+            "unexpected empty-class error: {err:?}"
+        );
     }
 
     #[test]

@@ -12479,6 +12479,11 @@ impl LossModule for MultiMarginLoss {
         input: TensorNodeId,
         target: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        let p_bits = self.p.to_bits();
+        if ![1.0_f64.to_bits(), 2.0_f64.to_bits()].contains(&p_bits) {
+            return Err(incompatible_error("MultiMarginLoss: p must be 1 or 2"));
+        }
+
         let shape = session.tensor_shape(input)?;
         if shape.len() != 2 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -12488,6 +12493,11 @@ impl LossModule for MultiMarginLoss {
             )));
         }
         let (n, c) = (shape[0], shape[1]);
+        if c < 1 {
+            return Err(incompatible_error(
+                "MultiMarginLoss: class dimension must be greater than zero",
+            ));
+        }
 
         // Compose through autograd primitives (mirrors the session
         // multi_margin_loss fix in frankentorch-x9cr).
@@ -25873,6 +25883,40 @@ mod tests {
         let loss = mml.forward(&mut session, input, target).unwrap();
         let val = session.tensor_values(loss).unwrap()[0];
         assert!(val > 0.0, "misclassified should have positive loss");
+    }
+
+    #[test]
+    fn multi_margin_loss_rejects_invalid_p() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mml = MultiMarginLoss::new(3.0, 1.0, Reduction::Mean);
+        let input = session
+            .tensor_variable(vec![3.0, 1.0, 0.0], vec![1, 3], false)
+            .unwrap();
+        let target = session.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let err = mml
+            .forward(&mut session, input, target)
+            .expect_err("unsupported p must fail closed");
+        assert!(
+            format!("{err:?}").contains("p must be 1 or 2"),
+            "unexpected invalid-p error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn multi_margin_loss_rejects_empty_class_dimension() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mml = MultiMarginLoss::new(1.0, 1.0, Reduction::Mean);
+        let input = session
+            .tensor_variable(Vec::new(), vec![0, 0], false)
+            .unwrap();
+        let target = session.tensor_variable(Vec::new(), vec![0], false).unwrap();
+        let err = mml
+            .forward(&mut session, input, target)
+            .expect_err("empty class dimension must fail closed");
+        assert!(
+            format!("{err:?}").contains("class dimension must be greater than zero"),
+            "unexpected empty-class error: {err:?}"
+        );
     }
 
     // ── SoftMarginLoss Tests ───────────────────────────────────────────
