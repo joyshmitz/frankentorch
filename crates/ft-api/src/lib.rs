@@ -11014,17 +11014,24 @@ impl FrankenTorchSession {
         let numel =
             Self::checked_shape_numel(&output_shape, "affine_grid output shape volume overflow")?;
 
-        // Autograd path: tensor_apply_function works on f64. Only
-        // exposed for F64 theta — F32 theta with requires_grad=true
-        // still hits the existing fail-loud guard below to preserve
-        // dtype semantics. The forward is linear in theta (each grid
-        // cell is t00*x + t01*y + t02 / t10*x + t11*y + t12), so the
-        // backward is just the same accumulator with grad_grid in
-        // place of the constant 1. Tracked under frankentorch-bfj5
-        // (child of frankentorch-3v6e).
-        if matches!(theta_tensor.typed_storage(), TensorStorage::F64(_))
-            && self.tensor_tape.tensor_requires_grad(theta)?
-        {
+        // Autograd path: tensor_apply_function computes in f64 and
+        // materializes the output in theta's floating dtype. The
+        // forward is linear in theta (each grid cell is
+        // t00*x + t01*y + t02 / t10*x + t11*y + t12), so backward is
+        // the same accumulator with grad_grid in place of the
+        // constant 1. Tracked under frankentorch-bfj5 and extended to
+        // F32 under frankentorch-8mrg.
+        if self.tensor_tape.tensor_requires_grad(theta)? {
+            if !matches!(
+                theta_tensor.typed_storage(),
+                TensorStorage::F32(_) | TensorStorage::F64(_)
+            ) {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "affine_grid: theta must be float32 or float64",
+                    },
+                )));
+            }
             let out_h_c = out_h;
             let out_w_c = out_w;
             let batch_c = batch;
@@ -11089,14 +11096,6 @@ impl FrankenTorchSession {
                 ),
             );
             return Ok(out_id);
-        }
-
-        if self.tensor_tape.tensor_requires_grad(theta)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "affine_grid: autograd is only supported for F64 theta",
-                },
-            )));
         }
 
         match theta_tensor.typed_storage() {
@@ -43444,6 +43443,40 @@ mod tests {
             assert!(
                 (g - e).abs() < 1e-12,
                 "affine_grid grad_theta[{i}] = {g}, expected {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn tensor_affine_grid_f32_propagates_gradient_through_theta() {
+        // Regression test for frankentorch-8mrg: F32 theta used to
+        // hit a stale fail-loud guard even though affine_grid's
+        // analytical backward is dtype-independent.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let theta = s
+            .tensor_variable_f32(vec![1.0_f32, 0.0, 0.0, 0.0, 1.0, 0.0], vec![1, 2, 3], true)
+            .unwrap();
+        let grid = s
+            .tensor_affine_grid(theta, vec![1, 1, 2, 2], true)
+            .expect("affine_grid must accept tracked f32 theta");
+
+        assert_eq!(s.tensor_dtype(grid).unwrap(), DType::F32);
+        assert_eq!(
+            s.tensor_values_f32(grid).unwrap(),
+            vec![-1.0_f32, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0]
+        );
+
+        let loss = s.tensor_sum(grid).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_theta = s
+            .tensor_gradient(&report, theta)
+            .expect("affine_grid must propagate f32 theta gradient");
+
+        let expected = [0.0_f64, 0.0, 4.0, 0.0, 0.0, 4.0];
+        for (i, (&g, &e)) in grad_theta.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-6,
+                "affine_grid f32 grad_theta[{i}] = {g}, expected {e}"
             );
         }
     }
