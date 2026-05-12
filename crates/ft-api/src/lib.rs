@@ -7792,12 +7792,11 @@ impl FrankenTorchSession {
         let shape = self.tensor_shape(input)?;
         if p >= 1.0 {
             // p >= 1 → all elements dropped → output is zero, with
-            // gradient also zero (a zero tensor multiplied with input
-            // is differentiable; for fully-dropped layers the
-            // gradient should still pass through as zero, which is
-            // semantically equivalent to a non-grad zero leaf).
-            let numel = Self::checked_shape_numel(&shape, "dropout: shape volume overflow")?;
-            return self.tensor_variable(vec![0.0; numel], shape, false);
+            // gradient also zero. Preserve the input's tape edge by
+            // multiplying by a same-dtype zero mask instead of
+            // rebuilding a fresh non-grad leaf.
+            let zeros = self.zeros_like(input, false)?;
+            return self.tensor_mul(input, zeros);
         }
 
         // Compose through tensor_mul against a non-grad random mask.
@@ -38308,6 +38307,28 @@ mod tests {
         for &v in &vals {
             assert!(v.abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn functional_dropout_p1_preserves_zero_gradient_edge() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
+            .unwrap();
+
+        let out = s.functional_dropout(input, 1.0, true).unwrap();
+        assert!(
+            s.tensor_requires_grad(out).unwrap(),
+            "p=1 dropout output must remain on the tape"
+        );
+        assert_eq!(s.tensor_values(out).unwrap(), &[0.0, 0.0, 0.0]);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("p=1 dropout should propagate zero gradient");
+        assert_eq!(grad, &[0.0, 0.0, 0.0]);
     }
 
     #[test]
