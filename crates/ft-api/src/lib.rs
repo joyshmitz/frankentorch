@@ -11263,12 +11263,15 @@ impl FrankenTorchSession {
                     },
                 )));
             }
-            if !matches!(input_tensor.typed_storage(), TensorStorage::F64(_))
-                || !matches!(grid_tensor.typed_storage(), TensorStorage::F64(_))
-            {
+            let matching_float_dtype = matches!(
+                (input_tensor.typed_storage(), grid_tensor.typed_storage()),
+                (TensorStorage::F32(_), TensorStorage::F32(_))
+                    | (TensorStorage::F64(_), TensorStorage::F64(_))
+            );
+            if !matching_float_dtype {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "grid_sample: autograd is only supported for F64 input and grid tensors",
+                        reason: "grid_sample: autograd requires matching f32 or f64 input and grid tensors",
                     },
                 )));
             }
@@ -43300,7 +43303,8 @@ mod tests {
     #[test]
     fn tensor_grid_sample_fails_closed_for_grad_inputs() {
         // Nearest-mode grid_sample remains fail-loud for gradients:
-        // only the bilinear F64 slice has an analytical backward.
+        // only the bilinear floating-point slice has an analytical
+        // backward.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
@@ -43317,6 +43321,57 @@ mod tests {
                 true,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn tensor_grid_sample_bilinear_f32_propagates_gradients_to_input_and_grid() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable_f32(vec![1.0_f32, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
+            .unwrap();
+        let grid = s
+            .tensor_variable_f32(vec![0.0_f32, 0.0], vec![1, 1, 1, 2], true)
+            .unwrap();
+
+        let output = s
+            .tensor_grid_sample(
+                input,
+                grid,
+                GridSampleMode::Bilinear,
+                GridSamplePaddingMode::Zeros,
+                true,
+            )
+            .expect("bilinear F32 grid_sample should support autograd");
+        assert_eq!(s.tensor_dtype(output).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(output).unwrap(), vec![2.5_f32]);
+
+        let loss = s.tensor_sum(output).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_input = s
+            .tensor_gradient(&report, input)
+            .expect("grid_sample should propagate f32 input gradient");
+        let grad_grid = s
+            .tensor_gradient(&report, grid)
+            .expect("grid_sample should propagate f32 grid gradient");
+
+        assert_eq!(grad_input.len(), 4);
+        for (i, &g) in grad_input.iter().enumerate() {
+            assert!(
+                (g - 0.25).abs() < 1e-6,
+                "f32 grad_input[{i}] = {g}, expected 0.25"
+            );
+        }
+        assert_eq!(grad_grid.len(), 2);
+        assert!(
+            (grad_grid[0] - 0.5).abs() < 1e-6,
+            "f32 grad_grid x = {}, expected 0.5",
+            grad_grid[0]
+        );
+        assert!(
+            (grad_grid[1] - 1.0).abs() < 1e-6,
+            "f32 grad_grid y = {}, expected 1.0",
+            grad_grid[1]
         );
     }
 
