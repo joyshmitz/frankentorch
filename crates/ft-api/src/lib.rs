@@ -17884,8 +17884,14 @@ impl FrankenTorchSession {
 
         let (batch, channels, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let r = upscale_factor;
+        if r == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "pixel_shuffle: upscale_factor must be greater than zero",
+            ));
+        }
+        let r_squared = Self::checked_mul(r, r, "pixel_shuffle: upscale_factor squared overflow")?;
 
-        if channels % (r * r) != 0 {
+        if channels % r_squared != 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "pixel_shuffle: channels must be divisible by upscale_factor^2",
@@ -17893,14 +17899,16 @@ impl FrankenTorchSession {
             )));
         }
 
-        let oc = channels / (r * r);
+        let oc = channels / r_squared;
+        let out_h = Self::checked_mul(h, r, "pixel_shuffle: output height overflow")?;
+        let out_w = Self::checked_mul(w, r, "pixel_shuffle: output width overflow")?;
 
         // reshape to (N, C, r, r, H, W)
         let reshaped = self.tensor_reshape(input, vec![batch, oc, r, r, h, w])?;
         // permute to (N, C, H, r, W, r)
         let permuted = self.tensor_permute(reshaped, vec![0, 1, 4, 2, 5, 3])?;
         // reshape to (N, C, H*r, W*r)
-        self.tensor_reshape(permuted, vec![batch, oc, h * r, w * r])
+        self.tensor_reshape(permuted, vec![batch, oc, out_h, out_w])
     }
 
     // ── pixel_unshuffle ─────────────────────────────────────────────────
@@ -17928,6 +17936,13 @@ impl FrankenTorchSession {
 
         let (batch, channels, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let r = downscale_factor;
+        if r == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "pixel_unshuffle: downscale_factor must be greater than zero",
+            ));
+        }
+        let r_squared =
+            Self::checked_mul(r, r, "pixel_unshuffle: downscale_factor squared overflow")?;
 
         if h % r != 0 || w % r != 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -17939,13 +17954,18 @@ impl FrankenTorchSession {
 
         let oh = h / r;
         let ow = w / r;
+        let out_channels = Self::checked_mul(
+            channels,
+            r_squared,
+            "pixel_unshuffle: output channel count overflow",
+        )?;
 
         // reshape to (N, C, H/r, r, W/r, r)
         let reshaped = self.tensor_reshape(input, vec![batch, channels, oh, r, ow, r])?;
         // permute to (N, C, r, r, H/r, W/r)
         let permuted = self.tensor_permute(reshaped, vec![0, 1, 3, 5, 2, 4])?;
         // reshape to (N, C*r*r, H/r, W/r)
-        self.tensor_reshape(permuted, vec![batch, channels * r * r, oh, ow])
+        self.tensor_reshape(permuted, vec![batch, out_channels, oh, ow])
     }
 
     // ── F.interpolate ────────────────────────────────────────────────────
@@ -45205,6 +45225,24 @@ mod tests {
     }
 
     #[test]
+    fn pixel_shuffle_zero_factor_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1], false)
+            .unwrap();
+        assert!(s.tensor_pixel_shuffle(x, 0).is_err());
+    }
+
+    #[test]
+    fn pixel_shuffle_factor_square_overflow_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1], false)
+            .unwrap();
+        assert!(s.tensor_pixel_shuffle(x, usize::MAX).is_err());
+    }
+
+    #[test]
     fn pixel_shuffle_preserves_numel() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // (1, 8, 2, 3) -> (1, 2, 4, 6) with r=2
@@ -45241,6 +45279,24 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 1, 3, 2], false)
             .unwrap();
         assert!(s.tensor_pixel_unshuffle(x, 2).is_err());
+    }
+
+    #[test]
+    fn pixel_unshuffle_zero_factor_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1], false)
+            .unwrap();
+        assert!(s.tensor_pixel_unshuffle(x, 0).is_err());
+    }
+
+    #[test]
+    fn pixel_unshuffle_factor_square_overflow_errors() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1], false)
+            .unwrap();
+        assert!(s.tensor_pixel_unshuffle(x, usize::MAX).is_err());
     }
 
     #[test]
