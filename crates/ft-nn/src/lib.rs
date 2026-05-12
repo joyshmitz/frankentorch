@@ -11640,10 +11640,26 @@ impl HingeEmbeddingLoss {
         // target is constant labels), then
         //   result = mask * input + (1 - mask) * relu(margin - input)
         let shape = session.tensor_shape(input)?;
+        let target_shape = session.tensor_shape(target)?;
+        if !target_shape.as_slice().eq(shape.as_slice()) {
+            return Err(incompatible_error(
+                "HingeEmbeddingLoss: target shape must match input shape",
+            ));
+        }
+
         let target_vals = session.tensor_values(target)?;
+        let valid_target_bits = [1.0_f64.to_bits(), (-1.0_f64).to_bits()];
+        for &target_value in &target_vals {
+            if !valid_target_bits.contains(&target_value.to_bits()) {
+                return Err(incompatible_error(
+                    "HingeEmbeddingLoss: target labels must be 1.0 or -1.0",
+                ));
+            }
+        }
+
         let mask_vals: Vec<f64> = target_vals
             .iter()
-            .map(|&t| if t > 0.0 { 1.0 } else { 0.0 })
+            .map(|&t| if t.is_sign_positive() { 1.0 } else { 0.0 })
             .collect();
         let mask = session.tensor_variable(mask_vals, shape.clone(), false)?;
         let ones_t = session.full(shape.clone(), 1.0, false)?;
@@ -15875,6 +15891,42 @@ mod tests {
         let vals = s.tensor_values(l).unwrap();
         // max(0, 1.0 - 0.3) = 0.7
         assert!((vals[0] - 0.7).abs() < 1e-10);
+    }
+
+    #[test]
+    fn hinge_embedding_loss_rejects_target_shape_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.3, 0.5], vec![2], false).unwrap();
+        let target = s
+            .tensor_variable(vec![1.0, -1.0], vec![1, 2], false)
+            .unwrap();
+        let loss = HingeEmbeddingLoss::new(1.0);
+        let err = loss
+            .forward_hinge(&mut s, input, target)
+            .expect_err("target shape mismatch must fail closed");
+        assert!(
+            format!("{err:?}").contains("target shape must match input shape"),
+            "unexpected shape error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn hinge_embedding_loss_rejects_invalid_target_labels() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.3, 0.5, 0.7], vec![3], false)
+            .unwrap();
+        let target = s
+            .tensor_variable(vec![0.0, f64::NAN, f64::INFINITY], vec![3], false)
+            .unwrap();
+        let loss = HingeEmbeddingLoss::new(1.0);
+        let err = loss
+            .forward_hinge(&mut s, input, target)
+            .expect_err("non +/-1 target labels must fail closed");
+        assert!(
+            format!("{err:?}").contains("target labels must be 1.0 or -1.0"),
+            "unexpected target-label error: {err:?}"
+        );
     }
 
     #[test]
