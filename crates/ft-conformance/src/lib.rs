@@ -13952,6 +13952,33 @@ mod tests {
             }
         }
 
+        // MR (idempotence): abs(abs(x)) == abs(x) bit-exactly. Once
+        // values are made non-negative, a second abs is a no-op.
+        // Companion to fuzz_metamorphic_abs_of_neg_equals_abs (zt03).
+        // frankentorch-f26s.
+        #[test]
+        fn fuzz_metamorphic_abs_is_idempotent(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let a1 = s.tensor_abs(x).expect("abs once");
+            let a2 = s.tensor_abs(a1).expect("abs twice");
+            let v1 = s.tensor_values(a1).expect("v1");
+            let v2 = s.tensor_values(a2).expect("v2");
+            for (i, (a, b)) in v1.iter().zip(v2.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "abs(abs(x))[{}] = {} != abs(x)[{}] = {}", i, b, i, a
+                );
+            }
+        }
+
         // MR (rounding consistency): bit-exact relationships between
         // ceil, floor, round. For any finite x:
         //   - floor(x) <= round(x) <= ceil(x)
