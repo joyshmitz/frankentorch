@@ -400,4 +400,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_api_index_put_backward"
+path = "fuzz_targets/ft_api_index_put_backward.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
