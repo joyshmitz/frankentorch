@@ -13952,6 +13952,62 @@ mod tests {
             }
         }
 
+        // MR (rounding consistency): bit-exact relationships between
+        // ceil, floor, round. For any finite x:
+        //   - floor(x) <= round(x) <= ceil(x)
+        //   - ceil(x) - floor(x) ∈ {0.0, 1.0}
+        //   - round(x) ∈ {ceil(x), floor(x)} (modulo IEEE round-half-to-even)
+        // Catches sign-flip drift in any of the three rounding ops.
+        // frankentorch-m9p3.
+        #[test]
+        fn fuzz_metamorphic_rounding_consistency(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x in roughly [-20, 20] with fractional components.
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 100.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+
+            let x_a = s.tensor_variable(input.clone(), vec![n], false).expect("x_a");
+            let ceil_x = s.tensor_ceil(x_a).expect("ceil");
+            let v_ceil = s.tensor_values(ceil_x).expect("ceil vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_b = s.tensor_variable(input.clone(), vec![n], false).expect("x_b");
+            let floor_x = s.tensor_floor(x_b).expect("floor");
+            let v_floor = s.tensor_values(floor_x).expect("floor vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_c = s.tensor_variable(input.clone(), vec![n], false).expect("x_c");
+            let round_x = s.tensor_round(x_c).expect("round");
+            let v_round = s.tensor_values(round_x).expect("round vals");
+
+            for (i, &x) in input.iter().enumerate() {
+                let c = v_ceil[i];
+                let f = v_floor[i];
+                let r = v_round[i];
+
+                prop_assert!(
+                    f <= r && r <= c,
+                    "ordering broken at [{}]: x={}, floor={}, round={}, ceil={}",
+                    i, x, f, r, c
+                );
+                let gap = c - f;
+                prop_assert!(
+                    gap == 0.0 || gap == 1.0,
+                    "ceil - floor at [{}] = {} (expected 0 for integer x or 1 otherwise; x = {})",
+                    i, gap, x
+                );
+                prop_assert!(
+                    r == c || r == f,
+                    "round at [{}] = {} not in {{floor={}, ceil={}}}; x = {}",
+                    i, r, f, c, x
+                );
+            }
+        }
+
         // MR (inverse function): sin(asin(y)) ≈ y for y in [-1, 1]
         // within 8 ULP. frankentorch-bzu2.
         #[test]
