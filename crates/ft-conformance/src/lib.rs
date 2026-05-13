@@ -13678,6 +13678,206 @@ mod tests {
                 "det(AB) = {det_ab} but det(A)*det(B) = {det_a_times_det_b}; diff = {diff:e}, bound = {bound:e}"
             );
         }
+
+        // MR (identity, multiplicative): matmul(A, I) == A and
+        // matmul(I, A) == A bit-exactly when I is the identity
+        // matrix. The kernel sums products of pure 0/1 with A's
+        // entries; no rounding loss possible so this is a strong
+        // bit-exact probe of the inner triple-loop indexing.
+        // frankentorch-o3uq.
+        #[test]
+        fn fuzz_metamorphic_matmul_identity_right_left(
+            (m, n, a_raw) in (1usize..=8, 1usize..=8)
+                .prop_flat_map(|(m, n)| (
+                    Just(m),
+                    Just(n),
+                    prop::collection::vec(-256i16..256i16, m * n),
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            // Right identity: I has shape [n, n]; A @ I_n == A
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a_n = s.tensor_variable(a.clone(), vec![m, n], false).expect("a");
+            let mut eye_right = vec![0.0_f64; n * n];
+            for i in 0..n {
+                eye_right[i * n + i] = 1.0;
+            }
+            let i_n = s.tensor_variable(eye_right, vec![n, n], false).expect("I_n");
+            let a_eye = s.tensor_matmul(a_n, i_n).expect("A @ I_n");
+            let v_a_eye = s.tensor_values(a_eye).expect("v_a_eye");
+            for (idx, (got, expected)) in v_a_eye.iter().zip(a.iter()).enumerate() {
+                prop_assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "matmul(A, I_n)[{}] = {} but A[{}] = {}", idx, got, idx, expected
+                );
+            }
+
+            // Left identity: I has shape [m, m]; I_m @ A == A
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a_n = s.tensor_variable(a.clone(), vec![m, n], false).expect("a");
+            let mut eye_left = vec![0.0_f64; m * m];
+            for i in 0..m {
+                eye_left[i * m + i] = 1.0;
+            }
+            let i_m = s.tensor_variable(eye_left, vec![m, m], false).expect("I_m");
+            let eye_a = s.tensor_matmul(i_m, a_n).expect("I_m @ A");
+            let v_eye_a = s.tensor_values(eye_a).expect("v_eye_a");
+            for (idx, (got, expected)) in v_eye_a.iter().zip(a.iter()).enumerate() {
+                prop_assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "matmul(I_m, A)[{}] = {} but A[{}] = {}", idx, got, idx, expected
+                );
+            }
+        }
+
+        // MR (linearity, multiplicative): matmul(k*A, B) ==
+        // k * matmul(A, B) within ULP slack scaled by the inner
+        // dimension. Catches sign flips and any "constant baked in
+        // to the inner accumulator" regression.
+        // frankentorch-o3uq.
+        #[test]
+        fn fuzz_metamorphic_matmul_scaling_left(
+            (m, k, n, a_raw, b_raw, scale_raw) in (1usize..=6, 1usize..=6, 1usize..=6)
+                .prop_flat_map(|(m, k, n)| (
+                    Just(m),
+                    Just(k),
+                    Just(n),
+                    prop::collection::vec(-128i16..128i16, m * k),
+                    prop::collection::vec(-128i16..128i16, k * n),
+                    -16i16..16i16,
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            if scale_raw == 0 { return Ok(()); }
+            let a: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let b: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let scale = f64::from(scale_raw) / 7.0;
+            let ka: Vec<f64> = a.iter().map(|x| scale * x).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a_n = s.tensor_variable(a.clone(), vec![m, k], false).expect("a");
+            let b_n = s.tensor_variable(b.clone(), vec![k, n], false).expect("b");
+            let ab = s.tensor_matmul(a_n, b_n).expect("a@b");
+            let v_ab = s.tensor_values(ab).expect("v_ab");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let ka_n = s.tensor_variable(ka, vec![m, k], false).expect("k*a");
+            let b_n2 = s.tensor_variable(b.clone(), vec![k, n], false).expect("b2");
+            let kab = s.tensor_matmul(ka_n, b_n2).expect("(k*a)@b");
+            let v_kab = s.tensor_values(kab).expect("v_kab");
+
+            let abs_a_max: f64 = a.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+            let abs_b_max: f64 = b.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+            let bound = (k as f64) * scale.abs() * abs_a_max * abs_b_max
+                * f64::EPSILON * 16.0 + 1e-12;
+            for (i, (lhs, rhs)) in v_kab.iter().zip(v_ab.iter()).enumerate() {
+                let expected = scale * rhs;
+                let diff = (lhs - expected).abs();
+                prop_assert!(
+                    diff <= bound,
+                    "matmul(k*A, B)[{}] = {} but k * matmul(A, B)[{}] = {}; diff = {:e}",
+                    i, lhs, i, expected, diff
+                );
+            }
+        }
+
+        // MR (distributivity, additive): matmul(A, B + C) ==
+        // matmul(A, B) + matmul(A, C) within ULP slack. The two
+        // sides take different paths through the kernel (one
+        // matmul with summed input vs two matmuls then add); a
+        // regression in the inner accumulator surfaces here.
+        // frankentorch-o3uq.
+        #[test]
+        fn fuzz_metamorphic_matmul_right_distributivity(
+            (m, k, n, a_raw, b_raw, c_raw) in (1usize..=5, 1usize..=5, 1usize..=5)
+                .prop_flat_map(|(m, k, n)| (
+                    Just(m),
+                    Just(k),
+                    Just(n),
+                    prop::collection::vec(-128i16..128i16, m * k),
+                    prop::collection::vec(-128i16..128i16, k * n),
+                    prop::collection::vec(-128i16..128i16, k * n),
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let b: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let c: Vec<f64> = c_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let b_plus_c: Vec<f64> = b.iter().zip(c.iter()).map(|(x, y)| x + y).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a_n = s.tensor_variable(a.clone(), vec![m, k], false).expect("a");
+            let bpc = s.tensor_variable(b_plus_c, vec![k, n], false).expect("b+c");
+            let a_bpc = s.tensor_matmul(a_n, bpc).expect("A @ (B+C)");
+            let v_lhs = s.tensor_values(a_bpc).expect("v_lhs");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a.clone(), vec![m, k], false).expect("a2");
+            let b2 = s.tensor_variable(b.clone(), vec![k, n], false).expect("b2");
+            let ab = s.tensor_matmul(a2, b2).expect("A @ B");
+            let v_ab = s.tensor_values(ab).expect("v_ab");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a3 = s.tensor_variable(a.clone(), vec![m, k], false).expect("a3");
+            let c2 = s.tensor_variable(c.clone(), vec![k, n], false).expect("c2");
+            let ac = s.tensor_matmul(a3, c2).expect("A @ C");
+            let v_ac = s.tensor_values(ac).expect("v_ac");
+
+            let abs_a_max: f64 = a.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+            let abs_bc_max: f64 = b.iter().zip(c.iter())
+                .fold(0.0_f64, |acc, (&x, &y)| acc.max((x + y).abs()).max(x.abs()).max(y.abs()));
+            let bound = (k as f64) * abs_a_max * abs_bc_max
+                * f64::EPSILON * 32.0 + 1e-12;
+            for (i, (l, (b_v, c_v))) in v_lhs.iter()
+                .zip(v_ab.iter().zip(v_ac.iter())).enumerate()
+            {
+                let expected = b_v + c_v;
+                let diff = (l - expected).abs();
+                prop_assert!(
+                    diff <= bound,
+                    "matmul(A, B+C)[{}] = {} but matmul(A,B) + matmul(A,C)[{}] = {}; diff = {:e}",
+                    i, l, i, expected, diff
+                );
+            }
+        }
+
+        // MR (basis, dot): dot(a, e_i) bit-exactly equals a[i].
+        // The standard basis vector picks one cell with no
+        // rounding (multiplications by 0 and exactly one by 1).
+        // frankentorch-o3uq.
+        #[test]
+        fn fuzz_metamorphic_dot_with_basis_vector(
+            (n, a_raw, idx_raw) in (1usize..=12)
+                .prop_flat_map(|n| (
+                    Just(n),
+                    prop::collection::vec(-512i16..512i16, n),
+                    0usize..n,
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut e_i = vec![0.0_f64; n];
+            e_i[idx_raw] = 1.0;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a_n = s.tensor_variable(a.clone(), vec![n], false).expect("a");
+            let e_n = s.tensor_variable(e_i, vec![n], false).expect("e_i");
+            let d = s.tensor_dot(a_n, e_n).expect("dot");
+            let v = s.tensor_values(d).expect("v");
+            prop_assert_eq!(v.len(), 1);
+            prop_assert_eq!(
+                v[0].to_bits(),
+                a[idx_raw].to_bits(),
+                "dot(a, e_{}) = {} but a[{}] = {}", idx_raw, v[0], idx_raw, a[idx_raw]
+            );
+        }
     }
 
     #[cfg(feature = "fuzz")]
