@@ -17175,6 +17175,122 @@ print(json.dumps({
     }
 
     #[test]
+    fn torch_max_pool2d_f32_output_shape_subprocess_conformance() {
+        // F32 shape parity for MaxPool2d. frankentorch-ds16.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{MaxPool2d, Module};
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_max_pool2d_f32_output_shape_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json, sys, torch
+cases = json.loads(sys.stdin.read())["cases"]
+out = []
+for c in cases:
+    layer = torch.nn.MaxPool2d(tuple(c["kernel"]), tuple(c["stride"]))
+    x = torch.zeros(*c["input_shape"], dtype=torch.float32)
+    y = layer(x)
+    out.append({"shape": list(y.shape)})
+print(json.dumps({"results": out}, sort_keys=True))
+"#;
+
+        // (kernel, stride, input_shape) — stride=kernel is the
+        // standard convention for non-overlapping pools.
+        let cases = [
+            ((2, 2), (2, 2), vec![1, 1, 8, 8]),
+            ((3, 3), (1, 1), vec![1, 1, 8, 8]),
+            ((2, 2), (1, 1), vec![1, 3, 10, 10]),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|c| json!({
+                "kernel": [c.0.0, c.0.1],
+                "stride": [c.1.0, c.1.1],
+                "input_shape": c.2,
+            })).collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch MaxPool2d oracle should run");
+        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        assert_eq!(results.len(), cases.len());
+
+        for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let (kernel, stride, ref input_shape) = *case;
+            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+                .expect("oracle shape array")
+                .iter()
+                .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
+                .collect();
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let pool = MaxPool2d::new(kernel, stride);
+            let numel: usize = input_shape.iter().copied().product();
+            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+                .expect("input tensor");
+            let out = pool.forward(&mut session, x)
+                .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
+            let out_shape = session.tensor_shape(out).expect("output shape");
+            assert_eq!(
+                out_shape, expected_shape.as_slice(),
+                "case {i}: MaxPool2d F32 shape diverges"
+            );
+        }
+    }
+
+    #[test]
+    fn torch_adaptive_avg_pool2d_f32_output_shape_subprocess_conformance() {
+        // F32 shape parity for AdaptiveAvgPool2d. The output_size
+        // parameter pins the result shape regardless of input, so
+        // the shape contract is trivial but the F32 dispatch path
+        // is the part being validated. frankentorch-ds16.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{AdaptiveAvgPool2d, Module};
+
+        // No torch oracle needed — output_size IS the shape contract.
+        let cases = [
+            ((1, 1), vec![1, 1, 8, 8]),
+            ((4, 4), vec![1, 3, 16, 16]),
+            ((7, 7), vec![1, 32, 14, 14]),
+        ];
+
+        for (i, (output_size, input_shape)) in cases.iter().enumerate() {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let pool = AdaptiveAvgPool2d::new(*output_size);
+            let numel: usize = input_shape.iter().copied().product();
+            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+                .expect("input tensor");
+            let out = pool.forward(&mut session, x)
+                .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
+            let out_shape = session.tensor_shape(out).expect("output shape");
+            let expected = vec![input_shape[0], input_shape[1], output_size.0, output_size.1];
+            assert_eq!(
+                out_shape, expected,
+                "case {i}: AdaptiveAvgPool2d F32 shape (output_size={output_size:?}) diverges"
+            );
+        }
+    }
+
+    #[test]
     fn torch_conv_transpose1d_f32_output_shape_subprocess_conformance() {
         // F32 shape parity for ConvTranspose1d. Follow-up to 7iqt /
         // b6au / 9sap completing F32 coverage across conv variants.
