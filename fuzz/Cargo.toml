@@ -344,4 +344,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_api_ordering"
+path = "fuzz_targets/ft_api_ordering.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
