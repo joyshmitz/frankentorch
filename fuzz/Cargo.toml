@@ -253,4 +253,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_kernel_cpu_cat_stack"
+path = "fuzz_targets/ft_kernel_cpu_cat_stack.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
