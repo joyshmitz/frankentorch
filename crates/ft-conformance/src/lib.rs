@@ -13952,6 +13952,46 @@ mod tests {
             }
         }
 
+        // MR (multiplicative inverse): x * reciprocal(x) ≈ 1 for
+        // non-zero x within 4 ULP. Catches reciprocal precision
+        // drift and any divide-by-zero handling issues that would
+        // produce inf or NaN. frankentorch-dm86.
+        #[test]
+        fn fuzz_metamorphic_reciprocal_multiply_recovers_one(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Skip zero. Bias toward non-zero with scale 1/17.
+            let input: Vec<f64> = samples
+                .iter()
+                .map(|v| {
+                    let f = f64::from(*v) / 17.0;
+                    if f == 0.0 { 1.0 } else { f }
+                })
+                .collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x1 = s.tensor_variable(input.clone(), vec![n], false).expect("x1");
+            let recip = s.tensor_reciprocal(x1).expect("reciprocal");
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let recip_vals = (0..n).map(|i| 1.0 / input[i]).collect::<Vec<f64>>();
+            let recip2 = s.tensor_variable(recip_vals, vec![n], false).expect("recip2");
+            let x2 = s.tensor_variable(input.clone(), vec![n], false).expect("x2");
+            let _ = recip;
+            let prod = s.tensor_mul(x2, recip2).expect("mul");
+            let v = s.tensor_values(prod).expect("values");
+
+            for (i, &g) in v.iter().enumerate() {
+                let diff = (g - 1.0).abs();
+                prop_assert!(
+                    diff <= 4.0 * f64::EPSILON,
+                    "x * reciprocal(x) [{}] = {} (expected 1.0; x = {})",
+                    i, g, input[i]
+                );
+            }
+        }
+
         // MR (general idempotence): clamp(clamp(x, min, max), min, max)
         // == clamp(x, min, max) bit-exactly. Once values are clamped
         // to [min, max], a second clamp is a no-op. yg6k covers the
