@@ -7669,6 +7669,80 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// `torch.special.softmax(input, dim)` parity alias for
+    /// `tensor_softmax`. Tracked under frankentorch-ksrz.
+    pub fn tensor_special_softmax(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softmax(input, dim)
+    }
+
+    /// `torch.special.log_softmax(input, dim)` parity alias.
+    /// Tracked under frankentorch-ksrz.
+    pub fn tensor_special_log_softmax(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log_softmax(input, dim)
+    }
+
+    /// `torch.special.psi(input)` parity alias for
+    /// `tensor_digamma`. Tracked under frankentorch-ksrz.
+    pub fn tensor_special_psi(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_digamma(input)
+    }
+
+    /// `torch.special.softplus(input)` parity alias.
+    /// Tracked under frankentorch-ksrz.
+    pub fn tensor_special_softplus(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softplus(input)
+    }
+
+    /// `torch.special.round(input)` parity alias.
+    /// Tracked under frankentorch-ksrz.
+    pub fn tensor_special_round(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_round(input)
+    }
+
+    /// `torch.special.log1p(input)` parity alias.
+    /// Tracked under frankentorch-ksrz.
+    pub fn tensor_special_log1p(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log1p(input)
+    }
+
+    /// `torch.special.expm1(input)` parity alias.
+    /// Tracked under frankentorch-ksrz.
+    pub fn tensor_special_expm1(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expm1(input)
+    }
+
+    /// `torch.special.sinc(input)` parity alias.
+    /// Tracked under frankentorch-ksrz.
+    pub fn tensor_special_sinc(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sinc(input)
+    }
+
     /// Gated Linear Unit: split `input` in half along `dim` and gate.
     ///
     /// Equivalent to `torch.nn.functional.glu(input, dim)`. Returns
@@ -40977,6 +41051,57 @@ mod tests {
         let v_gn = s.tensor_values(gn).unwrap();
         for (i, (a, b)) in v_lg.iter().zip(v_gn.iter()).enumerate() {
             assert_eq!(a.to_bits(), b.to_bits(), "i={i}: lgamma={a}, gammaln={b}");
+        }
+    }
+
+    #[test]
+    fn special_namespace_aliases_match_canonical() {
+        // 8 torch.special namespace aliases (frankentorch-ksrz) —
+        // all bit-equal their canonical counterparts.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs = vec![0.5, 1.0, -0.5, 2.5];
+
+        macro_rules! check_unary {
+            ($name:expr, $alias:ident, $canon:ident) => {{
+                let a = s.tensor_variable(xs.clone(), vec![xs.len()], false).unwrap();
+                let b = s.tensor_variable(xs.clone(), vec![xs.len()], false).unwrap();
+                let alias_id = s.$alias(a).unwrap();
+                let canon_id = s.$canon(b).unwrap();
+                let v_a = s.tensor_values(alias_id).unwrap();
+                let v_c = s.tensor_values(canon_id).unwrap();
+                for (i, (x, y)) in v_a.iter().zip(v_c.iter()).enumerate() {
+                    assert_eq!(x.to_bits(), y.to_bits(), "{} i={i}: alias={x}, canonical={y}", $name);
+                }
+            }};
+        }
+
+        check_unary!("psi", tensor_special_psi, tensor_digamma);
+        check_unary!("softplus", tensor_special_softplus, tensor_softplus);
+        check_unary!("round", tensor_special_round, tensor_round);
+        check_unary!("log1p", tensor_special_log1p, tensor_log1p);
+        check_unary!("expm1", tensor_special_expm1, tensor_expm1);
+        check_unary!("sinc", tensor_special_sinc, tensor_sinc);
+
+        // Softmax / log_softmax: dim-parameterized.
+        let sm_xs = vec![1.0, 2.0, 3.0, 4.0];
+        let a = s.tensor_variable(sm_xs.clone(), vec![4], false).unwrap();
+        let b = s.tensor_variable(sm_xs.clone(), vec![4], false).unwrap();
+        let sm_alias = s.tensor_special_softmax(a, 0).unwrap();
+        let sm_canon = s.tensor_softmax(b, 0).unwrap();
+        let v_a = s.tensor_values(sm_alias).unwrap();
+        let v_c = s.tensor_values(sm_canon).unwrap();
+        for (i, (x, y)) in v_a.iter().zip(v_c.iter()).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "softmax i={i}: alias={x}, canonical={y}");
+        }
+
+        let c = s.tensor_variable(sm_xs.clone(), vec![4], false).unwrap();
+        let d = s.tensor_variable(sm_xs, vec![4], false).unwrap();
+        let lsm_alias = s.tensor_special_log_softmax(c, 0).unwrap();
+        let lsm_canon = s.tensor_log_softmax(d, 0).unwrap();
+        let v_a = s.tensor_values(lsm_alias).unwrap();
+        let v_c = s.tensor_values(lsm_canon).unwrap();
+        for (i, (x, y)) in v_a.iter().zip(v_c.iter()).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "log_softmax i={i}: alias={x}, canonical={y}");
         }
     }
 
