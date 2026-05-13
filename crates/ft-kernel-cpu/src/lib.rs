@@ -5308,17 +5308,18 @@ pub fn sum_dim_tensor_contiguous_f32(
         return Ok(vec![0.0f32; out_numel]);
     }
     let offset = meta.storage_offset();
-    let mut output = vec![0.0f32; out_numel];
+    // Push-based output mirrors the f64 fix (frankentorch-bv1n).
+    let mut output = Vec::with_capacity(out_numel);
     let data = &input[offset..];
 
     // F32 mirror of the f64 sum_dim fast/general split. F32 has only
     // a 24-bit mantissa so the precision improvement from pairwise
     // vs sequential is even more pronounced here.
     if inner_size == 1 {
-        for (outer, slot) in output.iter_mut().enumerate() {
+        for outer in 0..outer_size {
             let start = outer * reduce_size;
             let end = start + reduce_size;
-            *slot = pairwise_sum_f32(&data[start..end]);
+            output.push(pairwise_sum_f32(&data[start..end]));
         }
         return Ok(output);
     }
@@ -5329,7 +5330,7 @@ pub fn sum_dim_tensor_contiguous_f32(
             for r in 0..reduce_size {
                 scratch[r] = data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            output[outer * inner_size + inner] = pairwise_sum_f32(&scratch);
+            output.push(pairwise_sum_f32(&scratch));
         }
     }
     Ok(output)
@@ -5566,7 +5567,8 @@ pub fn prod_dim_tensor_contiguous_f32(
         return Ok(vec![1.0f32; out_numel]);
     }
     let offset = meta.storage_offset();
-    let mut output = vec![1.0f32; out_numel];
+    // Push-based output mirrors the f64 fix (frankentorch-bv1n).
+    let mut output = Vec::with_capacity(out_numel);
     let data = &input[offset..];
     for outer in 0..outer_size {
         for inner in 0..inner_size {
@@ -5574,7 +5576,7 @@ pub fn prod_dim_tensor_contiguous_f32(
             for r in 0..reduce_size {
                 prod *= data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            output[outer * inner_size + inner] = prod;
+            output.push(prod);
         }
     }
     Ok(output)
@@ -5602,7 +5604,8 @@ pub fn var_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let data = &input[offset..];
-    let mut output = vec![0.0f32; out_numel];
+    // Push-based output mirrors the f64 fix (frankentorch-bv1n).
+    let mut output = Vec::with_capacity(out_numel);
     #[allow(clippy::cast_precision_loss)]
     let correction = (reduce_size - 1) as f32;
     #[allow(clippy::cast_precision_loss)]
@@ -5627,7 +5630,7 @@ pub fn var_dim_tensor_contiguous_f32(
                 let d = x - mean;
                 d * d
             });
-            output[outer * inner_size + inner] = var_sum / correction;
+            output.push(var_sum / correction);
         }
     }
     Ok(output)
@@ -5697,7 +5700,8 @@ pub fn norm_dim_tensor_contiguous_f32(
     }
     let offset = meta.storage_offset();
     let data = &input[offset..];
-    let mut output = vec![0.0f32; out_numel];
+    // Push-based output mirrors the f64 fix (frankentorch-bv1n).
+    let mut output = Vec::with_capacity(out_numel);
 
     if p == f32::INFINITY {
         for outer in 0..outer_size {
@@ -5707,7 +5711,7 @@ pub fn norm_dim_tensor_contiguous_f32(
                     max_abs = max_abs
                         .max(data[outer * reduce_size * inner_size + r * inner_size + inner].abs());
                 }
-                output[outer * inner_size + inner] = max_abs;
+                output.push(max_abs);
             }
         }
     } else if p == f32::NEG_INFINITY {
@@ -5718,7 +5722,7 @@ pub fn norm_dim_tensor_contiguous_f32(
                     min_abs = min_abs
                         .min(data[outer * reduce_size * inner_size + r * inner_size + inner].abs());
                 }
-                output[outer * inner_size + inner] = min_abs;
+                output.push(min_abs);
             }
         }
     } else if p == 0.0f32 {
@@ -5730,7 +5734,7 @@ pub fn norm_dim_tensor_contiguous_f32(
                         count += 1.0f32;
                     }
                 }
-                output[outer * inner_size + inner] = count;
+                output.push(count);
             }
         }
     } else if p == 1.0f32 {
@@ -5740,7 +5744,7 @@ pub fn norm_dim_tensor_contiguous_f32(
                 for r in 0..reduce_size {
                     sum += data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
                 }
-                output[outer * inner_size + inner] = sum;
+                output.push(sum);
             }
         }
     } else if p == 2.0f32 {
@@ -5751,7 +5755,7 @@ pub fn norm_dim_tensor_contiguous_f32(
                     let v = data[outer * reduce_size * inner_size + r * inner_size + inner];
                     sum_sq += v * v;
                 }
-                output[outer * inner_size + inner] = sum_sq.sqrt();
+                output.push(sum_sq.sqrt());
             }
         }
     } else {
@@ -5763,7 +5767,7 @@ pub fn norm_dim_tensor_contiguous_f32(
                         .abs()
                         .powf(p);
                 }
-                output[outer * inner_size + inner] = sum_pow.powf(1.0f32 / p);
+                output.push(sum_pow.powf(1.0f32 / p));
             }
         }
     }
