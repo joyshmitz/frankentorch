@@ -13952,6 +13952,59 @@ mod tests {
             }
         }
 
+        // MR (inverse function): sin(asin(y)) ≈ y for y in [-1, 1]
+        // within 8 ULP. frankentorch-bzu2.
+        #[test]
+        fn fuzz_metamorphic_sin_of_asin_recovers_y(
+            samples in prop::collection::vec(-1000i16..1000i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // y in [-1, 1].
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 1000.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let y = s.tensor_variable(input.clone(), vec![n], false).expect("y");
+            let asin_y = s.tensor_asin(y).expect("asin");
+            let sin_asin_y = s.tensor_sin(asin_y).expect("sin");
+            let v = s.tensor_values(sin_asin_y).expect("vals");
+            for (i, (got, expected)) in v.iter().zip(input.iter()).enumerate() {
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * scale * f64::EPSILON,
+                    "sin(asin(y))[{}] = {}, expected y = {} (diff = {:e})",
+                    i, got, expected, diff
+                );
+            }
+        }
+
+        // MR (inverse function): cos(acos(y)) ≈ y for y in [-1, 1]
+        // within 8 ULP. frankentorch-bzu2.
+        #[test]
+        fn fuzz_metamorphic_cos_of_acos_recovers_y(
+            samples in prop::collection::vec(-1000i16..1000i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 1000.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let y = s.tensor_variable(input.clone(), vec![n], false).expect("y");
+            let acos_y = s.tensor_acos(y).expect("acos");
+            let cos_acos_y = s.tensor_cos(acos_y).expect("cos");
+            let v = s.tensor_values(cos_acos_y).expect("vals");
+            for (i, (got, expected)) in v.iter().zip(input.iter()).enumerate() {
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * scale * f64::EPSILON,
+                    "cos(acos(y))[{}] = {}, expected y = {} (diff = {:e})",
+                    i, got, expected, diff
+                );
+            }
+        }
+
         // MR (inverse function, principal branch): atan(tan(x)) ≈ x
         // for x in the principal branch (-π/2, π/2). Beyond this
         // range, atan returns the equivalent angle mod π so the
