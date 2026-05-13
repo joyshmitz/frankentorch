@@ -6709,9 +6709,21 @@ impl FrankenTorchSession {
                 },
             )));
         }
+        // For real inputs, torch.angle returns 0 if x >= 0 and π if
+        // x < 0. The previous formulation atan2(0, x) gave π for both
+        // x = -0 and x < 0 (per IEEE 754 atan2(+0, -0) = π), which
+        // diverges from torch for the x = -0 case (torch treats -0
+        // and +0 identically since -0 == 0). Reformulated as
+        // where(isnan(x), NaN, where(x < 0, π, 0)) to also preserve
+        // NaN propagation. frankentorch-q76p.
         let shape = self.tensor_shape(input)?;
-        let zeros = self.full(shape, 0.0, false)?;
-        self.tensor_atan2(zeros, input)
+        let zero_scalar = self.full(shape.clone(), 0.0, false)?;
+        let pi_scalar = self.full(shape.clone(), std::f64::consts::PI, false)?;
+        let nan_scalar = self.full(shape, f64::NAN, false)?;
+        let negative_mask = self.tensor_lt(input, zero_scalar)?;
+        let neg_or_zero = self.tensor_where(negative_mask, pi_scalar, zero_scalar)?;
+        let nan_mask = self.tensor_isnan(input)?;
+        self.tensor_where(nan_mask, nan_scalar, neg_or_zero)
     }
 
     /// IEEE 754-2008 maxNum: NaN-tolerant element-wise maximum.
