@@ -17777,10 +17777,10 @@ impl FrankenTorchSession {
         // the error path matches the previous fail-loud behavior.
         let ndim = self.tensor_tape.tensor(input)?.meta().shape().len();
         if dim >= ndim {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "logcumsumexp: dimension out of range",
-                },
+            // Surface actual (dim, ndim) via the dynamic-diagnostic
+            // pattern (frankentorch-ovad).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
             )));
         }
 
@@ -19183,10 +19183,11 @@ impl FrankenTorchSession {
         let in_shape = self.tensor_shape(input)?;
         let ndim = in_shape.len();
         if dim >= ndim {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "logsumexp: dimension out of range",
-                },
+            // Surface the actual offending (dim, ndim) so the
+            // caller can diagnose without reparsing static
+            // strings (frankentorch-ovad).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
             )));
         }
 
@@ -19292,10 +19293,12 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let ndim = self.tensor_shape(input)?.len();
         if source >= ndim || destination >= ndim {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "movedim: dimension out of range",
-                },
+            // Surface whichever offender fired (source first
+            // since it's listed first in the predicate);
+            // frankentorch-ovad.
+            let dim = if source >= ndim { source } else { destination };
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim },
             )));
         }
         if source == destination {
