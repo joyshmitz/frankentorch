@@ -13952,6 +13952,36 @@ mod tests {
             }
         }
 
+        // MR (general idempotence): clamp(clamp(x, min, max), min, max)
+        // == clamp(x, min, max) bit-exactly. Once values are clamped
+        // to [min, max], a second clamp is a no-op. yg6k covers the
+        // restricted case where input is already in range; this is
+        // the general statement that holds even when many inputs are
+        // clamp-saturated. frankentorch-qv2y.
+        #[test]
+        fn fuzz_metamorphic_clamp_is_idempotent_general(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Wide range so many inputs hit the [-1, 1] saturation.
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 50.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let c1 = s.tensor_clamp(x, -1.0, 1.0).expect("clamp once");
+            let c2 = s.tensor_clamp(c1, -1.0, 1.0).expect("clamp twice");
+            let v1 = s.tensor_values(c1).expect("v1");
+            let v2 = s.tensor_values(c2).expect("v2");
+            for (i, (a, b)) in v1.iter().zip(v2.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "clamp(clamp(x, -1, 1), -1, 1)[{}] = {} != clamp(x, -1, 1)[{}] = {}", i, b, i, a
+                );
+            }
+        }
+
         // MR (ternary contract): sign(x) returns -1 for x < 0,
         // 0 for x == 0 (any sign of zero), +1 for x > 0, NaN for NaN.
         // Catches sign(-0) returning -1 (a common bug), and any
