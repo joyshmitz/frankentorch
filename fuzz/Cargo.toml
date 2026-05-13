@@ -211,4 +211,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_kernel_cpu_var"
+path = "fuzz_targets/ft_kernel_cpu_var.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
