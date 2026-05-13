@@ -13952,6 +13952,34 @@ mod tests {
             }
         }
 
+        // MR (inverse function): square(sqrt(x)) ≈ x for x >= 0
+        // within 8 ULP. The two operations are an inverse pair on
+        // the non-negative reals; for x = 0 the round-trip is
+        // exact, for x > 0 a small ULP drift is expected from
+        // the sqrt rounding. frankentorch-0pja.
+        #[test]
+        fn fuzz_metamorphic_square_of_sqrt_recovers_nonneg(
+            samples in prop::collection::vec(0i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let sqrt_x = s.tensor_sqrt(x).expect("sqrt");
+            let sq_sqrt_x = s.tensor_square(sqrt_x).expect("square");
+            let v = s.tensor_values(sq_sqrt_x).expect("vals");
+            for (a, b) in v.iter().zip(input.iter()) {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * scale * f64::EPSILON,
+                    "square(sqrt(x)) = {a} but x = {b}, diff = {diff:e}"
+                );
+            }
+        }
+
         // MR (inverse function): exp(log(y)) ≈ y for y > 0 within
         // ~16 ULP. Companion to the existing log(exp(x)) ≈ x MR
         // (b27s) — that one starts from x then composes exp ∘ log;
