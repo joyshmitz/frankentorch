@@ -1615,7 +1615,11 @@ pub fn addmm_tensor_contiguous_f64(
     }
     ensure_storage_len(input, input_meta, "input")?;
 
-    let mut out = vec![0.0; out_numel];
+    // Push-based output skips the m*n zero-init memset
+    // (frankentorch-u04j; mirrors the matmul z588 / bmm mg2p
+    // fixes). The (row, col) loop nest already proceeds in
+    // row-major order.
+    let mut out = Vec::with_capacity(out_numel);
     // Same gather-then-pairwise pattern as `matmul_tensor_contiguous_f64`
     // (commit 35a7760). One scratch buffer per call carries the K
     // products into the pairwise summer; for K > 128 this tightens
@@ -1632,7 +1636,7 @@ pub fn addmm_tensor_contiguous_f64(
             } else {
                 input_offset + row * n + col
             };
-            out[row * n + col] = beta * input[bias_idx] + alpha * acc;
+            out.push(beta * input[bias_idx] + alpha * acc);
         }
     }
     Ok(out)
@@ -1688,17 +1692,19 @@ pub fn addmv_tensor_contiguous_f64(
     let vec_start = vec_meta.storage_offset();
     let input_start = input_meta.storage_offset();
 
-    let mut out = vec![0.0; m];
+    // Push-based output skips the m-cell zero-init memset
+    // (frankentorch-u04j); same row-major contract as matmul.
+    let mut out = Vec::with_capacity(m);
     // Pairwise dot product per row. Same pattern as matmul; for K
     // typical of LM head linear projections (vocab >= 32k) the
     // sequential drift was visible in inference logits.
     let mut scratch = vec![0.0_f64; k];
-    for (row, slot) in out.iter_mut().enumerate() {
+    for row in 0..m {
         for (col, scratch_slot) in scratch.iter_mut().enumerate() {
             *scratch_slot = mat[mat_start + row * k + col] * vec_data[vec_start + col];
         }
         let acc = pairwise_sum_f64(&scratch);
-        *slot = beta * input[input_start + row] + alpha * acc;
+        out.push(beta * input[input_start + row] + alpha * acc);
     }
     Ok(out)
 }
@@ -6988,7 +6994,8 @@ pub fn addmm_tensor_contiguous_f32(
         });
     }
     ensure_storage_len_f32(input, input_meta, "input")?;
-    let mut out = vec![0.0f32; out_numel];
+    // Push-based output mirrors the f64 fix (frankentorch-u04j).
+    let mut out = Vec::with_capacity(out_numel);
     let mut scratch = vec![0.0f32; k];
     for row in 0..m {
         for col in 0..n {
@@ -7001,7 +7008,7 @@ pub fn addmm_tensor_contiguous_f32(
             } else {
                 input_offset + row * n + col
             };
-            out[row * n + col] = beta * input[bias_idx] + alpha * acc;
+            out.push(beta * input[bias_idx] + alpha * acc);
         }
     }
     Ok(out)
@@ -7053,14 +7060,15 @@ pub fn addmv_tensor_contiguous_f32(
     let mat_start = mat_meta.storage_offset();
     let vec_start = vec_meta.storage_offset();
     let input_start = input_meta.storage_offset();
-    let mut out = vec![0.0f32; m];
+    // Push-based output mirrors the f64 fix (frankentorch-u04j).
+    let mut out = Vec::with_capacity(m);
     let mut scratch = vec![0.0f32; k];
-    for (row, slot) in out.iter_mut().enumerate() {
+    for row in 0..m {
         for (col, scratch_slot) in scratch.iter_mut().enumerate() {
             *scratch_slot = mat[mat_start + row * k + col] * vec_data[vec_start + col];
         }
         let acc = pairwise_sum_f32(&scratch);
-        *slot = beta * input[input_start + row] + alpha * acc;
+        out.push(beta * input[input_start + row] + alpha * acc);
     }
     Ok(out)
 }
