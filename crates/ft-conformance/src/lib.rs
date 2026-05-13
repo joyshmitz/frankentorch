@@ -12409,6 +12409,88 @@ mod tests {
             }
         }
 
+        // ── tensor_logaddexp2 metamorphic suite (frankentorch-emaj) ───
+        //
+        // log2(2^a + 2^b) has three oracle-free identities:
+        //   - commutativity: logaddexp2(a, b) = logaddexp2(b, a)
+        //   - identity: logaddexp2(a, -inf) = a
+        //   - translation: logaddexp2(a+c, b+c) = logaddexp2(a, b) + c
+
+        #[test]
+        fn fuzz_metamorphic_logaddexp2_commutativity(
+            (a_raw, b_raw) in (-256i16..256i16, -256i16..256i16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let av = f64::from(a_raw) / 17.0;
+            let bv = f64::from(b_raw) / 17.0;
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(vec![av], vec![1], false).unwrap();
+            let b = s.tensor_variable(vec![bv], vec![1], false).unwrap();
+            let ab = s.tensor_logaddexp2(a, b).unwrap();
+            let a2 = s.tensor_variable(vec![av], vec![1], false).unwrap();
+            let b2 = s.tensor_variable(vec![bv], vec![1], false).unwrap();
+            let ba = s.tensor_logaddexp2(b2, a2).unwrap();
+            let v_ab = s.tensor_values(ab).unwrap()[0];
+            let v_ba = s.tensor_values(ba).unwrap()[0];
+            prop_assert_eq!(v_ab.to_bits(), v_ba.to_bits(),
+                "logaddexp2 commutativity: logaddexp2({}, {}) = {}, logaddexp2({}, {}) = {}",
+                av, bv, v_ab, bv, av, v_ba);
+        }
+
+        #[test]
+        fn fuzz_metamorphic_logaddexp2_neg_inf_identity(
+            a_raw in -256i16..256i16
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let av = f64::from(a_raw) / 11.0;
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(vec![av], vec![1], false).unwrap();
+            let neg_inf = s.tensor_variable(vec![f64::NEG_INFINITY], vec![1], false).unwrap();
+            let out = s.tensor_logaddexp2(a, neg_inf).unwrap();
+            let v = s.tensor_values(out).unwrap()[0];
+            // logaddexp2(a, -inf) = log2(2^a + 0) = a.
+            let diff = (v - av).abs();
+            let scale = v.abs().max(av.abs()).max(1.0);
+            prop_assert!(
+                diff <= 1e-12 || diff <= 16.0 * scale * f64::EPSILON,
+                "logaddexp2({av}, -inf) = {v}, expected {av}, diff = {diff}"
+            );
+        }
+
+        #[test]
+        fn fuzz_metamorphic_logaddexp2_translation(
+            (a_raw, b_raw, c_raw) in (-128i16..128i16, -128i16..128i16, -64i16..64i16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let av = f64::from(a_raw) / 11.0;
+            let bv = f64::from(b_raw) / 11.0;
+            let c = f64::from(c_raw) / 13.0;
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            // Direct: logaddexp2(a + c, b + c)
+            let a_shift = s.tensor_variable(vec![av + c], vec![1], false).unwrap();
+            let b_shift = s.tensor_variable(vec![bv + c], vec![1], false).unwrap();
+            let direct = s.tensor_logaddexp2(a_shift, b_shift).unwrap();
+            let v_direct = s.tensor_values(direct).unwrap()[0];
+
+            // Shifted: logaddexp2(a, b) + c
+            let a2 = s.tensor_variable(vec![av], vec![1], false).unwrap();
+            let b2 = s.tensor_variable(vec![bv], vec![1], false).unwrap();
+            let base = s.tensor_logaddexp2(a2, b2).unwrap();
+            let v_base = s.tensor_values(base).unwrap()[0];
+            let expected = v_base + c;
+
+            let diff = (v_direct - expected).abs();
+            let scale = v_direct.abs().max(expected.abs()).max(1.0);
+            prop_assert!(
+                diff <= 1e-12 || diff <= 32.0 * scale * f64::EPSILON,
+                "logaddexp2 translation: direct = {v_direct}, base + c = {expected}, diff = {diff}"
+            );
+        }
+
         // logaddexp is symmetric in its arguments: logaddexp(a, b) ==
         // logaddexp(b, a) bit-exactly. log(exp(a)+exp(b)) is unchanged
         // by argument order, and the max-subtraction stabilization
