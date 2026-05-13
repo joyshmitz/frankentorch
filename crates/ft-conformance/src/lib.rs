@@ -16912,6 +16912,114 @@ print(json.dumps({"results": results}, sort_keys=True))
     }
 
     #[test]
+    fn torch_windows_subprocess_conformance() {
+        // Subprocess oracle for the 4 signal-processing windows
+        // (lg75/fhrd/q4hs/8moo) against torch.{hamming, blackman,
+        // bartlett, kaiser}_window. Hamming/blackman/bartlett use
+        // closed-form cosine/triangular expressions so bit-tight
+        // agreement is realistic; kaiser is composed via i0 (~1.6e-7
+        // accuracy) so it gets a looser tolerance. Tracked under
+        // frankentorch-stqv.
+        use ft_api::FrankenTorchSession;
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!("torch_windows_subprocess_conformance: torch unavailable, skipping");
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let n = 8usize;
+        let beta_k = 8.6_f64;
+        let case_payload = json!({
+            "n": n,
+            "beta_kaiser": beta_k,
+        });
+
+        let script = r#"
+import json
+import sys
+import torch
+
+payload = json.loads(sys.stdin.read())
+n = int(payload["n"])
+beta = float(payload["beta_kaiser"])
+
+def windows(periodic):
+    return {
+        "hamming": torch.hamming_window(n, periodic=periodic, dtype=torch.float64).tolist(),
+        "blackman": torch.blackman_window(n, periodic=periodic, dtype=torch.float64).tolist(),
+        "bartlett": torch.bartlett_window(n, periodic=periodic, dtype=torch.float64).tolist(),
+        "kaiser": torch.kaiser_window(n, periodic=periodic, beta=beta, dtype=torch.float64).tolist(),
+    }
+
+print(json.dumps({
+    "periodic": windows(True),
+    "symmetric": windows(False),
+}, sort_keys=True))
+"#;
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &case_payload)
+            .expect("torch windows oracle should run");
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        for (mode, periodic) in [("periodic", true), ("symmetric", false)] {
+            let expected = oracle
+                .get(mode)
+                .and_then(Value::as_object)
+                .expect("mode block");
+
+            // Hamming, blackman, bartlett: tight tolerance (cosine
+            // closed forms; ft-api matches torch to f64 limit).
+            let check_window = |s: &mut FrankenTorchSession,
+                                name: &str,
+                                id: ft_autograd::TensorNodeId,
+                                tol: f64| {
+                let want: Vec<f64> = expected
+                    .get(name)
+                    .and_then(Value::as_array)
+                    .expect("array")
+                    .iter()
+                    .map(|v| v.as_f64().expect("f64"))
+                    .collect();
+                let got = s.tensor_values(id).expect("values");
+                for (i, (g, e)) in got.iter().zip(want.iter()).enumerate() {
+                    assert!(
+                        (g - e).abs() < tol,
+                        "{mode} {name} i={i}: got {g}, torch {e}"
+                    );
+                }
+            };
+            let h_id = session.hamming_window(n, periodic, false).expect("h");
+            check_window(&mut session, "hamming", h_id, 1e-12);
+            let b_id = session.blackman_window(n, periodic, false).expect("b");
+            check_window(&mut session, "blackman", b_id, 1e-12);
+            let t_id = session.bartlett_window(n, periodic, false).expect("t");
+            check_window(&mut session, "bartlett", t_id, 1e-12);
+
+            // Kaiser: looser tolerance because A&S i0 polynomial is
+            // ~1.6e-7 accurate.
+            let k_id = session
+                .kaiser_window(n, periodic, beta_k, false)
+                .expect("kaiser");
+            check_window(&mut session, "kaiser", k_id, 5e-7);
+        }
+    }
+
+    #[test]
     fn torch_special_ndtri_subprocess_conformance() {
         // Subprocess oracle for tensor_special_ndtri (gf4d) —
         // the inverse standard normal CDF. ft-api composes via
