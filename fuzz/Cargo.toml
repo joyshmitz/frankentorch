@@ -379,4 +379,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_api_f32_pipeline"
+path = "fuzz_targets/ft_api_f32_pipeline.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
