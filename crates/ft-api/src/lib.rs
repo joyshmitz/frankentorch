@@ -16128,6 +16128,17 @@ impl FrankenTorchSession {
     /// Equivalent to `torch.linalg.pinv(input)`.
     /// For a matrix A with SVD `A = U @ diag(S) @ V^T`, the pseudoinverse is
     /// `A+ = V @ diag(1/S) @ U^T` (with small singular values zeroed).
+    /// `torch.pinverse(input)` parity alias for
+    /// `tensor_linalg_pinv`. torch's legacy pinverse name is
+    /// distinct from torch.linalg.pinv (still in wide use in
+    /// older PyTorch codebases). Tracked under frankentorch-36op.
+    pub fn tensor_pinverse(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_pinv(input)
+    }
+
     pub fn tensor_linalg_pinv(
         &mut self,
         input: TensorNodeId,
@@ -34558,6 +34569,25 @@ mod tests {
         assert!(vals[1].abs() < 1e-10);
         assert!((vals[4] - 1.0).abs() < 1e-10);
         assert!((vals[8] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pinverse_alias_matches_linalg_pinv() {
+        // tensor_pinverse is a thin alias of tensor_linalg_pinv
+        // (frankentorch-36op). Both must produce identical
+        // outputs.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let a = s.tensor_variable(xs.clone(), vec![2, 3], false).unwrap();
+        let b = s.tensor_variable(xs, vec![2, 3], false).unwrap();
+        let alias_id = s.tensor_pinverse(a).unwrap();
+        let canon_id = s.tensor_linalg_pinv(b).unwrap();
+        let v_a = s.tensor_values(alias_id).unwrap();
+        let v_c = s.tensor_values(canon_id).unwrap();
+        assert_eq!(v_a.len(), v_c.len());
+        for (i, (x, y)) in v_a.iter().zip(v_c.iter()).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "i={i}: pinverse={x}, linalg_pinv={y}");
+        }
     }
 
     #[test]
