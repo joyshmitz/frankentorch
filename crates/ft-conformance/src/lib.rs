@@ -21457,12 +21457,17 @@ print(json.dumps({"results": out}))
 
         for (case_idx, input) in inputs.iter().enumerate() {
             let n = input.len();
-            // Bound: each butterfly stage doubles relative error;
-            // FrankenTorch O(N^2) DFT accumulates N^2 multiplies so
-            // bound is N * N * EPSILON.
-            let bound = (n as f64).powi(2) * f64::EPSILON
-                * input.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs())).max(1.0)
-                + 1e-10;
+            // Bound: Cooley-Tukey (power-of-2 N) accumulates
+            // O(log N) ULPs per output cell — tightened from the
+            // previous N^2 * EPSILON post-hpo6. Non-power-of-2 N
+            // still uses the naive O(N^2) fallback so retain the
+            // N^2 bound on that path. frankentorch-2mfg.
+            let abs_max = input.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs())).max(1.0);
+            let bound = if n.is_power_of_two() && n > 1 {
+                (n as f64) * (n as f64).log2() * 64.0 * f64::EPSILON * abs_max + 1e-12
+            } else {
+                (n as f64).powi(2) * f64::EPSILON * abs_max + 1e-10
+            };
 
             // fft
             let x = session.tensor_variable(input.clone(), vec![n], false).expect("x");
