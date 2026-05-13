@@ -1,0 +1,5 @@
+---
+source: crates/ft-serialize/src/lib.rs
+expression: err.to_string()
+---
+I/O error at '/tmp/ft_missing.ftsv': No such file or directory (os error 2)

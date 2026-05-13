@@ -2701,6 +2701,30 @@ mod tests {
     }
 
     #[test]
+    fn io_error_diagnostic_snapshot() {
+        // Pin the Io variant wrapper format. Log scrapers and
+        // corruption-recovery scripts parse this exact format —
+        // dropping the path or message context is a contract
+        // break. Tracked under frankentorch-1okq.
+        let err = TensorIOError::Io {
+            path: "/tmp/ft_missing.ftsv".to_string(),
+            message: "No such file or directory (os error 2)".to_string(),
+        };
+        insta::assert_snapshot!("io_error_diagnostic", err.to_string());
+    }
+
+    #[test]
+    fn tensor_error_wrapper_diagnostic_snapshot() {
+        // Pin the TensorError wrapper format that prepends
+        // "tensor error: " to the underlying DenseTensorError.
+        // Use UnsupportedLayout as a deterministic wrappee.
+        // Tracked under frankentorch-1okq.
+        let err: TensorIOError =
+            ft_core::DenseTensorError::UnsupportedLayout.into();
+        insta::assert_snapshot!("tensor_error_wrapper_diagnostic", err.to_string());
+    }
+
+    #[test]
     fn load_state_dict_rejects_trailing_bytes() {
         let mut sd = BTreeMap::new();
         sd.insert("w".to_string(), make_f64_tensor(vec![1.0, 2.0], vec![2]));

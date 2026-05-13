@@ -1,0 +1,5 @@
+---
+source: crates/ft-serialize/src/lib.rs
+expression: err.to_string()
+---
+tensor error: dense tensor requires contiguous layout
