@@ -14675,6 +14675,21 @@ impl FrankenTorchSession {
         Ok((out, indices))
     }
 
+    /// `torch.msort(input)` parity alias for `tensor_sort` along
+    /// dim 0 in ascending order.
+    ///
+    /// PyTorch's `torch.msort` is a NumPy-inheritance alias that
+    /// always sorts along dim=0 ascending. ft-api had only the
+    /// general `tensor_sort`; PyTorch code using `torch.msort`
+    /// fails to compile without this alias. Tracked under
+    /// frankentorch-4bra.
+    pub fn tensor_msort(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, Vec<usize>), AutogradError> {
+        self.tensor_sort(input, 0, false)
+    }
+
     /// Return the k largest (or smallest) elements along the given dimension.
     ///
     /// Returns `(values_tensor, indices)`. By default, returns the k largest elements
@@ -27645,6 +27660,37 @@ mod tests {
         let (sorted, _indices) = session.tensor_sort(t, 1, false).expect("sort");
         let vals = session.tensor_values(sorted).expect("vals");
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn msort_alias_matches_sort_dim_zero_ascending() {
+        // tensor_msort is a thin alias of tensor_sort(input, 0, false)
+        // (frankentorch-4bra). Both must produce identical (values,
+        // indices) pairs.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs = vec![3.0, 1.0, 2.0, 6.0, 4.0, 5.0];
+        let a = session.tensor_variable(xs.clone(), vec![2, 3], false).unwrap();
+        let b = session.tensor_variable(xs, vec![2, 3], false).unwrap();
+        let (m_vals, m_idx) = session.tensor_msort(a).unwrap();
+        let (s_vals, s_idx) = session.tensor_sort(b, 0, false).unwrap();
+        let v_m = session.tensor_values(m_vals).unwrap();
+        let v_s = session.tensor_values(s_vals).unwrap();
+        for (i, (x, y)) in v_m.iter().zip(v_s.iter()).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "i={i}: msort={x}, sort={y}");
+        }
+        assert_eq!(m_idx, s_idx);
+    }
+
+    #[test]
+    fn msort_1d_returns_sorted_ascending() {
+        // 1-D input: msort returns ascending-sorted values.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let t = session
+            .tensor_variable(vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0], vec![8], false)
+            .unwrap();
+        let (sorted, _) = session.tensor_msort(t).unwrap();
+        let vals = session.tensor_values(sorted).unwrap();
+        assert_eq!(vals, vec![1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 9.0]);
     }
 
     #[test]
