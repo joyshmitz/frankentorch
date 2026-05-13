@@ -155,4 +155,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_kernel_cpu_masked_fill"
+path = "fuzz_targets/ft_kernel_cpu_masked_fill.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
