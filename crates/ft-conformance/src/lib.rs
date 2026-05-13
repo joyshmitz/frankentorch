@@ -19977,6 +19977,27 @@ print(json.dumps({"results": out}, sort_keys=True))
             );
             return;
         }
+        // Torch internally falls back to numpy for some tensor
+        // operations (e.g. conversion paths) and emits a UserWarning
+        // if numpy isn't available. Some torch versions promote that
+        // warning to an error, breaking this harness. Skip when
+        // numpy is missing so the test is portable.
+        // frankentorch-anro.
+        let numpy_available = Command::new(&python)
+            .arg("-c")
+            .arg("import numpy")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_ieee754_unary_edge_cases_subprocess_conformance: numpy unavailable, skipping"
+            );
+            return;
+        }
         config.legacy_oracle_python = Some(python);
 
         // Edge-case grids. Each grid covers ±0.0, ±1, ±inf, NaN at
