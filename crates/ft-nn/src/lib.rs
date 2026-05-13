@@ -1921,8 +1921,7 @@ impl Module for LayerNorm {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         let ndim = input_shape.len();
@@ -2062,8 +2061,7 @@ impl Module for Dropout {
         }
         if self.p >= 1.0 {
             let shape = {
-                let (_, meta) = session.tensor_values_meta(input)?;
-                meta.shape().to_vec()
+                session.tensor_shape(input)?
             };
             let zeros = session.zeros(shape, false)?;
             return session.tensor_mul(input, zeros);
@@ -2071,8 +2069,7 @@ impl Module for Dropout {
 
         // Generate random mask: values in [0, 1), keep where > p
         let shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
         let mask_rand = session.rand(shape.clone(), false)?;
 
@@ -2148,8 +2145,7 @@ impl Module for Dropout2d {
             return Ok(input);
         }
         let shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
         if shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -2238,8 +2234,7 @@ impl Module for Dropout3d {
             return Ok(input);
         }
         let shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
         if shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -2480,8 +2475,7 @@ impl Module for Embedding {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         let total = checked_shape_numel(&input_shape, "Embedding input shape overflow")?;
@@ -3126,8 +3120,7 @@ impl Module for BatchNorm1d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 2 {
@@ -3362,8 +3355,7 @@ impl Module for Conv1d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 3 {
@@ -3496,8 +3488,7 @@ impl Module for AvgPool1d {
         )?;
 
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 3 {
@@ -4667,8 +4658,7 @@ impl Module for GroupNorm {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() < 2 {
@@ -4995,8 +4985,7 @@ impl Module for InstanceNorm2d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 4 {
@@ -5060,8 +5049,7 @@ impl Module for MaxPool1d {
         )?;
 
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 3 {
@@ -5230,8 +5218,7 @@ impl Module for Conv2d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 4 {
@@ -5408,8 +5395,7 @@ impl Module for MaxPool2d {
         )?;
 
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 4 {
@@ -5513,8 +5499,7 @@ impl Module for AdaptiveAvgPool2d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 4 {
@@ -5671,8 +5656,7 @@ impl Module for AvgPool2d {
         }
 
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 4 {
@@ -5861,8 +5845,7 @@ impl Module for AvgPool3d {
         )?;
 
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 5 {
@@ -5989,8 +5972,7 @@ impl Module for MaxPool3d {
         )?;
 
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 5 {
@@ -6089,8 +6071,7 @@ impl Module for AdaptiveAvgPool1d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 3 {
@@ -6177,8 +6158,7 @@ impl Module for AdaptiveAvgPool3d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 5 {
@@ -6319,8 +6299,7 @@ impl Module for AdaptiveMaxPool1d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 3 {
@@ -6400,8 +6379,7 @@ impl Module for AdaptiveMaxPool2d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 4 {
@@ -6514,8 +6492,7 @@ impl Module for AdaptiveMaxPool3d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 5 {
@@ -7327,8 +7304,7 @@ impl Module for BatchNorm2d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 4 {
@@ -7610,8 +7586,7 @@ impl Module for Upsample1d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 3 {
@@ -7678,8 +7653,7 @@ impl Module for Upsample2d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 4 {
@@ -7838,8 +7812,7 @@ impl Module for ConvTranspose1d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 3 {
@@ -8068,8 +8041,7 @@ impl Module for Conv3d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 5 {
@@ -8847,8 +8819,7 @@ impl Module for ConvTranspose3d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
 
         if input_shape.len() != 5 {
@@ -9104,8 +9075,7 @@ impl RNNCell {
         hx: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
         if input_shape.len() != 2 || input_shape[1] != self.input_size {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -9220,8 +9190,7 @@ impl LSTMCell {
         cx: TensorNodeId,
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
         if input_shape.len() != 2 || input_shape[1] != self.input_size {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -9348,8 +9317,7 @@ impl GRUCell {
         hx: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
+            session.tensor_shape(input)?
         };
         if input_shape.len() != 2 || input_shape[1] != self.input_size {
             return Err(AutogradError::Dispatch(DispatchError::Key(
