@@ -218,4 +218,18 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_kernel_cpu_matmul"
+path = "fuzz_targets/ft_kernel_cpu_matmul.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ft_kernel_cpu_bmm"
+path = "fuzz_targets/ft_kernel_cpu_bmm.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
