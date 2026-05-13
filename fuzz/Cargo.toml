@@ -372,4 +372,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_api_complex"
+path = "fuzz_targets/ft_api_complex.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
