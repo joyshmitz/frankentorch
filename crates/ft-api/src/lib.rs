@@ -6461,11 +6461,19 @@ impl FrankenTorchSession {
         threshold: f64,
         value: f64,
     ) -> Result<TensorNodeId, AutogradError> {
+        // For non-NaN input x: return x if x > threshold else value.
+        // For NaN input: propagate NaN (matches current torch.threshold;
+        // older torch returned the value branch since NaN > t is false,
+        // but the current upstream behavior propagates NaN through
+        // threshold). frankentorch-w9kc.
         let shape = self.tensor_shape(input)?;
         let threshold_t = self.full(shape.clone(), threshold, false)?;
-        let value_t = self.full(shape, value, false)?;
-        let mask = self.tensor_gt(input, threshold_t)?;
-        self.tensor_where(mask, input, value_t)
+        let value_t = self.full(shape.clone(), value, false)?;
+        let nan_t = self.full(shape, f64::NAN, false)?;
+        let nan_mask = self.tensor_isnan(input)?;
+        let above_mask = self.tensor_gt(input, threshold_t)?;
+        let above_or_value = self.tensor_where(above_mask, input, value_t)?;
+        self.tensor_where(nan_mask, nan_t, above_or_value)
     }
 
     pub fn tensor_softplus(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
