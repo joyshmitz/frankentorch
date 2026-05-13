@@ -13952,6 +13952,58 @@ mod tests {
             }
         }
 
+        // MR (gradient distribution): sum(scatter_add(input, dim,
+        // index, src)) backward should yield uniform gradient 1
+        // everywhere on both input and src (regardless of duplicate
+        // indices). Catches sign flips and weighting errors in the
+        // scatter_add backward formula. frankentorch-wcmr.
+        #[test]
+        fn fuzz_metamorphic_scatter_add_sum_backward_uniform_grad(
+            (n, m, raw_idx) in (4usize..=8, 2usize..=5).prop_flat_map(|(n, m)| (
+                Just(n),
+                Just(m),
+                // index values in [0, n).
+                prop::collection::vec(0usize..n, m),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input_data: Vec<f64> = (0..n).map(|i| (i as f64) * 0.1).collect();
+            let src_data: Vec<f64> = (0..m).map(|i| (i as f64) + 1.0).collect();
+            let index_data: Vec<f64> = raw_idx.iter().map(|&v| v as f64).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input_t = s.tensor_variable(input_data, vec![n], true).expect("input");
+            let index_t = s.tensor_variable(index_data, vec![m], false).expect("index");
+            let src_t = s.tensor_variable(src_data, vec![m], true).expect("src");
+
+            let scattered = s.tensor_scatter_add(input_t, 0, index_t, src_t).expect("scatter_add");
+            let loss = s.tensor_sum(scattered).expect("sum");
+            s.tensor_backward(loss).expect("backward");
+
+            let input_grad = s.tensor_accumulated_gradient(input_t)
+                .expect("input_grad accessor")
+                .expect("input_grad some");
+            let src_grad = s.tensor_accumulated_gradient(src_t)
+                .expect("src_grad accessor")
+                .expect("src_grad some");
+
+            for (i, &g) in input_grad.iter().enumerate() {
+                prop_assert!(
+                    (g - 1.0).abs() < 1e-12,
+                    "input_grad[{}] = {} (expected 1 since loss = sum and output preserves input)",
+                    i, g
+                );
+            }
+            for (i, &g) in src_grad.iter().enumerate() {
+                prop_assert!(
+                    (g - 1.0).abs() < 1e-12,
+                    "src_grad[{}] = {} (expected 1 since every src entry adds to its slot, which adds to the sum)",
+                    i, g
+                );
+            }
+        }
+
         // MR (descending duality): for non-NaN inputs,
         // sort_descending(x) bit-exactly equals reverse(sort_ascending(x)).
         // Catches any sign-comparator bug in the descending path.
