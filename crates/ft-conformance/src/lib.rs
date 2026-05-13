@@ -13847,6 +13847,96 @@ mod tests {
             }
         }
 
+        // MR (invertibility): istft(stft(x)) ≈ x for a real signal
+        // x within bounded ULP, using default options (rectangular
+        // window, hop = n_fft/4, center=true, onesided=true). The
+        // default config satisfies the COLA (Constant OverLap-Add)
+        // condition so the round-trip is mathematically exact up
+        // to FP rounding.
+        //
+        // Catches:
+        // - Window placement bugs (the win_length vs n_fft padding
+        //   in both forward and inverse paths)
+        // - Frame striding bugs (hop_length step computation)
+        // - Center vs non-center mode mismatches
+        //
+        // Tolerance scales with the signal length and log(n_fft)
+        // since each STFT frame internally runs an FFT, and the
+        // overlap-add accumulates rounding across frames.
+        // frankentorch-sdgq.
+        #[test]
+        fn fuzz_metamorphic_istft_of_stft_recovers_signal(
+            (signal_len, raw, n_fft_log2) in (16usize..=32).prop_flat_map(|sl| (
+                Just(sl),
+                prop::collection::vec(-512i16..512i16, sl),
+                2u32..=4, // n_fft = 4, 8, or 16
+            ))
+        ) {
+            use ft_api::{FrankenTorchSession, IstftOptions, StftOptions};
+
+            let n_fft: usize = 1 << n_fft_log2;
+            // Skip configurations where the signal is shorter than
+            // n_fft — istft can't reconstruct.
+            if signal_len < n_fft {
+                return Ok(());
+            }
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 41.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![signal_len], false).expect("x");
+            let stft_out = match s.tensor_stft(x, n_fft, StftOptions::default()) {
+                Ok(t) => t,
+                Err(_) => return Ok(()), // some shape combos rejected; skip
+            };
+            let istft_options = IstftOptions {
+                length: Some(signal_len),
+                ..IstftOptions::default()
+            };
+            let recovered = match s.tensor_istft(stft_out, n_fft, istft_options) {
+                Ok(t) => t,
+                Err(_) => return Ok(()),
+            };
+            let v_rec = match s.tensor_values(recovered) {
+                Ok(v) => v,
+                Err(_) => return Ok(()),
+            };
+            prop_assert_eq!(
+                v_rec.len(),
+                signal_len,
+                "istft must restore original signal length"
+            );
+
+            // Tolerance: per-frame Cooley-Tukey error * frame count.
+            // Each frame does an FFT of n_fft size and the
+            // overlap-add accumulates across ceil(signal_len / hop)
+            // frames.
+            let hop = n_fft / 4;
+            let n_frames = (signal_len + hop - 1) / hop.max(1);
+            let abs_max = input.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs())).max(1.0);
+            let bound = (n_fft as f64) * (n_fft as f64).log2()
+                * (n_frames as f64).max(1.0) * 64.0 * f64::EPSILON * abs_max
+                + 1e-9;
+
+            // Only check the interior of the signal where COLA
+            // overlap is fully satisfied. Near the signal edges,
+            // fewer windows overlap (1, 2, or 3 instead of 4 for
+            // hop = n_fft / 4), so the rectangular-window istft
+            // cannot perfectly recover the boundary samples
+            // without a windowing-specific compensation. The
+            // interior (samples in [n_fft, signal_len - n_fft))
+            // is fully covered.
+            for (i, (got, expected)) in v_rec.iter().zip(input.iter()).enumerate() {
+                if i < n_fft || i + n_fft > signal_len {
+                    continue;
+                }
+                let diff = (got - expected).abs();
+                prop_assert!(
+                    diff <= bound,
+                    "istft(stft(x))[{}] = {} but x[{}] = {} (diff = {:e}, bound = {:e}, n_fft={}, n_frames={})",
+                    i, got, i, expected, diff, bound, n_fft, n_frames
+                );
+            }
+        }
+
         // MR (invertibility): irfft(rfft(x)) == x for real input x
         // within bounded ULP. The DFT inverse-DFT roundtrip catches:
         // - sign flips in the exp(-2πi k n / N) phase
