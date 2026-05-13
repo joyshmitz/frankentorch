@@ -17175,6 +17175,137 @@ print(json.dumps({
     }
 
     #[test]
+    fn torch_conv2d_f32_output_shape_subprocess_conformance() {
+        // F32 forward shape parity for Conv2d, mirroring the existing
+        // ConvTranspose2d test but using F32 input. After c9jg
+        // replaced tensor_values_meta with tensor_shape across ft-nn,
+        // F32 input should propagate cleanly through Conv2d::forward
+        // without UnsupportedDType errors. frankentorch-7iqt.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{Conv2d, Module};
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_conv2d_f32_output_shape_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json
+import sys
+import torch
+
+cases = json.loads(sys.stdin.read())["cases"]
+out = []
+for case in cases:
+    layer = torch.nn.Conv2d(
+        in_channels=case["in_channels"],
+        out_channels=case["out_channels"],
+        kernel_size=tuple(case["kernel_size"]),
+        stride=tuple(case["stride"]),
+        padding=tuple(case["padding"]),
+        bias=False,
+    )
+    x = torch.zeros(*case["input_shape"], dtype=torch.float32)
+    y = layer(x)
+    out.append({"shape": list(y.shape)})
+
+print(json.dumps({"results": out}, sort_keys=True))
+"#;
+
+        // Standard CNN configurations: kernel/stride/padding combos
+        // covering pointwise (1x1), 3x3 same-padding, 5x5 valid,
+        // and strided downsample.
+        let cases = [
+            (1, 1, (3, 3), (1, 1), (1, 1), vec![1, 1, 8, 8]),
+            (3, 6, (3, 3), (1, 1), (1, 1), vec![1, 3, 8, 8]),
+            (3, 16, (5, 5), (1, 1), (0, 0), vec![1, 3, 12, 12]),
+            (8, 16, (3, 3), (2, 2), (1, 1), vec![1, 8, 8, 8]),
+            (1, 4, (1, 1), (1, 1), (0, 0), vec![1, 1, 5, 5]),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|c| {
+                json!({
+                    "in_channels": c.0,
+                    "out_channels": c.1,
+                    "kernel_size": [c.2.0, c.2.1],
+                    "stride": [c.3.0, c.3.1],
+                    "padding": [c.4.0, c.4.1],
+                    "input_shape": c.5,
+                })
+            }).collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch Conv2d oracle should run");
+        let results = oracle
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("oracle Conv2d results");
+        assert_eq!(results.len(), cases.len(), "oracle returned wrong number of results");
+
+        for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let (in_ch, out_ch, kernel, stride, padding, ref input_shape) = *case;
+            let expected_shape: Vec<usize> = oracle_entry
+                .get("shape")
+                .and_then(Value::as_array)
+                .expect("oracle shape array")
+                .iter()
+                .map(|v| {
+                    usize::try_from(v.as_u64().expect("oracle shape entry"))
+                        .expect("oracle shape entry fits usize")
+                })
+                .collect();
+
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let conv = Conv2d::new(
+                &mut session,
+                in_ch,
+                out_ch,
+                kernel,
+                stride,
+                padding,
+                false,
+            )
+            .expect("Conv2d::new should succeed");
+
+            let numel: usize = input_shape.iter().copied().product();
+            let x = session
+                .tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+                .expect("input tensor");
+            let out = conv
+                .forward(&mut session, x)
+                .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
+
+            let out_shape = session.tensor_shape(out).expect("output shape");
+            assert_eq!(
+                out_shape,
+                expected_shape.as_slice(),
+                "case {i}: Conv2d F32 output shape diverges from torch (configuration: \
+                 in_ch={in_ch}, out_ch={out_ch}, kernel={kernel:?}, stride={stride:?}, \
+                 padding={padding:?}, input={input_shape:?})"
+            );
+        }
+    }
+
+    #[test]
     fn torch_conv_transpose2d_output_shape_subprocess_conformance() {
         // PyTorch parity for ConvTranspose2d output shape across the
         // same configurations the hbm0 regression covers, plus a few
