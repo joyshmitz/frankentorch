@@ -1222,8 +1222,19 @@ pub fn save_safetensors<P: AsRef<Path>>(
     metadata: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<(), TensorIOError> {
     let path_str = path.as_ref().to_string_lossy().to_string();
+    let data = save_safetensors_to_bytes(state_dict, metadata)?;
+    std::fs::write(&path, data).map_err(|e| io_err(&path_str, e))?;
+    Ok(())
+}
 
-    // Build the list of (name, view) pairs
+/// Serialize a state dict to SafeTensors bytes (no file I/O).
+/// Companion to `load_safetensors_from_bytes`; used by fuzz
+/// targets and tests that need the round-trip without touching
+/// disk. frankentorch-mwl7.
+pub fn save_safetensors_to_bytes(
+    state_dict: &BTreeMap<String, DenseTensor>,
+    metadata: Option<&std::collections::HashMap<String, String>>,
+) -> Result<Vec<u8>, TensorIOError> {
     let views: Vec<(String, TensorViewAdapter<'_>)> = state_dict
         .iter()
         .map(|(name, tensor)| {
@@ -1233,14 +1244,9 @@ pub fn save_safetensors<P: AsRef<Path>>(
         })
         .collect::<Result<Vec<_>, TensorIOError>>()?;
 
-    let data =
-        st_tensor::serialize(views, metadata.cloned()).map_err(|e| TensorIOError::Corrupt {
-            reason: format!("safetensors serialization failed: {e}"),
-        })?;
-
-    std::fs::write(&path, data).map_err(|e| io_err(&path_str, e))?;
-
-    Ok(())
+    st_tensor::serialize(views, metadata.cloned()).map_err(|e| TensorIOError::Corrupt {
+        reason: format!("safetensors serialization failed: {e}"),
+    })
 }
 
 /// Load a state dict from a SafeTensors format file.

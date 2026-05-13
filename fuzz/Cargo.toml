@@ -393,4 +393,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_serialize_safetensors_roundtrip"
+path = "fuzz_targets/ft_serialize_safetensors_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
