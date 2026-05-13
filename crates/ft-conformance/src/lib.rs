@@ -13952,6 +13952,36 @@ mod tests {
             }
         }
 
+        // MR (inverse function): exp(log(y)) ≈ y for y > 0 within
+        // ~16 ULP. Companion to the existing log(exp(x)) ≈ x MR
+        // (b27s) — that one starts from x then composes exp ∘ log;
+        // this one starts from y (positive) and composes log ∘ exp.
+        // Different starting domain → independent precision coverage.
+        // frankentorch-b5ko.
+        #[test]
+        fn fuzz_metamorphic_exp_of_log_recovers_positive_y(
+            samples in prop::collection::vec(1i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Map to positive y in [0.05, ~100]
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 21.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let y = s.tensor_variable(input.clone(), vec![n], false).expect("variable");
+            let log_y = s.tensor_log(y).expect("log");
+            let exp_log_y = s.tensor_exp(log_y).expect("exp");
+            let v = s.tensor_values(exp_log_y).expect("vals");
+            for (a, b) in v.iter().zip(input.iter()) {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * scale * f64::EPSILON,
+                    "exp(log(y)) = {a} but y = {b}, diff = {diff:e}"
+                );
+            }
+        }
+
         // MR (gradient distribution): sum(matmul(A, B)) backward
         // gives well-defined closed-form gradients via chain rule.
         // For loss = sum(A @ B) with d_loss/d_y = ones_{m,n}:
