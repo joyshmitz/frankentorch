@@ -358,4 +358,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_api_vector_calculus"
+path = "fuzz_targets/ft_api_vector_calculus.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
