@@ -13952,6 +13952,66 @@ mod tests {
             }
         }
 
+        // MR (gradient distribution): sum(gather(input, dim, index))
+        // backward yields input_grad as a count histogram of how
+        // many times each input position appears in index. Catches:
+        // - scatter-add accumulation bugs in the gather backward
+        // - sign flips
+        // - autograd severance through gather
+        //
+        // Strong probes:
+        //   sum(input_grad) == m (n_index entries)
+        //   input_grad[i] == count(index == i)
+        //   input_grad[i] == 0 if i is not in index
+        // frankentorch-3j7k.
+        #[test]
+        fn fuzz_metamorphic_gather_sum_backward_count_histogram(
+            (n, m, raw_idx) in (4usize..=8, 2usize..=6).prop_flat_map(|(n, m)| (
+                Just(n),
+                Just(m),
+                prop::collection::vec(0usize..n, m),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input_data: Vec<f64> = (0..n).map(|i| (i as f64) + 1.0).collect();
+            let index_data: Vec<f64> = raw_idx.iter().map(|&v| v as f64).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input_t = s.tensor_variable(input_data, vec![n], true).expect("input");
+            let index_t = s.tensor_variable(index_data, vec![m], false).expect("index");
+
+            let gathered = s.tensor_gather(input_t, 0, index_t).expect("gather");
+            let loss = s.tensor_sum(gathered).expect("sum");
+            s.tensor_backward(loss).expect("backward");
+
+            let input_grad = s.tensor_accumulated_gradient(input_t)
+                .expect("input_grad accessor")
+                .expect("input_grad some");
+
+            // Build expected count histogram.
+            let mut expected_grad = vec![0.0_f64; n];
+            for &idx in raw_idx.iter() {
+                expected_grad[idx] += 1.0;
+            }
+
+            for (i, (got, want)) in input_grad.iter().zip(expected_grad.iter()).enumerate() {
+                prop_assert!(
+                    (got - want).abs() < 1e-12,
+                    "input_grad[{}] = {} (expected count {} from index)",
+                    i, got, want
+                );
+            }
+
+            // Sum invariant.
+            let grad_sum: f64 = input_grad.iter().sum();
+            prop_assert!(
+                (grad_sum - m as f64).abs() < 1e-12,
+                "sum(input_grad) = {} (expected n_index = {})",
+                grad_sum, m
+            );
+        }
+
         // MR (gradient distribution): sum(scatter_add(input, dim,
         // index, src)) backward should yield uniform gradient 1
         // everywhere on both input and src (regardless of duplicate
