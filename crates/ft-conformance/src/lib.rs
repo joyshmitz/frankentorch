@@ -17175,6 +17175,183 @@ print(json.dumps({
     }
 
     #[test]
+    fn torch_conv_transpose1d_f32_output_shape_subprocess_conformance() {
+        // F32 shape parity for ConvTranspose1d. Follow-up to 7iqt /
+        // b6au / 9sap completing F32 coverage across conv variants.
+        // frankentorch-43sk.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{ConvTranspose1d, Module};
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_conv_transpose1d_f32_output_shape_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json, sys, torch
+cases = json.loads(sys.stdin.read())["cases"]
+out = []
+for c in cases:
+    layer = torch.nn.ConvTranspose1d(
+        c["in_channels"], c["out_channels"], c["kernel"],
+        c["stride"], c["padding"], c["output_padding"], bias=False,
+    )
+    x = torch.zeros(*c["input_shape"], dtype=torch.float32)
+    y = layer(x)
+    out.append({"shape": list(y.shape)})
+print(json.dumps({"results": out}, sort_keys=True))
+"#;
+
+        let cases = [
+            (1, 1, 3, 1, 1, 0, vec![1, 1, 8]),
+            (2, 4, 4, 2, 1, 0, vec![1, 2, 6]),
+            (4, 8, 3, 2, 0, 1, vec![1, 4, 4]),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|c| json!({
+                "in_channels": c.0, "out_channels": c.1, "kernel": c.2,
+                "stride": c.3, "padding": c.4, "output_padding": c.5,
+                "input_shape": c.6,
+            })).collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch ConvTranspose1d oracle should run");
+        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        assert_eq!(results.len(), cases.len());
+
+        for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let (in_ch, out_ch, kernel, stride, padding, output_padding, ref input_shape) = *case;
+            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+                .expect("oracle shape array")
+                .iter()
+                .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
+                .collect();
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let deconv = ConvTranspose1d::new(
+                &mut session, in_ch, out_ch, kernel, stride, padding, output_padding, false,
+            ).expect("ConvTranspose1d::new should succeed");
+            let numel: usize = input_shape.iter().copied().product();
+            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+                .expect("input tensor");
+            let out = deconv.forward(&mut session, x)
+                .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
+            let out_shape = session.tensor_shape(out).expect("output shape");
+            assert_eq!(
+                out_shape, expected_shape.as_slice(),
+                "case {i}: ConvTranspose1d F32 shape diverges"
+            );
+        }
+    }
+
+    #[test]
+    fn torch_conv_transpose3d_f32_output_shape_subprocess_conformance() {
+        // F32 shape parity for ConvTranspose3d. frankentorch-43sk.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{ConvTranspose3d, Module};
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_conv_transpose3d_f32_output_shape_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json, sys, torch
+cases = json.loads(sys.stdin.read())["cases"]
+out = []
+for c in cases:
+    layer = torch.nn.ConvTranspose3d(
+        c["in_channels"], c["out_channels"], tuple(c["kernel"]),
+        tuple(c["stride"]), tuple(c["padding"]),
+        tuple(c["output_padding"]), bias=False,
+    )
+    x = torch.zeros(*c["input_shape"], dtype=torch.float32)
+    y = layer(x)
+    out.append({"shape": list(y.shape)})
+print(json.dumps({"results": out}, sort_keys=True))
+"#;
+
+        let cases = [
+            (1, 1, (3, 3, 3), (1, 1, 1), (1, 1, 1), (0, 0, 0), vec![1, 1, 4, 4, 4]),
+            (2, 3, (3, 3, 3), (2, 2, 2), (1, 1, 1), (0, 0, 0), vec![1, 2, 3, 3, 3]),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|c| json!({
+                "in_channels": c.0, "out_channels": c.1,
+                "kernel": [c.2.0, c.2.1, c.2.2],
+                "stride": [c.3.0, c.3.1, c.3.2],
+                "padding": [c.4.0, c.4.1, c.4.2],
+                "output_padding": [c.5.0, c.5.1, c.5.2],
+                "input_shape": c.6,
+            })).collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch ConvTranspose3d oracle should run");
+        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        assert_eq!(results.len(), cases.len());
+
+        for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let (in_ch, out_ch, kernel, stride, padding, output_padding, ref input_shape) = *case;
+            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+                .expect("oracle shape array")
+                .iter()
+                .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
+                .collect();
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let deconv = ConvTranspose3d::new(
+                &mut session, in_ch, out_ch, kernel, stride, padding, output_padding, false,
+            ).expect("ConvTranspose3d::new should succeed");
+            let numel: usize = input_shape.iter().copied().product();
+            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+                .expect("input tensor");
+            let out = deconv.forward(&mut session, x)
+                .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
+            let out_shape = session.tensor_shape(out).expect("output shape");
+            assert_eq!(
+                out_shape, expected_shape.as_slice(),
+                "case {i}: ConvTranspose3d F32 shape diverges"
+            );
+        }
+    }
+
+    #[test]
     fn torch_layernorm_f32_output_shape_subprocess_conformance() {
         // F32 forward shape parity for LayerNorm. Follow-up to 7iqt
         // and b6au extending F32 coverage from convs to normalization.
