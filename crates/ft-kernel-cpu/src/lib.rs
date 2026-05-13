@@ -2070,7 +2070,10 @@ pub fn norm_dim_tensor_contiguous_f64(
     let offset = meta.storage_offset();
     let data = &input[offset..];
 
-    let mut output = vec![0.0; out_numel];
+    // Push-based output skips the zero-init pass; all 6 p-branches
+    // iterate (outer, inner) in row-major output order
+    // (frankentorch-5hjx).
+    let mut output = Vec::with_capacity(out_numel);
 
     if p == f64::INFINITY {
         for outer in 0..outer_size {
@@ -2080,7 +2083,7 @@ pub fn norm_dim_tensor_contiguous_f64(
                     max_abs = max_abs
                         .max(data[outer * reduce_size * inner_size + r * inner_size + inner].abs());
                 }
-                output[outer * inner_size + inner] = max_abs;
+                output.push(max_abs);
             }
         }
     } else if p == f64::NEG_INFINITY {
@@ -2091,7 +2094,7 @@ pub fn norm_dim_tensor_contiguous_f64(
                     min_abs = min_abs
                         .min(data[outer * reduce_size * inner_size + r * inner_size + inner].abs());
                 }
-                output[outer * inner_size + inner] = min_abs;
+                output.push(min_abs);
             }
         }
     } else if p == 0.0 {
@@ -2103,7 +2106,7 @@ pub fn norm_dim_tensor_contiguous_f64(
                         count += 1.0;
                     }
                 }
-                output[outer * inner_size + inner] = count;
+                output.push(count);
             }
         }
     } else if p == 1.0 {
@@ -2113,7 +2116,7 @@ pub fn norm_dim_tensor_contiguous_f64(
                 for r in 0..reduce_size {
                     sum += data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
                 }
-                output[outer * inner_size + inner] = sum;
+                output.push(sum);
             }
         }
     } else if p == 2.0 {
@@ -2124,7 +2127,7 @@ pub fn norm_dim_tensor_contiguous_f64(
                     let v = data[outer * reduce_size * inner_size + r * inner_size + inner];
                     sum_sq += v * v;
                 }
-                output[outer * inner_size + inner] = sum_sq.sqrt();
+                output.push(sum_sq.sqrt());
             }
         }
     } else {
@@ -2136,7 +2139,7 @@ pub fn norm_dim_tensor_contiguous_f64(
                         .abs()
                         .powf(p);
                 }
-                output[outer * inner_size + inner] = sum_pow.powf(1.0 / p);
+                output.push(sum_pow.powf(1.0 / p));
             }
         }
     }
