@@ -12347,6 +12347,68 @@ mod tests {
             }
         }
 
+        // ── signal-processing window symmetry (frankentorch-kz3h) ─────
+        //
+        // Non-periodic windows are symmetric: w[n] == w[N - 1 - n]
+        // for all n in [0, N). This holds by construction for the
+        // 4 standard windows (hamming, blackman, bartlett, kaiser)
+        // shipped in lg75/fhrd/q4hs/8moo. Bit-exact for cosine /
+        // triangular forms; ULP-bounded for kaiser (composed via
+        // i0 which has ~1.6e-7 accuracy).
+
+        #[test]
+        fn fuzz_metamorphic_window_symmetry(
+            n_raw in 2u8..16u8
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let n = usize::from(n_raw);
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            // Closed-form windows: ULP-bounded symmetry. Bit-exact
+            // would be ideal but cos / division rounding at
+            // mirror-pair indices can drift by a few ULPs (e.g.
+            // 2π * 1 / 3 then cos vs 2π * 2 / 3 then cos go down
+            // different libm code paths). Tolerance 16 ULPs covers
+            // the boundary.
+            for (name, build) in &[
+                ("hamming", "h"),
+                ("blackman", "b"),
+                ("bartlett", "t"),
+            ] {
+                let id = match *build {
+                    "h" => s.hamming_window(n, false, false),
+                    "b" => s.blackman_window(n, false, false),
+                    _ => s.bartlett_window(n, false, false),
+                }.expect("window");
+                let vals = s.tensor_values(id).expect("values");
+                for i in 0..n {
+                    let mirror = n - 1 - i;
+                    let diff = (vals[i] - vals[mirror]).abs();
+                    let scale = vals[i].abs().max(vals[mirror].abs()).max(1.0);
+                    prop_assert!(
+                        diff <= 16.0 * scale * f64::EPSILON,
+                        "{} n={} symmetry: vals[{}]={}, vals[{}]={}, diff={}",
+                        name, n, i, vals[i], mirror, vals[mirror], diff
+                    );
+                }
+            }
+
+            // Kaiser: composed via i0 (~1.6e-7 accuracy). Use a
+            // mid-range beta and an absolute tolerance.
+            let id = s.kaiser_window(n, false, 8.6, false).expect("kaiser");
+            let vals = s.tensor_values(id).expect("kaiser values");
+            for i in 0..n {
+                let mirror = n - 1 - i;
+                let diff = (vals[i] - vals[mirror]).abs();
+                prop_assert!(
+                    diff < 5e-7,
+                    "kaiser n={n} symmetry: vals[{}] = {}, vals[{}] = {}, diff = {}",
+                    i, vals[i], mirror, vals[mirror], diff
+                );
+            }
+        }
+
         // logaddexp is symmetric in its arguments: logaddexp(a, b) ==
         // logaddexp(b, a) bit-exactly. log(exp(a)+exp(b)) is unchanged
         // by argument order, and the max-subtraction stabilization
