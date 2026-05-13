@@ -1405,7 +1405,10 @@ pub fn sum_dim_tensor_contiguous_f64(
         return Ok(vec![0.0; out_numel]);
     }
     let offset = meta.storage_offset();
-    let mut output = vec![0.0; out_numel];
+    // Push-based output skips the m*n zero-init memset
+    // (frankentorch-ao30). Both branches below proceed in
+    // row-major output order so push is correct.
+    let mut output = Vec::with_capacity(out_numel);
     let data = &input[offset..];
 
     // Inner_size == 1 means we are reducing the last (most-contiguous)
@@ -1413,10 +1416,10 @@ pub fn sum_dim_tensor_contiguous_f64(
     // The strided slice for each outer is pure contiguous, so we can
     // pairwise-sum directly with zero scratch allocation.
     if inner_size == 1 {
-        for (outer, slot) in output.iter_mut().enumerate() {
+        for outer in 0..outer_size {
             let start = outer * reduce_size;
             let end = start + reduce_size;
-            *slot = pairwise_sum_f64(&data[start..end]);
+            output.push(pairwise_sum_f64(&data[start..end]));
         }
         return Ok(output);
     }
@@ -1430,7 +1433,7 @@ pub fn sum_dim_tensor_contiguous_f64(
             for r in 0..reduce_size {
                 scratch[r] = data[outer * reduce_size * inner_size + r * inner_size + inner];
             }
-            output[outer * inner_size + inner] = pairwise_sum_f64(&scratch);
+            output.push(pairwise_sum_f64(&scratch));
         }
     }
 
