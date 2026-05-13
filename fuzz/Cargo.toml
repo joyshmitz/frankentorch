@@ -302,4 +302,25 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_kernel_cpu_softmax_f32"
+path = "fuzz_targets/ft_kernel_cpu_softmax_f32.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ft_kernel_cpu_matmul_f32"
+path = "fuzz_targets/ft_kernel_cpu_matmul_f32.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ft_kernel_cpu_reductions_f32"
+path = "fuzz_targets/ft_kernel_cpu_reductions_f32.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
