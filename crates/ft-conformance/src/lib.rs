@@ -13952,6 +13952,54 @@ mod tests {
             }
         }
 
+        // MR (ternary contract): sign(x) returns -1 for x < 0,
+        // 0 for x == 0 (any sign of zero), +1 for x > 0, NaN for NaN.
+        // Catches sign(-0) returning -1 (a common bug), and any
+        // NaN propagation regressions. frankentorch-i8rh.
+        #[test]
+        fn fuzz_metamorphic_sign_ternary_contract(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let mut input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            // Inject adversarial values at fixed positions.
+            if input.len() >= 4 {
+                input[0] = 0.0;
+                input[1] = -0.0;
+                input[2] = f64::NAN;
+                input[3] = f64::INFINITY;
+            }
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let s_x = s.tensor_sign(x).expect("sign");
+            let v = s.tensor_values(s_x).expect("values");
+
+            for (i, (&original, &got)) in input.iter().zip(v.iter()).enumerate() {
+                if original.is_nan() {
+                    prop_assert!(
+                        got.is_nan(),
+                        "sign(NaN)[{}] = {}, expected NaN",
+                        i, got
+                    );
+                    continue;
+                }
+                let expected = if original > 0.0 {
+                    1.0
+                } else if original < 0.0 {
+                    -1.0
+                } else {
+                    0.0  // covers +0 and -0
+                };
+                prop_assert!(
+                    got == expected,
+                    "sign(x)[{}] = {} (expected {}; x = {}, bits = {:#x})",
+                    i, got, expected, original, original.to_bits()
+                );
+            }
+        }
+
         // MR (idempotence): abs(abs(x)) == abs(x) bit-exactly. Once
         // values are made non-negative, a second abs is a no-op.
         // Companion to fuzz_metamorphic_abs_of_neg_equals_abs (zt03).
