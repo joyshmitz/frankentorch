@@ -8351,10 +8351,11 @@ impl Module for ConvTranspose2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            let (_, meta) = session.tensor_values_meta(input)?;
-            meta.shape().to_vec()
-        };
+        // Use tensor_shape rather than tensor_values_meta — the
+        // latter calls tensor_values which only supports F64 and
+        // errors with UnsupportedDType(F32) on F32 input. We only
+        // need the shape here. frankentorch-l68y.
+        let input_shape = session.tensor_shape(input)?;
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
