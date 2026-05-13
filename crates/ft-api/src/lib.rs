@@ -11096,6 +11096,33 @@ impl FrankenTorchSession {
         self.tensor_tape.chunk(input, chunks, dim)
     }
 
+    /// `torch.split_with_sizes(input, split_sizes, dim)` parity
+    /// alias for `tensor_split`. PyTorch exposes the named
+    /// variant of split that mirrors the original argument name.
+    /// Tracked under frankentorch-8uxl.
+    pub fn tensor_split_with_sizes(
+        &mut self,
+        input: TensorNodeId,
+        split_sizes: &[usize],
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_split(input, split_sizes, dim)
+    }
+
+    /// `torch.unsafe_chunk(input, chunks, dim)` parity alias for
+    /// `tensor_chunk`. In PyTorch the difference is that
+    /// unsafe_chunk skips a runtime autograd safety check; in
+    /// ft-api both go through the same tensor_tape path so they
+    /// are equivalent. Tracked under frankentorch-8uxl.
+    pub fn tensor_unsafe_chunk(
+        &mut self,
+        input: TensorNodeId,
+        chunks: usize,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_chunk(input, chunks, dim)
+    }
+
     pub fn tensor_unbind(
         &mut self,
         input: TensorNodeId,
@@ -34575,6 +34602,43 @@ mod tests {
         assert!(vals[1].abs() < 1e-10);
         assert!((vals[4] - 1.0).abs() < 1e-10);
         assert!((vals[8] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn split_with_sizes_alias_matches_split() {
+        // tensor_split_with_sizes is a thin alias of tensor_split
+        // (frankentorch-8uxl).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let a = s.tensor_variable(xs.clone(), vec![6], false).unwrap();
+        let b = s.tensor_variable(xs, vec![6], false).unwrap();
+        let split_sizes = &[2usize, 1, 3];
+        let alias_pieces = s.tensor_split_with_sizes(a, split_sizes, 0).unwrap();
+        let canon_pieces = s.tensor_split(b, split_sizes, 0).unwrap();
+        assert_eq!(alias_pieces.len(), canon_pieces.len());
+        for (i, (alias_id, canon_id)) in alias_pieces.iter().zip(canon_pieces.iter()).enumerate() {
+            let v_a = s.tensor_values(*alias_id).unwrap();
+            let v_c = s.tensor_values(*canon_id).unwrap();
+            assert_eq!(v_a, v_c, "split_with_sizes piece {i}");
+        }
+    }
+
+    #[test]
+    fn unsafe_chunk_alias_matches_chunk() {
+        // tensor_unsafe_chunk is a thin alias of tensor_chunk
+        // (frankentorch-8uxl).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xs: Vec<f64> = (0..12).map(|i| i as f64).collect();
+        let a = s.tensor_variable(xs.clone(), vec![12], false).unwrap();
+        let b = s.tensor_variable(xs, vec![12], false).unwrap();
+        let alias_pieces = s.tensor_unsafe_chunk(a, 4, 0).unwrap();
+        let canon_pieces = s.tensor_chunk(b, 4, 0).unwrap();
+        assert_eq!(alias_pieces.len(), canon_pieces.len());
+        for (i, (alias_id, canon_id)) in alias_pieces.iter().zip(canon_pieces.iter()).enumerate() {
+            let v_a = s.tensor_values(*alias_id).unwrap();
+            let v_c = s.tensor_values(*canon_id).unwrap();
+            assert_eq!(v_a, v_c, "unsafe_chunk piece {i}");
+        }
     }
 
     #[test]
