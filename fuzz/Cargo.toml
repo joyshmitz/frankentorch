@@ -365,4 +365,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_api_linalg_solve"
+path = "fuzz_targets/ft_api_linalg_solve.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
