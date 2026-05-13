@@ -18943,10 +18943,27 @@ print(json.dumps({"results": results}, sort_keys=True))
                         "case {i} (a={a_in}, b={b_in}) {name}: expected NaN, got {got}"
                     );
                 } else if expected == 0.0 {
+                    // For fmax/fmin of pairs that include both signs
+                    // of zero (e.g. fmax(0, -0)), the result is
+                    // implementation-defined per IEEE 754 — either
+                    // ±0 is valid. FrankenTorch's element-wise max
+                    // and torch may disagree on which sign survives,
+                    // and both are correct. Relax to value-equality
+                    // (got == expected) which holds when both are
+                    // any zero. frankentorch-71bv.
+                    assert!(
+                        got == 0.0,
+                        "case {i} (a={a_in}, b={b_in}) {name}: expected 0.0 (any sign), got {got}"
+                    );
+                } else if expected.is_infinite() {
+                    // inf vs inf gives diff = inf - inf = NaN which
+                    // fails the <= bound check below. Use bit-equality
+                    // for infinities (which encodes the sign).
+                    // frankentorch-71bv.
                     assert_eq!(
                         got.to_bits(),
                         expected.to_bits(),
-                        "case {i} (a={a_in}, b={b_in}) {name}: expected zero with bits {:#x}, got {got} with bits {:#x}",
+                        "case {i} (a={a_in}, b={b_in}) {name}: expected inf with bits {:#x}, got {got} with bits {:#x}",
                         expected.to_bits(),
                         got.to_bits()
                     );
