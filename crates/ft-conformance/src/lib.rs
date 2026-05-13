@@ -13847,6 +13847,111 @@ mod tests {
             }
         }
 
+        // MR (output moment): layer_norm with weight=None, bias=None
+        // (no affine) outputs along the normalized dims have mean ≈ 0
+        // and variance ≈ 1 per row. Catches:
+        // - broken sqrt or eps handling
+        // - wrong reduction axis
+        // - missing normalization (output not actually centered/scaled)
+        // frankentorch-fxel.
+        #[test]
+        fn fuzz_metamorphic_layer_norm_output_zero_mean_unit_var(
+            (rows, cols, raw) in (2usize..=4, 4usize..=16).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![rows, cols], false).expect("x");
+            let normed = s.functional_layer_norm(
+                x,
+                vec![cols], // normalize over the last dim
+                None,
+                None,
+                1e-5,
+            ).expect("layer_norm");
+            let v = s.tensor_values(normed).expect("values");
+            prop_assert_eq!(v.len(), rows * cols);
+
+            for r in 0..rows {
+                let row = &v[r * cols..(r + 1) * cols];
+                let mean: f64 = row.iter().sum::<f64>() / (cols as f64);
+                let var: f64 = row.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>()
+                    / (cols as f64);
+                prop_assert!(
+                    mean.abs() < 1e-9,
+                    "layer_norm row {} mean = {} (should be ≈ 0)",
+                    r, mean
+                );
+                // Variance should be ≈ 1 — the eps in the denominator
+                // pulls it slightly below 1, with tolerance 1e-3.
+                prop_assert!(
+                    (var - 1.0).abs() < 1e-3,
+                    "layer_norm row {} var = {} (should be ≈ 1)",
+                    r, var
+                );
+            }
+        }
+
+        // MR (output moment): group_norm with weight=None, bias=None
+        // produces output with mean ≈ 0 and variance ≈ 1 per (sample,
+        // group). frankentorch-fxel.
+        #[test]
+        fn fuzz_metamorphic_group_norm_output_zero_mean_unit_var(
+            (n, c, spatial, raw) in (1usize..=2, 4usize..=8, 4usize..=8).prop_flat_map(|(n, c, sp)| (
+                Just(n),
+                Just(c),
+                Just(sp),
+                prop::collection::vec(-256i16..256i16, n * c * sp),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let groups: usize = 2;
+            // Ensure c is divisible by groups.
+            if c % groups != 0 {
+                return Ok(());
+            }
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n, c, spatial], false).expect("x");
+            let normed = s.functional_group_norm(x, groups, None, None, 1e-5).expect("group_norm");
+            let v = s.tensor_values(normed).expect("values");
+            prop_assert_eq!(v.len(), n * c * spatial);
+
+            let channels_per_group = c / groups;
+            let group_elements = channels_per_group * spatial;
+            for sample in 0..n {
+                for g in 0..groups {
+                    // Walk the group's slice in the contiguous N×C×S layout.
+                    let mut group_vals: Vec<f64> = Vec::with_capacity(group_elements);
+                    for ch_in_g in 0..channels_per_group {
+                        let ch = g * channels_per_group + ch_in_g;
+                        for sp in 0..spatial {
+                            group_vals.push(v[sample * c * spatial + ch * spatial + sp]);
+                        }
+                    }
+                    let mean: f64 = group_vals.iter().sum::<f64>() / (group_elements as f64);
+                    let var: f64 = group_vals.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>()
+                        / (group_elements as f64);
+                    prop_assert!(
+                        mean.abs() < 1e-9,
+                        "group_norm sample={} group={} mean = {} (should be ≈ 0)",
+                        sample, g, mean
+                    );
+                    prop_assert!(
+                        (var - 1.0).abs() < 1e-3,
+                        "group_norm sample={} group={} var = {} (should be ≈ 1)",
+                        sample, g, var
+                    );
+                }
+            }
+        }
+
         // MR (descending duality): for non-NaN inputs,
         // sort_descending(x) bit-exactly equals reverse(sort_ascending(x)).
         // Catches any sign-comparator bug in the descending path.
