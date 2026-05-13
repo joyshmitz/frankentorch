@@ -13847,6 +13847,109 @@ mod tests {
             }
         }
 
+        // MR (idempotence): hardtanh(hardtanh(x)) bit-exactly equals
+        // hardtanh(x). Once values are clamped to [-1, 1], a second
+        // hardtanh is a no-op. Catches clamp-bound regressions where
+        // the second application would silently re-process values.
+        // frankentorch-ard7.
+        #[test]
+        fn fuzz_metamorphic_hardtanh_is_idempotent(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("variable");
+            let h1 = s.tensor_hardtanh(x).expect("hardtanh once");
+            let h2 = s.tensor_hardtanh(h1).expect("hardtanh twice");
+            let v1 = s.tensor_values(h1).expect("v1");
+            let v2 = s.tensor_values(h2).expect("v2");
+            for (i, (a, b)) in v1.iter().zip(v2.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "hardtanh(hardtanh(x))[{}] = {} != hardtanh(x)[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
+        // MR (monotonicity): sigmoid is non-decreasing in x. Given
+        // a sorted ascending input, the output must also be non-
+        // decreasing. Catches sign flips in the exp argument and
+        // any regression that would invert the curve.
+        // frankentorch-ard7.
+        #[test]
+        fn fuzz_metamorphic_sigmoid_is_monotone(
+            samples in prop::collection::vec(-2048i16..2048i16, 2..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let mut sorted: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = sorted.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(sorted, vec![n], false).expect("variable");
+            let y = s.tensor_sigmoid(x).expect("sigmoid");
+            let v = s.tensor_values(y).expect("values");
+
+            // Allow tiny FP slack: two very-large-magnitude inputs
+            // can both saturate to 1.0 (resp. 0.0), so non-strict.
+            for i in 1..v.len() {
+                if !v[i - 1].is_finite() || !v[i].is_finite() {
+                    continue;
+                }
+                prop_assert!(
+                    v[i] >= v[i - 1] - 16.0 * f64::EPSILON,
+                    "sigmoid not monotone at i={}: v[{}]={} > v[{}]={}",
+                    i, i - 1, v[i - 1], i, v[i]
+                );
+            }
+        }
+
+        // MR (sign symmetry): tanh(-x) == -tanh(x). libm tanh is
+        // an odd function in floating-point as well; any kernel
+        // regression that would silently bias the result (e.g. an
+        // unintentional offset added to the exp arg) shows up
+        // here as a bit-asymmetric output.
+        // frankentorch-ard7.
+        #[test]
+        fn fuzz_metamorphic_tanh_is_odd(
+            samples in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let pos: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let neg: Vec<f64> = pos.iter().map(|x| -x).collect();
+            let n = pos.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xp = s.tensor_variable(pos, vec![n], false).expect("xp");
+            let yp = s.tensor_tanh(xp).expect("tanh(x)");
+            let v_yp = s.tensor_values(yp).expect("v_yp");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xn = s.tensor_variable(neg, vec![n], false).expect("xn");
+            let yn = s.tensor_tanh(xn).expect("tanh(-x)");
+            let v_yn = s.tensor_values(yn).expect("v_yn");
+
+            // tanh(-0.0) is -0.0 and -tanh(0.0) is -0.0 (positive
+            // zero negated), so the bit patterns match. NaN check:
+            // tanh propagates NaN; -NaN preserves NaN bits.
+            for (i, (yp_v, yn_v)) in v_yp.iter().zip(v_yn.iter()).enumerate() {
+                if yp_v.is_nan() && yn_v.is_nan() {
+                    continue;
+                }
+                let neg_yp = -yp_v;
+                prop_assert_eq!(
+                    yn_v.to_bits(),
+                    neg_yp.to_bits(),
+                    "tanh(-x)[{}] = {} != -tanh(x)[{}] = {}", i, yn_v, i, neg_yp
+                );
+            }
+        }
+
         // MR (basis, dot): dot(a, e_i) bit-exactly equals a[i].
         // The standard basis vector picks one cell with no
         // rounding (multiplications by 0 and exactly one by 1).
