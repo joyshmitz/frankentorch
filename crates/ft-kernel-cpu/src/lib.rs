@@ -386,33 +386,18 @@ pub fn pow_scalar(input: &ScalarTensor, exponent: f64) -> ScalarTensor {
 }
 
 fn powf_torch_signed_zero_f64(value: f64, exponent: f64) -> f64 {
-    let result = value.powf(exponent);
-    if value == 0.0
-        && value.is_sign_negative()
-        && exponent.is_finite()
-        && exponent > 0.0
-        && exponent.fract() != 0.0
-        && result == 0.0
-    {
-        -0.0
-    } else {
-        result
-    }
+    // Defer to Rust's f64::powf, which matches libm pow bit-for-bit.
+    // The previous body overrode pow(-0, fractional > 0) from +0 to
+    // -0 to match an older torch convention, but current libm and
+    // torch both return +0 (per IEEE 754-2008 §9.2.1). Pinned by
+    // torch_pow_ieee754_subprocess_conformance (vgj2).
+    value.powf(exponent)
 }
 
 fn powf_torch_signed_zero_f32(value: f32, exponent: f32) -> f32 {
-    let result = value.powf(exponent);
-    if value == 0.0
-        && value.is_sign_negative()
-        && exponent.is_finite()
-        && exponent > 0.0
-        && exponent.fract() != 0.0
-        && result == 0.0
-    {
-        -0.0
-    } else {
-        result
-    }
+    // Match libm convention: pow(-0, fractional > 0) returns +0.
+    // See powf_torch_signed_zero_f64 for the rationale.
+    value.powf(exponent)
 }
 
 pub fn clamp_scalar(input: &ScalarTensor, min_val: f64, max_val: f64) -> ScalarTensor {
@@ -9070,10 +9055,16 @@ mod tests {
     }
 
     #[test]
-    fn pow_scalar_preserves_negative_zero_for_fractional_exponent() {
+    fn pow_scalar_matches_libm_pow_negative_zero_fractional_exponent() {
+        // Per IEEE 754-2008 §9.2.1 and current libm (and current
+        // torch), pow(-0, fractional > 0) returns +0, not -0. The
+        // previous behavior in powf_torch_signed_zero_f64 forced
+        // -0 to match an older torch convention; updated under
+        // frankentorch-vgj2 to align with libm/torch parity now
+        // enforced by torch_pow_ieee754_subprocess_conformance.
         let input = ScalarTensor::new(-0.0, DType::F64, Device::Cpu);
         let out = pow_scalar(&input, 0.5);
-        assert_eq!(out.value().to_bits(), (-0.0f64).to_bits());
+        assert_eq!(out.value().to_bits(), (0.0f64).to_bits());
     }
 
     #[test]
@@ -9095,22 +9086,26 @@ mod tests {
     }
 
     #[test]
-    fn pow_tensor_preserves_negative_zero_for_fractional_exponent() {
+    fn pow_tensor_matches_libm_for_negative_zero_fractional_exponent() {
+        // Per IEEE 754-2008 §9.2.1, pow(-0, fractional > 0) returns
+        // +0 (matches libm pow). Updated under frankentorch-vgj2 to
+        // align with current torch parity.
         let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
         let input = vec![-0.0, 0.0];
         let out =
             pow_tensor_contiguous_f64(&input, &meta, 0.5).expect("fractional pow should succeed");
-        assert_eq!(out[0].to_bits(), (-0.0f64).to_bits());
+        assert_eq!(out[0].to_bits(), 0.0f64.to_bits());
         assert_eq!(out[1].to_bits(), 0.0f64.to_bits());
     }
 
     #[test]
-    fn pow_tensor_f32_preserves_negative_zero_for_fractional_exponent() {
+    fn pow_tensor_f32_matches_libm_for_negative_zero_fractional_exponent() {
+        // Companion to pow_tensor_matches_libm_for_negative_zero_fractional_exponent.
         let meta = TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu);
         let input = vec![-0.0f32, 0.0f32];
         let out =
             pow_tensor_contiguous_f32(&input, &meta, 0.5).expect("fractional pow should succeed");
-        assert_eq!(out[0].to_bits(), (-0.0f32).to_bits());
+        assert_eq!(out[0].to_bits(), 0.0f32.to_bits());
         assert_eq!(out[1].to_bits(), 0.0f32.to_bits());
     }
 
