@@ -11393,9 +11393,12 @@ impl FrankenTorchSession {
         let out_h = grid_meta.shape()[1];
         let out_w = grid_meta.shape()[2];
         if batch != out_batch {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "grid_sample: input and grid batch dimensions must match",
+            // Surface both full shapes so the caller can see
+            // which batch sizes were given (frankentorch-p947).
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: input_meta.shape().to_vec(),
+                    rhs: grid_meta.shape().to_vec(),
                 },
             )));
         }
@@ -14668,9 +14671,12 @@ impl FrankenTorchSession {
             let batch = seq_shape[0];
             let seq_len = seq_shape[1];
             if val_shape[0] != batch {
-                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                    ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "searchsorted: batch dimensions must match",
+                // Surface both full shapes so caller can see
+                // which batch sizes were given (frankentorch-p947).
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                    ft_kernel_cpu::KernelError::ShapeMismatch {
+                        lhs: seq_shape.clone(),
+                        rhs: val_shape.clone(),
                     },
                 )));
             }
