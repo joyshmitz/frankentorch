@@ -17175,6 +17175,90 @@ print(json.dumps({
     }
 
     #[test]
+    fn torch_layernorm_f32_output_shape_subprocess_conformance() {
+        // F32 forward shape parity for LayerNorm. Follow-up to 7iqt
+        // and b6au extending F32 coverage from convs to normalization.
+        // frankentorch-9sap.
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{LayerNorm, Module};
+
+        let mut config = HarnessConfig::default_paths();
+        let python = config
+            .legacy_oracle_python
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let torch_available = Command::new(&python)
+            .arg("-c")
+            .arg("import torch")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !torch_available {
+            eprintln!(
+                "torch_layernorm_f32_output_shape_subprocess_conformance: torch unavailable, skipping"
+            );
+            return;
+        }
+        config.legacy_oracle_python = Some(python);
+
+        let script = r#"
+import json, sys, torch
+cases = json.loads(sys.stdin.read())["cases"]
+out = []
+for c in cases:
+    layer = torch.nn.LayerNorm(tuple(c["normalized_shape"]))
+    x = torch.zeros(*c["input_shape"], dtype=torch.float32)
+    y = layer(x)
+    out.append({"shape": list(y.shape)})
+print(json.dumps({"results": out}, sort_keys=True))
+"#;
+
+        // (normalized_shape, input_shape)
+        let cases: Vec<(Vec<usize>, Vec<usize>)> = vec![
+            (vec![8], vec![1, 8]),
+            (vec![8], vec![4, 8]),
+            (vec![4, 8], vec![2, 4, 8]),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|c| json!({
+                "normalized_shape": c.0,
+                "input_shape": c.1,
+            })).collect::<Vec<_>>(),
+        });
+
+        let oracle = super::run_legacy_oracle_script(&config, script, &payload)
+            .expect("torch LayerNorm oracle should run");
+        let results = oracle.get("results").and_then(Value::as_array).expect("results");
+        assert_eq!(results.len(), cases.len());
+
+        for (i, (case, oracle_entry)) in cases.iter().zip(results.iter()).enumerate() {
+            let (normalized_shape, input_shape) = case;
+            let expected_shape: Vec<usize> = oracle_entry.get("shape").and_then(Value::as_array)
+                .expect("oracle shape array")
+                .iter()
+                .map(|v| usize::try_from(v.as_u64().expect("u64")).expect("usize"))
+                .collect();
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let ln = LayerNorm::new(&mut session, normalized_shape.clone(), 1e-5)
+                .expect("LayerNorm::new should succeed");
+            let numel: usize = input_shape.iter().copied().product();
+            let x = session.tensor_variable_f32(vec![0.0_f32; numel], input_shape.clone(), false)
+                .expect("input tensor");
+            let out = ln.forward(&mut session, x)
+                .unwrap_or_else(|err| panic!("case {i} forward failed: {err:?}"));
+            let out_shape = session.tensor_shape(out).expect("output shape");
+            assert_eq!(
+                out_shape, expected_shape.as_slice(),
+                "case {i}: LayerNorm F32 shape diverges (normalized_shape={normalized_shape:?}, input={input_shape:?})"
+            );
+        }
+    }
+
+    #[test]
     fn torch_conv1d_f32_output_shape_subprocess_conformance() {
         // F32 forward shape parity for Conv1d. Follow-up to 7iqt.
         // frankentorch-b6au.
