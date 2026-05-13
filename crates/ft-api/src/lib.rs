@@ -13648,15 +13648,15 @@ impl FrankenTorchSession {
         let zeros = self.full(vec![batch_size], 0.0, false)?;
         let neg_loss = self.tensor_max(neg_diff, zeros)?;
 
-        // Select based on target: mask = (target + 1) / 2 -> 1.0 for positive, 0.0 for negative
+        // Select based on target: mask = (target + 1) / 2 -> 1.0 for positive, 0.0 for negative.
         let mask_vals: Vec<f64> = target_vals.iter().map(|t| (t + 1.0) / 2.0).collect();
         let mask = self.tensor_variable(mask_vals, vec![batch_size], false)?;
-        let inv_mask = self.tensor_sub(ones, mask)?;
-
-        // result = mask * pos_loss + (1 - mask) * neg_loss
-        let weighted_pos = self.tensor_mul(mask, pos_loss)?;
-        let weighted_neg = self.tensor_mul(inv_mask, neg_loss)?;
-        let total = self.tensor_add(weighted_pos, weighted_neg)?;
+        // Blend via tensor_where instead of mask*pos + (1-mask)*neg
+        // (frankentorch-qw5a — mirrors uqtq/yt94). For target in
+        // {-1, +1} (documented domain), mask is 0/1 so tensor_where
+        // produces the same result with -1 sub + -2 mul + -1 add
+        // collapsed into 1 where node.
+        let total = self.tensor_where(mask, pos_loss, neg_loss)?;
 
         self.tensor_mean(total)
     }
