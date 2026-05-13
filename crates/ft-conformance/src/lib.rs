@@ -13952,6 +13952,38 @@ mod tests {
             }
         }
 
+        // MR (inverse function, principal branch): atan(tan(x)) ≈ x
+        // for x in the principal branch (-π/2, π/2). Beyond this
+        // range, atan returns the equivalent angle mod π so the
+        // round-trip is non-trivial. Restricting to the principal
+        // branch gives a clean inverse-function identity within
+        // ~16 ULP. frankentorch-mss4.
+        #[test]
+        fn fuzz_metamorphic_atan_of_tan_principal_branch(
+            samples in prop::collection::vec(-1500i16..1500i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x in roughly (-1.5, 1.5) — well inside (-π/2, π/2)
+            // ≈ (-1.5708, 1.5708). Stays clear of the tan poles.
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 1000.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let n = input.len();
+            let x_node = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let tan_x = s.tensor_tan(x_node).expect("tan");
+            let atan_tan_x = s.tensor_atan(tan_x).expect("atan");
+            let v = s.tensor_values(atan_tan_x).expect("vals");
+            for (i, (got, expected)) in v.iter().zip(input.iter()).enumerate() {
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * scale * f64::EPSILON,
+                    "atan(tan(x))[{}] = {}, expected x = {} (diff = {:e})",
+                    i, got, expected, diff
+                );
+            }
+        }
+
         // MR (hyperbolic Pythagorean identity): cosh^2(x) - sinh^2(x)
         // ≈ 1 for any finite real x. Catches libm sinh/cosh precision
         // regressions, sign drift, autograd severance.
