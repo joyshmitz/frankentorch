@@ -197,4 +197,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "ft_kernel_cpu_lerp"
+path = "fuzz_targets/ft_kernel_cpu_lerp.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
