@@ -21360,6 +21360,201 @@ print(json.dumps({"erf": erf_out, "erfc": erfc_out}))
     }
 
     #[test]
+    fn torch_fft_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_fft / tensor_ifft / tensor_rfft /
+        // tensor_irfft against numpy.fft on shared real inputs.
+        // numpy.fft is the upstream reference for torch.fft so this is
+        // the canonical oracle. Tolerance is relaxed compared to the
+        // libm bit-equality oracles (lgamma, atan2, pow): FFT
+        // implementations differ in butterfly ordering and FrankenTorch
+        // currently uses a naive O(N^2) DFT while numpy uses pocketfft —
+        // so relative error scales with N. frankentorch-7z70.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!("torch_fft_numpy_subprocess_conformance: python3/numpy not available, skipping");
+            return;
+        }
+
+        let config = HarnessConfig::default_paths();
+
+        // Six representative real inputs: powers of two and non-powers,
+        // mixed signs and magnitudes.
+        let inputs: Vec<Vec<f64>> = vec![
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![1.0, -1.0, 1.0, -1.0],
+            vec![0.5, 1.5, -2.5, 3.5, -0.5, 2.5],
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            vec![10.0, -10.0, 5.0, -5.0, 2.5, -2.5, 1.25, -1.25],
+        ];
+
+        // Serialize input arrays as lists of f64 bits.
+        let serialized: Vec<Vec<String>> = inputs
+            .iter()
+            .map(|arr| arr.iter().map(|v| v.to_bits().to_string()).collect())
+            .collect();
+        let payload = json!({ "inputs": serialized });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+req = json.loads(sys.stdin.read())
+out = {"fft": [], "ifft": [], "rfft": [], "irfft": []}
+for arr_bits in req["inputs"]:
+    arr = np.array([struct.unpack("<d", struct.pack("<Q", int(b)))[0] for b in arr_bits], dtype=np.float64)
+    # fft: complex output length N
+    f = np.fft.fft(arr)
+    out["fft"].append([(struct.unpack("<Q", struct.pack("<d", z.real))[0], struct.unpack("<Q", struct.pack("<d", z.imag))[0]) for z in f])
+    # ifft: take fft output, ifft it, return complex output length N
+    inv = np.fft.ifft(f)
+    out["ifft"].append([(struct.unpack("<Q", struct.pack("<d", z.real))[0], struct.unpack("<Q", struct.pack("<d", z.imag))[0]) for z in inv])
+    # rfft: complex output length N/2 + 1
+    rf = np.fft.rfft(arr)
+    out["rfft"].append([(struct.unpack("<Q", struct.pack("<d", z.real))[0], struct.unpack("<Q", struct.pack("<d", z.imag))[0]) for z in rf])
+    # irfft: real output length N
+    inv_r = np.fft.irfft(rf, n=len(arr))
+    out["irfft"].append([struct.unpack("<Q", struct.pack("<d", v))[0] for v in inv_r])
+print(json.dumps({"results": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "torch_fft_numpy_subprocess_conformance: oracle invocation failed ({e}); skipping"
+                );
+                return;
+            }
+        };
+        let results = response.get("results").expect("results");
+        let np_fft = results.get("fft").and_then(|v| v.as_array()).expect("fft results");
+        let np_ifft = results.get("ifft").and_then(|v| v.as_array()).expect("ifft results");
+        let np_rfft = results.get("rfft").and_then(|v| v.as_array()).expect("rfft results");
+        let np_irfft = results.get("irfft").and_then(|v| v.as_array()).expect("irfft results");
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        // Helper: decode a (re_bits, im_bits) pair into (re, im).
+        let decode_complex = |entry: &serde_json::Value| -> (f64, f64) {
+            let pair = entry.as_array().expect("complex pair");
+            let re_bits: u64 = pair[0].as_str().unwrap().parse().unwrap();
+            let im_bits: u64 = pair[1].as_str().unwrap().parse().unwrap();
+            (f64::from_bits(re_bits), f64::from_bits(im_bits))
+        };
+
+        for (case_idx, input) in inputs.iter().enumerate() {
+            let n = input.len();
+            // Bound: each butterfly stage doubles relative error;
+            // FrankenTorch O(N^2) DFT accumulates N^2 multiplies so
+            // bound is N * N * EPSILON.
+            let bound = (n as f64).powi(2) * f64::EPSILON
+                * input.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs())).max(1.0)
+                + 1e-10;
+
+            // fft
+            let x = session.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let freq = session.tensor_fft(x, None).expect("fft");
+            let re_view = session.tensor_real(freq).expect("real");
+            let im_view = session.tensor_imag(freq).expect("imag");
+            let re_vals = session.tensor_values(re_view).expect("re vals");
+            let im_vals = session.tensor_values(im_view).expect("im vals");
+            let np_case = np_fft[case_idx].as_array().expect("fft array");
+            assert_eq!(np_case.len(), n);
+            for k in 0..n {
+                let (want_re, want_im) = decode_complex(&np_case[k]);
+                if (re_vals[k] - want_re).abs() > bound || (im_vals[k] - want_im).abs() > bound {
+                    mismatches.push(format!(
+                        "fft case={case_idx} k={k}: got ({}, {}), numpy ({}, {})",
+                        re_vals[k], im_vals[k], want_re, want_im
+                    ));
+                }
+            }
+
+            // rfft (output length n/2 + 1)
+            let x2 = session.tensor_variable(input.clone(), vec![n], false).expect("x2");
+            let rfreq = session.tensor_rfft(x2, None).expect("rfft");
+            let re_r = session.tensor_real(rfreq).expect("re_r");
+            let im_r = session.tensor_imag(rfreq).expect("im_r");
+            let re_r_vals = session.tensor_values(re_r).expect("re_r vals");
+            let im_r_vals = session.tensor_values(im_r).expect("im_r vals");
+            let np_rcase = np_rfft[case_idx].as_array().expect("rfft array");
+            assert_eq!(np_rcase.len(), n / 2 + 1);
+            assert_eq!(re_r_vals.len(), n / 2 + 1);
+            for k in 0..(n / 2 + 1) {
+                let (want_re, want_im) = decode_complex(&np_rcase[k]);
+                if (re_r_vals[k] - want_re).abs() > bound
+                    || (im_r_vals[k] - want_im).abs() > bound
+                {
+                    mismatches.push(format!(
+                        "rfft case={case_idx} k={k}: got ({}, {}), numpy ({}, {})",
+                        re_r_vals[k], im_r_vals[k], want_re, want_im
+                    ));
+                }
+            }
+
+            // ifft: round-trip via fft to obtain a complex input, then
+            // run ifft. Compare to numpy's ifft of the same fft output
+            // (so both are inverse-DFT of fft(input)).
+            let x3 = session.tensor_variable(input.clone(), vec![n], false).expect("x3");
+            let freq3 = session.tensor_fft(x3, None).expect("fft3");
+            let inv = session.tensor_ifft(freq3, None).expect("ifft");
+            let re_inv = session.tensor_real(inv).expect("re_inv");
+            let im_inv = session.tensor_imag(inv).expect("im_inv");
+            let re_inv_vals = session.tensor_values(re_inv).expect("re_inv vals");
+            let im_inv_vals = session.tensor_values(im_inv).expect("im_inv vals");
+            let np_icase = np_ifft[case_idx].as_array().expect("ifft array");
+            for k in 0..n {
+                let (want_re, want_im) = decode_complex(&np_icase[k]);
+                if (re_inv_vals[k] - want_re).abs() > bound
+                    || (im_inv_vals[k] - want_im).abs() > bound
+                {
+                    mismatches.push(format!(
+                        "ifft case={case_idx} k={k}: got ({}, {}), numpy ({}, {})",
+                        re_inv_vals[k], im_inv_vals[k], want_re, want_im
+                    ));
+                }
+            }
+
+            // irfft: round-trip via rfft then irfft. Compare to numpy
+            // irfft(rfft(input)).
+            let x4 = session.tensor_variable(input.clone(), vec![n], false).expect("x4");
+            let rf = session.tensor_rfft(x4, None).expect("rfft4");
+            let irfft_out = session.tensor_irfft(rf, Some(n)).expect("irfft");
+            let irfft_vals = session.tensor_values(irfft_out).expect("irfft vals");
+            let np_irc = np_irfft[case_idx].as_array().expect("irfft array");
+            for k in 0..n {
+                let want_bits: u64 = np_irc[k].as_str().unwrap().parse().unwrap();
+                let want = f64::from_bits(want_bits);
+                if (irfft_vals[k] - want).abs() > bound {
+                    mismatches.push(format!(
+                        "irfft case={case_idx} k={k}: got {}, numpy {}",
+                        irfft_vals[k], want
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "FFT numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_lgamma_libm_subprocess_conformance() {
         // Lock the precision contract for lgamma (log-Gamma).
         //
