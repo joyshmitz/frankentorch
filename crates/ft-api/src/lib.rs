@@ -19133,7 +19133,6 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let vals = self.tensor_values(input)?;
         let dtype = self.tensor_dtype(input)?;
 
         if dtype != DType::Complex128 && dtype != DType::Complex64 {
@@ -19143,6 +19142,12 @@ impl FrankenTorchSession {
                 },
             )));
         }
+        // Extract interleaved [re, im, re, im, ...] via the
+        // tensor_view_as_real conversion path. tensor_values cannot
+        // be called directly on a Complex{64,128} tensor — it errors
+        // with DenseTensor(UnsupportedDType). frankentorch-w6x1.
+        let real_view = self.tensor_view_as_real(input)?;
+        let vals = self.tensor_values(real_view)?;
 
         let input_len = vals.len() / 2; // complex elements
         let fft_len = n.unwrap_or(input_len);
@@ -19242,7 +19247,6 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let vals = self.tensor_values(input)?;
         let dtype = self.tensor_dtype(input)?;
 
         if dtype != DType::Complex128 && dtype != DType::Complex64 {
@@ -19252,6 +19256,10 @@ impl FrankenTorchSession {
                 },
             )));
         }
+        // Extract interleaved [re, im, re, im, ...] via the
+        // tensor_view_as_real conversion path. frankentorch-w6x1.
+        let real_view = self.tensor_view_as_real(input)?;
+        let vals = self.tensor_values(real_view)?;
 
         let freq_len = vals.len() / 2;
         let out_len = n.unwrap_or((freq_len - 1) * 2);
@@ -34945,6 +34953,54 @@ mod tests {
         // Just verify the guard triggers on the requires_grad real
         // input plumbed through via tensor_complex's predecessor,
         // which reflects the practical training-time path.
+    }
+
+    /// Regression for frankentorch-w6x1: tensor_irfft and
+    /// tensor_ifft used to panic with DenseTensor(UnsupportedDType
+    /// (Complex128)) on legitimate complex input because they
+    /// called tensor_values directly on a complex tensor. Fixed by
+    /// routing through tensor_view_as_real first.
+    #[test]
+    fn fft_irfft_roundtrip_recovers_real_input() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let n = input.len();
+        let x = s.tensor_variable(input.clone(), vec![n], false).unwrap();
+        let freq = s.tensor_rfft(x, None).expect("rfft");
+        let recovered = s.tensor_irfft(freq, Some(n)).expect("irfft");
+        let v = s.tensor_values(recovered).expect("values");
+        assert_eq!(v.len(), n);
+        let bound = (n as f64) * 64.0 * f64::EPSILON
+            + 1e-10 * input.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+        for (i, (got, expected)) in v.iter().zip(input.iter()).enumerate() {
+            let diff = (got - expected).abs();
+            assert!(
+                diff <= bound,
+                "irfft(rfft(x))[{i}] = {got}, expected x[{i}] = {expected}, diff = {diff:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn fft_ifft_roundtrip_recovers_real_input_via_real_part() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let n = input.len();
+        let x = s.tensor_variable(input.clone(), vec![n], false).unwrap();
+        let freq = s.tensor_fft(x, None).expect("fft");
+        let recovered = s.tensor_ifft(freq, None).expect("ifft");
+        let real_part = s.tensor_real(recovered).expect("real");
+        let v = s.tensor_values(real_part).expect("values");
+        assert_eq!(v.len(), n);
+        let bound = (n as f64) * 64.0 * f64::EPSILON
+            + 1e-10 * input.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+        for (i, (got, expected)) in v.iter().zip(input.iter()).enumerate() {
+            let diff = (got - expected).abs();
+            assert!(
+                diff <= bound,
+                "ifft(fft(x)).real[{i}] = {got}, expected x[{i}] = {expected}, diff = {diff:e}"
+            );
+        }
     }
 
     #[test]
