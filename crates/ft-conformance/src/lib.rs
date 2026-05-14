@@ -15418,6 +15418,96 @@ mod tests {
             }
         }
 
+        // MR (atleast_Nd contracts): the three atleast surfaces
+        // ensure the input has rank >= 1, 2, or 3 by padding with
+        // size-1 dims using PyTorch's asymmetric convention:
+        //   atleast_1d: 0-D scalar → [1]
+        //   atleast_2d: 0-D → [1, 1], 1-D [N] → [1, N]
+        //   atleast_3d: 0-D → [1, 1, 1], 1-D [N] → [1, N, 1],
+        //               2-D [N, M] → [N, M, 1]
+        // Three contracts on 1-D and 2-D inputs:
+        //   1. Numel is preserved across the rank promotion.
+        //   2. Output rank meets the target.
+        //   3. Values are bit-exactly preserved (these are pure
+        //      reshape ops with no rounding).
+        // frankentorch-pvglb.
+        #[test]
+        fn fuzz_metamorphic_atleast_nd_contracts(
+            (rows, cols, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..=256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let n = input.len();
+
+            // 1-D source: shape [n].
+            for target_rank in 1usize..=3 {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+                let promoted = match target_rank {
+                    1 => s.tensor_atleast_1d(x).expect("atleast_1d"),
+                    2 => s.tensor_atleast_2d(x).expect("atleast_2d"),
+                    3 => s.tensor_atleast_3d(x).expect("atleast_3d"),
+                    _ => unreachable!(),
+                };
+                let shape = s.tensor_shape(promoted).expect("shape");
+                let v = s.tensor_values(promoted).expect("vals");
+                prop_assert!(
+                    shape.len() >= target_rank,
+                    "atleast_{}d output rank {} below target {}",
+                    target_rank, shape.len(), target_rank
+                );
+                let total: usize = shape.iter().product();
+                prop_assert_eq!(total, n,
+                    "atleast_{}d numel = {} != input numel = {}",
+                    target_rank, total, n);
+                for (i, (g, want)) in v.iter().zip(input.iter()).enumerate() {
+                    prop_assert_eq!(
+                        g.to_bits(), want.to_bits(),
+                        "atleast_{}d[{}] = {} != x[{}] = {}",
+                        target_rank, i, g, i, want
+                    );
+                }
+            }
+
+            // 2-D source: shape [rows, cols]. atleast_1d/2d are
+            // no-ops (returned unchanged), atleast_3d appends a
+            // trailing 1.
+            let total = rows * cols;
+            for target_rank in 1usize..=3 {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+                let promoted = match target_rank {
+                    1 => s.tensor_atleast_1d(x).expect("atleast_1d"),
+                    2 => s.tensor_atleast_2d(x).expect("atleast_2d"),
+                    3 => s.tensor_atleast_3d(x).expect("atleast_3d"),
+                    _ => unreachable!(),
+                };
+                let shape = s.tensor_shape(promoted).expect("shape");
+                let v = s.tensor_values(promoted).expect("vals");
+                prop_assert!(
+                    shape.len() >= target_rank.max(2),
+                    "atleast_{}d output rank {} below 2 (input is 2-D)",
+                    target_rank, shape.len()
+                );
+                let total_promoted: usize = shape.iter().product();
+                prop_assert_eq!(total_promoted, total,
+                    "atleast_{}d numel mismatch: got {} expected {}",
+                    target_rank, total_promoted, total);
+                for (i, (g, want)) in v.iter().zip(input.iter()).enumerate() {
+                    prop_assert_eq!(
+                        g.to_bits(), want.to_bits(),
+                        "atleast_{}d[{}] = {} != x[{}] = {} (2-D input)",
+                        target_rank, i, g, i, want
+                    );
+                }
+            }
+        }
+
         // MR (tensor_inner contracts): for 1-D inputs of equal
         // length, tensor_inner is the dot product. Three contracts:
         //   1. inner(a, b) == dot(a, b) bit-exact (ft-api routes
