@@ -13952,6 +13952,50 @@ mod tests {
             }
         }
 
+        // MR (roundtrip): split(cat(tensors, dim), sizes, dim) returns
+        // the original tensor list bit-exact when sizes matches each
+        // tensor's size along dim. Concatenation joins tensors;
+        // split unjoins. frankentorch-5gak.
+        #[test]
+        fn fuzz_metamorphic_cat_split_roundtrip(
+            (n, k, raw) in (1usize..=6, 2usize..=4).prop_flat_map(|(n, k)| (
+                Just(n),
+                Just(k),
+                prop::collection::vec(-256i16..=256i16, n * k),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let mut originals: Vec<Vec<f64>> = Vec::with_capacity(k);
+            let mut nodes: Vec<_> = Vec::with_capacity(k);
+            for chunk_idx in 0..k {
+                let slice: Vec<f64> = raw[chunk_idx * n..(chunk_idx + 1) * n]
+                    .iter()
+                    .map(|v| f64::from(*v) / 23.0)
+                    .collect();
+                let t = s.tensor_variable(slice.clone(), vec![n], false).expect("t");
+                originals.push(slice);
+                nodes.push(t);
+            }
+            let catted = s.tensor_cat(&nodes, 0).expect("cat");
+            let sizes = vec![n; k];
+            let split = s.tensor_split(catted, &sizes, 0).expect("split");
+            prop_assert_eq!(split.len(), k);
+            for (chunk_idx, &got_node) in split.iter().enumerate() {
+                let v = s.tensor_values(got_node).expect("got vals");
+                let expected = &originals[chunk_idx];
+                prop_assert_eq!(v.len(), expected.len());
+                for (i, (a, b)) in v.iter().zip(expected.iter()).enumerate() {
+                    prop_assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "split[{}][{}] = {} != original[{}] = {}", chunk_idx, i, a, i, b
+                    );
+                }
+            }
+        }
+
         // MR (roundtrip): unbind(stack(tensors, dim), dim) returns
         // the original tensor list bit-exact. Stacking inserts a new
         // dim of size k; unbinding along that dim splits back into
