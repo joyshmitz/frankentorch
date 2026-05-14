@@ -15418,6 +15418,102 @@ mod tests {
             }
         }
 
+        // MR (softshrink + hardshrink): two sparsifying
+        // activations with three-piece definitions:
+        //   softshrink(x, λ) = x - λ  if x >  λ
+        //                    = x + λ  if x < -λ
+        //                    = 0      otherwise (|x| <= λ)
+        //   hardshrink(x, λ) = x      if |x| >  λ
+        //                    = 0      otherwise
+        // Contracts:
+        //   * Closed-form bit-exact match against Rust-side ref.
+        //   * Both output 0 on |x| <= λ (the sparsifying region).
+        //   * softshrink monotone non-decreasing (the threshold
+        //     branch is x ± λ which preserves order; the zero
+        //     plateau closes the gap).
+        //   * hardshrink is identity outside [-λ, λ]: at |x| > λ
+        //     the kernel returns x bit-exact.
+        // λ is varied across {0.0, 0.5, 1.0, 2.0} so both edge
+        // cases (λ=0 ≡ identity for softshrink, all-x-pass for
+        // hardshrink) and the typical 0.5 default are exercised.
+        // frankentorch-mftco.
+        #[test]
+        fn fuzz_metamorphic_softshrink_hardshrink_three_piece(
+            raw in prop::collection::vec(-2048i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            for lambd in [0.0_f64, 0.5, 1.0, 2.0] {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+                let ssh = s.tensor_softshrink(x, lambd).expect("softshrink");
+                let hsh = s.tensor_hardshrink(x, lambd).expect("hardshrink");
+                let got_ssh = s.tensor_values(ssh).expect("ssh vals");
+                let got_hsh = s.tensor_values(hsh).expect("hsh vals");
+
+                for (i, ((&g_s, &g_h), &xi)) in got_ssh.iter()
+                    .zip(got_hsh.iter())
+                    .zip(input.iter())
+                    .enumerate()
+                {
+                    let want_ssh = if xi > lambd {
+                        xi - lambd
+                    } else if xi < -lambd {
+                        xi + lambd
+                    } else {
+                        0.0
+                    };
+                    let want_hsh = if xi.abs() > lambd { xi } else { 0.0 };
+
+                    let diff_s = (g_s - want_ssh).abs();
+                    let scale_s = g_s.abs().max(want_ssh.abs()).max(1.0);
+                    prop_assert!(
+                        diff_s <= 4.0 * f64::EPSILON * scale_s,
+                        "softshrink[{}] lambd={} = {} != closed-form {} for x = {}",
+                        i, lambd, g_s, want_ssh, xi
+                    );
+                    prop_assert_eq!(
+                        g_h.to_bits(), want_hsh.to_bits(),
+                        "hardshrink[{}] lambd={} = {} (bits 0x{:x}) != closed-form {} (bits 0x{:x}) for x = {}",
+                        i, lambd, g_h, g_h.to_bits(), want_hsh, want_hsh.to_bits(), xi
+                    );
+
+                    // Sparsifying contract: |x| <= λ → output 0.
+                    if xi.abs() <= lambd {
+                        prop_assert_eq!(
+                            g_h.to_bits(), 0.0_f64.to_bits(),
+                            "hardshrink interior |x|<=λ must be 0, got {} for x = {}", g_h, xi
+                        );
+                    }
+                    // hardshrink is identity outside [-λ, λ]: at
+                    // |x| > λ the value passes through bit-exact.
+                    if xi.abs() > lambd {
+                        prop_assert_eq!(
+                            g_h.to_bits(), xi.to_bits(),
+                            "hardshrink exterior |x|>λ must be x bit-exact, got {} for x = {}", g_h, xi
+                        );
+                    }
+                }
+
+                // softshrink monotone non-decreasing in x for a
+                // fixed lambd. Sort by input then check the output
+                // is also non-decreasing.
+                let mut pairs: Vec<(f64, f64)> = input.iter().zip(got_ssh.iter())
+                    .map(|(&a, &b)| (a, b)).collect();
+                pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+                for k in 1..pairs.len() {
+                    prop_assert!(
+                        pairs[k - 1].1 <= pairs[k].1 + 1e-15,
+                        "softshrink not monotone (lambd={}): x={} -> {}, x={} -> {}",
+                        lambd, pairs[k - 1].0, pairs[k - 1].1, pairs[k].0, pairs[k].1
+                    );
+                }
+            }
+        }
+
         // MR (softsign + tanhshrink contracts): two related
         // activations:
         //   softsign(x)   = x / (1 + |x|)   bounded in (-1, 1)
