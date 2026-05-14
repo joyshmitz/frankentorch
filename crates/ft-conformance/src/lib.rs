@@ -13952,6 +13952,41 @@ mod tests {
             }
         }
 
+        // MR (closed form): silu(x) == x * sigmoid(x) within 16 ULP.
+        // SiLU (also called Swish) is defined as x * sigmoid(x).
+        // Catches drift between the dedicated silu kernel and the
+        // composed mul + sigmoid path. frankentorch-cwvr.
+        #[test]
+        fn fuzz_metamorphic_silu_equals_x_times_sigmoid(
+            samples in prop::collection::vec(-800i16..=800i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 80.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_a = s.tensor_variable(input.clone(), vec![n], false).expect("x_a");
+            let silu_x = s.tensor_silu(x_a).expect("silu");
+            let v_silu = s.tensor_values(silu_x).expect("silu vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_b = s.tensor_variable(input.clone(), vec![n], false).expect("x_b");
+            let sig = s.tensor_sigmoid(x_b).expect("sigmoid");
+            let v_sig = s.tensor_values(sig).expect("sig vals");
+
+            for (i, ((&x_i, &got), &sigval)) in input.iter().zip(v_silu.iter()).zip(v_sig.iter()).enumerate() {
+                let expected = x_i * sigval;
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "silu({})[{}] = {} vs x * sigmoid(x) = {} (diff = {:e})",
+                    x_i, i, got, expected, diff
+                );
+            }
+        }
+
         // MR (identity): softplus(x) - softplus(-x) == x within
         // ~32 ULP. softplus(x) = log(1 + exp(x)); difference of
         // softplus at x and -x cancels the symmetric log terms
