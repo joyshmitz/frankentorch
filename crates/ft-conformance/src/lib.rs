@@ -13952,6 +13952,36 @@ mod tests {
             }
         }
 
+        // MR (involution): flip(flip(x, dims), dims) == x bit-exact.
+        // Reversing the same dims twice returns the original.
+        // frankentorch-5lty.
+        #[test]
+        fn fuzz_metamorphic_flip_is_involution(
+            (rows, cols, raw) in (1usize..=8, 1usize..=8).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            // Flip both dims twice.
+            let f1 = s.tensor_flip(x, &[0, 1]).expect("flip once");
+            let f2 = s.tensor_flip(f1, &[0, 1]).expect("flip twice");
+            let v = s.tensor_values(f2).expect("vals");
+            prop_assert_eq!(v.len(), input.len());
+            for (i, (a, b)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "flip(flip(x))[{}] = {} != x[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (roundtrip): unflatten(flatten(x, dim, end_dim), dim,
         // original_sizes) == x bit-exact. flatten collapses a range
         // of dims; unflatten un-collapses with the explicit sizes.
