@@ -13952,6 +13952,46 @@ mod tests {
             }
         }
 
+        // MR (identity): softplus(x) - softplus(-x) == x within
+        // ~32 ULP. softplus(x) = log(1 + exp(x)); difference of
+        // softplus at x and -x cancels the symmetric log terms
+        // and yields x exactly (mathematically). FP rounding
+        // introduces a few ULP drift. frankentorch-scwc.
+        #[test]
+        fn fuzz_metamorphic_softplus_difference_identity(
+            samples in prop::collection::vec(-1000i16..=1000i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x in roughly [-12, 12] keeps softplus values well-
+            // within f64 range.
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 80.0).collect();
+            let neg_input: Vec<f64> = input.iter().map(|&v| -v).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_pos = s.tensor_variable(input.clone(), vec![n], false).expect("x_pos");
+            let sp_pos = s.tensor_softplus(x_pos).expect("softplus(x)");
+            let v_pos = s.tensor_values(sp_pos).expect("pos vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_neg = s.tensor_variable(neg_input, vec![n], false).expect("x_neg");
+            let sp_neg = s.tensor_softplus(x_neg).expect("softplus(-x)");
+            let v_neg = s.tensor_values(sp_neg).expect("neg vals");
+
+            for (i, (&p, &q)) in v_pos.iter().zip(v_neg.iter()).enumerate() {
+                let got = p - q;
+                let expected = input[i];
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "softplus(x) - softplus(-x) [{}] = {} (expected x = {}, diff = {:e})",
+                    i, got, expected, diff
+                );
+            }
+        }
+
         // MR (consistency): tanh(x) ≈ 2 * sigmoid(2x) - 1 within
         // 32 ULP. Mathematical identity linking tanh and sigmoid
         // — both go through libm exp internally. Catches drift
