@@ -13952,6 +13952,35 @@ mod tests {
             }
         }
 
+        // MR (closed form): relu(x) == x * (x > 0) bit-exact.
+        // The relu output is x when x > 0 and 0 otherwise.
+        // For x = 0 we have relu(0) = 0 and 0 * 1 = 0 (bit-exact).
+        // For x < 0 we have relu(x) = 0 and x * 0 = -0 — both are
+        // value-equal to 0 but differ in bit pattern (+0 vs -0).
+        // Use value equality and skip the sign check for the
+        // exact-zero case. frankentorch-czig.
+        #[test]
+        fn fuzz_metamorphic_relu_equals_x_times_indicator(
+            samples in prop::collection::vec(-2048i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let r = s.tensor_relu(x).expect("relu");
+            let v = s.tensor_values(r).expect("vals");
+            for (i, (&x_i, &r_i)) in input.iter().zip(v.iter()).enumerate() {
+                let expected = if x_i > 0.0 { x_i } else { 0.0 };
+                prop_assert!(
+                    r_i == expected,
+                    "relu({})[{}] = {} (expected {})",
+                    x_i, i, r_i, expected
+                );
+            }
+        }
+
         // MR (roundtrip): split(cat(tensors, dim), sizes, dim) returns
         // the original tensor list bit-exact when sizes matches each
         // tensor's size along dim. Concatenation joins tensors;
