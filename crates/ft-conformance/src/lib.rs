@@ -13952,6 +13952,43 @@ mod tests {
             }
         }
 
+        // MR (consistency): log10(x) ≈ log(x) / ln(10) within 16 ULP
+        // for positive x. Two paths to log10(x): dedicated kernel
+        // vs natural log scaled by ln(10). Catches drift.
+        // frankentorch-r7a2.
+        #[test]
+        fn fuzz_metamorphic_log10_via_natural_log(
+            samples in prop::collection::vec(1i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Positive x in [0.05, ~100].
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 21.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_a = s.tensor_variable(input.clone(), vec![n], false).expect("x_a");
+            let log10_x = s.tensor_log10(x_a).expect("log10");
+            let v_log10 = s.tensor_values(log10_x).expect("log10 vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_b = s.tensor_variable(input, vec![n], false).expect("x_b");
+            let log_x = s.tensor_log(x_b).expect("log");
+            let v_log = s.tensor_values(log_x).expect("log vals");
+
+            let ln10 = 10.0_f64.ln();
+            for (i, (&l10, &ln_v)) in v_log10.iter().zip(v_log.iter()).enumerate() {
+                let expected = ln_v / ln10;
+                let diff = (l10 - expected).abs();
+                let scale = l10.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "log10(x)[{}] = {} vs log(x)/ln(10) = {} (diff = {:e})",
+                    i, l10, expected, diff
+                );
+            }
+        }
+
         // MR (closed form): mish(x) ≈ x * tanh(softplus(x)) within
         // 32 ULP. Mish is defined as x * tanh(log(1+exp(x))).
         // Catches drift between the dedicated mish kernel and the
