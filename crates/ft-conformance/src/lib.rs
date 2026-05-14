@@ -15418,6 +15418,62 @@ mod tests {
             }
         }
 
+        // MR (take flat-index contracts): tensor_take(x, indices)
+        // treats x as a flat 1-D array and gathers at the linear
+        // indices. Three contracts on a 2-D input:
+        //   1. Shape preservation: output shape == indices shape.
+        //   2. take(x, [k]) == flatten(x)[k] bit-exact.
+        //   3. Identity-index round-trip: take(x, [0, 1, ...,
+        //      numel-1]) == flatten(x) bit-exact.
+        // Catches off-by-one in the flatten + index_select +
+        // reshape composition. frankentorch-xxspz.
+        #[test]
+        fn fuzz_metamorphic_take_flat_index_contracts(
+            (rows, cols, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..=256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let numel = rows * cols;
+
+            // Contract 1 + 2: shape + bit-exact at every index.
+            for k in 0..numel {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+                let idx = s.tensor_variable(vec![k as f64], vec![1], false).expect("idx");
+                let t = s.tensor_take(x, idx).expect("take");
+                let shape = s.tensor_shape(t).expect("take shape");
+                let v = s.tensor_values(t).expect("take vals");
+                prop_assert_eq!(shape, vec![1],
+                    "take(x, [{}]) shape must be [1]", k);
+                prop_assert_eq!(
+                    v[0].to_bits(), input[k].to_bits(),
+                    "take(x, [{}])[0] = {} != flatten(x)[{}] = {}",
+                    k, v[0], k, input[k]
+                );
+            }
+
+            // Contract 3: identity-index returns flatten(x).
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let identity_idx: Vec<f64> = (0..numel).map(|i| i as f64).collect();
+            let idx = s.tensor_variable(identity_idx, vec![numel], false).expect("idx");
+            let t = s.tensor_take(x, idx).expect("take identity");
+            let shape = s.tensor_shape(t).expect("take id shape");
+            let v = s.tensor_values(t).expect("take id vals");
+            prop_assert_eq!(shape, vec![numel]);
+            for (i, (g, want)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "take(x, identity)[{}] = {} != flatten(x)[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (select bit-exact slice): tensor_select(x, dim,
         // index) returns the slice at `index` along `dim` with
         // that dim removed (rank reduces by 1). Two contracts on
