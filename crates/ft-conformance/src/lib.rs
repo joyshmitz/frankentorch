@@ -13952,6 +13952,53 @@ mod tests {
             }
         }
 
+        // MR (bracketing identity): for non-integer x, floor(x) and
+        // ceil(x) bracket x with gap exactly 1. So ceil(x) - floor(x)
+        // = 1, and x is in the open interval (floor(x), ceil(x)).
+        // For integer x, ceil = floor = x. Bit-exact since rounding
+        // produces integer-valued f64. frankentorch-qps6.
+        #[test]
+        fn fuzz_metamorphic_floor_and_ceil_bracket_x(
+            samples in prop::collection::vec(-2048i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_a = s.tensor_variable(input.clone(), vec![n], false).expect("x_a");
+            let f = s.tensor_floor(x_a).expect("floor");
+            let v_f = s.tensor_values(f).expect("floor vals");
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_b = s.tensor_variable(input.clone(), vec![n], false).expect("x_b");
+            let c = s.tensor_ceil(x_b).expect("ceil");
+            let v_c = s.tensor_values(c).expect("ceil vals");
+
+            for (i, ((&fl, &ce), &x_i)) in v_f.iter().zip(v_c.iter()).zip(input.iter()).enumerate() {
+                let gap = ce - fl;
+                let is_integer = x_i == fl;
+                if is_integer {
+                    prop_assert!(
+                        gap == 0.0,
+                        "integer x = {}: ceil({}) - floor({}) should be 0, got {}",
+                        x_i, x_i, x_i, gap
+                    );
+                } else {
+                    prop_assert!(
+                        gap == 1.0,
+                        "non-integer x = {}: ceil({}) - floor({}) should be 1, got {} (floor={}, ceil={})",
+                        x_i, x_i, x_i, gap, fl, ce
+                    );
+                    prop_assert!(
+                        fl < x_i && x_i < ce,
+                        "non-integer x = {} must be strictly between floor = {} and ceil = {}",
+                        x_i, fl, ce
+                    );
+                }
+                let _ = i;
+            }
+        }
+
         // MR (consistency): atan2(y, x) ≈ atan(y / x) for x > 0
         // within 16 ULP. For positive x, atan2 reduces to atan on
         // the ratio. Catches atan2 vs atan drift in the principal
