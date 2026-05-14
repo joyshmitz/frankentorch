@@ -15418,6 +15418,76 @@ mod tests {
             }
         }
 
+        // MR (pdist consistency): tensor_pdist(x, p) returns the
+        // upper-triangular pairwise distances of a 2-D [N, M]
+        // input. Three contracts on p ∈ {1.0, 2.0}:
+        //   1. Shape: [N*(N-1)/2].
+        //   2. Non-negativity: every entry >= 0.
+        //   3. cdist consistency: pdist(x, p)[k] ≈ cdist(x, x, p)
+        //      [i, j] for the (i, j) pair in row-major upper-
+        //      triangular scan (i = 0..N, j = i+1..N). The two
+        //      kernels share the same row-pair index machinery
+        //      so the result must match within 16 ULP relative.
+        // Catches off-by-one in the upper-triangular index scan
+        // and any drift between the pdist and cdist Lp paths.
+        // Skip n == 1 since no pairs exist. frankentorch-2sxo4.
+        #[test]
+        fn fuzz_metamorphic_pdist_cdist_consistency(
+            (n, m, raw) in (2usize..=4, 1usize..=4).prop_flat_map(|(nn, mm)| (
+                Just(nn),
+                Just(mm),
+                prop::collection::vec(-64i16..=64i16, nn * mm),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let out_len = n * (n - 1) / 2;
+
+            for p in [1.0_f64, 2.0] {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![n, m], false).expect("x");
+                let pd = s.tensor_pdist(x, p).expect("pdist");
+                let shape = s.tensor_shape(pd).expect("pdist shape");
+                let v_pd = s.tensor_values(pd).expect("pdist vals");
+                prop_assert_eq!(shape, vec![out_len],
+                    "pdist shape must be [n*(n-1)/2 = {}]", out_len);
+                prop_assert_eq!(v_pd.len(), out_len);
+
+                // Non-negativity.
+                for (k, &x) in v_pd.iter().enumerate() {
+                    prop_assert!(
+                        x >= 0.0,
+                        "pdist(p={})[{}] = {} is negative", p, k, x
+                    );
+                }
+
+                // cdist consistency.
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x1 = s.tensor_variable(input.clone(), vec![n, m], false).expect("x1");
+                let x2 = s.tensor_variable(input.clone(), vec![n, m], false).expect("x2");
+                let cd = s.tensor_cdist(x1, x2, p).expect("cdist");
+                let v_cd = s.tensor_values(cd).expect("cdist vals");
+
+                // Map upper-triangular index k → (i, j) and check.
+                let mut k = 0;
+                for i in 0..n {
+                    for j in (i + 1)..n {
+                        let pd_val = v_pd[k];
+                        let cd_val = v_cd[i * n + j];
+                        let diff = (pd_val - cd_val).abs();
+                        let scale = pd_val.abs().max(cd_val.abs()).max(1.0);
+                        prop_assert!(
+                            diff <= 16.0 * f64::EPSILON * scale,
+                            "pdist(p={})[{}] = {} != cdist[{}, {}] = {} (diff = {:e})",
+                            p, k, pd_val, i, j, cd_val, diff
+                        );
+                        k += 1;
+                    }
+                }
+            }
+        }
+
         // MR (cdist contracts): tensor_cdist(x1, x2, p) computes
         // pairwise Lp distances between rows of x1 ([P, M]) and
         // x2 ([R, M]). Four contracts on the unbatched path
