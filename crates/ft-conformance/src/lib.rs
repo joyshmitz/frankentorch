@@ -13952,6 +13952,50 @@ mod tests {
             }
         }
 
+        // MR (homomorphism): log(a*b) ≈ log(a) + log(b) for positive
+        // a, b within 16 ULP. Multiplicative→additive homomorphism.
+        // Catches log/exp precision drift and any multiplication
+        // path divergence. frankentorch-3zzx.
+        #[test]
+        fn fuzz_metamorphic_log_of_product_equals_sum_of_logs(
+            (a_raw, b_raw) in (
+                prop::collection::vec(1i16..=2048i16, 1..24),
+                prop::collection::vec(1i16..=2048i16, 1..24),
+            ).prop_filter("same length", |(a, b)| a.len() == b.len())
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Positive a, b in [0.05, ~100].
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 21.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 21.0).collect();
+            let n = a_vals.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a1");
+            let b1 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b1");
+            let ab = s.tensor_mul(a1, b1).expect("a*b");
+            let log_ab = s.tensor_log(ab).expect("log(a*b)");
+            let v_log_ab = s.tensor_values(log_ab).expect("log(a*b) vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a_vals, vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(b_vals, vec![n], false).expect("b2");
+            let log_a = s.tensor_log(a2).expect("log(a)");
+            let log_b = s.tensor_log(b2).expect("log(b)");
+            let sum_logs = s.tensor_add(log_a, log_b).expect("log(a) + log(b)");
+            let v_sum_logs = s.tensor_values(sum_logs).expect("sum logs vals");
+
+            for (i, (got, want)) in v_log_ab.iter().zip(v_sum_logs.iter()).enumerate() {
+                let diff = (got - want).abs();
+                let scale = got.abs().max(want.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "log(a*b)[{}] = {} vs log(a) + log(b) = {} (diff = {:e})",
+                    i, got, want, diff
+                );
+            }
+        }
+
         // MR (consistency): log10(x) ≈ log(x) / ln(10) within 16 ULP
         // for positive x. Two paths to log10(x): dedicated kernel
         // vs natural log scaled by ln(10). Catches drift.
