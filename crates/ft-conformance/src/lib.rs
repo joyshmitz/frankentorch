@@ -15418,6 +15418,70 @@ mod tests {
             }
         }
 
+        // MR (select bit-exact slice): tensor_select(x, dim,
+        // index) returns the slice at `index` along `dim` with
+        // that dim removed (rank reduces by 1). Two contracts on
+        // a 2-D [m, n] input:
+        //   1. select(x, 0, i)[j] == x[i, j] bit-exact, output
+        //      shape is [n].
+        //   2. select(x, 1, j)[i] == x[i, j] bit-exact, output
+        //      shape is [m].
+        // Catches off-by-one in the narrow+squeeze composition
+        // and any drift between the row and column slice paths.
+        // frankentorch-dgqa7.
+        #[test]
+        fn fuzz_metamorphic_select_bit_exact_slice(
+            (m, n, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(mm, nn)| (
+                Just(mm),
+                Just(nn),
+                prop::collection::vec(-256i16..=256i16, mm * nn),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+
+            // Contract 1: select along dim 0 (row slice).
+            for i in 0..m {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![m, n], false).expect("x");
+                let row = s.tensor_select(x, 0, i).expect("select row");
+                let shape = s.tensor_shape(row).expect("row shape");
+                let v = s.tensor_values(row).expect("row vals");
+                prop_assert_eq!(shape, vec![n],
+                    "select(x, 0, {}) shape must be [n = {}], got rank reduced", i, n);
+                for j in 0..n {
+                    let got = v[j];
+                    let want = input[i * n + j];
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "select(x, 0, {})[{}] = {} != x[{}, {}] = {}",
+                        i, j, got, i, j, want
+                    );
+                }
+            }
+
+            // Contract 2: select along dim 1 (column slice).
+            for j in 0..n {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![m, n], false).expect("x");
+                let col = s.tensor_select(x, 1, j).expect("select col");
+                let shape = s.tensor_shape(col).expect("col shape");
+                let v = s.tensor_values(col).expect("col vals");
+                prop_assert_eq!(shape, vec![m],
+                    "select(x, 1, {}) shape must be [m = {}], got rank reduced", j, m);
+                for i in 0..m {
+                    let got = v[i];
+                    let want = input[i * n + j];
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "select(x, 1, {})[{}] = {} != x[{}, {}] = {}",
+                        j, i, got, i, j, want
+                    );
+                }
+            }
+        }
+
         // MR (tile periodic pattern): tensor_tile(x, [k]) repeats
         // x k times along the last dim. Three contracts on a 1-D
         // input:
