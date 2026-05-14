@@ -13952,6 +13952,58 @@ mod tests {
             }
         }
 
+        // MR (trichotomy): for non-NaN a, b, exactly one of
+        // lt(a, b), gt(a, b), eq(a, b) is 1.0. The sum is exactly 1.
+        // For NaN, all three are 0 (NaN comparisons all return false)
+        // and the sum is 0. frankentorch-1h48.
+        #[test]
+        fn fuzz_metamorphic_lt_gt_eq_trichotomy(
+            (a_raw, b_raw) in (
+                prop::collection::vec(-512i16..=512i16, 1..24),
+                prop::collection::vec(-512i16..=512i16, 1..24),
+            ).prop_filter("same length", |(a, b)| a.len() == b.len())
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = a_vals.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a1");
+            let b1 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b1");
+            let lt = s.tensor_lt(a1, b1).expect("lt");
+            let v_lt = s.tensor_values(lt).expect("lt vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b2");
+            let gt = s.tensor_gt(a2, b2).expect("gt");
+            let v_gt = s.tensor_values(gt).expect("gt vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a3 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a3");
+            let b3 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b3");
+            let eq_ab = s.tensor_eq(a3, b3).expect("eq");
+            let v_eq = s.tensor_values(eq_ab).expect("eq vals");
+
+            for (i, ((((&lt_v, &gt_v), &eq_v), &av), &bv)) in v_lt.iter()
+                .zip(v_gt.iter())
+                .zip(v_eq.iter())
+                .zip(a_vals.iter())
+                .zip(b_vals.iter())
+                .enumerate()
+            {
+                let sum = lt_v + gt_v + eq_v;
+                let expected = if av.is_nan() || bv.is_nan() { 0.0 } else { 1.0 };
+                prop_assert!(
+                    sum == expected,
+                    "lt + gt + eq [{}] = {} (expected {}); a = {}, b = {}, lt = {}, gt = {}, eq = {}",
+                    i, sum, expected, av, bv, lt_v, gt_v, eq_v
+                );
+            }
+        }
+
         // MR (complement): ne(a, b) + eq(a, b) == 1.0 for non-NaN
         // inputs. The two ops are complementary boolean masks.
         // For NaN, both eq and ne handle NaN per IEEE 754:
