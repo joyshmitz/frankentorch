@@ -13952,6 +13952,32 @@ mod tests {
             }
         }
 
+        // MR (degenerate-bounds passthrough): clamp(x, -inf, +inf)
+        // == x bit-exact for finite x. Infinitely wide bounds make
+        // the clamp a no-op. NaN inputs propagate NaN. Catches any
+        // sign-of-infinity drift in the clamp comparison branches.
+        // frankentorch-3vew.
+        #[test]
+        fn fuzz_metamorphic_clamp_infinite_bounds_passthrough(
+            samples in prop::collection::vec(-2048i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let c = s.tensor_clamp(x, f64::NEG_INFINITY, f64::INFINITY).expect("clamp");
+            let v = s.tensor_values(c).expect("clamp vals");
+            for (i, (got, want)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "clamp(x, -inf, +inf)[{}] = {} != x[{}] = {}", i, got, i, want
+                );
+            }
+        }
+
         // MR (max/min identity): max(a, b) + min(a, b) == a + b
         // bit-exact for finite a, b (FP addition is exact when no
         // rounding occurs, which is the case when a and b have
