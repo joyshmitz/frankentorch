@@ -13952,6 +13952,48 @@ mod tests {
             }
         }
 
+        // MR (double-angle): sin(2x) ≈ 2 * sin(x) * cos(x) within
+        // 16 ULP. Classic trig identity couples sin and cos.
+        // Catches drift between sin/cos at the doubled vs single
+        // angle. frankentorch-kwct.
+        #[test]
+        fn fuzz_metamorphic_sin_double_angle(
+            samples in prop::collection::vec(-1500i16..=1500i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x in [-12, 12], so 2x in [-24, 24] — exercise multiple
+            // periods of sin/cos.
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 125.0).collect();
+            let two_x: Vec<f64> = input.iter().map(|&v| 2.0 * v).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_a = s.tensor_variable(two_x, vec![n], false).expect("x_a");
+            let sin_2x = s.tensor_sin(x_a).expect("sin(2x)");
+            let v_sin_2x = s.tensor_values(sin_2x).expect("sin(2x) vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_b = s.tensor_variable(input.clone(), vec![n], false).expect("x_b");
+            let sin_x = s.tensor_sin(x_b).expect("sin(x)");
+            let v_sin_x = s.tensor_values(sin_x).expect("sin(x) vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_c = s.tensor_variable(input.clone(), vec![n], false).expect("x_c");
+            let cos_x = s.tensor_cos(x_c).expect("cos(x)");
+            let v_cos_x = s.tensor_values(cos_x).expect("cos(x) vals");
+
+            for (i, ((got, &sx), &cx)) in v_sin_2x.iter().zip(v_sin_x.iter()).zip(v_cos_x.iter()).enumerate() {
+                let expected = 2.0 * sx * cx;
+                let diff = (got - expected).abs();
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON,
+                    "sin(2x)[{}] = {} vs 2*sin(x)*cos(x) = {} (x = {}, diff = {:e})",
+                    i, got, expected, input[i], diff
+                );
+            }
+        }
+
         // MR (homomorphism): exp(a+b) ≈ exp(a) * exp(b) within
         // 32 ULP. Additive→multiplicative homomorphism — the dual
         // of log's multiplicative→additive. Catches exp/addition
