@@ -869,18 +869,30 @@ impl FrankenTorchSession {
     }
 
     /// PyTorch-style alias for casting a tensor to float16.
+    ///
+    /// Tape-level F16 conversion is not yet implemented; this call
+    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(F16))`
+    /// until tape-level F16 lands. Tracked under frankentorch-gx0p.
     pub fn tensor_half(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_to_dtype(input, DType::F16)
     }
 
     /// PyTorch-style alias for casting a tensor to bfloat16.
+    ///
+    /// Tape-level BF16 conversion is not yet implemented; this call
+    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(BF16))`
+    /// until tape-level BF16 lands. Tracked under frankentorch-gx0p.
     pub fn tensor_bfloat16(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_to_dtype(input, DType::BF16)
     }
 
     /// Cast a tensor to the given dtype.
-    /// Supports all floating-point casts: F16, BF16, F32, F64.
-    /// Returns unchanged if already target dtype.
+    ///
+    /// Supported floating-point casts today: F32 ↔ F64. F16 and BF16
+    /// targets surface `AutogradError::DenseTensor(UnsupportedDType(_))`
+    /// until tape-level conversion lands (frankentorch-gx0p). Returns
+    /// the input unchanged when the source dtype already matches the
+    /// target.
     pub fn tensor_to_dtype(
         &mut self,
         input: TensorNodeId,
