@@ -13952,6 +13952,43 @@ mod tests {
             }
         }
 
+        // MR (consistency): tanh(x) ≈ 2 * sigmoid(2x) - 1 within
+        // 32 ULP. Mathematical identity linking tanh and sigmoid
+        // — both go through libm exp internally. Catches drift
+        // between the two activation implementations.
+        // frankentorch-ejxu.
+        #[test]
+        fn fuzz_metamorphic_tanh_via_sigmoid_consistency(
+            samples in prop::collection::vec(-1000i16..=1000i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 80.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_a = s.tensor_variable(input.clone(), vec![n], false).expect("x_a");
+            let tanh_x = s.tensor_tanh(x_a).expect("tanh");
+            let v_tanh = s.tensor_values(tanh_x).expect("tanh vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let two_x: Vec<f64> = input.iter().map(|&v| 2.0 * v).collect();
+            let x_b = s.tensor_variable(two_x, vec![n], false).expect("x_b");
+            let sig = s.tensor_sigmoid(x_b).expect("sigmoid");
+            let v_sig = s.tensor_values(sig).expect("sig vals");
+
+            for (i, (got_tanh, got_sig)) in v_tanh.iter().zip(v_sig.iter()).enumerate() {
+                let expected = 2.0 * got_sig - 1.0;
+                let diff = (got_tanh - expected).abs();
+                let scale = got_tanh.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "tanh({})[{}] = {} vs 2*sigmoid(2x)-1 = {} (diff = {:e})",
+                    input[i], i, got_tanh, expected, diff
+                );
+            }
+        }
+
         // MR (closed form): tanh(x) ≈ (1 - exp(-2x)) / (1 + exp(-2x))
         // within 32 ULP. Two division paths for the same answer:
         // dedicated tanh vs closed-form via exp + div. Catches drift
