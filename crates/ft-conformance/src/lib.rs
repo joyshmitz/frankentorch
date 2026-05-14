@@ -13952,6 +13952,59 @@ mod tests {
             }
         }
 
+        // MR (quotient/remainder identity): for non-zero b,
+        //   a ≈ floor_divide(a, b) * b + remainder(a, b)
+        // within ULP tolerance. The Euclidean division algorithm
+        // guarantees this exactly mathematically; FP introduces
+        // small rounding. frankentorch-f96u.
+        #[test]
+        fn fuzz_metamorphic_remainder_quotient_identity(
+            (a_raw, b_raw) in (
+                prop::collection::vec(-512i16..=512i16, 1..24),
+                prop::collection::vec(-512i16..=512i16, 1..24),
+            ).prop_filter("same length", |(a, b)| a.len() == b.len())
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            // Avoid zero divisor.
+            let b_vals: Vec<f64> = b_raw.iter()
+                .map(|v| {
+                    let f = f64::from(*v) / 17.0;
+                    if f == 0.0 { 1.0 } else { f }
+                })
+                .collect();
+            let n = a_vals.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a1");
+            let b1 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b1");
+            let q = s.tensor_floor_divide(a1, b1).expect("floor_divide");
+            let v_q = s.tensor_values(q).expect("q vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b2");
+            let r = s.tensor_remainder(a2, b2).expect("remainder");
+            let v_r = s.tensor_values(r).expect("r vals");
+
+            for (i, (((&qv, &rv), &av), &bv)) in v_q.iter()
+                .zip(v_r.iter())
+                .zip(a_vals.iter())
+                .zip(b_vals.iter())
+                .enumerate()
+            {
+                let reconstructed = qv * bv + rv;
+                let diff = (reconstructed - av).abs();
+                let scale = av.abs().max(reconstructed.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "Euclidean identity broken at [{}]: a = {}, b = {}, q = {}, r = {}, q*b + r = {} (diff = {:e})",
+                    i, av, bv, qv, rv, reconstructed, diff
+                );
+            }
+        }
+
         // MR (bracketing identity): for non-integer x, floor(x) and
         // ceil(x) bracket x with gap exactly 1. So ceil(x) - floor(x)
         // = 1, and x is in the open interval (floor(x), ceil(x)).
