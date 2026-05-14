@@ -15418,6 +15418,68 @@ mod tests {
             }
         }
 
+        // MR (kron 1-D bit-exact): tensor_kron(a, b) for 1-D
+        // inputs flattens the outer product:
+        //     kron(a, b)[i * |b| + j] == a[i] * b[j]
+        // Three contracts:
+        //   1. Shape: kron output is 1-D of length |a| * |b|.
+        //   2. Element formula bit-exact (single IEEE mul per slot).
+        //   3. Special case: kron(a, [1.0]) == a bit-exact (the
+        //      identity element of Kronecker over scalar tensors).
+        // Catches index swap on the outer-product-then-flatten
+        // composition and any drift between the formula and the
+        // kernel. frankentorch-5qw44.
+        #[test]
+        fn fuzz_metamorphic_kron_1d_bit_exact(
+            (a_raw, b_raw) in (1usize..=6, 1usize..=6).prop_flat_map(|(m, n)| (
+                prop::collection::vec(-128i16..=128i16, m),
+                prop::collection::vec(-128i16..=128i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let m = a_vals.len();
+            let n = b_vals.len();
+
+            // Contract 1 + 2: shape + element formula.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a");
+            let bv = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let k = s.tensor_kron(av, bv).expect("kron");
+            let shape = s.tensor_shape(k).expect("kron shape");
+            let vals = s.tensor_values(k).expect("kron vals");
+            prop_assert_eq!(shape, vec![m * n], "kron shape must be [|a|*|b|]");
+            prop_assert_eq!(vals.len(), m * n);
+            for i in 0..m {
+                for j in 0..n {
+                    let got = vals[i * n + j];
+                    let want = a_vals[i] * b_vals[j];
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "kron[{}*{}+{} = {}] = {} != a[{}]*b[{}] = {}*{} = {}",
+                        i, n, j, i * n + j, got, i, j, a_vals[i], b_vals[j], want
+                    );
+                }
+            }
+
+            // Contract 3: kron(a, [1]) == a bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a");
+            let one_b = s.tensor_variable(vec![1.0], vec![1], false).expect("one");
+            let k = s.tensor_kron(av, one_b).expect("kron a one");
+            let shape = s.tensor_shape(k).expect("kron a one shape");
+            let vals = s.tensor_values(k).expect("kron a one vals");
+            prop_assert_eq!(shape, vec![m]);
+            for (i, (g, want)) in vals.iter().zip(a_vals.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "kron(a, [1])[{}] = {} != a[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (diagflat round-trip + sparsity): tensor_diagflat(v)
         // wraps a 1-D vector v into a 2-D matrix with v on the
         // offset-th diagonal and zeros elsewhere. Four contracts:
