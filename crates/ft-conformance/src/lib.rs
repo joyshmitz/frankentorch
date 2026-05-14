@@ -13952,6 +13952,42 @@ mod tests {
             }
         }
 
+        // MR (consistency): topk(x, k=1, largest=true) returns
+        // (max_dim(x, 0).values, max_dim(x, 0).indices) for 1-D x.
+        // Both ops should agree on the maximum value and its
+        // position. frankentorch-mmcl.
+        #[test]
+        fn fuzz_metamorphic_topk_1_equals_max_dim(
+            samples in prop::collection::vec(-512i16..=512i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            // Skip arrays with NaN since topk and max_dim handle
+            // NaN tie-breaking differently.
+            if input.iter().any(|v| v.is_nan()) { return Ok(()); }
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x1 = s.tensor_variable(input.clone(), vec![n], false).expect("x1");
+            let (topk_vals_node, _) = s.tensor_topk(x1, 1, 0, true, true).expect("topk");
+            let topk_vals = s.tensor_values(topk_vals_node).expect("topk vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x2 = s.tensor_variable(input.clone(), vec![n], false).expect("x2");
+            let (max_vals_node, _) = s.tensor_max_dim(x2, 0).expect("max_dim");
+            let max_vals = s.tensor_values(max_vals_node).expect("max vals");
+
+            prop_assert_eq!(topk_vals.len(), 1);
+            prop_assert_eq!(max_vals.len(), 1);
+            prop_assert_eq!(
+                topk_vals[0].to_bits(),
+                max_vals[0].to_bits(),
+                "topk(x, 1, largest=true) value [{}] != max_dim(x, 0).value = {}",
+                topk_vals[0], max_vals[0]
+            );
+        }
+
         // MR (consistency): tensor_argmax(x, dim) == max_dim(x, dim).indices
         // bit-exact. Both ops return integer indices of the max
         // position. Catches dispatch drift between the dedicated
