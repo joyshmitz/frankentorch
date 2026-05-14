@@ -13952,6 +13952,40 @@ mod tests {
             }
         }
 
+        // MR (consistency): pow(a, 0.5) ≈ sqrt(a) for non-negative a
+        // within 8 ULP. Two paths to the same answer; agreement
+        // catches drift between libm pow with exponent=0.5 and the
+        // dedicated sqrt. frankentorch-5jne.
+        #[test]
+        fn fuzz_metamorphic_pow_half_equals_sqrt(
+            samples in prop::collection::vec(0i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(input.clone(), vec![n], false).expect("a1");
+            let p = s.tensor_pow(a1, 0.5).expect("pow(a, 0.5)");
+            let v_p = s.tensor_values(p).expect("pow vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(input, vec![n], false).expect("a2");
+            let sq = s.tensor_sqrt(a2).expect("sqrt(a)");
+            let v_sq = s.tensor_values(sq).expect("sqrt vals");
+
+            for (i, (got_p, got_sq)) in v_p.iter().zip(v_sq.iter()).enumerate() {
+                let diff = (got_p - got_sq).abs();
+                let scale = got_p.abs().max(got_sq.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON * scale,
+                    "pow(a, 0.5)[{}] = {} vs sqrt(a) = {} (diff = {:e})",
+                    i, got_p, got_sq, diff
+                );
+            }
+        }
+
         // MR (double-angle): cos(2x) ≈ cos^2(x) - sin^2(x) within
         // 16 ULP. Companion to sin double-angle (kwct).
         // frankentorch-30qq.
