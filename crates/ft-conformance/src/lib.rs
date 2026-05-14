@@ -15418,6 +15418,142 @@ mod tests {
             }
         }
 
+        // MR (smooth_l1_loss + huber_loss contracts): both losses
+        // are 2-piece (quadratic near 0, linear far from 0):
+        //   smooth_l1(d, β) = 0.5 * d^2 / β   if |d| <  β
+        //                   = |d| - 0.5 * β  if |d| >= β
+        //   huber(d, δ)     = 0.5 * d^2        if |d| <= δ
+        //                   = δ * (|d| - 0.5 * δ)  if |d| >  δ
+        // (d = pred - target; outputs are mean over all positions.)
+        // Contracts:
+        //   1. Closed-form match against Rust reference within
+        //      16 ULP relative.
+        //   2. Identity loss(x, x) == 0 (each |d| = 0 → quadratic
+        //      0 branch).
+        //   3. Symmetry loss(a, b) == loss(b, a) (|a-b| = |b-a|
+        //      and the loss only depends on |d|).
+        //   4. Non-negativity (loss >= 0).
+        // Catches branch-direction bugs (quadratic vs linear),
+        // sign drift on the diff, and the boundary handling at
+        // |d| = β / δ. frankentorch-wq84a.
+        #[test]
+        fn fuzz_metamorphic_smooth_l1_huber_contracts(
+            (p_raw, t_raw) in (1usize..=16).prop_flat_map(|n| (
+                prop::collection::vec(-512i16..=512i16, n),
+                prop::collection::vec(-512i16..=512i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let pred_vals: Vec<f64> = p_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let target_vals: Vec<f64> = t_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = pred_vals.len();
+
+            for beta in [0.5_f64, 1.0, 2.5] {
+                // Contracts 1 + 4 for smooth_l1.
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let pa = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("pa");
+                let tb = s.tensor_variable(target_vals.clone(), vec![n], false).expect("tb");
+                let sl1 = s.smooth_l1_loss(pa, tb, beta).expect("smooth_l1");
+                let v_sl1 = s.tensor_values(sl1).expect("sl1 val")[0];
+
+                let expected_sl1: f64 = pred_vals.iter().zip(target_vals.iter())
+                    .map(|(p, t)| {
+                        let d = p - t;
+                        if d.abs() < beta {
+                            0.5 * d * d / beta
+                        } else {
+                            d.abs() - 0.5 * beta
+                        }
+                    })
+                    .sum::<f64>() / n as f64;
+                let diff = (v_sl1 - expected_sl1).abs();
+                let scale = v_sl1.abs().max(expected_sl1.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "smooth_l1_loss(β={}) = {} != closed-form {} (diff = {:e})",
+                    beta, v_sl1, expected_sl1, diff
+                );
+                prop_assert!(
+                    v_sl1 >= 0.0,
+                    "smooth_l1_loss(β={}) = {} is negative", beta, v_sl1
+                );
+
+                // Contracts 2 + 3 for smooth_l1 (identity + symmetry).
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let p1 = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("p1");
+                let p2 = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("p2");
+                let sl1_id = s.smooth_l1_loss(p1, p2, beta).expect("smooth_l1 id");
+                let v_id = s.tensor_values(sl1_id).expect("sl1 id val")[0];
+                prop_assert_eq!(
+                    v_id.to_bits(), 0.0_f64.to_bits(),
+                    "smooth_l1_loss(x, x, β={}) must be 0, got {}", beta, v_id
+                );
+
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let pa = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("pa");
+                let tb = s.tensor_variable(target_vals.clone(), vec![n], false).expect("tb");
+                let sl1_ba = s.smooth_l1_loss(tb, pa, beta).expect("smooth_l1 ba");
+                let v_ba = s.tensor_values(sl1_ba).expect("sl1 ba val")[0];
+                prop_assert_eq!(
+                    v_sl1.to_bits(), v_ba.to_bits(),
+                    "smooth_l1_loss not symmetric: ab = {}, ba = {}", v_sl1, v_ba
+                );
+            }
+
+            for delta in [0.5_f64, 1.0, 2.5] {
+                // Contracts 1 + 4 for huber.
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let pa = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("pa");
+                let tb = s.tensor_variable(target_vals.clone(), vec![n], false).expect("tb");
+                let hub = s.huber_loss(pa, tb, delta).expect("huber");
+                let v_hub = s.tensor_values(hub).expect("hub val")[0];
+
+                let expected_hub: f64 = pred_vals.iter().zip(target_vals.iter())
+                    .map(|(p, t)| {
+                        let d = p - t;
+                        if d.abs() <= delta {
+                            0.5 * d * d
+                        } else {
+                            delta * (d.abs() - 0.5 * delta)
+                        }
+                    })
+                    .sum::<f64>() / n as f64;
+                let diff = (v_hub - expected_hub).abs();
+                let scale = v_hub.abs().max(expected_hub.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "huber_loss(δ={}) = {} != closed-form {} (diff = {:e})",
+                    delta, v_hub, expected_hub, diff
+                );
+                prop_assert!(
+                    v_hub >= 0.0,
+                    "huber_loss(δ={}) = {} is negative", delta, v_hub
+                );
+
+                // Contracts 2 + 3 for huber (identity + symmetry).
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let p1 = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("p1");
+                let p2 = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("p2");
+                let hub_id = s.huber_loss(p1, p2, delta).expect("huber id");
+                let v_id = s.tensor_values(hub_id).expect("hub id val")[0];
+                prop_assert_eq!(
+                    v_id.to_bits(), 0.0_f64.to_bits(),
+                    "huber_loss(x, x, δ={}) must be 0, got {}", delta, v_id
+                );
+
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let pa = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("pa");
+                let tb = s.tensor_variable(target_vals.clone(), vec![n], false).expect("tb");
+                let hub_ba = s.huber_loss(tb, pa, delta).expect("huber ba");
+                let v_ba = s.tensor_values(hub_ba).expect("hub ba val")[0];
+                prop_assert_eq!(
+                    v_hub.to_bits(), v_ba.to_bits(),
+                    "huber_loss not symmetric: ab = {}, ba = {}", v_hub, v_ba
+                );
+            }
+        }
+
         // MR (l1_loss contracts): l1_loss(pred, target) =
         // mean(|pred - target|). Four contracts on a 1-D pair:
         //   1. Identity: l1_loss(x, x) == 0 bit-exact (|0| = 0
