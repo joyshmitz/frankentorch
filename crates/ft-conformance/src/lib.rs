@@ -15418,6 +15418,59 @@ mod tests {
             }
         }
 
+        // MR (diagflat round-trip + sparsity): tensor_diagflat(v)
+        // wraps a 1-D vector v into a 2-D matrix with v on the
+        // offset-th diagonal and zeros elsewhere. Four contracts:
+        //   1. Shape: diagflat(v) is [n, n] for offset = 0.
+        //   2. On-diagonal: diagflat(v)[i, i] == v[i] bit-exact.
+        //   3. Off-diagonal: diagflat(v)[i, j] == 0 for i != j
+        //      bit-exact.
+        //   4. Round-trip with diagonal: diagonal(diagflat(v), 0)
+        //      == v bit-exact (the pair is a strict inverse on
+        //      offset = 0). frankentorch-we5uh.
+        #[test]
+        fn fuzz_metamorphic_diagflat_roundtrip_sparsity(
+            raw in prop::collection::vec(-256i16..=256i16, 1..8)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let v_vals: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let n = v_vals.len();
+
+            // Contracts 1 + 2 + 3.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let v = s.tensor_variable(v_vals.clone(), vec![n], false).expect("v");
+            let m = s.tensor_diagflat(v, 0).expect("diagflat");
+            let shape = s.tensor_shape(m).expect("m shape");
+            let flat = s.tensor_values(m).expect("m vals");
+            prop_assert_eq!(shape, vec![n, n], "diagflat shape must be [n, n]");
+            prop_assert_eq!(flat.len(), n * n);
+            for i in 0..n {
+                for j in 0..n {
+                    let got = flat[i * n + j];
+                    let want = if i == j { v_vals[i] } else { 0.0 };
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "diagflat[{}, {}] = {} != {}", i, j, got, want
+                    );
+                }
+            }
+
+            // Contract 4: diagonal(diagflat(v)) == v bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let v = s.tensor_variable(v_vals.clone(), vec![n], false).expect("v");
+            let m = s.tensor_diagflat(v, 0).expect("diagflat");
+            let d = s.tensor_diagonal(m, 0).expect("diagonal");
+            let v_back = s.tensor_values(d).expect("diag vals");
+            prop_assert_eq!(v_back.len(), n);
+            for (i, (g, want)) in v_back.iter().zip(v_vals.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "diagonal(diagflat(v))[{}] = {} != v[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (diagonal extraction contracts): tensor_diagonal(M,
         // offset) extracts the offset-th diagonal of a 2-D matrix.
         // Four contracts:
