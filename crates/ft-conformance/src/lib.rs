@@ -15418,6 +15418,74 @@ mod tests {
             }
         }
 
+        // MR (order-statistic contract): tensor_quantile must
+        // satisfy four contracts on a 1-D input:
+        //   1. quantile(x, 0) == min(x)
+        //   2. quantile(x, 1) == max(x)
+        //   3. quantile is non-decreasing in q (sample increments
+        //      of 0.1 over [0, 1] in this MR)
+        //   4. Any NaN in input → NaN output (PyTorch propagation)
+        // Catches off-by-one in the floor/ceil index, lerp
+        // direction bugs, and silent NaN swallowing.
+        // frankentorch-oj2v.
+        #[test]
+        fn fuzz_metamorphic_quantile_contract(
+            raw in prop::collection::vec(-2048i16..2048i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let min_val = input.iter().fold(f64::INFINITY, |acc, &v| acc.min(v));
+            let max_val = input.iter().fold(f64::NEG_INFINITY, |acc, &v| acc.max(v));
+
+            // Contracts 1, 2, 3.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let qs: Vec<f64> = (0..=10).map(|k| k as f64 / 10.0).collect();
+            let mut q_vals: Vec<f64> = Vec::with_capacity(qs.len());
+            for &q in &qs {
+                let out = s.tensor_quantile(x, q).expect("quantile");
+                let v = s.tensor_values(out).expect("q val")[0];
+                q_vals.push(v);
+            }
+
+            // q=0 is min, q=1 is max — bit-exact (no interpolation).
+            prop_assert_eq!(
+                q_vals[0].to_bits(), min_val.to_bits(),
+                "quantile(x, 0.0) = {} != min(x) = {}", q_vals[0], min_val
+            );
+            prop_assert_eq!(
+                q_vals[10].to_bits(), max_val.to_bits(),
+                "quantile(x, 1.0) = {} != max(x) = {}", q_vals[10], max_val
+            );
+
+            // Non-decreasing in q. Use total_cmp to dodge any
+            // partial_cmp false negatives at signed-zero crossings.
+            for k in 1..qs.len() {
+                prop_assert!(
+                    q_vals[k - 1].total_cmp(&q_vals[k]) != std::cmp::Ordering::Greater,
+                    "quantile not monotone in q: q={} -> {}, q={} -> {}",
+                    qs[k - 1], q_vals[k - 1], qs[k], q_vals[k]
+                );
+            }
+
+            // Contract 4: NaN in input propagates. Construct a
+            // separate session with a NaN slot and verify.
+            if n >= 2 {
+                let mut nan_input = input.clone();
+                nan_input[0] = f64::NAN;
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xn = s.tensor_variable(nan_input, vec![n], false).expect("xn");
+                let out = s.tensor_quantile(xn, 0.5).expect("quantile nan");
+                let v = s.tensor_values(out).expect("nan val")[0];
+                prop_assert!(
+                    v.is_nan(),
+                    "quantile with NaN in input must propagate NaN, got {v}"
+                );
+            }
+        }
+
         // MR (rank-statistic contract): tensor_kthvalue must
         // satisfy three orthogonal contracts on a 1-D input:
         //   1. kthvalue(x, 1) == min(x)
