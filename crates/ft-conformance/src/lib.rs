@@ -15418,6 +15418,110 @@ mod tests {
             }
         }
 
+        // MR (addr decomposition): tensor_addr(input, v1, v2,
+        // beta, alpha) = beta · input + alpha · outer(v1, v2).
+        // Three contracts on a [m, n] input + [m] v1 + [n] v2:
+        //   1. Composition: addr matches β·input + α·outer(v1, v2)
+        //      within 32 ULP relative (one kernel vs three-step
+        //      composed reference).
+        //   2. alpha == 0 → β·input within 8 ULP relative (outer
+        //      branch suppressed).
+        //   3. beta == 0 with zeros input → α·outer(v1, v2) within
+        //      16 ULP relative.
+        // Catches drift between the fused kernel and the composed
+        // reference, missed α/β branches, and any v1/v2 axis swap
+        // in the outer product path. frankentorch-4i909.
+        #[test]
+        fn fuzz_metamorphic_addr_decomposition(
+            (m, n, raw_input, raw_v1, raw_v2) in (1usize..=4, 1usize..=4).prop_flat_map(|(mm, nn)| (
+                Just(mm),
+                Just(nn),
+                prop::collection::vec(-16i16..=16i16, mm * nn),
+                prop::collection::vec(-16i16..=16i16, mm),
+                prop::collection::vec(-16i16..=16i16, nn),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input_vals: Vec<f64> = raw_input.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let v1_vals:    Vec<f64> = raw_v1.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let v2_vals:    Vec<f64> = raw_v2.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let alpha = 2.5_f64;
+            let beta = 0.75_f64;
+
+            // Contract 1: kernel vs composed reference.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m, n], false).expect("inp");
+            let v1 = s.tensor_variable(v1_vals.clone(), vec![m], false).expect("v1");
+            let v2 = s.tensor_variable(v2_vals.clone(), vec![n], false).expect("v2");
+            let kernel_out = s.tensor_addr(inp, v1, v2, beta, alpha).expect("addr");
+            let v_kernel = s.tensor_values(kernel_out).expect("kernel vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m, n], false).expect("inp");
+            let v1 = s.tensor_variable(v1_vals.clone(), vec![m], false).expect("v1");
+            let v2 = s.tensor_variable(v2_vals.clone(), vec![n], false).expect("v2");
+            let outer = s.tensor_outer(v1, v2).expect("outer");
+            let alpha_t = s.full(vec![m, n], alpha, false).expect("alpha t");
+            let beta_t = s.full(vec![m, n], beta, false).expect("beta t");
+            let alpha_outer = s.tensor_mul(outer, alpha_t).expect("alpha * outer");
+            let beta_inp = s.tensor_mul(inp, beta_t).expect("beta * inp");
+            let composed = s.tensor_add(beta_inp, alpha_outer).expect("sum");
+            let v_composed = s.tensor_values(composed).expect("composed vals");
+
+            prop_assert_eq!(v_kernel.len(), v_composed.len());
+            for (i, (a, b)) in v_kernel.iter().zip(v_composed.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "addr[{}] = {} vs composed = {} (diff = {:e})", i, a, b, diff
+                );
+            }
+
+            // Contract 2: alpha == 0 → β · input.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m, n], false).expect("inp");
+            let v1 = s.tensor_variable(v1_vals.clone(), vec![m], false).expect("v1");
+            let v2 = s.tensor_variable(v2_vals.clone(), vec![n], false).expect("v2");
+            let out = s.tensor_addr(inp, v1, v2, beta, 0.0).expect("addr a0");
+            let v = s.tensor_values(out).expect("a0 vals");
+            for (i, (g, &ix)) in v.iter().zip(input_vals.iter()).enumerate() {
+                let want = beta * ix;
+                let diff = (g - want).abs();
+                let scale = g.abs().max(want.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON * scale,
+                    "addr(α=0)[{}] = {} != β·input = {}", i, g, want
+                );
+            }
+
+            // Contract 3: beta == 0 with zeros input → α·outer.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(vec![0.0; m * n], vec![m, n], false).expect("zeros");
+            let v1 = s.tensor_variable(v1_vals.clone(), vec![m], false).expect("v1");
+            let v2 = s.tensor_variable(v2_vals.clone(), vec![n], false).expect("v2");
+            let out = s.tensor_addr(inp, v1, v2, 0.0, alpha).expect("addr b0");
+            let v = s.tensor_values(out).expect("b0 vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let v1 = s.tensor_variable(v1_vals, vec![m], false).expect("v1 ref");
+            let v2 = s.tensor_variable(v2_vals, vec![n], false).expect("v2 ref");
+            let outer = s.tensor_outer(v1, v2).expect("outer ref");
+            let alpha_t = s.full(vec![m, n], alpha, false).expect("alpha ref");
+            let scaled = s.tensor_mul(outer, alpha_t).expect("alpha * outer ref");
+            let v_ref = s.tensor_values(scaled).expect("ref vals");
+
+            for (i, (a, b)) in v.iter().zip(v_ref.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "addr(β=0, zeros)[{}] = {} != α·outer = {}", i, a, b
+                );
+            }
+        }
+
         // MR (exp2 + log2 contracts): the base-2 exponential and
         // logarithm are inverses on appropriate domains. Five
         // contracts:
