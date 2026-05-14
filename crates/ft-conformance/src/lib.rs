@@ -13952,6 +13952,48 @@ mod tests {
             }
         }
 
+        // MR (reflexivity): eq(a, a) == 1.0 for every non-NaN
+        // element (NaN is not equal to itself per IEEE 754 §5.11).
+        // Catches: any eq dispatch regression that would consider
+        // a value not equal to itself. frankentorch-8bsk.
+        #[test]
+        fn fuzz_metamorphic_eq_is_reflexive_for_non_nan(
+            samples in prop::collection::vec(-2048i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let mut input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            // Inject ±0, NaN, ±inf at known positions.
+            if input.len() >= 4 {
+                input[0] = 0.0;
+                input[1] = -0.0;
+                input[2] = f64::INFINITY;
+                input[3] = f64::NEG_INFINITY;
+            }
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(input.clone(), vec![n], false).expect("a");
+            let b = s.tensor_variable(input.clone(), vec![n], false).expect("b");
+            let eq_ab = s.tensor_eq(a, b).expect("eq");
+            let v = s.tensor_values(eq_ab).expect("eq vals");
+            for (i, (&x_i, &eq_val)) in input.iter().zip(v.iter()).enumerate() {
+                if x_i.is_nan() {
+                    // NaN != NaN, so eq should be 0.0.
+                    prop_assert!(
+                        eq_val == 0.0,
+                        "eq(NaN, NaN)[{}] = {} (expected 0.0)",
+                        i, eq_val
+                    );
+                } else {
+                    prop_assert!(
+                        eq_val == 1.0,
+                        "eq({}, {})[{}] = {} (expected 1.0 reflexive)",
+                        x_i, x_i, i, eq_val
+                    );
+                }
+            }
+        }
+
         // MR (degenerate-bounds passthrough): clamp(x, -inf, +inf)
         // == x bit-exact for finite x. Infinitely wide bounds make
         // the clamp a no-op. NaN inputs propagate NaN. Catches any
