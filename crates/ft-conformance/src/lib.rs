@@ -13952,6 +13952,53 @@ mod tests {
             }
         }
 
+        // MR (consistency): tensor_sub(a, b) ≈ tensor_add(a, neg(b))
+        // within 4 ULP. Subtraction is defined as a - b = a + (-b);
+        // the two paths should agree closely. Tolerance not bit-exact
+        // because the IEEE round of a + (-b) may differ slightly
+        // from the dedicated a - b op depending on summing order.
+        // frankentorch-9ta7.
+        #[test]
+        fn fuzz_metamorphic_sub_equals_add_neg(
+            samples in (
+                prop::collection::vec(-1024i16..1024i16, 1..24),
+                prop::collection::vec(-1024i16..1024i16, 1..24),
+            ).prop_filter("same length", |(a, b)| a.len() == b.len())
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_raw = samples.0;
+            let b_raw = samples.1;
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = a_vals.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a1");
+            let b1 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b1");
+            let sub_ab = s.tensor_sub(a1, b1).expect("sub");
+            let v_sub = s.tensor_values(sub_ab).expect("sub vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a_vals, vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(b_vals, vec![n], false).expect("b2");
+            let neg_b = s.tensor_neg(b2).expect("neg b");
+            let add_a_neg = s.tensor_add(a2, neg_b).expect("a + neg(b)");
+            let v_add = s.tensor_values(add_a_neg).expect("add vals");
+
+            for (i, (l, r)) in v_sub.iter().zip(v_add.iter()).enumerate() {
+                if l.is_nan() && r.is_nan() {
+                    continue;
+                }
+                let diff = (l - r).abs();
+                let scale = l.abs().max(r.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 4.0 * f64::EPSILON * scale,
+                    "sub(a, b)[{}] = {} vs add(a, neg(b))[{}] = {} (diff = {:e})",
+                    i, l, i, r, diff
+                );
+            }
+        }
+
         // MR (additive inverse): x + (-x) == 0 for finite x. This
         // is exact under FP (no rounding when adding two equal-
         // magnitude opposite-sign values — they cancel exactly).
