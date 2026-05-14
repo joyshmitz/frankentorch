@@ -15418,6 +15418,109 @@ mod tests {
             }
         }
 
+        // MR (diagonal extraction contracts): tensor_diagonal(M,
+        // offset) extracts the offset-th diagonal of a 2-D matrix.
+        // Four contracts:
+        //   1. offset == 0: diagonal[i] == M[i, i] bit-exact and
+        //      length is min(m, n).
+        //   2. offset == 1: diagonal[i] == M[i, i+1] bit-exact and
+        //      length is min(m, n - 1) when n > 1.
+        //   3. offset == -1: diagonal[i] == M[i+1, i] bit-exact and
+        //      length is min(m - 1, n) when m > 1.
+        //   4. Identity case: diagonal(I_n, 0) is the all-ones
+        //      vector of length n.
+        // Catches off-by-one in the index_select scaffold and
+        // direction confusion between positive (super-diagonal)
+        // and negative (sub-diagonal) offsets.
+        // frankentorch-6j2yt.
+        #[test]
+        fn fuzz_metamorphic_diagonal_extraction(
+            (m, n, raw) in (1usize..=5, 1usize..=5).prop_flat_map(|(mm, nn)| (
+                Just(mm),
+                Just(nn),
+                prop::collection::vec(-256i16..=256i16, mm * nn),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+
+            // Contract 1: offset == 0.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![m, n], false).expect("x");
+            let d = s.tensor_diagonal(x, 0).expect("diagonal 0");
+            let v = s.tensor_values(d).expect("d0 vals");
+            let shape = s.tensor_shape(d).expect("d0 shape");
+            let expected_len = m.min(n);
+            prop_assert_eq!(shape, vec![expected_len],
+                "diagonal(M, 0) length must be min(m, n) = {}", expected_len);
+            for i in 0..expected_len {
+                let got = v[i];
+                let want = input[i * n + i];
+                prop_assert_eq!(
+                    got.to_bits(), want.to_bits(),
+                    "diagonal(M, 0)[{}] = {} != M[{}, {}] = {}", i, got, i, i, want
+                );
+            }
+
+            // Contract 2: offset == 1 (only if n > 1).
+            if n > 1 {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![m, n], false).expect("x");
+                let d = s.tensor_diagonal(x, 1).expect("diagonal 1");
+                let v = s.tensor_values(d).expect("d1 vals");
+                let shape = s.tensor_shape(d).expect("d1 shape");
+                let expected_len = m.min(n - 1);
+                prop_assert_eq!(shape, vec![expected_len],
+                    "diagonal(M, 1) length must be min(m, n-1) = {}", expected_len);
+                for i in 0..expected_len {
+                    let got = v[i];
+                    let want = input[i * n + (i + 1)];
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "diagonal(M, 1)[{}] = {} != M[{}, {}] = {}",
+                        i, got, i, i + 1, want
+                    );
+                }
+            }
+
+            // Contract 3: offset == -1 (only if m > 1).
+            if m > 1 {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![m, n], false).expect("x");
+                let d = s.tensor_diagonal(x, -1).expect("diagonal -1");
+                let v = s.tensor_values(d).expect("d-1 vals");
+                let shape = s.tensor_shape(d).expect("d-1 shape");
+                let expected_len = (m - 1).min(n);
+                prop_assert_eq!(shape, vec![expected_len],
+                    "diagonal(M, -1) length must be min(m-1, n) = {}", expected_len);
+                for i in 0..expected_len {
+                    let got = v[i];
+                    let want = input[(i + 1) * n + i];
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "diagonal(M, -1)[{}] = {} != M[{}, {}] = {}",
+                        i, got, i + 1, i, want
+                    );
+                }
+            }
+
+            // Contract 4: identity case (only for square m == n).
+            if m == n {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let i_n = s.eye(n, false).expect("eye");
+                let d = s.tensor_diagonal(i_n, 0).expect("diagonal of eye");
+                let v = s.tensor_values(d).expect("eye diag vals");
+                prop_assert_eq!(v.len(), n);
+                for (i, &g) in v.iter().enumerate() {
+                    prop_assert_eq!(
+                        g.to_bits(), 1.0_f64.to_bits(),
+                        "diagonal(eye)[{}] = {} != 1.0", i, g
+                    );
+                }
+            }
+        }
+
         // MR (addr decomposition): tensor_addr(input, v1, v2,
         // beta, alpha) = beta · input + alpha · outer(v1, v2).
         // Three contracts on a [m, n] input + [m] v1 + [n] v2:
