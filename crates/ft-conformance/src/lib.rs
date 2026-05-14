@@ -13952,6 +13952,58 @@ mod tests {
             }
         }
 
+        // MR (consistency): tensor_div(a, b) ≈ tensor_mul(a, reciprocal(b))
+        // for non-zero b within 8 ULP. Two different paths to the
+        // same answer; divergence catches reciprocal-mul drift or
+        // div/mul-reciprocal dispatch mismatches.
+        // frankentorch-rhi1.
+        #[test]
+        fn fuzz_metamorphic_div_equals_mul_reciprocal(
+            samples in (
+                prop::collection::vec(-512i16..512i16, 1..24),
+                prop::collection::vec(-512i16..512i16, 1..24),
+            ).prop_filter("same length", |(a, b)| a.len() == b.len())
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_raw = samples.0;
+            let b_raw = samples.1;
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            // Skip zero b: map 0 → 1 to avoid div-by-zero
+            let b_vals: Vec<f64> = b_raw.iter()
+                .map(|v| {
+                    let f = f64::from(*v) / 17.0;
+                    if f == 0.0 { 1.0 } else { f }
+                })
+                .collect();
+            let n = a_vals.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a1");
+            let b1 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b1");
+            let div_ab = s.tensor_div(a1, b1).expect("div");
+            let v_div = s.tensor_values(div_ab).expect("div vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a_vals, vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(b_vals, vec![n], false).expect("b2");
+            let rec_b = s.tensor_reciprocal(b2).expect("rec");
+            let mul_a_rec = s.tensor_mul(a2, rec_b).expect("a * rec(b)");
+            let v_mul = s.tensor_values(mul_a_rec).expect("mul vals");
+
+            for (i, (l, r)) in v_div.iter().zip(v_mul.iter()).enumerate() {
+                if l.is_nan() && r.is_nan() {
+                    continue;
+                }
+                let diff = (l - r).abs();
+                let scale = l.abs().max(r.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON * scale,
+                    "div(a, b)[{}] = {} vs mul(a, recip(b))[{}] = {} (diff = {:e})",
+                    i, l, i, r, diff
+                );
+            }
+        }
+
         // MR (consistency): tensor_sub(a, b) ≈ tensor_add(a, neg(b))
         // within 4 ULP. Subtraction is defined as a - b = a + (-b);
         // the two paths should agree closely. Tolerance not bit-exact
