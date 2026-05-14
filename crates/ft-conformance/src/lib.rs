@@ -15418,6 +15418,96 @@ mod tests {
             }
         }
 
+        // MR (outer product contracts): tensor_outer(a, b) is the
+        // rank-1 outer product with shape [|a|, |b|] and
+        // outer[i, j] = a[i] * b[j]. Four contracts:
+        //   1. Shape: result is [|a|, |b|].
+        //   2. Element formula: outer[i, j] == a[i] * b[j]
+        //      bit-exact (single IEEE mul, no further rounding).
+        //   3. Transpose-swap: outer(a, b).T == outer(b, a)
+        //      bit-exact (transposing the outer product swaps
+        //      the role of the two factors).
+        //   4. Trace identity: trace(outer(a, a)) for a 1-D
+        //      vector of length n is sum_i (a[i] * a[i]) = |a|^2.
+        // Catches kernel index swap on the formula, accidental
+        // shape transposition, and any drift between the trace
+        // path and the squared-norm path. frankentorch-2mmq8.
+        #[test]
+        fn fuzz_metamorphic_outer_product_contracts(
+            (a_raw, b_raw) in (1usize..=6, 1usize..=6).prop_flat_map(|(m, n)| (
+                prop::collection::vec(-128i16..=128i16, m),
+                prop::collection::vec(-128i16..=128i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let m = a_vals.len();
+            let n = b_vals.len();
+
+            // Contracts 1 + 2: shape + element formula bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a");
+            let bv = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let out = s.tensor_outer(av, bv).expect("outer");
+            let shape = s.tensor_shape(out).expect("outer shape");
+            let vals = s.tensor_values(out).expect("outer vals");
+            prop_assert_eq!(shape, vec![m, n], "outer shape must be [m, n]");
+            prop_assert_eq!(vals.len(), m * n);
+            for i in 0..m {
+                for j in 0..n {
+                    let got = vals[i * n + j];
+                    let want = a_vals[i] * b_vals[j];
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "outer[{},{}] = {} (bits 0x{:x}) != a[{}]*b[{}] = {} (bits 0x{:x})",
+                        i, j, got, got.to_bits(), i, j, want, want.to_bits()
+                    );
+                }
+            }
+
+            // Contract 3: outer(a, b).T == outer(b, a) bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a");
+            let bv = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let ab = s.tensor_outer(av, bv).expect("outer ab");
+            let ab_t = s.tensor_transpose(ab, 0, 1).expect("ab.T");
+            let v_ab_t = s.tensor_values(ab_t).expect("ab.T vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a");
+            let bv = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let ba = s.tensor_outer(bv, av).expect("outer ba");
+            let v_ba = s.tensor_values(ba).expect("ba vals");
+
+            prop_assert_eq!(v_ab_t.len(), v_ba.len());
+            for (i, (a, b)) in v_ab_t.iter().zip(v_ba.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "outer(a, b).T[{}] = {} != outer(b, a)[{}] = {}", i, a, i, b
+                );
+            }
+
+            // Contract 4: trace(outer(a, a)) == sum_i a[i]^2 for
+            // same-length input (only run when a is non-empty).
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av1 = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a1");
+            let av2 = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a2");
+            let aa = s.tensor_outer(av1, av2).expect("outer aa");
+            let tr = s.tensor_trace(aa).expect("trace");
+            let v_tr = s.tensor_values(tr).expect("trace val")[0];
+
+            let expected: f64 = a_vals.iter().map(|v| v * v).sum();
+            let diff = (v_tr - expected).abs();
+            let scale = v_tr.abs().max(expected.abs()).max(1.0);
+            prop_assert!(
+                diff <= 8.0 * f64::EPSILON * scale,
+                "trace(outer(a, a)) = {} != sum(a^2) = {} (diff = {:e})",
+                v_tr, expected, diff
+            );
+        }
+
         // MR (glu contracts): tensor_glu(x, dim) splits the input
         // along dim (size must be even) into first half a and
         // second half b, then returns a * sigmoid(b). Three
