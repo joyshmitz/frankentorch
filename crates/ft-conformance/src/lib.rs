@@ -15418,6 +15418,67 @@ mod tests {
             }
         }
 
+        // MR (block_diag contracts): tensor_block_diag([A, B])
+        // creates a block-diagonal matrix with A in the upper-left
+        // and B in the lower-right, with zeros elsewhere. Three
+        // contracts:
+        //   1. Shape: [m1 + m2, n1 + n2].
+        //   2. Upper-left block: out[i, j] == A[i, j] for i in
+        //      [0, m1), j in [0, n1).
+        //   3. Lower-right block: out[m1 + i, n1 + j] == B[i, j]
+        //      for i in [0, m2), j in [0, n2).
+        //   4. Off-diagonal blocks: out[i, j] == 0 elsewhere.
+        // Catches drift in the offset arithmetic, axis swaps in
+        // the block placement, and any failure of the zero-fill
+        // for off-block positions. frankentorch-dan0o.
+        #[test]
+        fn fuzz_metamorphic_block_diag_two_blocks(
+            (m1, n1, m2, n2, raw_a, raw_b) in (1usize..=3, 1usize..=3, 1usize..=3, 1usize..=3).prop_flat_map(|(mm1, nn1, mm2, nn2)| (
+                Just(mm1), Just(nn1), Just(mm2), Just(nn2),
+                prop::collection::vec(-128i16..=128i16, mm1 * nn1),
+                prop::collection::vec(-128i16..=128i16, mm2 * nn2),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = raw_a.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let b_vals: Vec<f64> = raw_b.iter().map(|v| f64::from(*v) / 17.0).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(a_vals.clone(), vec![m1, n1], false).expect("a");
+            let b = s.tensor_variable(b_vals.clone(), vec![m2, n2], false).expect("b");
+            let out = s.tensor_block_diag(&[a, b]).expect("block_diag");
+            let shape = s.tensor_shape(out).expect("out shape");
+            let v = s.tensor_values(out).expect("out vals");
+
+            let total_rows = m1 + m2;
+            let total_cols = n1 + n2;
+            prop_assert_eq!(shape, vec![total_rows, total_cols],
+                "block_diag shape must be [m1+m2, n1+n2]");
+            prop_assert_eq!(v.len(), total_rows * total_cols);
+
+            for i in 0..total_rows {
+                for j in 0..total_cols {
+                    let got = v[i * total_cols + j];
+                    let want = if i < m1 && j < n1 {
+                        // Upper-left block.
+                        a_vals[i * n1 + j]
+                    } else if i >= m1 && j >= n1 {
+                        // Lower-right block.
+                        b_vals[(i - m1) * n2 + (j - n1)]
+                    } else {
+                        // Off-block zero.
+                        0.0
+                    };
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "block_diag[{}, {}] = {} != expected {} (m1={}, n1={}, m2={}, n2={})",
+                        i, j, got, want, m1, n1, m2, n2
+                    );
+                }
+            }
+        }
+
         // MR (take flat-index contracts): tensor_take(x, indices)
         // treats x as a flat 1-D array and gathers at the linear
         // indices. Three contracts on a 2-D input:
