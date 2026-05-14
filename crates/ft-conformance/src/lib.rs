@@ -15418,6 +15418,101 @@ mod tests {
             }
         }
 
+        // MR (dist metric axioms): tensor_dist(a, b, p) =
+        // norm(a - b, p) must satisfy the metric axioms for p >= 1
+        // (the Minkowski p-distance is a metric in that regime):
+        //   1. Identity of indiscernibles: dist(x, x, p) == 0
+        //      bit-exact (subtracting equal values is exactly 0).
+        //   2. Symmetry: dist(a, b, p) ≈ dist(b, a, p). Because
+        //      the kernel computes |a - b| element-wise before
+        //      raising to p, swapping arguments must give the
+        //      same magnitude.
+        //   3. Triangle inequality: dist(a, b, p) <=
+        //      dist(a, c, p) + dist(c, b, p) for p >= 1. This is
+        //      Minkowski's inequality; for p == 1 (L1) and p == 2
+        //      (L2) it's well-known. p < 1 is NOT a metric so
+        //      excluded.
+        // Uses p ∈ {1.0, 2.0, 3.0, inf} and bounded inputs to
+        // dodge overflow. frankentorch-30m4p.
+        #[test]
+        fn fuzz_metamorphic_dist_metric_axioms(
+            (a_raw, b_raw, c_raw) in (1usize..=8).prop_flat_map(|n| (
+                prop::collection::vec(-128i16..=128i16, n),
+                prop::collection::vec(-128i16..=128i16, n),
+                prop::collection::vec(-128i16..=128i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let c_vals: Vec<f64> = c_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let n = a_vals.len();
+
+            for p in [1.0_f64, 2.0, 3.0, f64::INFINITY] {
+                // Contract 1: dist(x, x, p) == 0.
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xa = s.tensor_variable(a_vals.clone(), vec![n], false).expect("xa");
+                let xb = s.tensor_variable(a_vals.clone(), vec![n], false).expect("xb");
+                let d = s.tensor_dist(xa, xb, p).expect("dist x x");
+                let v = s.tensor_values(d).expect("dist val")[0];
+                prop_assert_eq!(
+                    v.to_bits(), 0.0_f64.to_bits(),
+                    "dist(x, x, p={}) must be exactly 0, got {}", p, v
+                );
+
+                // Contract 2: symmetry dist(a, b, p) == dist(b, a, p).
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xa = s.tensor_variable(a_vals.clone(), vec![n], false).expect("xa");
+                let xb = s.tensor_variable(b_vals.clone(), vec![n], false).expect("xb");
+                let d_ab = s.tensor_dist(xa, xb, p).expect("dist a b");
+                let v_ab = s.tensor_values(d_ab).expect("val ab")[0];
+
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xa = s.tensor_variable(a_vals.clone(), vec![n], false).expect("xa");
+                let xb = s.tensor_variable(b_vals.clone(), vec![n], false).expect("xb");
+                let d_ba = s.tensor_dist(xb, xa, p).expect("dist b a");
+                let v_ba = s.tensor_values(d_ba).expect("val ba")[0];
+
+                let diff = (v_ab - v_ba).abs();
+                let scale = v_ab.abs().max(v_ba.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON * scale,
+                    "dist(a, b, p={}) = {} not equal dist(b, a, p={}) = {} (diff = {:e})",
+                    p, v_ab, p, v_ba, diff
+                );
+
+                // Contract 3: triangle inequality
+                // dist(a, b, p) <= dist(a, c, p) + dist(c, b, p)
+                // for p >= 1.
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xa = s.tensor_variable(a_vals.clone(), vec![n], false).expect("xa");
+                let xc = s.tensor_variable(c_vals.clone(), vec![n], false).expect("xc");
+                let d_ac = s.tensor_dist(xa, xc, p).expect("dist a c");
+                let v_ac = s.tensor_values(d_ac).expect("val ac")[0];
+
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xc = s.tensor_variable(c_vals.clone(), vec![n], false).expect("xc");
+                let xb = s.tensor_variable(b_vals.clone(), vec![n], false).expect("xb");
+                let d_cb = s.tensor_dist(xc, xb, p).expect("dist c b");
+                let v_cb = s.tensor_values(d_cb).expect("val cb")[0];
+
+                let triangle_lhs = v_ab;
+                let triangle_rhs = v_ac + v_cb;
+                // Allow a generous ULP slack since v_ab routes
+                // through one sub+norm and v_ac+v_cb is the sum of
+                // two sub+norm + an explicit add. Use 64 ULP
+                // relative because the L_inf norm can take a max
+                // path that's distinct from the route used for the
+                // shorter pair.
+                prop_assert!(
+                    triangle_lhs <= triangle_rhs + 64.0 * f64::EPSILON * triangle_rhs.max(1.0),
+                    "triangle inequality violated for p={}: dist(a, b) = {} > dist(a, c) + dist(c, b) = {} + {} = {}",
+                    p, triangle_lhs, v_ac, v_cb, triangle_rhs
+                );
+            }
+        }
+
         // MR (softshrink + hardshrink): two sparsifying
         // activations with three-piece definitions:
         //   softshrink(x, λ) = x - λ  if x >  λ
