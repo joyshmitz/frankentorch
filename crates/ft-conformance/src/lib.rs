@@ -13952,6 +13952,50 @@ mod tests {
             }
         }
 
+        // MR (decomposition): mse_loss(pred, target) == mean(square(
+        // pred - target)) within 16 ULP. The mse_loss surface is
+        // already implemented as sub + mul + mean, so this MR
+        // checks that an explicit composed form via tensor_square
+        // matches. frankentorch-dwhv.
+        #[test]
+        fn fuzz_metamorphic_mse_loss_decomposition(
+            (n, p_raw, t_raw) in (1usize..=16).prop_flat_map(|n| (
+                Just(n),
+                prop::collection::vec(-256i16..=256i16, n),
+                prop::collection::vec(-256i16..=256i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let pred_vals: Vec<f64> = p_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let target_vals: Vec<f64> = t_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let p1 = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("p1");
+            let t1 = s.tensor_variable(target_vals.clone(), vec![n], false).expect("t1");
+            let mse = s.mse_loss(p1, t1).expect("mse_loss");
+            let v_mse = s.tensor_values(mse).expect("mse vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let p2 = s.tensor_variable(pred_vals, vec![n], false).expect("p2");
+            let t2 = s.tensor_variable(target_vals, vec![n], false).expect("t2");
+            let diff = s.tensor_sub(p2, t2).expect("sub");
+            let sq = s.tensor_square(diff).expect("square");
+            let m = s.tensor_mean(sq).expect("mean");
+            let v_m = s.tensor_values(m).expect("m vals");
+
+            prop_assert_eq!(v_mse.len(), v_m.len());
+            for (i, (a, b)) in v_mse.iter().zip(v_m.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "mse_loss[{}] = {} vs mean(square(pred - target)) = {} (diff = {:e})",
+                    i, a, b, diff
+                );
+            }
+        }
+
         // MR (decomposition): cross_entropy_loss(logits, targets)
         // ≈ nll_loss(log_softmax(logits, 1), targets) within 32 ULP.
         // The two paths should agree on the loss value.
