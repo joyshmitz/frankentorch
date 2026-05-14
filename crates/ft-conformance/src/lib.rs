@@ -15418,6 +15418,94 @@ mod tests {
             }
         }
 
+        // MR (cumulative contract): tensor_cummax/tensor_cummin
+        // values must be monotonically non-decreasing /
+        // non-increasing, and the LAST element must equal the
+        // global max / min of the input. Both follow directly from
+        // the definition cum_op[i] = op(input[0..=i]) and catch
+        // off-by-one or accumulation drift bugs in the cumulative
+        // path. The pair is checked together to amortize the
+        // proptest input. Skip NaN inputs because comparison
+        // semantics are dialect-defined and tensor_max(NaN, x)
+        // depends on argument order — out of scope for this MR.
+        // frankentorch-z7l7.
+        #[test]
+        fn fuzz_metamorphic_cummax_cummin_contract(
+            raw in prop::collection::vec(-2048i16..2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            // Reference: simulate cummax/cummin in plain Rust.
+            let mut cummax_ref: Vec<f64> = Vec::with_capacity(n);
+            let mut cummin_ref: Vec<f64> = Vec::with_capacity(n);
+            let mut running_max = f64::NEG_INFINITY;
+            let mut running_min = f64::INFINITY;
+            for &v in &input {
+                if v > running_max { running_max = v; }
+                if v < running_min { running_min = v; }
+                cummax_ref.push(running_max);
+                cummin_ref.push(running_min);
+            }
+            let global_max = *cummax_ref.last().unwrap();
+            let global_min = *cummin_ref.last().unwrap();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let (cmax_vals, _cmax_idx) = s.tensor_cummax(x).expect("cummax");
+            let (cmin_vals, _cmin_idx) = s.tensor_cummin(x).expect("cummin");
+
+            let got_max = s.tensor_values(cmax_vals).expect("cummax vals");
+            let got_min = s.tensor_values(cmin_vals).expect("cummin vals");
+
+            prop_assert_eq!(got_max.len(), n, "cummax shape mismatch");
+            prop_assert_eq!(got_min.len(), n, "cummin shape mismatch");
+
+            // Bit-exact match against the running-extremum reference.
+            for (i, (g, r)) in got_max.iter().zip(cummax_ref.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), r.to_bits(),
+                    "cummax[{}] = {} (bits 0x{:x}) != running_max = {} (bits 0x{:x})",
+                    i, g, g.to_bits(), r, r.to_bits()
+                );
+            }
+            for (i, (g, r)) in got_min.iter().zip(cummin_ref.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), r.to_bits(),
+                    "cummin[{}] = {} (bits 0x{:x}) != running_min = {} (bits 0x{:x})",
+                    i, g, g.to_bits(), r, r.to_bits()
+                );
+            }
+
+            // Monotonicity contract.
+            for i in 1..n {
+                prop_assert!(
+                    got_max[i] >= got_max[i - 1],
+                    "cummax not non-decreasing: cummax[{}] = {} < cummax[{}] = {}",
+                    i, got_max[i], i - 1, got_max[i - 1]
+                );
+                prop_assert!(
+                    got_min[i] <= got_min[i - 1],
+                    "cummin not non-increasing: cummin[{}] = {} > cummin[{}] = {}",
+                    i, got_min[i], i - 1, got_min[i - 1]
+                );
+            }
+
+            // Last element equals the global extremum.
+            prop_assert_eq!(
+                got_max[n - 1].to_bits(), global_max.to_bits(),
+                "cummax[-1] = {} != max(input) = {}",
+                got_max[n - 1], global_max
+            );
+            prop_assert_eq!(
+                got_min[n - 1].to_bits(), global_min.to_bits(),
+                "cummin[-1] = {} != min(input) = {}",
+                got_min[n - 1], global_min
+            );
+        }
+
         // MR (dtype invariance): every layout-only shape op must
         // preserve the input dtype. Pipes a [2, 1, 4] tensor through
         // ten shape ops (squeeze, unsqueeze, reshape, narrow,
