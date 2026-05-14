@@ -13952,6 +13952,37 @@ mod tests {
             }
         }
 
+        // MR (roundtrip): unsqueeze(squeeze(x, dim), dim) == x
+        // bit-exact when the squeezed dim has size 1. Both are pure
+        // metadata ops. frankentorch-7ca0.
+        #[test]
+        fn fuzz_metamorphic_unsqueeze_of_squeeze_roundtrip(
+            (rows, cols, raw) in (1usize..=8, 1usize..=8).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            // Insert a unit dim at position 1: shape [rows, 1, cols]
+            let with_unit = s.tensor_variable(input.clone(), vec![rows, 1, cols], false).expect("x");
+            let squeezed = s.tensor_squeeze(with_unit, 1).expect("squeeze");
+            let restored = s.tensor_unsqueeze(squeezed, 1).expect("unsqueeze");
+            let v = s.tensor_values(restored).expect("vals");
+            let shape = s.tensor_shape(restored).expect("shape");
+            prop_assert_eq!(shape, vec![rows, 1, cols], "shape preserved after squeeze+unsqueeze");
+            for (i, (a, b)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "unsqueeze(squeeze(x))[{}] = {} != x[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (roundtrip): reshape(reshape(x, new_shape), original_shape)
         // == x bit-exact. reshape is a pure metadata op (no data
         // copy in contiguous case), so the round-trip must preserve
