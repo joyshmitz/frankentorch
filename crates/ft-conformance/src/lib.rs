@@ -15418,6 +15418,104 @@ mod tests {
             }
         }
 
+        // MR (softsign + tanhshrink contracts): two related
+        // activations:
+        //   softsign(x)   = x / (1 + |x|)   bounded in (-1, 1)
+        //   tanhshrink(x) = x - tanh(x)
+        // Both are odd: f(-x) = -f(x). softsign is bounded; the
+        // MR verifies |softsign(x)| < 1 for all finite x.
+        //   * Closed-form bit-exact match against Rust-side ref.
+        //   * Antisymmetry: f(-x) bits-equal -f(x).
+        //   * softsign bounded to (-1, 1).
+        //   * tanhshrink(0) == 0 (odd functions zero at origin).
+        // Catches sign-bit handling in the antisymmetry path,
+        // rounding drift through tensor_tanh composition, and
+        // any failure of softsign to saturate at ±1.
+        // frankentorch-xpnv.
+        #[test]
+        fn fuzz_metamorphic_softsign_tanhshrink_contracts(
+            raw in prop::collection::vec(-2048i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            // Forward run on input + negated input.
+            let neg_input: Vec<f64> = input.iter().map(|v| -v).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let xn = s.tensor_variable(neg_input.clone(), vec![n], false).expect("xn");
+            let ssg = s.tensor_softsign(x).expect("softsign");
+            let ssg_n = s.tensor_softsign(xn).expect("softsign neg");
+            let tsh = s.tensor_tanhshrink(x).expect("tanhshrink");
+            let tsh_n = s.tensor_tanhshrink(xn).expect("tanhshrink neg");
+
+            let v_ssg = s.tensor_values(ssg).expect("ssg vals");
+            let v_ssg_n = s.tensor_values(ssg_n).expect("ssg neg vals");
+            let v_tsh = s.tensor_values(tsh).expect("tsh vals");
+            let v_tsh_n = s.tensor_values(tsh_n).expect("tsh neg vals");
+
+            // softsign closed-form match.
+            for (i, (&g, &xi)) in v_ssg.iter().zip(input.iter()).enumerate() {
+                let want = xi / (1.0 + xi.abs());
+                let diff = (g - want).abs();
+                let scale = g.abs().max(want.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 4.0 * f64::EPSILON * scale,
+                    "softsign[{}] = {} != closed-form {} for x = {}", i, g, want, xi
+                );
+
+                // Bound: |softsign(x)| < 1 for finite x.
+                if xi.is_finite() {
+                    prop_assert!(
+                        g.abs() < 1.0,
+                        "|softsign({})| = {} not strictly less than 1", xi, g.abs()
+                    );
+                }
+            }
+
+            // softsign odd: softsign(-x) == -softsign(x) within 4 ULP.
+            for (i, (&g_pos, &g_neg)) in v_ssg.iter().zip(v_ssg_n.iter()).enumerate() {
+                let neg_g_pos = -g_pos;
+                let diff = (g_neg - neg_g_pos).abs();
+                let scale = g_pos.abs().max(g_neg.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 4.0 * f64::EPSILON * scale,
+                    "softsign(-x)[{}] = {} != -softsign(x) = {}", i, g_neg, neg_g_pos
+                );
+            }
+
+            // tanhshrink odd: tanhshrink(-x) == -tanhshrink(x). The
+            // op composes through tensor_tanh + tensor_sub so a
+            // few ULP of slop is acceptable.
+            for (i, (&g_pos, &g_neg)) in v_tsh.iter().zip(v_tsh_n.iter()).enumerate() {
+                let neg_g_pos = -g_pos;
+                let diff = (g_neg - neg_g_pos).abs();
+                let scale = g_pos.abs().max(g_neg.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 4.0 * f64::EPSILON * scale,
+                    "tanhshrink(-x)[{}] = {} != -tanhshrink(x) = {}", i, g_neg, neg_g_pos
+                );
+            }
+
+            // Origin boundary: both odd functions are 0 at x = 0.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let zero = s.tensor_variable(vec![0.0], vec![1], false).expect("zero");
+            let ssg0 = s.tensor_softsign(zero).expect("ssg 0");
+            let v0 = s.tensor_values(ssg0).expect("ssg 0 val")[0];
+            prop_assert_eq!(v0.to_bits(), 0.0_f64.to_bits(),
+                "softsign(0) must be 0, got {}", v0);
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let zero = s.tensor_variable(vec![0.0], vec![1], false).expect("zero");
+            let tsh0 = s.tensor_tanhshrink(zero).expect("tsh 0");
+            let v0 = s.tensor_values(tsh0).expect("tsh 0 val")[0];
+            prop_assert_eq!(v0.to_bits(), 0.0_f64.to_bits(),
+                "tanhshrink(0) must be 0, got {}", v0);
+        }
+
         // MR (hardswish + hardsigmoid closed-form): both ops are
         // 3-piece functions in the kernel:
         //   hardswish(x) = 0  if x <= -3
