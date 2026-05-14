@@ -13952,6 +13952,35 @@ mod tests {
             }
         }
 
+        // MR (inverse roll): roll(roll(x, n, dim), -n, dim) == x
+        // bit-exact. Rolling forward then backward by the same
+        // amount returns to original. Catches off-by-one in the
+        // shift arithmetic. frankentorch-2rg6.
+        #[test]
+        fn fuzz_metamorphic_roll_inverse(
+            (n, raw, shift) in (1usize..=12).prop_flat_map(|n| (
+                Just(n),
+                prop::collection::vec(-256i16..256i16, n),
+                -10i64..=10i64,
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let rolled = s.tensor_roll(x, shift, 0).expect("roll forward");
+            let restored = s.tensor_roll(rolled, -shift, 0).expect("roll backward");
+            let v = s.tensor_values(restored).expect("vals");
+            for (i, (a, b)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "roll(roll(x, {}, 0), -{}, 0)[{}] = {} != x[{}] = {}", shift, shift, i, a, i, b
+                );
+            }
+        }
+
         // MR (involution): flip(flip(x, dims), dims) == x bit-exact.
         // Reversing the same dims twice returns the original.
         // frankentorch-5lty.
