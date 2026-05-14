@@ -15418,6 +15418,114 @@ mod tests {
             }
         }
 
+        // MR (matrix_power contracts): tensor_matrix_power(M, n)
+        // raises a square matrix to integer power n via the
+        // binary-square-and-multiply pattern. Four contracts on
+        // a [d, d] input:
+        //   1. n == 0 → identity I_d bit-exact (off-diagonals 0,
+        //      diagonals 1).
+        //   2. n == 1 → M bit-exact (the algorithm builds up from
+        //      result = I and multiplies once).
+        //   3. n == 2 → M @ M within 16 ULP relative (one matmul
+        //      step in either path, so we'd expect bit-exact, but
+        //      the matrix_power scaffold runs result = I @ M @ M
+        //      which has an extra multiplicative step compared to
+        //      the bare M @ M reference).
+        //   4. Multiplicative property: M^a @ M^b == M^(a + b)
+        //      within 32 ULP relative for small a, b. Catches
+        //      drift in the binary-power-decomposition step.
+        // Inputs are bounded so M^4 doesn't overflow.
+        // frankentorch-aso1f.
+        #[test]
+        fn fuzz_metamorphic_matrix_power_contracts(
+            (d, raw) in (1usize..=4).prop_flat_map(|dd| (
+                Just(dd),
+                prop::collection::vec(-8i16..=8i16, dd * dd),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let m_vals: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 7.0).collect();
+
+            // Contract 1: matrix_power(M, 0) == I.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let m = s.tensor_variable(m_vals.clone(), vec![d, d], false).expect("m");
+            let m0 = s.tensor_matrix_power(m, 0).expect("M^0");
+            let v0 = s.tensor_values(m0).expect("M^0 vals");
+            for i in 0..d {
+                for j in 0..d {
+                    let got = v0[i * d + j];
+                    let want: f64 = if i == j { 1.0 } else { 0.0 };
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "M^0[{}, {}] = {} != I[{}, {}] = {}", i, j, got, i, j, want
+                    );
+                }
+            }
+
+            // Contract 2: matrix_power(M, 1) == M.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let m = s.tensor_variable(m_vals.clone(), vec![d, d], false).expect("m");
+            let m1 = s.tensor_matrix_power(m, 1).expect("M^1");
+            let v1 = s.tensor_values(m1).expect("M^1 vals");
+            for (i, (g, ref_v)) in v1.iter().zip(m_vals.iter()).enumerate() {
+                // The scaffold runs result = I @ M which preserves
+                // values bit-exactly in IEEE since I is exact.
+                let diff = (g - ref_v).abs();
+                let scale = g.abs().max(ref_v.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON * scale,
+                    "M^1[{}] = {} != M[{}] = {}", i, g, i, ref_v
+                );
+            }
+
+            // Contract 3: matrix_power(M, 2) == M @ M.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let m = s.tensor_variable(m_vals.clone(), vec![d, d], false).expect("m");
+            let m2_alg = s.tensor_matrix_power(m, 2).expect("M^2 alg");
+            let v2_alg = s.tensor_values(m2_alg).expect("M^2 alg vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let m1 = s.tensor_variable(m_vals.clone(), vec![d, d], false).expect("m1");
+            let m2 = s.tensor_variable(m_vals.clone(), vec![d, d], false).expect("m2");
+            let m2_ref = s.tensor_matmul(m1, m2).expect("M @ M");
+            let v2_ref = s.tensor_values(m2_ref).expect("M^2 ref vals");
+
+            for (i, (a, b)) in v2_alg.iter().zip(v2_ref.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "M^2 algorithm[{}] = {} != M @ M reference[{}] = {} (diff = {:e})",
+                    i, a, i, b, diff
+                );
+            }
+
+            // Contract 4: M^a @ M^b == M^(a+b) for a=2, b=2 → M^4.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let m_a = s.tensor_variable(m_vals.clone(), vec![d, d], false).expect("m_a");
+            let m_b = s.tensor_variable(m_vals.clone(), vec![d, d], false).expect("m_b");
+            let m_a_2 = s.tensor_matrix_power(m_a, 2).expect("M^a 2");
+            let m_b_2 = s.tensor_matrix_power(m_b, 2).expect("M^b 2");
+            let product = s.tensor_matmul(m_a_2, m_b_2).expect("M^2 @ M^2");
+            let v_prod = s.tensor_values(product).expect("M^2 @ M^2 vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let m = s.tensor_variable(m_vals.clone(), vec![d, d], false).expect("m");
+            let m_4 = s.tensor_matrix_power(m, 4).expect("M^4");
+            let v_m4 = s.tensor_values(m_4).expect("M^4 vals");
+
+            for (i, (a, b)) in v_prod.iter().zip(v_m4.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "M^2 @ M^2[{}] = {} != M^4[{}] = {} (diff = {:e})",
+                    i, a, i, b, diff
+                );
+            }
+        }
+
         // MR (outer product contracts): tensor_outer(a, b) is the
         // rank-1 outer product with shape [|a|, |b|] and
         // outer[i, j] = a[i] * b[j]. Four contracts:
