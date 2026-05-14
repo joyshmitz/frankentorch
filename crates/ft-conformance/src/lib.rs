@@ -13952,6 +13952,46 @@ mod tests {
             }
         }
 
+        // MR (complement): ne(a, b) + eq(a, b) == 1.0 for non-NaN
+        // inputs. The two ops are complementary boolean masks.
+        // For NaN, both eq and ne handle NaN per IEEE 754:
+        // eq(NaN, ...) == 0 and ne(NaN, ...) == 1; the sum still
+        // equals 1. frankentorch-i2sm.
+        #[test]
+        fn fuzz_metamorphic_ne_is_complement_of_eq(
+            (a_raw, b_raw) in (
+                prop::collection::vec(-512i16..=512i16, 1..24),
+                prop::collection::vec(-512i16..=512i16, 1..24),
+            ).prop_filter("same length", |(a, b)| a.len() == b.len())
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = a_vals.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a1");
+            let b1 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b1");
+            let eq_ab = s.tensor_eq(a1, b1).expect("eq");
+            let v_eq = s.tensor_values(eq_ab).expect("eq vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a_vals, vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(b_vals, vec![n], false).expect("b2");
+            let ne_ab = s.tensor_ne(a2, b2).expect("ne");
+            let v_ne = s.tensor_values(ne_ab).expect("ne vals");
+
+            for (i, (&eq_v, &ne_v)) in v_eq.iter().zip(v_ne.iter()).enumerate() {
+                let sum = eq_v + ne_v;
+                prop_assert!(
+                    sum == 1.0,
+                    "eq + ne [{}] = {} (expected 1.0); eq = {}, ne = {}",
+                    i, sum, eq_v, ne_v
+                );
+            }
+        }
+
         // MR (reflexivity): eq(a, a) == 1.0 for every non-NaN
         // element (NaN is not equal to itself per IEEE 754 §5.11).
         // Catches: any eq dispatch regression that would consider
