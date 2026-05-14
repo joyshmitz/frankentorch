@@ -15418,6 +15418,72 @@ mod tests {
             }
         }
 
+        // MR (rank-statistic contract): tensor_kthvalue must
+        // satisfy three orthogonal contracts on a 1-D input:
+        //   1. kthvalue(x, 1) == min(x)
+        //   2. kthvalue(x, n) == max(x)
+        //   3. kthvalue values are non-decreasing in k
+        // Catches off-by-one in the rank computation, sort-order
+        // bugs, and any drift from the canonical 1-based PyTorch
+        // semantics. The reference sort is computed in Rust using
+        // total_cmp (same comparator the kernel uses), so the
+        // comparison is bit-exact. frankentorch-q3cl.
+        #[test]
+        fn fuzz_metamorphic_kthvalue_contract(
+            raw in prop::collection::vec(-2048i16..2048i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            // Reference sort using the same total_cmp the kernel
+            // uses for tie ordering.
+            let mut sorted = input.clone();
+            sorted.sort_by(|a, b| a.total_cmp(b));
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+
+            // Collect kthvalue for every valid k.
+            let mut all_kth: Vec<f64> = Vec::with_capacity(n);
+            for k in 1..=n {
+                let (val, _idx) = s.tensor_kthvalue(x, k).expect("kthvalue");
+                let v = s.tensor_values(val).expect("k val")[0];
+                all_kth.push(v);
+            }
+
+            // (1, 2, 3) — bit-exact match against the sorted ref.
+            for (k, (got, want)) in all_kth.iter().zip(sorted.iter()).enumerate() {
+                prop_assert_eq!(
+                    got.to_bits(), want.to_bits(),
+                    "kthvalue(x, {}) = {} (bits 0x{:x}) != sorted[{}] = {} (bits 0x{:x})",
+                    k + 1, got, got.to_bits(), k, want, want.to_bits()
+                );
+            }
+
+            // k=1 is min, k=n is max.
+            let min_val = *sorted.first().unwrap();
+            let max_val = *sorted.last().unwrap();
+            prop_assert_eq!(
+                all_kth[0].to_bits(), min_val.to_bits(),
+                "kthvalue(x, 1) = {} != min(x) = {}", all_kth[0], min_val
+            );
+            prop_assert_eq!(
+                all_kth[n - 1].to_bits(), max_val.to_bits(),
+                "kthvalue(x, {}) = {} != max(x) = {}", n, all_kth[n - 1], max_val
+            );
+
+            // Non-decreasing in k.
+            for k in 1..n {
+                prop_assert!(
+                    all_kth[k - 1].total_cmp(&all_kth[k]) != std::cmp::Ordering::Greater,
+                    "kthvalue not monotone: kth({}) = {} > kth({}) = {}",
+                    k, all_kth[k - 1], k + 1, all_kth[k]
+                );
+            }
+        }
+
         // MR (cumulative contract): tensor_cummax/tensor_cummin
         // values must be monotonically non-decreasing /
         // non-increasing, and the LAST element must equal the
