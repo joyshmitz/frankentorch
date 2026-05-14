@@ -15418,6 +15418,84 @@ mod tests {
             }
         }
 
+        // MR (masked_select contract): tensor_masked_select must
+        // satisfy four contracts on a 1-D input + mask:
+        //   1. Output length equals count of nonzero positions in
+        //      mask.
+        //   2. Selected values appear in input order (the i-th
+        //      selected output equals x at the i-th true mask
+        //      position).
+        //   3. mask = all-true returns x bit-exact.
+        //   4. mask = all-false returns an empty 1-D tensor.
+        // Catches mask-direction reversal, scan-order bugs, and
+        // boundary-mask handling for the empty / full output cases.
+        // frankentorch-h45g.
+        #[test]
+        fn fuzz_metamorphic_masked_select_contract(
+            (raw, mask_raw) in (1usize..=16).prop_flat_map(|n| (
+                prop::collection::vec(-256i16..=256i16, n),
+                prop::collection::vec(0u8..=1u8, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mask_f: Vec<f64> = mask_raw.iter().map(|v| f64::from(*v)).collect();
+            let n = input.len();
+
+            // Reference: compute the selection in plain Rust.
+            let expected: Vec<f64> = input.iter()
+                .zip(mask_f.iter())
+                .filter(|&(_, m)| *m != 0.0)
+                .map(|(v, _)| *v)
+                .collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let mask = s.tensor_variable(mask_f, vec![n], false).expect("mask");
+            let sel = s.tensor_masked_select(x, mask).expect("masked_select");
+            let got = s.tensor_values(sel).expect("sel vals");
+            let got_shape = s.tensor_shape(sel).expect("sel shape");
+
+            // Contracts 1 + 2.
+            prop_assert_eq!(got_shape.clone(), vec![expected.len()],
+                "masked_select shape must be [{}] not {:?}", expected.len(), got_shape);
+            prop_assert_eq!(got.len(), expected.len());
+            for (i, (a, b)) in got.iter().zip(expected.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "masked_select[{}] = {} != expected[{}] = {}", i, a, i, b
+                );
+            }
+
+            // Contract 3: mask = all-true returns input bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let all_true = s.tensor_variable(vec![1.0; n], vec![n], false).expect("all_true");
+            let sel = s.tensor_masked_select(x, all_true).expect("masked_select all-true");
+            let got = s.tensor_values(sel).expect("sel vals");
+            prop_assert_eq!(got.len(), n);
+            for (i, (a, b)) in got.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "masked_select(all-true)[{}] = {} != x[{}] = {}", i, a, i, b
+                );
+            }
+
+            // Contract 4: mask = all-false returns an empty 1-D
+            // tensor of shape [0].
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let all_false = s.tensor_variable(vec![0.0; n], vec![n], false).expect("all_false");
+            let sel = s.tensor_masked_select(x, all_false).expect("masked_select all-false");
+            let got = s.tensor_values(sel).expect("sel vals");
+            let got_shape = s.tensor_shape(sel).expect("sel shape");
+            prop_assert_eq!(got_shape.clone(), vec![0],
+                "masked_select(all-false) shape must be [0], got {:?}", got_shape);
+            prop_assert!(got.is_empty(),
+                "masked_select(all-false) must be empty, got {got:?}");
+        }
+
         // MR (masked_fill contract): tensor_masked_fill must
         // satisfy three position-wise contracts:
         //   1. At positions where mask is non-zero (true), output
