@@ -15418,6 +15418,70 @@ mod tests {
             }
         }
 
+        // MR (aminmax contract): tensor_aminmax(x, dim) returns
+        // the paired (min, max) reductions along dim. Three
+        // contracts on a 2-D input with dim=1:
+        //   1. min <= max element-wise.
+        //   2. aminmax.min bit-equal to tensor_amin(x, dim).
+        //   3. aminmax.max bit-equal to tensor_amax(x, dim).
+        // Catches any drift between the paired surface and the
+        // single-direction surface. Excludes NaN inputs because
+        // PyTorch min/max NaN semantics differ across versions
+        // and the MR target is paired-vs-single consistency.
+        // frankentorch-uh93r.
+        #[test]
+        fn fuzz_metamorphic_aminmax_paired_vs_single(
+            (rows, cols, raw) in (1usize..=4, 1usize..=8).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..=256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let (min_id, max_id) = s.tensor_aminmax(x, 1).expect("aminmax");
+            let v_min = s.tensor_values(min_id).expect("min vals");
+            let v_max = s.tensor_values(max_id).expect("max vals");
+
+            // Contract 1: min <= max element-wise (use total_cmp
+            // to dodge any signed-zero noise).
+            prop_assert_eq!(v_min.len(), v_max.len());
+            for (i, (lo, hi)) in v_min.iter().zip(v_max.iter()).enumerate() {
+                prop_assert!(
+                    lo.total_cmp(hi) != std::cmp::Ordering::Greater,
+                    "aminmax.min[{}] = {} > aminmax.max[{}] = {}", i, lo, i, hi
+                );
+            }
+
+            // Contract 2 + 3: agree with amin / amax surfaces.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let amn_ref = s.tensor_amin(x, 1).expect("amin");
+            let v_amn = s.tensor_values(amn_ref).expect("amin vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![rows, cols], false).expect("x");
+            let amx_ref = s.tensor_amax(x, 1).expect("amax");
+            let v_amx = s.tensor_values(amx_ref).expect("amax vals");
+
+            for (i, (a, b)) in v_min.iter().zip(v_amn.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "aminmax.min[{}] = {} != amin[{}] = {}", i, a, i, b
+                );
+            }
+            for (i, (a, b)) in v_max.iter().zip(v_amx.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "aminmax.max[{}] = {} != amax[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (functional_normalize contracts): normalize(x, p, dim)
         // divides x by its Lp norm along dim. Three contracts on
         // a 1-D input with dim=0 and p ∈ {1.0, 2.0, 3.0}:
