@@ -15418,6 +15418,57 @@ mod tests {
             }
         }
 
+        // MR (leaky_relu closed-form contract): the kernel uses
+        // a fixed 0.01 slope (ft-kernel-cpu line 247 / 4964), so:
+        //   * x >= 0  →  output == x bit-exact (positive branch is
+        //     the identity).
+        //   * x <  0  →  output == 0.01 * x bit-exact (single IEEE
+        //     mul, no further rounding).
+        //   * leaky_relu(0) == 0 and leaky_relu(-0) == 0 (the
+        //     0.01 * -0 = -0 case is the only signed-zero subtlety;
+        //     the kernel routes -0 through the negative branch).
+        //   * leaky_relu is monotone non-decreasing in x.
+        // Catches slope drift (e.g. accidental 0.1 vs 0.01),
+        // sign-bit handling on the negative branch, and any
+        // branch-inversion bug. frankentorch-aaxg.
+        #[test]
+        fn fuzz_metamorphic_leaky_relu_closed_form(
+            raw in prop::collection::vec(-2048i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let out = s.tensor_leaky_relu(x).expect("leaky_relu");
+            let got = s.tensor_values(out).expect("got vals");
+
+            // Closed-form expected values computed in plain Rust.
+            for (i, (&g, &xi)) in got.iter().zip(input.iter()).enumerate() {
+                let expected = if xi >= 0.0 { xi } else { 0.01 * xi };
+                prop_assert_eq!(
+                    g.to_bits(), expected.to_bits(),
+                    "leaky_relu[{}] = {} (bits 0x{:x}) != closed-form {} (bits 0x{:x}) for x = {}",
+                    i, g, g.to_bits(), expected, expected.to_bits(), xi
+                );
+            }
+
+            // Monotonicity contract — sort the input and verify the
+            // outputs are also non-decreasing.
+            let mut pairs: Vec<(f64, f64)> = input.iter().zip(got.iter())
+                .map(|(&a, &b)| (a, b)).collect();
+            pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for k in 1..pairs.len() {
+                prop_assert!(
+                    pairs[k - 1].1 <= pairs[k].1 + 1e-300,
+                    "leaky_relu not monotone: x={} -> {}, x={} -> {}",
+                    pairs[k - 1].0, pairs[k - 1].1, pairs[k].0, pairs[k].1
+                );
+            }
+        }
+
         // MR (gather/scatter inverse): for a 1-D input with a
         // permutation index, gather(scatter(zeros, 0, idx, src),
         // 0, idx) == src bit-exact. scatter places src[k] at slot
