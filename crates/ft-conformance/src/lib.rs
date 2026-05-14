@@ -15418,6 +15418,85 @@ mod tests {
             }
         }
 
+        // MR (masked_fill contract): tensor_masked_fill must
+        // satisfy three position-wise contracts:
+        //   1. At positions where mask is non-zero (true), output
+        //      equals the fill value v.
+        //   2. At positions where mask is zero (false), output
+        //      equals x[i] bit-exact (no rounding through the
+        //      tensor_where path).
+        //   3. masked_fill is idempotent under the same mask with
+        //      a fresh value: masked_fill(masked_fill(x, m, v), m, w)
+        //      bit-equals masked_fill(x, m, w).
+        // Catches mask-direction swaps (true vs false branch),
+        // accidental rounding through the fill path, and any
+        // non-idempotent storage drift.
+        // frankentorch-epdp.
+        #[test]
+        fn fuzz_metamorphic_masked_fill_contract(
+            (raw, mask_raw) in (1usize..=16).prop_flat_map(|n| (
+                prop::collection::vec(-256i16..=256i16, n),
+                prop::collection::vec(0u8..=1u8, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mask_f: Vec<f64> = mask_raw.iter().map(|v| f64::from(*v)).collect();
+            let n = input.len();
+            let v = -42.5_f64;
+
+            // Single session because shapes never change.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let mask = s.tensor_variable(mask_f.clone(), vec![n], false).expect("mask");
+            let filled = s.tensor_masked_fill(x, mask, v).expect("masked_fill");
+            let filled_vals = s.tensor_values(filled).expect("filled vals");
+
+            // Contracts 1 + 2: per-position selection.
+            for (i, ((&got, &want_x), &m)) in filled_vals.iter()
+                .zip(input.iter())
+                .zip(mask_f.iter())
+                .enumerate()
+            {
+                if m != 0.0 {
+                    prop_assert_eq!(
+                        got.to_bits(), v.to_bits(),
+                        "masked_fill[{}] with mask=true should be {}, got {}", i, v, got
+                    );
+                } else {
+                    prop_assert_eq!(
+                        got.to_bits(), want_x.to_bits(),
+                        "masked_fill[{}] with mask=false should preserve x = {}, got {}",
+                        i, want_x, got
+                    );
+                }
+            }
+
+            // Contract 3: idempotence under same mask, fresh value.
+            let w = 17.25_f64;
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let mask = s.tensor_variable(mask_f.clone(), vec![n], false).expect("mask");
+            let once = s.tensor_masked_fill(x, mask, v).expect("once");
+            let twice = s.tensor_masked_fill(once, mask, w).expect("twice");
+            let twice_vals = s.tensor_values(twice).expect("twice vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let mask = s.tensor_variable(mask_f, vec![n], false).expect("mask");
+            let direct = s.tensor_masked_fill(x, mask, w).expect("direct");
+            let direct_vals = s.tensor_values(direct).expect("direct vals");
+
+            for (i, (a, b)) in twice_vals.iter().zip(direct_vals.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "masked_fill twice[{}] = {} != masked_fill direct[{}] = {}",
+                    i, a, i, b
+                );
+            }
+        }
+
         // MR (pad contracts): tensor_pad must satisfy two
         // orthogonal contracts on a 2-D [rows, cols] input:
         //   1. Zero padding identity: pad with [0, 0, 0, 0] returns
