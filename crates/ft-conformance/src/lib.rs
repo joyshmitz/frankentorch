@@ -15418,6 +15418,71 @@ mod tests {
             }
         }
 
+        // MR (movedim contracts): tensor_movedim(x, src, dst)
+        // moves dimension `src` to position `dst` and shifts
+        // others. The op is a permutation, so:
+        //   1. Numel and value-multiset preservation: output has
+        //      the same total element count and the values are
+        //      a permutation of the input's flat layout.
+        //   2. Inverse round-trip: movedim(movedim(x, s, d), d, s)
+        //      == x bit-exact. Applying the move and its inverse
+        //      returns to the original tensor.
+        //   3. Shape contract: the new shape has shape[src]
+        //      relocated to position dst.
+        // Tests on a rank-3 [a, b, c] input across all valid
+        // (src, dst) pairs. frankentorch-bpgqk.
+        #[test]
+        fn fuzz_metamorphic_movedim_inverse_roundtrip(
+            (a, b, c, raw) in (1usize..=3, 1usize..=3, 1usize..=3).prop_flat_map(|(aa, bb, cc)| (
+                Just(aa),
+                Just(bb),
+                Just(cc),
+                prop::collection::vec(-256i16..=256i16, aa * bb * cc),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let original_shape = vec![a, b, c];
+
+            for src in 0..3usize {
+                for dst in 0..3usize {
+                    if src == dst {
+                        continue;
+                    }
+
+                    // Contract 2: inverse round-trip bit-exact.
+                    let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let x = s.tensor_variable(input.clone(), original_shape.clone(), false).expect("x");
+                    let moved = s.tensor_movedim(x, src, dst).expect("move forward");
+                    let back = s.tensor_movedim(moved, dst, src).expect("move back");
+                    let v_back = s.tensor_values(back).expect("back vals");
+                    let shape_back = s.tensor_shape(back).expect("back shape");
+                    prop_assert_eq!(shape_back, original_shape.clone(),
+                        "movedim inverse must restore original shape");
+                    for (i, (g, ref_v)) in v_back.iter().zip(input.iter()).enumerate() {
+                        prop_assert_eq!(
+                            g.to_bits(), ref_v.to_bits(),
+                            "movedim inverse[{}] = {} != x[{}] = {} (src={}, dst={})",
+                            i, g, i, ref_v, src, dst
+                        );
+                    }
+
+                    // Contract 1: numel preservation.
+                    let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let x = s.tensor_variable(input.clone(), original_shape.clone(), false).expect("x");
+                    let moved = s.tensor_movedim(x, src, dst).expect("move");
+                    let v_moved = s.tensor_values(moved).expect("moved vals");
+                    let shape_moved = s.tensor_shape(moved).expect("moved shape");
+                    prop_assert_eq!(v_moved.len(), input.len(),
+                        "movedim numel mismatch: got {} expected {}", v_moved.len(), input.len());
+                    let expected_total: usize = shape_moved.iter().product();
+                    prop_assert_eq!(expected_total, input.len(),
+                        "moved shape volume = {} != input numel = {}", expected_total, input.len());
+                }
+            }
+        }
+
         // MR (aminmax contract): tensor_aminmax(x, dim) returns
         // the paired (min, max) reductions along dim. Three
         // contracts on a 2-D input with dim=1:
