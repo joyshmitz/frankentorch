@@ -15418,6 +15418,83 @@ mod tests {
             }
         }
 
+        // MR (cdist contracts): tensor_cdist(x1, x2, p) computes
+        // pairwise Lp distances between rows of x1 ([P, M]) and
+        // x2 ([R, M]). Four contracts on the unbatched path
+        // with p ∈ {1.0, 2.0}:
+        //   1. Shape: [P, R].
+        //   2. Non-negativity: every entry >= 0.
+        //   3. Self-distance zero: cdist(x, x, p)[i, i] ≈ 0
+        //      within 16 ULP (sub i-i = 0 then norm of zero is 0;
+        //      the kernel may take an internal path that
+        //      introduces a tiny error at the diagonal).
+        //   4. Symmetry under x1 == x2: cdist(x, x, p)[i, j] ≈
+        //      cdist(x, x, p)[j, i] within 16 ULP relative.
+        // Catches axis swap (P vs R), drift in the Lp aggregation,
+        // and any failure of the self-distance to vanish.
+        // frankentorch-nbc9i.
+        #[test]
+        fn fuzz_metamorphic_cdist_self_distance_symmetry(
+            (p_rows, m_feat, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(pp, mm)| (
+                Just(pp),
+                Just(mm),
+                prop::collection::vec(-64i16..=64i16, pp * mm),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+
+            for p in [1.0_f64, 2.0] {
+                // Contract 1: shape [P, R] for cdist(x1, x2) where
+                // x2 has R rows. Use x2 = x1 so P == R for the
+                // remaining contracts.
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x1 = s.tensor_variable(input.clone(), vec![p_rows, m_feat], false)
+                    .expect("x1");
+                let x2 = s.tensor_variable(input.clone(), vec![p_rows, m_feat], false)
+                    .expect("x2");
+                let d = s.tensor_cdist(x1, x2, p).expect("cdist");
+                let shape = s.tensor_shape(d).expect("d shape");
+                let v = s.tensor_values(d).expect("d vals");
+                prop_assert_eq!(shape, vec![p_rows, p_rows],
+                    "cdist shape must be [P, R] = [{}, {}]", p_rows, p_rows);
+                prop_assert_eq!(v.len(), p_rows * p_rows);
+
+                // Contract 2: non-negativity.
+                for (k, &x) in v.iter().enumerate() {
+                    prop_assert!(
+                        x >= 0.0,
+                        "cdist(p={}) entry[{}] = {} is negative", p, k, x
+                    );
+                }
+
+                // Contract 3: self-distance zero on the diagonal.
+                for i in 0..p_rows {
+                    let self_d = v[i * p_rows + i];
+                    prop_assert!(
+                        self_d.abs() <= 16.0 * f64::EPSILON,
+                        "cdist(x, x, p={})[{}, {}] = {} not ≈ 0", p, i, i, self_d
+                    );
+                }
+
+                // Contract 4: symmetry under x1 == x2.
+                for i in 0..p_rows {
+                    for j in (i + 1)..p_rows {
+                        let upper = v[i * p_rows + j];
+                        let lower = v[j * p_rows + i];
+                        let diff = (upper - lower).abs();
+                        let scale = upper.abs().max(lower.abs()).max(1.0);
+                        prop_assert!(
+                            diff <= 16.0 * f64::EPSILON * scale,
+                            "cdist(x, x, p={})[{}, {}] = {} != [{}, {}] = {}",
+                            p, i, j, upper, j, i, lower
+                        );
+                    }
+                }
+            }
+        }
+
         // MR (corrcoef contracts): tensor_corrcoef(x) returns the
         // Pearson correlation matrix. Four contracts on a 2-D
         // (N, M) input with M >= 2:
