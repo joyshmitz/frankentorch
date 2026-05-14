@@ -15418,6 +15418,75 @@ mod tests {
             }
         }
 
+        // MR (cartesian_prod contracts): tensor_cartesian_prod
+        // enumerates pairs of 1-D vectors in lexicographic order.
+        // Three contracts:
+        //   1. Shape: cartesian_prod([a, b]) is [m*n, 2] where
+        //      m = |a| and n = |b|.
+        //   2. Lex enumeration: row k = [a[k/n], b[k%n]] bit-exact.
+        //   3. 1-input identity: cartesian_prod([a]) has shape
+        //      [m] and row[i] == a[i] bit-exact (the implementation
+        //      may return a 1-D tensor of length m for the
+        //      single-input case).
+        // Catches index axis swap (a vs b), off-by-one in the
+        // mixed-radix counter, and any failure of the lex order.
+        // frankentorch-u2i3h.
+        #[test]
+        fn fuzz_metamorphic_cartesian_prod_two_inputs(
+            (a_raw, b_raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(mm, nn)| (
+                prop::collection::vec(-64i16..=64i16, mm),
+                prop::collection::vec(-64i16..=64i16, nn),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let m = a_vals.len();
+            let n = b_vals.len();
+
+            // Contracts 1 + 2: two-input cartesian product.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a");
+            let b = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let cp = s.tensor_cartesian_prod(&[a, b]).expect("cartesian_prod");
+            let shape = s.tensor_shape(cp).expect("cp shape");
+            let v = s.tensor_values(cp).expect("cp vals");
+            prop_assert_eq!(shape, vec![m * n, 2],
+                "cartesian_prod([a, b]) shape must be [m*n, 2] = [{}, 2]", m * n);
+            prop_assert_eq!(v.len(), m * n * 2);
+            for k in 0..(m * n) {
+                let i = k / n;
+                let j = k % n;
+                let want_a = a_vals[i];
+                let want_b = b_vals[j];
+                let got_a = v[k * 2];
+                let got_b = v[k * 2 + 1];
+                prop_assert_eq!(
+                    got_a.to_bits(), want_a.to_bits(),
+                    "cartesian_prod[{}, 0] = {} != a[{}] = {}", k, got_a, i, want_a
+                );
+                prop_assert_eq!(
+                    got_b.to_bits(), want_b.to_bits(),
+                    "cartesian_prod[{}, 1] = {} != b[{}] = {}", k, got_b, j, want_b
+                );
+            }
+
+            // Contract 3: 1-input identity returns vector bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = s.tensor_variable(a_vals.clone(), vec![m], false).expect("a");
+            let cp = s.tensor_cartesian_prod(&[a]).expect("cartesian_prod one");
+            let v = s.tensor_values(cp).expect("cp one vals");
+            prop_assert_eq!(v.len(), m,
+                "cartesian_prod([a]) length must be |a|, got {}", v.len());
+            for (i, (g, want)) in v.iter().zip(a_vals.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "cartesian_prod([a])[{}] = {} != a[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (pdist consistency): tensor_pdist(x, p) returns the
         // upper-triangular pairwise distances of a 2-D [N, M]
         // input. Three contracts on p ∈ {1.0, 2.0}:
