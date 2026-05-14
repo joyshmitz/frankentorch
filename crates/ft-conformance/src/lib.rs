@@ -15418,6 +15418,110 @@ mod tests {
             }
         }
 
+        // MR (addmv decomposition): tensor_addmv(input, mat, vec,
+        // beta, alpha) = beta * input + alpha * (mat @ vec).
+        // Three contracts on a [m, n] mat with [n] vector and [m]
+        // input:
+        //   1. Composition: addmv matches β·input + α·(mat @ vec)
+        //      via tensor_mv + scaled add within 32 ULP relative.
+        //   2. alpha == 0 → β·input (matvec branch suppressed)
+        //      within 8 ULP.
+        //   3. beta == 0 with zeros input → α·(mat @ vec) within
+        //      16 ULP.
+        // Catches drift between the fused GEMV kernel and the
+        // composed reference, missed α/β branches, and
+        // input/matvec axis swap. frankentorch-arysr.
+        #[test]
+        fn fuzz_metamorphic_addmv_decomposition(
+            (m, n, raw_input, raw_mat, raw_vec) in (1usize..=4, 1usize..=4).prop_flat_map(|(mm, nn)| (
+                Just(mm),
+                Just(nn),
+                prop::collection::vec(-16i16..=16i16, mm),
+                prop::collection::vec(-16i16..=16i16, mm * nn),
+                prop::collection::vec(-16i16..=16i16, nn),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input_vals: Vec<f64> = raw_input.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let mat_vals:   Vec<f64> = raw_mat.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let vec_vals:   Vec<f64> = raw_vec.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let alpha = 2.5_f64;
+            let beta = 0.75_f64;
+
+            // Contract 1: kernel vs composed reference.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m], false).expect("inp");
+            let mt = s.tensor_variable(mat_vals.clone(), vec![m, n], false).expect("mt");
+            let vc = s.tensor_variable(vec_vals.clone(), vec![n], false).expect("vc");
+            let kernel_out = s.tensor_addmv(inp, mt, vc, beta, alpha).expect("addmv");
+            let v_kernel = s.tensor_values(kernel_out).expect("kernel vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m], false).expect("inp");
+            let mt = s.tensor_variable(mat_vals.clone(), vec![m, n], false).expect("mt");
+            let vc = s.tensor_variable(vec_vals.clone(), vec![n], false).expect("vc");
+            let prod = s.tensor_mv(mt, vc).expect("matvec");
+            let alpha_t = s.full(vec![m], alpha, false).expect("alpha t");
+            let beta_t = s.full(vec![m], beta, false).expect("beta t");
+            let alpha_prod = s.tensor_mul(prod, alpha_t).expect("alpha * prod");
+            let beta_inp = s.tensor_mul(inp, beta_t).expect("beta * inp");
+            let composed = s.tensor_add(beta_inp, alpha_prod).expect("sum");
+            let v_composed = s.tensor_values(composed).expect("composed vals");
+
+            prop_assert_eq!(v_kernel.len(), v_composed.len());
+            for (i, (a, b)) in v_kernel.iter().zip(v_composed.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "addmv[{}] = {} vs composed = {} (diff = {:e})", i, a, b, diff
+                );
+            }
+
+            // Contract 2: alpha == 0 → β · input.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m], false).expect("inp");
+            let mt = s.tensor_variable(mat_vals.clone(), vec![m, n], false).expect("mt");
+            let vc = s.tensor_variable(vec_vals.clone(), vec![n], false).expect("vc");
+            let out = s.tensor_addmv(inp, mt, vc, beta, 0.0).expect("addmv a0");
+            let v = s.tensor_values(out).expect("a0 vals");
+            for (i, (g, &ix)) in v.iter().zip(input_vals.iter()).enumerate() {
+                let want = beta * ix;
+                let diff = (g - want).abs();
+                let scale = g.abs().max(want.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON * scale,
+                    "addmv(α=0)[{}] = {} != β·input = {}", i, g, want
+                );
+            }
+
+            // Contract 3: beta == 0 with zeros input → α·(mat @ vec).
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(vec![0.0; m], vec![m], false).expect("zeros");
+            let mt = s.tensor_variable(mat_vals.clone(), vec![m, n], false).expect("mt");
+            let vc = s.tensor_variable(vec_vals.clone(), vec![n], false).expect("vc");
+            let out = s.tensor_addmv(inp, mt, vc, 0.0, alpha).expect("addmv b0");
+            let v = s.tensor_values(out).expect("b0 vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let mt = s.tensor_variable(mat_vals, vec![m, n], false).expect("mt ref");
+            let vc = s.tensor_variable(vec_vals, vec![n], false).expect("vc ref");
+            let prod = s.tensor_mv(mt, vc).expect("matvec ref");
+            let alpha_t = s.full(vec![m], alpha, false).expect("alpha ref");
+            let scaled = s.tensor_mul(prod, alpha_t).expect("alpha * prod ref");
+            let v_ref = s.tensor_values(scaled).expect("ref vals");
+
+            for (i, (a, b)) in v.iter().zip(v_ref.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "addmv(β=0, zeros)[{}] = {} != α·(mat@vec) = {}", i, a, b
+                );
+            }
+        }
+
         // MR (matrix_power contracts): tensor_matrix_power(M, n)
         // raises a square matrix to integer power n via the
         // binary-square-and-multiply pattern. Four contracts on
