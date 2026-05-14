@@ -13952,6 +13952,51 @@ mod tests {
             }
         }
 
+        // MR (homomorphism): exp(a+b) ≈ exp(a) * exp(b) within
+        // 32 ULP. Additive→multiplicative homomorphism — the dual
+        // of log's multiplicative→additive. Catches exp/addition
+        // precision drift. frankentorch-95bj.
+        #[test]
+        fn fuzz_metamorphic_exp_of_sum_equals_product_of_exps(
+            (a_raw, b_raw) in (
+                prop::collection::vec(-500i16..=500i16, 1..24),
+                prop::collection::vec(-500i16..=500i16, 1..24),
+            ).prop_filter("same length", |(a, b)| a.len() == b.len())
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // a, b in [-7, 7] keeps exp values within safe range
+            // for f64 (no overflow to inf).
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 71.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 71.0).collect();
+            let n = a_vals.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a1");
+            let b1 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b1");
+            let sum = s.tensor_add(a1, b1).expect("a+b");
+            let exp_sum = s.tensor_exp(sum).expect("exp(a+b)");
+            let v_exp_sum = s.tensor_values(exp_sum).expect("exp(a+b) vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a_vals, vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(b_vals, vec![n], false).expect("b2");
+            let exp_a = s.tensor_exp(a2).expect("exp(a)");
+            let exp_b = s.tensor_exp(b2).expect("exp(b)");
+            let prod = s.tensor_mul(exp_a, exp_b).expect("exp(a)*exp(b)");
+            let v_prod = s.tensor_values(prod).expect("prod vals");
+
+            for (i, (got, want)) in v_exp_sum.iter().zip(v_prod.iter()).enumerate() {
+                let diff = (got - want).abs();
+                let scale = got.abs().max(want.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "exp(a+b)[{}] = {} vs exp(a)*exp(b) = {} (diff = {:e})",
+                    i, got, want, diff
+                );
+            }
+        }
+
         // MR (homomorphism): log(a*b) ≈ log(a) + log(b) for positive
         // a, b within 16 ULP. Multiplicative→additive homomorphism.
         // Catches log/exp precision drift and any multiplication
