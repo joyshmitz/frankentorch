@@ -15418,6 +15418,98 @@ mod tests {
             }
         }
 
+        // MR (exp2 + log2 contracts): the base-2 exponential and
+        // logarithm are inverses on appropriate domains. Five
+        // contracts:
+        //   1. log2(exp2(x)) ≈ x for finite x within 4 ULP
+        //      relative (exp2 introduces one rounding step, log2
+        //      another).
+        //   2. exp2(log2(x)) ≈ x for positive x within 4 ULP
+        //      relative.
+        //   3. exp2(0) == 1 bit-exact (2^0 = 1 is libm-exact).
+        //   4. log2(1) == 0 bit-exact (log2(1) = 0 is libm-exact).
+        //   5. exp2(n) == 2^n bit-exact for small integer n (the
+        //      power-of-two path is exactly representable).
+        // Catches drift between exp2 / log2 and the underlying
+        // libm ops, sign-of-zero handling at the boundaries, and
+        // any approximation drift in the exact power-of-two case.
+        // frankentorch-l6pzq.
+        #[test]
+        fn fuzz_metamorphic_exp2_log2_contracts(
+            raw in prop::collection::vec(-256i16..=256i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Constrain x to a sensible exp2 range: x ∈ [-15, 15]
+            // so that exp2 stays finite.
+            let inputs: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 18.0).collect();
+            let n = inputs.len();
+
+            // Contract 1: log2(exp2(x)) ≈ x within 4 ULP.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(inputs.clone(), vec![n], false).expect("x");
+            let exp_x = s.tensor_exp2(x).expect("exp2");
+            let recovered = s.tensor_log2(exp_x).expect("log2 of exp2");
+            let v = s.tensor_values(recovered).expect("log2 of exp2 vals");
+            for (i, (&g, &xi)) in v.iter().zip(inputs.iter()).enumerate() {
+                let diff = (g - xi).abs();
+                let scale = g.abs().max(xi.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 4.0 * f64::EPSILON * scale,
+                    "log2(exp2(x))[{}] = {} != x[{}] = {} (diff = {:e})",
+                    i, g, i, xi, diff
+                );
+            }
+
+            // Contract 2: exp2(log2(x)) ≈ x for positive x.
+            let pos_inputs: Vec<f64> = inputs.iter()
+                .map(|v| v.abs() + 1e-3)  // Strictly positive.
+                .collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xp = s.tensor_variable(pos_inputs.clone(), vec![n], false).expect("xp");
+            let log_xp = s.tensor_log2(xp).expect("log2");
+            let recovered = s.tensor_exp2(log_xp).expect("exp2 of log2");
+            let v = s.tensor_values(recovered).expect("exp2 of log2 vals");
+            for (i, (&g, &xi)) in v.iter().zip(pos_inputs.iter()).enumerate() {
+                let diff = (g - xi).abs();
+                let scale = g.abs().max(xi.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 4.0 * f64::EPSILON * scale,
+                    "exp2(log2(x))[{}] = {} != x[{}] = {} (diff = {:e})",
+                    i, g, i, xi, diff
+                );
+            }
+
+            // Contracts 3 + 4: anchor points.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let zero = s.tensor_variable(vec![0.0], vec![1], false).expect("zero");
+            let one = s.tensor_variable(vec![1.0], vec![1], false).expect("one");
+            let exp2_zero = s.tensor_exp2(zero).expect("exp2(0)");
+            let log2_one = s.tensor_log2(one).expect("log2(1)");
+            let v_exp2_zero = s.tensor_values(exp2_zero).expect("exp2 zero val")[0];
+            let v_log2_one = s.tensor_values(log2_one).expect("log2 one val")[0];
+            prop_assert_eq!(v_exp2_zero.to_bits(), 1.0_f64.to_bits(),
+                "exp2(0) = {} must be 1.0 bit-exact", v_exp2_zero);
+            prop_assert_eq!(v_log2_one.to_bits(), 0.0_f64.to_bits(),
+                "log2(1) = {} must be 0.0 bit-exact", v_log2_one);
+
+            // Contract 5: small integer powers are exactly
+            // representable. exp2(1) == 2, exp2(2) == 4,
+            // exp2(3) == 8, exp2(-1) == 0.5.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let ints = s.tensor_variable(vec![1.0, 2.0, 3.0, -1.0], vec![4], false)
+                .expect("ints");
+            let exp_ints = s.tensor_exp2(ints).expect("exp2 ints");
+            let v_ints = s.tensor_values(exp_ints).expect("exp2 int vals");
+            let expected = [2.0_f64, 4.0, 8.0, 0.5];
+            for (i, (&g, &want)) in v_ints.iter().zip(expected.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "exp2 integer[{}] = {} != {}", i, g, want
+                );
+            }
+        }
+
         // MR (polar contracts): tensor_polar(abs, angle)
         // constructs a complex tensor from magnitude + phase. By
         // construction in ft-api this is:
