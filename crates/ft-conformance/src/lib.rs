@@ -15418,6 +15418,81 @@ mod tests {
             }
         }
 
+        // MR (l1_loss contracts): l1_loss(pred, target) =
+        // mean(|pred - target|). Four contracts on a 1-D pair:
+        //   1. Identity: l1_loss(x, x) == 0 bit-exact (|0| = 0
+        //      then mean of zeros is 0).
+        //   2. Symmetry: l1_loss(a, b) == l1_loss(b, a) bit-exact.
+        //      |a - b| == |b - a|, mean is commutative-input.
+        //   3. Non-negativity: l1_loss output >= 0.
+        //   4. Decomposition: matches mean(|pred-target|) computed
+        //      in plain Rust within 8 ULP relative — single
+        //      sub+abs+mean composition.
+        // Catches sign-handling drift on the difference, accidental
+        // reordering in mean, and any failure of non-negativity.
+        // frankentorch-8o5hs.
+        #[test]
+        fn fuzz_metamorphic_l1_loss_contracts(
+            (p_raw, t_raw) in (1usize..=16).prop_flat_map(|n| (
+                prop::collection::vec(-512i16..=512i16, n),
+                prop::collection::vec(-512i16..=512i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let pred_vals: Vec<f64> = p_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let target_vals: Vec<f64> = t_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = pred_vals.len();
+
+            // Contract 1: identity (l1_loss(x, x) == 0).
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let p1 = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("p1");
+            let p2 = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("p2");
+            let identity = s.l1_loss(p1, p2).expect("l1 identity");
+            let v_id = s.tensor_values(identity).expect("identity val")[0];
+            prop_assert_eq!(
+                v_id.to_bits(), 0.0_f64.to_bits(),
+                "l1_loss(x, x) must be exactly 0, got {}", v_id
+            );
+
+            // Contract 2 + 4: symmetry + decomposition.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let pa = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("pa");
+            let tb = s.tensor_variable(target_vals.clone(), vec![n], false).expect("tb");
+            let lab = s.l1_loss(pa, tb).expect("l1 ab");
+            let v_ab = s.tensor_values(lab).expect("ab val")[0];
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let pa = s.tensor_variable(pred_vals.clone(), vec![n], false).expect("pa");
+            let tb = s.tensor_variable(target_vals.clone(), vec![n], false).expect("tb");
+            let lba = s.l1_loss(tb, pa).expect("l1 ba");
+            let v_ba = s.tensor_values(lba).expect("ba val")[0];
+
+            prop_assert_eq!(
+                v_ab.to_bits(), v_ba.to_bits(),
+                "l1_loss(a, b) = {} not symmetric with l1_loss(b, a) = {}",
+                v_ab, v_ba
+            );
+
+            // Contract 3: non-negativity.
+            prop_assert!(
+                v_ab >= 0.0,
+                "l1_loss = {} is negative", v_ab
+            );
+
+            // Contract 4: closed-form decomposition.
+            let expected: f64 = pred_vals.iter().zip(target_vals.iter())
+                .map(|(p, t)| (p - t).abs())
+                .sum::<f64>() / n as f64;
+            let diff = (v_ab - expected).abs();
+            let scale = v_ab.abs().max(expected.abs()).max(1.0);
+            prop_assert!(
+                diff <= 8.0 * f64::EPSILON * scale,
+                "l1_loss = {} != mean(|pred-target|) = {} (diff = {:e})",
+                v_ab, expected, diff
+            );
+        }
+
         // MR (addmm decomposition): tensor_addmm(input, mat1,
         // mat2, beta, alpha) = beta * input + alpha * (mat1 @
         // mat2). The MR exercises three contracts:
