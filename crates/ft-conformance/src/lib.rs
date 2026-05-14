@@ -15418,6 +15418,121 @@ mod tests {
             }
         }
 
+        // MR (hardswish + hardsigmoid closed-form): both ops are
+        // 3-piece functions in the kernel:
+        //   hardswish(x) = 0  if x <= -3
+        //                = x  if x >= 3
+        //                = x * (x + 3) / 6  otherwise
+        //   hardsigmoid(x) = 0  if x <= -3
+        //                  = 1  if x >= 3
+        //                  = (x + 3) / 6  otherwise
+        // Contracts:
+        //   * Both match the closed-form bit-exact (same Rust IEEE
+        //     expression on the reference side, no slack).
+        //   * hardsigmoid is monotone non-decreasing and bounded
+        //     to [0, 1]. hardswish is NOT monotone — the middle
+        //     parabola x(x+3)/6 has its minimum at x = -1.5 — so
+        //     we check its lower bound (-3/8 = the parabola
+        //     minimum) instead.
+        //   * Saturation at the cutoffs: hardswish(-10) = 0,
+        //     hardswish(10) = 10, hardsigmoid(-10) = 0,
+        //     hardsigmoid(10) = 1.
+        // frankentorch-6uci.
+        #[test]
+        fn fuzz_metamorphic_hardswish_hardsigmoid_closed_form(
+            raw in prop::collection::vec(-2048i16..=2048i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let hsw = s.tensor_hardswish(x).expect("hardswish");
+            let hsi = s.tensor_hardsigmoid(x).expect("hardsigmoid");
+            let got_hsw = s.tensor_values(hsw).expect("hsw vals");
+            let got_hsi = s.tensor_values(hsi).expect("hsi vals");
+
+            // Closed-form bit-exact match.
+            for (i, ((&g_w, &g_i), &xi)) in got_hsw.iter()
+                .zip(got_hsi.iter())
+                .zip(input.iter())
+                .enumerate()
+            {
+                let want_hsw = if xi <= -3.0 {
+                    0.0
+                } else if xi >= 3.0 {
+                    xi
+                } else {
+                    xi * (xi + 3.0) / 6.0
+                };
+                let want_hsi = if xi <= -3.0 {
+                    0.0
+                } else if xi >= 3.0 {
+                    1.0
+                } else {
+                    (xi + 3.0) / 6.0
+                };
+                prop_assert_eq!(
+                    g_w.to_bits(), want_hsw.to_bits(),
+                    "hardswish[{}] = {} != closed-form {} for x = {}",
+                    i, g_w, want_hsw, xi
+                );
+                prop_assert_eq!(
+                    g_i.to_bits(), want_hsi.to_bits(),
+                    "hardsigmoid[{}] = {} != closed-form {} for x = {}",
+                    i, g_i, want_hsi, xi
+                );
+
+                // Saturation bounds for hardsigmoid: always in [0, 1].
+                prop_assert!(
+                    (0.0..=1.0).contains(&g_i),
+                    "hardsigmoid[{}] = {} outside [0, 1]", i, g_i
+                );
+
+                // Lower bound for hardswish: the parabola
+                // x*(x+3)/6 has minimum -0.375 at x = -1.5, and
+                // saturates at 0 outside that. So hardswish(x) >=
+                // -0.375 for all x.
+                prop_assert!(
+                    g_w >= -0.375 - 1e-15,
+                    "hardswish[{}] = {} below parabola minimum -0.375", i, g_w
+                );
+            }
+
+            // Hardsigmoid monotone non-decreasing in x.
+            let mut pairs: Vec<(f64, f64)> = input.iter()
+                .zip(got_hsi.iter())
+                .map(|(&a, &b)| (a, b))
+                .collect();
+            pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for k in 1..pairs.len() {
+                prop_assert!(
+                    pairs[k - 1].1 <= pairs[k].1 + 1e-300,
+                    "hardsigmoid not monotone: x={} -> {}, x={} -> {}",
+                    pairs[k - 1].0, pairs[k - 1].1, pairs[k].0, pairs[k].1
+                );
+            }
+
+            // Saturation at the cutoffs: for x = -10 both should be
+            // 0; for x = +10 hardswish = 10 and hardsigmoid = 1.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let edge_x = s.tensor_variable(vec![-10.0, 10.0], vec![2], false).expect("edge");
+            let hsw_e = s.tensor_hardswish(edge_x).expect("hsw edge");
+            let hsi_e = s.tensor_hardsigmoid(edge_x).expect("hsi edge");
+            let v_hsw = s.tensor_values(hsw_e).expect("hsw edge vals");
+            let v_hsi = s.tensor_values(hsi_e).expect("hsi edge vals");
+            prop_assert_eq!(v_hsw[0].to_bits(), 0.0_f64.to_bits(),
+                "hardswish(-10) must be 0");
+            prop_assert_eq!(v_hsw[1].to_bits(), 10.0_f64.to_bits(),
+                "hardswish(10) must be 10");
+            prop_assert_eq!(v_hsi[0].to_bits(), 0.0_f64.to_bits(),
+                "hardsigmoid(-10) must be 0");
+            prop_assert_eq!(v_hsi[1].to_bits(), 1.0_f64.to_bits(),
+                "hardsigmoid(10) must be 1");
+        }
+
         // MR (elu closed-form contract): the kernel uses fixed
         // alpha=1 with `if x > 0 { x } else { x.exp() - 1.0 }`
         // (ft-kernel-cpu lib.rs:254). So:
