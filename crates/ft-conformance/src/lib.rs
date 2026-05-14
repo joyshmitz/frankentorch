@@ -15418,6 +15418,94 @@ mod tests {
             }
         }
 
+        // MR (nonzero / count_nonzero contract): the index matrix
+        // returned by tensor_nonzero must agree with the scalar
+        // returned by tensor_count_nonzero, and every returned index
+        // must point to a nonzero element of the input. The MR
+        // additionally checks two boundary masks:
+        //   * input ≡ 0 → nonzero has shape [0, ndim]
+        //   * input ≡ 1 → nonzero has shape [numel, ndim] (every
+        //     position appears)
+        // Catches off-by-one in stride decomposition, missed
+        // positions, and silent drift between the count surface
+        // and the index surface. frankentorch-qlr0.
+        #[test]
+        fn fuzz_metamorphic_nonzero_count_consistency(
+            (rows, cols, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-2i16..=2i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v)).collect();
+            let n = rows * cols;
+
+            // Reference: collect the (row, col) coordinates of each
+            // nonzero (or NaN) position in input order.
+            let expected_indices: Vec<[usize; 2]> = input.iter()
+                .enumerate()
+                .filter(|&(_, &v)| v != 0.0 || v.is_nan())
+                .map(|(flat, _)| [flat / cols, flat % cols])
+                .collect();
+            let expected_count = expected_indices.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let nz = s.tensor_nonzero(x).expect("nonzero");
+            let nz_vals = s.tensor_values(nz).expect("nz vals");
+            let nz_shape = s.tensor_shape(nz).expect("nz shape");
+
+            // Cardinality contract.
+            prop_assert_eq!(
+                nz_shape.clone(),
+                vec![expected_count, 2],
+                "nonzero shape must be [{}, 2], got {:?}", expected_count, nz_shape
+            );
+            prop_assert_eq!(nz_vals.len(), expected_count * 2);
+
+            // count_nonzero must agree.
+            let count_node = s.tensor_count_nonzero(x).expect("count_nonzero");
+            let count = s.tensor_values(count_node).expect("count val")[0] as usize;
+            prop_assert_eq!(
+                count, expected_count,
+                "count_nonzero = {} but nonzero rows = {}", count, expected_count
+            );
+
+            // Per-row index contract.
+            for (row_i, expected) in expected_indices.iter().enumerate() {
+                let got_r = nz_vals[row_i * 2] as usize;
+                let got_c = nz_vals[row_i * 2 + 1] as usize;
+                prop_assert_eq!(
+                    [got_r, got_c],
+                    *expected,
+                    "nonzero row {} = ({}, {}) != expected ({}, {})",
+                    row_i, got_r, got_c, expected[0], expected[1]
+                );
+                let flat = got_r * cols + got_c;
+                let v = input[flat];
+                prop_assert!(
+                    v != 0.0 || v.is_nan(),
+                    "nonzero row {} points to flat index {} = {} (zero)", row_i, flat, v
+                );
+            }
+
+            // Boundary: all-zero input → shape [0, 2].
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let z = s.tensor_variable(vec![0.0; n], vec![rows, cols], false).expect("zeros");
+            let nz_z = s.tensor_nonzero(z).expect("nonzero zeros");
+            let shape_z = s.tensor_shape(nz_z).expect("zeros shape");
+            prop_assert_eq!(shape_z, vec![0, 2], "all-zero nonzero shape must be [0, 2]");
+
+            // Boundary: all-one input → shape [numel, 2].
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let o = s.tensor_variable(vec![1.0; n], vec![rows, cols], false).expect("ones");
+            let nz_o = s.tensor_nonzero(o).expect("nonzero ones");
+            let shape_o = s.tensor_shape(nz_o).expect("ones shape");
+            prop_assert_eq!(shape_o, vec![n, 2], "all-one nonzero shape must be [{}, 2]", n);
+        }
+
         // MR (masked_select contract): tensor_masked_select must
         // satisfy four contracts on a 1-D input + mask:
         //   1. Output length equals count of nonzero positions in
