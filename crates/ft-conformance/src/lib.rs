@@ -27926,6 +27926,193 @@ print(json.dumps({"xlog1py": out}))
     }
 
     #[test]
+    fn torch_hypot_libm_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_hypot against libm's hypot.
+        // f64::hypot wraps the platform libm's hypot (which is C99
+        // and IEEE 754 1-ULP-compliant). The contract worth locking:
+        //   * (0, 0) -> 0
+        //   * (x, 0) -> |x|, (0, y) -> |y|
+        //   * overflow regime where x*x + y*y would overflow but
+        //     hypot stays finite (the stable formulation is the
+        //     whole reason hypot exists)
+        //   * (+inf, y) and (x, +inf) return +inf even if the other
+        //     arg is NaN (C99: hypot(±inf, NaN) = +inf)
+        //   * NaN propagation when neither arg is inf
+        // frankentorch-kua1.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let python_available = Command::new("python3")
+            .arg("-c")
+            .arg("import math, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !python_available {
+            eprintln!(
+                "torch_hypot_libm_subprocess_conformance: python3 not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        let cases: Vec<(f64, f64)> = vec![
+            // Trivial.
+            (0.0, 0.0),
+            (-0.0, 0.0),
+            (0.0, -0.0),
+            (-0.0, -0.0),
+            // One arg zero.
+            (3.0, 0.0),
+            (0.0, 4.0),
+            (-3.0, 0.0),
+            (0.0, -4.0),
+            // 3-4-5 and 5-12-13 — exact in IEEE.
+            (3.0, 4.0),
+            (-3.0, 4.0),
+            (3.0, -4.0),
+            (-3.0, -4.0),
+            (5.0, 12.0),
+            (8.0, 15.0),
+            (7.0, 24.0),
+            // Generic interior.
+            (1.0, 1.0),
+            (1.5, 2.5),
+            (0.1, 0.2),
+            (1e-3, 2e-3),
+            // Wide dynamic range, no overflow yet.
+            (1e150, 1e-150),
+            (1e-150, 1e150),
+            // The overflow regime: x*x + y*y > f64::MAX but hypot
+            // still finite. Stable hypot is the whole point.
+            (1e200, 1e200),
+            (1e300, 1e300),
+            (f64::MAX, f64::MAX),
+            (1e300, 1.0),
+            (1.0, 1e300),
+            // Subnormal smalls.
+            (f64::MIN_POSITIVE, f64::MIN_POSITIVE),
+            (5e-324, 5e-324),
+            // Inf arguments. C99 hypot(±inf, anything) = +inf even
+            // when the other is NaN.
+            (f64::INFINITY, 1.0),
+            (1.0, f64::INFINITY),
+            (f64::NEG_INFINITY, 1.0),
+            (1.0, f64::NEG_INFINITY),
+            (f64::INFINITY, f64::INFINITY),
+            (f64::INFINITY, f64::NEG_INFINITY),
+            (f64::INFINITY, f64::NAN),
+            (f64::NAN, f64::INFINITY),
+            // NaN propagation when neither arg is inf.
+            (f64::NAN, 1.0),
+            (1.0, f64::NAN),
+            (f64::NAN, f64::NAN),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(x, y)| {
+                json!({"x_bits": x.to_bits().to_string(),
+                       "y_bits": y.to_bits().to_string()})
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import ctypes, ctypes.util, json, struct, sys
+
+libm_name = ctypes.util.find_library("m") or "libm.so.6"
+libm = ctypes.CDLL(libm_name)
+libm.hypot.restype = ctypes.c_double
+libm.hypot.argtypes = [ctypes.c_double, ctypes.c_double]
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    x = from_bits(case["x_bits"])
+    y = from_bits(case["y_bits"])
+    out.append(to_bits(libm.hypot(x, y)))
+print(json.dumps({"hypot": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_hypot_libm_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("hypot")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include hypot array");
+        assert_eq!(results.len(), cases.len());
+
+        // FrankenTorch routes through Rust f64::hypot (which wraps
+        // the same platform libm on most targets) — both are 1-ULP
+        // C99 compliant but may disagree in the last bit. Allow 2
+        // ULP tolerance. inf and NaN are exact under the standard.
+        const ULP_TOL: u64 = 2;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() != b.is_infinite()
+                || a.is_nan() != b.is_nan()
+                || a.is_sign_negative() != b.is_sign_negative()
+            {
+                return false;
+            }
+            let a_bits = a.to_bits();
+            let b_bits = b.to_bits();
+            a_bits.abs_diff(b_bits) <= ULP_TOL
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (x, y)) in cases.iter().enumerate() {
+            let want = f64::from_bits(results[i].as_str().unwrap().parse::<u64>().unwrap());
+            let xt = session
+                .tensor_variable(vec![*x], vec![1], false)
+                .expect("xt");
+            let yt = session
+                .tensor_variable(vec![*y], vec![1], false)
+                .expect("yt");
+            let got_id = session.tensor_hypot(xt, yt).expect("tensor_hypot");
+            let got = session.tensor_values(got_id).expect("got")[0];
+            if !approx_eq(got, want) {
+                mismatches.push(format!(
+                    "tensor_hypot(x={x:?}, y={y:?}) = {got:?} (bits 0x{:016x}) but libm returned {want:?} (bits 0x{:016x})",
+                    got.to_bits(),
+                    want.to_bits(),
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "hypot libm conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_sinc_numpy_subprocess_conformance() {
         // Lock FrankenTorch's tensor_sinc / tensor_special_sinc
         // against numpy.sinc. Both define the normalized sinc:
