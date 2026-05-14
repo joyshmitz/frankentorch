@@ -13952,6 +13952,50 @@ mod tests {
             }
         }
 
+        // MR (decomposition): cross_entropy_loss(logits, targets)
+        // ≈ nll_loss(log_softmax(logits, 1), targets) within 32 ULP.
+        // The two paths should agree on the loss value.
+        // frankentorch-jl6s.
+        #[test]
+        fn fuzz_metamorphic_cross_entropy_decomposition(
+            (batch, classes, raw_logits, target_raw) in (1usize..=4, 2usize..=8)
+                .prop_flat_map(|(b, c)| (
+                    Just(b),
+                    Just(c),
+                    prop::collection::vec(-256i16..=256i16, b * c),
+                    prop::collection::vec(0usize..c, b),
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let logits: Vec<f64> = raw_logits.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let targets: Vec<f64> = target_raw.iter().map(|&v| v as f64).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let l1 = s.tensor_variable(logits.clone(), vec![batch, classes], false).expect("l1");
+            let t1 = s.tensor_variable(targets.clone(), vec![batch], false).expect("t1");
+            let ce = s.cross_entropy_loss(l1, t1).expect("ce");
+            let v_ce = s.tensor_values(ce).expect("ce vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let l2 = s.tensor_variable(logits, vec![batch, classes], false).expect("l2");
+            let t2 = s.tensor_variable(targets, vec![batch], false).expect("t2");
+            let lsm = s.tensor_log_softmax(l2, 1).expect("log_softmax");
+            let nll = s.nll_loss(lsm, t2).expect("nll");
+            let v_nll = s.tensor_values(nll).expect("nll vals");
+
+            prop_assert_eq!(v_ce.len(), v_nll.len());
+            for (i, (a, b)) in v_ce.iter().zip(v_nll.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "ce[{}] = {} vs nll(log_softmax)[{}] = {} (diff = {:e})",
+                    i, a, i, b, diff
+                );
+            }
+        }
+
         // MR (consistency): topk(x, k=1, largest=true) returns
         // (max_dim(x, 0).values, max_dim(x, 0).indices) for 1-D x.
         // Both ops should agree on the maximum value and its
