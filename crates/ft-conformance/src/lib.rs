@@ -13952,6 +13952,52 @@ mod tests {
             }
         }
 
+        // MR (consistency): le(a, b) == lt(a, b) + eq(a, b) for
+        // non-NaN inputs. The "less or equal" predicate is the OR
+        // of strict-less and equal — and since they're disjoint,
+        // the OR is the SUM. Catches le/lt/eq dispatch drift.
+        // frankentorch-17hr.
+        #[test]
+        fn fuzz_metamorphic_le_equals_lt_or_eq(
+            (a_raw, b_raw) in (
+                prop::collection::vec(-512i16..=512i16, 1..24),
+                prop::collection::vec(-512i16..=512i16, 1..24),
+            ).prop_filter("same length", |(a, b)| a.len() == b.len())
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = a_vals.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a1 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a1");
+            let b1 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b1");
+            let le_ab = s.tensor_le(a1, b1).expect("le");
+            let v_le = s.tensor_values(le_ab).expect("le vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a2 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a2");
+            let b2 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b2");
+            let lt_ab = s.tensor_lt(a2, b2).expect("lt");
+            let v_lt = s.tensor_values(lt_ab).expect("lt vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a3 = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a3");
+            let b3 = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b3");
+            let eq_ab = s.tensor_eq(a3, b3).expect("eq");
+            let v_eq = s.tensor_values(eq_ab).expect("eq vals");
+
+            for (i, (&le_v, (&lt_v, &eq_v))) in v_le.iter().zip(v_lt.iter().zip(v_eq.iter())).enumerate() {
+                let expected = lt_v + eq_v;
+                prop_assert!(
+                    le_v == expected,
+                    "le[{}] = {} but lt + eq = {} (lt = {}, eq = {})",
+                    i, le_v, expected, lt_v, eq_v
+                );
+            }
+        }
+
         // MR (trichotomy): for non-NaN a, b, exactly one of
         // lt(a, b), gt(a, b), eq(a, b) is 1.0. The sum is exactly 1.
         // For NaN, all three are 0 (NaN comparisons all return false)
