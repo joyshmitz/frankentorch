@@ -15418,6 +15418,78 @@ mod tests {
             }
         }
 
+        // MR (tensor_inner contracts): for 1-D inputs of equal
+        // length, tensor_inner is the dot product. Three contracts:
+        //   1. inner(a, b) == dot(a, b) bit-exact (ft-api routes
+        //      the 1-D branch through tensor_dot directly).
+        //   2. Symmetry: inner(a, b) == inner(b, a) (the dot
+        //      product over real values is commutative; the same
+        //      sum is computed in IEEE order from both arguments).
+        //   3. Zero-vector identity: inner(a, 0) == 0 bit-exact
+        //      (every term in the sum is 0 * a[i] = 0).
+        // frankentorch-6fnu3.
+        #[test]
+        fn fuzz_metamorphic_inner_equals_dot_symmetric(
+            (a_raw, b_raw) in (1usize..=12).prop_flat_map(|n| (
+                prop::collection::vec(-256i16..=256i16, n),
+                prop::collection::vec(-256i16..=256i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let b_vals: Vec<f64> = b_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = a_vals.len();
+
+            // Contract 1: inner(a, b) == dot(a, b) bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a");
+            let bv = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let ino = s.tensor_inner(av, bv).expect("inner");
+            let v_in = s.tensor_values(ino).expect("inner val");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a");
+            let bv = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let dot = s.tensor_dot(av, bv).expect("dot");
+            let v_dot = s.tensor_values(dot).expect("dot val");
+
+            // tensor_inner returns shape [1] for 1-D inputs; dot
+            // returns shape [1] or scalar. Compare first element.
+            prop_assert_eq!(
+                v_in[0].to_bits(), v_dot[0].to_bits(),
+                "inner(a, b) = {} != dot(a, b) = {}", v_in[0], v_dot[0]
+            );
+
+            // Contract 2: symmetry.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a");
+            let bv = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let inn_ba = s.tensor_inner(bv, av).expect("inner ba");
+            let v_ba = s.tensor_values(inn_ba).expect("inner ba val");
+            prop_assert_eq!(
+                v_in[0].to_bits(), v_ba[0].to_bits(),
+                "inner(a, b) = {} not symmetric with inner(b, a) = {}",
+                v_in[0], v_ba[0]
+            );
+
+            // Contract 3: zero-vector identity. The result is
+            // either +0 or -0 depending on the sign-of-zero rules
+            // for IEEE 754 multiplication (e.g. -1.0 * 0.0 = -0.0
+            // accumulates to -0). Both are mathematically zero,
+            // so accept either by checking the magnitude.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals, vec![n], false).expect("a");
+            let zero = s.tensor_variable(vec![0.0; n], vec![n], false).expect("zero");
+            let inn_z = s.tensor_inner(av, zero).expect("inner zero");
+            let v_z = s.tensor_values(inn_z).expect("inner zero val");
+            prop_assert!(
+                v_z[0] == 0.0,
+                "inner(a, 0) must be ±0, got {} (bits 0x{:x})",
+                v_z[0], v_z[0].to_bits()
+            );
+        }
+
         // MR (movedim contracts): tensor_movedim(x, src, dst)
         // moves dimension `src` to position `dst` and shifts
         // others. The op is a permutation, so:
