@@ -15418,6 +15418,118 @@ mod tests {
             }
         }
 
+        // MR (addmm decomposition): tensor_addmm(input, mat1,
+        // mat2, beta, alpha) = beta * input + alpha * (mat1 @
+        // mat2). The MR exercises three contracts:
+        //   1. Composition: addmm matches the explicit composed
+        //      form beta * input + alpha * (mat1 @ mat2) within
+        //      32 ULP relative scale. The kernel may collapse the
+        //      operation into a single fused GEMM and the
+        //      composed form runs four separate kernels, so a
+        //      modest ULP envelope is expected.
+        //   2. alpha == 0 boundary: addmm(input, mat1, mat2, β, 0)
+        //      == β * input. The matmul branch is entirely
+        //      suppressed.
+        //   3. beta  == 0 boundary: addmm(zeros, mat1, mat2, 0, α)
+        //      == α * (mat1 @ mat2). The input branch is entirely
+        //      suppressed (using zeros sidesteps any 0 * NaN
+        //      pathological corner).
+        // Catches drift between the fused GEMM kernel and the
+        // composed reference, missed alpha/beta branches, and
+        // any input/mat1@mat2 axis swap. frankentorch-v35i3.
+        #[test]
+        fn fuzz_metamorphic_addmm_decomposition(
+            (m, k, n, raw_input, raw_mat1, raw_mat2) in (1usize..=4, 1usize..=4, 1usize..=4).prop_flat_map(|(mm, kk, nn)| (
+                Just(mm),
+                Just(kk),
+                Just(nn),
+                prop::collection::vec(-16i16..=16i16, mm * nn),
+                prop::collection::vec(-16i16..=16i16, mm * kk),
+                prop::collection::vec(-16i16..=16i16, kk * nn),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input_vals: Vec<f64> = raw_input.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let mat1_vals:  Vec<f64> = raw_mat1.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let mat2_vals:  Vec<f64> = raw_mat2.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let alpha = 2.5_f64;
+            let beta = 0.75_f64;
+
+            // Contract 1: kernel result vs composed reference.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m, n], false).expect("inp");
+            let m1 = s.tensor_variable(mat1_vals.clone(), vec![m, k], false).expect("m1");
+            let m2 = s.tensor_variable(mat2_vals.clone(), vec![k, n], false).expect("m2");
+            let kernel_out = s.tensor_addmm(inp, m1, m2, beta, alpha).expect("addmm");
+            let v_kernel = s.tensor_values(kernel_out).expect("kernel vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m, n], false).expect("inp");
+            let m1 = s.tensor_variable(mat1_vals.clone(), vec![m, k], false).expect("m1");
+            let m2 = s.tensor_variable(mat2_vals.clone(), vec![k, n], false).expect("m2");
+            let prod = s.tensor_matmul(m1, m2).expect("matmul");
+            let alpha_t = s.full(vec![m, n], alpha, false).expect("alpha t");
+            let beta_t = s.full(vec![m, n], beta, false).expect("beta t");
+            let alpha_prod = s.tensor_mul(prod, alpha_t).expect("alpha * prod");
+            let beta_inp = s.tensor_mul(inp, beta_t).expect("beta * inp");
+            let composed = s.tensor_add(beta_inp, alpha_prod).expect("sum");
+            let v_composed = s.tensor_values(composed).expect("composed vals");
+
+            prop_assert_eq!(v_kernel.len(), v_composed.len());
+            for (i, (a, b)) in v_kernel.iter().zip(v_composed.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "addmm[{}] = {} vs composed = {} (diff = {:e})", i, a, b, diff
+                );
+            }
+
+            // Contract 2: alpha == 0 → addmm == β * input.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(input_vals.clone(), vec![m, n], false).expect("inp");
+            let m1 = s.tensor_variable(mat1_vals.clone(), vec![m, k], false).expect("m1");
+            let m2 = s.tensor_variable(mat2_vals.clone(), vec![k, n], false).expect("m2");
+            let out = s.tensor_addmm(inp, m1, m2, beta, 0.0).expect("addmm a0");
+            let v = s.tensor_values(out).expect("a0 vals");
+            for (i, (g, &ix)) in v.iter().zip(input_vals.iter()).enumerate() {
+                let want = beta * ix;
+                let diff = (g - want).abs();
+                let scale = g.abs().max(want.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON * scale,
+                    "addmm(α=0)[{}] = {} != β * input[{}] = {} * {} = {}",
+                    i, g, i, beta, ix, want
+                );
+            }
+
+            // Contract 3: beta == 0 with zeros input → α * (m1 @ m2).
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(vec![0.0; m * n], vec![m, n], false).expect("zeros");
+            let m1 = s.tensor_variable(mat1_vals, vec![m, k], false).expect("m1");
+            let m2 = s.tensor_variable(mat2_vals, vec![k, n], false).expect("m2");
+            let out = s.tensor_addmm(inp, m1, m2, 0.0, alpha).expect("addmm b0");
+            let v = s.tensor_values(out).expect("b0 vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let m1 = s.tensor_variable(raw_mat1.iter().map(|v| f64::from(*v) / 13.0).collect(), vec![m, k], false).expect("m1 ref");
+            let m2 = s.tensor_variable(raw_mat2.iter().map(|v| f64::from(*v) / 13.0).collect(), vec![k, n], false).expect("m2 ref");
+            let prod = s.tensor_matmul(m1, m2).expect("matmul ref");
+            let alpha_t = s.full(vec![m, n], alpha, false).expect("alpha ref");
+            let scaled = s.tensor_mul(prod, alpha_t).expect("alpha * prod ref");
+            let v_ref = s.tensor_values(scaled).expect("ref vals");
+
+            for (i, (a, b)) in v.iter().zip(v_ref.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "addmm(β=0, zeros)[{}] = {} != α*(m1@m2)[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (cosine_similarity contracts): cosine_similarity(x, y)
         // = (x · y) / (|x| * |y|) must satisfy four contracts:
         //   1. Self-similarity: cosine_similarity(x, x) ≈ 1 for
