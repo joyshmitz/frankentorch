@@ -15418,6 +15418,101 @@ mod tests {
             }
         }
 
+        // MR (deduplication contract): tensor_unique(x, sorted=true,
+        // return_inverse=true, return_counts=true) must satisfy:
+        //   1. |unique| <= |x|
+        //   2. unique is sorted ascending under total_cmp
+        //   3. Every x[i] equals some unique[j] (membership)
+        //   4. unique[inverse[i]] == x[i] for every i — the inverse
+        //      map is a left inverse of the unique map. (PyTorch
+        //      uses IEEE `==`, so this fails on NaN; the MR uses
+        //      finite inputs to dodge that semantic.)
+        //   5. sum(counts) == |x|
+        //   6. counts[j] == number of i such that x[i] == unique[j]
+        // Catches sortedness violations, duplicate slots, inverse
+        // off-by-one, and miscounted occurrences in one MR.
+        // frankentorch-0pap.
+        #[test]
+        fn fuzz_metamorphic_unique_contract(
+            raw in prop::collection::vec(-32i16..=32i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Narrow integer range guarantees lots of duplicates so
+            // the counts / inverse paths see exercise. Scale to f64
+            // identically without any introduction of NaN/inf so
+            // the IEEE equality MR holds.
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v)).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+
+            let (unique_id, inverse_id_opt, counts_id_opt) =
+                s.tensor_unique(x, true, true, true).expect("unique");
+            let inverse_id = inverse_id_opt.expect("inverse requested");
+            let counts_id = counts_id_opt.expect("counts requested");
+
+            let unique_vals = s.tensor_values(unique_id).expect("unique vals");
+            let inverse_vals = s.tensor_values(inverse_id).expect("inverse vals");
+            let counts_vals = s.tensor_values(counts_id).expect("counts vals");
+
+            // Contract 1: |unique| <= |x|.
+            prop_assert!(
+                unique_vals.len() <= n,
+                "unique length {} exceeds input length {}", unique_vals.len(), n
+            );
+
+            // Contract 2: unique sorted ascending under total_cmp.
+            for k in 1..unique_vals.len() {
+                prop_assert!(
+                    unique_vals[k - 1].total_cmp(&unique_vals[k]) != std::cmp::Ordering::Greater,
+                    "unique not sorted: {} > {}", unique_vals[k - 1], unique_vals[k]
+                );
+            }
+
+            // Contract 3: every x[i] is in unique.
+            for &xi in &input {
+                prop_assert!(
+                    unique_vals.iter().any(|&u| u == xi),
+                    "x value {} missing from unique {:?}", xi, unique_vals
+                );
+            }
+
+            // Contract 4: unique[inverse[i]] == x[i].
+            prop_assert_eq!(inverse_vals.len(), n, "inverse length must match input");
+            for (i, &inv_f) in inverse_vals.iter().enumerate() {
+                let inv = inv_f as usize;
+                prop_assert!(
+                    inv < unique_vals.len(),
+                    "inverse[{}] = {} out of range for unique length {}",
+                    i, inv, unique_vals.len()
+                );
+                prop_assert_eq!(
+                    unique_vals[inv].to_bits(), input[i].to_bits(),
+                    "unique[inverse[{}]] = {} != x[{}] = {}",
+                    i, unique_vals[inv], i, input[i]
+                );
+            }
+
+            // Contract 5: sum(counts) == |x|.
+            let counts_sum: f64 = counts_vals.iter().copied().sum();
+            prop_assert_eq!(
+                counts_sum as usize, n,
+                "sum(counts) = {} != |x| = {}", counts_sum, n
+            );
+
+            // Contract 6: counts[j] equals frequency of unique[j] in x.
+            for (j, &uj) in unique_vals.iter().enumerate() {
+                let expected = input.iter().filter(|&&v| v == uj).count();
+                prop_assert_eq!(
+                    counts_vals[j] as usize, expected,
+                    "counts[{}] = {} but unique[{}] = {} appears {} times in x",
+                    j, counts_vals[j], j, uj, expected
+                );
+            }
+        }
+
         // MR (order-statistic contract): tensor_quantile must
         // satisfy four contracts on a 1-D input:
         //   1. quantile(x, 0) == min(x)
