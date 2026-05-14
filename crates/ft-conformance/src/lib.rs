@@ -15418,6 +15418,99 @@ mod tests {
             }
         }
 
+        // MR (IEEE predicate partition): every f64 falls into
+        // exactly one of three classes (finite, ±inf, NaN). The
+        // predicates must agree:
+        //   1. isfinite(x) + isinf(x) + isnan(x) == 1 for every x
+        //      (mutually exclusive, exhaustive).
+        //   2. isposinf(x) | isneginf(x) == isinf(x).
+        //   3. isposinf(x) & isneginf(x) == 0 (signed inf is one
+        //      of two distinct values).
+        //   4. isnan(x) ⇔ (x != x in IEEE).
+        // Test on a fixed mix of finite, ±inf, NaN inputs (no
+        // proptest noise needed — the partition holds on every
+        // f64 by definition). frankentorch-eqkn5.
+        #[test]
+        fn fuzz_metamorphic_ieee_predicate_partition(
+            scale in -64i16..=64i16
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let s_val = f64::from(scale) / 13.0;
+            let inputs: Vec<f64> = vec![
+                // Finite typical.
+                0.0,
+                -0.0,
+                1.0,
+                -1.0,
+                s_val,
+                f64::MIN_POSITIVE,
+                -f64::MIN_POSITIVE,
+                f64::MAX,
+                f64::MIN,
+                // Subnormal smalls.
+                5e-324,
+                -5e-324,
+                // Infinities.
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                // NaN.
+                f64::NAN,
+            ];
+            let n = inputs.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(inputs.clone(), vec![n], false).expect("x");
+            let isfin = s.tensor_isfinite(x).expect("isfinite");
+            let isinf = s.tensor_isinf(x).expect("isinf");
+            let isnan = s.tensor_isnan(x).expect("isnan");
+            let isposinf = s.tensor_isposinf(x).expect("isposinf");
+            let isneginf = s.tensor_isneginf(x).expect("isneginf");
+
+            let v_isfin = s.tensor_values(isfin).expect("isfin vals");
+            let v_isinf = s.tensor_values(isinf).expect("isinf vals");
+            let v_isnan = s.tensor_values(isnan).expect("isnan vals");
+            let v_isposinf = s.tensor_values(isposinf).expect("isposinf vals");
+            let v_isneginf = s.tensor_values(isneginf).expect("isneginf vals");
+
+            for (i, &xi) in inputs.iter().enumerate() {
+                let f = v_isfin[i];
+                let inf = v_isinf[i];
+                let nan = v_isnan[i];
+                let pinf = v_isposinf[i];
+                let ninf = v_isneginf[i];
+
+                // Contract 1: partition.
+                let partition = f + inf + nan;
+                prop_assert_eq!(
+                    partition.to_bits(), 1.0_f64.to_bits(),
+                    "isfinite + isinf + isnan = {} != 1 at x = {}", partition, xi
+                );
+
+                // Contract 2: isposinf | isneginf == isinf.
+                let sign_or: f64 = if pinf != 0.0 || ninf != 0.0 { 1.0 } else { 0.0 };
+                prop_assert_eq!(
+                    sign_or.to_bits(), inf.to_bits(),
+                    "isposinf | isneginf = {} != isinf = {} at x = {}", sign_or, inf, xi
+                );
+
+                // Contract 3: isposinf & isneginf == 0 (mutually
+                // exclusive).
+                let and: f64 = if pinf != 0.0 && ninf != 0.0 { 1.0 } else { 0.0 };
+                prop_assert_eq!(
+                    and.to_bits(), 0.0_f64.to_bits(),
+                    "isposinf & isneginf = {} != 0 at x = {}", and, xi
+                );
+
+                // Contract 4: isnan(x) iff (x != x in IEEE).
+                let want_nan: f64 = if xi != xi { 1.0 } else { 0.0 };
+                prop_assert_eq!(
+                    nan.to_bits(), want_nan.to_bits(),
+                    "isnan({}) = {} != IEEE (x != x) = {}", xi, nan, want_nan
+                );
+            }
+        }
+
         // MR (complex/real/imag round-trip): the pair
         // tensor_complex / (tensor_real, tensor_imag) is a strict
         // inverse for both Complex64 and Complex128 dtypes:
