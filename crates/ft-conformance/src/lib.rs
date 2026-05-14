@@ -13952,6 +13952,42 @@ mod tests {
             }
         }
 
+        // MR (consistency): tensor_repeat along dim 0 followed by
+        // tensor_chunk into k pieces returns k copies of x, each
+        // bit-exactly equal to the original. Catches drift between
+        // repeat and chunk shape arithmetic. frankentorch-f7u2.
+        #[test]
+        fn fuzz_metamorphic_repeat_then_chunk_recovers_original(
+            (n, k, raw) in (1usize..=8, 2usize..=4).prop_flat_map(|(n, k)| (
+                Just(n),
+                Just(k),
+                prop::collection::vec(-256i16..=256i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let repeated = s.tensor_repeat(x, &[k]).expect("repeat");
+            let shape = s.tensor_shape(repeated).expect("repeat shape");
+            prop_assert_eq!(shape, vec![n * k]);
+
+            let chunks = s.tensor_chunk(repeated, k, 0).expect("chunk");
+            prop_assert_eq!(chunks.len(), k);
+            for (chunk_idx, chunk) in chunks.iter().enumerate() {
+                let v = s.tensor_values(*chunk).expect("chunk vals");
+                prop_assert_eq!(v.len(), n);
+                for (i, (a, b)) in v.iter().zip(input.iter()).enumerate() {
+                    prop_assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "chunk[{}][{}] = {} != x[{}] = {}", chunk_idx, i, a, i, b
+                    );
+                }
+            }
+        }
+
         // MR (consistency): tensor_expand and tensor_broadcast_to
         // should produce bit-identical output for inputs where both
         // ops are well-defined (the input shape has 1s where the
