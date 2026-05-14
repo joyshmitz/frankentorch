@@ -15418,6 +15418,71 @@ mod tests {
             }
         }
 
+        // MR (gather/scatter inverse): for a 1-D input with a
+        // permutation index, gather(scatter(zeros, 0, idx, src),
+        // 0, idx) == src bit-exact. scatter places src[k] at slot
+        // idx[k] in a zero target; gather then reads back from
+        // those same slots. Without duplicate indices the
+        // composition is a strict inverse, so the round-trip must
+        // be bit-exact. Additionally checks the identity-index
+        // contract: gather(x, 0, [0..n-1]) == x. Catches index
+        // arithmetic drift in either of the two opposite-direction
+        // index ops. frankentorch-um69.
+        #[test]
+        fn fuzz_metamorphic_scatter_gather_roundtrip(
+            (raw, perm_seed) in (1usize..=12).prop_flat_map(|n| (
+                prop::collection::vec(-256i16..=256i16, n),
+                prop::collection::vec(0u8..=255u8, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let src_vals: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let n = src_vals.len();
+
+            // Build a permutation by Fisher-Yates on (0..n) keyed
+            // off perm_seed, giving us non-duplicate indices for
+            // every shrink.
+            let mut perm: Vec<usize> = (0..n).collect();
+            for i in (1..n).rev() {
+                let j = usize::from(perm_seed[i % perm_seed.len()]) % (i + 1);
+                perm.swap(i, j);
+            }
+            let index_vals: Vec<f64> = perm.iter().map(|&k| k as f64).collect();
+
+            // Contract 1: gather(scatter(zeros, idx, src), idx) == src.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let zeros = s.tensor_variable(vec![0.0; n], vec![n], false).expect("zeros");
+            let src = s.tensor_variable(src_vals.clone(), vec![n], false).expect("src");
+            let idx1 = s.tensor_variable(index_vals.clone(), vec![n], false).expect("idx1");
+            let scattered = s.tensor_scatter(zeros, 0, idx1, src).expect("scatter");
+            let idx2 = s.tensor_variable(index_vals, vec![n], false).expect("idx2");
+            let recovered = s.tensor_gather(scattered, 0, idx2).expect("gather");
+            let got = s.tensor_values(recovered).expect("got vals");
+            prop_assert_eq!(got.len(), n);
+            for (i, (a, b)) in got.iter().zip(src_vals.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "gather(scatter(zeros, idx, src), idx)[{}] = {} != src[{}] = {}",
+                    i, a, i, b
+                );
+            }
+
+            // Contract 2: gather with identity index is identity.
+            let identity_f: Vec<f64> = (0..n).map(|i| i as f64).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(src_vals.clone(), vec![n], false).expect("x");
+            let identity = s.tensor_variable(identity_f, vec![n], false).expect("identity");
+            let out = s.tensor_gather(x, 0, identity).expect("gather identity");
+            let got = s.tensor_values(out).expect("got vals");
+            for (i, (a, b)) in got.iter().zip(src_vals.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "gather(x, 0, identity)[{}] = {} != x[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (index_add contract): tensor_index_add(input, dim,
         // index, src) accumulates src[k] into input at position
         // index[k] along dim. The MR exercises two contracts on a
