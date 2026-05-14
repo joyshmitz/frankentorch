@@ -13952,6 +13952,39 @@ mod tests {
             }
         }
 
+        // MR (roundtrip): reshape(reshape(x, new_shape), original_shape)
+        // == x bit-exact. reshape is a pure metadata op (no data
+        // copy in contiguous case), so the round-trip must preserve
+        // bits. Catches stride-recomputation bugs.
+        // frankentorch-nz0c.
+        #[test]
+        fn fuzz_metamorphic_reshape_roundtrip(
+            (rows, cols, raw) in (1usize..=8, 1usize..=8).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let total = rows * cols;
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            // Flatten then restore.
+            let flat = s.tensor_reshape(x, vec![total]).expect("flatten");
+            let restored = s.tensor_reshape(flat, vec![rows, cols]).expect("restore");
+            let v = s.tensor_values(restored).expect("vals");
+            prop_assert_eq!(v.len(), input.len());
+            for (i, (a, b)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "reshape roundtrip[{}] = {} != x[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (involution): transpose(transpose(M, i, j), i, j) == M
         // bit-exact. Two transposes of the same dim pair return to
         // the original. Catches transpose index off-by-one and
