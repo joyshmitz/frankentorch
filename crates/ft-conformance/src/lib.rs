@@ -15418,6 +15418,70 @@ mod tests {
             }
         }
 
+        // MR (pad contracts): tensor_pad must satisfy two
+        // orthogonal contracts on a 2-D [rows, cols] input:
+        //   1. Zero padding identity: pad with [0, 0, 0, 0] returns
+        //      a tensor bit-exact to the input (no padding added).
+        //   2. Center recovery: pad with [l, r, t, b] then narrow
+        //      back to the original [rows, cols] window recovers
+        //      the input bit-exact. Catches off-by-one in the
+        //      pad_before / pad_after stride math or contention
+        //      between the padding axes.
+        // frankentorch-d7t4.
+        #[test]
+        fn fuzz_metamorphic_pad_constant_identity_and_center(
+            (rows, cols, l, r, t, b, raw) in (
+                1usize..=6, 1usize..=6, 0usize..=3, 0usize..=3, 0usize..=3, 0usize..=3
+            ).prop_flat_map(|(rr, cc, ll, rrp, tt, bb)| (
+                Just(rr), Just(cc), Just(ll), Just(rrp), Just(tt), Just(bb),
+                prop::collection::vec(-256i16..=256i16, rr * cc),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+
+            // Contract 1: pad with zeros is identity.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let zero_padded = s.tensor_pad(x, &[0, 0, 0, 0], 0.0).expect("zero pad");
+            let v0 = s.tensor_values(zero_padded).expect("zero pad vals");
+            let shape0 = s.tensor_shape(zero_padded).expect("zero pad shape");
+            prop_assert_eq!(shape0, vec![rows, cols]);
+            for (i, (a, b)) in v0.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "pad([0,0,0,0])[{}] = {} != x[{}] = {}", i, a, i, b
+                );
+            }
+
+            // Contract 2: pad then narrow the center back recovers x.
+            // PyTorch ordering: pad uses innermost-dim-first
+            // (left/right first, then top/bottom), so for a 2-D tensor
+            // [rows, cols] padded with [l, r, t, b] the resulting
+            // shape is [rows + t + b, cols + l + r] and the original
+            // input lives at the [t..t+rows, l..l+cols] sub-window.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let padded = s.tensor_pad(x, &[l, r, t, b], 0.0).expect("pad");
+            let shape_p = s.tensor_shape(padded).expect("padded shape");
+            prop_assert_eq!(shape_p, vec![rows + t + b, cols + l + r]);
+
+            // Narrow first along dim 0 to extract the row window, then
+            // dim 1 for the col window.
+            let row_window = s.tensor_narrow(padded, 0, t, rows).expect("row narrow");
+            let center = s.tensor_narrow(row_window, 1, l, cols).expect("col narrow");
+            let vc = s.tensor_values(center).expect("center vals");
+            let shape_c = s.tensor_shape(center).expect("center shape");
+            prop_assert_eq!(shape_c, vec![rows, cols]);
+            for (i, (a, b)) in vc.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "pad-then-narrow center[{}] = {} != x[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (deduplication contract): tensor_unique(x, sorted=true,
         // return_inverse=true, return_counts=true) must satisfy:
         //   1. |unique| <= |x|
