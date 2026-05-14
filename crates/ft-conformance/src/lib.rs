@@ -13952,6 +13952,42 @@ mod tests {
             }
         }
 
+        // MR (closed form): mish(x) ≈ x * tanh(softplus(x)) within
+        // 32 ULP. Mish is defined as x * tanh(log(1+exp(x))).
+        // Catches drift between the dedicated mish kernel and the
+        // composed mul + tanh + softplus path. frankentorch-fjpe.
+        #[test]
+        fn fuzz_metamorphic_mish_equals_x_times_tanh_softplus(
+            samples in prop::collection::vec(-800i16..=800i16, 1..32)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 80.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_a = s.tensor_variable(input.clone(), vec![n], false).expect("x_a");
+            let mish_x = s.tensor_mish(x_a).expect("mish");
+            let v_mish = s.tensor_values(mish_x).expect("mish vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x_b = s.tensor_variable(input.clone(), vec![n], false).expect("x_b");
+            let sp = s.tensor_softplus(x_b).expect("softplus");
+            let t = s.tensor_tanh(sp).expect("tanh");
+            let v_t = s.tensor_values(t).expect("tanh(softplus) vals");
+
+            for (i, ((&x_i, &got), &tval)) in input.iter().zip(v_mish.iter()).zip(v_t.iter()).enumerate() {
+                let expected = x_i * tval;
+                let diff = (got - expected).abs();
+                let scale = got.abs().max(expected.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "mish({})[{}] = {} vs x*tanh(softplus(x)) = {} (diff = {:e})",
+                    x_i, i, got, expected, diff
+                );
+            }
+        }
+
         // MR (closed form): silu(x) == x * sigmoid(x) within 16 ULP.
         // SiLU (also called Swish) is defined as x * sigmoid(x).
         // Catches drift between the dedicated silu kernel and the
