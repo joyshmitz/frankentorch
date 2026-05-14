@@ -27926,6 +27926,187 @@ print(json.dumps({"xlog1py": out}))
     }
 
     #[test]
+    fn torch_sinc_numpy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_sinc / tensor_special_sinc
+        // against numpy.sinc. Both define the normalized sinc:
+        //     sinc(x) = sin(pi * x) / (pi * x)    for x != 0
+        //     sinc(0) = 1                          (continuity limit)
+        // FrankenTorch's tensor_sinc composes through tensor_sin +
+        // tensor_div + tensor_where on the (x == 0) mask, so the
+        // x == 0 branch is bit-exact (both numpy and FrankenTorch
+        // hard-code 1) and the smooth interior should match within
+        // ~few ULPs of sin/div precision.
+        //
+        // frankentorch-zxn1.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let numpy_available = Command::new("python3")
+            .arg("-c")
+            .arg("import numpy, json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !numpy_available {
+            eprintln!(
+                "torch_sinc_numpy_subprocess_conformance: python3/numpy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // Inputs covering: x == 0 mask branch (both signs), tiny x
+        // where sin(pi*x) ≈ pi*x (output ≈ 1), x == ±1, ±0.5, etc.
+        // where sinc has known zero crossings and half-cycle peaks,
+        // larger x where the rapid oscillation stresses sin/div
+        // precision, and inf / NaN propagation.
+        let inputs: Vec<f64> = vec![
+            0.0,
+            -0.0,
+            // Tiny x: sinc(x) → 1.
+            1e-300,
+            -1e-300,
+            1e-15,
+            -1e-15,
+            1e-6,
+            -1e-6,
+            // sin(pi*x) zeros at integer x — sinc(n) = 0 exactly for
+            // integer n != 0.
+            1.0,
+            -1.0,
+            2.0,
+            -2.0,
+            3.0,
+            5.0,
+            10.0,
+            // Half-integer peaks: sinc(0.5) = 2/pi, sinc(1.5) = -2/(3 pi), etc.
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            2.5,
+            -2.5,
+            // Generic interior values.
+            0.1,
+            0.25,
+            -0.25,
+            0.75,
+            1.25,
+            -3.7,
+            7.3,
+            // Larger x where sin(pi*x) loses precision but the
+            // sin/div composition should still match libm/numpy.
+            100.0,
+            -100.0,
+            1000.0,
+            // Inf / NaN propagation.
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        let payload = json!({
+            "x_bits": inputs.iter().map(|x| x.to_bits().to_string())
+                .collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+import numpy as np
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for s in req["x_bits"]:
+    x = from_bits(s)
+    try:
+        v = float(np.sinc(x))
+    except Exception:
+        v = float("nan")
+    out.append(to_bits(v))
+print(json.dumps({"sinc": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_sinc_numpy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("sinc")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include sinc array");
+        assert_eq!(results.len(), inputs.len());
+
+        // Composition (sin + div + where) gives a few-ULP envelope on
+        // the smooth interior; the masked x == 0 case is bit-exact
+        // because both numpy and FrankenTorch hard-code 1.0. For
+        // very small |x| the result rides up against ulp(1) so
+        // absolute tolerance 1e-15 is the right floor.
+        const ULP_TOL: u64 = 4;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() != b.is_infinite()
+                || a.is_nan() != b.is_nan()
+                || a.is_sign_negative() != b.is_sign_negative()
+            {
+                return false;
+            }
+            if (a - b).abs() <= 1e-15 {
+                return true;
+            }
+            let a_bits = a.to_bits();
+            let b_bits = b.to_bits();
+            a_bits.abs_diff(b_bits) <= ULP_TOL
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, x) in inputs.iter().enumerate() {
+            let want = f64::from_bits(results[i].as_str().unwrap().parse::<u64>().unwrap());
+            let xt = session
+                .tensor_variable(vec![*x], vec![1], false)
+                .expect("xt");
+            let got_id = session.tensor_sinc(xt).expect("tensor_sinc");
+            let got = session.tensor_values(got_id).expect("got")[0];
+            if !approx_eq(got, want) {
+                mismatches.push(format!(
+                    "tensor_sinc({x:?}) = {got:?} (bits 0x{:016x}) but numpy.sinc returned {want:?} (bits 0x{:016x})",
+                    got.to_bits(),
+                    want.to_bits(),
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "sinc numpy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_xlogy_scipy_subprocess_conformance() {
         // Lock FrankenTorch's tensor_xlogy against
         // scipy.special.xlogy. xlogy(x, y) = x * log(y) with the
