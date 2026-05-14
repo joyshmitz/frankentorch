@@ -15418,6 +15418,119 @@ mod tests {
             }
         }
 
+        // MR (dtype invariance): every layout-only shape op must
+        // preserve the input dtype. Pipes a [2, 1, 4] tensor through
+        // ten shape ops (squeeze, unsqueeze, reshape, narrow,
+        // transpose, permute, flatten, unflatten, chunk, split)
+        // across F32/F64/Complex64/Complex128 and asserts
+        // tensor_dtype is unchanged after each op. Catches
+        // accidental upcasts in the layout machinery — the kind of
+        // bug that wouldn't show up in F64-only MRs. F16 and BF16
+        // are skipped because tape-level to_dtype only supports
+        // F32/F64 today; the tensor_half/tensor_bfloat16 surfaces
+        // are tracked separately.
+        // frankentorch-riso.
+        #[test]
+        fn fuzz_metamorphic_shape_ops_preserve_dtype(
+            raw in prop::collection::vec(-256i16..=256i16, 8)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Build the F64 source once; shape [2, 1, 4] = 8 elts.
+            let src: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+
+            for &target in &[DType::F32, DType::F64, DType::Complex64, DType::Complex128] {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                // Construct a leaf tensor in `target` dtype.
+                let dtyped = match target {
+                    DType::F32 => {
+                        let x = s.tensor_variable(src.clone(), vec![2, 1, 4], false)
+                            .expect("F64 leaf");
+                        s.tensor_to_f32(x).expect("cast to f32")
+                    }
+                    DType::F64 => {
+                        s.tensor_variable(src.clone(), vec![2, 1, 4], false)
+                            .expect("F64 leaf")
+                    }
+                    DType::Complex64 => {
+                        let real_f64 = s.tensor_variable(src.clone(), vec![2, 1, 4], false)
+                            .expect("real F64");
+                        let imag_f64 = s.tensor_variable(src.clone(), vec![2, 1, 4], false)
+                            .expect("imag F64");
+                        let real = s.tensor_to_f32(real_f64).expect("real to f32");
+                        let imag = s.tensor_to_f32(imag_f64).expect("imag to f32");
+                        s.tensor_complex(real, imag).expect("complex64")
+                    }
+                    DType::Complex128 => {
+                        let real = s.tensor_variable(src.clone(), vec![2, 1, 4], false)
+                            .expect("real F64");
+                        let imag = s.tensor_variable(src.clone(), vec![2, 1, 4], false)
+                            .expect("imag F64");
+                        s.tensor_complex(real, imag).expect("complex128")
+                    }
+                    _ => unreachable!(),
+                };
+
+                // Sanity: leaf is in the target dtype.
+                let leaf_dtype = s.tensor_dtype(dtyped).expect("leaf dtype");
+                prop_assert_eq!(leaf_dtype, target, "leaf dtype not as constructed");
+
+                // squeeze along the unit dim
+                let sq = s.tensor_squeeze(dtyped, 1).expect("squeeze");
+                prop_assert_eq!(s.tensor_dtype(sq).expect("sq dtype"), target,
+                    "tensor_squeeze upcast: target {:?}", target);
+
+                // unsqueeze a fresh unit dim at the front
+                let usq = s.tensor_unsqueeze(dtyped, 0).expect("unsqueeze");
+                prop_assert_eq!(s.tensor_dtype(usq).expect("usq dtype"), target,
+                    "tensor_unsqueeze upcast: target {:?}", target);
+
+                // reshape to flat 1-D
+                let rs = s.tensor_reshape(dtyped, vec![8]).expect("reshape");
+                prop_assert_eq!(s.tensor_dtype(rs).expect("rs dtype"), target,
+                    "tensor_reshape upcast: target {:?}", target);
+
+                // narrow on the last dim
+                let nr = s.tensor_narrow(dtyped, 2, 0, 2).expect("narrow");
+                prop_assert_eq!(s.tensor_dtype(nr).expect("nr dtype"), target,
+                    "tensor_narrow upcast: target {:?}", target);
+
+                // transpose first and last dim
+                let tp = s.tensor_transpose(dtyped, 0, 2).expect("transpose");
+                prop_assert_eq!(s.tensor_dtype(tp).expect("tp dtype"), target,
+                    "tensor_transpose upcast: target {:?}", target);
+
+                // permute to a non-identity order
+                let pm = s.tensor_permute(dtyped, vec![2, 0, 1]).expect("permute");
+                prop_assert_eq!(s.tensor_dtype(pm).expect("pm dtype"), target,
+                    "tensor_permute upcast: target {:?}", target);
+
+                // flatten the full rank
+                let fl = s.tensor_flatten(dtyped, 0, 2).expect("flatten");
+                prop_assert_eq!(s.tensor_dtype(fl).expect("fl dtype"), target,
+                    "tensor_flatten upcast: target {:?}", target);
+
+                // unflatten the last dim into [2, 2]
+                let ufl = s.tensor_unflatten(dtyped, 2, vec![2, 2]).expect("unflatten");
+                prop_assert_eq!(s.tensor_dtype(ufl).expect("ufl dtype"), target,
+                    "tensor_unflatten upcast: target {:?}", target);
+
+                // chunk into two equal halves along dim 0
+                let chunks = s.tensor_chunk(dtyped, 2, 0).expect("chunk");
+                for (k, c) in chunks.iter().enumerate() {
+                    prop_assert_eq!(s.tensor_dtype(*c).expect("chunk dtype"), target,
+                        "tensor_chunk[{}] upcast: target {:?}", k, target);
+                }
+
+                // split with explicit sizes along dim 0
+                let splits = s.tensor_split(dtyped, &[1, 1], 0).expect("split");
+                for (k, sp) in splits.iter().enumerate() {
+                    prop_assert_eq!(s.tensor_dtype(*sp).expect("split dtype"), target,
+                        "tensor_split[{}] upcast: target {:?}", k, target);
+                }
+            }
+        }
+
         // MR (consistency): tensor_div(a, b) ≈ tensor_mul(a, reciprocal(b))
         // for non-zero b within 8 ULP. Two different paths to the
         // same answer; divergence catches reciprocal-mul drift or
