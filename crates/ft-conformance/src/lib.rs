@@ -15418,6 +15418,63 @@ mod tests {
             }
         }
 
+        // MR (tile periodic pattern): tensor_tile(x, [k]) repeats
+        // x k times along the last dim. Three contracts on a 1-D
+        // input:
+        //   1. Shape: tile(x, [k]) is 1-D of length |x| * k.
+        //   2. Periodic pattern: tile(x, [k])[i*|x| + j] == x[j]
+        //      bit-exact for all 0 <= i < k, 0 <= j < |x|.
+        //   3. Identity: tile(x, [1]) == x bit-exact (single
+        //      repetition).
+        // Catches index drift in the repeat scaffold and any
+        // off-by-one in the period boundary. frankentorch-d5n6r.
+        #[test]
+        fn fuzz_metamorphic_tile_1d_periodic(
+            (k, raw) in (1usize..=4).prop_flat_map(|kk| (
+                Just(kk),
+                prop::collection::vec(-256i16..=256i16, 1..8),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let n = input.len();
+
+            // Contract 1 + 2: shape + periodic pattern.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let t = s.tensor_tile(x, &[k]).expect("tile");
+            let shape = s.tensor_shape(t).expect("tile shape");
+            let vals = s.tensor_values(t).expect("tile vals");
+            prop_assert_eq!(shape, vec![n * k], "tile shape must be [|x|*k]");
+            prop_assert_eq!(vals.len(), n * k);
+            for rep in 0..k {
+                for j in 0..n {
+                    let got = vals[rep * n + j];
+                    let want = input[j];
+                    prop_assert_eq!(
+                        got.to_bits(), want.to_bits(),
+                        "tile(x, [{}])[{}] = {} != x[{}] = {} (rep = {})",
+                        k, rep * n + j, got, j, want, rep
+                    );
+                }
+            }
+
+            // Contract 3: tile(x, [1]) == x bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let t = s.tensor_tile(x, &[1]).expect("tile 1");
+            let shape = s.tensor_shape(t).expect("tile 1 shape");
+            let vals = s.tensor_values(t).expect("tile 1 vals");
+            prop_assert_eq!(shape, vec![n]);
+            for (i, (g, want)) in vals.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "tile(x, [1])[{}] = {} != x[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (kron 1-D bit-exact): tensor_kron(a, b) for 1-D
         // inputs flattens the outer product:
         //     kron(a, b)[i * |b| + j] == a[i] * b[j]
