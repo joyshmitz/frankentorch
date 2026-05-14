@@ -15418,6 +15418,108 @@ mod tests {
             }
         }
 
+        // MR (polar contracts): tensor_polar(abs, angle)
+        // constructs a complex tensor from magnitude + phase. By
+        // construction in ft-api this is:
+        //   polar(abs, angle) = abs * (cos(angle) + i·sin(angle))
+        // Three contracts on F64 magnitude + angle pairs:
+        //   1. real(polar) == abs · cos(angle) bit-exact (same
+        //      Rust IEEE expression on the reference side).
+        //   2. imag(polar) == abs · sin(angle) bit-exact.
+        //   3. Unit-magnitude: for abs == 1, real² + imag² ≈ 1
+        //      within 16 ULP relative (sin² + cos² = 1 identity).
+        //   4. Axis: polar(abs, 0) yields real == abs, imag == 0
+        //      bit-exact (cos(0) = 1 and sin(0) = 0 are both
+        //      libm-exact).
+        // Catches sign drift between the cos/sin paths, abs/angle
+        // axis swap, and any drift in the magnitude-preserving
+        // sin² + cos² identity. frankentorch-ju776.
+        #[test]
+        fn fuzz_metamorphic_polar_construction(
+            (abs_raw, angle_raw) in (1usize..=8).prop_flat_map(|n| (
+                prop::collection::vec(0i16..=256i16, n),
+                prop::collection::vec(-512i16..=512i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Use non-negative abs to match polar convention.
+            let abs_vals: Vec<f64> = abs_raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let angle_vals: Vec<f64> = angle_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = abs_vals.len();
+
+            // Contracts 1 + 2: bit-exact real/imag against the
+            // explicit closed-form computation.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let abs_t = s.tensor_variable(abs_vals.clone(), vec![n], false).expect("abs");
+            let ang_t = s.tensor_variable(angle_vals.clone(), vec![n], false).expect("angle");
+            let z = s.tensor_polar(abs_t, ang_t).expect("polar");
+            let re = s.tensor_real(z).expect("real");
+            let im = s.tensor_imag(z).expect("imag");
+            let v_re = s.tensor_values(re).expect("re vals");
+            let v_im = s.tensor_values(im).expect("im vals");
+
+            for (i, ((&g_re, &g_im), (&a, &ang))) in v_re.iter()
+                .zip(v_im.iter())
+                .zip(abs_vals.iter().zip(angle_vals.iter()))
+                .enumerate()
+            {
+                let want_re = a * ang.cos();
+                let want_im = a * ang.sin();
+                prop_assert_eq!(
+                    g_re.to_bits(), want_re.to_bits(),
+                    "polar real[{}] = {} != abs·cos(angle) = {}", i, g_re, want_re
+                );
+                prop_assert_eq!(
+                    g_im.to_bits(), want_im.to_bits(),
+                    "polar imag[{}] = {} != abs·sin(angle) = {}", i, g_im, want_im
+                );
+            }
+
+            // Contract 3: unit-magnitude (abs ≡ 1).
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let ones = s.tensor_variable(vec![1.0; n], vec![n], false).expect("ones");
+            let ang_t = s.tensor_variable(angle_vals.clone(), vec![n], false).expect("angle");
+            let z_unit = s.tensor_polar(ones, ang_t).expect("polar unit");
+            let re_u = s.tensor_real(z_unit).expect("real unit");
+            let im_u = s.tensor_imag(z_unit).expect("imag unit");
+            let v_re_u = s.tensor_values(re_u).expect("re unit vals");
+            let v_im_u = s.tensor_values(im_u).expect("im unit vals");
+            for (i, (&r, &im_v)) in v_re_u.iter().zip(v_im_u.iter()).enumerate() {
+                let mag_sq = r * r + im_v * im_v;
+                let diff = (mag_sq - 1.0).abs();
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON,
+                    "polar(1, angle)[{}] magnitude² = {} not ≈ 1 (diff = {:e})",
+                    i, mag_sq, diff
+                );
+            }
+
+            // Contract 4: polar(abs, 0) is pure real with value abs.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let abs_t = s.tensor_variable(abs_vals.clone(), vec![n], false).expect("abs");
+            let zeros = s.tensor_variable(vec![0.0; n], vec![n], false).expect("zeros");
+            let z_axis = s.tensor_polar(abs_t, zeros).expect("polar axis");
+            let re_a = s.tensor_real(z_axis).expect("real axis");
+            let im_a = s.tensor_imag(z_axis).expect("imag axis");
+            let v_re_a = s.tensor_values(re_a).expect("re axis vals");
+            let v_im_a = s.tensor_values(im_a).expect("im axis vals");
+            for (i, ((&r, &im_v), &a)) in v_re_a.iter()
+                .zip(v_im_a.iter())
+                .zip(abs_vals.iter())
+                .enumerate()
+            {
+                prop_assert_eq!(
+                    r.to_bits(), a.to_bits(),
+                    "polar(abs, 0) real[{}] = {} != abs = {}", i, r, a
+                );
+                prop_assert_eq!(
+                    im_v.to_bits(), 0.0_f64.to_bits(),
+                    "polar(abs, 0) imag[{}] = {} != 0", i, im_v
+                );
+            }
+        }
+
         // MR (lerp contracts): tensor_lerp(a, b, weight) =
         // a + weight * (b - a). Four contracts on a 1-D pair:
         //   1. weight == 0 → a bit-exact (weight·(b-a) = 0·δ = 0).
