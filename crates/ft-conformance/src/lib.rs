@@ -27926,6 +27926,197 @@ print(json.dumps({"xlog1py": out}))
     }
 
     #[test]
+    fn torch_xlogy_scipy_subprocess_conformance() {
+        // Lock FrankenTorch's tensor_xlogy against
+        // scipy.special.xlogy. xlogy(x, y) = x * log(y) with the
+        // convention 0 * (anything) = 0 — so the y == 0 boundary
+        // where log(0) = -inf still yields 0 when x is 0. scipy and
+        // FrankenTorch should agree to within libm-quality log
+        // precision (~1 ULP) on the smooth interior, with bit-exact
+        // agreement on the masked x == 0 cases (both are explicit
+        // zeros).
+        //
+        // Sister harness to torch_xlog1py_scipy_subprocess_conformance —
+        // same scipy oracle, same fail-loud structure. Files closure
+        // for the xlogy slice of frankentorch-b5of (the torch.special
+        // functions tracking bead). frankentorch-9yjx.
+        use ft_api::FrankenTorchSession;
+        use std::process::{Command, Stdio};
+
+        let scipy_available = Command::new("python3")
+            .arg("-c")
+            .arg("from scipy import special; import json, struct, sys")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !scipy_available {
+            eprintln!(
+                "torch_xlogy_scipy_subprocess_conformance: python3/scipy not available, skipping"
+            );
+            return;
+        }
+
+        let mut config = HarnessConfig::default_paths();
+        config.legacy_oracle_python = Some(std::path::PathBuf::from("python3"));
+
+        // (x, y) pairs covering: smooth interior (positive y), the
+        // log(0) = -inf pole reached only when x == 0 (the masked
+        // branch — output must be 0, not NaN), exact-zero x with
+        // arbitrary y (always 0 except when y is NaN), and the x ≠ 0
+        // / y < 0 region where log underflows to NaN.
+        let cases: Vec<(f64, f64)> = vec![
+            // Smooth interior — the bread-and-butter regime.
+            (1.0, 1.0),
+            (1.0, 2.0),
+            (2.0, 1.0),
+            (2.5, 0.5),
+            (0.5, 0.5),
+            (3.7, 4.2),
+            (10.0, 1e-6),
+            (1e-6, 10.0),
+            // Tiny y > 0: log(y) is large negative; verifies the
+            // multiplication doesn't truncate at the boundary.
+            (1.0, 1e-300),
+            (5.0, f64::MIN_POSITIVE),
+            // y == 1: log(1) == 0, output == 0 (any x).
+            (1.0, 1.0),
+            (5.0, 1.0),
+            (-3.0, 1.0),
+            // The masked branch: x == 0 should yield 0 when y is
+            // not NaN (even when y == 0 / log(0) = -inf or y < 0
+            // where log is NaN of its own). When y itself is NaN,
+            // scipy propagates NaN.
+            (0.0, 1.0),
+            (0.0, 0.5),
+            (0.0, 0.0),
+            (0.0, -1.0),
+            (0.0, f64::INFINITY),
+            (0.0, f64::NAN),
+            // x ≠ 0 / y == 0: scipy returns -inf for x > 0, +inf for
+            // x < 0 (sign of x times -inf).
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (2.5, 0.0),
+            // x ≠ 0 / y < 0: log of negative is NaN.
+            (1.0, -1.0),
+            (-2.0, -3.0),
+            (3.0, -0.5),
+            // Negative x — output gets a sign from x.
+            (-1.0, 2.0),
+            (-2.5, 0.5),
+            // Inf / NaN propagation on x (with finite y > 0).
+            (f64::INFINITY, 2.0),
+            (f64::NEG_INFINITY, 2.0),
+            (f64::NAN, 2.0),
+        ];
+
+        let payload = json!({
+            "cases": cases.iter().map(|(x, y)| {
+                json!({"x_bits": x.to_bits().to_string(),
+                       "y_bits": y.to_bits().to_string()})
+            }).collect::<Vec<_>>()
+        });
+
+        let script = r#"
+import json, struct, sys
+from scipy import special
+
+def from_bits(s):
+    return struct.unpack("<d", struct.pack("<Q", int(s)))[0]
+
+def to_bits(v):
+    return str(struct.unpack("<Q", struct.pack("<d", float(v)))[0])
+
+req = json.loads(sys.stdin.read())
+out = []
+for case in req["cases"]:
+    x = from_bits(case["x_bits"])
+    y = from_bits(case["y_bits"])
+    try:
+        v = float(special.xlogy(x, y))
+    except Exception:
+        v = float("nan")
+    out.append(to_bits(v))
+print(json.dumps({"xlogy": out}))
+"#;
+
+        let response = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "torch_xlogy_scipy_subprocess_conformance: oracle invocation failed ({error}); skipping"
+                );
+                return;
+            }
+        };
+
+        let results = response
+            .get("xlogy")
+            .and_then(serde_json::Value::as_array)
+            .expect("oracle response must include xlogy array");
+        assert_eq!(results.len(), cases.len());
+
+        // FrankenTorch's tensor_xlogy composes through libm log +
+        // mul + where(x == 0). The masked x == 0 cases should be
+        // bit-exact (both scipy and FrankenTorch hardcode 0). The
+        // smooth interior should match within ~few ULPs of log
+        // precision; allow 4 ULP relative or 1e-15 absolute floor for
+        // results near zero.
+        const ULP_TOL: u64 = 4;
+        let approx_eq = |a: f64, b: f64| -> bool {
+            if a.is_nan() && b.is_nan() {
+                return true;
+            }
+            if a == b {
+                return true;
+            }
+            if a.is_infinite() != b.is_infinite()
+                || a.is_nan() != b.is_nan()
+                || a.is_sign_negative() != b.is_sign_negative()
+            {
+                return false;
+            }
+            if (a - b).abs() <= 1e-15 {
+                return true;
+            }
+            let a_bits = a.to_bits();
+            let b_bits = b.to_bits();
+            a_bits.abs_diff(b_bits) <= ULP_TOL
+        };
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mut mismatches = Vec::<String>::new();
+
+        for (i, (x, y)) in cases.iter().enumerate() {
+            let want = f64::from_bits(results[i].as_str().unwrap().parse::<u64>().unwrap());
+            let xt = session
+                .tensor_variable(vec![*x], vec![1], false)
+                .expect("xt");
+            let yt = session
+                .tensor_variable(vec![*y], vec![1], false)
+                .expect("yt");
+            let got_id = session.tensor_xlogy(xt, yt).expect("tensor_xlogy");
+            let got = session.tensor_values(got_id).expect("got")[0];
+            if !approx_eq(got, want) {
+                mismatches.push(format!(
+                    "tensor_xlogy(x={x:?}, y={y:?}) = {got:?} (bits 0x{:016x}) but scipy returned {want:?} (bits 0x{:016x})",
+                    got.to_bits(),
+                    want.to_bits(),
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "xlogy scipy conformance mismatches:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
     fn torch_entr_scipy_subprocess_conformance() {
         // Lock FrankenTorch's tensor_entr against scipy.special.entr.
         //     entr(x) = -x * log(x)        for x > 0
