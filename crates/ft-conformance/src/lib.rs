@@ -15418,6 +15418,83 @@ mod tests {
             }
         }
 
+        // MR (nextafter contracts): tensor_nextafter(x, y)
+        // returns the next representable float after x toward y.
+        // Four contracts:
+        //   1. Self-identity: nextafter(x, x) == x bit-exact for
+        //      every finite x.
+        //   2. Upward step: nextafter(x, y) > x when y > x
+        //      (and both finite).
+        //   3. Downward step: nextafter(x, y) < x when y < x.
+        //   4. 1-ULP step: |nextafter(x, y) - x| equals 1 ULP at
+        //      x (the smallest possible IEEE step).
+        // Catches direction reversal in the IEEE bit-pattern
+        // step and any failure of the self-identity at the
+        // boundary. frankentorch-4edvn.
+        #[test]
+        fn fuzz_metamorphic_nextafter_contracts(
+            raw in prop::collection::vec(-256i16..=256i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            // Contract 1: nextafter(x, x) == x bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x1 = s.tensor_variable(input.clone(), vec![n], false).expect("x1");
+            let x2 = s.tensor_variable(input.clone(), vec![n], false).expect("x2");
+            let out = s.tensor_nextafter(x1, x2).expect("nextafter self");
+            let v = s.tensor_values(out).expect("self vals");
+            for (i, (g, want)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "nextafter(x, x)[{}] = {} != x[{}] = {}", i, g, i, want
+                );
+            }
+
+            // Contracts 2 + 4: upward step toward +inf is +1 ULP.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let pos_inf = s.tensor_variable(vec![f64::INFINITY; n], vec![n], false).expect("+inf");
+            let out = s.tensor_nextafter(x, pos_inf).expect("nextafter up");
+            let v_up = s.tensor_values(out).expect("up vals");
+            for (i, (&g, &xi)) in v_up.iter().zip(input.iter()).enumerate() {
+                if !xi.is_finite() {
+                    continue;
+                }
+                prop_assert!(
+                    g > xi || g.to_bits() == xi.to_bits(),
+                    "nextafter(x, +inf)[{}] = {} not > x = {}", i, g, xi
+                );
+                // 1-ULP step: difference equals next_up(x) - x.
+                let expected_step = xi.next_up() - xi;
+                let actual_step = g - xi;
+                prop_assert!(
+                    actual_step == expected_step || actual_step.to_bits() == 0,
+                    "nextafter step[{}] = {} != next_up - x = {}",
+                    i, actual_step, expected_step
+                );
+            }
+
+            // Contract 3: downward step toward -inf is -1 ULP.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let neg_inf = s.tensor_variable(vec![f64::NEG_INFINITY; n], vec![n], false)
+                .expect("-inf");
+            let out = s.tensor_nextafter(x, neg_inf).expect("nextafter down");
+            let v_down = s.tensor_values(out).expect("down vals");
+            for (i, (&g, &xi)) in v_down.iter().zip(input.iter()).enumerate() {
+                if !xi.is_finite() {
+                    continue;
+                }
+                prop_assert!(
+                    g < xi || g.to_bits() == xi.to_bits(),
+                    "nextafter(x, -inf)[{}] = {} not < x = {}", i, g, xi
+                );
+            }
+        }
+
         // MR (polygamma contracts): tensor_polygamma(n, x) is
         // the (n+1)-th derivative of log(Γ(x)). Three contracts:
         //   1. n == 0 routing: polygamma(0, x) == digamma(x)
