@@ -15418,6 +15418,73 @@ mod tests {
             }
         }
 
+        // MR (logsigmoid contracts): tensor_logsigmoid(x) ==
+        // log(sigmoid(x)) == -softplus(-x). Three contracts:
+        //   1. Non-positive: logsigmoid(x) <= 0 always (since
+        //      sigmoid(x) ∈ (0, 1], so log <= 0).
+        //   2. At zero: logsigmoid(0) ≈ -log(2) within 16 ULP.
+        //   3. exp(logsigmoid(x)) ≈ sigmoid(x) within 32 ULP
+        //      relative — the round-trip should recover sigmoid.
+        // Catches drift between the -softplus(-x) composition
+        // and the true log(sigmoid) function, sign-of-zero bugs,
+        // and any failure of the inverse relationship with exp.
+        // frankentorch-zkewj.
+        #[test]
+        fn fuzz_metamorphic_logsigmoid_contracts(
+            raw in prop::collection::vec(-256i16..=256i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            // Contract 1: non-positive.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let ls = s.tensor_logsigmoid(x).expect("logsigmoid");
+            let v_ls = s.tensor_values(ls).expect("ls vals");
+            for (i, &g) in v_ls.iter().enumerate() {
+                prop_assert!(
+                    g <= 16.0 * f64::EPSILON,
+                    "logsigmoid[{}] = {} > 0 (must be non-positive)", i, g
+                );
+            }
+
+            // Contract 2: logsigmoid(0) ≈ -log(2).
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let zero = s.tensor_variable(vec![0.0], vec![1], false).expect("zero");
+            let ls = s.tensor_logsigmoid(zero).expect("logsigmoid 0");
+            let v = s.tensor_values(ls).expect("ls 0 vals")[0];
+            let want = -std::f64::consts::LN_2;
+            let diff = (v - want).abs();
+            prop_assert!(
+                diff <= 16.0 * f64::EPSILON,
+                "logsigmoid(0) = {} != -log(2) = {} (diff = {:e})", v, want, diff
+            );
+
+            // Contract 3: exp(logsigmoid(x)) ≈ sigmoid(x).
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let ls = s.tensor_logsigmoid(x).expect("logsigmoid");
+            let exp_ls = s.tensor_exp(ls).expect("exp(ls)");
+            let v_exp = s.tensor_values(exp_ls).expect("exp(ls) vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let sg = s.tensor_sigmoid(x).expect("sigmoid");
+            let v_sg = s.tensor_values(sg).expect("sigmoid vals");
+
+            for (i, (&a, &b)) in v_exp.iter().zip(v_sg.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let scale = a.abs().max(b.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "exp(logsigmoid(x))[{}] = {} != sigmoid(x)[{}] = {}",
+                    i, a, i, b
+                );
+            }
+        }
+
         // MR (ldexp contracts): tensor_ldexp(x, n) == x * 2^n,
         // composed through exp2 + mul in the API. Four contracts:
         //   1. n == 0: ldexp(x, 0) == x within 1 ULP relative
