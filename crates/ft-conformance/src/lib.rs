@@ -15418,6 +15418,72 @@ mod tests {
             }
         }
 
+        // MR (digamma contracts): tensor_digamma(x) = ψ(x) =
+        // d/dx log(|Γ(x)|). Three contracts:
+        //   1. Euler-Mascheroni anchor: digamma(1) ≈ -γ where
+        //      γ ≈ 0.5772156649015329 (a known closed form).
+        //   2. Half-integer anchor: digamma(0.5) ≈ -γ - 2·log(2).
+        //   3. Recurrence: digamma(x+1) - digamma(x) ≈ 1/x for
+        //      x > 0 within 16 ULP relative.
+        // Catches drift in the special-function approximation
+        // and any failure of the gamma recurrence relation,
+        // which is independent of the constant offset.
+        // frankentorch-buisp.
+        #[test]
+        fn fuzz_metamorphic_digamma_contracts(
+            raw in prop::collection::vec(1i16..=64i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x ∈ (0, ~6.4].
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 10.0).collect();
+            let n = input.len();
+            let euler_mascheroni: f64 = 0.577_215_664_901_532_9;
+
+            // Contracts 1 + 2: anchors.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let anchors = s.tensor_variable(vec![1.0, 0.5], vec![2], false).expect("anchors");
+            let dg = s.tensor_digamma(anchors).expect("digamma anchors");
+            let v = s.tensor_values(dg).expect("anchor vals");
+            // digamma(1) = -γ; allow modest tolerance since scipy
+            // uses an approximation with ~1e-10 absolute error.
+            prop_assert!(
+                (v[0] + euler_mascheroni).abs() <= 1e-10,
+                "digamma(1) = {} not ≈ -γ = {}", v[0], -euler_mascheroni
+            );
+            // digamma(0.5) = -γ - 2·log(2).
+            let want_half = -euler_mascheroni - 2.0 * 2.0_f64.ln();
+            prop_assert!(
+                (v[1] - want_half).abs() <= 1e-10,
+                "digamma(0.5) = {} not ≈ -γ - 2·log(2) = {}", v[1], want_half
+            );
+
+            // Contract 3: recurrence digamma(x+1) - digamma(x) ≈ 1/x.
+            let plus_input: Vec<f64> = input.iter().map(|v| v + 1.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let xp = s.tensor_variable(plus_input, vec![n], false).expect("x+1");
+            let dg_x = s.tensor_digamma(x).expect("digamma x");
+            let dg_xp = s.tensor_digamma(xp).expect("digamma x+1");
+            let v_x = s.tensor_values(dg_x).expect("dg x vals");
+            let v_xp = s.tensor_values(dg_xp).expect("dg x+1 vals");
+            for (i, ((&a, &b), &xi)) in v_xp.iter()
+                .zip(v_x.iter())
+                .zip(input.iter())
+                .enumerate()
+            {
+                let lhs = a - b;
+                let rhs = 1.0 / xi;
+                let diff = (lhs - rhs).abs();
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 1e-8 * scale,
+                    "digamma({}+1) - digamma({}) = {} != 1/x = {} (diff = {:e})",
+                    xi, xi, lhs, rhs, diff
+                );
+            }
+        }
+
         // MR (lgamma contracts): tensor_lgamma(x) = log(|Γ(x)|).
         // Four contracts:
         //   1. Integer anchor: lgamma(1) ≈ 0 (Γ(1) = 1).
