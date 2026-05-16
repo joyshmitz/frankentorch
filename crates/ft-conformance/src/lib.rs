@@ -15418,6 +15418,74 @@ mod tests {
             }
         }
 
+        // MR (logit contracts): tensor_logit(x, eps=None) =
+        // log(x / (1 - x)) for x in (0, 1). Three contracts:
+        //   1. Anchor: logit(0.5) == 0 within 16 ULP
+        //      (log(1) = 0 exactly; the div + log composition
+        //      introduces one rounding step).
+        //   2. Antisymmetry around 0.5: logit(1 - x) ≈ -logit(x)
+        //      within 16 ULP relative.
+        //   3. sigmoid round-trip: sigmoid(logit(x)) ≈ x for
+        //      x in (0, 1) within 16 ULP relative.
+        // Catches direction reversal in the 1-x denominator,
+        // sigmoid-logit pairing drift, and any failure of the
+        // antisymmetric point at x = 0.5.
+        // frankentorch-i6qgn.
+        #[test]
+        fn fuzz_metamorphic_logit_contracts(
+            raw in prop::collection::vec(1i16..=99i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x ∈ (0.01, 0.99) avoids the eps clamp boundary.
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 100.0).collect();
+            let n = input.len();
+
+            // Contract 1: logit(0.5) ≈ 0.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let half = s.tensor_variable(vec![0.5], vec![1], false).expect("0.5");
+            let l = s.tensor_logit(half, None).expect("logit 0.5");
+            let v = s.tensor_values(l).expect("logit 0.5 val")[0];
+            prop_assert!(
+                v.abs() <= 16.0 * f64::EPSILON,
+                "logit(0.5) = {} not ≈ 0", v
+            );
+
+            // Contract 2: antisymmetry around 0.5.
+            let comp_input: Vec<f64> = input.iter().map(|v| 1.0 - v).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let lx = s.tensor_logit(x, None).expect("logit x");
+            let v_pos = s.tensor_values(lx).expect("logit x vals");
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xc = s.tensor_variable(comp_input, vec![n], false).expect("1-x");
+            let lc = s.tensor_logit(xc, None).expect("logit 1-x");
+            let v_comp = s.tensor_values(lc).expect("logit 1-x vals");
+            for (i, (&p, &c)) in v_pos.iter().zip(v_comp.iter()).enumerate() {
+                let diff = (c + p).abs();
+                let scale = p.abs().max(c.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "logit(1-x)[{}] = {} != -logit(x) = {}", i, c, -p
+                );
+            }
+
+            // Contract 3: sigmoid(logit(x)) ≈ x.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let lx = s.tensor_logit(x, None).expect("logit");
+            let sx = s.tensor_sigmoid(lx).expect("sigmoid of logit");
+            let v = s.tensor_values(sx).expect("recovered vals");
+            for (i, (&g, &xi)) in v.iter().zip(input.iter()).enumerate() {
+                let diff = (g - xi).abs();
+                let scale = g.abs().max(xi.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "sigmoid(logit({}))[{}] = {} != {} (diff = {:e})", xi, i, g, xi, diff
+                );
+            }
+        }
+
         // MR (xlog1py contracts): tensor_xlog1py(x, y) = x *
         // log1p(y) with the convention 0 * log1p(-1) = 0
         // (matches scipy.special.xlog1py). Three contracts:
