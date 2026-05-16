@@ -15418,6 +15418,56 @@ mod tests {
             }
         }
 
+        // MR (view_as contracts): tensor_view_as(input, other)
+        // reshapes input to match other's shape (requires same
+        // numel). Three contracts:
+        //   1. Output shape == other shape bit-exact.
+        //   2. Output values bit-exactly match the flattened
+        //      input (view doesn't copy data, just reinterprets).
+        //   3. Output numel == input numel.
+        // Catches drift between the view_as wrapper and the
+        // underlying view, and any failure of the shape contract.
+        // frankentorch-l9kld.
+        #[test]
+        fn fuzz_metamorphic_view_as_contracts(
+            (rows, cols, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..=256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let numel = rows * cols;
+            // Build an "other" tensor with the same numel but
+            // different rank — flat 1-D.
+            let other_vals = vec![0.0_f64; numel];
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let other = s.tensor_variable(other_vals, vec![numel], false).expect("other");
+            let v_as = s.tensor_view_as(x, other).expect("view_as");
+            let shape = s.tensor_shape(v_as).expect("v_as shape");
+            let v = s.tensor_values(v_as).expect("v_as vals");
+
+            // Contract 1: shape matches other.
+            prop_assert_eq!(shape, vec![numel],
+                "view_as shape must match other = [{}]", numel);
+
+            // Contract 3: numel preserved.
+            prop_assert_eq!(v.len(), numel,
+                "view_as numel = {} != input numel = {}", v.len(), numel);
+
+            // Contract 2: values bit-exactly match flattened input.
+            for (i, (g, want)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "view_as[{}] = {} != flatten(x)[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (renorm contracts): tensor_renorm(x, p, dim,
         // maxnorm) rescales each slice so Lp norm along dim
         // <= maxnorm. Three contracts on a 2-D input with dim=0:
