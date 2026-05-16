@@ -15418,6 +15418,65 @@ mod tests {
             }
         }
 
+        // MR (copysign contracts): tensor_copysign(m, s) returns
+        // |m| with the sign of s. Three contracts on 1-D inputs:
+        //   1. Magnitude: |copysign(m, s)| == |m| bit-exact.
+        //   2. Sign carry for s > 0: copysign(m, s) == |m|
+        //      bit-exact when s > 0.
+        //   3. Sign carry for s < 0: copysign(m, s) == -|m|
+        //      bit-exact when s < 0.
+        // Catches direction reversal of the sign transfer,
+        // magnitude drift through the abs path, and any failure
+        // of the sign-of-zero handling. frankentorch-84j31.
+        #[test]
+        fn fuzz_metamorphic_copysign_contracts(
+            (m_raw, s_raw) in (1usize..=16).prop_flat_map(|n| (
+                prop::collection::vec(-256i16..=256i16, n),
+                prop::collection::vec(-256i16..=256i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Drop sign=0 cases (which would be ambiguous via the
+            // tensor_sign convention).
+            let m_vals: Vec<f64> = m_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let s_vals: Vec<f64> = s_raw.iter()
+                .map(|v| {
+                    let f = f64::from(*v) / 17.0;
+                    if f == 0.0 { 1.0 } else { f }
+                })
+                .collect();
+            let n = m_vals.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let m = s.tensor_variable(m_vals.clone(), vec![n], false).expect("m");
+            let sg = s.tensor_variable(s_vals.clone(), vec![n], false).expect("s");
+            let cs = s.tensor_copysign(m, sg).expect("copysign");
+            let v = s.tensor_values(cs).expect("cs vals");
+
+            for (i, (&g, (&mi, &si))) in v.iter()
+                .zip(m_vals.iter().zip(s_vals.iter()))
+                .enumerate()
+            {
+                let m_abs = mi.abs();
+                let want = if si >= 0.0 { m_abs } else { -m_abs };
+
+                // Contract 1: magnitude.
+                prop_assert!(
+                    (g.abs() - m_abs).abs() <= f64::EPSILON * m_abs.max(1.0),
+                    "copysign({}, {})[{}] magnitude {} != |m| = {}",
+                    mi, si, i, g.abs(), m_abs
+                );
+
+                // Contracts 2 + 3: sign carry.
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "copysign({}, {})[{}] = {} != expected {}",
+                    mi, si, i, g, want
+                );
+            }
+        }
+
         // MR (logical_not contracts): tensor_logical_not(x)
         // returns 1 where x == 0 and 0 otherwise. Four
         // contracts:
