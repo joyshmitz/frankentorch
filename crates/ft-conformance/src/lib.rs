@@ -15418,6 +15418,62 @@ mod tests {
             }
         }
 
+        // MR (logcumsumexp contracts): tensor_logcumsumexp(x, dim)
+        // is the running log-sum-exp along dim. Three contracts
+        // on a 1-D input (dim = 0):
+        //   1. Shape preserved.
+        //   2. Monotonically non-decreasing along the cum dim
+        //      (adding more terms can only grow log(sum(exp(...))).
+        //   3. Last element equals tensor_logsumexp of the full
+        //      input within 16 ULP relative.
+        // Catches off-by-one in the running max + running sum
+        // update, drift between the chunked algorithm and the
+        // textbook formula, and any failure to reach the global
+        // logsumexp at the boundary. frankentorch-4g58o.
+        #[test]
+        fn fuzz_metamorphic_logcumsumexp_contracts(
+            raw in prop::collection::vec(-256i16..=256i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Modest range so exp doesn't overflow naively.
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 80.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let lc = s.tensor_logcumsumexp(x, 0).expect("logcumsumexp");
+            let shape = s.tensor_shape(lc).expect("lc shape");
+            let v = s.tensor_values(lc).expect("lc vals");
+
+            // Contract 1: shape preserved.
+            prop_assert_eq!(shape, vec![n], "logcumsumexp must preserve shape");
+            prop_assert_eq!(v.len(), n);
+
+            // Contract 2: monotone non-decreasing.
+            for k in 1..n {
+                prop_assert!(
+                    v[k] >= v[k - 1] - 16.0 * f64::EPSILON * v[k - 1].abs().max(1.0),
+                    "logcumsumexp not monotone: [{}] = {} < [{}] = {}",
+                    k, v[k], k - 1, v[k - 1]
+                );
+            }
+
+            // Contract 3: last element equals logsumexp of full
+            // input within 16 ULP relative.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let lse = s.tensor_logsumexp(x, 0).expect("logsumexp");
+            let v_lse = s.tensor_values(lse).expect("lse val")[0];
+            let diff = (v[n - 1] - v_lse).abs();
+            let scale = v[n - 1].abs().max(v_lse.abs()).max(1.0);
+            prop_assert!(
+                diff <= 16.0 * f64::EPSILON * scale,
+                "logcumsumexp[-1] = {} != logsumexp = {} (diff = {:e})",
+                v[n - 1], v_lse, diff
+            );
+        }
+
         // MR (frac decomposition): tensor_frac(x) returns the
         // fractional part of x. Four contracts:
         //   1. Decomposition: frac(x) + trunc(x) == x bit-exact
