@@ -15418,6 +15418,83 @@ mod tests {
             }
         }
 
+        // MR (renorm contracts): tensor_renorm(x, p, dim,
+        // maxnorm) rescales each slice so Lp norm along dim
+        // <= maxnorm. Three contracts on a 2-D input with dim=0:
+        //   1. Shape preserved.
+        //   2. Row norm bounded: ||row[i]||_p <= maxnorm within
+        //      a few ULPs * scale (the renorm scale = maxnorm /
+        //      max(norm, maxnorm) caps it).
+        //   3. Passthrough below max: when ||row[i]||_p <=
+        //      maxnorm in the input, the row is unchanged
+        //      bit-exact (scale = 1 exactly).
+        // Catches direction reversal in the scale = maxnorm /
+        // max(norm, maxnorm) clamp and any failure to preserve
+        // already-bounded rows. frankentorch-6zfam.
+        #[test]
+        fn fuzz_metamorphic_renorm_contracts(
+            (rows, cols, raw) in (2usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-128i16..=128i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let maxnorm = 2.0_f64;
+            let p = 2.0_f64;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let r = s.tensor_renorm(x, p, 0, maxnorm).expect("renorm");
+            let shape = s.tensor_shape(r).expect("r shape");
+            let v = s.tensor_values(r).expect("r vals");
+
+            // Contract 1: shape preserved.
+            prop_assert_eq!(shape, vec![rows, cols], "renorm must preserve shape");
+
+            // Compute input row norms in plain Rust.
+            let mut input_row_norm = vec![0.0_f64; rows];
+            for i in 0..rows {
+                let mut sum = 0.0;
+                for j in 0..cols {
+                    sum += input[i * cols + j].powf(p);
+                }
+                input_row_norm[i] = sum.powf(1.0 / p);
+            }
+
+            // Contract 2: output row norm <= maxnorm.
+            for i in 0..rows {
+                let mut sum = 0.0;
+                for j in 0..cols {
+                    sum += v[i * cols + j].powf(p);
+                }
+                let row_norm = sum.powf(1.0 / p);
+                prop_assert!(
+                    row_norm <= maxnorm + 1e-9 * maxnorm,
+                    "row[{}] norm = {} > maxnorm = {}", i, row_norm, maxnorm
+                );
+            }
+
+            // Contract 3: passthrough when input row norm <= maxnorm.
+            for i in 0..rows {
+                if input_row_norm[i] <= maxnorm {
+                    for j in 0..cols {
+                        let got = v[i * cols + j];
+                        let want = input[i * cols + j];
+                        let diff = (got - want).abs();
+                        let scale = got.abs().max(want.abs()).max(1.0);
+                        prop_assert!(
+                            diff <= 32.0 * f64::EPSILON * scale,
+                            "renorm row[{}, {}] = {} != x[{}, {}] = {} (input row norm = {} <= maxnorm = {}, should passthrough)",
+                            i, j, got, i, j, want, input_row_norm[i], maxnorm
+                        );
+                    }
+                }
+            }
+        }
+
         // MR (histc contracts): tensor_histc(x, bins, min, max)
         // bins x into integer counts. Three contracts:
         //   1. Shape: output is [bins].
