@@ -15418,6 +15418,75 @@ mod tests {
             }
         }
 
+        // MR (erfinv contracts): tensor_erfinv(x) is the inverse
+        // error function. Three contracts:
+        //   1. Anchor: erfinv(0) == 0 within 16 ULP.
+        //   2. Odd function: erfinv(-x) ≈ -erfinv(x) within
+        //      16 ULP relative.
+        //   3. erf(erfinv(x)) ≈ x for x in (-1, 1) within
+        //      tolerance scaled by the Winitzki approximation
+        //      bound (the kernel uses a rational approximation).
+        // Catches sign-flip bugs in the inverse path and any
+        // drift between erf and erfinv pairings.
+        // frankentorch-47suy.
+        #[test]
+        fn fuzz_metamorphic_erfinv_contracts(
+            raw in prop::collection::vec(-90i16..=90i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x ∈ (-0.9, 0.9) avoids the near-boundary blowup
+            // where erfinv(x) → ±inf at x = ±1.
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 100.0).collect();
+            let n = input.len();
+
+            // Contract 1: erfinv(0) ≈ 0.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let z = s.tensor_variable(vec![0.0], vec![1], false).expect("0");
+            let e = s.tensor_erfinv(z).expect("erfinv 0");
+            let v = s.tensor_values(e).expect("erfinv 0 val")[0];
+            prop_assert!(
+                v.abs() <= 16.0 * f64::EPSILON,
+                "erfinv(0) = {} not ≈ 0", v
+            );
+
+            // Contract 2: odd function.
+            let neg_input: Vec<f64> = input.iter().map(|v| -v).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let ex = s.tensor_erfinv(x).expect("erfinv");
+            let v_pos = s.tensor_values(ex).expect("erfinv pos vals");
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xn = s.tensor_variable(neg_input, vec![n], false).expect("neg x");
+            let exn = s.tensor_erfinv(xn).expect("erfinv neg");
+            let v_neg = s.tensor_values(exn).expect("erfinv neg vals");
+            for (i, (&p, &neg)) in v_pos.iter().zip(v_neg.iter()).enumerate() {
+                let diff = (neg + p).abs();
+                let scale = p.abs().max(neg.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "erfinv(-x)[{}] = {} != -erfinv(x) = {}", i, neg, -p
+                );
+            }
+
+            // Contract 3: erf(erfinv(x)) ≈ x. The Winitzki
+            // approximation has max error ~1e-4 absolute, so
+            // we use a generous tolerance to focus on
+            // consistency rather than precision.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let ex = s.tensor_erfinv(x).expect("erfinv");
+            let recovered = s.tensor_erf(ex).expect("erf of erfinv");
+            let v = s.tensor_values(recovered).expect("recovered vals");
+            for (i, (&g, &xi)) in v.iter().zip(input.iter()).enumerate() {
+                let diff = (g - xi).abs();
+                prop_assert!(
+                    diff <= 1e-3,
+                    "erf(erfinv({}))[{}] = {} != {} (diff = {:e})", xi, i, g, xi, diff
+                );
+            }
+        }
+
         // MR (logit contracts): tensor_logit(x, eps=None) =
         // log(x / (1 - x)) for x in (0, 1). Three contracts:
         //   1. Anchor: logit(0.5) == 0 within 16 ULP
