@@ -15418,6 +15418,79 @@ mod tests {
             }
         }
 
+        // MR (floor_divide contracts): tensor_floor_divide(a, b)
+        // = floor(a / b). Three contracts on 1-D inputs with
+        // non-zero divisor:
+        //   1. Closed-form: matches floor(a / b) bit-exact (same
+        //      Rust IEEE expression as the kernel composition).
+        //   2. Integer-valued: result has zero fractional part
+        //      (the floor rounds to integer).
+        //   3. Bound: floor_divide(a, b) <= a / b within 1 ULP
+        //      (floor never increases).
+        // Catches drift between the div-then-floor composition
+        // and the closed-form reference, signed-zero handling at
+        // the boundary, and any failure of the integer-valued
+        // contract. frankentorch-bj015.
+        #[test]
+        fn fuzz_metamorphic_floor_divide_contracts(
+            (a_raw, b_raw) in (1usize..=16).prop_flat_map(|n| (
+                prop::collection::vec(-256i16..=256i16, n),
+                prop::collection::vec(-256i16..=256i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let a_vals: Vec<f64> = a_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            // Avoid b == 0 (yields inf/NaN).
+            let b_vals: Vec<f64> = b_raw.iter()
+                .map(|v| {
+                    let f = f64::from(*v) / 17.0;
+                    if f == 0.0 { 1.0 } else { f }
+                })
+                .collect();
+            let n = a_vals.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let av = s.tensor_variable(a_vals.clone(), vec![n], false).expect("a");
+            let bv = s.tensor_variable(b_vals.clone(), vec![n], false).expect("b");
+            let fd = s.tensor_floor_divide(av, bv).expect("floor_divide");
+            let v = s.tensor_values(fd).expect("fd vals");
+
+            for (i, (&g, (&a, &b))) in v.iter()
+                .zip(a_vals.iter().zip(b_vals.iter()))
+                .enumerate()
+            {
+                // Contract 1: closed-form match.
+                let want = (a / b).floor();
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "floor_divide({}, {})[{}] = {} != floor(a/b) = {}",
+                    a, b, i, g, want
+                );
+
+                // Contract 2: integer-valued (modulo NaN/inf which
+                // are technically not finite ints).
+                if g.is_finite() {
+                    let frac = g - g.trunc();
+                    prop_assert_eq!(
+                        frac.to_bits(), 0.0_f64.to_bits(),
+                        "floor_divide[{}] = {} has fractional part {}",
+                        i, g, frac
+                    );
+                }
+
+                // Contract 3: floor_divide(a, b) <= a/b.
+                let true_div = a / b;
+                if g.is_finite() && true_div.is_finite() {
+                    prop_assert!(
+                        g <= true_div + f64::EPSILON * true_div.abs().max(1.0),
+                        "floor_divide[{}] = {} > a/b = {} (a = {}, b = {})",
+                        i, g, true_div, a, b
+                    );
+                }
+            }
+        }
+
         // MR (index_copy contracts): tensor_index_copy(x, 0,
         // indices, src) writes src rows at positions indices.
         // Three contracts on a 2-D input:
