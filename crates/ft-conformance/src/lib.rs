@@ -15418,6 +15418,82 @@ mod tests {
             }
         }
 
+        // MR (inverse hyperbolic contracts): asinh / atanh are
+        // odd inverses of sinh / tanh. Four contracts:
+        //   1. asinh(0) == 0 bit-exact.
+        //   2. atanh(0) == 0 bit-exact.
+        //   3. asinh is odd: asinh(-x) ≈ -asinh(x) within
+        //      16 ULP relative.
+        //   4. sinh(asinh(x)) ≈ x within 32 ULP relative for
+        //      x in a bounded range.
+        // (acosh is restricted to x >= 1, so we sidestep its
+        // domain-restricted contracts here.) Catches sign-flip
+        // bugs in the composition asinh = log(x + sqrt(x²+1))
+        // and any drift between the inverse and forward paths.
+        // frankentorch-82yti.
+        #[test]
+        fn fuzz_metamorphic_asinh_atanh_contracts(
+            raw in prop::collection::vec(-256i16..=256i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Bounded input keeps sinh(asinh(x)) numerically stable.
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 53.0).collect();
+            let n = input.len();
+
+            // Contracts 1 + 2: zero anchors.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let zero = s.tensor_variable(vec![0.0], vec![1], false).expect("zero");
+            let asinh_zero = s.tensor_asinh(zero).expect("asinh 0");
+            let v = s.tensor_values(asinh_zero).expect("asinh 0 val")[0];
+            prop_assert_eq!(v.to_bits(), 0.0_f64.to_bits(),
+                "asinh(0) = {} must be 0 bit-exact", v);
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let zero = s.tensor_variable(vec![0.0], vec![1], false).expect("zero");
+            let atanh_zero = s.tensor_atanh(zero).expect("atanh 0");
+            let v = s.tensor_values(atanh_zero).expect("atanh 0 val")[0];
+            // atanh may produce -0 via log((1-x)/(1+x)).
+            prop_assert!(
+                v == 0.0,
+                "atanh(0) = {} must be ±0", v
+            );
+
+            // Contract 3: asinh odd.
+            let neg_input: Vec<f64> = input.iter().map(|v| -v).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let asinh_x = s.tensor_asinh(x).expect("asinh");
+            let v_pos = s.tensor_values(asinh_x).expect("asinh pos vals");
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xn = s.tensor_variable(neg_input, vec![n], false).expect("neg x");
+            let asinh_xn = s.tensor_asinh(xn).expect("asinh neg");
+            let v_neg = s.tensor_values(asinh_xn).expect("asinh neg vals");
+            for (i, (&p, &neg)) in v_pos.iter().zip(v_neg.iter()).enumerate() {
+                let diff = (neg + p).abs();
+                let scale = p.abs().max(neg.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "asinh(-x)[{}] = {} != -asinh(x) = {}", i, neg, -p
+                );
+            }
+
+            // Contract 4: sinh(asinh(x)) ≈ x.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let asx = s.tensor_asinh(x).expect("asinh");
+            let recovered = s.tensor_sinh(asx).expect("sinh of asinh");
+            let v = s.tensor_values(recovered).expect("recovered vals");
+            for (i, (&g, &xi)) in v.iter().zip(input.iter()).enumerate() {
+                let diff = (g - xi).abs();
+                let scale = g.abs().max(xi.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "sinh(asinh(x))[{}] = {} != x = {} (diff = {:e})", i, g, xi, diff
+                );
+            }
+        }
+
         // MR (logsigmoid contracts): tensor_logsigmoid(x) ==
         // log(sigmoid(x)) == -softplus(-x). Three contracts:
         //   1. Non-positive: logsigmoid(x) <= 0 always (since
