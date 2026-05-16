@@ -15418,6 +15418,74 @@ mod tests {
             }
         }
 
+        // MR (lgamma contracts): tensor_lgamma(x) = log(|Γ(x)|).
+        // Four contracts:
+        //   1. Integer anchor: lgamma(1) ≈ 0 (Γ(1) = 1).
+        //   2. Integer anchor: lgamma(2) ≈ 0 (Γ(2) = 1).
+        //   3. Half-integer: lgamma(0.5) ≈ log(sqrt(π)) (a
+        //      known closed form).
+        //   4. Recurrence: lgamma(x + 1) - lgamma(x) ≈ log(x)
+        //      for x > 0 within 16 ULP relative.
+        // Catches drift between the libm composition and the
+        // mathematical identities, especially the recurrence
+        // relation which is independent of the constant offsets.
+        // frankentorch-vlmyv.
+        #[test]
+        fn fuzz_metamorphic_lgamma_contracts(
+            raw in prop::collection::vec(1i16..=64i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x ∈ (0, ~6.4] keeps lgamma values modest and avoids
+            // negative-x sign tracking.
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 10.0).collect();
+            let n = input.len();
+
+            // Contracts 1 + 2 + 3: anchors.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let anchors = s.tensor_variable(vec![1.0, 2.0, 0.5], vec![3], false).expect("anchors");
+            let lg = s.tensor_lgamma(anchors).expect("lgamma anchors");
+            let v = s.tensor_values(lg).expect("anchor vals");
+            prop_assert!(
+                v[0].abs() <= 16.0 * f64::EPSILON,
+                "lgamma(1) = {} not ≈ 0", v[0]
+            );
+            prop_assert!(
+                v[1].abs() <= 16.0 * f64::EPSILON,
+                "lgamma(2) = {} not ≈ 0", v[1]
+            );
+            let want_half = std::f64::consts::PI.sqrt().ln();
+            prop_assert!(
+                (v[2] - want_half).abs() <= 16.0 * f64::EPSILON,
+                "lgamma(0.5) = {} not ≈ log(sqrt(π)) = {}", v[2], want_half
+            );
+
+            // Contract 4: recurrence lgamma(x+1) - lgamma(x) ≈ log(x).
+            let plus_input: Vec<f64> = input.iter().map(|v| v + 1.0).collect();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let xp = s.tensor_variable(plus_input, vec![n], false).expect("x+1");
+            let lg_x = s.tensor_lgamma(x).expect("lgamma x");
+            let lg_xp = s.tensor_lgamma(xp).expect("lgamma x+1");
+            let v_x = s.tensor_values(lg_x).expect("lg x vals");
+            let v_xp = s.tensor_values(lg_xp).expect("lg x+1 vals");
+            for (i, ((&a, &b), &xi)) in v_xp.iter()
+                .zip(v_x.iter())
+                .zip(input.iter())
+                .enumerate()
+            {
+                let lhs = a - b;
+                let rhs = xi.ln();
+                let diff = (lhs - rhs).abs();
+                let scale = lhs.abs().max(rhs.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 16.0 * f64::EPSILON * scale,
+                    "lgamma({}+1) - lgamma({}) = {} != log(x) = {} (diff = {:e})",
+                    xi, xi, lhs, rhs, diff
+                );
+            }
+        }
+
         // MR (erfinv contracts): tensor_erfinv(x) is the inverse
         // error function. Three contracts:
         //   1. Anchor: erfinv(0) == 0 within 16 ULP.
