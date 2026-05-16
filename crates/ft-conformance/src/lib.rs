@@ -15418,6 +15418,80 @@ mod tests {
             }
         }
 
+        // MR (trunc contracts): tensor_trunc(x) rounds toward
+        // zero. Four contracts:
+        //   1. Integer-valued: result has zero fractional part
+        //      for finite input (trunc maps every f64 to the
+        //      nearest integer toward zero).
+        //   2. Magnitude bound: |trunc(x)| <= |x| (truncation
+        //      always moves toward 0).
+        //   3. Sign preservation: trunc(x) and x have the same
+        //      sign for |x| >= 1 (when truncation doesn't
+        //      collapse to ±0).
+        //   4. Integer identity: trunc(int) == int bit-exact for
+        //      integers exactly representable in f64.
+        // Catches direction confusion (toward-zero vs toward-
+        // negative-infinity) and any off-by-one in the
+        // sign-of-zero handling. frankentorch-z0nzx.
+        #[test]
+        fn fuzz_metamorphic_trunc_contracts(
+            raw in prop::collection::vec(-2048i16..=2048i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x ∈ ~[-20, 20] with fractional components.
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 100.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let t = s.tensor_trunc(x).expect("trunc");
+            let v = s.tensor_values(t).expect("trunc vals");
+
+            for (i, (&g, &xi)) in v.iter().zip(input.iter()).enumerate() {
+                if !xi.is_finite() {
+                    continue;
+                }
+                // Contract 1: integer-valued.
+                let frac = g - g.trunc();
+                prop_assert_eq!(
+                    frac.to_bits(), 0.0_f64.to_bits(),
+                    "trunc[{}] = {} fractional part {}", i, g, frac
+                );
+
+                // Contract 2: |trunc(x)| <= |x|.
+                prop_assert!(
+                    g.abs() <= xi.abs() + f64::EPSILON * xi.abs().max(1.0),
+                    "|trunc({})| = {} > |x| = {}", xi, g.abs(), xi.abs()
+                );
+
+                // Contract 3: sign preservation for |x| >= 1.
+                if xi.abs() >= 1.0 {
+                    prop_assert!(
+                        (g >= 0.0) == (xi >= 0.0),
+                        "trunc({}) = {} has different sign", xi, g
+                    );
+                }
+            }
+
+            // Contract 4: trunc(int) == int bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let ints = s.tensor_variable(
+                vec![-3.0, -1.0, 0.0, 1.0, 3.0, 7.0],
+                vec![6],
+                false,
+            ).expect("ints");
+            let t = s.tensor_trunc(ints).expect("trunc ints");
+            let v = s.tensor_values(t).expect("trunc int vals");
+            let expected = [-3.0_f64, -1.0, 0.0, 1.0, 3.0, 7.0];
+            for (i, (&g, &want)) in v.iter().zip(expected.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "trunc(int)[{}] = {} != {}", i, g, want
+                );
+            }
+        }
+
         // MR (floor_divide contracts): tensor_floor_divide(a, b)
         // = floor(a / b). Three contracts on 1-D inputs with
         // non-zero divisor:
