@@ -15418,6 +15418,83 @@ mod tests {
             }
         }
 
+        // MR (xlog1py contracts): tensor_xlog1py(x, y) = x *
+        // log1p(y) with the convention 0 * log1p(-1) = 0
+        // (matches scipy.special.xlog1py). Three contracts:
+        //   1. Zero short-circuit: xlog1py(0, y) == ±0 for
+        //      finite y (even y = -1 where naive 0 * -inf is
+        //      NaN).
+        //   2. Anchor: xlog1py(x, 0) == ±0 since log1p(0) = 0.
+        //   3. Closed-form: xlog1py(x, y) ≈ x*log1p(y) within
+        //      8 ULP relative for y > -1.
+        // Catches drift between the masked composition and the
+        // closed-form math, and any failure of the zero short-
+        // circuit at the log1p(-1) = -inf boundary.
+        // frankentorch-l52wa.
+        #[test]
+        fn fuzz_metamorphic_xlog1py_decomposition(
+            (x_raw, y_raw) in (1usize..=12).prop_flat_map(|n| (
+                prop::collection::vec(-256i16..=256i16, n),
+                prop::collection::vec(0i16..=256i16, n),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let x_vals: Vec<f64> = x_raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            // y > -1 keeps log1p well-defined and avoids the
+            // masked branch.
+            let y_vals: Vec<f64> = y_raw.iter().map(|v| f64::from(*v) / 53.0).collect();
+            let n = x_vals.len();
+
+            // Contract 3: closed-form match for y > -1.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(x_vals.clone(), vec![n], false).expect("x");
+            let y = s.tensor_variable(y_vals.clone(), vec![n], false).expect("y");
+            let xy = s.tensor_xlog1py(x, y).expect("xlog1py");
+            let v = s.tensor_values(xy).expect("xlog1py vals");
+
+            for (i, (&g, (&xi, &yi))) in v.iter()
+                .zip(x_vals.iter().zip(y_vals.iter()))
+                .enumerate()
+            {
+                let want = xi * yi.ln_1p();
+                let diff = (g - want).abs();
+                let scale = g.abs().max(want.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 8.0 * f64::EPSILON * scale,
+                    "xlog1py({}, {}) = {} != x*log1p(y) = {} (diff = {:e})",
+                    xi, yi, g, want, diff
+                );
+            }
+
+            // Contract 1: zero short-circuit. xlog1py(0, y) == 0
+            // for any non-NaN y.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let zero_x = s.tensor_variable(vec![0.0; n], vec![n], false).expect("0");
+            let y = s.tensor_variable(y_vals.clone(), vec![n], false).expect("y");
+            let xy = s.tensor_xlog1py(zero_x, y).expect("xlog1py zero x");
+            let v = s.tensor_values(xy).expect("xlog1py zero vals");
+            for (i, &g) in v.iter().enumerate() {
+                prop_assert!(
+                    g == 0.0,
+                    "xlog1py(0, y)[{}] = {} != ±0", i, g
+                );
+            }
+
+            // Contract 2: xlog1py(x, 0) == 0 since log1p(0) = 0.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(x_vals, vec![n], false).expect("x");
+            let zero_y = s.tensor_variable(vec![0.0; n], vec![n], false).expect("0");
+            let xy = s.tensor_xlog1py(x, zero_y).expect("xlog1py y=0");
+            let v = s.tensor_values(xy).expect("xlog1py y=0 vals");
+            for (i, &g) in v.iter().enumerate() {
+                prop_assert!(
+                    g == 0.0,
+                    "xlog1py(x, 0)[{}] = {} != ±0", i, g
+                );
+            }
+        }
+
         // MR (entr contracts): tensor_entr(x) = -x*log(x) for
         // x > 0, 0 for x == 0, -inf for x < 0 (the scipy.special
         // .entr convention). Four contracts:
