@@ -15418,6 +15418,65 @@ mod tests {
             }
         }
 
+        // MR (argsort contracts): tensor_argsort(x, dim,
+        // descending) returns the indices that would sort the
+        // tensor. Three contracts on a 1-D input:
+        //   1. Length: argsort output has same length as input.
+        //   2. Permutation: argsort values form a permutation
+        //      of [0, n) — every index appears exactly once.
+        //   3. Sortedness: x[argsort(x, 0, false)[k]] is non-
+        //      decreasing in k under total_cmp (matches the
+        //      kernel's tie-breaking).
+        // Catches off-by-one in the sort routine, missed
+        // indices, and any direction reversal between
+        // ascending/descending. frankentorch-bmt1u.
+        #[test]
+        fn fuzz_metamorphic_argsort_contracts(
+            raw in prop::collection::vec(-256i16..=256i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let asx = s.tensor_argsort(x, 0, false).expect("argsort");
+            let shape = s.tensor_shape(asx).expect("argsort shape");
+            let v = s.tensor_values(asx).expect("argsort vals");
+
+            // Contract 1: length.
+            prop_assert_eq!(shape, vec![n], "argsort shape must be [n]");
+            prop_assert_eq!(v.len(), n);
+
+            // Contract 2: permutation. Every index in [0, n)
+            // must appear exactly once.
+            let mut seen = vec![false; n];
+            for (i, &g) in v.iter().enumerate() {
+                let idx = g as usize;
+                prop_assert!(
+                    idx < n,
+                    "argsort[{}] = {} out of range [0, {})", i, g, n
+                );
+                prop_assert!(
+                    !seen[idx],
+                    "argsort[{}] = {} is a duplicate", i, g
+                );
+                seen[idx] = true;
+            }
+
+            // Contract 3: input gathered at argsort is sorted
+            // non-decreasing under total_cmp.
+            let gathered: Vec<f64> = v.iter().map(|&g| input[g as usize]).collect();
+            for k in 1..n {
+                prop_assert!(
+                    gathered[k - 1].total_cmp(&gathered[k]) != std::cmp::Ordering::Greater,
+                    "argsort gather not sorted at [{}]: {} > {}",
+                    k, gathered[k - 1], gathered[k]
+                );
+            }
+        }
+
         // MR (one_hot contracts): one_hot(indices, num_classes)
         // converts class indices to a binary matrix where each
         // row is exactly the indicator vector of one class.
