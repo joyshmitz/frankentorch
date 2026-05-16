@@ -15418,6 +15418,71 @@ mod tests {
             }
         }
 
+        // MR (deg2rad + rad2deg contracts): the two angle-unit
+        // ops are inverses up to floating-point rounding. Four
+        // contracts:
+        //   1. deg2rad(0) == 0 bit-exact (0 * π/180 = 0).
+        //   2. rad2deg(0) == 0 bit-exact.
+        //   3. Anchor: deg2rad(180) ≈ π within 4 ULP.
+        //   4. Round-trip: rad2deg(deg2rad(x)) ≈ x within 4 ULP
+        //      relative (two scalar multiplies cancel up to
+        //      rounding).
+        // Catches drift in the π/180 factor, sign-of-zero bugs,
+        // and any failure of the inverse pairing.
+        // frankentorch-n4qsx.
+        #[test]
+        fn fuzz_metamorphic_deg2rad_rad2deg_contracts(
+            raw in prop::collection::vec(-360i16..=360i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v)).collect();
+            let n = input.len();
+
+            // Contracts 1 + 2: zero anchors.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let z = s.tensor_variable(vec![0.0], vec![1], false).expect("zero");
+            let d = s.tensor_deg2rad(z).expect("deg2rad 0");
+            let v = s.tensor_values(d).expect("deg2rad 0 val")[0];
+            prop_assert_eq!(v.to_bits(), 0.0_f64.to_bits(),
+                "deg2rad(0) = {} != 0 bit-exact", v);
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let z = s.tensor_variable(vec![0.0], vec![1], false).expect("zero");
+            let r = s.tensor_rad2deg(z).expect("rad2deg 0");
+            let v = s.tensor_values(r).expect("rad2deg 0 val")[0];
+            prop_assert_eq!(v.to_bits(), 0.0_f64.to_bits(),
+                "rad2deg(0) = {} != 0 bit-exact", v);
+
+            // Contract 3: deg2rad(180) ≈ π within 4 ULP.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let one_eighty = s.tensor_variable(vec![180.0], vec![1], false).expect("180");
+            let d = s.tensor_deg2rad(one_eighty).expect("deg2rad 180");
+            let v = s.tensor_values(d).expect("deg2rad 180 val")[0];
+            let pi = std::f64::consts::PI;
+            let diff = (v - pi).abs();
+            prop_assert!(
+                diff <= 4.0 * f64::EPSILON * pi,
+                "deg2rad(180) = {} not ≈ π = {} (diff = {:e})", v, pi, diff
+            );
+
+            // Contract 4: round-trip rad2deg(deg2rad(x)) ≈ x.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let d = s.tensor_deg2rad(x).expect("deg2rad");
+            let r = s.tensor_rad2deg(d).expect("rad2deg of deg2rad");
+            let v = s.tensor_values(r).expect("round-trip vals");
+            for (i, (&g, &xi)) in v.iter().zip(input.iter()).enumerate() {
+                let diff = (g - xi).abs();
+                let scale = g.abs().max(xi.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 4.0 * f64::EPSILON * scale,
+                    "rad2deg(deg2rad({}))[{}] = {} != {} (diff = {:e})",
+                    xi, i, g, xi, diff
+                );
+            }
+        }
+
         // MR (argsort contracts): tensor_argsort(x, dim,
         // descending) returns the indices that would sort the
         // tensor. Three contracts on a 1-D input:
