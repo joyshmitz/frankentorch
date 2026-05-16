@@ -15418,6 +15418,67 @@ mod tests {
             }
         }
 
+        // MR (acosh contracts): tensor_acosh(x) is the inverse
+        // hyperbolic cosine, defined for x >= 1. Three contracts:
+        //   1. acosh(1) == 0 bit-exact (the anchor where
+        //      cosh(0) = 1 inverts exactly).
+        //   2. Non-negative range: acosh(x) >= 0 for x >= 1.
+        //   3. cosh(acosh(x)) ≈ x for x >= 1 within 32 ULP
+        //      relative (round-trip recovers x).
+        // Catches drift in the log(x + sqrt(x²-1)) composition
+        // for x near 1, and any failure of the inverse pairing.
+        // frankentorch-o2oyl.
+        #[test]
+        fn fuzz_metamorphic_acosh_contracts(
+            raw in prop::collection::vec(0i16..=256i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Map to x >= 1 with bounded magnitude.
+            let input: Vec<f64> = raw.iter().map(|v| 1.0 + f64::from(*v) / 53.0).collect();
+            let n = input.len();
+
+            // Contract 1: acosh(1) == 0 bit-exact.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let one = s.tensor_variable(vec![1.0], vec![1], false).expect("one");
+            let acosh_one = s.tensor_acosh(one).expect("acosh 1");
+            let v = s.tensor_values(acosh_one).expect("acosh 1 val")[0];
+            // The closed-form log(1 + sqrt(0)) = log(1) is 0;
+            // we accept ±0 here since the implementation may
+            // produce -0 via sqrt of tiny FP rounding.
+            prop_assert!(
+                v == 0.0,
+                "acosh(1) = {} must be ±0", v
+            );
+
+            // Contract 2: non-negative range.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let ax = s.tensor_acosh(x).expect("acosh");
+            let v = s.tensor_values(ax).expect("acosh vals");
+            for (i, &g) in v.iter().enumerate() {
+                prop_assert!(
+                    g >= -16.0 * f64::EPSILON,
+                    "acosh[{}] = {} below 0 for x >= 1", i, g
+                );
+            }
+
+            // Contract 3: cosh(acosh(x)) ≈ x within 32 ULP.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let ax = s.tensor_acosh(x).expect("acosh");
+            let cx = s.tensor_cosh(ax).expect("cosh of acosh");
+            let v = s.tensor_values(cx).expect("recovered vals");
+            for (i, (&g, &xi)) in v.iter().zip(input.iter()).enumerate() {
+                let diff = (g - xi).abs();
+                let scale = g.abs().max(xi.abs()).max(1.0);
+                prop_assert!(
+                    diff <= 32.0 * f64::EPSILON * scale,
+                    "cosh(acosh(x))[{}] = {} != x = {} (diff = {:e})", i, g, xi, diff
+                );
+            }
+        }
+
         // MR (inverse hyperbolic contracts): asinh / atanh are
         // odd inverses of sinh / tanh. Four contracts:
         //   1. asinh(0) == 0 bit-exact.
