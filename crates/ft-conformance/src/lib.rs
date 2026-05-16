@@ -15418,6 +15418,60 @@ mod tests {
             }
         }
 
+        // MR (histc contracts): tensor_histc(x, bins, min, max)
+        // bins x into integer counts. Three contracts:
+        //   1. Shape: output is [bins].
+        //   2. Non-negative counts: every bin >= 0.
+        //   3. Full-range conservation: when all x in [min, max],
+        //      sum of bin counts == |x| (no values escape the
+        //      bucketing). Tolerance is exactness since counts
+        //      are integer-valued in f64.
+        // Catches off-by-one in the bucket index, missed
+        // saturation at the upper boundary, and any silent loss
+        // of in-range values. frankentorch-g6fht.
+        #[test]
+        fn fuzz_metamorphic_histc_contracts(
+            (bins, raw) in (1usize..=8).prop_flat_map(|b| (
+                Just(b),
+                prop::collection::vec(-100i16..=100i16, 1..16),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // x ∈ [-1, 1].
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 100.0).collect();
+            let n = input.len();
+            let min_val = -1.0_f64;
+            let max_val = 1.0_f64;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let h = s.tensor_histc(x, bins, min_val, max_val).expect("histc");
+            let shape = s.tensor_shape(h).expect("h shape");
+            let v = s.tensor_values(h).expect("h vals");
+
+            // Contract 1: shape.
+            prop_assert_eq!(shape, vec![bins], "histc shape must be [{}]", bins);
+            prop_assert_eq!(v.len(), bins);
+
+            // Contract 2: non-negative.
+            for (i, &g) in v.iter().enumerate() {
+                prop_assert!(
+                    g >= 0.0,
+                    "histc[{}] = {} is negative", i, g
+                );
+            }
+
+            // Contract 3: all x are in-range, so sum == n.
+            // All input values are in [-1, 1] by construction.
+            let total: f64 = v.iter().sum();
+            prop_assert_eq!(
+                total as usize, n,
+                "histc total = {} != |x| = {} (all values were in [min, max])",
+                total, n
+            );
+        }
+
         // MR (nextafter contracts): tensor_nextafter(x, y)
         // returns the next representable float after x toward y.
         // Four contracts:
