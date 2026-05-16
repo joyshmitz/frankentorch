@@ -15418,6 +15418,71 @@ mod tests {
             }
         }
 
+        // MR (logical_not contracts): tensor_logical_not(x)
+        // returns 1 where x == 0 and 0 otherwise. Four
+        // contracts:
+        //   1. Binary output: every value is exactly 0.0 or 1.0
+        //      bit-exact.
+        //   2. Position rule: output == 1 iff input == 0 (using
+        //      IEEE == which counts +0 and -0 as both 0).
+        //   3. Identity at zero: logical_not(zeros(n)) ==
+        //      ones(n) bit-exact.
+        //   4. Identity at ones: logical_not(ones(n)) ==
+        //      zeros(n) bit-exact.
+        // Catches direction reversal (true/false branch swap),
+        // any non-boolean output drift, and the zero/one
+        // boundary cases. frankentorch-s1odu.
+        #[test]
+        fn fuzz_metamorphic_logical_not_contracts(
+            raw in prop::collection::vec(-32i16..=32i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Include zeros explicitly by mapping a few inputs to 0.
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 7.0).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let ln = s.tensor_logical_not(x).expect("logical_not");
+            let v = s.tensor_values(ln).expect("ln vals");
+
+            for (i, (&g, &xi)) in v.iter().zip(input.iter()).enumerate() {
+                // Contract 1: binary output.
+                prop_assert!(
+                    g == 0.0 || g == 1.0,
+                    "logical_not[{}] = {} not in {{0, 1}}", i, g
+                );
+
+                // Contract 2: position rule.
+                let want: f64 = if xi == 0.0 { 1.0 } else { 0.0 };
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "logical_not({})[{}] = {} != expected {}", xi, i, g, want
+                );
+            }
+
+            // Contract 3: logical_not(zeros) == ones.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let z = s.tensor_variable(vec![0.0; n], vec![n], false).expect("zeros");
+            let ln = s.tensor_logical_not(z).expect("not zeros");
+            let v = s.tensor_values(ln).expect("not zero vals");
+            for (i, &g) in v.iter().enumerate() {
+                prop_assert_eq!(g.to_bits(), 1.0_f64.to_bits(),
+                    "logical_not(zeros)[{}] = {} != 1", i, g);
+            }
+
+            // Contract 4: logical_not(ones) == zeros.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let o = s.tensor_variable(vec![1.0; n], vec![n], false).expect("ones");
+            let ln = s.tensor_logical_not(o).expect("not ones");
+            let v = s.tensor_values(ln).expect("not ones vals");
+            for (i, &g) in v.iter().enumerate() {
+                prop_assert_eq!(g.to_bits(), 0.0_f64.to_bits(),
+                    "logical_not(ones)[{}] = {} != 0", i, g);
+            }
+        }
+
         // MR (clamp_min / clamp_max contracts): the one-sided
         // clamp ops have four contracts:
         //   1. Lower bound: clamp_min(x, m)[i] >= m for every i.
