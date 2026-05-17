@@ -15418,6 +15418,56 @@ mod tests {
             }
         }
 
+        // MR (squeeze_all contracts): tensor_squeeze_all(x)
+        // removes every size-1 dim. Three contracts on a
+        // [rows, 1, cols] input:
+        //   1. Output shape contains no 1's.
+        //   2. Output values bit-exactly match flatten of input.
+        //   3. Numel preserved.
+        // Catches drift in the unit-dim stripping and any
+        // failure to preserve element order. frankentorch-mlbch.
+        #[test]
+        fn fuzz_metamorphic_squeeze_all_contracts(
+            (rows, cols, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..=256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+            let numel = rows * cols;
+
+            // Insert a unit dim in the middle so squeeze_all has
+            // something to strip.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, 1, cols], false).expect("x");
+            let q = s.tensor_squeeze_all(x).expect("squeeze_all");
+            let shape = s.tensor_shape(q).expect("q shape");
+            let v = s.tensor_values(q).expect("q vals");
+
+            // Contract 1: no 1's in shape.
+            for &dim in &shape {
+                prop_assert!(
+                    dim != 1 || numel == 1,
+                    "squeeze_all shape {:?} contains a 1 dim", shape
+                );
+            }
+
+            // Contract 3: numel preserved.
+            prop_assert_eq!(v.len(), numel,
+                "squeeze_all numel = {} != input numel = {}", v.len(), numel);
+
+            // Contract 2: bit-exact flatten.
+            for (i, (g, want)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "squeeze_all flatten[{}] = {} != x[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (ravel contracts): tensor_ravel(x) flattens to 1-D.
         // Three contracts on a 2-D input:
         //   1. Output rank == 1.
