@@ -15418,6 +15418,89 @@ mod tests {
             }
         }
 
+        // MR (split_with_sizes contracts): tensor_split_with_sizes
+        // is a torch-style alias for tensor_split. Three
+        // contracts on a 1-D input with split sizes [a, b]
+        // where a + b == |x|:
+        //   1. Returns 2 chunks of sizes [a, b].
+        //   2. split_with_sizes bit-equals tensor_split chunk
+        //      by chunk.
+        //   3. tensor_cat(chunks, 0) bit-recovers x.
+        // Catches drift between the alias and tensor_split, and
+        // any failure of the concat round-trip.
+        // frankentorch-lrw66.
+        #[test]
+        fn fuzz_metamorphic_split_with_sizes_contracts(
+            raw in prop::collection::vec(-256i16..=256i16, 2..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            // Split roughly in half.
+            let half = n / 2;
+            let sizes = [half, n - half];
+            // Skip degenerate case where one half is 0.
+            if sizes[0] == 0 || sizes[1] == 0 {
+                return Ok(());
+            }
+
+            // Contract 1 + 2: chunk counts + size match + bit-exact
+            // against tensor_split.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let sp_alias = s.tensor_split_with_sizes(x, &sizes, 0).expect("split_with_sizes");
+            prop_assert_eq!(sp_alias.len(), 2,
+                "split_with_sizes must return 2 chunks");
+
+            for (k, &want_size) in sizes.iter().enumerate() {
+                let shape = s.tensor_shape(sp_alias[k]).expect("chunk shape");
+                prop_assert_eq!(shape, vec![want_size],
+                    "chunk {} shape must be [{}]", k, want_size);
+            }
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let sp_ref = s.tensor_split(x, &sizes, 0).expect("split");
+            prop_assert_eq!(sp_ref.len(), 2);
+
+            for k in 0..2 {
+                let v_alias = {
+                    let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+                    let sp = s.tensor_split_with_sizes(x, &sizes, 0).expect("alias");
+                    s.tensor_values(sp[k]).expect("alias k vals")
+                };
+                let v_ref = {
+                    let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                    let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+                    let sp = s.tensor_split(x, &sizes, 0).expect("ref");
+                    s.tensor_values(sp[k]).expect("ref k vals")
+                };
+                prop_assert_eq!(v_alias.len(), v_ref.len());
+                for (i, (a, b)) in v_alias.iter().zip(v_ref.iter()).enumerate() {
+                    prop_assert_eq!(
+                        a.to_bits(), b.to_bits(),
+                        "split_with_sizes[{}][{}] = {} != split[{}][{}] = {}",
+                        k, i, a, k, i, b
+                    );
+                }
+            }
+
+            // Contract 3: tensor_cat(chunks, 0) recovers x.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let sp = s.tensor_split_with_sizes(x, &sizes, 0).expect("sp");
+            let catted = s.tensor_cat(&sp, 0).expect("cat");
+            let v = s.tensor_values(catted).expect("cat vals");
+            for (i, (g, want)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "cat(split_with_sizes(x))[{}] = {} != x[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (matrix_transpose contracts): tensor_matrix_transpose
         // (x) transposes the last two dims (torch.Tensor.mT).
         // Two contracts on a 2-D and 3-D input:
