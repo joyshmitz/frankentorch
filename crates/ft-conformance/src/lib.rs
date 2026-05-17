@@ -15418,6 +15418,66 @@ mod tests {
             }
         }
 
+        // MR (swapaxes + swapdims aliases): both tensor_swapaxes
+        // and tensor_swapdims are aliases for tensor_transpose.
+        // Three contracts on a 2-D input:
+        //   1. swapaxes(x, 0, 1) bit-equals transpose(x, 0, 1).
+        //   2. swapdims(x, 0, 1) bit-equals transpose(x, 0, 1).
+        //   3. swapaxes(x, 0, 1) bit-equals swapdims(x, 0, 1)
+        //      (both aliases must produce identical output).
+        // Catches drift between the alias wrappers and the
+        // underlying transpose. frankentorch-hd5mw.
+        #[test]
+        fn fuzz_metamorphic_swapaxes_swapdims_aliases(
+            (rows, cols, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..=256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+
+            // Reference: tensor_transpose.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let t = s.tensor_transpose(x, 0, 1).expect("transpose");
+            let v_t = s.tensor_values(t).expect("transpose vals");
+
+            // Contract 1: swapaxes == transpose.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let sa = s.tensor_swapaxes(x, 0, 1).expect("swapaxes");
+            let v_sa = s.tensor_values(sa).expect("swapaxes vals");
+            for (i, (&a, &b)) in v_sa.iter().zip(v_t.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "swapaxes[{}] = {} != transpose[{}] = {}", i, a, i, b
+                );
+            }
+
+            // Contract 2: swapdims == transpose.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let sd = s.tensor_swapdims(x, 0, 1).expect("swapdims");
+            let v_sd = s.tensor_values(sd).expect("swapdims vals");
+            for (i, (&a, &b)) in v_sd.iter().zip(v_t.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "swapdims[{}] = {} != transpose[{}] = {}", i, a, i, b
+                );
+            }
+
+            // Contract 3: swapaxes == swapdims.
+            for (i, (&a, &b)) in v_sa.iter().zip(v_sd.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "swapaxes[{}] = {} != swapdims[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (split_with_sizes contracts): tensor_split_with_sizes
         // is a torch-style alias for tensor_split. Three
         // contracts on a 1-D input with split sizes [a, b]
