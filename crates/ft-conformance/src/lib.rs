@@ -15418,6 +15418,66 @@ mod tests {
             }
         }
 
+        // MR (matrix_transpose contracts): tensor_matrix_transpose
+        // (x) transposes the last two dims (torch.Tensor.mT).
+        // Two contracts on a 2-D and 3-D input:
+        //   1. matrix_transpose(x) bit-equals tensor_transpose(x,
+        //      ndim-2, ndim-1).
+        //   2. Involution: matrix_transpose(matrix_transpose(x))
+        //      == x bit-exact.
+        // Catches drift between the alias and the underlying
+        // transpose, and any failure of the involution.
+        // frankentorch-nneb4.
+        #[test]
+        fn fuzz_metamorphic_matrix_transpose_contracts(
+            (rows, cols, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-256i16..=256i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 23.0).collect();
+
+            // Contract 1: matrix_transpose(x) == transpose(x, 0, 1)
+            // for a 2-D input.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let mt = s.tensor_matrix_transpose(x).expect("mt");
+            let v_mt = s.tensor_values(mt).expect("mt vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let t = s.tensor_transpose(x, 0, 1).expect("transpose");
+            let v_t = s.tensor_values(t).expect("transpose vals");
+
+            prop_assert_eq!(v_mt.len(), v_t.len());
+            for (i, (&a, &b)) in v_mt.iter().zip(v_t.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "matrix_transpose[{}] = {} != transpose(-2, -1)[{}] = {}",
+                    i, a, i, b
+                );
+            }
+
+            // Contract 2: involution.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let mt = s.tensor_matrix_transpose(x).expect("mt");
+            let mtmt = s.tensor_matrix_transpose(mt).expect("mt mt");
+            let v = s.tensor_values(mtmt).expect("involution vals");
+            let shape = s.tensor_shape(mtmt).expect("involution shape");
+            prop_assert_eq!(shape, vec![rows, cols],
+                "matrix_transpose involution must restore shape");
+            for (i, (g, want)) in v.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "matrix_transpose involution[{}] = {} != x[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (squeeze_all contracts): tensor_squeeze_all(x)
         // removes every size-1 dim. Three contracts on a
         // [rows, 1, cols] input:
