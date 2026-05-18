@@ -15418,6 +15418,55 @@ mod tests {
             }
         }
 
+        // MR (double + float cast aliases): tensor_double is
+        // alias for tensor_to_f64; tensor_float is alias for
+        // tensor_to_f32. Two contracts on a 1-D F64 input:
+        //   1. tensor_double(x) bit-equals tensor_to_f64(x).
+        //   2. tensor_float values bit-equal tensor_to_f32 values
+        //      read back via tensor_values_f32.
+        // frankentorch-oteh9.
+        #[test]
+        fn fuzz_metamorphic_double_float_aliases(
+            raw in prop::collection::vec(-256i16..=256i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+
+            // Contract 1: double == to_f64.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let d = s.tensor_double(x).expect("double");
+            let v_d = s.tensor_values(d).expect("double vals");
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let f64_t = s.tensor_to_f64(x).expect("to_f64");
+            let v_f64 = s.tensor_values(f64_t).expect("to_f64 vals");
+            for (i, (&a, &b)) in v_d.iter().zip(v_f64.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "double[{}] = {} != to_f64[{}] = {}", i, a, i, b
+                );
+            }
+
+            // Contract 2: float == to_f32 read at f32.
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let f1 = s.tensor_float(x).expect("float");
+            let v_float = s.tensor_values_f32(f1).expect("float vals");
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let f2 = s.tensor_to_f32(x).expect("to_f32");
+            let v_to_f32 = s.tensor_values_f32(f2).expect("to_f32 vals");
+            for (i, (&a, &b)) in v_float.iter().zip(v_to_f32.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "float[{}] = {} != to_f32[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (logspace contracts): tensor_logspace(start, end,
         // steps, base) = base^linspace(start, end, steps).
         // Three contracts:
