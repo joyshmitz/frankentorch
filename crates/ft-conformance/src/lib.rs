@@ -15418,6 +15418,49 @@ mod tests {
             }
         }
 
+        // MR (pad_mode constant alias): tensor_pad_mode(x, p,
+        // "constant", v) bit-equals tensor_pad(x, p, v) for any
+        // padding spec. Two contracts on a 2-D input:
+        //   1. Output shape matches tensor_pad shape.
+        //   2. Output values bit-equal tensor_pad values.
+        // Catches drift between the pad_mode dispatch and the
+        // tensor_pad fast path. frankentorch-o8zz4.
+        #[test]
+        fn fuzz_metamorphic_pad_mode_constant_alias(
+            (rows, cols, l, r, t, b, raw) in (
+                1usize..=4, 1usize..=4, 0usize..=2, 0usize..=2, 0usize..=2, 0usize..=2
+            ).prop_flat_map(|(rr, cc, ll, rrp, tt, bb)| (
+                Just(rr), Just(cc), Just(ll), Just(rrp), Just(tt), Just(bb),
+                prop::collection::vec(-128i16..=128i16, rr * cc),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let value = 0.0_f64;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let pm = s.tensor_pad_mode(x, &[l, r, t, b], "constant", value).expect("pad_mode");
+            let shape_pm = s.tensor_shape(pm).expect("pm shape");
+            let v_pm = s.tensor_values(pm).expect("pm vals");
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![rows, cols], false).expect("x");
+            let pad = s.tensor_pad(x, &[l, r, t, b], value).expect("pad");
+            let shape_pad = s.tensor_shape(pad).expect("pad shape");
+            let v_pad = s.tensor_values(pad).expect("pad vals");
+
+            prop_assert_eq!(shape_pm, shape_pad);
+            prop_assert_eq!(v_pm.len(), v_pad.len());
+            for (i, (&a, &b)) in v_pm.iter().zip(v_pad.iter()).enumerate() {
+                prop_assert_eq!(
+                    a.to_bits(), b.to_bits(),
+                    "pad_mode(constant)[{}] = {} != pad[{}] = {}", i, a, i, b
+                );
+            }
+        }
+
         // MR (swapaxes + swapdims aliases): both tensor_swapaxes
         // and tensor_swapdims are aliases for tensor_transpose.
         // Three contracts on a 2-D input:
