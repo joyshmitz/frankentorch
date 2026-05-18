@@ -15418,6 +15418,41 @@ mod tests {
             }
         }
 
+        // MR (view contracts): tensor_view(x, new_shape)
+        // reshapes (same numel). Three contracts on a 2-D
+        // input reshaped to 1-D:
+        //   1. Output shape == new_shape.
+        //   2. Values bit-exact match input flatten.
+        //   3. Numel preserved.
+        // frankentorch-hx7r4.
+        #[test]
+        fn fuzz_metamorphic_view_contracts(
+            (rows, cols, raw) in (1usize..=4, 1usize..=4).prop_flat_map(|(r, c)| (
+                Just(r),
+                Just(c),
+                prop::collection::vec(-128i16..=128i16, r * c),
+            ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let numel = rows * cols;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![rows, cols], false).expect("x");
+            let v_out = s.tensor_view(x, vec![numel]).expect("view");
+            let shape = s.tensor_shape(v_out).expect("view shape");
+            let vals = s.tensor_values(v_out).expect("view vals");
+            prop_assert_eq!(shape, vec![numel]);
+            prop_assert_eq!(vals.len(), numel);
+            for (i, (g, want)) in vals.iter().zip(input.iter()).enumerate() {
+                prop_assert_eq!(
+                    g.to_bits(), want.to_bits(),
+                    "view[{}] = {} != flatten(x)[{}] = {}", i, g, i, want
+                );
+            }
+        }
+
         // MR (pad_mode constant alias): tensor_pad_mode(x, p,
         // "constant", v) bit-equals tensor_pad(x, p, v) for any
         // padding spec. Two contracts on a 2-D input:
