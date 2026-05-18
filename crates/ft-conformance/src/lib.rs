@@ -15418,6 +15418,58 @@ mod tests {
             }
         }
 
+        // MR (logspace contracts): tensor_logspace(start, end,
+        // steps, base) = base^linspace(start, end, steps).
+        // Three contracts:
+        //   1. Shape: [steps].
+        //   2. logspace[0] == base^start within 1 ULP.
+        //   3. logspace[steps-1] ≈ base^end within 4 ULP for
+        //      steps >= 2 (kernel computes start + (end - start)
+        //      * (i / (steps - 1)) which has 1-ULP drift, then
+        //      base.powf adds another rounding step).
+        // frankentorch-0q6xb.
+        #[test]
+        fn fuzz_metamorphic_logspace_contracts(
+            steps in 1usize..=10
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let start = 0.5_f64;
+            let end = 3.0_f64;
+            let base = 10.0_f64;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let ls = s.logspace(start, end, steps, base, false).expect("logspace");
+            let shape = s.tensor_shape(ls).expect("logspace shape");
+            let v = s.tensor_values(ls).expect("logspace vals");
+
+            // Contract 1: shape.
+            prop_assert_eq!(shape, vec![steps],
+                "logspace shape must be [{}]", steps);
+            prop_assert_eq!(v.len(), steps);
+
+            // Contract 2: first element.
+            let want_start = base.powf(start);
+            let diff_start = (v[0] - want_start).abs();
+            let scale_start = v[0].abs().max(want_start.abs()).max(1.0);
+            prop_assert!(
+                diff_start <= 1.0 * f64::EPSILON * scale_start,
+                "logspace[0] = {} != base^start = {}", v[0], want_start
+            );
+
+            // Contract 3: last element (only if steps >= 2).
+            if steps >= 2 {
+                let want_end = base.powf(end);
+                let diff_end = (v[steps - 1] - want_end).abs();
+                let scale_end = v[steps - 1].abs().max(want_end.abs()).max(1.0);
+                prop_assert!(
+                    diff_end <= 4.0 * f64::EPSILON * scale_end,
+                    "logspace[{}] = {} not within 4 ULP of base^end = {}",
+                    steps - 1, v[steps - 1], want_end
+                );
+            }
+        }
+
         // MR (fix + absolute torch aliases): tensor_fix is an
         // alias for tensor_trunc; tensor_absolute is an alias
         // for tensor_abs. Two contracts on a 1-D input:
