@@ -15418,6 +15418,48 @@ mod tests {
             }
         }
 
+        // MR (unsafe_chunk alias): tensor_unsafe_chunk is a
+        // torch parity alias for tensor_chunk. Two contracts on
+        // a 1-D input chunked into 2 pieces:
+        //   1. Same chunk count.
+        //   2. Bit-exact values per chunk vs tensor_chunk.
+        // frankentorch-b2j98.
+        #[test]
+        fn fuzz_metamorphic_unsafe_chunk_alias(
+            raw in prop::collection::vec(-128i16..=128i16, 2..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let k = 2;
+
+            let alias_vals: Vec<Vec<f64>> = {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+                let chunks = s.tensor_unsafe_chunk(x, k, 0).expect("unsafe_chunk");
+                chunks.iter().map(|c| s.tensor_values(*c).expect("c vals")).collect()
+            };
+            let ref_vals: Vec<Vec<f64>> = {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(input, vec![n], false).expect("x");
+                let chunks = s.tensor_chunk(x, k, 0).expect("chunk");
+                chunks.iter().map(|c| s.tensor_values(*c).expect("c vals")).collect()
+            };
+
+            prop_assert_eq!(alias_vals.len(), ref_vals.len());
+            for (ci, (a, b)) in alias_vals.iter().zip(ref_vals.iter()).enumerate() {
+                prop_assert_eq!(a.len(), b.len());
+                for (i, (g, want)) in a.iter().zip(b.iter()).enumerate() {
+                    prop_assert_eq!(
+                        g.to_bits(), want.to_bits(),
+                        "unsafe_chunk[{}][{}] = {} != chunk[{}][{}] = {}",
+                        ci, i, g, ci, i, want
+                    );
+                }
+            }
+        }
+
         // MR (view contracts): tensor_view(x, new_shape)
         // reshapes (same numel). Three contracts on a 2-D
         // input reshaped to 1-D:
