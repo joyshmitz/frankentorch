@@ -15003,9 +15003,9 @@ impl FrankenTorchSession {
             )));
         }
 
-        let (storage, meta) = {
+        let meta = {
             let tensor = self.tensor_tape.tensor(input)?;
-            (tensor.storage()?.to_vec(), tensor.meta().clone())
+            tensor.meta().clone()
         };
         let shape = meta.shape();
         let ndim = shape.len();
@@ -15077,14 +15077,23 @@ impl FrankenTorchSession {
             }
         }
 
+        if !matches!(mode, "reflect" | "replicate" | "circular") {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pad: unsupported mode (use constant, reflect, replicate, or circular)",
+                },
+            )));
+        }
+
+        let input_numel = Self::checked_shape_numel(shape, "pad: input shape volume overflow")?;
         let out_strides = ft_core::contiguous_strides(&out_shape);
         let in_strides = ft_core::contiguous_strides(shape);
 
-        let mut output = vec![0.0; out_numel];
+        let mut indices = Vec::with_capacity(out_numel);
 
         // For each output element, compute the source coordinate
         let mut out_coords = vec![0usize; ndim];
-        for (flat_out, out_val) in output.iter_mut().enumerate() {
+        for flat_out in 0..out_numel {
             // Decompose flat_out into coordinates
             let mut rem = flat_out;
             for d in 0..ndim {
@@ -15093,7 +15102,6 @@ impl FrankenTorchSession {
             }
 
             // Map each coordinate back to input space
-            let mut valid = true;
             let mut flat_in = 0usize;
             for d in 0..ndim {
                 let out_c = out_coords[d] as isize - pad_before[d] as isize;
@@ -15109,30 +15117,28 @@ impl FrankenTorchSession {
                     }
                     "replicate" => out_c.clamp(0, dim_size - 1) as usize,
                     "circular" => out_c.rem_euclid(dim_size) as usize,
-                    _ => {
-                        valid = false;
-                        0
-                    }
+                    _ => unreachable!("mode validated above"),
                 };
 
-                if !valid {
-                    break;
-                }
                 flat_in += in_c * in_strides[d];
             }
 
-            if !valid {
-                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                    ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "pad: unsupported mode (use constant, reflect, replicate, or circular)",
-                    },
-                )));
-            }
-
-            *out_val = storage[flat_in];
+            indices.push(flat_in as f64);
         }
 
-        self.tensor_variable(output, out_shape, false)
+        let flat_input = if ndim == 1 && shape[0] == input_numel {
+            input
+        } else {
+            self.tensor_reshape(input, vec![input_numel])?
+        };
+        let index_node = self.tensor_variable(indices, vec![out_numel], false)?;
+        let gathered = self.tensor_index_select(flat_input, 0, index_node)?;
+
+        if out_shape.len() == 1 && out_shape[0] == out_numel {
+            Ok(gathered)
+        } else {
+            self.tensor_reshape(gathered, out_shape)
+        }
     }
 
     // -------------------------------------------------------------------
@@ -36292,6 +36298,50 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         // Circular: [3, 4, 1, 2, 3, 4, 1, 2]
         assert_eq!(vals, vec![3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn pad_reflect_propagates_gradient_to_reused_input_positions() {
+        assert_pad_mode_gradient_counts(
+            "reflect",
+            &[2, 2],
+            &[3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 2.0],
+            &[1.0, 3.0, 3.0, 1.0],
+        );
+    }
+
+    #[test]
+    fn pad_replicate_and_circular_propagate_gradient_to_reused_input_positions() {
+        assert_pad_mode_gradient_counts(
+            "replicate",
+            &[2, 2],
+            &[1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0],
+            &[3.0, 1.0, 1.0, 3.0],
+        );
+        assert_pad_mode_gradient_counts(
+            "circular",
+            &[2, 2],
+            &[3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0],
+            &[2.0, 2.0, 2.0, 2.0],
+        );
+    }
+
+    fn assert_pad_mode_gradient_counts(
+        mode: &str,
+        padding: &[usize],
+        expected_values: &[f64],
+        expected_gradients: &[f64],
+    ) {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 4], true)
+            .unwrap();
+        let out = s.tensor_pad_mode(input, padding, mode, 0.0).unwrap();
+        assert_eq!(s.tensor_values(out).unwrap(), expected_values);
+
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        assert_eq!(report.gradient(input).unwrap(), expected_gradients);
     }
 
     #[test]
