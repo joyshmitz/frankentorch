@@ -3615,22 +3615,20 @@ impl Tape {
                 }
                 NodeOp::Elu { input } => {
                     let x = self.nodes[input.0].tensor.value();
-                    let output_value = self.nodes[node_id.0].tensor.value();
-                    // d/dx elu(x) = 1 if x > 0, else output + alpha (alpha=1.0)
-                    grads[input.0] += incoming
-                        * if x.is_nan() {
-                            f64::NAN
-                        } else if x > 0.0 {
-                            1.0
-                        } else {
-                            output_value + 1.0
-                        };
+                    // PyTorch's elu_backward kernel (is_result=false, used
+                    // by the non-in-place elu) is `x <= 0 ? grad * exp(x)
+                    // : grad` for the default alpha=scale=input_scale=1.
+                    // The `x <= 0` branch covers x == 0 (exp(0) = 1), and
+                    // a NaN input falls through to the `grad` branch
+                    // (multiplier 1) rather than propagating NaN.
+                    let derivative = if x <= 0.0 { x.exp() } else { 1.0 };
+                    grads[input.0] += incoming * derivative;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(BackwardStep {
                         node: node_id,
                         incoming_grad: incoming,
-                        rule: "d(elu(x))/dx=1|output+alpha",
+                        rule: "d(elu(x))/dx=1|exp(x)",
                     });
                 }
                 NodeOp::Rsqrt { input } => {
@@ -18048,6 +18046,19 @@ mod tests {
         let grad = report.gradient(x).expect("grad");
         // d/dx elu(x) = exp(x) for x < 0 (alpha=1.0)
         assert!((grad - (-1.0_f64).exp()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn scalar_elu_backward_at_zero_is_one() {
+        // PyTorch's elu_backward is `x <= 0 ? grad * exp(x) : grad`, so
+        // x == 0 lands in the `x <= 0` branch and yields exp(0) = 1 —
+        // the same value the positive branch would give, so elu is
+        // smooth at the origin.
+        let mut tape = Tape::new();
+        let x = tape.leaf(0.0, true);
+        let (y, _) = tape.elu(x, ExecutionMode::Strict).expect("elu");
+        let report = tape.backward(y).expect("backward");
+        assert_eq!(report.gradient(x).expect("grad"), 1.0);
     }
 
     // ── gelu/silu/leaky_relu/elu tensor tests ──────────────────────────
