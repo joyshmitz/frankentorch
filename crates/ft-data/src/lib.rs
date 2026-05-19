@@ -949,9 +949,9 @@ impl<D: Dataset> Dataset for Subset<D> {
 pub fn random_split<D: Dataset>(dataset: D, lengths: &[usize], seed: u64) -> Vec<Subset<D>> {
     let n = dataset.len();
     let total: usize = lengths.iter().sum();
-    assert!(
-        total <= n,
-        "random_split: sum of lengths ({total}) exceeds dataset size ({n})",
+    assert_eq!(
+        total, n,
+        "random_split: sum of lengths ({total}) must equal dataset size ({n})",
     );
 
     let shared = std::sync::Arc::new(dataset);
@@ -1743,6 +1743,13 @@ mod tests {
     fn random_split_rejects_too_large() {
         let ds = make_dataset(5, 1);
         random_split(ds, &[3, 4], 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "sum of lengths")]
+    fn random_split_rejects_too_small() {
+        let ds = make_dataset(5, 1);
+        random_split(ds, &[2, 2], 0);
     }
 
     // ── frankentorch-4i2: Sampler builder and edge case tests ──────────
