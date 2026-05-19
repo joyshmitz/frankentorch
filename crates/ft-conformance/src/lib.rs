@@ -15202,10 +15202,8 @@ mod tests {
         // broadcasting paths. frankentorch-2n82.
         #[test]
         fn fuzz_metamorphic_expand_equals_broadcast_to(
-            (rows, raw) in (1usize..=8).prop_flat_map(|r| (
-                Just(r),
-                prop::collection::vec(-256i16..=256i16, r),
-            ))
+            raw in (1usize..=8)
+                .prop_flat_map(|r| prop::collection::vec(-256i16..=256i16, r))
         ) {
             use ft_api::FrankenTorchSession;
 
@@ -15443,6 +15441,8 @@ mod tests {
             let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
             let f64_t = s.tensor_to_f64(x).expect("to_f64");
             let v_f64 = s.tensor_values(f64_t).expect("to_f64 vals");
+            prop_assert_eq!(v_d.len(), n, "tensor_double length changed");
+            prop_assert_eq!(v_f64.len(), n, "tensor_to_f64 length changed");
             for (i, (&a, &b)) in v_d.iter().zip(v_f64.iter()).enumerate() {
                 prop_assert_eq!(
                     a.to_bits(), b.to_bits(),
@@ -15459,6 +15459,8 @@ mod tests {
             let x = s.tensor_variable(input, vec![n], false).expect("x");
             let f2 = s.tensor_to_f32(x).expect("to_f32");
             let v_to_f32 = s.tensor_values_f32(f2).expect("to_f32 vals");
+            prop_assert_eq!(v_float.len(), n, "tensor_float length changed");
+            prop_assert_eq!(v_to_f32.len(), n, "tensor_to_f32 length changed");
             for (i, (&a, &b)) in v_float.iter().zip(v_to_f32.iter()).enumerate() {
                 prop_assert_eq!(
                     a.to_bits(), b.to_bits(),
@@ -16450,10 +16452,9 @@ mod tests {
             let dg_xp = s.tensor_digamma(xp).expect("digamma x+1");
             let v_x = s.tensor_values(dg_x).expect("dg x vals");
             let v_xp = s.tensor_values(dg_xp).expect("dg x+1 vals");
-            for (i, ((&a, &b), &xi)) in v_xp.iter()
+            for ((&a, &b), &xi) in v_xp.iter()
                 .zip(v_x.iter())
                 .zip(input.iter())
-                .enumerate()
             {
                 let lhs = a - b;
                 let rhs = 1.0 / xi;
@@ -16518,10 +16519,9 @@ mod tests {
             let lg_xp = s.tensor_lgamma(xp).expect("lgamma x+1");
             let v_x = s.tensor_values(lg_x).expect("lg x vals");
             let v_xp = s.tensor_values(lg_xp).expect("lg x+1 vals");
-            for (i, ((&a, &b), &xi)) in v_xp.iter()
+            for ((&a, &b), &xi) in v_xp.iter()
                 .zip(v_x.iter())
                 .zip(input.iter())
-                .enumerate()
             {
                 let lhs = a - b;
                 let rhs = xi.ln();
@@ -16707,9 +16707,8 @@ mod tests {
             let xy = s.tensor_xlog1py(x, y).expect("xlog1py");
             let v = s.tensor_values(xy).expect("xlog1py vals");
 
-            for (i, (&g, (&xi, &yi))) in v.iter()
+            for (&g, (&xi, &yi)) in v.iter()
                 .zip(x_vals.iter().zip(y_vals.iter()))
-                .enumerate()
             {
                 let want = xi * yi.ln_1p();
                 let diff = (g - want).abs();
@@ -16860,9 +16859,8 @@ mod tests {
             let xy = s.tensor_xlogy(x, y).expect("xlogy");
             let v = s.tensor_values(xy).expect("xlogy vals");
 
-            for (i, (&g, (&xi, &yi))) in v.iter()
+            for (&g, (&xi, &yi)) in v.iter()
                 .zip(x_vals.iter().zip(y_vals.iter()))
-                .enumerate()
             {
                 let want = xi * yi.ln();
                 let diff = (g - want).abs();
@@ -17589,8 +17587,8 @@ mod tests {
             // Contract 2: clamp_max upper bound.
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
             let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
-            let cM = s.tensor_clamp_max(x, max_bound).expect("clamp_max");
-            let v = s.tensor_values(cM).expect("cM vals");
+            let c_m = s.tensor_clamp_max(x, max_bound).expect("clamp_max");
+            let v = s.tensor_values(c_m).expect("cM vals");
             for (i, &g) in v.iter().enumerate() {
                 prop_assert!(
                     g <= max_bound,
@@ -17611,9 +17609,9 @@ mod tests {
             }
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
             let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
-            let cM_inf = s.tensor_clamp_max(x, f64::INFINITY).expect("clamp_max inf");
-            let v_cM = s.tensor_values(cM_inf).expect("cM inf vals");
-            for (i, (g, want)) in v_cM.iter().zip(input.iter()).enumerate() {
+            let c_m_inf = s.tensor_clamp_max(x, f64::INFINITY).expect("clamp_max inf");
+            let v_c_m = s.tensor_values(c_m_inf).expect("cM inf vals");
+            for (i, (g, want)) in v_c_m.iter().zip(input.iter()).enumerate() {
                 prop_assert_eq!(
                     g.to_bits(), want.to_bits(),
                     "clamp_max(x, inf)[{}] = {} != x[{}] = {}", i, g, i, want
@@ -17624,8 +17622,8 @@ mod tests {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
             let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
             let cm = s.tensor_clamp_min(x, m_bound).expect("clamp_min comp");
-            let cMm = s.tensor_clamp_max(cm, max_bound).expect("clamp_max comp");
-            let v_comp = s.tensor_values(cMm).expect("comp vals");
+            let c_mm = s.tensor_clamp_max(cm, max_bound).expect("clamp_max comp");
+            let v_comp = s.tensor_values(c_mm).expect("comp vals");
 
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
             let x = s.tensor_variable(input, vec![n], false).expect("x");
@@ -17728,10 +17726,9 @@ mod tests {
             let t = s.tensor_trunc(x).expect("trunc");
             let v_t = s.tensor_values(t).expect("trunc vals");
 
-            for (i, ((&fi, &ti), &xi)) in v_f.iter()
+            for ((&fi, &ti), &xi) in v_f.iter()
                 .zip(v_t.iter())
                 .zip(input.iter())
-                .enumerate()
             {
                 if !xi.is_finite() {
                     continue;
@@ -18167,7 +18164,7 @@ mod tests {
             // Contract 3: membership.
             for &val in &v {
                 prop_assert!(
-                    x_vals.iter().any(|&xv| xv == val),
+                    x_vals.contains(&val),
                     "combinations value {} not in input", val
                 );
             }
@@ -20934,7 +20931,7 @@ mod tests {
             let cs = s.cosine_similarity(xa, yb, 1, eps).expect("cosine xy");
             let v_xy = s.tensor_values(cs).expect("xy val")[0];
             prop_assert!(
-                v_xy >= -1.0 - 64.0 * f64::EPSILON && v_xy <= 1.0 + 64.0 * f64::EPSILON,
+                (-1.0 - 64.0 * f64::EPSILON..=1.0 + 64.0 * f64::EPSILON).contains(&v_xy),
                 "cosine_similarity(x, y) = {} outside [-1, 1]", v_xy
             );
 
@@ -21983,7 +21980,7 @@ mod tests {
             // Contract 3: every x[i] is in unique.
             for &xi in &input {
                 prop_assert!(
-                    unique_vals.iter().any(|&u| u == xi),
+                    unique_vals.contains(&xi),
                     "x value {} missing from unique {:?}", xi, unique_vals
                 );
             }
