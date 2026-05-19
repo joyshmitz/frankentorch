@@ -262,8 +262,10 @@ impl SGD {
                 "sgd requires finite non-negative momentum",
             ));
         }
-        if !self.dampening.is_finite() {
-            return Err(optimizer_hparam_error("sgd requires finite dampening"));
+        if !self.dampening.is_finite() || self.dampening < 0.0 {
+            return Err(optimizer_hparam_error(
+                "sgd requires finite non-negative dampening",
+            ));
         }
         if !self.weight_decay.is_finite() || self.weight_decay < 0.0 {
             return Err(optimizer_hparam_error(
@@ -5631,6 +5633,30 @@ mod tests {
             AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "sgd nesterov requires momentum > 0 and zero dampening"
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn sgd_rejects_negative_dampening() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut optimizer = SGD::new(vec![x], 0.1).momentum(0.9).dampening(-0.1);
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+
+        let err = optimizer
+            .step(&mut session, &report)
+            .expect_err("negative dampening must fail closed");
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "sgd requires finite non-negative dampening"
                 }
             ))
         ));
