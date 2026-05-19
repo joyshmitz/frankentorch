@@ -1203,12 +1203,21 @@ impl Optimizer for RAdam {
                     / ((rho_inf - 4.0) * (rho_inf - 2.0) * rho_t))
                     .sqrt();
 
+                // `torch.optim.RAdam` adds `eps` to the *un*-bias-corrected
+                // `sqrt(v)` and folds the bias correction into the adaptive
+                // learning rate: `adaptive_lr = sqrt(bias_correction2)
+                // / (sqrt(v) + eps)` (see _single_tensor_radam in
+                // torch/optim/radam.py). Adding `eps` to `sqrt(v_hat)`
+                // instead would scale the `eps` term by
+                // `1 / sqrt(bias_correction2)` and drift from upstream on
+                // the early rectified steps where `bias_correction2 << 1`.
+                let sqrt_bias_correction2 = bias_correction2.sqrt();
                 m_hat
                     .iter()
                     .zip(v.iter())
                     .map(|(mh, v_val)| {
-                        let v_hat = v_val / bias_correction2;
-                        self.lr * r_t * mh / (v_hat.sqrt() + self.eps)
+                        let adaptive_lr = sqrt_bias_correction2 / (v_val.sqrt() + self.eps);
+                        self.lr * r_t * mh * adaptive_lr
                     })
                     .collect()
             } else {
@@ -7306,6 +7315,78 @@ mod tests {
             b_val > -3.0,
             "RAdam should increase b toward 0, got {}",
             b_val
+        );
+    }
+
+    #[test]
+    fn radam_rectified_step_matches_torch_eps_placement() {
+        // torch.optim.RAdam (_single_tensor_radam in torch/optim/radam.py)
+        // forms the rectified update as
+        //   adaptive_lr = sqrt(bias_correction2) / (sqrt(v) + eps)
+        //   param      -= lr * m_hat * rect * adaptive_lr
+        // i.e. `eps` is added to the *un*-bias-corrected `sqrt(v)`. Adding
+        // it to `sqrt(v_hat) = sqrt(v / bias_correction2)` instead scales
+        // the `eps` term by `1 / sqrt(bias_correction2)`, which is large
+        // on the early rectified steps where `bias_correction2 << 1`.
+        // This drives RAdam through the `rho_t > 5` branch and checks the
+        // trajectory against an independent reference built from torch's
+        // exact formula. A deliberately large `eps` makes the placement
+        // divergence glaring (it stays a no-op in the SGD branch).
+        let lr = 0.05_f64;
+        let beta1 = 0.9_f64;
+        let beta2 = 0.999_f64;
+        let eps = 1e-3_f64;
+        let steps = 16_u64;
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![2.5], vec![1], true)
+            .expect("var");
+        let mut optimizer = RAdam::new(vec![x], lr).eps(eps);
+        let mut ft_traj = Vec::with_capacity(steps as usize);
+        for _ in 0..steps {
+            let sq = session.tensor_mul(x, x).expect("mul");
+            let loss = session.tensor_sum(sq).expect("sum");
+            let report = session.tensor_backward(loss).expect("backward");
+            optimizer.step(&mut session, &report).expect("step");
+            ft_traj.push(session.tensor_values(x).expect("values")[0]);
+            optimizer.zero_grad(&mut session).expect("zero_grad");
+        }
+
+        // Independent reference following torch.optim.RAdam exactly.
+        let rho_inf = 2.0 / (1.0 - beta2) - 1.0;
+        let mut p = 2.5_f64;
+        let mut m = 0.0_f64;
+        let mut v = 0.0_f64;
+        let mut entered_rectified = false;
+        for step in 1..=steps {
+            let g = 2.0 * p; // d/dp (p * p)
+            m = beta1 * m + (1.0 - beta1) * g;
+            v = beta2 * v + (1.0 - beta2) * g * g;
+            let bias_correction1 = 1.0 - beta1.powf(step as f64);
+            let bias_correction2 = 1.0 - beta2.powf(step as f64);
+            let m_hat = m / bias_correction1;
+            let beta2_pow_t = beta2.powf(step as f64);
+            let rho_t = rho_inf - 2.0 * (step as f64) * beta2_pow_t / (1.0 - beta2_pow_t);
+            if rho_t > 5.0 {
+                entered_rectified = true;
+                let rect = ((rho_t - 4.0) * (rho_t - 2.0) * rho_inf
+                    / ((rho_inf - 4.0) * (rho_inf - 2.0) * rho_t))
+                    .sqrt();
+                let adaptive_lr = bias_correction2.sqrt() / (v.sqrt() + eps);
+                p -= lr * m_hat * rect * adaptive_lr;
+            } else {
+                p -= lr * m_hat;
+            }
+            let ft = ft_traj[(step - 1) as usize];
+            assert!(
+                (ft - p).abs() <= 1e-11 * p.abs().max(1.0),
+                "RAdam step {step} diverged from torch reference: ft={ft}, ref={p}"
+            );
+        }
+        assert!(
+            entered_rectified,
+            "test must exercise the rho_t > 5 rectified branch"
         );
     }
 
