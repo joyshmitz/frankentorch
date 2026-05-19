@@ -3599,14 +3599,12 @@ impl Tape {
                 }
                 NodeOp::LeakyRelu { input } => {
                     let x = self.nodes[input.0].tensor.value();
-                    grads[input.0] += incoming
-                        * if x.is_nan() {
-                            f64::NAN
-                        } else if x >= 0.0 {
-                            1.0
-                        } else {
-                            0.01
-                        };
+                    // PyTorch's leaky_relu_backward kernel is
+                    // `self > 0 ? grad : grad * negative_slope` — the
+                    // boundary x == 0 (and x == -0.0) takes the slope
+                    // branch, and a NaN input also falls through to the
+                    // slope branch rather than propagating NaN.
+                    grads[input.0] += incoming * if x > 0.0 { 1.0 } else { 0.01 };
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(BackwardStep {
@@ -3710,7 +3708,13 @@ impl Tape {
                 }
                 NodeOp::Hardtanh { input } => {
                     let x = self.nodes[input.0].tensor.value();
-                    let grad = if (-1.0..=1.0).contains(&x) { 1.0 } else { 0.0 };
+                    // PyTorch's hardtanh_backward kernel is
+                    // `(self <= min || self >= max) ? 0 : grad`, so the
+                    // saturated boundaries x == -1 and x == 1 take the
+                    // zero-gradient branch. Bounds are strict on the
+                    // interior; a NaN input falls through to the `grad`
+                    // (multiplier 1) branch.
+                    let grad = if x <= -1.0 || x >= 1.0 { 0.0 } else { 1.0 };
                     grads[input.0] += incoming * grad;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
@@ -3722,15 +3726,24 @@ impl Tape {
                 }
                 NodeOp::Softplus { input } => {
                     let x = self.nodes[input.0].tensor.value();
-                    // d/dx softplus(x) = sigmoid(x) = 1/(1+exp(-x))
-                    let grad = 1.0 / (1.0 + (-x).exp());
+                    // d/dx softplus(x) = sigmoid(x) = 1/(1+exp(-x)), but
+                    // PyTorch's softplus_backward thresholds identically
+                    // to the forward: for x > threshold (default 20) the
+                    // function is the identity, so the gradient is
+                    // exactly 1 (matching ft-kernel-cpu::softplus_value's
+                    // `if x > 20.0 { x }` short circuit).
+                    let grad = if x > 20.0 {
+                        1.0
+                    } else {
+                        1.0 / (1.0 + (-x).exp())
+                    };
                     grads[input.0] += incoming * grad;
 
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(BackwardStep {
                         node: node_id,
                         incoming_grad: incoming,
-                        rule: "d(softplus(x))/dx=sigmoid(x)",
+                        rule: "d(softplus(x))/dx=1|sigmoid(x)",
                     });
                 }
                 NodeOp::Mish { input } => {
@@ -17940,6 +17953,63 @@ mod tests {
             .expect("leaky_relu");
         let report = tape.backward(y).expect("backward");
         assert_eq!(report.gradient(x).expect("grad"), 0.01);
+    }
+
+    #[test]
+    fn scalar_leaky_relu_backward_at_zero_uses_slope() {
+        // PyTorch's leaky_relu_backward kernel is
+        // `self > 0 ? grad : grad * negative_slope`, so the boundary
+        // x == 0 takes the slope branch (0.01), not 1.
+        let mut tape = Tape::new();
+        let x = tape.leaf(0.0, true);
+        let (y, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
+        let report = tape.backward(y).expect("backward");
+        assert_eq!(report.gradient(x).expect("grad"), 0.01);
+    }
+
+    #[test]
+    fn scalar_hardtanh_backward_at_saturation_boundaries_is_zero() {
+        // PyTorch's hardtanh_backward zeroes the gradient at the
+        // saturated boundaries: `(self <= min || self >= max) ? 0 : grad`.
+        // So both x == -1 and x == 1 backward to 0, not 1.
+        for boundary in [-1.0_f64, 1.0_f64] {
+            let mut tape = Tape::new();
+            let x = tape.leaf(boundary, true);
+            let (y, _) = tape.hardtanh(x, ExecutionMode::Strict).expect("hardtanh");
+            let report = tape.backward(y).expect("backward");
+            assert_eq!(
+                report.gradient(x).expect("grad"),
+                0.0,
+                "hardtanh backward at x={boundary} must be 0"
+            );
+        }
+        // An interior point still backward to 1.
+        let mut tape = Tape::new();
+        let x = tape.leaf(0.25, true);
+        let (y, _) = tape.hardtanh(x, ExecutionMode::Strict).expect("hardtanh");
+        let report = tape.backward(y).expect("backward");
+        assert_eq!(report.gradient(x).expect("grad"), 1.0);
+    }
+
+    #[test]
+    fn scalar_softplus_backward_above_threshold_is_exactly_one() {
+        // Past the threshold (default 20) softplus is the identity, so
+        // PyTorch's softplus_backward returns the gradient unscaled
+        // (exactly 1.0) rather than sigmoid(x) = 1 - epsilon.
+        let mut tape = Tape::new();
+        let x = tape.leaf(25.0, true);
+        let (y, _) = tape.softplus(x, ExecutionMode::Strict).expect("softplus");
+        let report = tape.backward(y).expect("backward");
+        assert_eq!(report.gradient(x).expect("grad"), 1.0);
+        // Just below the threshold the gradient is still sigmoid(x).
+        let mut tape = Tape::new();
+        let x = tape.leaf(10.0, true);
+        let (y, _) = tape.softplus(x, ExecutionMode::Strict).expect("softplus");
+        let report = tape.backward(y).expect("backward");
+        let expected = 1.0 / (1.0 + (-10.0_f64).exp());
+        assert_eq!(report.gradient(x).expect("grad"), expected);
     }
 
     #[test]
