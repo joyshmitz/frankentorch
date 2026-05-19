@@ -616,8 +616,16 @@ impl<'a, D: Dataset> DataLoader<'a, D> {
 
         // Collect samples for this batch
         let mut samples = Vec::with_capacity(batch_size);
+        let dataset_len = self.dataset.len();
         for i in 0..batch_size {
             let idx = self.indices[self.position + i];
+            if idx >= dataset_len {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "DataLoader: sampler index out of range for dataset",
+                    },
+                )));
+            }
             samples.push(self.dataset.get(idx));
         }
         self.position += batch_size;
@@ -698,7 +706,8 @@ fn collate(
             if s_vals.len() != sample_numel {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "DataLoader: sample values length does not match declared tensor shape",
+                        reason:
+                            "DataLoader: sample values length does not match declared tensor shape",
                     },
                 )));
             }
@@ -1417,7 +1426,7 @@ mod tests {
         let bs = BatchSampler::from_random(&rand, 3, false);
         let batches = bs.batches();
         assert_eq!(batches.len(), 3); // 3+3+2
-        // Total indices should be a permutation of 0..8
+                                      // Total indices should be a permutation of 0..8
         let all: Vec<usize> = batches.into_iter().flatten().collect();
         assert_eq!(all.len(), 8);
         let mut sorted = all.clone();
@@ -1464,6 +1473,24 @@ mod tests {
     }
 
     #[test]
+    fn dataloader_rejects_out_of_range_sampler_index() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let ds = make_dataset(2, 1);
+        let config = DataLoaderConfig::new(2);
+        let mut loader = DataLoader::with_indices(&ds, vec![0, 2], config);
+
+        let message = loader
+            .next_batch(&mut session)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        assert!(
+            message.contains("sampler index out of range"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
     fn dataloader_with_subset_sampler_train_val_split() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let ds = make_dataset(10, 1);
@@ -1488,11 +1515,9 @@ mod tests {
         let val_batch = val_loader.next_batch(&mut session).unwrap().unwrap();
         let val_targets = session.tensor_values(val_batch.target().unwrap()).unwrap();
         // All val targets should be in 7..10
-        assert!(
-            val_targets
-                .iter()
-                .all(|&v| (v as usize) >= 7 && (v as usize) < 10)
-        );
+        assert!(val_targets
+            .iter()
+            .all(|&v| (v as usize) >= 7 && (v as usize) < 10));
     }
 
     // ── Transform Tests ─────────────────────────────────────────────────
