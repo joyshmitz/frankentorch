@@ -10400,15 +10400,7 @@ impl TensorTape {
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
-                        .map(|(g, x)| {
-                            g * if x.is_nan() {
-                                f64::NAN
-                            } else if *x >= 0.0 {
-                                1.0
-                            } else {
-                                0.01
-                            }
-                        })
+                        .map(|(g, x)| g * if *x > 0.0 { 1.0 } else { 0.01 })
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
@@ -10420,20 +10412,13 @@ impl TensorTape {
                 }
                 TensorNodeOp::Elu { input } => {
                     let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
-                        .zip(output_values.iter())
-                        .map(|((g, x), y)| {
-                            g * if x.is_nan() {
-                                f64::NAN
-                            } else if *x > 0.0 {
-                                1.0
-                            } else {
-                                y + 1.0
-                            }
+                        .map(|(g, x)| {
+                            let derivative = if *x <= 0.0 { x.exp() } else { 1.0 };
+                            g * derivative
                         })
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
@@ -10441,7 +10426,7 @@ impl TensorTape {
                     steps.push(TensorBackwardStep {
                         node: node_id,
                         incoming_grad_len: incoming.len(),
-                        rule: "d(elu(x))/dx=1|output+alpha",
+                        rule: "d(elu(x))/dx=1|exp(x)",
                     });
                 }
                 TensorNodeOp::Rsqrt { input } => {
@@ -10546,7 +10531,9 @@ impl TensorTape {
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
-                        .map(|(g, x)| g * if *x < -1.0 || *x > 1.0 { 0.0 } else { 1.0 })
+                        .map(|(g, x)| {
+                            g * if *x <= -1.0 || *x >= 1.0 { 0.0 } else { 1.0 }
+                        })
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
@@ -10562,14 +10549,21 @@ impl TensorTape {
                     let contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
-                        .map(|(g, x)| g * (1.0 / (1.0 + (-x).exp())))
+                        .map(|(g, x)| {
+                            let grad = if *x > 20.0 {
+                                1.0
+                            } else {
+                                1.0 / (1.0 + (-x).exp())
+                            };
+                            g * grad
+                        })
                         .collect();
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &contrib)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
                         node: node_id,
                         incoming_grad_len: incoming.len(),
-                        rule: "d(softplus(x))/dx=sigmoid(x)",
+                        rule: "d(softplus(x))/dx=1|sigmoid(x)",
                     });
                 }
                 TensorNodeOp::Mish { input } => {
@@ -18146,6 +18140,20 @@ mod tests {
     }
 
     #[test]
+    fn tensor_leaky_relu_backward_at_zero_and_nan_use_slope() {
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![-0.0, 0.0, f64::NAN, 2.0], vec![4], true)
+            .expect("leaf");
+        let (y, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        assert_eq!(grads, vec![0.01, 0.01, 0.01, 1.0]);
+    }
+
+    #[test]
     fn tensor_elu_forward() {
         let mut tape = TensorTape::new();
         let x = tape
@@ -18167,6 +18175,44 @@ mod tests {
         let grads = report.gradient(x).expect("grad");
         assert_eq!(grads[0], 1.0);
         assert!((grads[1] - (-1.0_f64).exp()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tensor_elu_backward_zero_and_nan_match_torch() {
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![0.0, f64::NAN, -1.0, 2.0], vec![4], true)
+            .expect("leaf");
+        let (y, _) = tape.elu(x, ExecutionMode::Strict).expect("elu");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        assert_eq!(grads[0], 1.0);
+        assert_eq!(grads[1], 1.0);
+        assert!((grads[2] - (-1.0_f64).exp()).abs() < 1e-12);
+        assert_eq!(grads[3], 1.0);
+    }
+
+    #[test]
+    fn tensor_hardtanh_backward_boundaries_and_nan_match_torch() {
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![-1.0, 1.0, f64::NAN, 0.25], vec![4], true)
+            .expect("leaf");
+        let (y, _) = tape.hardtanh(x, ExecutionMode::Strict).expect("hardtanh");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        assert_eq!(grads, vec![0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn tensor_softplus_backward_above_threshold_is_exactly_one() {
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![25.0, 10.0], vec![2], true).expect("leaf");
+        let (y, _) = tape.softplus(x, ExecutionMode::Strict).expect("softplus");
+        let report = tape.backward(y).expect("backward");
+        let grads = report.gradient(x).expect("grad");
+        assert_eq!(grads[0], 1.0);
+        assert_eq!(grads[1], 1.0 / (1.0 + (-10.0_f64).exp()));
     }
 
     // ── prod_dim/var_dim/std_dim tensor tests ──────────────────────────
