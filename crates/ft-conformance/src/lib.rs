@@ -31653,16 +31653,16 @@ for arr_bits in req["inputs"]:
     arr = np.array([struct.unpack("<d", struct.pack("<Q", int(b)))[0] for b in arr_bits], dtype=np.float64)
     # fft: complex output length N
     f = np.fft.fft(arr)
-    out["fft"].append([(struct.unpack("<Q", struct.pack("<d", z.real))[0], struct.unpack("<Q", struct.pack("<d", z.imag))[0]) for z in f])
+    out["fft"].append([(str(struct.unpack("<Q", struct.pack("<d", z.real))[0]), str(struct.unpack("<Q", struct.pack("<d", z.imag))[0])) for z in f])
     # ifft: take fft output, ifft it, return complex output length N
     inv = np.fft.ifft(f)
-    out["ifft"].append([(struct.unpack("<Q", struct.pack("<d", z.real))[0], struct.unpack("<Q", struct.pack("<d", z.imag))[0]) for z in inv])
+    out["ifft"].append([(str(struct.unpack("<Q", struct.pack("<d", z.real))[0]), str(struct.unpack("<Q", struct.pack("<d", z.imag))[0])) for z in inv])
     # rfft: complex output length N/2 + 1
     rf = np.fft.rfft(arr)
-    out["rfft"].append([(struct.unpack("<Q", struct.pack("<d", z.real))[0], struct.unpack("<Q", struct.pack("<d", z.imag))[0]) for z in rf])
+    out["rfft"].append([(str(struct.unpack("<Q", struct.pack("<d", z.real))[0]), str(struct.unpack("<Q", struct.pack("<d", z.imag))[0])) for z in rf])
     # irfft: real output length N
     inv_r = np.fft.irfft(rf, n=len(arr))
-    out["irfft"].append([struct.unpack("<Q", struct.pack("<d", v))[0] for v in inv_r])
+    out["irfft"].append([str(struct.unpack("<Q", struct.pack("<d", v))[0]) for v in inv_r])
 print(json.dumps({"results": out}))
 "#;
 
@@ -31849,11 +31849,10 @@ req = json.loads(sys.stdin.read())
 out = []
 for arr_bits, offset in req["cases"]:
     arr = np.array([struct.unpack("<d", struct.pack("<Q", int(b)))[0] for b in arr_bits], dtype=np.float64)
-    m = np.diagflat([0]) if False else None  # placeholder
     # numpy.diag accepts a 1-D array and an offset k.
     result = np.diag(arr, k=int(offset))
     flat = result.flatten().tolist()
-    out.append([struct.unpack("<Q", struct.pack("<d", v))[0] for v in flat])
+    out.append([str(struct.unpack("<Q", struct.pack("<d", v))[0]) for v in flat])
 print(json.dumps({"results": out}))
 "#;
 
