@@ -13267,10 +13267,26 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Abs { input } => {
-                    // d(|x|)/dx = sign(x) * grad
+                    // d(|x|)/dx = sign(x) * grad. Use the same three-way
+                    // sign as the non-create_graph path (and PyTorch's
+                    // `sgn`): sign(0) is 0, not f64::signum's 1.0, and
+                    // sign(-0.0) is 0, not -1.0. NaN propagates.
                     let vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
-                    let sign: Vec<f64> = vals.iter().map(|&v| v.signum()).collect();
+                    let sign: Vec<f64> = vals
+                        .iter()
+                        .map(|&v| {
+                            if v.is_nan() {
+                                f64::NAN
+                            } else if v > 0.0 {
+                                1.0
+                            } else if v < 0.0 {
+                                -1.0
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect();
                     let sign_node = self.leaf(sign, shape, false)?;
                     let grad_in = self.cg_mul(incoming_id, sign_node)?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
@@ -13315,6 +13331,126 @@ impl TensorTape {
                         node: node_id,
                         incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
                         rule: "d(sum_to_shape(x))/dx=expand_grad_to_input_shape (cg)",
+                    });
+                }
+                TensorNodeOp::Tan { input } => {
+                    // d(tan(x))/dx = (1 + tan(x)^2) * grad   [tan(x) = node_id]
+                    let shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
+                    let numel =
+                        Self::checked_shape_numel(&shape, "tan backward shape overflow")?;
+                    let ones = self.leaf(vec![1.0; numel], shape, false)?;
+                    let tan_sq = self.cg_mul(node_id, node_id)?;
+                    let one_plus_sq = self.cg_add(ones, tan_sq)?;
+                    let grad_in = self.cg_mul(incoming_id, one_plus_sq)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(tan(x))/dx=(1+tan^2)*grad (cg)",
+                    });
+                }
+                TensorNodeOp::Atan { input } => {
+                    // d(atan(x))/dx = grad / (1 + x^2)
+                    let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let numel =
+                        Self::checked_shape_numel(&shape, "atan backward shape overflow")?;
+                    let ones = self.leaf(vec![1.0; numel], shape, false)?;
+                    let x_sq = self.cg_mul(input, input)?;
+                    let denom = self.cg_add(ones, x_sq)?;
+                    let grad_in = self.cg_div(incoming_id, denom)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(atan(x))/dx=grad/(1+x^2) (cg)",
+                    });
+                }
+                TensorNodeOp::Log1p { input } => {
+                    // d(log1p(x))/dx = grad / (1 + x)
+                    let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let numel =
+                        Self::checked_shape_numel(&shape, "log1p backward shape overflow")?;
+                    let ones = self.leaf(vec![1.0; numel], shape, false)?;
+                    let denom = self.cg_add(input, ones)?;
+                    let grad_in = self.cg_div(incoming_id, denom)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(log1p(x))/dx=grad/(1+x) (cg)",
+                    });
+                }
+                TensorNodeOp::Log2 { input } => {
+                    // d(log2(x))/dx = grad / (x * ln(2))
+                    let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let numel =
+                        Self::checked_shape_numel(&shape, "log2 backward shape overflow")?;
+                    let ln2 = self.leaf(vec![std::f64::consts::LN_2; numel], shape, false)?;
+                    let denom = self.cg_mul(input, ln2)?;
+                    let grad_in = self.cg_div(incoming_id, denom)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(log2(x))/dx=grad/(x*ln2) (cg)",
+                    });
+                }
+                TensorNodeOp::Log10 { input } => {
+                    // d(log10(x))/dx = grad / (x * ln(10))
+                    let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let numel =
+                        Self::checked_shape_numel(&shape, "log10 backward shape overflow")?;
+                    let ln10 = self.leaf(vec![std::f64::consts::LN_10; numel], shape, false)?;
+                    let denom = self.cg_mul(input, ln10)?;
+                    let grad_in = self.cg_div(incoming_id, denom)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(log10(x))/dx=grad/(x*ln10) (cg)",
+                    });
+                }
+                TensorNodeOp::Expm1 { input } => {
+                    // d(expm1(x))/dx = (expm1(x) + 1) * grad   [expm1(x) = node_id]
+                    let shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
+                    let numel =
+                        Self::checked_shape_numel(&shape, "expm1 backward shape overflow")?;
+                    let ones = self.leaf(vec![1.0; numel], shape, false)?;
+                    let exp_x = self.cg_add(node_id, ones)?;
+                    let grad_in = self.cg_mul(incoming_id, exp_x)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(expm1(x))/dx=(expm1(x)+1)*grad (cg)",
+                    });
+                }
+                TensorNodeOp::Mean { input, input_numel } => {
+                    // d(mean(x))/dx = expand(grad) / n. The division by the
+                    // constant n is kept as an explicit Div node so that the
+                    // 1/n factor survives a second backward pass (folding it
+                    // into the Expand value would drop it on double-backward).
+                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let incoming_val =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?[0];
+                    let expanded_data = vec![incoming_val; input_numel];
+                    let expanded =
+                        self.cg_expand(incoming_id, expanded_data, input_shape.clone())?;
+                    let n_leaf =
+                        self.leaf(vec![input_numel as f64; input_numel], input_shape, false)?;
+                    let grad_in = self.cg_div(expanded, n_leaf)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(mean(x))/dx=expand(grad)/n (cg)",
                     });
                 }
                 // For unsupported ops, fall back to non-differentiable gradient
@@ -20430,6 +20566,225 @@ mod tests {
             (second_deriv[0] - 48.0).abs() < 1e-8,
             "u''(2) should be 48, got {}",
             second_deriv[0]
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_tan() {
+        // f(x) = tan(x), f'(x) = 1 + tan(x)^2, f''(x) = 2*tan(x)*(1+tan(x)^2)
+        let xv = 0.5_f64;
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![xv], vec![1], true).expect("x");
+        let (tx, _) = tape.tan(x, ExecutionMode::Strict).expect("tan(x)");
+        let report1 = tape
+            .backward_with_options(
+                tx,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let t = xv.tan();
+        let expected_first = 1.0 + t * t;
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!(
+            (grad_x[0] - expected_first).abs() < 1e-10,
+            "tan' should be {expected_first}, got {}",
+            grad_x[0]
+        );
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2 = report2.gradient(x).expect("second gradient");
+        let expected_second = 2.0 * t * (1.0 + t * t);
+        assert!(
+            (grad2[0] - expected_second).abs() < 1e-9,
+            "tan'' should be {expected_second}, got {}",
+            grad2[0]
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_atan() {
+        // f(x) = atan(x), f'(x) = 1/(1+x^2), f''(x) = -2x/(1+x^2)^2
+        let xv = 0.5_f64;
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![xv], vec![1], true).expect("x");
+        let (ax, _) = tape.atan(x, ExecutionMode::Strict).expect("atan(x)");
+        let report1 = tape
+            .backward_with_options(
+                ax,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let expected_first = 1.0 / (1.0 + xv * xv);
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!((grad_x[0] - expected_first).abs() < 1e-10, "atan'");
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2 = report2.gradient(x).expect("second gradient");
+        let expected_second = -2.0 * xv / (1.0 + xv * xv).powi(2);
+        assert!(
+            (grad2[0] - expected_second).abs() < 1e-9,
+            "atan'' should be {expected_second}, got {}",
+            grad2[0]
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_log1p() {
+        // f(x) = log1p(x), f'(x) = 1/(1+x), f''(x) = -1/(1+x)^2
+        let xv = 1.0_f64;
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![xv], vec![1], true).expect("x");
+        let (lx, _) = tape.log1p(x, ExecutionMode::Strict).expect("log1p(x)");
+        let report1 = tape
+            .backward_with_options(
+                lx,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!((grad_x[0] - 1.0 / (1.0 + xv)).abs() < 1e-10, "log1p'");
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2 = report2.gradient(x).expect("second gradient");
+        let expected_second = -1.0 / (1.0 + xv).powi(2);
+        assert!(
+            (grad2[0] - expected_second).abs() < 1e-9,
+            "log1p'' should be {expected_second}, got {}",
+            grad2[0]
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_log2_log10() {
+        // f(x) = log2(x): f'(x) = 1/(x*ln2), f''(x) = -1/(x^2*ln2)
+        // f(x) = log10(x): f'(x) = 1/(x*ln10), f''(x) = -1/(x^2*ln10)
+        let xv = 2.0_f64;
+        for (is_log2, base_ln) in [(true, std::f64::consts::LN_2), (false, std::f64::consts::LN_10)]
+        {
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(vec![xv], vec![1], true).expect("x");
+            let (lx, _) = if is_log2 {
+                tape.log2(x, ExecutionMode::Strict).expect("log2(x)")
+            } else {
+                tape.log10(x, ExecutionMode::Strict).expect("log10(x)")
+            };
+            let report1 = tape
+                .backward_with_options(
+                    lx,
+                    BackwardOptions {
+                        create_graph: true,
+                        ..BackwardOptions::strict_default()
+                    },
+                )
+                .expect("first backward");
+            let grad_x = report1.gradient(x).expect("x gradient");
+            assert!((grad_x[0] - 1.0 / (xv * base_ln)).abs() < 1e-10, "log_b'");
+            let dx_node = report1.gradient_node(x).expect("gradient node");
+            let report2 = tape.backward(dx_node).expect("second backward");
+            let grad2 = report2.gradient(x).expect("second gradient");
+            let expected_second = -1.0 / (xv * xv * base_ln);
+            assert!(
+                (grad2[0] - expected_second).abs() < 1e-9,
+                "log_b'' should be {expected_second}, got {}",
+                grad2[0]
+            );
+        }
+    }
+
+    #[test]
+    fn create_graph_second_derivative_expm1() {
+        // f(x) = expm1(x), f'(x) = exp(x), f''(x) = exp(x)
+        let xv = 1.0_f64;
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![xv], vec![1], true).expect("x");
+        let (ex, _) = tape.expm1(x, ExecutionMode::Strict).expect("expm1(x)");
+        let report1 = tape
+            .backward_with_options(
+                ex,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let expected = xv.exp();
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!((grad_x[0] - expected).abs() < 1e-10, "expm1'");
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2 = report2.gradient(x).expect("second gradient");
+        assert!(
+            (grad2[0] - expected).abs() < 1e-9,
+            "expm1'' should be {expected}, got {}",
+            grad2[0]
+        );
+    }
+
+    #[test]
+    fn create_graph_mean_double_backward_keeps_one_over_n() {
+        // m = mean(x^2) over n=2 elements. dm/dx_i = 2*x_i/n = x_i.
+        // d2m/dx_i^2 = 1/n*2 = 1. If the 1/n factor were dropped on the
+        // second backward the result would be 2, not 1.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let (x2, _) = tape.mul(x, x, ExecutionMode::Strict).expect("x^2");
+        let (m, _) = tape.mean(x2, ExecutionMode::Strict).expect("mean(x^2)");
+        let report1 = tape
+            .backward_with_options(
+                m,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!(
+            (grad_x[0] - 1.0).abs() < 1e-12 && (grad_x[1] - 2.0).abs() < 1e-12,
+            "dm/dx should be [1, 2], got {grad_x:?}"
+        );
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2 = report2.gradient(x).expect("second gradient");
+        assert!(
+            (grad2[0] - 1.0).abs() < 1e-12 && (grad2[1] - 1.0).abs() < 1e-12,
+            "d2m/dx2 should be [1, 1], got {grad2:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_abs_gradient_is_zero_at_zero() {
+        // d|x|/dx uses three-way sign: sign(0)=0, sign(-0)=0, sign(NaN)=NaN —
+        // not f64::signum (which yields 1.0 at +0.0 and -1.0 at -0.0).
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![0.0, -0.0, -3.0, 2.0], vec![4], true)
+            .expect("x");
+        let (ax, _) = tape.abs(x, ExecutionMode::Strict).expect("abs(x)");
+        let (loss, _) = tape.sum(ax, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("create_graph backward");
+        let grad_x = report.gradient(x).expect("x gradient");
+        assert_eq!(
+            grad_x,
+            &[0.0, 0.0, -1.0, 1.0],
+            "abs gradient at 0/-0 must be 0 (PyTorch sgn), got {grad_x:?}"
         );
     }
 
