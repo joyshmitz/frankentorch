@@ -12012,5 +12012,71 @@ mod tests {
                 meaned[0]
             );
         }
+
+        #[test]
+        fn prop_matmul_matches_naive_triple_loop(
+            (dims, lhs, rhs) in (1usize..6, 1usize..6, 1usize..6).prop_flat_map(
+                |(m, k, n)| {
+                    (
+                        Just((m, k, n)),
+                        proptest::collection::vec(-5.0f64..5.0, m * k),
+                        proptest::collection::vec(-5.0f64..5.0, k * n),
+                    )
+                },
+            ),
+        ) {
+            // The blocked matmul kernel must agree with the textbook
+            // O(m*k*n) triple loop for every (m, k, n) shape.
+            let (m, k, n) = dims;
+            let lhs_meta = TensorMeta::from_shape(vec![m, k], DType::F64, Device::Cpu);
+            let rhs_meta = TensorMeta::from_shape(vec![k, n], DType::F64, Device::Cpu);
+            let kernel =
+                super::matmul_tensor_contiguous_f64(&lhs, &rhs, &lhs_meta, &rhs_meta).unwrap();
+            prop_assert_eq!(kernel.len(), m * n);
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0;
+                    for p in 0..k {
+                        acc += lhs[i * k + p] * rhs[p * n + j];
+                    }
+                    prop_assert!(
+                        (kernel[i * n + j] - acc).abs() <= 1e-9 * (1.0 + acc.abs()),
+                        "matmul[{i}][{j}] = {}, naive = {acc}",
+                        kernel[i * n + j]
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn prop_inv_roundtrip_diagonally_dominant(
+            (n, raw) in (2usize..6).prop_flat_map(|n| {
+                (Just(n), proptest::collection::vec(-1.0f64..1.0, n * n))
+            }),
+        ) {
+            // Build a strictly diagonally dominant matrix — guaranteed
+            // invertible and well-conditioned: each diagonal entry gets
+            // a +(n+1) bump, so |A[i][i]| >= n, which dominates the row's
+            // off-diagonal magnitude sum (<= n - 1). A @ inv(A) must then
+            // recover the identity.
+            let mut a = raw;
+            for i in 0..n {
+                a[i * n + i] += (n + 1) as f64;
+            }
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let inv = super::inv_tensor_contiguous_f64(&a, &meta).unwrap();
+            let prod =
+                super::matmul_tensor_contiguous_f64(&a, &inv, &meta, &meta).unwrap();
+            for i in 0..n {
+                for j in 0..n {
+                    let expected = if i == j { 1.0 } else { 0.0 };
+                    prop_assert!(
+                        (prod[i * n + j] - expected).abs() < 1e-8,
+                        "A @ inv(A) [{i}][{j}] = {}, expected {expected}",
+                        prod[i * n + j]
+                    );
+                }
+            }
+        }
     }
 }
