@@ -38,6 +38,12 @@ pub enum KernelError {
         size: usize,
     },
     NotPositiveDefinite,
+    /// A reduction that has no identity element (argmax/argmin/max/min)
+    /// was applied along a dimension of size zero. PyTorch raises a
+    /// runtime error here rather than returning a sentinel.
+    EmptyReductionDim {
+        dim: usize,
+    },
 }
 
 impl fmt::Display for KernelError {
@@ -79,6 +85,10 @@ impl fmt::Display for KernelError {
             Self::NotPositiveDefinite => {
                 write!(f, "matrix is not positive definite")
             }
+            Self::EmptyReductionDim { dim } => write!(
+                f,
+                "cannot reduce (argmax/argmin/max/min) over dimension {dim} of size zero"
+            ),
         }
     }
 }
@@ -2333,7 +2343,7 @@ pub fn argmax_dim_tensor_contiguous_f64(
         return Ok(Vec::new());
     }
     if reduce_size == 0 {
-        return Ok(vec![0.0; out_numel]);
+        return Err(KernelError::EmptyReductionDim { dim });
     }
     let offset = meta.storage_offset();
     let mut output = vec![0.0; out_numel];
@@ -2384,7 +2394,7 @@ pub fn argmin_dim_tensor_contiguous_f64(
         return Ok(Vec::new());
     }
     if reduce_size == 0 {
-        return Ok(vec![0.0; out_numel]);
+        return Err(KernelError::EmptyReductionDim { dim });
     }
     let offset = meta.storage_offset();
     let mut output = vec![0.0; out_numel];
@@ -2435,7 +2445,7 @@ pub fn max_dim_tensor_contiguous_f64(
         return Ok((Vec::new(), Vec::new()));
     }
     if reduce_size == 0 {
-        return Ok((vec![f64::NEG_INFINITY; out_numel], vec![0.0; out_numel]));
+        return Err(KernelError::EmptyReductionDim { dim });
     }
     let offset = meta.storage_offset();
     let mut values = vec![f64::NEG_INFINITY; out_numel];
@@ -2486,7 +2496,7 @@ pub fn min_dim_tensor_contiguous_f64(
         return Ok((Vec::new(), Vec::new()));
     }
     if reduce_size == 0 {
-        return Ok((vec![f64::INFINITY; out_numel], vec![0.0; out_numel]));
+        return Err(KernelError::EmptyReductionDim { dim });
     }
     let offset = meta.storage_offset();
     let mut values = vec![f64::INFINITY; out_numel];
@@ -5998,7 +6008,7 @@ pub fn argmax_dim_tensor_contiguous_f32(
         return Ok(Vec::new());
     }
     if reduce_size == 0 {
-        return Ok(vec![0.0f32; out_numel]);
+        return Err(KernelError::EmptyReductionDim { dim });
     }
     let offset = meta.storage_offset();
     let mut output = vec![0.0f32; out_numel];
@@ -6042,7 +6052,7 @@ pub fn argmin_dim_tensor_contiguous_f32(
         return Ok(Vec::new());
     }
     if reduce_size == 0 {
-        return Ok(vec![0.0f32; out_numel]);
+        return Err(KernelError::EmptyReductionDim { dim });
     }
     let offset = meta.storage_offset();
     let mut output = vec![0.0f32; out_numel];
@@ -6086,7 +6096,7 @@ pub fn max_dim_tensor_contiguous_f32(
         return Ok((Vec::new(), Vec::new()));
     }
     if reduce_size == 0 {
-        return Ok((vec![f32::NEG_INFINITY; out_numel], vec![0.0f32; out_numel]));
+        return Err(KernelError::EmptyReductionDim { dim });
     }
     let offset = meta.storage_offset();
     let mut values = vec![f32::NEG_INFINITY; out_numel];
@@ -6130,7 +6140,7 @@ pub fn min_dim_tensor_contiguous_f32(
         return Ok((Vec::new(), Vec::new()));
     }
     if reduce_size == 0 {
-        return Ok((vec![f32::INFINITY; out_numel], vec![0.0f32; out_numel]));
+        return Err(KernelError::EmptyReductionDim { dim });
     }
     let offset = meta.storage_offset();
     let mut values = vec![f32::INFINITY; out_numel];
@@ -9538,6 +9548,33 @@ mod tests {
             err,
             KernelError::InvalidDimension { dim: 2, ndim: 2 }
         ));
+    }
+
+    #[test]
+    fn argmax_max_over_empty_dim_error() {
+        // argmax/argmin/max/min have no identity element, so PyTorch raises
+        // a runtime error when the reduced dimension has size zero rather
+        // than returning a sentinel index/value.
+        let meta = TensorMeta::from_shape(vec![3, 0], DType::F64, Device::Cpu);
+        let input: Vec<f64> = Vec::new();
+        assert!(matches!(
+            argmax_dim_tensor_contiguous_f64(&input, &meta, 1).unwrap_err(),
+            KernelError::EmptyReductionDim { dim: 1 }
+        ));
+        assert!(matches!(
+            argmin_dim_tensor_contiguous_f64(&input, &meta, 1).unwrap_err(),
+            KernelError::EmptyReductionDim { dim: 1 }
+        ));
+        assert!(matches!(
+            max_dim_tensor_contiguous_f64(&input, &meta, 1).unwrap_err(),
+            KernelError::EmptyReductionDim { dim: 1 }
+        ));
+        assert!(matches!(
+            min_dim_tensor_contiguous_f64(&input, &meta, 1).unwrap_err(),
+            KernelError::EmptyReductionDim { dim: 1 }
+        ));
+        // sum/mean/prod DO have identity elements and still succeed.
+        assert!(sum_dim_tensor_contiguous_f64(&input, &meta, 1).is_ok());
     }
 
     #[test]
