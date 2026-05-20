@@ -17461,7 +17461,15 @@ impl FrankenTorchSession {
         // Single zeros tensor shared between the eq mask and the
         // where-true branch (frankentorch-rbhb).
         let zeros = self.full(x_shape, 0.0, false)?;
-        let mask = self.tensor_eq(x, zeros)?;
+        let mask_x_zero = self.tensor_eq(x, zeros)?;
+        // xlogy(0, y) short-circuits to 0 ONLY when y is not NaN. scipy
+        // and torch both leave xlogy(0, NaN) = 0*log(NaN) = NaN, so the
+        // mask is (x == 0 && !isnan(y)), mirroring tensor_xlog1py
+        // (frankentorch-duf7). tensor_isnan emits exact 0.0/1.0, so
+        // (isnan_y == 0) is the bit-exact boolean negation.
+        let isnan_y = self.tensor_isnan(y)?;
+        let not_isnan_y = self.tensor_eq(isnan_y, zeros)?;
+        let mask = self.tensor_mul(mask_x_zero, not_isnan_y)?;
         let out = self.tensor_where(mask, zeros, prod)?;
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
@@ -45913,6 +45921,21 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals[0], 0.0, "0 * log(0) should be 0");
         assert_eq!(vals[1], 0.0, "0 * log(inf) should be 0");
+    }
+
+    #[test]
+    fn xlogy_zero_times_nan_is_nan() {
+        // scipy/torch xlogy short-circuit 0*log(y) to 0 only when y is not
+        // NaN; xlogy(0, NaN) = 0*log(NaN) = 0*NaN = NaN.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let y = s
+            .tensor_variable(vec![f64::NAN, -1.0], vec![2], false)
+            .unwrap();
+        let out = s.tensor_xlogy(x, y).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!(vals[0].is_nan(), "xlogy(0, NaN) must be NaN, got {}", vals[0]);
+        assert_eq!(vals[1], 0.0, "xlogy(0, -1) short-circuits to 0");
     }
 
     #[test]
