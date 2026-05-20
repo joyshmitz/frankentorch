@@ -11843,6 +11843,28 @@ mod tests {
 
     use proptest::prelude::*;
 
+    #[test]
+    fn cumprod_backward_interior_zero_matches_definition() {
+        // The `input == 0` branch of cumprod_backward cannot be reached
+        // by random floats, so pin it deterministically. For
+        // input = [2, 0, 3] the forward cumprod is [2, 0, 0]; the exact
+        // Jacobian (d out[j] / d in[d], summed against grad_output = 1)
+        // gives grad_input = [1, 8, 0]:
+        //   d=0: only out[0] depends on in[0] -> 1
+        //   d=1: d out[1]/d in[1] = in[0] = 2,
+        //        d out[2]/d in[1] = in[0]*in[2] = 6  -> 8
+        //   d=2: d out[2]/d in[2] = in[0]*in[1] = 0  -> 0
+        let input = [2.0, 0.0, 3.0];
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let output = super::cumprod_tensor_contiguous_f64(&input, &meta, 0).unwrap();
+        assert_eq!(output, vec![2.0, 0.0, 0.0]);
+        let grad_output = [1.0, 1.0, 1.0];
+        let grad_input =
+            super::cumprod_backward_tensor_contiguous_f64(&grad_output, &input, &output, &meta, 0)
+                .unwrap();
+        assert_eq!(grad_input, vec![1.0, 8.0, 0.0]);
+    }
+
     proptest! {
         #[test]
         fn prop_unary_neg_is_self_inverse(
@@ -11907,6 +11929,88 @@ mod tests {
             for (i, &v) in sm.iter().enumerate() {
                 prop_assert!(v >= 0.0, "softmax[{i}] = {v} should be non-negative");
             }
+        }
+
+        #[test]
+        fn prop_cumprod_backward_matches_finite_difference(
+            input in proptest::collection::vec(0.3f64..2.0, 2..7),
+            grad_seed in proptest::collection::vec(-2.0f64..2.0, 2..7),
+        ) {
+            // gradcheck the analytic cumprod backward against a central
+            // finite-difference Jacobian-vector product. Inputs stay
+            // strictly positive so the forward is well-conditioned and
+            // the `acc / input` main path (not the zero branch) runs.
+            let n = input.len().min(grad_seed.len());
+            let input = &input[..n];
+            let grad_output = &grad_seed[..n];
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            let output = super::cumprod_tensor_contiguous_f64(input, &meta, 0).unwrap();
+            let analytic = super::cumprod_backward_tensor_contiguous_f64(
+                grad_output,
+                input,
+                &output,
+                &meta,
+                0,
+            )
+            .unwrap();
+
+            let h = 1e-6;
+            for d in 0..n {
+                let mut plus = input.to_vec();
+                let mut minus = input.to_vec();
+                plus[d] += h;
+                minus[d] -= h;
+                let y_plus = super::cumprod_tensor_contiguous_f64(&plus, &meta, 0).unwrap();
+                let y_minus = super::cumprod_tensor_contiguous_f64(&minus, &meta, 0).unwrap();
+                let mut numeric = 0.0;
+                for j in 0..n {
+                    numeric += grad_output[j] * (y_plus[j] - y_minus[j]) / (2.0 * h);
+                }
+                prop_assert!(
+                    (analytic[d] - numeric).abs() <= 1e-4 * (1.0 + numeric.abs()),
+                    "cumprod backward[{d}] analytic={} finite-diff={numeric}",
+                    analytic[d]
+                );
+            }
+        }
+
+        #[test]
+        fn prop_var_dim_matches_naive_two_pass(
+            vals in proptest::collection::vec(-30.0f64..30.0, 2..40),
+        ) {
+            // var_dim must equal the textbook unbiased (Bessel-corrected)
+            // two-pass variance: sum((x - mean)^2) / (n - 1).
+            let n = vals.len();
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            let kernel = super::var_dim_tensor_contiguous_f64(&vals, &meta, 0).unwrap();
+            let mean = vals.iter().sum::<f64>() / n as f64;
+            let naive = vals.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>()
+                / (n as f64 - 1.0);
+            prop_assert_eq!(kernel.len(), 1);
+            prop_assert!(
+                (kernel[0] - naive).abs() <= 1e-6 * (1.0 + naive.abs()),
+                "var_dim={} != naive two-pass={naive}",
+                kernel[0]
+            );
+        }
+
+        #[test]
+        fn prop_mean_dim_is_sum_dim_over_count(
+            vals in proptest::collection::vec(-50.0f64..50.0, 1..48),
+        ) {
+            // mean_dim is exactly sum_dim divided by the reduced count.
+            let n = vals.len();
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            let summed = super::sum_dim_tensor_contiguous_f64(&vals, &meta, 0).unwrap();
+            let meaned = super::mean_dim_tensor_contiguous_f64(&vals, &meta, 0).unwrap();
+            prop_assert_eq!(summed.len(), 1);
+            prop_assert_eq!(meaned.len(), 1);
+            let expected = summed[0] / n as f64;
+            prop_assert!(
+                (meaned[0] - expected).abs() <= 1e-9 * (1.0 + expected.abs()),
+                "mean_dim={} != sum_dim/n={expected}",
+                meaned[0]
+            );
         }
     }
 }
