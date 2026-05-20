@@ -3915,9 +3915,10 @@ impl Tape {
                     max_val,
                 } => {
                     let input_value = self.nodes[input.0].tensor.value();
-                    grads[input.0] += if input_value.is_nan() {
-                        f64::NAN
-                    } else if input_value >= min_val && input_value <= max_val {
+                    // PyTorch clamp_backward is where((x>=min)&(x<=max), grad, 0).
+                    // A NaN input fails both comparisons, so its gradient is 0,
+                    // not NaN.
+                    grads[input.0] += if input_value >= min_val && input_value <= max_val {
                         incoming
                     } else {
                         0.0
@@ -10849,13 +10850,15 @@ impl TensorTape {
                     let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
                     Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
 
+                    // PyTorch clamp_backward is where((x>=min)&(x<=max), grad, 0).
+                    // A NaN input fails both comparisons, so its gradient is 0,
+                    // not NaN (clamp(NaN) is NaN in the forward, but the
+                    // boundary mask still routes 0 gradient).
                     let clamp_contrib: Vec<f64> = incoming
                         .iter()
                         .zip(input_values.iter())
                         .map(|(grad, x)| {
-                            if x.is_nan() {
-                                f64::NAN
-                            } else if *x >= min_val && *x <= max_val {
+                            if *x >= min_val && *x <= max_val {
                                 *grad
                             } else {
                                 0.0
@@ -21041,6 +21044,24 @@ mod tests {
         assert_eq!(tape.dtype(c).unwrap(), DType::F32);
         let vals = tape.values_f32(c).unwrap();
         assert_eq!(vals, vec![1.0f32, 1.5, 2.5, 3.0]);
+    }
+
+    #[test]
+    fn clamp_backward_nan_input_gradient_is_zero() {
+        // PyTorch clamp_backward = where((x>=min)&(x<=max), grad, 0). A NaN
+        // input fails both comparisons, so its gradient is 0, not NaN.
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![f64::NAN, 2.0, 5.0, 1.0], vec![4], true)
+            .expect("x");
+        let (c, _) = tape
+            .tensor_clamp(x, 1.0, 3.0, ExecutionMode::Strict)
+            .expect("clamp");
+        let (loss, _) = tape.sum(c, ExecutionMode::Strict).expect("sum");
+        let report = tape.backward(loss).expect("backward");
+        let grad = report.gradient(x).expect("gradient");
+        // NaN -> 0, 2.0 in-range -> 1, 5.0 above max -> 0, 1.0 at min -> 1.
+        assert_eq!(grad, &[0.0, 1.0, 0.0, 1.0], "got {grad:?}");
     }
 
     #[test]
