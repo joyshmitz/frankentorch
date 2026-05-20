@@ -5860,13 +5860,13 @@ fn run_tensor_reduction_case(
             let dim = case
                 .dim
                 .ok_or_else(|| format!("missing dim for var_dim in '{}'", case.name))?;
-            session.tensor_var_dim(input, dim)
+            session.tensor_var_dim(input, dim, 1)
         }
         "std_dim" => {
             let dim = case
                 .dim
                 .ok_or_else(|| format!("missing dim for std_dim in '{}'", case.name))?;
-            session.tensor_std_dim(input, dim)
+            session.tensor_std_dim(input, dim, 1)
         }
         _ => {
             return Err(format!(
@@ -13265,8 +13265,8 @@ mod tests {
             let x = s
                 .tensor_variable(input.clone(), vec![n], false)
                 .expect("variable");
-            let std_t = s.tensor_std_dim(x, 0).expect("std_dim");
-            let var_t = s.tensor_var_dim(x, 0).expect("var_dim");
+            let std_t = s.tensor_std_dim(x, 0, 1).expect("std_dim");
+            let var_t = s.tensor_var_dim(x, 0, 1).expect("var_dim");
             let sqrt_var = s.tensor_sqrt(var_t).expect("sqrt(var)");
             let v_std = s.tensor_values(std_t).expect("v_std");
             let v_sqrt = s.tensor_values(sqrt_var).expect("v_sqrt");
@@ -40412,7 +40412,7 @@ print(json.dumps({"softplus": sp_out}))
         use ft_optim::{Adam, Optimizer};
 
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 3, 1e-5, 0.1).expect("bn");
+        let bn = BatchNorm1d::new(&mut session, 3, 1e-5, Some(0.1)).expect("bn");
         let head = Linear::new(&mut session, 3, 1, true).expect("linear");
 
         // 4 samples, 3 features.

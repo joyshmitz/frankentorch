@@ -910,7 +910,9 @@ impl Linear {
     /// Create a new Linear layer with Kaiming uniform initialization.
     ///
     /// `weight` has shape `[out_features, in_features]`.
-    /// `bias` (if enabled) has shape `[1, out_features]` for broadcast add.
+    /// `bias` (if enabled) has shape `[out_features]` (1-D), matching
+    /// PyTorch's `Linear.bias` so `state_dict` round-trips against a
+    /// torch checkpoint. Forward broadcasts it over the batch dims.
     pub fn new(
         session: &mut FrankenTorchSession,
         in_features: usize,
@@ -940,14 +942,14 @@ impl Linear {
 
         // Initialize bias
         let bias = if use_bias {
-            let bias_rand = session.rand(vec![1, out_features], false)?;
-            let bias_scale = session.full(vec![1, out_features], 2.0 * bound, false)?;
+            let bias_rand = session.rand(vec![out_features], false)?;
+            let bias_scale = session.full(vec![out_features], 2.0 * bound, false)?;
             let bias_scaled = session.tensor_mul(bias_rand, bias_scale)?;
-            let bias_shift = session.full(vec![1, out_features], bound, false)?;
+            let bias_shift = session.full(vec![out_features], bound, false)?;
             let bias_shifted = session.tensor_sub(bias_scaled, bias_shift)?;
 
             let bias_values = session.tensor_values(bias_shifted)?;
-            Some(session.tensor_variable(bias_values, vec![1, out_features], true)?)
+            Some(session.tensor_variable(bias_values, vec![out_features], true)?)
         } else {
             None
         };
@@ -1002,7 +1004,16 @@ impl Module for Linear {
                     let (_, meta) = session.tensor_values_meta(output)?;
                     meta.shape().to_vec()
                 };
-                let expanded_bias = session.tensor_expand(bias, out_shape)?;
+                // bias is 1-D [out_features]; reshape to a rank-matched
+                // broadcast shape (1s in the leading dims) before
+                // expanding. `tensor_expand` only stretches size-1 dims;
+                // it cannot prepend new ones.
+                let mut bias_shape = vec![1usize; out_shape.len()];
+                if let Some(last) = bias_shape.last_mut() {
+                    *last = self.out_features;
+                }
+                let bias_reshaped = session.tensor_reshape(bias, bias_shape)?;
+                let expanded_bias = session.tensor_expand(bias_reshaped, out_shape)?;
                 session.tensor_add(output, expanded_bias)
             }
             None => Ok(output),
@@ -2398,6 +2409,14 @@ pub struct Embedding {
     num_embeddings: usize,
     embedding_dim: usize,
     sparse: bool,
+    /// If set, `weight[padding_idx]` is initialised to the zero vector
+    /// and its gradient is held at zero (PyTorch `padding_idx`).
+    padding_idx: Option<usize>,
+    /// If set, accessed rows whose `norm_type`-norm exceeds this value
+    /// are renormalised in place on forward (PyTorch `max_norm`).
+    max_norm: Option<f64>,
+    /// p for the `max_norm` renormalisation (PyTorch `norm_type`, 2.0).
+    norm_type: f64,
 }
 
 impl Embedding {
@@ -2407,18 +2426,26 @@ impl Embedding {
         num_embeddings: usize,
         embedding_dim: usize,
     ) -> Result<Self, AutogradError> {
-        Self::with_options(session, num_embeddings, embedding_dim, false)
+        Self::with_options(session, num_embeddings, embedding_dim, None, None, 2.0, false)
     }
 
-    /// Create a new Embedding with sparse gradient mode.
+    /// Create a new Embedding with full PyTorch option parity.
     ///
-    /// When `sparse=true`, the backward pass produces sparse gradients (COO format)
-    /// that only contain the rows accessed during the forward pass. Use this with
-    /// `SparseAdam` optimizer for efficient training of large embedding tables.
+    /// * `padding_idx` — if set, `weight[padding_idx]` is zeroed and its
+    ///   gradient stays zero, matching `torch.nn.Embedding(padding_idx=)`.
+    /// * `max_norm` / `norm_type` — if `max_norm` is set, accessed rows
+    ///   whose `norm_type`-norm exceeds it are renormalised in place on
+    ///   forward (`torch.embedding_renorm_`).
+    /// * `sparse` — when true, the backward pass produces sparse
+    ///   gradients (COO format) containing only the accessed rows. Use
+    ///   with `SparseAdam` for large vocabularies.
     pub fn with_options(
         session: &mut FrankenTorchSession,
         num_embeddings: usize,
         embedding_dim: usize,
+        padding_idx: Option<usize>,
+        max_norm: Option<f64>,
+        norm_type: f64,
         sparse: bool,
     ) -> Result<Self, AutogradError> {
         if num_embeddings == 0 || embedding_dim == 0 {
@@ -2428,10 +2455,41 @@ impl Embedding {
                 },
             )));
         }
+        if let Some(p) = padding_idx
+            && p >= num_embeddings
+        {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Embedding padding_idx out of range for num_embeddings",
+                },
+            )));
+        }
+        if let Some(mn) = max_norm
+            && (!mn.is_finite() || mn <= 0.0)
+        {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Embedding max_norm must be finite and > 0",
+                },
+            )));
+        }
+        if norm_type.is_nan() || norm_type <= 0.0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Embedding norm_type must be > 0",
+                },
+            )));
+        }
 
         // PyTorch default: N(0, 1) initialization
         let weight_init = session.randn(vec![num_embeddings, embedding_dim], false)?;
-        let weight_values = session.tensor_values(weight_init)?;
+        let mut weight_values = session.tensor_values(weight_init)?;
+        // PyTorch initialises weight[padding_idx] to the zero vector.
+        if let Some(p) = padding_idx {
+            for v in &mut weight_values[p * embedding_dim..(p + 1) * embedding_dim] {
+                *v = 0.0;
+            }
+        }
         let weight =
             session.tensor_variable(weight_values, vec![num_embeddings, embedding_dim], true)?;
 
@@ -2440,7 +2498,84 @@ impl Embedding {
             num_embeddings,
             embedding_dim,
             sparse,
+            padding_idx,
+            max_norm,
+            norm_type,
         })
+    }
+
+    /// The padding index, if configured.
+    #[must_use]
+    pub fn padding_idx(&self) -> Option<usize> {
+        self.padding_idx
+    }
+
+    /// The `max_norm` renormalisation threshold, if configured.
+    #[must_use]
+    pub fn max_norm(&self) -> Option<f64> {
+        self.max_norm
+    }
+
+    /// Renormalises the rows of `weight` accessed by `flat_indices` in
+    /// place, matching PyTorch's `torch.embedding_renorm_`: a row whose
+    /// `norm_type`-norm exceeds `max_norm` is scaled by
+    /// `max_norm / (norm + 1e-7)`. Unaccessed rows are left untouched.
+    fn renorm_accessed_rows(
+        &self,
+        session: &mut FrankenTorchSession,
+        flat_indices: TensorNodeId,
+        max_norm: f64,
+    ) -> Result<(), AutogradError> {
+        let dim = self.embedding_dim;
+        let idx_vals = session.tensor_values(flat_indices)?;
+        let mut accessed: Vec<usize> = idx_vals
+            .iter()
+            .filter_map(|&f| {
+                let i = f as usize;
+                (f >= 0.0 && f.fract() == 0.0 && i < self.num_embeddings).then_some(i)
+            })
+            .collect();
+        accessed.sort_unstable();
+        accessed.dedup();
+
+        let mut weight_values = session.tensor_values(self.weight)?;
+        let mut changed = false;
+        for r in accessed {
+            let row = &mut weight_values[r * dim..(r + 1) * dim];
+            let norm = if self.norm_type.is_infinite() {
+                row.iter().fold(0.0_f64, |m, &v| m.max(v.abs()))
+            } else {
+                row.iter()
+                    .map(|&v| v.abs().powf(self.norm_type))
+                    .sum::<f64>()
+                    .powf(1.0 / self.norm_type)
+            };
+            if norm > max_norm {
+                let scale = max_norm / (norm + 1e-7);
+                for v in row.iter_mut() {
+                    *v *= scale;
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            // Write the renormalised rows back into the leaf weight in
+            // place, under no_grad so the renorm is not taped.
+            session.no_grad_enter();
+            let outcome = (|| -> Result<(), AutogradError> {
+                let renormed = session.tensor_variable(
+                    weight_values,
+                    vec![self.num_embeddings, dim],
+                    false,
+                )?;
+                session.tensor_zero_(self.weight)?;
+                session.tensor_add_(self.weight, renormed)?;
+                Ok(())
+            })();
+            session.no_grad_exit();
+            outcome?;
+        }
+        Ok(())
     }
 
     /// Access the weight parameter node ID.
@@ -2483,11 +2618,43 @@ impl Module for Embedding {
         // Flatten indices to 1D for index_select
         let flat_indices = session.tensor_reshape(input, vec![total])?;
 
+        // max_norm: PyTorch renormalises the accessed rows of `weight`
+        // in place before the lookup (torch.embedding_renorm_).
+        if let Some(max_norm) = self.max_norm {
+            self.renorm_accessed_rows(session, flat_indices, max_norm)?;
+        }
+
         // index_select(weight, dim=0, flat_indices) -> [total, embedding_dim]
         let selected = if self.sparse {
             session.tensor_index_select_sparse(self.weight, 0, flat_indices)?
         } else {
             session.tensor_index_select(self.weight, 0, flat_indices)?
+        };
+
+        // padding_idx: zero the looked-up rows whose index is the
+        // padding index via a non-grad multiplicative mask. This forces
+        // those output rows to the zero vector AND zeroes the gradient
+        // that flows back into `weight[padding_idx]` (d/dselected = mask),
+        // matching PyTorch. Masking the output works for both the dense
+        // and sparse lookup paths.
+        let selected = match self.padding_idx {
+            Some(p) => {
+                let idx_vals = session.tensor_values(flat_indices)?;
+                let mut mask = vec![1.0_f64; total * self.embedding_dim];
+                for (row, &idx_f) in idx_vals.iter().enumerate() {
+                    if idx_f >= 0.0 && idx_f.fract() == 0.0 && idx_f as usize == p {
+                        for v in &mut mask[row * self.embedding_dim
+                            ..(row + 1) * self.embedding_dim]
+                        {
+                            *v = 0.0;
+                        }
+                    }
+                }
+                let mask_node =
+                    session.tensor_variable(mask, vec![total, self.embedding_dim], false)?;
+                session.tensor_mul(selected, mask_node)?
+            }
+            None => selected,
         };
 
         // Reshape to [*input_shape, embedding_dim]
@@ -2860,7 +3027,10 @@ pub struct BatchNorm1d {
     registered_buffers: std::cell::RefCell<Vec<RegisteredBuffer>>,
     num_features: usize,
     eps: f64,
-    momentum: f64,
+    /// Running-stat averaging factor. `Some(m)` is the exponential
+    /// moving average; `None` selects PyTorch's cumulative moving
+    /// average (`exponential_average_factor = 1/num_batches_tracked`).
+    momentum: Option<f64>,
     training: std::cell::Cell<bool>,
 }
 
@@ -2869,11 +3039,16 @@ impl BatchNorm1d {
     ///
     /// Weight (gamma) initialized to ones, bias (beta) to zeros.
     /// Running mean initialized to zeros, running var to ones.
+    ///
+    /// `momentum` mirrors PyTorch's `Optional[float]`: `Some(m)` uses
+    /// the exponential moving average, `None` uses the cumulative
+    /// moving average (`1/num_batches_tracked`). Accepts 2-D `[N, C]`
+    /// and 3-D `[N, C, L]` input.
     pub fn new(
         session: &mut FrankenTorchSession,
         num_features: usize,
         eps: f64,
-        momentum: f64,
+        momentum: Option<f64>,
     ) -> Result<Self, AutogradError> {
         if num_features == 0 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -3004,6 +3179,14 @@ impl BatchNorm1d {
             let var_vals = session.tensor_values(batch_var)?;
             let mut rm = self.running_mean.borrow_mut();
             let mut rv = self.running_var.borrow_mut();
+            // PyTorch increments num_batches_tracked first, then derives
+            // the averaging factor: `self.momentum` when set, else the
+            // cumulative moving average factor 1/num_batches_tracked.
+            let num_batches_tracked = self.num_batches_tracked.get().saturating_add(1);
+            self.num_batches_tracked.set(num_batches_tracked);
+            let factor = self
+                .momentum
+                .unwrap_or_else(|| 1.0 / num_batches_tracked as f64);
             // Unbiased variance for running stats: var * N / (N-1)
             let bessel_factor = if n > 1 {
                 n as f64 / (n as f64 - 1.0)
@@ -3011,14 +3194,12 @@ impl BatchNorm1d {
                 1.0
             };
             for i in 0..c {
-                rm[i] = (1.0 - self.momentum) * rm[i] + self.momentum * mean_vals[i];
-                rv[i] = (1.0 - self.momentum) * rv[i] + self.momentum * var_vals[i] * bessel_factor;
+                rm[i] = (1.0 - factor) * rm[i] + factor * mean_vals[i];
+                rv[i] = (1.0 - factor) * rv[i] + factor * var_vals[i] * bessel_factor;
             }
 
             let running_mean_buffer = session.tensor_variable(rm.clone(), vec![c], false)?;
             let running_var_buffer = session.tensor_variable(rv.clone(), vec![c], false)?;
-            let num_batches_tracked = self.num_batches_tracked.get().saturating_add(1);
-            self.num_batches_tracked.set(num_batches_tracked);
             let num_batches_tracked_buffer =
                 session.tensor_variable(vec![num_batches_tracked as f64], vec![1], false)?;
 
@@ -3123,13 +3304,18 @@ impl Module for BatchNorm1d {
             session.tensor_shape(input)?
         };
 
-        if input_shape.len() != 2 {
-            return Err(AutogradError::Dispatch(DispatchError::Key(
-                DispatchKeyError::IncompatibleSet {
-                    reason: "BatchNorm1d expects 2D input [N, C]",
-                },
-            )));
-        }
+        // PyTorch BatchNorm1d accepts 2-D `[N, C]` and 3-D `[N, C, L]`.
+        let length = match input_shape.len() {
+            2 => None,
+            3 => Some(input_shape[2]),
+            _ => {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "BatchNorm1d expects 2D [N, C] or 3D [N, C, L] input",
+                    },
+                )));
+            }
+        };
 
         if input_shape[1] != self.num_features {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -3139,10 +3325,34 @@ impl Module for BatchNorm1d {
             )));
         }
 
-        if self.training.get() {
-            self.forward_train(session, input, &input_shape)
+        // Fold the optional length dim into the batch: `[N, C, L]` is
+        // permuted to `[N, L, C]` and flattened to `[N*L, C]` so the
+        // per-channel statistics reduce over both N and L (the
+        // Bessel-correction count becomes N*L), exactly matching
+        // PyTorch. The 2-D path is unchanged.
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let (flat_input, flat_n) = match length {
+            None => (input, n),
+            Some(l) => {
+                let m = checked_mul(n, l, "BatchNorm1d [N,C,L] batch overflow")?;
+                let permuted = session.tensor_permute(input, vec![0, 2, 1])?;
+                (session.tensor_reshape(permuted, vec![m, c])?, m)
+            }
+        };
+
+        let normalized = if self.training.get() {
+            self.forward_train(session, flat_input, &[flat_n, c])?
         } else {
-            self.forward_eval(session, input, &input_shape)
+            self.forward_eval(session, flat_input, &[flat_n, c])?
+        };
+
+        match length {
+            None => Ok(normalized),
+            Some(l) => {
+                let back = session.tensor_reshape(normalized, vec![n, l, c])?;
+                session.tensor_permute(back, vec![0, 2, 1])
+            }
         }
     }
 
@@ -7022,7 +7232,10 @@ pub struct BatchNorm2d {
     registered_buffers: std::cell::RefCell<Vec<RegisteredBuffer>>,
     num_features: usize,
     eps: f64,
-    momentum: f64,
+    /// Running-stat averaging factor. `Some(m)` is the exponential
+    /// moving average; `None` selects PyTorch's cumulative moving
+    /// average (`exponential_average_factor = 1/num_batches_tracked`).
+    momentum: Option<f64>,
     training: std::cell::Cell<bool>,
 }
 
@@ -7035,7 +7248,7 @@ impl BatchNorm2d {
         session: &mut FrankenTorchSession,
         num_features: usize,
         eps: f64,
-        momentum: f64,
+        momentum: Option<f64>,
     ) -> Result<Self, AutogradError> {
         if num_features == 0 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -7173,6 +7386,14 @@ impl BatchNorm2d {
             let var_vals = session.tensor_values(batch_var)?;
             let mut rm = self.running_mean.borrow_mut();
             let mut rv = self.running_var.borrow_mut();
+            // PyTorch increments num_batches_tracked first, then derives
+            // the averaging factor: `self.momentum` when set, else the
+            // cumulative moving average factor 1/num_batches_tracked.
+            let num_batches_tracked = self.num_batches_tracked.get().saturating_add(1);
+            self.num_batches_tracked.set(num_batches_tracked);
+            let factor = self
+                .momentum
+                .unwrap_or_else(|| 1.0 / num_batches_tracked as f64);
             // Unbiased variance for running stats: var * m / (m-1)
             let bessel_factor = if m > 1 {
                 m as f64 / (m as f64 - 1.0)
@@ -7180,14 +7401,12 @@ impl BatchNorm2d {
                 1.0
             };
             for i in 0..c {
-                rm[i] = (1.0 - self.momentum) * rm[i] + self.momentum * mean_vals[i];
-                rv[i] = (1.0 - self.momentum) * rv[i] + self.momentum * var_vals[i] * bessel_factor;
+                rm[i] = (1.0 - factor) * rm[i] + factor * mean_vals[i];
+                rv[i] = (1.0 - factor) * rv[i] + factor * var_vals[i] * bessel_factor;
             }
 
             let running_mean_buffer = session.tensor_variable(rm.clone(), vec![c], false)?;
             let running_var_buffer = session.tensor_variable(rv.clone(), vec![c], false)?;
-            let num_batches_tracked = self.num_batches_tracked.get().saturating_add(1);
-            self.num_batches_tracked.set(num_batches_tracked);
             let num_batches_tracked_buffer =
                 session.tensor_variable(vec![num_batches_tracked as f64], vec![1], false)?;
 
@@ -7469,7 +7688,7 @@ impl BatchNorm3d {
         session: &mut FrankenTorchSession,
         num_features: usize,
         eps: f64,
-        momentum: f64,
+        momentum: Option<f64>,
     ) -> Result<Self, AutogradError> {
         Ok(Self {
             inner: BatchNorm2d::new(session, num_features, eps, momentum)?,
@@ -9053,13 +9272,34 @@ impl RNNCell {
         size: usize,
         bound: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let r = session.rand(vec![1, size], false)?;
-        let scale = session.full(vec![1, size], 2.0 * bound, false)?;
+        // Cell biases are 1-D `[size]`, matching PyTorch's
+        // `RNNCell.bias_ih` / `bias_hh` so a torch `state_dict` loads
+        // without a rank mismatch. Forward broadcasts via `expand_bias`.
+        let r = session.rand(vec![size], false)?;
+        let scale = session.full(vec![size], 2.0 * bound, false)?;
         let scaled = session.tensor_mul(r, scale)?;
-        let shift = session.full(vec![1, size], bound, false)?;
+        let shift = session.full(vec![size], bound, false)?;
         let shifted = session.tensor_sub(scaled, shift)?;
         let vals = session.tensor_values(shifted)?;
-        session.tensor_variable(vals, vec![1, size], true)
+        session.tensor_variable(vals, vec![size], true)
+    }
+
+    /// Broadcasts a 1-D `[size]` cell bias to a gate tensor's shape.
+    ///
+    /// `tensor_expand` only stretches existing size-1 dims; it cannot
+    /// prepend a batch dim. Reshape the 1-D bias to a rank-matched
+    /// `[1, .., size]` first, then expand.
+    fn expand_bias(
+        session: &mut FrankenTorchSession,
+        bias: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut bias_shape = vec![1usize; target_shape.len()];
+        if let Some(last) = bias_shape.last_mut() {
+            *last = *target_shape.last().unwrap_or(&0);
+        }
+        let reshaped = session.tensor_reshape(bias, bias_shape)?;
+        session.tensor_expand(reshaped, target_shape)
     }
 
     /// Run one step of the RNN cell.
@@ -9098,8 +9338,8 @@ impl RNNCell {
             let (_, meta) = session.tensor_values_meta(xw)?;
             meta.shape().to_vec()
         };
-        let b_ih_exp = session.tensor_expand(self.b_ih, out_shape.clone())?;
-        let b_hh_exp = session.tensor_expand(self.b_hh, out_shape)?;
+        let b_ih_exp = Self::expand_bias(session, self.b_ih, out_shape.clone())?;
+        let b_hh_exp = Self::expand_bias(session, self.b_hh, out_shape)?;
 
         let sum1 = session.tensor_add(xw, hw)?;
         let sum2 = session.tensor_add(sum1, b_ih_exp)?;
@@ -9212,8 +9452,8 @@ impl LSTMCell {
             let (_, meta) = session.tensor_values_meta(xw)?;
             meta.shape().to_vec()
         };
-        let b_ih_exp = session.tensor_expand(self.b_ih, gates_shape.clone())?;
-        let b_hh_exp = session.tensor_expand(self.b_hh, gates_shape)?;
+        let b_ih_exp = RNNCell::expand_bias(session, self.b_ih, gates_shape.clone())?;
+        let b_hh_exp = RNNCell::expand_bias(session, self.b_hh, gates_shape)?;
 
         let sum1 = session.tensor_add(xw, hw)?;
         let sum2 = session.tensor_add(sum1, b_ih_exp)?;
@@ -9335,7 +9575,7 @@ impl GRUCell {
             let (_, meta) = session.tensor_values_meta(x_gates)?;
             meta.shape().to_vec()
         };
-        let b_ih_exp = session.tensor_expand(self.b_ih, x_gates_shape)?;
+        let b_ih_exp = RNNCell::expand_bias(session, self.b_ih, x_gates_shape)?;
         let x_gates = session.tensor_add(x_gates, b_ih_exp)?;
 
         // Compute hidden-side gates: h @ W_hh^T + b_hh
@@ -9345,7 +9585,7 @@ impl GRUCell {
             let (_, meta) = session.tensor_values_meta(h_gates)?;
             meta.shape().to_vec()
         };
-        let b_hh_exp = session.tensor_expand(self.b_hh, h_gates_shape)?;
+        let b_hh_exp = RNNCell::expand_bias(session, self.b_hh, h_gates_shape)?;
         let h_gates = session.tensor_add(h_gates, b_hh_exp)?;
 
         // Split x_gates into 3 chunks: [x_r, x_z, x_n]
@@ -16020,7 +16260,7 @@ mod tests {
     fn linear_forward_computes_xw_t_plus_bias() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         // Create a 2->1 linear with known weights
-        // weight shape: [1, 2], bias shape: [1, 1]
+        // weight shape: [1, 2], bias shape: [1] (1-D, PyTorch parity)
         let linear = Linear::new(&mut session, 2, 1, true).expect("linear should succeed");
         assert_eq!(linear.in_features(), 2);
         assert_eq!(linear.out_features(), 1);
@@ -16707,9 +16947,85 @@ mod tests {
     }
 
     #[test]
+    fn embedding_padding_idx_zero_vector_and_zero_grad() {
+        // PyTorch zeroes weight[padding_idx], returns the zero vector
+        // for it, and holds its gradient at zero (frankentorch-v50u).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let emb =
+            Embedding::with_options(&mut session, 4, 3, Some(1), None, 2.0, false).expect("emb");
+        assert_eq!(emb.padding_idx(), Some(1));
+        // weight[1] initialised to zeros.
+        let w = session.tensor_values(emb.weight()).expect("weight");
+        assert!(w[3..6].iter().all(|&v| v == 0.0), "padding row zeroed");
+
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0, 2.0, 1.0], vec![4], false)
+            .expect("indices");
+        let y = emb.forward(&mut session, indices).expect("forward");
+        let (vals, _) = session.tensor_values_meta(y).expect("vals");
+        // rows 1 and 3 of the output (index == padding) are zero.
+        assert!(vals[3..6].iter().all(|&v| v == 0.0), "padding lookup zero");
+        assert!(vals[9..12].iter().all(|&v| v == 0.0), "padding lookup zero");
+
+        let loss = session.tensor_sum(y).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let w_grad = session.tensor_gradient(&report, emb.weight()).expect("grad");
+        // padding row gradient stays zero; row 0 (selected once) is one.
+        assert!(w_grad[3..6].iter().all(|&v| v == 0.0), "padding grad zero");
+        assert!(w_grad[0..3].iter().all(|&v| v == 1.0), "row0 grad one");
+    }
+
+    #[test]
+    fn embedding_padding_idx_out_of_range_rejected() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        assert!(
+            Embedding::with_options(&mut session, 4, 3, Some(4), None, 2.0, false).is_err()
+        );
+    }
+
+    #[test]
+    fn embedding_max_norm_renormalizes_accessed_rows_in_place() {
+        // PyTorch renormalises only the accessed rows, in place, when
+        // their L2 norm exceeds max_norm (frankentorch-v50u).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let emb =
+            Embedding::with_options(&mut session, 4, 3, None, Some(1.0), 2.0, false).expect("emb");
+        // Set known weights: row0 norm 5, row1 norm 0.5, row2 norm 10.
+        session.no_grad_enter();
+        let seed = session
+            .tensor_variable(
+                vec![
+                    3.0, 4.0, 0.0, 0.0, 0.0, 0.5, 6.0, 8.0, 0.0, 1.0, 0.0, 0.0,
+                ],
+                vec![4, 3],
+                false,
+            )
+            .expect("seed");
+        session.tensor_zero_(emb.weight()).expect("zero");
+        session.tensor_add_(emb.weight(), seed).expect("add");
+        session.no_grad_exit();
+
+        let indices = session
+            .tensor_variable(vec![0.0, 1.0], vec![2], false)
+            .expect("indices");
+        let y = emb.forward(&mut session, indices).expect("forward");
+        let (out, _) = session.tensor_values_meta(y).expect("vals");
+        // row0 (norm 5 > 1) renormed to [0.6, 0.8, 0].
+        assert!((out[0] - 0.6).abs() < 1e-6 && (out[1] - 0.8).abs() < 1e-6);
+        // row1 (norm 0.5 <= 1) untouched.
+        assert!((out[5] - 0.5).abs() < 1e-9);
+
+        let w = session.tensor_values(emb.weight()).expect("weight");
+        // in-place: weight row0 is renormed, row2 (unaccessed) untouched.
+        assert!((w[0] - 0.6).abs() < 1e-6, "row0 renormed in place");
+        assert!((w[6] - 6.0).abs() < 1e-9, "row2 unaccessed, untouched");
+    }
+
+    #[test]
     fn embedding_sparse_backward_emits_sparse_grad() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let emb = Embedding::with_options(&mut session, 5, 3, true).expect("embedding");
+        let emb =
+            Embedding::with_options(&mut session, 5, 3, None, None, 2.0, true).expect("embedding");
         assert!(emb.is_sparse());
 
         // Use indices [1, 3, 1] — row 1 appears twice so its gradient
@@ -17151,7 +17467,7 @@ mod tests {
     #[test]
     fn batchnorm1d_forward_training() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("batchnorm");
+        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, Some(0.1)).expect("batchnorm");
         assert_eq!(bn.num_features(), 2);
         assert!(bn.is_training());
         assert_eq!(bn.parameters().len(), 2);
@@ -17177,7 +17493,7 @@ mod tests {
     #[test]
     fn batchnorm1d_updates_running_stats() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("batchnorm");
+        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, Some(0.1)).expect("batchnorm");
 
         // Initial running stats
         assert_eq!(bn.running_mean(), vec![0.0, 0.0]);
@@ -17203,7 +17519,7 @@ mod tests {
     #[test]
     fn batchnorm1d_eval_mode() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("batchnorm");
+        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, Some(0.1)).expect("batchnorm");
 
         // Run one training pass to update running stats
         let x = session
@@ -17228,7 +17544,7 @@ mod tests {
     #[test]
     fn batchnorm1d_backward_produces_gradients() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 3, 1e-5, 0.1).expect("batchnorm");
+        let bn = BatchNorm1d::new(&mut session, 3, 1e-5, Some(0.1)).expect("batchnorm");
 
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
@@ -17254,7 +17570,7 @@ mod tests {
     #[test]
     fn batchnorm1d_rejects_wrong_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 3, 1e-5, 0.1).expect("batchnorm");
+        let bn = BatchNorm1d::new(&mut session, 3, 1e-5, Some(0.1)).expect("batchnorm");
 
         // 1D input (wrong)
         let x = session
@@ -17272,18 +17588,74 @@ mod tests {
     #[test]
     fn batchnorm1d_rejects_zero_features() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        assert!(BatchNorm1d::new(&mut session, 0, 1e-5, 0.1).is_err());
+        assert!(BatchNorm1d::new(&mut session, 0, 1e-5, Some(0.1)).is_err());
     }
 
     #[test]
     fn batchnorm1d_train_eval_toggle() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, 0.1).expect("batchnorm");
+        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, Some(0.1)).expect("batchnorm");
         assert!(bn.is_training());
         bn.eval();
         assert!(!bn.is_training());
         bn.train(true);
         assert!(bn.is_training());
+    }
+
+    #[test]
+    fn batchnorm1d_accepts_3d_input() {
+        // PyTorch BatchNorm1d normalises [N, C, L] over N and L per
+        // channel. Reference values from torch 2.12 (frankentorch-yx37).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn");
+        let x = session
+            .tensor_variable(
+                vec![
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+                ],
+                vec![2, 2, 3],
+                false,
+            )
+            .expect("input");
+        let y = bn.forward(&mut session, x).expect("forward");
+        let (vals, meta) = session.tensor_values_meta(y).expect("vals");
+        assert_eq!(meta.shape(), &[2, 2, 3]);
+        // out[0, 0, :] for channel-0 values {1,2,3,7,8,9}: mean 5, biased
+        // var 9.6667 -> (x-5)/sqrt(var+eps).
+        assert!((vals[0] - (-1.286_53)).abs() < 1e-4, "got {}", vals[0]);
+        assert!((vals[1] - (-0.964_90)).abs() < 1e-4, "got {}", vals[1]);
+        assert!((vals[2] - (-0.643_27)).abs() < 1e-4, "got {}", vals[2]);
+        // running stats reduce over N and L: mean {5,8} * momentum 0.1.
+        let rm = bn.running_mean();
+        assert!((rm[0] - 0.5).abs() < 1e-9 && (rm[1] - 0.8).abs() < 1e-9);
+        let rv = bn.running_var();
+        assert!((rv[0] - 2.06).abs() < 1e-6 && (rv[1] - 2.06).abs() < 1e-6);
+    }
+
+    #[test]
+    fn batchnorm1d_momentum_none_cumulative_average() {
+        // momentum=None -> cumulative moving average with factor
+        // 1/num_batches_tracked. Reference: torch 2.12 (frankentorch-yx37).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let bn = BatchNorm1d::new(&mut session, 2, 1e-5, None).expect("bn");
+
+        let x1 = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("batch1");
+        bn.forward(&mut session, x1).expect("forward b1");
+        // After batch 1: factor = 1/1 = 1.0 -> running_mean == batch mean.
+        let rm1 = bn.running_mean();
+        assert!((rm1[0] - 2.0).abs() < 1e-9 && (rm1[1] - 3.0).abs() < 1e-9);
+
+        let x2 = session
+            .tensor_variable(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], false)
+            .expect("batch2");
+        bn.forward(&mut session, x2).expect("forward b2");
+        // After batch 2: factor = 1/2 = 0.5 -> 0.5*[2,3] + 0.5*[6,7].
+        let rm2 = bn.running_mean();
+        assert!((rm2[0] - 4.0).abs() < 1e-9 && (rm2[1] - 5.0).abs() < 1e-9);
+        let rv2 = bn.running_var();
+        assert!((rv2[0] - 2.0).abs() < 1e-6 && (rv2[1] - 2.0).abs() < 1e-6);
     }
 
     // ---- Conv1d tests ----
@@ -18143,7 +18515,7 @@ mod tests {
     #[test]
     fn batchnorm2d_forward_training() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn2d");
 
         // [N=2, C=2, H=2, W=2]
         #[rustfmt::skip]
@@ -18174,7 +18546,7 @@ mod tests {
     #[test]
     fn batchnorm2d_output_shape_preserved() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm2d::new(&mut session, 3, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 3, 1e-5, Some(0.1)).expect("bn2d");
 
         let x = session
             .tensor_variable(vec![1.0; 2 * 3 * 4 * 5], vec![2, 3, 4, 5], true)
@@ -18188,7 +18560,7 @@ mod tests {
     #[test]
     fn batchnorm2d_eval_mode() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn2d");
 
         // Train first to populate running stats
         #[rustfmt::skip]
@@ -18221,7 +18593,7 @@ mod tests {
     #[test]
     fn batchnorm2d_train_eval_toggle() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm2d::new(&mut session, 4, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 4, 1e-5, Some(0.1)).expect("bn2d");
 
         assert!(bn.is_training());
         bn.eval();
@@ -18233,7 +18605,7 @@ mod tests {
     #[test]
     fn batchnorm2d_backward_produces_gradients() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn2d");
 
         let x = session
             .tensor_variable(vec![1.0; 16], vec![2, 2, 2, 2], true)
@@ -18252,7 +18624,7 @@ mod tests {
     #[test]
     fn batchnorm2d_rejects_wrong_dim() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm2d::new(&mut session, 3, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 3, 1e-5, Some(0.1)).expect("bn2d");
 
         // 2D input — should fail
         let x = session
@@ -18270,7 +18642,7 @@ mod tests {
     #[test]
     fn batchnorm2d_rejects_channel_mismatch() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm2d::new(&mut session, 3, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 3, 1e-5, Some(0.1)).expect("bn2d");
 
         // C=2 but num_features=3
         let x = session
@@ -18282,7 +18654,7 @@ mod tests {
     #[test]
     fn batchnorm2d_updates_running_stats() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, 0.1).expect("bn2d");
+        let bn = BatchNorm2d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn2d");
 
         assert_eq!(bn.running_mean(), vec![0.0, 0.0]);
         assert_eq!(bn.running_var(), vec![1.0, 1.0]);
@@ -20691,6 +21063,33 @@ mod tests {
     }
 
     #[test]
+    fn linear_and_cell_biases_are_one_dimensional() {
+        // PyTorch stores Linear.bias / cell bias_ih / bias_hh as 1-D
+        // tensors; FrankenTorch must match so a torch state_dict loads
+        // without a rank mismatch (frankentorch-50e2).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let linear = Linear::new(&mut session, 3, 5, true).expect("linear");
+        let bias = linear.bias().expect("linear has bias");
+        assert_eq!(session.tensor_shape(bias).expect("shape"), vec![5]);
+
+        let rnn = RNNCell::new(&mut session, 3, 4, true).expect("rnn");
+        let rnn_p = rnn.parameters();
+        assert_eq!(session.tensor_shape(rnn_p[2]).expect("b_ih"), vec![4]);
+        assert_eq!(session.tensor_shape(rnn_p[3]).expect("b_hh"), vec![4]);
+
+        let lstm = LSTMCell::new(&mut session, 3, 4).expect("lstm");
+        let lstm_p = lstm.parameters();
+        assert_eq!(session.tensor_shape(lstm_p[2]).expect("b_ih"), vec![16]);
+        assert_eq!(session.tensor_shape(lstm_p[3]).expect("b_hh"), vec![16]);
+
+        let gru = GRUCell::new(&mut session, 3, 4).expect("gru");
+        let gru_p = gru.parameters();
+        assert_eq!(session.tensor_shape(gru_p[2]).expect("b_ih"), vec![12]);
+        assert_eq!(session.tensor_shape(gru_p[3]).expect("b_hh"), vec![12]);
+    }
+
+    #[test]
     fn gru_cell_rejects_wrong_input_size() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let cell = GRUCell::new(&mut session, 3, 4).expect("gru_cell");
@@ -21086,7 +21485,7 @@ mod tests {
     #[test]
     fn batch_norm_named_parameters_own() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, 0.1).expect("bn");
+        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, Some(0.1)).expect("bn");
         let params = bn.named_parameters_own();
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].0, "weight");
@@ -21096,7 +21495,7 @@ mod tests {
     #[test]
     fn batchnorm1d_register_parameter_and_buffer_semantics() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mut bn = BatchNorm1d::new(&mut session, 3, 1e-5, 0.1).expect("bn");
+        let mut bn = BatchNorm1d::new(&mut session, 3, 1e-5, Some(0.1)).expect("bn");
 
         let extra_param = session
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true)
@@ -21146,7 +21545,7 @@ mod tests {
     #[test]
     fn batchnorm1d_register_none_slots_not_in_iterators() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mut bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("bn");
+        let mut bn = BatchNorm1d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn");
 
         bn.register_parameter("optional_param", None)
             .expect("optional parameter slot");
@@ -21186,7 +21585,7 @@ mod tests {
     #[test]
     fn batchnorm_register_name_validation_and_conflicts() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mut bn = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("bn");
+        let mut bn = BatchNorm1d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn");
 
         let cache = session
             .tensor_variable(vec![1.0], vec![1], false)
@@ -21252,7 +21651,7 @@ mod tests {
     #[test]
     fn batchnorm2d_register_and_named_buffer_views() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mut bn = BatchNorm2d::new(&mut session, 2, 1e-5, 0.1).expect("bn2d");
+        let mut bn = BatchNorm2d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn2d");
 
         let extra_param = session
             .tensor_variable(vec![1.0], vec![1], true)
@@ -21300,8 +21699,8 @@ mod tests {
     #[test]
     fn named_buffers_nested_module_prefixes() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn1 = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("bn1");
-        let bn2 = BatchNorm1d::new(&mut session, 2, 1e-5, 0.1).expect("bn2");
+        let bn1 = BatchNorm1d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn1");
+        let bn2 = BatchNorm1d::new(&mut session, 2, 1e-5, Some(0.1)).expect("bn2");
 
         let mut seq = Sequential::new();
         seq.push(Box::new(bn1));
@@ -21782,13 +22181,14 @@ mod tests {
         assert!(state.contains_key("weight"));
         assert!(state.contains_key("bias"));
         assert_eq!(state.get("weight").expect("weight").meta().shape(), &[2, 3]);
-        assert_eq!(state.get("bias").expect("bias").meta().shape(), &[1, 2]);
+        // PyTorch `Linear.bias` is 1-D `[out_features]` (frankentorch-50e2).
+        assert_eq!(state.get("bias").expect("bias").meta().shape(), &[2]);
     }
 
     #[test]
     fn state_dict_includes_persistent_buffers() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, 0.1).expect("batch norm");
+        let bn = BatchNorm1d::new(&mut session, 4, 1e-5, Some(0.1)).expect("batch norm");
         let state = bn.state_dict(&session).expect("state_dict");
 
         assert!(state.contains_key("weight"));
@@ -26623,7 +27023,7 @@ mod tests {
     #[test]
     fn batch_norm3d_output_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, 0.1).unwrap();
+        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, Some(0.1)).unwrap();
         // [N=1, C=2, D=2, H=3, W=3]
         let n = 2 * 2 * 3 * 3;
         let input = session
@@ -26637,7 +27037,7 @@ mod tests {
     #[test]
     fn batch_norm3d_has_parameters() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm3d::new(&mut session, 4, 1e-5, 0.1).unwrap();
+        let bn = BatchNorm3d::new(&mut session, 4, 1e-5, Some(0.1)).unwrap();
         let params = bn.parameters();
         assert!(params.len() >= 2, "should have weight and bias params");
     }
@@ -26645,7 +27045,7 @@ mod tests {
     #[test]
     fn batch_norm3d_eval_mode() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, 0.1).unwrap();
+        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, Some(0.1)).unwrap();
         bn.eval();
         assert!(!bn.is_training());
         bn.train(true);
@@ -26655,7 +27055,7 @@ mod tests {
     #[test]
     fn batch_norm3d_rejects_4d() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, 0.1).unwrap();
+        let bn = BatchNorm3d::new(&mut session, 2, 1e-5, Some(0.1)).unwrap();
         let input = session
             .tensor_variable(vec![1.0; 8], vec![1, 2, 2, 2], false)
             .unwrap();

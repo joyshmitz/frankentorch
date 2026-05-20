@@ -9855,8 +9855,16 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let num_embeddings = 6;
         let embedding_dim = 4;
-        let emb = Embedding::with_options(&mut session, num_embeddings, embedding_dim, true)
-            .expect("sparse embedding");
+        let emb = Embedding::with_options(
+            &mut session,
+            num_embeddings,
+            embedding_dim,
+            None,
+            None,
+            2.0,
+            true,
+        )
+        .expect("sparse embedding");
         let weight = emb.weight();
 
         let weights_before = session.tensor_values(weight).expect("values").to_vec();

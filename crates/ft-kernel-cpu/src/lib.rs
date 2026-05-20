@@ -2720,6 +2720,13 @@ pub fn narrow_tensor_contiguous_f64(
     Ok(output)
 }
 
+/// Normalizes an index value with Python-style negative wrapping.
+///
+/// A negative index `i` is rewritten to `i + dim_size`. This matches
+/// PyTorch *advanced indexing* (`tensor[idx]` / `index_put_`), which
+/// wraps negative indices. It must NOT be used for `index_select`,
+/// `gather`, `scatter`, or `scatter_add` — those reject negatives (see
+/// [`normalize_strict_index_value`]).
 fn normalize_wrapped_index_value(idx_f: f64, dim_size: usize) -> Result<usize, KernelError> {
     if !idx_f.is_finite() || idx_f.fract().abs() > f64::EPSILON {
         return Err(KernelError::InvalidDimension {
@@ -2744,6 +2751,48 @@ fn normalize_wrapped_index_value(idx_f: f64, dim_size: usize) -> Result<usize, K
     if idx_i < 0 {
         idx_i += dim_size_i;
     }
+    if idx_i < 0 || idx_i >= dim_size_i {
+        return Err(KernelError::InvalidDimension {
+            dim: dim_size,
+            ndim: dim_size,
+        });
+    }
+
+    usize::try_from(idx_i).map_err(|_| KernelError::InvalidDimension {
+        dim: dim_size,
+        ndim: dim_size,
+    })
+}
+
+/// Validates an index value WITHOUT negative wrapping.
+///
+/// A negative index is rejected outright. This matches PyTorch
+/// `index_select` (`IndexError: index out of range in self`),
+/// `gather` / `scatter` / `scatter_add` (`RuntimeError: index N is out
+/// of bounds for dimension D`), which — unlike advanced indexing — do
+/// not interpret negatives as offsets from the end. Verified against
+/// torch 2.12 (frankentorch-n0un).
+fn normalize_strict_index_value(idx_f: f64, dim_size: usize) -> Result<usize, KernelError> {
+    if !idx_f.is_finite() || idx_f.fract().abs() > f64::EPSILON {
+        return Err(KernelError::InvalidDimension {
+            dim: dim_size,
+            ndim: dim_size,
+        });
+    }
+
+    let dim_size_i = isize::try_from(dim_size).map_err(|_| KernelError::InvalidDimension {
+        dim: dim_size,
+        ndim: dim_size,
+    })?;
+
+    if idx_f < 0.0 || idx_f > isize::MAX as f64 {
+        return Err(KernelError::InvalidDimension {
+            dim: dim_size,
+            ndim: dim_size,
+        });
+    }
+
+    let idx_i = idx_f as isize;
     if idx_i < 0 || idx_i >= dim_size_i {
         return Err(KernelError::InvalidDimension {
             dim: dim_size,
@@ -2856,7 +2905,7 @@ pub fn index_select_tensor_contiguous_f64(
 
     for outer in 0..outer_size {
         for &idx_f in indices {
-            let idx = normalize_wrapped_index_value(idx_f, dim_size)?;
+            let idx = normalize_strict_index_value(idx_f, dim_size)?;
             for inner in 0..inner_size {
                 let src = outer * dim_size * inner_size + idx * inner_size + inner;
                 output.push(data[src]);
@@ -2920,7 +2969,7 @@ pub fn gather_tensor_contiguous_f64(
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
                 let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
+                let selected = normalize_strict_index_value(index_data[idx_pos], dim_size)?;
                 let src = outer * dim_size * inner_size + selected * inner_size + inner;
                 output.push(data[src]);
             }
@@ -3000,7 +3049,7 @@ pub fn scatter_tensor_contiguous_f64(
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
                 let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
+                let selected = normalize_strict_index_value(index_data[idx_pos], dim_size)?;
                 let dst = outer * dim_size * inner_size + selected * inner_size + inner;
                 output[dst] = src[idx_pos];
             }
@@ -3077,7 +3126,7 @@ pub fn scatter_add_tensor_contiguous_f64(
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
                 let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
+                let selected = normalize_strict_index_value(index_data[idx_pos], dim_size)?;
                 let dst = outer * dim_size * inner_size + selected * inner_size + inner;
                 output[dst] += src[idx_pos];
             }
@@ -6411,7 +6460,7 @@ pub fn index_select_tensor_contiguous_f32(
     let mut output = Vec::with_capacity(out_numel);
     for outer in 0..outer_size {
         for &idx_f in indices {
-            let idx = normalize_wrapped_index_value(idx_f, dim_size)?;
+            let idx = normalize_strict_index_value(idx_f, dim_size)?;
             for inner in 0..inner_size {
                 let src = outer * dim_size * inner_size + idx * inner_size + inner;
                 output.push(data[src]);
@@ -6466,7 +6515,7 @@ pub fn gather_tensor_contiguous_f32(
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
                 let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
+                let selected = normalize_strict_index_value(index_data[idx_pos], dim_size)?;
                 let src = outer * dim_size * inner_size + selected * inner_size + inner;
                 output.push(data[src]);
             }
@@ -6536,7 +6585,7 @@ pub fn scatter_tensor_contiguous_f32(
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
                 let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
+                let selected = normalize_strict_index_value(index_data[idx_pos], dim_size)?;
                 let dst = outer * dim_size * inner_size + selected * inner_size + inner;
                 output[dst] = src[idx_pos];
             }
@@ -6608,7 +6657,7 @@ pub fn scatter_add_tensor_contiguous_f32(
         for r in 0..idx_dim_size {
             for inner in 0..inner_size {
                 let idx_pos = outer * idx_dim_size * inner_size + r * inner_size + inner;
-                let selected = normalize_wrapped_index_value(index_data[idx_pos], dim_size)?;
+                let selected = normalize_strict_index_value(index_data[idx_pos], dim_size)?;
                 let dst = outer * dim_size * inner_size + selected * inner_size + inner;
                 output[dst] += src[idx_pos];
             }
@@ -7672,7 +7721,8 @@ mod tests {
         expm1_tensor_contiguous_f64, floor_scalar, floor_tensor_contiguous_f64,
         gather_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gelu_scalar,
         gelu_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64,
-        index_select_tensor_contiguous_f64, le_scalar, le_tensor_contiguous_f64, leaky_relu_scalar,
+        index_select_tensor_contiguous_f32, index_select_tensor_contiguous_f64, le_scalar,
+        le_tensor_contiguous_f64, leaky_relu_scalar,
         leaky_relu_tensor_contiguous_f64, log_scalar, log_softmax_dim_tensor_contiguous_f64,
         log_tensor_contiguous_f64, log1p_scalar, log1p_tensor_contiguous_f64, log2_scalar,
         log2_tensor_contiguous_f64, log10_scalar, log10_tensor_contiguous_f64, lt_scalar,
@@ -7684,8 +7734,9 @@ mod tests {
         neg_tensor_contiguous_f64, norm_tensor_contiguous_f64, outer_tensor_contiguous_f64,
         pow_scalar, pow_tensor_contiguous_f32, pow_tensor_contiguous_f64,
         prod_dim_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
-        relu_scalar, relu_tensor_contiguous_f64, scatter_tensor_contiguous_f32,
-        scatter_tensor_contiguous_f64, sigmoid_scalar, sigmoid_tensor_contiguous_f64, sign_scalar,
+        relu_scalar, relu_tensor_contiguous_f64, scatter_add_tensor_contiguous_f64,
+        scatter_tensor_contiguous_f32, scatter_tensor_contiguous_f64, sigmoid_scalar,
+        sigmoid_tensor_contiguous_f64, sign_scalar,
         sign_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64, sinh_scalar,
         sinh_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64, sparse_coo_add,
         sparse_coo_coalesce, sparse_coo_matmul_dense_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
@@ -10094,6 +10145,45 @@ mod tests {
         let input = vec![1.0, 2.0, 3.0, 4.0];
         let result = index_select_tensor_contiguous_f64(&input, &meta, 0, &[1.0e300]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn index_select_negative_index_returns_error() {
+        // torch.index_select rejects negative indices (IndexError);
+        // unlike advanced indexing it does not wrap. (frankentorch-n0un)
+        let meta = TensorMeta::from_shape(vec![3, 2], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        assert!(index_select_tensor_contiguous_f64(&input, &meta, 0, &[-1.0]).is_err());
+        let input_f32 = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        assert!(index_select_tensor_contiguous_f32(&input_f32, &meta, 0, &[-1.0]).is_err());
+    }
+
+    #[test]
+    fn gather_negative_index_returns_error() {
+        // torch.gather rejects negative indices (RuntimeError). (frankentorch-n0un)
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let idx_meta = TensorMeta::from_shape(vec![2, 1], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        assert!(
+            gather_tensor_contiguous_f64(&input, &meta, 1, &[-1.0, -1.0], &idx_meta).is_err()
+        );
+    }
+
+    #[test]
+    fn scatter_negative_index_returns_error() {
+        // torch.scatter / scatter_add reject negative indices. (frankentorch-n0un)
+        let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let idx_meta = TensorMeta::from_shape(vec![2, 1], DType::F64, Device::Cpu);
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let src = vec![9.0, 9.0];
+        assert!(
+            scatter_tensor_contiguous_f64(&input, &meta, 1, &[-1.0, -1.0], &idx_meta, &src)
+                .is_err()
+        );
+        assert!(
+            scatter_add_tensor_contiguous_f64(&input, &meta, 1, &[-1.0, -1.0], &idx_meta, &src)
+                .is_err()
+        );
     }
 
     #[test]

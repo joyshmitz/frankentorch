@@ -7622,24 +7622,77 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Variance along `dim` with Bessel `correction` (`torch.var`).
+    ///
+    /// `var = sum_sq_dev / max(0, N - correction)` where `N` is the
+    /// reduced dimension's length. `correction = 1` is the sample
+    /// variance, `correction = 0` the population variance. Matches
+    /// torch 2.12 including the `inf` / `NaN` results when
+    /// `correction >= N` (frankentorch-ic84).
     pub fn tensor_var_dim(
         &mut self,
         input: TensorNodeId,
         dim: usize,
+        correction: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.var_dim(input, dim, self.mode())?;
         self.record_tensor_reduction_dim_operation(&event);
-        Ok(out)
+        self.apply_variance_correction(input, dim, out, correction, false)
     }
 
+    /// Standard deviation along `dim` with Bessel `correction`
+    /// (`torch.std`); see [`Self::tensor_var_dim`] for the `correction`
+    /// semantics. `std = sqrt(var)`.
     pub fn tensor_std_dim(
         &mut self,
         input: TensorNodeId,
         dim: usize,
+        correction: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.std_dim(input, dim, self.mode())?;
         self.record_tensor_reduction_dim_operation(&event);
-        Ok(out)
+        self.apply_variance_correction(input, dim, out, correction, true)
+    }
+
+    /// Rescales the kernel's hard-coded `correction = 1` var/std result
+    /// to an arbitrary `correction`.
+    ///
+    /// The kernel computes `default = sum_sq_dev / (N - 1)`. Since
+    /// `var(correction=c) = sum_sq_dev / (N - c)`, the corrected value
+    /// is `default * (N - 1) / (N - c)` (and the `sqrt` of that ratio
+    /// for `std`). The rescale is a multiply by a non-grad constant, so
+    /// it composes through autograd: the backward scale becomes
+    /// `2 (x - mean) / (N - c)`, matching torch.
+    fn apply_variance_correction(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        default_result: TensorNodeId,
+        correction: i64,
+        is_std: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // correction == 1 is exactly the kernel's behaviour.
+        if correction == 1 {
+            return Ok(default_result);
+        }
+        let n = self.tensor_shape(input)?[dim];
+        let n_i = i64::try_from(n).unwrap_or(i64::MAX);
+        // PyTorch clamps the denominator at zero: max(0, N - correction).
+        let denom = (n_i - correction).max(0);
+        let out_shape = self.tensor_shape(default_result)?;
+        // Degenerate N <= 1 with a positive denominator: torch returns
+        // 0 (variance of a single element), but the kernel's /(N-1)
+        // path produces NaN. Emit a true zero tensor instead.
+        if n <= 1 && denom > 0 {
+            return self.full(out_shape, 0.0, false);
+        }
+        // ratio == +inf when denom == 0 (correction >= N): `default`
+        // is then a finite var that scales to +inf, or 0 -> NaN, both
+        // matching torch's degrees-of-freedom <= 0 behaviour.
+        let ratio = (n_i - 1) as f64 / denom as f64;
+        let factor = if is_std { ratio.sqrt() } else { ratio };
+        let factor_tensor = self.full(out_shape, factor, false)?;
+        self.tensor_mul(default_result, factor_tensor)
     }
 
     pub fn tensor_norm(
@@ -10446,15 +10499,18 @@ impl FrankenTorchSession {
                 idx_f,
                 "index_add: index values must be finite integers",
             )?;
-            if idx_i < -dim_size_i || idx_i >= dim_size_i {
+            // torch `index_add_` rejects negative indices outright
+            // (`IndexError: index out of range in self`); it does not
+            // wrap them like advanced indexing. Verified vs torch 2.12
+            // (frankentorch-n0un).
+            if idx_i < 0 || idx_i >= dim_size_i {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
                         reason: "index_add: index value out of range",
                     },
                 )));
             }
-            let wrapped = if idx_i < 0 { idx_i + dim_size_i } else { idx_i };
-            usize::try_from(wrapped).map_err(|_| {
+            usize::try_from(idx_i).map_err(|_| {
                 AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
                         reason: "index_add: index value out of range",
@@ -10600,15 +10656,18 @@ impl FrankenTorchSession {
                 idx_f,
                 "index_copy: index values must be finite integers",
             )?;
-            if idx_i < -dim_size_i || idx_i >= dim_size_i {
+            // torch `index_copy_` rejects negative indices outright
+            // (`IndexError: index_copy_(): index N is out of bounds`);
+            // it does not wrap them like advanced indexing. Verified
+            // vs torch 2.12 (frankentorch-n0un).
+            if idx_i < 0 || idx_i >= dim_size_i {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
                         reason: "index_copy: index value out of range",
                     },
                 )));
             }
-            let wrapped = if idx_i < 0 { idx_i + dim_size_i } else { idx_i };
-            usize::try_from(wrapped).map_err(|_| {
+            usize::try_from(idx_i).map_err(|_| {
                 AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
                         reason: "index_copy: index value out of range",
@@ -10735,11 +10794,15 @@ impl FrankenTorchSession {
             })
         };
 
-        // Validate every supplied index up-front so the composition
-        // below sees only well-formed indices.
-        for &idx_f in &idx_vals {
-            normalize_index(idx_f)?;
-        }
+        // Validate and Python-wrap every supplied index up-front. The
+        // scatter composition below must see non-negative, in-range
+        // indices — and `torch.index_fill_` *does* wrap negatives (it
+        // is one of the few index ops that does), so the wrapped value
+        // is what the composition must use (frankentorch-n0un).
+        let wrapped_idx_vals: Vec<f64> = idx_vals
+            .iter()
+            .map(|&idx_f| normalize_index(idx_f).map(|i| i as f64))
+            .collect::<Result<_, _>>()?;
         if !matches!(input_dtype, DType::F64 | DType::F32) {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -10777,7 +10840,7 @@ impl FrankenTorchSession {
         )?;
         let mut expanded_idx_vals = Vec::with_capacity(expanded_numel);
         for _o in 0..outer {
-            for &idx_f in &idx_vals {
+            for &idx_f in &wrapped_idx_vals {
                 for _i in 0..inner {
                     expanded_idx_vals.push(idx_f);
                 }
@@ -24672,7 +24735,7 @@ mod tests {
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false)
             .expect("leaf");
-        let y = session.tensor_var_dim(x, 0).expect("var_dim 0");
+        let y = session.tensor_var_dim(x, 0, 1).expect("var_dim 0");
         let vals = session.tensor_values(y).expect("values");
         assert!((vals[0] - 4.0).abs() < 1e-12);
         assert!((vals[1] - 4.0).abs() < 1e-12);
@@ -24684,7 +24747,7 @@ mod tests {
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
             .expect("leaf");
-        let y = session.tensor_var_dim(x, 1).expect("var_dim 1");
+        let y = session.tensor_var_dim(x, 1, 1).expect("var_dim 1");
         let vals = session.tensor_values(y).expect("values");
         assert!((vals[0] - 1.0).abs() < 1e-12);
         assert!((vals[1] - 1.0).abs() < 1e-12);
@@ -24696,7 +24759,7 @@ mod tests {
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false)
             .expect("leaf");
-        let y = session.tensor_std_dim(x, 0).expect("std_dim 0");
+        let y = session.tensor_std_dim(x, 0, 1).expect("std_dim 0");
         let vals = session.tensor_values(y).expect("values");
         assert!((vals[0] - 2.0).abs() < 1e-12);
         assert!((vals[1] - 2.0).abs() < 1e-12);
@@ -24723,12 +24786,49 @@ mod tests {
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
             .expect("leaf");
-        let y = session.tensor_var_dim(x, 1).expect("var_dim 1");
+        let y = session.tensor_var_dim(x, 1, 1).expect("var_dim 1");
         let report = session.tensor_backward(y).expect("backward");
         let grads = report.gradient(x).expect("grad");
         assert!((grads[0] - (-1.0)).abs() < 1e-12);
         assert!(grads[1].abs() < 1e-12);
         assert!((grads[2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_tensor_var_std_dim_correction() {
+        // torch.var/std `correction=`: var = sum_sq_dev / (N - correction).
+        // Reference values from torch 2.12 (frankentorch-ic84).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let make = |s: &mut FrankenTorchSession| {
+            s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+                .expect("leaf")
+        };
+        // var: correction 0 -> 1.25 (population), 1 -> 1.6667, 2 -> 2.5.
+        let x = make(&mut session);
+        let v0 = session.tensor_var_dim(x, 0, 0).expect("var c0");
+        assert!((session.tensor_values(v0).unwrap()[0] - 1.25).abs() < 1e-9);
+        let v1 = session.tensor_var_dim(x, 0, 1).expect("var c1");
+        assert!((session.tensor_values(v1).unwrap()[0] - 5.0 / 3.0).abs() < 1e-9);
+        let v2 = session.tensor_var_dim(x, 0, 2).expect("var c2");
+        assert!((session.tensor_values(v2).unwrap()[0] - 2.5).abs() < 1e-9);
+        // correction >= N: degrees of freedom <= 0 -> +inf.
+        let v4 = session.tensor_var_dim(x, 0, 4).expect("var c4");
+        assert!(session.tensor_values(v4).unwrap()[0].is_infinite());
+        // std(correction=0) = sqrt(1.25).
+        let s0 = session.tensor_std_dim(x, 0, 0).expect("std c0");
+        assert!((session.tensor_values(s0).unwrap()[0] - 1.25_f64.sqrt()).abs() < 1e-9);
+
+        // backward: d var(correction=0)/dx = 2 (x - mean) / N.
+        let xb = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true)
+            .expect("leaf");
+        let yb = session.tensor_var_dim(xb, 1, 0).expect("var c0");
+        let report = session.tensor_backward(yb).expect("backward");
+        let g = report.gradient(xb).expect("grad");
+        // mean 2; 2(x-2)/3 = [-0.6667, 0, 0.6667].
+        assert!((g[0] - (-2.0 / 3.0)).abs() < 1e-9);
+        assert!(g[1].abs() < 1e-9);
+        assert!((g[2] - 2.0 / 3.0).abs() < 1e-9);
     }
 
     // ── softmax/log_softmax API tests ─────────────────────────────
@@ -27156,7 +27256,7 @@ mod tests {
         let t = session
             .tensor_variable(vec![2.0, 3.0, 5.0], vec![1, 3], false)
             .expect("t");
-        let r = session.tensor_var_dim(t, 0).expect("var_dim 0");
+        let r = session.tensor_var_dim(t, 0, 1).expect("var_dim 0");
         let vals = session.tensor_values(r).expect("vals");
         // Variance of a single element with Bessel correction: division by (n-1)=0 -> NaN
         // Without Bessel correction: 0.0
@@ -38821,16 +38921,16 @@ mod tests {
     }
 
     #[test]
-    fn index_add_allows_negative_index() {
+    fn index_add_rejects_negative_index() {
+        // torch `index_add_` rejects negative indices outright; it does
+        // not Python-wrap them (frankentorch-n0un, verified vs torch 2.12).
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .unwrap();
-        let index = s.tensor_variable(vec![-1.0, -3.0], vec![2], false).unwrap();
-        let src = s.tensor_variable(vec![10.0, 20.0], vec![2], false).unwrap();
-        let out = s.tensor_index_add(input, 0, index, src).unwrap();
-        let vals = s.tensor_values(out).unwrap();
-        assert_eq!(vals, vec![21.0, 2.0, 13.0]);
+        let index = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        let src = s.tensor_variable(vec![10.0], vec![1], false).unwrap();
+        assert!(s.tensor_index_add(input, 0, index, src).is_err());
     }
 
     #[test]
@@ -38904,16 +39004,16 @@ mod tests {
     }
 
     #[test]
-    fn index_copy_allows_negative_index() {
+    fn index_copy_rejects_negative_index() {
+        // torch `index_copy_` rejects negative indices outright; it
+        // does not Python-wrap them (frankentorch-n0un).
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
             .unwrap();
         let index = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
         let src = s.tensor_variable(vec![9.0], vec![1], false).unwrap();
-        let out = s.tensor_index_copy(input, 0, index, src).unwrap();
-        let vals = s.tensor_values(out).unwrap();
-        assert_eq!(vals, vec![1.0, 2.0, 9.0]);
+        assert!(s.tensor_index_copy(input, 0, index, src).is_err());
     }
 
     #[test]
