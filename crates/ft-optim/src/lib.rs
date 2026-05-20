@@ -2119,7 +2119,9 @@ impl LRScheduler for MultiStepLR {
 /// lr = eta_min + 0.5 * (initial_lr - eta_min) * (1 + cos(pi * epoch / t_max))
 /// ```
 ///
-/// For epochs beyond `t_max`, lr stays at `eta_min`.
+/// Matching PyTorch, the cosine continues past `t_max`: epoch `t_max` reaches
+/// `eta_min`, and the schedule then rises back toward `initial_lr`, giving a
+/// full oscillation period of `2 * t_max` epochs.
 pub struct CosineAnnealingLR {
     initial_lr: f64,
     t_max: usize,
@@ -2171,11 +2173,9 @@ impl CosineAnnealingLR {
         if epoch < 0 {
             return self.initial_lr;
         }
-        let e = epoch as usize;
-        if e >= self.t_max {
-            return self.eta_min;
-        }
-        let ratio = e as f64 / self.t_max as f64;
+        // PyTorch's closed-form cosine schedule keeps oscillating past t_max
+        // (period 2*t_max); it does NOT clamp to eta_min after t_max.
+        let ratio = epoch as f64 / self.t_max as f64;
         self.eta_min
             + 0.5 * (self.initial_lr - self.eta_min) * (1.0 + (std::f64::consts::PI * ratio).cos())
     }
@@ -4271,22 +4271,29 @@ impl Optimizer for Adadelta {
                 "adadelta acc_delta state length mismatch",
             )?;
 
-            let update: Vec<f64> = effective_grad
+            // delta = sqrt(E[delta^2] + eps) / sqrt(E[g^2] + eps) * g.
+            // PyTorch computes delta WITHOUT the learning rate, accumulates
+            // delta^2 into acc_delta, and only then scales the parameter step
+            // by lr. Folding lr into delta before the accumulation would leave
+            // acc_delta carrying a spurious lr^2 factor (correct only at lr=1).
+            let delta: Vec<f64> = effective_grad
                 .iter()
                 .zip(sq_avg.iter())
                 .zip(acc_d.iter())
                 .map(|((g, s), d)| {
                     let std_delta = (d + self.eps).sqrt();
                     let std_grad = (s + self.eps).sqrt();
-                    self.lr * (std_delta / std_grad) * g
+                    (std_delta / std_grad) * g
                 })
                 .collect();
 
             // Update running average of squared updates: E[delta^2] = rho * E[delta^2] + (1-rho) * delta^2
-            for (d, u) in acc_d.iter_mut().zip(update.iter()) {
+            for (d, u) in acc_d.iter_mut().zip(delta.iter()) {
                 *d = self.rho * *d + (1.0 - self.rho) * u * u;
             }
 
+            // Parameter step scales delta by the learning rate.
+            let update: Vec<f64> = delta.iter().map(|d| self.lr * d).collect();
             apply_param_update(session, param, &update)?;
         }
         Ok(())
@@ -4313,6 +4320,11 @@ pub struct NAdam {
     step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
+    /// Per-parameter running product of the momentum schedule mu values
+    /// (mu_product = prod_{i=1}^{t} mu_i). PyTorch maintains this as
+    /// optimizer state; the bias-correction denominators need the full
+    /// cumulative product, not just the current step's mu.
+    mu_products: Vec<f64>,
 }
 
 impl NAdam {
@@ -4333,6 +4345,7 @@ impl NAdam {
             step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
+            mu_products: vec![1.0; n],
         }
     }
 
@@ -4414,6 +4427,12 @@ impl Optimizer for NAdam {
             let mu_t1 =
                 self.beta1 * (1.0 - 0.5 * 0.96f64.powf((t as f64 + 1.0) * self.momentum_decay));
 
+            // Cumulative product of mu values: mu_product = prod_{i=1}^{t} mu_i.
+            // PyTorch carries this as state; the bias-correction denominators
+            // need the full running product, not just the current mu_t.
+            self.mu_products[i] *= mu_t;
+            let mu_product = self.mu_products[i];
+
             let param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
             let _param_shape = session.tensor_values_meta(param)?.1.shape().to_vec();
@@ -4456,8 +4475,12 @@ impl Optimizer for NAdam {
                 .zip(v.iter())
                 .zip(effective_grad.iter())
                 .map(|((m_val, v_val), g)| {
-                    let m_hat =
-                        mu_t1 * m_val / (1.0 - mu_t * mu_t1) + (1.0 - mu_t) * g / (1.0 - mu_t);
+                    // PyTorch _single_tensor_nadam: the lookahead term is
+                    // divided by (1 - mu_product*mu_next) and the raw-gradient
+                    // term by (1 - mu_product), where mu_product is the running
+                    // cumulative product of all mu values up to step t.
+                    let m_hat = mu_t1 * m_val / (1.0 - mu_product * mu_t1)
+                        + (1.0 - mu_t) * g / (1.0 - mu_product);
                     let v_hat = v_val / bias_correction2;
                     self.lr * m_hat / (v_hat.sqrt() + self.eps)
                 })
@@ -8263,11 +8286,21 @@ mod tests {
             "expected eta_min at epoch 10, got {min_lr}"
         );
 
-        scheduler.step(&mut opt, Some(25));
-        let held = opt.get_lr();
+        // PyTorch's cosine schedule keeps oscillating past t_max with period
+        // 2*t_max: epoch 2*t_max returns to initial_lr, and epoch 2.5*t_max
+        // (cos(2.5*pi) = 0) sits back at the midpoint.
+        scheduler.step(&mut opt, Some(20));
+        let full_period = opt.get_lr();
         assert!(
-            held.abs() < 1e-12,
-            "expected lr to remain eta_min beyond t_max, got {held}"
+            (full_period - 1.0).abs() < 1e-12,
+            "expected initial_lr at epoch 2*t_max, got {full_period}"
+        );
+
+        scheduler.step(&mut opt, Some(25));
+        let midpoint = opt.get_lr();
+        assert!(
+            (midpoint - 0.5).abs() < 1e-12,
+            "expected midpoint lr 0.5 at epoch 2.5*t_max, got {midpoint}"
         );
     }
 
@@ -9279,6 +9312,37 @@ mod tests {
     }
 
     #[test]
+    fn adadelta_param_step_scales_linearly_with_lr() {
+        // loss = sum(x) yields a constant gradient of 1 regardless of x. With a
+        // constant gradient Adadelta's internal `delta` sequence is independent
+        // of lr (acc_delta accumulates delta^2, not (lr*delta)^2, and square_avg
+        // sees only the gradient), so the total parameter displacement must
+        // scale exactly linearly with lr. A spurious lr^2 factor leaking into
+        // acc_delta breaks this relationship from the second step onward.
+        let run = |lr: f64| -> f64 {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session
+                .tensor_variable(vec![10.0], vec![1], true)
+                .expect("variable");
+            let mut opt = Adadelta::new(vec![x], lr);
+            for _ in 0..6 {
+                opt.zero_grad(&mut session).expect("zero_grad");
+                let loss = session.tensor_sum(x).expect("sum");
+                let report = session.tensor_backward(loss).expect("backward");
+                opt.step(&mut session, &report).expect("step");
+            }
+            10.0 - session.tensor_values(x).expect("values")[0]
+        };
+        let disp1 = run(1.0);
+        let disp3 = run(3.0);
+        assert!(disp1 > 0.0, "expected positive displacement, got {disp1}");
+        assert!(
+            (disp3 / disp1 - 3.0).abs() < 1e-9,
+            "displacement must scale linearly with lr: lr=1 -> {disp1}, lr=3 -> {disp3}"
+        );
+    }
+
+    #[test]
     fn adadelta_invalid_rho_fails() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session
@@ -9323,7 +9387,12 @@ mod tests {
             .expect("variable");
         let mut opt = NAdam::new(vec![x], 0.1);
 
-        for _ in 0..50 {
+        // PyTorch-faithful NAdam divides the raw-gradient term by
+        // (1 - mu_product), so for t >> 1 that term is only ~0.1*grad — the
+        // optimizer takes genuine (smaller) Nesterov-Adam steps and needs more
+        // iterations to converge than the earlier formula, which collapsed the
+        // term to a full `grad`.
+        for _ in 0..300 {
             opt.zero_grad(&mut session).expect("zero_grad");
             let loss = session.tensor_mul(x, x).expect("mul");
             let loss_sum = session.tensor_sum(loss).expect("sum");
