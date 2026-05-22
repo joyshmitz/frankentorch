@@ -5390,6 +5390,103 @@ impl FrankenTorchSession {
         self.tensor_variable(result, vec![out_len], false)
     }
 
+    /// Convert class indices to one-hot encoded tensors.
+    ///
+    /// Equivalent to `torch.nn.functional.one_hot(input, num_classes)`.
+    /// Input must be a 1D tensor of integer indices in [0, num_classes).
+    /// Output is a 2D tensor of shape (input_len, num_classes).
+    pub fn tensor_one_hot(
+        &mut self,
+        input: TensorNodeId,
+        num_classes: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "one_hot: input must be 1D",
+                },
+            )));
+        }
+        let n = shape[0];
+        let values = self.tensor_values(input)?;
+        let mut result = vec![0.0_f64; n * num_classes];
+        for (i, &idx) in values.iter().enumerate() {
+            let class_idx = idx as usize;
+            if class_idx >= num_classes {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "one_hot: class index out of range",
+                    },
+                )));
+            }
+            result[i * num_classes + class_idx] = 1.0;
+        }
+        self.tensor_variable(result, vec![n, num_classes], false)
+    }
+
+    /// Compute cosine similarity between tensors along a dimension.
+    ///
+    /// Equivalent to `torch.nn.functional.cosine_similarity(x1, x2, dim, eps)`.
+    /// Returns cos(angle) = (x1 · x2) / (||x1|| * ||x2||).
+    pub fn tensor_cosine_similarity(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+        dim: usize,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape1 = self.tensor_shape(x1)?;
+        let shape2 = self.tensor_shape(x2)?;
+        if shape1 != shape2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: shape1,
+                    rhs: shape2,
+                },
+            )));
+        }
+        // dot = sum(x1 * x2, dim)
+        let prod = self.tensor_mul(x1, x2)?;
+        let dot = self.tensor_sum_dim(prod, dim)?;
+        // norm1 = sqrt(sum(x1^2, dim))
+        let x1_sq = self.tensor_mul(x1, x1)?;
+        let norm1_sq = self.tensor_sum_dim(x1_sq, dim)?;
+        let norm1 = self.tensor_sqrt(norm1_sq)?;
+        // norm2 = sqrt(sum(x2^2, dim))
+        let x2_sq = self.tensor_mul(x2, x2)?;
+        let norm2_sq = self.tensor_sum_dim(x2_sq, dim)?;
+        let norm2 = self.tensor_sqrt(norm2_sq)?;
+        // denom = max(norm1 * norm2, eps)
+        let norm_prod = self.tensor_mul(norm1, norm2)?;
+        let eps_shape = self.tensor_shape(norm_prod)?;
+        let eps_t = self.full(eps_shape, eps, false)?;
+        let denom = self.tensor_maximum(norm_prod, eps_t)?;
+        self.tensor_div(dot, denom)
+    }
+
+    /// Normalize a tensor along a dimension using Lp norm.
+    ///
+    /// Equivalent to `torch.nn.functional.normalize(input, p, dim, eps)`.
+    /// Returns input / max(||input||_p, eps) along the specified dimension.
+    pub fn tensor_normalize(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        dim: usize,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // norm = ||input||_p along dim
+        let norm = self.tensor_norm_dim(input, p, dim)?;
+        // unsqueeze norm back to original dim for broadcasting
+        let norm_unsq = self.tensor_unsqueeze(norm, dim)?;
+        // denom = max(norm, eps)
+        let eps_shape = self.tensor_shape(norm_unsq)?;
+        let eps_t = self.full(eps_shape, eps, false)?;
+        let denom = self.tensor_maximum(norm_unsq, eps_t)?;
+        self.tensor_div(input, denom)
+    }
+
     pub fn tensor_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.trace(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
