@@ -14477,6 +14477,38 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place index fill: fills target at indices along dim with value.
+    pub fn tensor_index_fill_(
+        &mut self,
+        target: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        value: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_index_fill(target, dim, index, value)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("index_fill_", target, Some(format!("dim={dim} value={value}")));
+        Ok(())
+    }
+
+    /// In-place index copy: copies src values into target at indices along dim.
+    pub fn tensor_index_copy_(
+        &mut self,
+        target: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_index_copy(target, dim, index, src)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("index_copy_", target, Some(format!("dim={dim}")));
+        Ok(())
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -54399,6 +54431,25 @@ mod tests {
         assert_eq!(s.tensor_values(left).unwrap(), vec![10.0, 12.0, 24.0]);
         let right = s.tensor_bitwise_right_shift(a, shift).unwrap();
         assert_eq!(s.tensor_values(right).unwrap(), vec![2.0, 0.0, 6.0]);
+    }
+
+    #[test]
+    fn test_index_fill_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false).unwrap();
+        let idx = s.tensor_variable(vec![0.0, 2.0], vec![2], false).unwrap();
+        s.tensor_index_fill_(x, 0, idx, -1.0).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![-1.0, 2.0, -1.0, 4.0]);
+    }
+
+    #[test]
+    fn test_index_copy_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false).unwrap();
+        let idx = s.tensor_variable(vec![1.0, 3.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 40.0], vec![2], false).unwrap();
+        s.tensor_index_copy_(x, 0, idx, src).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![1.0, 10.0, 3.0, 40.0]);
     }
 
     #[test]
