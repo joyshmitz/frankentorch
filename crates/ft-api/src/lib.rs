@@ -11823,6 +11823,62 @@ impl FrankenTorchSession {
         self.tensor_index_select(flat, 0, index_node)
     }
 
+    /// Embed values from src into the diagonal of input.
+    ///
+    /// Equivalent to `torch.diagonal_scatter(input, src, offset)`.
+    /// Returns a copy of input with the diagonal replaced by src values.
+    /// Tracked under frankentorch-ac92.
+    pub fn tensor_diagonal_scatter(
+        &mut self,
+        input: TensorNodeId,
+        src: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "diagonal_scatter: input must be 2-D",
+                },
+            )));
+        }
+        let m = shape[0];
+        let n = shape[1];
+
+        let (row_start, col_start, diag_len) = if offset >= 0 {
+            let col_start = offset as usize;
+            if col_start >= n {
+                return Ok(input);
+            }
+            let diag_len = m.min(n - col_start);
+            (0, col_start, diag_len)
+        } else {
+            let row_start = (-offset) as usize;
+            if row_start >= m {
+                return Ok(input);
+            }
+            let diag_len = n.min(m - row_start);
+            (row_start, 0, diag_len)
+        };
+
+        let src_vals = self.tensor_values(src)?;
+        if src_vals.len() != diag_len {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "diagonal_scatter: src length must match diagonal length",
+                },
+            )));
+        }
+
+        let mut result = self.tensor_values(input)?;
+        for i in 0..diag_len {
+            let idx = (row_start + i) * n + col_start + i;
+            result[idx] = src_vals[i];
+        }
+
+        self.tensor_variable(result, shape, false)
+    }
+
     pub fn tensor_values(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
         self.tensor_tape.values(node)
     }
@@ -50325,5 +50381,29 @@ mod tests {
         assert!((dim0[1] - 2.0).abs() < 1e-10);
         assert!((dim1[0] - 2.0).abs() < 1e-10);
         assert!((dim1[1] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_diagonal_scatter_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0; 9], vec![3, 3], false).unwrap();
+        let src = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let result = s.tensor_diagonal_scatter(input, src, 0).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[4] - 2.0).abs() < 1e-10);
+        assert!((vals[8] - 3.0).abs() < 1e-10);
+        assert!(vals[1].abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_diagonal_scatter_offset() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0; 9], vec![3, 3], false).unwrap();
+        let src = s.tensor_variable(vec![5.0, 6.0], vec![2], false).unwrap();
+        let result = s.tensor_diagonal_scatter(input, src, 1).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[1] - 5.0).abs() < 1e-10);
+        assert!((vals[5] - 6.0).abs() < 1e-10);
     }
 }
