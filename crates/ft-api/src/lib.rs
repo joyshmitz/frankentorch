@@ -13497,6 +13497,24 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("hardsigmoid_", target, None, |x| (x / 6.0 + 0.5).clamp(0.0, 1.0))
     }
 
+    /// In-place leaky ReLU: max(0, x) + negative_slope * min(0, x).
+    ///
+    /// Equivalent to `F.leaky_relu(tensor, negative_slope, inplace=True)` in PyTorch.
+    pub fn tensor_leaky_relu_(&mut self, target: TensorNodeId, negative_slope: f64) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("leaky_relu_", target, Some(format!("negative_slope={negative_slope}")), |x| {
+            if x > 0.0 { x } else { negative_slope * x }
+        })
+    }
+
+    /// In-place CELU activation: max(0, x) + min(0, alpha * (exp(x/alpha) - 1)).
+    ///
+    /// Equivalent to `F.celu(tensor, alpha, inplace=True)` in PyTorch.
+    pub fn tensor_celu_(&mut self, target: TensorNodeId, alpha: f64) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("celu_", target, Some(format!("alpha={alpha}")), |x| {
+            if x > 0.0 { x } else { alpha * ((x / alpha).exp() - 1.0) }
+        })
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53561,6 +53579,17 @@ mod tests {
         assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
         let b = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
         s.tensor_hardsigmoid_(b).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_leaky_relu_celu_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_leaky_relu_(a, 0.01).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_celu_(b, 1.0).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
