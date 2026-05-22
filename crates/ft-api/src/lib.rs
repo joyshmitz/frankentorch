@@ -11328,6 +11328,28 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Conjugate transpose (Hermitian adjoint) of the last two dimensions.
+    ///
+    /// Equivalent to `torch.adjoint(input)`. For complex tensors this
+    /// performs conjugation and transpose; for real tensors it is
+    /// equivalent to `tensor_matrix_transpose`. Requires at least 2D.
+    pub fn tensor_adjoint(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let transposed = self.tensor_matrix_transpose(input)?;
+        let dtype = self.tensor_dtype(transposed)?;
+        if dtype == DType::Complex64 || dtype == DType::Complex128 {
+            self.tensor_conj(transposed)
+        } else {
+            Ok(transposed)
+        }
+    }
+
+    /// Hermitian transpose; alias for `tensor_adjoint`.
+    ///
+    /// Equivalent to accessing `.H` on a tensor in PyTorch.
+    pub fn tensor_H(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_adjoint(input)
+    }
+
     /// Swap two dimensions; alias for `tensor_transpose`.
     ///
     /// Equivalent to `torch.swapaxes(input, dim0, dim1)`. PyTorch
@@ -51850,6 +51872,38 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s.tensor_variable(vec![1.0; 24], vec![2, 3, 4], false).unwrap();
         let result = s.tensor_t(x);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_adjoint_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let adj = s.tensor_adjoint(x).unwrap();
+        let shape = s.tensor_shape(adj).unwrap();
+        assert_eq!(shape, vec![3, 2]);
+        let vals = s.tensor_values(adj).unwrap();
+        // For real tensors, adjoint = transpose
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_H_3d_batch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Batch of 2 matrices, each 2x3
+        let x = s.tensor_variable(vec![1.0; 12], vec![2, 2, 3], false).unwrap();
+        let h = s.tensor_H(x).unwrap();
+        let shape = s.tensor_shape(h).unwrap();
+        // Should transpose last two dims: [2, 2, 3] -> [2, 3, 2]
+        assert_eq!(shape, vec![2, 3, 2]);
+    }
+
+    #[test]
+    fn test_adjoint_errors_on_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let result = s.tensor_adjoint(x);
         assert!(result.is_err());
     }
 }
