@@ -7798,6 +7798,23 @@ impl FrankenTorchSession {
         self.tensor_float_classify(UnaryOp::IsFinite, input)
     }
 
+    /// Returns a 0/1 mask indicating which elements are real (imaginary part is zero).
+    ///
+    /// For non-complex tensors, returns all 1.0s (all elements are real).
+    /// For complex tensors, returns 1.0 where imag(x) == 0.
+    ///
+    /// Equivalent to `torch.isreal(input)`.
+    pub fn tensor_isreal(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let dtype = self.tensor_dtype(input)?;
+        if !dtype.is_complex() {
+            let shape = self.tensor_shape(input)?;
+            return self.full(shape, 1.0, false);
+        }
+        let imag = self.tensor_imag(input)?;
+        let zero = self.full(self.tensor_shape(imag)?, 0.0, false)?;
+        self.tensor_eq(imag, zero)
+    }
+
     /// 0/1 mask of the IEEE 754 sign bit of `input`.
     ///
     /// Equivalent to `torch.signbit(input)` — true (1.0) where the
@@ -53100,5 +53117,14 @@ mod tests {
         let numel = s.tensor_numel(x).unwrap();
         assert_eq!(nelement, numel);
         assert_eq!(nelement, 24);
+    }
+
+    #[test]
+    fn test_tensor_isreal() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let isreal = s.tensor_isreal(x).unwrap();
+        assert_eq!(s.tensor_shape(isreal).unwrap(), vec![3]);
+        assert_eq!(s.tensor_dtype(isreal).unwrap(), DType::F64);
     }
 }
