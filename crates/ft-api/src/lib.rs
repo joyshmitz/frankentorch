@@ -14655,6 +14655,55 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place diagonal scatter: embeds src into diagonal of target.
+    pub fn tensor_diagonal_scatter_(
+        &mut self,
+        target: TensorNodeId,
+        src: TensorNodeId,
+        offset: i64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_diagonal_scatter(target, src, offset)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("diagonal_scatter_", target, Some(format!("offset={offset}")));
+        Ok(())
+    }
+
+    /// In-place select scatter: embeds src at selected index along dim.
+    pub fn tensor_select_scatter_(
+        &mut self,
+        target: TensorNodeId,
+        src: TensorNodeId,
+        dim: i64,
+        index: i64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_select_scatter(target, src, dim, index)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("select_scatter_", target, Some(format!("dim={dim} index={index}")));
+        Ok(())
+    }
+
+    /// In-place slice scatter: embeds src into slice of target.
+    pub fn tensor_slice_scatter_(
+        &mut self,
+        target: TensorNodeId,
+        src: TensorNodeId,
+        dim: i64,
+        start: Option<i64>,
+        end: Option<i64>,
+        step: i64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_slice_scatter(target, src, dim, start, end, step)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("slice_scatter_", target, Some(format!("dim={dim} step={step}")));
+        Ok(())
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -54656,6 +54705,33 @@ mod tests {
         let src = s.tensor_variable(vec![10.0, 30.0], vec![2], false).unwrap();
         s.tensor_masked_scatter_(x, mask, src).unwrap();
         assert_eq!(s.tensor_values(x).unwrap(), vec![10.0, 2.0, 30.0, 4.0]);
+    }
+
+    #[test]
+    fn test_diagonal_scatter_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).unwrap();
+        let diag = s.tensor_variable(vec![10.0, 40.0], vec![2], false).unwrap();
+        s.tensor_diagonal_scatter_(m, diag, 0).unwrap();
+        assert_eq!(s.tensor_values(m).unwrap(), vec![10.0, 2.0, 3.0, 40.0]);
+    }
+
+    #[test]
+    fn test_select_scatter_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0, 30.0], vec![3], false).unwrap();
+        s.tensor_select_scatter_(x, src, 0, 1).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn test_slice_scatter_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0, 30.0], vec![1, 3], false).unwrap();
+        s.tensor_slice_scatter_(x, src, 0, Some(1), Some(2), 1).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0]);
     }
 
     #[test]
