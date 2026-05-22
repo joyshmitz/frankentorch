@@ -4239,6 +4239,38 @@ impl Module for Softmax {
     }
 }
 
+/// Softmax2d module: applies softmax over channels at each spatial location.
+///
+/// Accepts unbatched `[C, H, W]` or batched `[N, C, H, W]` inputs and preserves
+/// the input shape.
+pub struct Softmax2d;
+
+impl Module for Softmax2d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = session.tensor_shape(input)?;
+        let dim = match shape.as_slice() {
+            [_, _, _] => 0,
+            [_, _, _, _] => 1,
+            _ => {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "Softmax2d expects 3D [C, H, W] or 4D [N, C, H, W] input",
+                    },
+                )));
+            }
+        };
+        session.tensor_softmax(input, dim)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 /// LogSoftmax module: applies log-softmax along a specified dimension.
 pub struct LogSoftmax {
     dim: usize,
@@ -19363,6 +19395,82 @@ mod tests {
         assert!((exp_sum - 1.0).abs() < 1e-6);
     }
 
+    fn softmax_pair(a: f64, b: f64) -> (f64, f64) {
+        let m = a.max(b);
+        let ea = (a - m).exp();
+        let eb = (b - m).exp();
+        let denom = ea + eb;
+        (ea / denom, eb / denom)
+    }
+
+    #[test]
+    fn softmax2d_unbatched_normalizes_channels_per_location() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 10.0, 3.0, 20.0], vec![2, 1, 2], false)
+            .expect("variable");
+
+        let y = Softmax2d.forward(&mut session, x).expect("forward");
+        let (vals, meta) = session.tensor_values_meta(y).expect("values");
+        let (p0, p1) = softmax_pair(1.0, 3.0);
+        let (p2, p3) = softmax_pair(10.0, 20.0);
+
+        assert_eq!(meta.shape(), &[2, 1, 2]);
+        let expected = [p0, p2, p1, p3];
+        for (actual, expected) in vals.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn softmax2d_batched_normalizes_channels_per_location() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 10.0, 3.0, 20.0], vec![1, 2, 1, 2], false)
+            .expect("variable");
+
+        let y = Softmax2d.forward(&mut session, x).expect("forward");
+        let (vals, meta) = session.tensor_values_meta(y).expect("values");
+        let (p0, p1) = softmax_pair(1.0, 3.0);
+        let (p2, p3) = softmax_pair(10.0, 20.0);
+
+        assert_eq!(meta.shape(), &[1, 2, 1, 2]);
+        let expected = [p0, p2, p1, p3];
+        for (actual, expected) in vals.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn softmax2d_rejects_wrong_rank() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let rank_two = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("rank two");
+        let rank_five = session
+            .tensor_variable(vec![1.0], vec![1, 1, 1, 1, 1], false)
+            .expect("rank five");
+
+        assert!(Softmax2d.forward(&mut session, rank_two).is_err());
+        assert!(Softmax2d.forward(&mut session, rank_five).is_err());
+    }
+
+    #[test]
+    fn softmax2d_backward_produces_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 10.0, 3.0, 20.0], vec![1, 2, 1, 2], true)
+            .expect("variable");
+
+        let y = Softmax2d.forward(&mut session, x).expect("forward");
+        let loss = session.tensor_sum(y).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session.tensor_gradient(&report, x).expect("gradient");
+
+        assert_eq!(grad.len(), 4);
+        assert!(grad.iter().all(|value| value.is_finite()));
+    }
+
     // ---- Flatten module test ----
 
     #[test]
@@ -19515,6 +19623,7 @@ mod tests {
         assert!(Mish.parameters().is_empty());
         assert!(Softplus.parameters().is_empty());
         assert!(Softmax::new(0).parameters().is_empty());
+        assert!(Softmax2d.parameters().is_empty());
         assert!(LogSoftmax::new(0).parameters().is_empty());
         assert!(Flatten::new(0, 0).parameters().is_empty());
     }
