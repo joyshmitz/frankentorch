@@ -182,10 +182,11 @@ pub enum ExecutionMode {
     Hardened,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QuantizationParams {
-    scale_bits: u64,
-    zero_point: i64,
+    scale_bits: Vec<u64>,
+    zero_points: Vec<i64>,
+    axis: Option<usize>,
 }
 
 impl QuantizationParams {
@@ -194,25 +195,127 @@ impl QuantizationParams {
     /// `scale` must be finite and strictly positive. It is stored by bit pattern
     /// so tensor metadata remains equality/hash stable.
     pub fn new(scale: f64, zero_point: i64) -> Result<Self, TensorMetaError> {
+        let scale_bits = Self::validate_scale(scale)?;
+        Ok(Self {
+            scale_bits: vec![scale_bits],
+            zero_points: vec![zero_point],
+            axis: None,
+        })
+    }
+
+    /// Create per-channel affine quantization parameters.
+    ///
+    /// `axis` identifies the quantized channel dimension in the tensor shape.
+    /// `scales` and `zero_points` must have the same non-zero length.
+    pub fn per_channel(
+        scales: Vec<f64>,
+        zero_points: Vec<i64>,
+        axis: usize,
+    ) -> Result<Self, TensorMetaError> {
+        if scales.is_empty() {
+            return Err(TensorMetaError::EmptyQuantizationChannels);
+        }
+        if scales.len() != zero_points.len() {
+            return Err(TensorMetaError::QuantizationVectorLengthMismatch {
+                scales: scales.len(),
+                zero_points: zero_points.len(),
+            });
+        }
+
+        let mut scale_bits = Vec::with_capacity(scales.len());
+        for scale in scales {
+            scale_bits.push(Self::validate_scale(scale)?);
+        }
+
+        Ok(Self {
+            scale_bits,
+            zero_points,
+            axis: Some(axis),
+        })
+    }
+
+    fn validate_scale(scale: f64) -> Result<u64, TensorMetaError> {
         if !scale.is_finite() || scale <= 0.0 {
             return Err(TensorMetaError::InvalidQuantizationScale {
                 scale_bits: scale.to_bits(),
             });
         }
-        Ok(Self {
-            scale_bits: scale.to_bits(),
-            zero_point,
-        })
+        Ok(scale.to_bits())
     }
 
     #[must_use]
-    pub fn scale(self) -> f64 {
-        f64::from_bits(self.scale_bits)
+    pub fn scale(&self) -> f64 {
+        f64::from_bits(self.scale_bits[0])
     }
 
     #[must_use]
-    pub fn zero_point(self) -> i64 {
-        self.zero_point
+    pub fn zero_point(&self) -> i64 {
+        self.zero_points[0]
+    }
+
+    #[must_use]
+    pub fn scales(&self) -> Vec<f64> {
+        self.scale_bits
+            .iter()
+            .map(|&bits| f64::from_bits(bits))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn zero_points(&self) -> &[i64] {
+        &self.zero_points
+    }
+
+    #[must_use]
+    pub fn axis(&self) -> Option<usize> {
+        self.axis
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.scale_bits.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.scale_bits.is_empty()
+    }
+
+    fn validate_for_shape(&self, shape: &[usize]) -> Result<(), TensorMetaError> {
+        if self.scale_bits.is_empty() {
+            return Err(TensorMetaError::EmptyQuantizationChannels);
+        }
+        if self.scale_bits.len() != self.zero_points.len() {
+            return Err(TensorMetaError::QuantizationVectorLengthMismatch {
+                scales: self.scale_bits.len(),
+                zero_points: self.zero_points.len(),
+            });
+        }
+
+        if let Some(axis) = self.axis {
+            if axis >= shape.len() {
+                return Err(TensorMetaError::InvalidQuantizationAxis {
+                    axis,
+                    rank: shape.len(),
+                });
+            }
+            let expected = shape[axis];
+            let actual = self.scale_bits.len();
+            if expected != actual {
+                return Err(TensorMetaError::QuantizationChannelCountMismatch {
+                    axis,
+                    expected,
+                    actual,
+                });
+            }
+        } else if self.scale_bits.len() != 1 {
+            return Err(TensorMetaError::QuantizationVectorLengthMismatch {
+                scales: self.scale_bits.len(),
+                zero_points: self.zero_points.len(),
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -265,6 +368,20 @@ impl TensorMeta {
         Ok(meta)
     }
 
+    pub fn quantized_per_channel_from_shape(
+        shape: Vec<usize>,
+        dtype: DType,
+        device: Device,
+        scales: Vec<f64>,
+        zero_points: Vec<i64>,
+        axis: usize,
+    ) -> Result<Self, TensorMetaError> {
+        let quantization = QuantizationParams::per_channel(scales, zero_points, axis)?;
+        let meta = Self::from_shape(shape, dtype, device).with_quantization(quantization);
+        meta.validate()?;
+        Ok(meta)
+    }
+
     pub fn from_shape_and_strides(
         shape: Vec<usize>,
         strides: Vec<usize>,
@@ -306,6 +423,30 @@ impl TensorMeta {
         Ok(meta)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn quantized_per_channel_from_shape_and_strides(
+        shape: Vec<usize>,
+        strides: Vec<usize>,
+        storage_offset: usize,
+        dtype: DType,
+        device: Device,
+        scales: Vec<f64>,
+        zero_points: Vec<i64>,
+        axis: usize,
+    ) -> Result<Self, TensorMetaError> {
+        let quantization = QuantizationParams::per_channel(scales, zero_points, axis)?;
+        let meta = Self {
+            shape,
+            strides,
+            storage_offset,
+            dtype,
+            device,
+            quantization: Some(quantization),
+        };
+        meta.validate()?;
+        Ok(meta)
+    }
+
     #[must_use]
     pub fn with_storage_offset(mut self, storage_offset: usize) -> Self {
         self.storage_offset = storage_offset;
@@ -328,8 +469,8 @@ impl TensorMeta {
     }
 
     pub fn validate(&self) -> Result<(), TensorMetaError> {
-        match (self.dtype.is_quantized(), self.quantization) {
-            (true, Some(_)) => {}
+        match (self.dtype.is_quantized(), self.quantization.as_ref()) {
+            (true, Some(quantization)) => quantization.validate_for_shape(&self.shape)?,
             (true, None) => {
                 return Err(TensorMetaError::MissingQuantizationParams { dtype: self.dtype });
             }
@@ -399,8 +540,8 @@ impl TensorMeta {
     }
 
     #[must_use]
-    pub fn quantization(&self) -> Option<QuantizationParams> {
-        self.quantization
+    pub fn quantization(&self) -> Option<&QuantizationParams> {
+        self.quantization.as_ref()
     }
 
     #[must_use]
@@ -555,6 +696,20 @@ pub enum TensorMetaError {
     InvalidQuantizationScale {
         scale_bits: u64,
     },
+    EmptyQuantizationChannels,
+    QuantizationVectorLengthMismatch {
+        scales: usize,
+        zero_points: usize,
+    },
+    InvalidQuantizationAxis {
+        axis: usize,
+        rank: usize,
+    },
+    QuantizationChannelCountMismatch {
+        axis: usize,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for TensorMetaError {
@@ -603,6 +758,30 @@ impl fmt::Display for TensorMetaError {
                     "quantization scale must be finite and > 0: bits={scale_bits:#x}"
                 )
             }
+            Self::EmptyQuantizationChannels => {
+                write!(f, "per-channel quantization requires at least one channel")
+            }
+            Self::QuantizationVectorLengthMismatch {
+                scales,
+                zero_points,
+            } => write!(
+                f,
+                "quantization scales/zero_points length mismatch: scales={scales}, zero_points={zero_points}"
+            ),
+            Self::InvalidQuantizationAxis { axis, rank } => {
+                write!(
+                    f,
+                    "quantization axis out of range: axis={axis}, rank={rank}"
+                )
+            }
+            Self::QuantizationChannelCountMismatch {
+                axis,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "quantization channel count mismatch at axis={axis}: expected={expected}, actual={actual}"
+            ),
         }
     }
 }
@@ -1084,6 +1263,25 @@ impl DenseTensor {
         Self::from_storage_qint8(meta, values)
     }
 
+    pub fn from_contiguous_values_qint8_per_channel(
+        values: Vec<i8>,
+        shape: Vec<usize>,
+        device: Device,
+        scales: Vec<f64>,
+        zero_points: Vec<i64>,
+        axis: usize,
+    ) -> Result<Self, DenseTensorError> {
+        let meta = TensorMeta::quantized_per_channel_from_shape(
+            shape,
+            DType::QInt8,
+            device,
+            scales,
+            zero_points,
+            axis,
+        )?;
+        Self::from_storage_qint8(meta, values)
+    }
+
     pub fn from_contiguous_values_quint8(
         values: Vec<u8>,
         shape: Vec<usize>,
@@ -1093,6 +1291,25 @@ impl DenseTensor {
     ) -> Result<Self, DenseTensorError> {
         let meta =
             TensorMeta::quantized_from_shape(shape, DType::QUInt8, device, scale, zero_point)?;
+        Self::from_storage_quint8(meta, values)
+    }
+
+    pub fn from_contiguous_values_quint8_per_channel(
+        values: Vec<u8>,
+        shape: Vec<usize>,
+        device: Device,
+        scales: Vec<f64>,
+        zero_points: Vec<i64>,
+        axis: usize,
+    ) -> Result<Self, DenseTensorError> {
+        let meta = TensorMeta::quantized_per_channel_from_shape(
+            shape,
+            DType::QUInt8,
+            device,
+            scales,
+            zero_points,
+            axis,
+        )?;
         Self::from_storage_quint8(meta, values)
     }
 
@@ -1230,22 +1447,36 @@ impl DenseTensor {
         let Some(qparams) = self.meta.quantization() else {
             return Err(DenseTensorError::UnsupportedDType(self.meta.dtype()));
         };
-        let scale = qparams.scale();
-        #[allow(clippy::cast_precision_loss)]
-        let zero_point = qparams.zero_point() as f64;
         let start = self.meta.storage_offset();
         let end = Self::storage_span_required_len(&self.meta)?;
+        let dequantize = |flat_idx: usize, qvalue: f64| -> f64 {
+            let channel = qparams
+                .axis()
+                .map(|axis| Self::channel_index_for_flat(self.meta.shape(), axis, flat_idx))
+                .unwrap_or(0);
+            let scale = f64::from_bits(qparams.scale_bits[channel]);
+            #[allow(clippy::cast_precision_loss)]
+            let zero_point = qparams.zero_points[channel] as f64;
+            (qvalue - zero_point) * scale
+        };
         match &self.storage {
             TensorStorage::QInt8(v) => Ok(v[start..end]
                 .iter()
-                .map(|&q| (f64::from(q) - zero_point) * scale)
+                .enumerate()
+                .map(|(flat_idx, &q)| dequantize(flat_idx, f64::from(q)))
                 .collect()),
             TensorStorage::QUInt8(v) => Ok(v[start..end]
                 .iter()
-                .map(|&q| (f64::from(q) - zero_point) * scale)
+                .enumerate()
+                .map(|(flat_idx, &q)| dequantize(flat_idx, f64::from(q)))
                 .collect()),
             _ => Err(DenseTensorError::UnsupportedDType(self.meta.dtype())),
         }
+    }
+
+    fn channel_index_for_flat(shape: &[usize], axis: usize, flat_idx: usize) -> usize {
+        let inner: usize = shape[axis + 1..].iter().copied().product();
+        (flat_idx / inner) % shape[axis]
     }
 
     #[must_use]
@@ -3146,6 +3377,55 @@ mod tests {
                 .expect("dequantized qint8"),
             vec![-5.0, 0.0, 5.0]
         );
+    }
+
+    #[test]
+    fn dense_tensor_dequantizes_qint8_per_channel_by_axis() {
+        let tensor = DenseTensor::from_contiguous_values_qint8_per_channel(
+            vec![1, 2, 3, 4, 5, 6],
+            vec![2, 3],
+            Device::Cpu,
+            vec![0.5, 0.25],
+            vec![1, 2],
+            0,
+        )
+        .expect("per-channel qint8 dense tensor");
+
+        let qparams = tensor
+            .meta()
+            .quantization()
+            .expect("per-channel quantization params");
+        assert_eq!(qparams.axis(), Some(0));
+        assert_eq!(qparams.scales(), vec![0.5, 0.25]);
+        assert_eq!(qparams.zero_points(), &[1, 2]);
+        assert_eq!(
+            tensor
+                .dequantized_values_as_f64()
+                .expect("dequantized per-channel qint8"),
+            vec![0.0, 0.5, 1.0, 0.5, 0.75, 1.0]
+        );
+    }
+
+    #[test]
+    fn tensor_meta_rejects_per_channel_qparams_with_wrong_axis_size() {
+        let err = TensorMeta::quantized_per_channel_from_shape(
+            vec![2, 3],
+            DType::QInt8,
+            Device::Cpu,
+            vec![0.5, 0.25],
+            vec![1, 2],
+            1,
+        )
+        .expect_err("axis=1 requires three qparam channels");
+
+        assert!(matches!(
+            err,
+            TensorMetaError::QuantizationChannelCountMismatch {
+                axis: 1,
+                expected: 3,
+                actual: 2
+            }
+        ));
     }
 
     #[test]

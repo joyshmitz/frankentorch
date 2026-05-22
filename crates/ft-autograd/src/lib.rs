@@ -14262,6 +14262,150 @@ impl TensorTape {
                         rule: "d(gather(x))/dx=scatter(grad) (cg)",
                     });
                 }
+                TensorNodeOp::Scatter {
+                    input,
+                    src,
+                    dim,
+                    ref index,
+                    ref index_shape,
+                    ref input_shape,
+                } => {
+                    // create_graph backward for scatter:
+                    //   grad_input: incoming with overwritten positions zeroed
+                    //   grad_src: gather(incoming, dim, index), mask non-last-writers to 0
+                    let input_numel =
+                        Self::checked_shape_numel(input_shape, "scatter cg backward overflow")?;
+                    let index_numel =
+                        Self::checked_shape_numel(index_shape, "scatter cg backward idx overflow")?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+
+                    let dim_size = input_shape[dim];
+                    let idx_dim_size = index_shape[dim];
+                    let (outer_size, inner_size, _) = Self::checked_dim_loop_sizes(
+                        index_shape,
+                        dim,
+                        "scatter cg backward loop sizes overflow",
+                    )?;
+
+                    // Track which output positions were overwritten and by which src slot last
+                    let mut last_writer_for_output: Vec<Option<usize>> = vec![None; input_numel];
+                    let mut active_src_slots = vec![true; index_numel];
+
+                    for outer in 0..outer_size {
+                        for r in 0..idx_dim_size {
+                            for inner in 0..inner_size {
+                                let idx_pos =
+                                    outer * idx_dim_size * inner_size + r * inner_size + inner;
+                                let selected = index[idx_pos] as usize;
+                                if selected >= dim_size {
+                                    return Err(AutogradError::Dispatch(
+                                        DispatchKeyError::IncompatibleSet {
+                                            reason: "scatter cg backward: out-of-bounds index",
+                                        }
+                                        .into(),
+                                    ));
+                                }
+                                let orig_pos =
+                                    outer * dim_size * inner_size + selected * inner_size + inner;
+                                if let Some(prev_slot) = last_writer_for_output[orig_pos] {
+                                    active_src_slots[prev_slot] = false;
+                                }
+                                last_writer_for_output[orig_pos] = Some(idx_pos);
+                            }
+                        }
+                    }
+
+                    // grad_input: zero out overwritten positions
+                    let mut grad_input_vals = incoming_vals.clone();
+                    for (pos, last_writer) in last_writer_for_output.iter().enumerate() {
+                        if last_writer.is_some() {
+                            grad_input_vals[pos] = 0.0;
+                        }
+                    }
+                    let grad_input = self.leaf(grad_input_vals, input_shape.clone(), true)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_input)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    // grad_src: gather(incoming, dim, index), then mask non-last-writers
+                    let device = self.nodes[input.0].tensor.meta().device();
+                    let incoming_meta =
+                        ft_core::TensorMeta::from_shape(input_shape.clone(), DType::F64, device);
+                    let idx_meta =
+                        ft_core::TensorMeta::from_shape(index_shape.clone(), DType::F64, device);
+                    let mut src_grad = gather_tensor_contiguous_f64(
+                        &incoming_vals,
+                        &incoming_meta,
+                        dim,
+                        index,
+                        &idx_meta,
+                    )
+                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
+                    for (slot, &active) in active_src_slots.iter().enumerate() {
+                        if !active {
+                            src_grad[slot] = 0.0;
+                        }
+                    }
+                    let grad_src = self.leaf(src_grad, index_shape.clone(), true)?;
+                    self.cg_accumulate(src, &mut grad_nodes, grad_src)?;
+                    Self::complete_dependency(&mut pending, src, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(scatter(x,src))/d(x,src)=(mask,gather_last_writer) (cg)",
+                    });
+                }
+                TensorNodeOp::ScatterAdd {
+                    input,
+                    src,
+                    dim,
+                    ref index,
+                    ref index_shape,
+                    ref input_shape,
+                } => {
+                    // create_graph backward for scatter_add:
+                    //   grad_input: passthrough (additions don't change input contribution)
+                    //   grad_src: gather(incoming, dim, index)
+                    let _ =
+                        Self::checked_shape_numel(input_shape, "scatter_add cg backward overflow")?;
+                    let index_numel = Self::checked_shape_numel(
+                        index_shape,
+                        "scatter_add cg backward idx overflow",
+                    )?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+
+                    // grad_input: passthrough
+                    let grad_input = self.leaf(incoming_vals.clone(), input_shape.clone(), true)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_input)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    // grad_src: gather(incoming, dim, index)
+                    let device = self.nodes[input.0].tensor.meta().device();
+                    let incoming_meta =
+                        ft_core::TensorMeta::from_shape(input_shape.clone(), DType::F64, device);
+                    let idx_meta =
+                        ft_core::TensorMeta::from_shape(index_shape.clone(), DType::F64, device);
+                    let src_grad = gather_tensor_contiguous_f64(
+                        &incoming_vals,
+                        &incoming_meta,
+                        dim,
+                        index,
+                        &idx_meta,
+                    )
+                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
+                    let _ = index_numel; // silence unused warning
+                    let grad_src = self.leaf(src_grad, index_shape.clone(), true)?;
+                    self.cg_accumulate(src, &mut grad_nodes, grad_src)?;
+                    Self::complete_dependency(&mut pending, src, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(scatter_add(x,src))/d(x,src)=(passthrough,gather) (cg)",
+                    });
+                }
                 // For unsupported ops, fall back to non-differentiable gradient
                 _ => {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -23379,6 +23523,60 @@ mod tests {
         // min([1,5,3], [2,3,3]) = [1,3,3] -> x wins at [0], y wins at [1], tie at [2] -> x gets it
         assert_eq!(report.gradient(x).expect("gx"), &[1.0, 0.0, 1.0]);
         assert_eq!(report.gradient(y).expect("gy"), &[0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn create_graph_scatter_gradients() {
+        // scatter overwrites positions: grad_input has zeros at overwritten slots,
+        // grad_src gets gather(incoming, dim, index) for last writers only.
+        let mut tape = TensorTape::new();
+        // input: [1,2,3,4], src: [10,20], indices: [1,3] -> output: [1,10,3,20]
+        let input = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("input");
+        let src = tape.leaf(vec![10.0, 20.0], vec![2], true).expect("src");
+        let s = tape
+            .scatter(input, src, 0, &[1.0, 3.0], vec![2], &[10.0, 20.0])
+            .expect("scatter");
+        let (out, _) = tape.sum(s, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                out,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        // grad_input: [1,0,1,0] (positions 1,3 were overwritten)
+        assert_eq!(report.gradient(input).expect("gi"), &[1.0, 0.0, 1.0, 0.0]);
+        // grad_src: gather([1,1,1,1], positions [1,3]) = [1,1]
+        assert_eq!(report.gradient(src).expect("gs"), &[1.0, 1.0]);
+    }
+
+    #[test]
+    fn create_graph_scatter_add_gradients() {
+        // scatter_add adds to positions: grad_input is passthrough,
+        // grad_src gets gather(incoming, dim, index).
+        let mut tape = TensorTape::new();
+        // input: [1,2,3,4], src: [10,20], indices: [1,1] -> output: [1,32,3,4]
+        let input = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("input");
+        let src = tape.leaf(vec![10.0, 20.0], vec![2], true).expect("src");
+        let s = tape
+            .scatter_add(input, src, 0, &[1.0, 1.0], vec![2], &[10.0, 20.0])
+            .expect("scatter_add");
+        let (out, _) = tape.sum(s, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                out,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        // grad_input: passthrough [1,1,1,1]
+        assert_eq!(report.gradient(input).expect("gi"), &[1.0, 1.0, 1.0, 1.0]);
+        // grad_src: gather([1,1,1,1], positions [1,1]) = [1,1]
+        assert_eq!(report.gradient(src).expect("gs"), &[1.0, 1.0]);
     }
 
     // ── frankentorch-igu: Property-based tests for tensor autograd ─────
