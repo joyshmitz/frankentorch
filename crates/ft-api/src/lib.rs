@@ -13430,6 +13430,20 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("erfinv_", target, None, erfinv_approx)
     }
 
+    /// In-place SiLU (Swish) activation: x * sigmoid(x).
+    ///
+    /// Equivalent to `tensor.silu_()` in PyTorch.
+    pub fn tensor_silu_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("silu_", target, None, |x| x / (1.0 + (-x).exp()))
+    }
+
+    /// In-place Mish activation: x * tanh(softplus(x)).
+    ///
+    /// Equivalent to `F.mish(tensor, inplace=True)` in PyTorch.
+    pub fn tensor_mish_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("mish_", target, None, |x| x * (1.0 + x.exp()).ln().tanh())
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53450,6 +53464,17 @@ mod tests {
         assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
         let b = s.tensor_variable(vec![-0.5, 0.0, 0.5], vec![3], false).unwrap();
         s.tensor_erfinv_(b).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_activation_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_silu_(a).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_mish_(b).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
