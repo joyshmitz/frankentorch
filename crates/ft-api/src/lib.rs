@@ -20703,6 +20703,17 @@ impl FrankenTorchSession {
         self.tensor_variable(result.factor, vec![n, n], false)
     }
 
+    /// Alias for tensor_linalg_cholesky.
+    ///
+    /// Provided for parity with older PyTorch code using `torch.cholesky`.
+    pub fn tensor_cholesky(
+        &mut self,
+        input: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_cholesky(input, upper)
+    }
+
     /// Solve A @ X = B given Cholesky factor L where A = L @ L^T.
     ///
     /// More efficient than general solve for symmetric positive-definite systems.
