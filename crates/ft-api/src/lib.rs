@@ -6837,6 +6837,30 @@ impl FrankenTorchSession {
         self.tensor_variable(result, shape, false)
     }
 
+    /// Element-wise bitwise NOT (complement).
+    ///
+    /// Casts to i64, performs bitwise NOT, casts back to f64. Non-differentiable.
+    /// Equivalent to `torch.bitwise_not(input)`.
+    pub fn tensor_bitwise_not(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "bitwise_not: autograd not supported (bitwise ops are non-differentiable)",
+                },
+            )));
+        }
+        let input_vals = self.tensor_values(input)?;
+        let result: Vec<f64> = input_vals
+            .iter()
+            .map(|&a| (!(a as i64)) as f64)
+            .collect();
+        let shape = self.tensor_shape(input)?;
+        self.tensor_variable(result, shape, false)
+    }
+
     /// Element-wise bitwise left shift.
     ///
     /// Casts to i64, performs left shift, casts back to f64. Non-differentiable.
@@ -23745,6 +23769,19 @@ impl FrankenTorchSession {
         let result_vals = self.tensor_values(result)?;
         self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
         self.record_tensor_in_place_operation("bitwise_xor_", target, None);
+        Ok(())
+    }
+
+    /// In-place bitwise NOT: target = ~target.
+    pub fn tensor_bitwise_not_(
+        &mut self,
+        target: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_bitwise_not(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("bitwise_not_", target, None);
         Ok(())
     }
 
