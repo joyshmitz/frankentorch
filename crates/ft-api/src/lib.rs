@@ -18230,6 +18230,17 @@ impl FrankenTorchSession {
         self.tensor_log2(input)
     }
 
+    /// Alias for tensor_digamma for torch.special.psi parity.
+    ///
+    /// psi(x) = digamma(x) = d/dx ln(Gamma(x))
+    /// Tracked under frankentorch-h8ji.
+    pub fn tensor_psi(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_digamma(input)
+    }
+
     /// Element-wise inverse error function.
     ///
     /// Equivalent to `torch.special.erfinv(input)`.
@@ -51317,5 +51328,16 @@ mod tests {
         assert!((vals[1] - 1.0).abs() < 1e-10);
         assert!((vals[2] - 2.0).abs() < 1e-10);
         assert!((vals[3] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_psi_alias() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let result = s.tensor_psi(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] + 0.5772157).abs() < 1e-4); // digamma(1) = -gamma
+        assert!((vals[1] - 0.4227843).abs() < 1e-4); // digamma(2)
+        assert!((vals[2] - 0.9227843).abs() < 1e-4); // digamma(3)
     }
 }
