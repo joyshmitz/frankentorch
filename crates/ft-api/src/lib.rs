@@ -1075,6 +1075,26 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Physical conjugate - materializes the conjugate (same as conj in FrankenTorch).
+    pub fn tensor_conj_physical(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conj(input)
+    }
+
+    /// Resolve conjugate view to materialized tensor.
+    /// FrankenTorch doesn't use lazy conjugation, so this is an identity.
+    pub fn tensor_resolve_conj(&self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        Ok(input)
+    }
+
+    /// Resolve negation view to materialized tensor.
+    /// FrankenTorch doesn't use lazy negation, so this is an identity.
+    pub fn tensor_resolve_neg(&self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        Ok(input)
+    }
+
     /// Construct a complex tensor from separate real and imaginary tensors.
     pub fn tensor_complex(
         &mut self,
