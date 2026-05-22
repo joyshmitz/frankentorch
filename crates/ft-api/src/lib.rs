@@ -10410,6 +10410,36 @@ impl FrankenTorchSession {
         Ok((std, mean))
     }
 
+    /// Variance over all elements.
+    ///
+    /// Equivalent to `torch.var(input, correction=correction)` with no dim specified.
+    /// Reduces the entire tensor to a single variance value.
+    pub fn tensor_var(
+        &mut self,
+        input: TensorNodeId,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let numel = Self::checked_shape_numel(&shape, "tensor_var: shape overflow")?;
+        let flat = self.tensor_reshape(input, vec![numel])?;
+        self.tensor_var_dim(flat, 0, correction)
+    }
+
+    /// Standard deviation over all elements.
+    ///
+    /// Equivalent to `torch.std(input, correction=correction)` with no dim specified.
+    /// Reduces the entire tensor to a single std value.
+    pub fn tensor_std(
+        &mut self,
+        input: TensorNodeId,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let numel = Self::checked_shape_numel(&shape, "tensor_std: shape overflow")?;
+        let flat = self.tensor_reshape(input, vec![numel])?;
+        self.tensor_std_dim(flat, 0, correction)
+    }
+
     /// Rescales the kernel's hard-coded `correction = 1` var/std result
     /// to an arbitrary `correction`.
     ///
