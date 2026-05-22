@@ -13040,6 +13040,24 @@ impl FrankenTorchSession {
         self.tensor_unfold(input, dimension, size, step)
     }
 
+    /// Pixel shuffle for sub-pixel convolution. Alias for tensor_pixel_shuffle.
+    pub fn functional_pixel_shuffle(
+        &mut self,
+        input: TensorNodeId,
+        upscale_factor: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pixel_shuffle(input, upscale_factor)
+    }
+
+    /// Pixel unshuffle (reverse of pixel_shuffle). Alias for tensor_pixel_unshuffle.
+    pub fn functional_pixel_unshuffle(
+        &mut self,
+        input: TensorNodeId,
+        downscale_factor: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pixel_unshuffle(input, downscale_factor)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
