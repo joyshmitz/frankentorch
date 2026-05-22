@@ -17676,12 +17676,8 @@ impl FrankenTorchSession {
         self.tensor_matmul(vh_t_scaled, u_t)
     }
 
-    pub fn tensor_pinv(
-        &mut self,
-        input: TensorNodeId,
-        rcond: f64,
-    ) -> Result<TensorNodeId, AutogradError> {
-        self.tensor_linalg_pinv(input, rcond)
+    pub fn tensor_pinv(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_pinv(input)
     }
 
     /// Return the k-th smallest element of a 1-D tensor.
@@ -52587,8 +52583,8 @@ mod tests {
         let inv = s.tensor_inv(m).unwrap();
         let inverse = s.tensor_inverse(m).unwrap();
         assert_eq!(s.tensor_values(inv).unwrap(), s.tensor_values(inverse).unwrap());
-        let pinv = s.tensor_pinv(m, 1e-15).unwrap();
-        let linalg_pinv = s.tensor_linalg_pinv(m, 1e-15).unwrap();
+        let pinv = s.tensor_pinv(m).unwrap();
+        let linalg_pinv = s.tensor_linalg_pinv(m).unwrap();
         assert_eq!(s.tensor_values(pinv).unwrap(), s.tensor_values(linalg_pinv).unwrap());
     }
 }
