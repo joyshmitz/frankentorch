@@ -14271,6 +14271,36 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place where: where condition is non-zero, take from `other`, else keep original.
+    pub fn tensor_where_(
+        &mut self,
+        target: TensorNodeId,
+        condition: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let cond_vals = self.tensor_values(condition)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != cond_vals.len() || target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(condition)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(cond_vals.iter())
+            .zip(other_vals.iter())
+            .map(|((&t, &c), &o)| if c != 0.0 { o } else { t })
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("where_", target, None);
+        Ok(())
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -54165,6 +54195,16 @@ mod tests {
         let mask = s.tensor_variable(vec![1.0, 0.0, 1.0, 0.0], vec![4], false).unwrap();
         s.tensor_masked_fill_(x, mask, -9.0).unwrap();
         assert_eq!(s.tensor_values(x).unwrap(), vec![-9.0, 2.0, -9.0, 4.0]);
+    }
+
+    #[test]
+    fn test_where_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false).unwrap();
+        let cond = s.tensor_variable(vec![1.0, 0.0, 1.0, 0.0], vec![4], false).unwrap();
+        let other = s.tensor_variable(vec![10.0, 20.0, 30.0, 40.0], vec![4], false).unwrap();
+        s.tensor_where_(x, cond, other).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![10.0, 2.0, 30.0, 4.0]);
     }
 
     #[test]
