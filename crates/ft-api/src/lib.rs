@@ -21799,6 +21799,16 @@ impl FrankenTorchSession {
         self.tensor_permute(input, perm)
     }
 
+    /// Alias for `tensor_movedim`. Equivalent to `torch.moveaxis`.
+    pub fn tensor_moveaxis(
+        &mut self,
+        input: TensorNodeId,
+        source: usize,
+        destination: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_movedim(input, source, destination)
+    }
+
     /// Compute both min and max along a dimension. Returns `(min, max)`.
     ///
     /// Equivalent to `torch.aminmax(input, dim)`.
@@ -52274,5 +52284,15 @@ mod tests {
         let vals = s.tensor_values(f).unwrap();
         assert_eq!(shape, vec![2]);
         assert!(vals.iter().all(|v| (v - 42.0).abs() < 1e-10));
+    }
+
+    #[test]
+    fn test_moveaxis() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 2x3x4 tensor -> move dim 0 to dim 2 -> 3x4x2
+        let x = s.tensor_variable(vec![0.0; 24], vec![2, 3, 4], false).unwrap();
+        let moved = s.tensor_moveaxis(x, 0, 2).unwrap();
+        let shape = s.tensor_shape(moved).unwrap();
+        assert_eq!(shape, vec![3, 4, 2]);
     }
 }
