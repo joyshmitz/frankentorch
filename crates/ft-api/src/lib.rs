@@ -916,6 +916,26 @@ impl FrankenTorchSession {
         self.tensor_to_dtype(input, DType::Bool)
     }
 
+    /// PyTorch-style alias for casting a tensor to complex64.
+    ///
+    /// Equivalent to `tensor.cfloat()` in PyTorch.
+    ///
+    /// Tape-level Complex64 conversion is not yet implemented; this call
+    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(Complex64))`.
+    pub fn tensor_cfloat(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to_dtype(input, DType::Complex64)
+    }
+
+    /// PyTorch-style alias for casting a tensor to complex128.
+    ///
+    /// Equivalent to `tensor.cdouble()` in PyTorch.
+    ///
+    /// Tape-level Complex128 conversion is not yet implemented; this call
+    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(Complex128))`.
+    pub fn tensor_cdouble(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to_dtype(input, DType::Complex128)
+    }
+
     /// Cast a tensor to the given dtype.
     ///
     /// Supported floating-point casts today: F32 ↔ F64. F16 and BF16
@@ -53038,6 +53058,32 @@ mod tests {
                 )))
             ),
             "tensor_bool should exist and return UnsupportedDType(Bool) until tape-level Bool conversion lands"
+        );
+    }
+
+    #[test]
+    fn test_tensor_cfloat_cdouble() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let cfloat_result = s.tensor_cfloat(x);
+        let cdouble_result = s.tensor_cdouble(x);
+        assert!(
+            matches!(
+                cfloat_result,
+                Err(AutogradError::DenseTensor(ft_core::DenseTensorError::UnsupportedDType(
+                    DType::Complex64
+                )))
+            ),
+            "tensor_cfloat should return UnsupportedDType(Complex64) until tape-level Complex64 conversion lands"
+        );
+        assert!(
+            matches!(
+                cdouble_result,
+                Err(AutogradError::DenseTensor(ft_core::DenseTensorError::UnsupportedDType(
+                    DType::Complex128
+                )))
+            ),
+            "tensor_cdouble should return UnsupportedDType(Complex128) until tape-level Complex128 conversion lands"
         );
     }
 }
