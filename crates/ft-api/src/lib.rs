@@ -27279,6 +27279,20 @@ impl FrankenTorchSession {
         )
     }
 
+    /// Return a copy of the unfolded tensor.
+    ///
+    /// Equivalent to `torch.Tensor.unfold_copy()`. Since ft-api always
+    /// creates copies (no views), this is identical to `tensor_unfold`.
+    pub fn tensor_unfold_copy(
+        &mut self,
+        input: TensorNodeId,
+        dimension: usize,
+        size: usize,
+        step: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_unfold(input, dimension, size, step)
+    }
+
     /// Renormalize sub-tensors so their p-norm <= maxnorm.
     ///
     /// Equivalent to `torch.renorm(input, p, dim, maxnorm)`.
