@@ -25805,6 +25805,67 @@ impl FrankenTorchSession {
         self.tensor_complex(re_node, im_node)
     }
 
+    /// Shift the zero-frequency component to the center of the spectrum.
+    ///
+    /// Equivalent to `torch.fft.fftshift(input, dim)`. Rolls the tensor by
+    /// n//2 along the specified dimension(s) to center the DC component.
+    pub fn tensor_fftshift(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if let Some(d) = dim {
+            if d >= shape.len() {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "fftshift: dim out of range",
+                    },
+                )));
+            }
+            let shift = (shape[d] / 2) as i64;
+            self.tensor_roll(input, shift, d)
+        } else {
+            // Shift all dimensions sequentially
+            let mut result = input;
+            for d in 0..shape.len() {
+                let shift = (shape[d] / 2) as i64;
+                result = self.tensor_roll(result, shift, d)?;
+            }
+            Ok(result)
+        }
+    }
+
+    /// Inverse of fftshift - shift zero-frequency back to the origin.
+    ///
+    /// Equivalent to `torch.fft.ifftshift(input, dim)`. Rolls the tensor by
+    /// -(n//2) (or equivalently (n+1)//2) along the specified dimension(s).
+    pub fn tensor_ifftshift(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if let Some(d) = dim {
+            if d >= shape.len() {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "ifftshift: dim out of range",
+                    },
+                )));
+            }
+            let shift = -((shape[d] / 2) as i64);
+            self.tensor_roll(input, shift, d)
+        } else {
+            let mut result = input;
+            for d in 0..shape.len() {
+                let shift = -((shape[d] / 2) as i64);
+                result = self.tensor_roll(result, shift, d)?;
+            }
+            Ok(result)
+        }
+    }
+
     // ── logsumexp ────────────────────────────────────────────────────────
     /// Numerically stable log-sum-exp reduction along a dimension.
     ///
