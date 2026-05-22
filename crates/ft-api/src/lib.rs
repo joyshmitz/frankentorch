@@ -11394,6 +11394,19 @@ impl FrankenTorchSession {
         self.tensor_tape.reshape(input, new_shape)
     }
 
+    /// Reshape `input` to have the same shape as `other`.
+    ///
+    /// Equivalent to `torch.reshape(input, other.shape)` or
+    /// `input.reshape_as(other)`. Element counts must match.
+    pub fn tensor_reshape_as(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let target_shape = self.tensor_shape(other)?;
+        self.tensor_reshape(input, target_shape)
+    }
+
     pub fn tensor_view(
         &mut self,
         input: TensorNodeId,
@@ -52320,5 +52333,17 @@ mod tests {
         let x = s.tensor_variable(vec![0.0; 6], vec![2, 3], false).unwrap();
         assert_eq!(s.tensor_size(x).unwrap(), vec![2, 3]);
         assert_eq!(s.tensor_shape(x).unwrap(), s.tensor_size(x).unwrap());
+    }
+
+    #[test]
+    fn test_reshape_as() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], false).unwrap();
+        let template = s.tensor_variable(vec![0.0; 6], vec![2, 3], false).unwrap();
+        let reshaped = s.tensor_reshape_as(x, template).unwrap();
+        let shape = s.tensor_shape(reshaped).unwrap();
+        assert_eq!(shape, vec![2, 3]);
+        let vals = s.tensor_values(reshaped).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
     }
 }
