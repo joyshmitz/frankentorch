@@ -13567,6 +13567,76 @@ impl FrankenTorchSession {
         self.tensor_narrow(sorted, 0, median_idx, 1)
     }
 
+    /// NaN-aware median: equivalent to `torch.nanmedian(input)`.
+    ///
+    /// Computes the median of non-NaN values. All-NaN input returns NaN.
+    /// Tracked under frankentorch-o4j2.
+    pub fn tensor_nanmedian(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let numel = Self::checked_shape_numel(&shape, "nanmedian shape volume overflow")?;
+        if numel == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nanmedian requires non-empty tensor",
+                },
+            )));
+        }
+
+        let vals = self.tensor_values(input)?;
+        let mut non_nan: Vec<f64> = vals.into_iter().filter(|x| !x.is_nan()).collect();
+
+        if non_nan.is_empty() {
+            return self.tensor_variable(vec![f64::NAN], vec![1], false);
+        }
+
+        non_nan.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median_idx = (non_nan.len() - 1) / 2;
+        let median_val = non_nan[median_idx];
+
+        self.tensor_variable(vec![median_val], vec![1], false)
+    }
+
+    /// NaN-aware quantile: equivalent to `torch.nanquantile(input, q)`.
+    ///
+    /// Computes the q-th quantile (0 <= q <= 1) of non-NaN values.
+    /// All-NaN input returns NaN.
+    /// Tracked under frankentorch-o4j2.
+    pub fn tensor_nanquantile(
+        &mut self,
+        input: TensorNodeId,
+        q: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !(0.0..=1.0).contains(&q) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nanquantile: q must be in [0, 1]",
+                },
+            )));
+        }
+
+        let vals = self.tensor_values(input)?;
+        let mut non_nan: Vec<f64> = vals.into_iter().filter(|x| !x.is_nan()).collect();
+
+        if non_nan.is_empty() {
+            return self.tensor_variable(vec![f64::NAN], vec![1], false);
+        }
+
+        non_nan.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = non_nan.len();
+        let idx_f = q * (n - 1) as f64;
+        let idx_lo = idx_f.floor() as usize;
+        let idx_hi = idx_f.ceil() as usize;
+        let frac = idx_f - idx_lo as f64;
+
+        let result = if idx_lo == idx_hi {
+            non_nan[idx_lo]
+        } else {
+            non_nan[idx_lo] * (1.0 - frac) + non_nan[idx_hi] * frac
+        };
+
+        self.tensor_variable(vec![result], vec![1], false)
+    }
+
     // ── Similarity Functions ────────────────────────────────────────────
 
     /// Cosine similarity between two tensors along a dimension.
@@ -50099,5 +50169,44 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         // Flat indices 0 and 3 should be replaced
         assert_eq!(vals, vec![10.0, 2.0, 3.0, 40.0]);
+    }
+
+    #[test]
+    fn test_nanmedian_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, f64::NAN, 3.0, 2.0, f64::NAN], vec![5], false).unwrap();
+        let out = s.tensor_nanmedian(input).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        // Non-NaN values: [1, 3, 2] sorted = [1, 2, 3], median = 2
+        assert!((vals[0] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_nanmedian_all_nan() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![f64::NAN, f64::NAN], vec![2], false).unwrap();
+        let out = s.tensor_nanmedian(input).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!(vals[0].is_nan());
+    }
+
+    #[test]
+    fn test_nanquantile_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, f64::NAN, 3.0, 5.0, f64::NAN], vec![5], false).unwrap();
+        // Non-NaN: [1, 3, 5], q=0.5 -> median = 3
+        let out = s.tensor_nanquantile(input, 0.5).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert!((vals[0] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_nanquantile_extremes() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false).unwrap();
+        let q0 = s.tensor_nanquantile(input, 0.0).unwrap();
+        let q1 = s.tensor_nanquantile(input, 1.0).unwrap();
+        assert!((s.tensor_values(q0).unwrap()[0] - 1.0).abs() < 1e-10);
+        assert!((s.tensor_values(q1).unwrap()[0] - 4.0).abs() < 1e-10);
     }
 }
