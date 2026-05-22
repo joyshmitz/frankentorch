@@ -10193,6 +10193,34 @@ impl FrankenTorchSession {
         self.tensor_prod(cleaned)
     }
 
+    /// NaN-aware minimum: equivalent to `torch.nanmin(input)`.
+    ///
+    /// Returns the minimum non-NaN element. If all elements are NaN,
+    /// returns +inf. NaN values are treated as +inf for comparison purposes.
+    pub fn tensor_nanmin(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let numel = Self::checked_shape_numel(&shape, "tensor_nanmin: shape overflow")?;
+        let inf = self.full(shape, f64::INFINITY, false)?;
+        let mask = self.tensor_isnan(input)?;
+        let cleaned = self.tensor_where(mask, inf, input)?;
+        let flat = self.tensor_reshape(cleaned, vec![numel])?;
+        self.tensor_amin(flat, 0)
+    }
+
+    /// NaN-aware maximum: equivalent to `torch.nanmax(input)`.
+    ///
+    /// Returns the maximum non-NaN element. If all elements are NaN,
+    /// returns -inf. NaN values are treated as -inf for comparison purposes.
+    pub fn tensor_nanmax(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let numel = Self::checked_shape_numel(&shape, "tensor_nanmax: shape overflow")?;
+        let neg_inf = self.full(shape, f64::NEG_INFINITY, false)?;
+        let mask = self.tensor_isnan(input)?;
+        let cleaned = self.tensor_where(mask, neg_inf, input)?;
+        let flat = self.tensor_reshape(cleaned, vec![numel])?;
+        self.tensor_amax(flat, 0)
+    }
+
     /// NaN-aware variance: equivalent to `torch.nanvar(input, correction)`.
     ///
     /// `correction` selects the divisor:
