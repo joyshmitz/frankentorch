@@ -2689,6 +2689,45 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Vector dot product of two 1D tensors.
+    ///
+    /// Equivalent to `torch.vdot(input, other)`. Both inputs must be 1D
+    /// with the same number of elements. For complex tensors this would
+    /// conjugate the first argument, but for real tensors it is
+    /// equivalent to `tensor_dot`.
+    pub fn tensor_vdot(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape_a = self.tensor_shape(input)?;
+        let shape_b = self.tensor_shape(other)?;
+
+        if shape_a.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "vdot: input must be 1-D",
+                },
+            )));
+        }
+        if shape_b.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "vdot: other must be 1-D",
+                },
+            )));
+        }
+        if shape_a[0] != shape_b[0] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "vdot: input and other must have the same number of elements",
+                },
+            )));
+        }
+
+        self.tensor_dot(input, other)
+    }
+
     pub fn tensor_outer(
         &mut self,
         lhs: TensorNodeId,
@@ -11269,6 +11308,24 @@ impl FrankenTorchSession {
         }
         let last = shape.len() - 1;
         self.tensor_transpose(input, last - 1, last)
+    }
+
+    /// Transpose a 0-D, 1-D, or 2-D tensor.
+    ///
+    /// Equivalent to `torch.t(input)`. For 0-D and 1-D tensors returns
+    /// the input unchanged; for 2-D tensors transposes dimensions 0 and
+    /// 1. Errors on tensors with more than 2 dimensions.
+    pub fn tensor_t(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        match shape.len() {
+            0 | 1 => Ok(input),
+            2 => self.tensor_transpose(input, 0, 1),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "t: input must have <= 2 dimensions",
+                },
+            ))),
+        }
     }
 
     /// Swap two dimensions; alias for `tensor_transpose`.
@@ -51733,5 +51790,66 @@ mod tests {
         assert!(vals[3].abs() < 1e-10); // (1,0) zeroed
         assert!((vals[4] - 5.0).abs() < 1e-10); // (1,1)
         assert!(vals[6].abs() < 1e-10); // (2,0) zeroed
+    }
+
+    #[test]
+    fn test_vdot_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false).unwrap();
+        let c = s.tensor_vdot(a, b).unwrap();
+        let vals = s.tensor_values(c).unwrap();
+        // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+        assert!((vals[0] - 32.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vdot_errors_on_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).unwrap();
+        let result = s.tensor_vdot(a, b);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_t_0d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![42.0], vec![], false).unwrap();
+        let t = s.tensor_t(x).unwrap();
+        let shape = s.tensor_shape(t).unwrap();
+        assert!(shape.is_empty());
+    }
+
+    #[test]
+    fn test_t_1d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let t = s.tensor_t(x).unwrap();
+        let shape = s.tensor_shape(t).unwrap();
+        assert_eq!(shape, vec![3]);
+    }
+
+    #[test]
+    fn test_t_2d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let t = s.tensor_t(x).unwrap();
+        let shape = s.tensor_shape(t).unwrap();
+        assert_eq!(shape, vec![3, 2]);
+        let vals = s.tensor_values(t).unwrap();
+        // Original: [[1,2,3],[4,5,6]] -> Transposed: [[1,4],[2,5],[3,6]]
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 4.0).abs() < 1e-10);
+        assert!((vals[2] - 2.0).abs() < 1e-10);
+        assert!((vals[3] - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_t_errors_on_3d() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0; 24], vec![2, 3, 4], false).unwrap();
+        let result = s.tensor_t(x);
+        assert!(result.is_err());
     }
 }
