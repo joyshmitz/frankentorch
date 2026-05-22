@@ -13293,6 +13293,13 @@ impl FrankenTorchSession {
         self.tensor_tape.tensor_accumulated_gradient_values(node)
     }
 
+    pub fn tensor_grad(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<Option<Vec<f64>>, AutogradError> {
+        self.tensor_accumulated_gradient(node)
+    }
+
     pub fn tensor_zero_grad(&mut self, node: TensorNodeId) -> Result<(), AutogradError> {
         self.tensor_tape.zero_tensor_accumulated_gradient(node)
     }
@@ -52931,5 +52938,18 @@ mod tests {
         s.tensor_fill_diagonal_(x, 1.0).unwrap();
         let vals = s.tensor_values(x).unwrap();
         assert_eq!(vals, vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_tensor_grad_alias() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 3.0], vec![2], true).unwrap();
+        let y = s.tensor_mul(x, x).unwrap();
+        let z = s.tensor_sum(y).unwrap();
+        s.tensor_backward(z).unwrap();
+        let grad = s.tensor_grad(x).unwrap();
+        let acc_grad = s.tensor_accumulated_gradient(x).unwrap();
+        assert_eq!(grad, acc_grad);
+        assert_eq!(grad.unwrap(), vec![4.0, 6.0]);
     }
 }
