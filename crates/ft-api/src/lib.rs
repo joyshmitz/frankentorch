@@ -14285,6 +14285,19 @@ impl FrankenTorchSession {
         self.tensor_shape(node)
     }
 
+    /// Check if two tensors have the same shape.
+    ///
+    /// Equivalent to `input.is_same_size(other)` in PyTorch.
+    pub fn tensor_is_same_size(
+        &self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        let shape_a = self.tensor_shape(input)?;
+        let shape_b = self.tensor_shape(other)?;
+        Ok(shape_a == shape_b)
+    }
+
     /// Return whether this tensor currently tracks gradients.
     pub fn tensor_requires_grad(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_tape.tensor_requires_grad(node)
@@ -52388,5 +52401,15 @@ mod tests {
         let result = s.tensor_type_as(x, template).unwrap();
         let dtype = s.tensor_dtype(result).unwrap();
         assert_eq!(dtype, s.tensor_dtype(template).unwrap());
+    }
+
+    #[test]
+    fn test_is_same_size() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0; 6], vec![2, 3], false).unwrap();
+        let b = s.tensor_variable(vec![2.0; 6], vec![2, 3], false).unwrap();
+        let c = s.tensor_variable(vec![3.0; 6], vec![3, 2], false).unwrap();
+        assert!(s.tensor_is_same_size(a, b).unwrap());
+        assert!(!s.tensor_is_same_size(a, c).unwrap());
     }
 }
