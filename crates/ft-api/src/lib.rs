@@ -5526,6 +5526,37 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// ReLU6 activation: min(max(0, x), 6).
+    ///
+    /// Equivalent to `F.relu6(input)` in PyTorch.
+    pub fn tensor_relu6(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let out = self.tensor_apply_function(
+            &[input],
+            |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                let values: Vec<f64> = vals.iter().map(|&x| x.max(0.0).min(6.0)).collect();
+                Ok((values, shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let input_vals = &saved[0];
+                let grad_in: Vec<f64> = input_vals
+                    .iter()
+                    .zip(grad_out.iter())
+                    .map(|(&x, &go)| if x > 0.0 && x < 6.0 { go } else { 0.0 })
+                    .collect();
+                Ok(vec![Some(grad_in)])
+            },
+        )?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("relu6 in={} out={}", input.0, out.0),
+        );
+        Ok(out)
+    }
+
     pub fn tensor_sigmoid(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sigmoid(input, self.mode())?;
         self.record_tensor_unary_operation(&event);
@@ -13213,6 +13244,13 @@ impl FrankenTorchSession {
 
     pub fn tensor_relu_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
         self.apply_tensor_unary_in_place("relu_", target, None, |v| if v > 0.0 { v } else { 0.0 })
+    }
+
+    /// In-place ReLU6: min(max(0, x), 6).
+    ///
+    /// Equivalent to `F.relu6(tensor, inplace=True)` in PyTorch.
+    pub fn tensor_relu6_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("relu6_", target, None, |v| v.max(0.0).min(6.0))
     }
 
     pub fn tensor_sigmoid_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
@@ -53645,6 +53683,17 @@ mod tests {
         assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
         let b = s.tensor_variable(vec![0.1, 0.5, 0.9], vec![3], false).unwrap();
         s.tensor_logit_(b, Some(0.01)).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_relu6() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-1.0, 3.0, 10.0], vec![3], false).unwrap();
+        let out = s.tensor_relu6(a).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![-2.0, 4.0, 8.0], vec![3], false).unwrap();
+        s.tensor_relu6_(b).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
