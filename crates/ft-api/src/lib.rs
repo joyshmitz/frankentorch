@@ -16522,6 +16522,11 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("erfinv_", target, None, erfinv_approx)
     }
 
+    /// In-place erfcinv: inverse of erfc. erfcinv(erfc(x)) = x.
+    pub fn tensor_erfcinv_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("erfcinv_", target, None, |x| erfinv_approx(1.0 - x))
+    }
+
     /// In-place digamma (psi function): d/dx ln(Gamma(x)).
     pub fn tensor_digamma_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
         self.apply_tensor_unary_in_place("digamma_", target, None, digamma_approx)
@@ -24491,6 +24496,16 @@ impl FrankenTorchSession {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erfinv(input)
+    }
+
+    /// Inverse of the complementary error function.
+    ///
+    /// erfcinv(erfc(x)) = x. Computed as erfinv(1 - x).
+    pub fn tensor_erfcinv(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ones = self.full(shape, 1.0, false)?;
+        let one_minus_x = self.tensor_sub(ones, input)?;
+        self.tensor_erfinv(one_minus_x)
     }
 
     /// Element-wise natural logarithm of the absolute value of the gamma function.
