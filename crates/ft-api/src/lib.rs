@@ -19036,6 +19036,13 @@ impl FrankenTorchSession {
         Ok(values[0])
     }
 
+    /// Return the tensor's values as a flat Vec.
+    /// In PyTorch, tolist() returns nested lists matching shape. Here we return flat values.
+    pub fn tensor_tolist(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
+        let values = self.tensor_tape.values(node)?;
+        Ok(values.to_vec())
+    }
+
     fn clone_dense_tensor_from_node(
         &self,
         node: TensorNodeId,
@@ -19090,6 +19097,36 @@ impl FrankenTorchSession {
 
     pub fn tensor_is_contiguous(&self, _node: TensorNodeId) -> Result<bool, AutogradError> {
         Ok(true)
+    }
+
+    /// Returns whether the tensor is a conjugated view.
+    /// FrankenTorch uses value semantics without conjugate views, so always false.
+    pub fn tensor_is_conj(&self, _node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(false)
+    }
+
+    /// Returns whether the tensor is a negated view.
+    /// FrankenTorch uses value semantics without negation views, so always false.
+    pub fn tensor_is_neg(&self, _node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(false)
+    }
+
+    /// Returns whether this is a meta tensor (shape-only, no data).
+    /// FrankenTorch always materializes data, so always false.
+    pub fn tensor_is_meta(&self, _node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(false)
+    }
+
+    /// Returns whether tensor is on MPS (Apple Metal) device.
+    /// FrankenTorch only supports CPU currently, so always false.
+    pub fn tensor_is_mps(&self, _node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(false)
+    }
+
+    /// Returns whether the tensor is in inference mode.
+    /// FrankenTorch doesn't have inference mode, so always false.
+    pub fn tensor_is_inference(&self, _node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(false)
     }
 
     pub fn tensor_contiguous(&self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
