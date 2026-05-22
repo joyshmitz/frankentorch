@@ -14517,6 +14517,11 @@ impl FrankenTorchSession {
         Ok(tensor.meta().numel())
     }
 
+    /// Alias for `tensor_numel`. Equivalent to `tensor.nelement()` in PyTorch.
+    pub fn tensor_nelement(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_numel(node)
+    }
+
     pub fn tensor_element_size(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
         let dtype = self.tensor_dtype(node)?;
         Ok(dtype.element_size())
@@ -53085,5 +53090,15 @@ mod tests {
             ),
             "tensor_cdouble should return UnsupportedDType(Complex128) until tape-level Complex128 conversion lands"
         );
+    }
+
+    #[test]
+    fn test_tensor_nelement() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0; 24], vec![2, 3, 4], false).unwrap();
+        let nelement = s.tensor_nelement(x).unwrap();
+        let numel = s.tensor_numel(x).unwrap();
+        assert_eq!(nelement, numel);
+        assert_eq!(nelement, 24);
     }
 }
