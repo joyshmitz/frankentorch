@@ -13247,6 +13247,13 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("round_", target, None, f64::round)
     }
 
+    /// In-place truncation toward zero.
+    ///
+    /// Equivalent to `tensor.trunc_()` in PyTorch.
+    pub fn tensor_trunc_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("trunc_", target, None, f64::trunc)
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53126,5 +53133,13 @@ mod tests {
         let isreal = s.tensor_isreal(x).unwrap();
         assert_eq!(s.tensor_shape(isreal).unwrap(), vec![3]);
         assert_eq!(s.tensor_dtype(isreal).unwrap(), DType::F64);
+    }
+
+    #[test]
+    fn test_tensor_trunc_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.7, -2.3, 3.9], vec![3], false).unwrap();
+        s.tensor_trunc_(x).unwrap();
+        assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
     }
 }
