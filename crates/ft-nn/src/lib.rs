@@ -8441,6 +8441,86 @@ impl Module for UpsamplingNearest2d {
     }
 }
 
+/// PyTorch-named bilinear 2D upsampling module.
+///
+/// This is equivalent to `nn.functional.interpolate(..., mode="bilinear",
+/// align_corners=true)` for 4D `[N, C, H, W]` tensors.
+pub struct UpsamplingBilinear2d {
+    size: Option<[usize; 2]>,
+    scale_factor: Option<[f64; 2]>,
+}
+
+impl UpsamplingBilinear2d {
+    /// Create an UpsamplingBilinear2d module with an explicit output
+    /// height/width.
+    #[must_use]
+    pub fn with_size(output_h: usize, output_w: usize) -> Self {
+        Self {
+            size: Some([output_h, output_w]),
+            scale_factor: None,
+        }
+    }
+
+    /// Create an UpsamplingBilinear2d module with the same scale factor for
+    /// height and width.
+    #[must_use]
+    pub fn with_scale_factor(scale_factor: f64) -> Self {
+        Self::with_scale_factors(scale_factor, scale_factor)
+    }
+
+    /// Create an UpsamplingBilinear2d module with explicit height/width
+    /// scale factors.
+    #[must_use]
+    pub fn with_scale_factors(scale_h: f64, scale_w: f64) -> Self {
+        Self {
+            size: None,
+            scale_factor: Some([scale_h, scale_w]),
+        }
+    }
+
+    /// Create an UpsamplingBilinear2d module from PyTorch-style optional
+    /// `size` and `scale_factor` arguments.
+    pub fn from_options(
+        size: Option<[usize; 2]>,
+        scale_factor: Option<[f64; 2]>,
+    ) -> Result<Self, AutogradError> {
+        match (size, scale_factor) {
+            (Some(_), Some(_)) => Err(incompatible_error(
+                "UpsamplingBilinear2d accepts either size or scale_factor, not both",
+            )),
+            (None, None) => Err(incompatible_error(
+                "UpsamplingBilinear2d requires size or scale_factor",
+            )),
+            (size, scale_factor) => Ok(Self { size, scale_factor }),
+        }
+    }
+}
+
+impl Module for UpsamplingBilinear2d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = session.tensor_shape(input)?;
+        if input_shape.len() != 4 {
+            return Err(incompatible_error(
+                "UpsamplingBilinear2d expects 4D input [N, C, H, W]",
+            ));
+        }
+
+        let size = self.size.map(|[height, width]| vec![height, width]);
+        let scale_factor = self
+            .scale_factor
+            .map(|[scale_h, scale_w]| vec![scale_h, scale_w]);
+        session.tensor_interpolate(input, size, scale_factor, "bilinear", Some(true))
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 /// Nearest-neighbor upsampling for 3D inputs (5D tensors `[N, C, D, H, W]`).
 ///
 /// Repeats each element along depth, height, and width by the configured scale
@@ -22581,6 +22661,129 @@ mod tests {
         let grad = session.tensor_gradient(&report, x).expect("input grad");
 
         assert_eq!(grad, &[4.0, 4.0, 4.0, 4.0]);
+    }
+
+    #[test]
+    fn upsampling_bilinear2d_with_size_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = UpsamplingBilinear2d::with_size(4, 4);
+
+        let x = session
+            .tensor_variable(vec![0.0, 1.0, 1.0, 0.0], vec![1, 1, 2, 2], false)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 4, 4]);
+        let expected = [
+            0.0,
+            1.0 / 3.0,
+            2.0 / 3.0,
+            1.0,
+            1.0 / 3.0,
+            4.0 / 9.0,
+            5.0 / 9.0,
+            2.0 / 3.0,
+            2.0 / 3.0,
+            5.0 / 9.0,
+            4.0 / 9.0,
+            1.0 / 3.0,
+            1.0,
+            2.0 / 3.0,
+            1.0 / 3.0,
+            0.0,
+        ];
+        for (actual, expected) in vals.iter().zip(expected) {
+            assert!(
+                (*actual - expected).abs() < 1e-12,
+                "actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn upsampling_bilinear2d_with_uniform_scale_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = UpsamplingBilinear2d::with_scale_factor(2.0);
+
+        let x = session
+            .tensor_variable(vec![0.0, 1.0, 1.0, 0.0], vec![1, 1, 2, 2], false)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+
+        let shape = session.tensor_shape(out).expect("shape");
+        assert_eq!(shape, vec![1, 1, 4, 4]);
+    }
+
+    #[test]
+    fn upsampling_bilinear2d_with_per_axis_scale_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = UpsamplingBilinear2d::with_scale_factors(1.0, 3.0);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 1, 1, 2], false)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 1, 6]);
+        let expected = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0];
+        for (actual, expected) in vals.iter().zip(expected) {
+            assert!(
+                (*actual - expected).abs() < 1e-12,
+                "actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn upsampling_bilinear2d_rejects_invalid_options() {
+        assert!(UpsamplingBilinear2d::from_options(Some([4, 4]), Some([2.0, 2.0])).is_err());
+        assert!(UpsamplingBilinear2d::from_options(None, None).is_err());
+    }
+
+    #[test]
+    fn upsampling_bilinear2d_rejects_invalid_forward_inputs() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .expect("variable");
+
+        let zero_size = UpsamplingBilinear2d::with_size(0, 4);
+        assert!(zero_size.forward(&mut session, x).is_err());
+
+        let zero_scale = UpsamplingBilinear2d::with_scale_factor(0.0);
+        assert!(zero_scale.forward(&mut session, x).is_err());
+
+        let wrong_rank = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 1, 2], false)
+            .expect("variable");
+        let up = UpsamplingBilinear2d::with_scale_factor(2.0);
+        assert!(up.forward(&mut session, wrong_rank).is_err());
+    }
+
+    #[test]
+    fn upsampling_bilinear2d_has_no_parameters() {
+        let up = UpsamplingBilinear2d::with_scale_factor(2.0);
+        assert!(up.parameters().is_empty());
+    }
+
+    #[test]
+    fn upsampling_bilinear2d_backward_preserves_grad_mass() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = UpsamplingBilinear2d::with_size(4, 4);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+        let loss = session.tensor_sum(out).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session.tensor_gradient(&report, x).expect("input grad");
+
+        let total: f64 = grad.iter().sum();
+        assert!((total - 16.0).abs() < 1e-9, "total grad mass = {total}");
+        assert!(grad.iter().all(|g| g.is_finite()));
     }
 
     #[test]
