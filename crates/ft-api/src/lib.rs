@@ -22545,6 +22545,118 @@ impl FrankenTorchSession {
         self.tensor_vecdot(x, y)
     }
 
+    // ── fft — FFT Helper Functions ─────────────────────────────────────────
+
+    /// Shift the zero-frequency component to the center of the spectrum.
+    ///
+    /// Equivalent to `torch.fft.fftshift`. Rolls each dimension by half its size.
+    /// If `dim` is None, shifts all dimensions.
+    pub fn tensor_fft_fftshift(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        let dims: Vec<usize> = match dim {
+            Some(d) => d.to_vec(),
+            None => (0..ndim).collect(),
+        };
+        let mut result = input;
+        for &d in &dims {
+            if d >= ndim {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "fft_fftshift: dimension out of range",
+                    },
+                )));
+            }
+            let shift = (shape[d] / 2) as i64;
+            result = self.tensor_roll(result, shift, d)?;
+        }
+        Ok(result)
+    }
+
+    /// Inverse of `tensor_fft_fftshift`.
+    ///
+    /// Equivalent to `torch.fft.ifftshift`. For odd-length dimensions,
+    /// this is NOT the same as fftshift.
+    pub fn tensor_fft_ifftshift(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        let dims: Vec<usize> = match dim {
+            Some(d) => d.to_vec(),
+            None => (0..ndim).collect(),
+        };
+        let mut result = input;
+        for &d in &dims {
+            if d >= ndim {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "fft_ifftshift: dimension out of range",
+                    },
+                )));
+            }
+            let shift = -(((shape[d] + 1) / 2) as i64);
+            result = self.tensor_roll(result, shift, d)?;
+        }
+        Ok(result)
+    }
+
+    /// Return the Discrete Fourier Transform sample frequencies.
+    ///
+    /// Equivalent to `torch.fft.fftfreq(n, d)`.
+    /// Returns frequencies in cycles per unit spacing: `[0, 1, ..., n/2-1, -n/2, ..., -1] / (n*d)`.
+    pub fn tensor_fft_fftfreq(
+        &mut self,
+        n: usize,
+        d: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if n == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "fft_fftfreq: n must be > 0",
+                },
+            )));
+        }
+        let scale = 1.0 / (n as f64 * d);
+        let mut values = Vec::with_capacity(n);
+        let half = (n + 1) / 2;
+        for i in 0..half {
+            values.push(i as f64 * scale);
+        }
+        for i in half..n {
+            values.push((i as isize - n as isize) as f64 * scale);
+        }
+        self.tensor_variable(values, vec![n], false)
+    }
+
+    /// Return the Discrete Fourier Transform sample frequencies for real input.
+    ///
+    /// Equivalent to `torch.fft.rfftfreq(n, d)`.
+    /// Returns frequencies: `[0, 1, ..., n//2] / (n*d)` (length n//2 + 1).
+    pub fn tensor_fft_rfftfreq(
+        &mut self,
+        n: usize,
+        d: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if n == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "fft_rfftfreq: n must be > 0",
+                },
+            )));
+        }
+        let scale = 1.0 / (n as f64 * d);
+        let out_len = n / 2 + 1;
+        let values: Vec<f64> = (0..out_len).map(|i| i as f64 * scale).collect();
+        self.tensor_variable(values, vec![out_len], false)
+    }
+
     fn _compute_strides(shape: &[usize]) -> Vec<usize> {
         let ndim = shape.len();
         let mut strides = vec![0usize; ndim];
