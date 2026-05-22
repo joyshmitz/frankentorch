@@ -14250,6 +14250,16 @@ impl FrankenTorchSession {
         Ok(tensor.meta().numel())
     }
 
+    /// Alias for `tensor_dim`. Equivalent to `tensor.ndim` in PyTorch.
+    pub fn tensor_ndim(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_dim(node)
+    }
+
+    /// Alias for `tensor_shape`. Equivalent to `tensor.size()` in PyTorch.
+    pub fn tensor_size(&self, node: TensorNodeId) -> Result<Vec<usize>, AutogradError> {
+        self.tensor_shape(node)
+    }
+
     /// Return whether this tensor currently tracks gradients.
     pub fn tensor_requires_grad(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_tape.tensor_requires_grad(node)
@@ -52294,5 +52304,21 @@ mod tests {
         let moved = s.tensor_moveaxis(x, 0, 2).unwrap();
         let shape = s.tensor_shape(moved).unwrap();
         assert_eq!(shape, vec![3, 4, 2]);
+    }
+
+    #[test]
+    fn test_ndim_alias() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0; 24], vec![2, 3, 4], false).unwrap();
+        assert_eq!(s.tensor_ndim(x).unwrap(), 3);
+        assert_eq!(s.tensor_dim(x).unwrap(), s.tensor_ndim(x).unwrap());
+    }
+
+    #[test]
+    fn test_size_alias() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0; 6], vec![2, 3], false).unwrap();
+        assert_eq!(s.tensor_size(x).unwrap(), vec![2, 3]);
+        assert_eq!(s.tensor_shape(x).unwrap(), s.tensor_size(x).unwrap());
     }
 }
