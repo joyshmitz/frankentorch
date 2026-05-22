@@ -9997,6 +9997,17 @@ impl FrankenTorchSession {
         self.tensor_div(summed, divisor)
     }
 
+    /// NaN-aware product: equivalent to `torch.nanprod(input)`.
+    ///
+    /// Treats NaN as 1 (neutral element for multiplication).
+    /// Product of all non-NaN elements.
+    pub fn tensor_nanprod(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let ones = self.ones_like(input, false)?;
+        let mask = self.tensor_isnan(input)?;
+        let cleaned = self.tensor_where(mask, ones, input)?;
+        self.tensor_prod(cleaned)
+    }
+
     /// NaN-aware variance: equivalent to `torch.nanvar(input, correction)`.
     ///
     /// `correction` selects the divisor:
@@ -10103,6 +10114,19 @@ impl FrankenTorchSession {
         let (out, event) = self.tensor_tape.prod_dim(input, dim, self.mode())?;
         self.record_tensor_reduction_dim_operation(&event);
         Ok(out)
+    }
+
+    /// Product of all elements in tensor.
+    ///
+    /// Equivalent to `torch.prod(input)`. Reduces all elements to a scalar.
+    pub fn tensor_prod(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        if ndim == 0 {
+            return Ok(input);
+        }
+        let flat = self.tensor_flatten(input, 0, ndim - 1)?;
+        self.tensor_prod_dim(flat, 0)
     }
 
     /// Variance along `dim` with Bessel `correction` (`torch.var`).
