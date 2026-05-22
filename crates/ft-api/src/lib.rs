@@ -11948,6 +11948,84 @@ impl FrankenTorchSession {
         self.tensor_variable(result, shape, false)
     }
 
+    /// Embed src tensor into a slice of input along a dimension.
+    ///
+    /// Equivalent to `torch.slice_scatter(input, src, dim, start, end, step)`.
+    /// Tracked under frankentorch-eikp.
+    pub fn tensor_slice_scatter(
+        &mut self,
+        input: TensorNodeId,
+        src: TensorNodeId,
+        dim: i64,
+        start: Option<i64>,
+        end: Option<i64>,
+        step: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if step <= 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "slice_scatter: step must be positive",
+                },
+            )));
+        }
+
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        if ndim == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "slice_scatter: input must have at least 1 dimension",
+                },
+            )));
+        }
+
+        let dim = if dim < 0 { ndim as i64 + dim } else { dim } as usize;
+        if dim >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "slice_scatter: dim out of range",
+                },
+            )));
+        }
+
+        let dim_size = shape[dim] as i64;
+        let start = start.map(|s| if s < 0 { dim_size + s } else { s }).unwrap_or(0).max(0).min(dim_size) as usize;
+        let end = end.map(|e| if e < 0 { dim_size + e } else { e }).unwrap_or(dim_size).max(0).min(dim_size) as usize;
+        let step = step as usize;
+
+        let slice_len = if end > start { (end - start + step - 1) / step } else { 0 };
+
+        let src_shape = self.tensor_shape(src)?;
+        let mut expected_shape = shape.clone();
+        expected_shape[dim] = slice_len;
+        if src_shape != expected_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "slice_scatter: src shape must match slice shape",
+                },
+            )));
+        }
+
+        let mut result = self.tensor_values(input)?;
+        let src_vals = self.tensor_values(src)?;
+
+        let inner_stride: usize = shape[dim + 1..].iter().product();
+        let outer_stride: usize = shape[dim..].iter().product();
+        let outer_count: usize = shape[..dim].iter().product();
+
+        for outer in 0..outer_count {
+            for (slice_idx, dim_idx) in (start..end).step_by(step).enumerate() {
+                for inner in 0..inner_stride {
+                    let src_idx = outer * (slice_len * inner_stride) + slice_idx * inner_stride + inner;
+                    let dst_idx = outer * outer_stride + dim_idx * inner_stride + inner;
+                    result[dst_idx] = src_vals[src_idx];
+                }
+            }
+        }
+
+        self.tensor_variable(result, shape, false)
+    }
+
     pub fn tensor_values(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
         self.tensor_tape.values(node)
     }
@@ -50499,5 +50577,31 @@ mod tests {
         assert!((vals[0] - 10.0).abs() < 1e-10);
         assert!((vals[1] - 2.0).abs() < 1e-10);
         assert!((vals[3] - 20.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_slice_scatter_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0], vec![1, 2], false).unwrap();
+        let result = s.tensor_slice_scatter(input, src, 0, Some(1), Some(2), 1).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[3] - 10.0).abs() < 1e-10);
+        assert!((vals[4] - 20.0).abs() < 1e-10);
+        assert!((vals[5] - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_slice_scatter_step() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![6], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0, 30.0], vec![3], false).unwrap();
+        let result = s.tensor_slice_scatter(input, src, 0, Some(0), Some(6), 2).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 10.0).abs() < 1e-10);
+        assert!((vals[1] - 2.0).abs() < 1e-10);
+        assert!((vals[2] - 20.0).abs() < 1e-10);
+        assert!((vals[4] - 30.0).abs() < 1e-10);
     }
 }
