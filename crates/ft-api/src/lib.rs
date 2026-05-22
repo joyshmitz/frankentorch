@@ -13254,6 +13254,13 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("trunc_", target, None, f64::trunc)
     }
 
+    /// In-place signum: -1 for negative, 0 for zero, +1 for positive.
+    ///
+    /// Equivalent to `tensor.sign_()` in PyTorch.
+    pub fn tensor_sign_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("sign_", target, None, f64::signum)
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53140,6 +53147,14 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s.tensor_variable(vec![1.7, -2.3, 3.9], vec![3], false).unwrap();
         s.tensor_trunc_(x).unwrap();
+        assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_sign_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![5.0, -3.0, 0.0], vec![3], false).unwrap();
+        s.tensor_sign_(x).unwrap();
         assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
     }
 }
