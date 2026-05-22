@@ -53557,13 +53557,13 @@ mod tests {
     fn test_slice_scatter_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
-        let src = s.tensor_variable(vec![10.0, 20.0], vec![1, 2], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0, 30.0], vec![1, 3], false).unwrap();
         let result = s.tensor_slice_scatter(input, src, 0, Some(1), Some(2), 1).unwrap();
         let vals = s.tensor_values(result).unwrap();
         assert!((vals[0] - 1.0).abs() < 1e-10);
         assert!((vals[3] - 10.0).abs() < 1e-10);
         assert!((vals[4] - 20.0).abs() < 1e-10);
-        assert!((vals[5] - 6.0).abs() < 1e-10);
+        assert!((vals[5] - 30.0).abs() < 1e-10);
     }
 
     #[test]
@@ -53685,10 +53685,10 @@ mod tests {
         let input = s.tensor_variable(vec![0.0, 1.0, -1.0, -2.0], vec![4], false).unwrap();
         let result = s.tensor_log_ndtr(input).unwrap();
         let vals = s.tensor_values(result).unwrap();
-        assert!((vals[0] - (-std::f64::consts::LN_2)).abs() < 1e-5); // log(0.5)
-        assert!((vals[1] - (-0.172847)).abs() < 1e-5); // log(0.8413...)
-        assert!((vals[2] - (-1.841022)).abs() < 1e-5); // log(0.1586...)
-        assert!((vals[3] - (-3.783184)).abs() < 1e-5); // log(0.0227...)
+        assert!((vals[0] - (-std::f64::consts::LN_2)).abs() < 1e-5);
+        assert!((vals[1] - (-0.172754)).abs() < 1e-5);
+        assert!((vals[2] - (-1.841022)).abs() < 1e-5);
+        assert!((vals[3] - (-3.783184)).abs() < 1e-5);
     }
 
     #[test]
