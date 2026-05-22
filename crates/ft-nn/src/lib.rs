@@ -13408,6 +13408,96 @@ impl Module for ConstantPad2d {
     }
 }
 
+/// Constant padding for 3D inputs (5D tensors `[N, C, D, H, W]`).
+///
+/// Pads the last three dimensions with a constant value.
+pub struct ConstantPad3d {
+    pad_left: usize,
+    pad_right: usize,
+    pad_top: usize,
+    pad_bottom: usize,
+    pad_front: usize,
+    pad_back: usize,
+    value: f64,
+}
+
+impl ConstantPad3d {
+    /// Create a new ConstantPad3d.
+    ///
+    /// * `padding` - `(left, right, top, bottom, front, back)` padding sizes
+    /// * `value` - the constant fill value
+    #[must_use]
+    pub fn new(padding: (usize, usize, usize, usize, usize, usize), value: f64) -> Self {
+        Self {
+            pad_left: padding.0,
+            pad_right: padding.1,
+            pad_top: padding.2,
+            pad_bottom: padding.3,
+            pad_front: padding.4,
+            pad_back: padding.5,
+            value,
+        }
+    }
+}
+
+impl Module for ConstantPad3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_pad(
+            input,
+            &[
+                self.pad_left,
+                self.pad_right,
+                self.pad_top,
+                self.pad_bottom,
+                self.pad_front,
+                self.pad_back,
+            ],
+            self.value,
+        )
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Zero padding for 1D inputs (3D tensors `[N, C, W]`).
+///
+/// Equivalent to `ConstantPad1d` with `value = 0.0`.
+pub struct ZeroPad1d {
+    inner: ConstantPad1d,
+}
+
+impl ZeroPad1d {
+    /// Create a new ZeroPad1d.
+    ///
+    /// * `padding` - `(left, right)` padding sizes
+    #[must_use]
+    pub fn new(padding: (usize, usize)) -> Self {
+        Self {
+            inner: ConstantPad1d::new(padding, 0.0),
+        }
+    }
+}
+
+impl Module for ZeroPad1d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.inner.forward(session, input)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 /// Zero padding for 2D inputs (4D tensors `[N, C, H, W]`).
 ///
 /// Equivalent to `ConstantPad2d` with `value = 0.0`.
@@ -13428,6 +13518,39 @@ impl ZeroPad2d {
 }
 
 impl Module for ZeroPad2d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.inner.forward(session, input)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Zero padding for 3D inputs (5D tensors `[N, C, D, H, W]`).
+///
+/// Equivalent to `ConstantPad3d` with `value = 0.0`.
+pub struct ZeroPad3d {
+    inner: ConstantPad3d,
+}
+
+impl ZeroPad3d {
+    /// Create a new ZeroPad3d.
+    ///
+    /// * `padding` - `(left, right, top, bottom, front, back)` padding sizes
+    #[must_use]
+    pub fn new(padding: (usize, usize, usize, usize, usize, usize)) -> Self {
+        Self {
+            inner: ConstantPad3d::new(padding, 0.0),
+        }
+    }
+}
+
+impl Module for ZeroPad3d {
     fn forward(
         &self,
         session: &mut FrankenTorchSession,
@@ -20822,6 +20945,52 @@ mod tests {
     }
 
     #[test]
+    fn constant_pad3d_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pad = ConstantPad3d::new((1, 0, 0, 1, 1, 0), -2.0);
+
+        // [N=1, C=1, D=1, H=2, W=2] -> [1, 1, 2, 3, 3]
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 1, 2, 2], false)
+            .expect("variable");
+        let out = pad.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 2, 3, 3]);
+        assert_eq!(vals.len(), 18);
+        assert_eq!(vals[0], -2.0);
+        assert_eq!(vals[10], 1.0);
+        assert_eq!(vals[17], -2.0);
+    }
+
+    #[test]
+    fn constant_pad3d_has_no_parameters() {
+        let pad = ConstantPad3d::new((1, 1, 1, 1, 1, 1), 0.0);
+        assert!(pad.parameters().is_empty());
+    }
+
+    #[test]
+    fn zero_pad1d_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pad = ZeroPad1d::new((2, 1));
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 1, 2], false)
+            .expect("variable");
+        let out = pad.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 5]);
+        assert_eq!(vals, &[0.0, 0.0, 1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn zero_pad1d_has_no_parameters() {
+        let pad = ZeroPad1d::new((1, 1));
+        assert!(pad.parameters().is_empty());
+    }
+
+    #[test]
     fn zero_pad2d_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let pad = ZeroPad2d::new((1, 1, 1, 1));
@@ -20841,6 +21010,30 @@ mod tests {
     #[test]
     fn zero_pad2d_has_no_parameters() {
         let pad = ZeroPad2d::new((1, 1, 1, 1));
+        assert!(pad.parameters().is_empty());
+    }
+
+    #[test]
+    fn zero_pad3d_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pad = ZeroPad3d::new((0, 1, 1, 0, 0, 1));
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 1, 2, 2], false)
+            .expect("variable");
+        let out = pad.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 2, 3, 3]);
+        assert_eq!(vals.len(), 18);
+        assert_eq!(vals[3], 1.0);
+        assert_eq!(vals[7], 4.0);
+        assert_eq!(vals[9], 0.0);
+    }
+
+    #[test]
+    fn zero_pad3d_has_no_parameters() {
+        let pad = ZeroPad3d::new((1, 1, 1, 1, 1, 1));
         assert!(pad.parameters().is_empty());
     }
 
