@@ -7534,6 +7534,60 @@ impl FrankenTorchSession {
         self.tensor_min(lhs_b, rhs_b)
     }
 
+    /// In-place maximum: target = max(target, other) element-wise.
+    pub fn tensor_maximum_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| a.max(b))
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("maximum_", target, None);
+        Ok(())
+    }
+
+    /// In-place minimum: target = min(target, other) element-wise.
+    pub fn tensor_minimum_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| a.min(b))
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("minimum_", target, None);
+        Ok(())
+    }
+
     pub fn tensor_atan2(
         &mut self,
         lhs: TensorNodeId,
@@ -7665,6 +7719,76 @@ impl FrankenTorchSession {
         let nan_rhs = self.tensor_isnan(rhs_b)?;
         let step1 = self.tensor_where(nan_rhs, lhs_b, raw_min)?;
         self.tensor_where(nan_lhs, rhs_b, step1)
+    }
+
+    /// In-place fmax: NaN-tolerant maximum (ignores NaN if other is finite).
+    pub fn tensor_fmax_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| {
+                if a.is_nan() && !b.is_nan() {
+                    b
+                } else if b.is_nan() && !a.is_nan() {
+                    a
+                } else {
+                    a.max(b)
+                }
+            })
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("fmax_", target, None);
+        Ok(())
+    }
+
+    /// In-place fmin: NaN-tolerant minimum (ignores NaN if other is finite).
+    pub fn tensor_fmin_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| {
+                if a.is_nan() && !b.is_nan() {
+                    b
+                } else if b.is_nan() && !a.is_nan() {
+                    a
+                } else {
+                    a.min(b)
+                }
+            })
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("fmin_", target, None);
+        Ok(())
     }
 
     pub fn tensor_fmod(
@@ -54505,6 +54629,38 @@ mod tests {
         s.tensor_heaviside_(a, v).unwrap();
         let vals = s.tensor_values(a).unwrap();
         assert_eq!(vals, vec![0.0, 0.5, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_tensor_maximum_minimum_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 5.0, 3.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![2.0, 3.0, 4.0], vec![3], false).unwrap();
+        s.tensor_maximum_(a, b).unwrap();
+        assert_eq!(s.tensor_values(a).unwrap(), vec![2.0, 5.0, 4.0]);
+        let c = s.tensor_variable(vec![1.0, 5.0, 3.0], vec![3], false).unwrap();
+        let d = s.tensor_variable(vec![2.0, 3.0, 4.0], vec![3], false).unwrap();
+        s.tensor_minimum_(c, d).unwrap();
+        assert_eq!(s.tensor_values(c).unwrap(), vec![1.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn test_tensor_fmax_fmin_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![f64::NAN, 5.0, 3.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![2.0, f64::NAN, 4.0], vec![3], false).unwrap();
+        s.tensor_fmax_(a, b).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        assert_eq!(vals[0], 2.0);
+        assert_eq!(vals[1], 5.0);
+        assert_eq!(vals[2], 4.0);
+        let c = s.tensor_variable(vec![f64::NAN, 5.0, 3.0], vec![3], false).unwrap();
+        let d = s.tensor_variable(vec![2.0, f64::NAN, 4.0], vec![3], false).unwrap();
+        s.tensor_fmin_(c, d).unwrap();
+        let vals2 = s.tensor_values(c).unwrap();
+        assert_eq!(vals2[0], 2.0);
+        assert_eq!(vals2[1], 5.0);
+        assert_eq!(vals2[2], 3.0);
     }
 
     #[test]
