@@ -12079,6 +12079,72 @@ impl FrankenTorchSession {
         self.tensor_variable(result, shape, false)
     }
 
+    /// Extract lower triangular part of a 2D matrix.
+    ///
+    /// Equivalent to `torch.tril(input, diagonal)`.
+    /// Elements above the k-th diagonal are zeroed.
+    /// Tracked under frankentorch-avfl.
+    pub fn tensor_tril(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tril: input must be a 2-D tensor",
+                },
+            )));
+        }
+
+        let (m, n) = (shape[0], shape[1]);
+        let vals = self.tensor_values(input)?;
+        let mut result = vec![0.0; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                if (j as i64) <= (i as i64) + diagonal {
+                    result[i * n + j] = vals[i * n + j];
+                }
+            }
+        }
+
+        self.tensor_variable(result, shape, false)
+    }
+
+    /// Extract upper triangular part of a 2D matrix.
+    ///
+    /// Equivalent to `torch.triu(input, diagonal)`.
+    /// Elements below the k-th diagonal are zeroed.
+    /// Tracked under frankentorch-avfl.
+    pub fn tensor_triu(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "triu: input must be a 2-D tensor",
+                },
+            )));
+        }
+
+        let (m, n) = (shape[0], shape[1]);
+        let vals = self.tensor_values(input)?;
+        let mut result = vec![0.0; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                if (j as i64) >= (i as i64) + diagonal {
+                    result[i * n + j] = vals[i * n + j];
+                }
+            }
+        }
+
+        self.tensor_variable(result, shape, false)
+    }
+
     /// Embed src tensor at a selected index along a dimension.
     ///
     /// Equivalent to `torch.select_scatter(input, src, dim, index)`.
@@ -51638,5 +51704,34 @@ mod tests {
         assert!((vals[1] - 3.0).abs() < 1e-10);
         assert!((vals[2] - 2.0).abs() < 1e-10);
         assert!((vals[3] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_tril_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 3x3 matrix
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], vec![3, 3], false).unwrap();
+        let result = s.tensor_tril(input, 0).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10); // (0,0)
+        assert!(vals[1].abs() < 1e-10); // (0,1) zeroed
+        assert!(vals[2].abs() < 1e-10); // (0,2) zeroed
+        assert!((vals[3] - 4.0).abs() < 1e-10); // (1,0)
+        assert!((vals[4] - 5.0).abs() < 1e-10); // (1,1)
+        assert!((vals[8] - 9.0).abs() < 1e-10); // (2,2)
+    }
+
+    #[test]
+    fn test_triu_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], vec![3, 3], false).unwrap();
+        let result = s.tensor_triu(input, 0).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10); // (0,0)
+        assert!((vals[1] - 2.0).abs() < 1e-10); // (0,1)
+        assert!((vals[2] - 3.0).abs() < 1e-10); // (0,2)
+        assert!(vals[3].abs() < 1e-10); // (1,0) zeroed
+        assert!((vals[4] - 5.0).abs() < 1e-10); // (1,1)
+        assert!(vals[6].abs() < 1e-10); // (2,0) zeroed
     }
 }
