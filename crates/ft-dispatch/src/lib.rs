@@ -3911,6 +3911,12 @@ pub fn dispatch_tensor_unary_contiguous_typed(
             }
             .into())
         }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for unary dispatch",
+            }
+            .into())
+        }
     }
 }
 
@@ -4113,7 +4119,10 @@ impl<'a> TryFrom<&'a TensorStorage> for NonComplexTensorStorageRef<'a> {
             TensorStorage::F32(values) => Ok(Self::F32(values.as_slice())),
             TensorStorage::F16(values) => Ok(Self::F16(values.as_slice())),
             TensorStorage::BF16(values) => Ok(Self::BF16(values.as_slice())),
-            TensorStorage::Complex64(_) | TensorStorage::Complex128(_) => Err(()),
+            TensorStorage::Complex64(_)
+            | TensorStorage::Complex128(_)
+            | TensorStorage::QInt8(_)
+            | TensorStorage::QUInt8(_) => Err(()),
         }
     }
 }
@@ -5059,6 +5068,12 @@ pub fn dispatch_tensor_reduction_contiguous_typed(
             }
             .into())
         }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for reduction dispatch",
+            }
+            .into())
+        }
     }
 }
 
@@ -5125,6 +5140,12 @@ pub fn dispatch_tensor_reduction_dim_contiguous_typed(
             }
             .into())
         }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for reduction dim dispatch",
+            }
+            .into())
+        }
     }
 }
 
@@ -5174,6 +5195,12 @@ pub fn dispatch_tensor_pow_contiguous_typed(
         TensorStorage::Complex64(_) | TensorStorage::Complex128(_) => {
             Err(DispatchKeyError::IncompatibleSet {
                 reason: "complex dtypes are not supported for pow dispatch",
+            }
+            .into())
+        }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for pow dispatch",
             }
             .into())
         }
@@ -5243,6 +5270,12 @@ pub fn dispatch_tensor_clamp_contiguous_typed(
             }
             .into())
         }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for clamp dispatch",
+            }
+            .into())
+        }
     }
 }
 
@@ -5286,6 +5319,12 @@ pub fn dispatch_tensor_norm_contiguous_typed(
         TensorStorage::Complex64(_) | TensorStorage::Complex128(_) => {
             Err(DispatchKeyError::IncompatibleSet {
                 reason: "complex dtypes are not supported for norm dispatch",
+            }
+            .into())
+        }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for norm dispatch",
             }
             .into())
         }
@@ -5343,6 +5382,12 @@ pub fn dispatch_tensor_norm_dim_contiguous_typed(
             }
             .into())
         }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for norm dim dispatch",
+            }
+            .into())
+        }
     }
 }
 
@@ -5394,6 +5439,12 @@ pub fn dispatch_tensor_scan_dim_contiguous_typed(
         TensorStorage::Complex64(_) | TensorStorage::Complex128(_) => {
             Err(DispatchKeyError::IncompatibleSet {
                 reason: "complex dtypes are not supported for scan dim dispatch",
+            }
+            .into())
+        }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for scan dim dispatch",
             }
             .into())
         }
@@ -5463,6 +5514,12 @@ pub fn dispatch_tensor_normalize_dim_contiguous_typed(
             }
             .into())
         }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for normalize dim dispatch",
+            }
+            .into())
+        }
     }
 }
 
@@ -5529,6 +5586,12 @@ pub fn dispatch_tensor_sort_contiguous_typed(
         TensorStorage::Complex64(_) | TensorStorage::Complex128(_) => {
             Err(DispatchKeyError::IncompatibleSet {
                 reason: "complex dtypes are not supported for sort dispatch",
+            }
+            .into())
+        }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for sort dispatch",
             }
             .into())
         }
@@ -5607,6 +5670,12 @@ pub fn dispatch_tensor_topk_contiguous_typed(
         TensorStorage::Complex64(_) | TensorStorage::Complex128(_) => {
             Err(DispatchKeyError::IncompatibleSet {
                 reason: "complex dtypes are not supported for topk dispatch",
+            }
+            .into())
+        }
+        TensorStorage::QInt8(_) | TensorStorage::QUInt8(_) => {
+            Err(DispatchKeyError::IncompatibleSet {
+                reason: "quantized dtypes are not supported for topk dispatch",
             }
             .into())
         }

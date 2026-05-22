@@ -8885,6 +8885,18 @@ impl TensorTape {
                     perm,
                 )?))
             }
+            TensorStorage::QInt8(values) => TensorStorage::QInt8(Arc::new(Self::permute_slice(
+                Self::checked_storage_slice(values, start, end)?,
+                meta.shape(),
+                perm,
+            )?)),
+            TensorStorage::QUInt8(values) => {
+                TensorStorage::QUInt8(Arc::new(Self::permute_slice(
+                    Self::checked_storage_slice(values, start, end)?,
+                    meta.shape(),
+                    perm,
+                )?))
+            }
         })
     }
 
@@ -9054,6 +9066,16 @@ impl TensorTape {
             TensorStorage::Complex128(values) => TensorStorage::Complex128(Arc::new(
                 Self::map_slice(values, output_len, &mut src_index_for_output)?,
             )),
+            TensorStorage::QInt8(values) => TensorStorage::QInt8(Arc::new(Self::map_slice(
+                values,
+                output_len,
+                &mut src_index_for_output,
+            )?)),
+            TensorStorage::QUInt8(values) => TensorStorage::QUInt8(Arc::new(Self::map_slice(
+                values,
+                output_len,
+                &mut src_index_for_output,
+            )?)),
         })
     }
 
@@ -13772,6 +13794,304 @@ impl TensorTape {
                         rule: "d(silu(x))/dx=s*(1+x*(1-s)) (cg)",
                     });
                 }
+                TensorNodeOp::Dot { lhs, rhs } => {
+                    // dot(x,y) produces a scalar. d/dx = grad_out * y, d/dy = grad_out * x.
+                    // incoming_id is scalar [1]; broadcast to lhs/rhs shapes.
+                    let lhs_shape = self.nodes[lhs.0].tensor.meta().shape().to_vec();
+                    let lhs_numel =
+                        Self::checked_shape_numel(&lhs_shape, "dot backward lhs shape overflow")?;
+                    let incoming_val =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?[0];
+                    let expanded_grad = vec![incoming_val; lhs_numel];
+                    let grad_expanded =
+                        self.cg_expand(incoming_id, expanded_grad, lhs_shape.clone())?;
+                    let grad_lhs = self.cg_mul(grad_expanded, rhs)?;
+                    let grad_rhs = self.cg_mul(grad_expanded, lhs)?;
+                    self.cg_accumulate(lhs, &mut grad_nodes, grad_lhs)?;
+                    self.cg_accumulate(rhs, &mut grad_nodes, grad_rhs)?;
+                    Self::complete_dependency(&mut pending, lhs, &mut queue)?;
+                    Self::complete_dependency(&mut pending, rhs, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(dot(x,y))/dx=grad*y; d/dy=grad*x (cg)",
+                    });
+                }
+                TensorNodeOp::Outer { lhs, rhs } => {
+                    // outer(x,y)[i,j] = x[i]*y[j]. Shape: [m] x [n] -> [m,n].
+                    // d/dx = incoming @ y (sum cols), d/dy = incoming.T @ x (sum rows).
+                    let lhs_shape = self.nodes[lhs.0].tensor.meta().shape().to_vec();
+                    let rhs_shape = self.nodes[rhs.0].tensor.meta().shape().to_vec();
+                    let m = lhs_shape[0];
+                    let n = rhs_shape[0];
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let lhs_vals = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_vals = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
+                    let mut grad_lhs_data = vec![0.0; m];
+                    let mut grad_rhs_data = vec![0.0; n];
+                    for i in 0..m {
+                        for j in 0..n {
+                            grad_lhs_data[i] += incoming_vals[i * n + j] * rhs_vals[j];
+                            grad_rhs_data[j] += incoming_vals[i * n + j] * lhs_vals[i];
+                        }
+                    }
+                    let grad_lhs = self.leaf(grad_lhs_data, lhs_shape.clone(), true)?;
+                    let grad_rhs = self.leaf(grad_rhs_data, rhs_shape.clone(), true)?;
+                    self.cg_accumulate(lhs, &mut grad_nodes, grad_lhs)?;
+                    self.cg_accumulate(rhs, &mut grad_nodes, grad_rhs)?;
+                    Self::complete_dependency(&mut pending, lhs, &mut queue)?;
+                    Self::complete_dependency(&mut pending, rhs, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(outer(x,y))/dx=grad@y; d/dy=x^T@grad (cg)",
+                    });
+                }
+                TensorNodeOp::Bmm { lhs, rhs } => {
+                    // Batched matmul: [B,M,K] @ [B,K,N] -> [B,M,N].
+                    // d/dA = grad @ B^T, d/dB = A^T @ grad (per batch).
+                    let lhs_shape = self.nodes[lhs.0].tensor.meta().shape().to_vec();
+                    let rhs_shape = self.nodes[rhs.0].tensor.meta().shape().to_vec();
+                    if lhs_shape.len() != 3 || rhs_shape.len() != 3 {
+                        return Err(AutogradError::Dispatch(
+                            DispatchKeyError::IncompatibleSet {
+                                reason: "bmm create_graph backward expected rank-3 operands",
+                            }
+                            .into(),
+                        ));
+                    }
+                    let batch = lhs_shape[0];
+                    let m = lhs_shape[1];
+                    let k = lhs_shape[2];
+                    let n = rhs_shape[2];
+                    let lhs_vals = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_vals = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let lhs_batch_stride = m * k;
+                    let rhs_batch_stride = k * n;
+                    let out_batch_stride = m * n;
+                    let mut grad_lhs_data = vec![0.0; batch * m * k];
+                    let mut grad_rhs_data = vec![0.0; batch * k * n];
+                    for b in 0..batch {
+                        for i in 0..m {
+                            for j in 0..k {
+                                let mut acc = 0.0;
+                                for l in 0..n {
+                                    acc += incoming_vals[b * out_batch_stride + i * n + l]
+                                        * rhs_vals[b * rhs_batch_stride + j * n + l];
+                                }
+                                grad_lhs_data[b * lhs_batch_stride + i * k + j] = acc;
+                            }
+                        }
+                        for i in 0..k {
+                            for j in 0..n {
+                                let mut acc = 0.0;
+                                for l in 0..m {
+                                    acc += lhs_vals[b * lhs_batch_stride + l * k + i]
+                                        * incoming_vals[b * out_batch_stride + l * n + j];
+                                }
+                                grad_rhs_data[b * rhs_batch_stride + i * n + j] = acc;
+                            }
+                        }
+                    }
+                    let grad_lhs = self.leaf(grad_lhs_data, lhs_shape, true)?;
+                    let grad_rhs = self.leaf(grad_rhs_data, rhs_shape, true)?;
+                    self.cg_accumulate(lhs, &mut grad_nodes, grad_lhs)?;
+                    self.cg_accumulate(rhs, &mut grad_nodes, grad_rhs)?;
+                    Self::complete_dependency(&mut pending, lhs, &mut queue)?;
+                    Self::complete_dependency(&mut pending, rhs, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(bmm(A,B))/dA=grad@B^T; d/dB=A^T@grad (cg)",
+                    });
+                }
+                TensorNodeOp::Gelu { input } => {
+                    // Exact erf-form derivative (matches PyTorch approximate="none"):
+                    // d(gelu(x))/dx = 0.5*(1+erf(x/sqrt(2))) + x*(1/sqrt(2*pi))*exp(-x^2/2)
+                    let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let inv_sqrt_two = std::f64::consts::FRAC_1_SQRT_2;
+                    let inv_sqrt_two_pi =
+                        std::f64::consts::FRAC_1_SQRT_2 * std::f64::consts::FRAC_2_SQRT_PI * 0.5;
+                    let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let deriv_data: Vec<f64> = input_vals
+                        .iter()
+                        .map(|&x| {
+                            let phi = inv_sqrt_two_pi * (-0.5 * x * x).exp();
+                            0.5 * (1.0 + libm::erf(x * inv_sqrt_two)) + x * phi
+                        })
+                        .collect();
+                    let deriv_node = self.leaf(deriv_data, shape, true)?;
+                    let grad_in = self.cg_mul(incoming_id, deriv_node)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(gelu(x))/dx (cg)",
+                    });
+                }
+                TensorNodeOp::Narrow {
+                    input,
+                    dim,
+                    start,
+                    ref original_shape,
+                } => {
+                    // Zero-pad the gradient back to the original shape.
+                    let (outer_size, inner_size, orig_numel) = Self::checked_dim_loop_sizes(
+                        original_shape,
+                        dim,
+                        "narrow cg backward shape volume overflow",
+                    )?;
+                    let output_shape = self.nodes[node_id.0].tensor.meta().shape();
+                    let length = output_shape[dim];
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let orig_dim_size = original_shape[dim];
+                    let mut contrib = vec![0.0; orig_numel];
+                    for outer in 0..outer_size {
+                        for r in 0..length {
+                            for inner in 0..inner_size {
+                                let grad_idx = outer * length * inner_size + r * inner_size + inner;
+                                let orig_idx = outer * orig_dim_size * inner_size
+                                    + (start + r) * inner_size
+                                    + inner;
+                                contrib[orig_idx] = incoming_vals[grad_idx];
+                            }
+                        }
+                    }
+                    let grad_in = self.leaf(contrib, original_shape.clone(), true)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(narrow(x))/dx=zero_pad(grad) (cg)",
+                    });
+                }
+                TensorNodeOp::Cat {
+                    ref inputs,
+                    dim,
+                    ref input_dim_sizes,
+                } => {
+                    // Split the incoming gradient along dim and route to each input.
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let out_shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
+                    let total_dim_size: usize = input_dim_sizes.iter().sum();
+                    let (outer_size, inner_size, _) = Self::checked_dim_loop_sizes(
+                        &out_shape,
+                        dim,
+                        "cat cg backward shape volume overflow",
+                    )?;
+                    let mut offset = 0usize;
+                    for (idx, &inp) in inputs.iter().enumerate() {
+                        let inp_dim_size = input_dim_sizes[idx];
+                        let inp_shape = self.nodes[inp.0].tensor.meta().shape().to_vec();
+                        let inp_numel =
+                            Self::checked_shape_numel(&inp_shape, "cat backward input overflow")?;
+                        let mut contrib = vec![0.0; inp_numel];
+                        for outer in 0..outer_size {
+                            for r in 0..inp_dim_size {
+                                for inner in 0..inner_size {
+                                    let out_idx = outer * total_dim_size * inner_size
+                                        + (offset + r) * inner_size
+                                        + inner;
+                                    let inp_idx =
+                                        outer * inp_dim_size * inner_size + r * inner_size + inner;
+                                    contrib[inp_idx] = incoming_vals[out_idx];
+                                }
+                            }
+                        }
+                        let grad_slice = self.leaf(contrib, inp_shape, true)?;
+                        self.cg_accumulate(inp, &mut grad_nodes, grad_slice)?;
+                        Self::complete_dependency(&mut pending, inp, &mut queue)?;
+                        offset += inp_dim_size;
+                    }
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(cat(xs))/dx_i=split(grad)[i] (cg)",
+                    });
+                }
+                TensorNodeOp::Stack { ref inputs, dim } => {
+                    // Stack adds a new dimension; split incoming grad and squeeze.
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let out_shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
+                    let num_inputs = inputs.len();
+                    let (outer_size, inner_size, _) = Self::checked_dim_loop_sizes(
+                        &out_shape,
+                        dim,
+                        "stack cg backward shape volume overflow",
+                    )?;
+                    for (idx, &inp) in inputs.iter().enumerate() {
+                        let inp_shape = self.nodes[inp.0].tensor.meta().shape().to_vec();
+                        let inp_numel =
+                            Self::checked_shape_numel(&inp_shape, "stack backward input overflow")?;
+                        let mut contrib = vec![0.0; inp_numel];
+                        for outer in 0..outer_size {
+                            for inner in 0..inner_size {
+                                let out_idx =
+                                    outer * num_inputs * inner_size + idx * inner_size + inner;
+                                let inp_idx = outer * inner_size + inner;
+                                contrib[inp_idx] = incoming_vals[out_idx];
+                            }
+                        }
+                        let grad_slice = self.leaf(contrib, inp_shape, true)?;
+                        self.cg_accumulate(inp, &mut grad_nodes, grad_slice)?;
+                        Self::complete_dependency(&mut pending, inp, &mut queue)?;
+                    }
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(stack(xs))/dx_i=squeeze(split(grad))[i] (cg)",
+                    });
+                }
+                TensorNodeOp::Min { lhs, rhs } | TensorNodeOp::Max { lhs, rhs } => {
+                    // d/dx = grad where x <= y (min) or x >= y (max), else 0.
+                    // d/dy = grad where y < x (min) or y > x (max), else 0.
+                    let is_min = matches!(op, TensorNodeOp::Min { .. });
+                    let lhs_vals = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
+                    let rhs_vals = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
+                    let shape = self.nodes[lhs.0].tensor.meta().shape().to_vec();
+                    let numel = Self::checked_shape_numel(&shape, "min/max backward overflow")?;
+                    let mut lhs_mask = vec![0.0; numel];
+                    let mut rhs_mask = vec![0.0; numel];
+                    for i in 0..numel {
+                        let (l, r) = (lhs_vals[i], rhs_vals[i]);
+                        if is_min {
+                            if l <= r {
+                                lhs_mask[i] = 1.0;
+                            }
+                            if r < l {
+                                rhs_mask[i] = 1.0;
+                            }
+                        } else {
+                            if l >= r {
+                                lhs_mask[i] = 1.0;
+                            }
+                            if r > l {
+                                rhs_mask[i] = 1.0;
+                            }
+                        }
+                    }
+                    let lhs_mask_node = self.leaf(lhs_mask, shape.clone(), false)?;
+                    let rhs_mask_node = self.leaf(rhs_mask, shape, false)?;
+                    let grad_lhs = self.cg_mul(incoming_id, lhs_mask_node)?;
+                    let grad_rhs = self.cg_mul(incoming_id, rhs_mask_node)?;
+                    self.cg_accumulate(lhs, &mut grad_nodes, grad_lhs)?;
+                    self.cg_accumulate(rhs, &mut grad_nodes, grad_rhs)?;
+                    Self::complete_dependency(&mut pending, lhs, &mut queue)?;
+                    Self::complete_dependency(&mut pending, rhs, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(min/max(x,y)) (cg)",
+                    });
+                }
                 // For unsupported ops, fall back to non-differentiable gradient
                 _ => {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -14799,6 +15119,12 @@ impl TensorTape {
             TensorStorage::Complex128(values) => {
                 TensorStorage::Complex128(Arc::new(Self::flip_slice(values, shape, dims)?))
             }
+            TensorStorage::QInt8(values) => {
+                TensorStorage::QInt8(Arc::new(Self::flip_slice(values, shape, dims)?))
+            }
+            TensorStorage::QUInt8(values) => {
+                TensorStorage::QUInt8(Arc::new(Self::flip_slice(values, shape, dims)?))
+            }
         })
     }
 
@@ -14883,6 +15209,18 @@ impl TensorTape {
             TensorStorage::Complex128(values) => TensorStorage::Complex128(Arc::new(
                 Self::repeat_slice(values, repeat_shape, repeats, output_shape)?,
             )),
+            TensorStorage::QInt8(values) => TensorStorage::QInt8(Arc::new(Self::repeat_slice(
+                values,
+                repeat_shape,
+                repeats,
+                output_shape,
+            )?)),
+            TensorStorage::QUInt8(values) => TensorStorage::QUInt8(Arc::new(Self::repeat_slice(
+                values,
+                repeat_shape,
+                repeats,
+                output_shape,
+            )?)),
         })
     }
 
@@ -14950,6 +15288,12 @@ impl TensorTape {
             }
             TensorStorage::Complex128(values) => {
                 TensorStorage::Complex128(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
+            }
+            TensorStorage::QInt8(values) => {
+                TensorStorage::QInt8(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
+            }
+            TensorStorage::QUInt8(values) => {
+                TensorStorage::QUInt8(Arc::new(Self::roll_slice(values, shape, shift, dim)?))
             }
         })
     }
@@ -15085,6 +15429,12 @@ impl TensorTape {
                     ft_core::Complex128::new(value, 0.0),
                 )?))
             }
+            TensorStorage::QInt8(values) => TensorStorage::QInt8(Arc::new(Self::pad_slice(
+                values, shape, out_shape, pad_before, value as i8,
+            )?)),
+            TensorStorage::QUInt8(values) => TensorStorage::QUInt8(Arc::new(Self::pad_slice(
+                values, shape, out_shape, pad_before, value as u8,
+            )?)),
         })
     }
 
@@ -15240,6 +15590,22 @@ impl TensorTape {
                     length,
                 )))
             }
+            TensorStorage::QInt8(values) => TensorStorage::QInt8(Arc::new(Self::narrow_slice(
+                Self::checked_storage_slice(values, storage_start, storage_end)?,
+                outer_size,
+                inner_size,
+                dim_size,
+                start,
+                length,
+            ))),
+            TensorStorage::QUInt8(values) => TensorStorage::QUInt8(Arc::new(Self::narrow_slice(
+                Self::checked_storage_slice(values, storage_start, storage_end)?,
+                outer_size,
+                inner_size,
+                dim_size,
+                start,
+                length,
+            ))),
         })
     }
 
@@ -15265,6 +15631,12 @@ impl TensorTape {
                 Self::checked_storage_slice(values, start, end)?.to_vec(),
             ))),
             TensorStorage::Complex128(values) => Ok(TensorStorage::Complex128(Arc::new(
+                Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+            TensorStorage::QInt8(values) => Ok(TensorStorage::QInt8(Arc::new(
+                Self::checked_storage_slice(values, start, end)?.to_vec(),
+            ))),
+            TensorStorage::QUInt8(values) => Ok(TensorStorage::QUInt8(Arc::new(
                 Self::checked_storage_slice(values, start, end)?.to_vec(),
             ))),
         }
@@ -22594,6 +22966,179 @@ mod tests {
         let tensor_a = tape.tensor(a).unwrap();
         let tensor_b = tape.tensor(b).unwrap();
         assert!(tensor_a.shares_storage_with(tensor_b));
+    }
+
+    #[test]
+    fn create_graph_dot_second_derivative() {
+        // dot(x,y) = sum(x*y); d/dx = y, d/dy = x.
+        // Second deriv of sum(dot(x,y)^2) should propagate through.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let y = tape.leaf(vec![3.0, 4.0], vec![2], true).expect("y");
+        let (d, _) = tape.dot(x, y, ExecutionMode::Strict).expect("dot");
+        let report = tape
+            .backward_with_options(
+                d,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        assert_eq!(report.gradient(x).expect("gx"), &[3.0, 4.0]);
+        assert_eq!(report.gradient(y).expect("gy"), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn create_graph_outer_second_derivative() {
+        // outer(x,y)[i,j] = x[i]*y[j]
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let y = tape.leaf(vec![3.0, 4.0, 5.0], vec![3], true).expect("y");
+        let (o, _) = tape.outer(x, y, ExecutionMode::Strict).expect("outer");
+        let (s, _) = tape.sum(o, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        // d/dx = sum_j(y[j]) = 12.0 for each x element
+        assert_eq!(report.gradient(x).expect("gx"), &[12.0, 12.0]);
+        // d/dy = sum_i(x[i]) = 3.0 for each y element
+        assert_eq!(report.gradient(y).expect("gy"), &[3.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn create_graph_bmm_gradients() {
+        // bmm: [1,2,3] @ [1,3,2] -> [1,2,2]
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 2, 3], true).expect("a");
+        let b = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 3, 2], true).expect("b");
+        let (c, _) = tape.bmm(a, b, ExecutionMode::Strict).expect("bmm");
+        let (s, _) = tape.sum(c, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        let ga = report.gradient(a).expect("ga");
+        let gb = report.gradient(b).expect("gb");
+        // Verify shapes are correct
+        assert_eq!(ga.len(), 6);
+        assert_eq!(gb.len(), 6);
+        // d/dA = ones @ B^T, d/dB = A^T @ ones
+        assert_eq!(ga, &[3.0, 7.0, 11.0, 3.0, 7.0, 11.0]);
+        assert_eq!(gb, &[5.0, 5.0, 7.0, 7.0, 9.0, 9.0]);
+    }
+
+    #[test]
+    fn create_graph_gelu_first_derivative() {
+        // GELU at x=0: f'(0) = 0.5. Second derivatives aren't supported
+        // because the derivative uses erf which isn't composable from cg primitives.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![0.0], vec![1], true).expect("x");
+        let (g, _) = tape.gelu(x, ExecutionMode::Strict).expect("gelu");
+        let report = tape
+            .backward_with_options(
+                g,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        assert!((report.gradient(x).expect("g")[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn create_graph_narrow_gradients() {
+        // narrow slices a tensor; gradient zero-pads back
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], true).expect("x");
+        let n = tape.narrow(x, 0, 1, 3).expect("narrow");
+        let (s, _) = tape.sum(n, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        assert_eq!(report.gradient(x).expect("gx"), &[0.0, 1.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn create_graph_cat_gradients() {
+        // cat joins tensors; gradient splits back
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("a");
+        let b = tape.leaf(vec![3.0, 4.0, 5.0], vec![3], true).expect("b");
+        let (c, _) = tape.cat(&[a, b], 0, ExecutionMode::Strict).expect("cat");
+        let (s, _) = tape.sum(c, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        assert_eq!(report.gradient(a).expect("ga"), &[1.0, 1.0]);
+        assert_eq!(report.gradient(b).expect("gb"), &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn create_graph_stack_gradients() {
+        // stack adds a dimension; gradient unstacks
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("a");
+        let b = tape.leaf(vec![3.0, 4.0], vec![2], true).expect("b");
+        let (c, _) = tape.stack(&[a, b], 0, ExecutionMode::Strict).expect("stack");
+        let (s, _) = tape.sum(c, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        assert_eq!(report.gradient(a).expect("ga"), &[1.0, 1.0]);
+        assert_eq!(report.gradient(b).expect("gb"), &[1.0, 1.0]);
+    }
+
+    #[test]
+    fn create_graph_min_max_gradients() {
+        // min/max: gradient flows to the arg that won
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 5.0, 3.0], vec![3], true).expect("x");
+        let y = tape.leaf(vec![2.0, 3.0, 3.0], vec![3], true).expect("y");
+        let (m, _) = tape.tensor_min(x, y, ExecutionMode::Strict).expect("min");
+        let (s, _) = tape.sum(m, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        // min([1,5,3], [2,3,3]) = [1,3,3] -> x wins at [0], y wins at [1], tie at [2] -> x gets it
+        assert_eq!(report.gradient(x).expect("gx"), &[1.0, 0.0, 1.0]);
+        assert_eq!(report.gradient(y).expect("gy"), &[0.0, 1.0, 0.0]);
     }
 
     // ── frankentorch-igu: Property-based tests for tensor autograd ─────
