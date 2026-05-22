@@ -5837,6 +5837,117 @@ impl FrankenTorchSession {
         self.tensor_nll_loss(log_probs, target, reduction)
     }
 
+    /// Kullback-Leibler divergence loss.
+    ///
+    /// Equivalent to `torch.nn.functional.kl_div(input, target, reduction, log_target)`.
+    /// Input should be log-probabilities. If log_target=true, target is also log-probs.
+    pub fn tensor_kl_div(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        log_target: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let loss = if log_target {
+            let exp_target = self.tensor_exp(target)?;
+            let diff = self.tensor_sub(target, input)?;
+            self.tensor_mul(exp_target, diff)?
+        } else {
+            let log_target_t = self.tensor_log(target)?;
+            let diff = self.tensor_sub(log_target_t, input)?;
+            self.tensor_mul(target, diff)?
+        };
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            "batchmean" => {
+                let sum = self.tensor_sum(loss)?;
+                let shape = self.tensor_shape(input)?;
+                let batch_size = shape[0] as f64;
+                let batch_t = self.full(vec![], batch_size, false)?;
+                self.tensor_div(sum, batch_t)
+            }
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "kl_div: reduction must be 'none', 'mean', 'sum', or 'batchmean'",
+                },
+            ))),
+        }
+    }
+
+    /// Huber loss (smooth L1 with configurable delta).
+    ///
+    /// Equivalent to `torch.nn.functional.huber_loss(input, target, reduction, delta)`.
+    pub fn tensor_huber_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        delta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_smooth_l1_loss(input, target, reduction, delta)
+    }
+
+    /// Hinge embedding loss for margin-based classification.
+    ///
+    /// Equivalent to `torch.nn.functional.hinge_embedding_loss`.
+    pub fn tensor_hinge_embedding_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let zeros = self.full(shape.clone(), 0.0, false)?;
+        let margin_t = self.full(shape.clone(), margin, false)?;
+        let ones = self.full(shape, 1.0, false)?;
+        let margin_minus_input = self.tensor_sub(margin_t, input)?;
+        let hinge = self.tensor_maximum(zeros, margin_minus_input)?;
+        let mask_pos = self.tensor_eq(target, ones)?;
+        let loss = self.tensor_where(mask_pos, input, hinge)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "hinge_embedding_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Soft margin loss for binary classification.
+    ///
+    /// Equivalent to `torch.nn.functional.soft_margin_loss`.
+    /// Loss = log(1 + exp(-target * input))
+    pub fn tensor_soft_margin_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let prod = self.tensor_mul(target, input)?;
+        let neg_prod = self.tensor_neg(prod)?;
+        let exp_term = self.tensor_exp(neg_prod)?;
+        let shape = self.tensor_shape(exp_term)?;
+        let ones = self.full(shape, 1.0, false)?;
+        let one_plus_exp = self.tensor_add(ones, exp_term)?;
+        let loss = self.tensor_log(one_plus_exp)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "soft_margin_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
     pub fn tensor_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.trace(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
@@ -6170,7 +6281,7 @@ impl FrankenTorchSession {
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| x.max(0.0).min(6.0)).collect();
+                let values: Vec<f64> = vals.iter().map(|&x| x.clamp(0.0, 6.0)).collect();
                 Ok((values, shape.to_vec()))
             },
             |ctx, grad_outputs| {
@@ -6722,7 +6833,7 @@ impl FrankenTorchSession {
             .zip(other_vals.iter())
             .map(|(&a, &b)| {
                 let shift_i = b as i64;
-                if shift_i < 0 || shift_i > 63 {
+                if !(0..=63).contains(&shift_i) {
                     0.0
                 } else {
                     ((a as i64).wrapping_shl(shift_i as u32)) as f64
@@ -6763,7 +6874,7 @@ impl FrankenTorchSession {
             .zip(other_vals.iter())
             .map(|(&a, &b)| {
                 let shift_i = b as i64;
-                if shift_i < 0 || shift_i > 63 {
+                if !(0..=63).contains(&shift_i) {
                     if (a as i64) < 0 { -1.0 } else { 0.0 }
                 } else {
                     ((a as i64).wrapping_shr(shift_i as u32)) as f64
@@ -15004,7 +15115,7 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `F.relu6(tensor, inplace=True)` in PyTorch.
     pub fn tensor_relu6_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
-        self.apply_tensor_unary_in_place("relu6_", target, None, |v| v.max(0.0).min(6.0))
+        self.apply_tensor_unary_in_place("relu6_", target, None, |v| v.clamp(0.0, 6.0))
     }
 
     pub fn tensor_sigmoid_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
@@ -15566,7 +15677,7 @@ impl FrankenTorchSession {
     /// Equivalent to `F.threshold(tensor, threshold, value, inplace=True)` in PyTorch.
     pub fn tensor_threshold_(&mut self, target: TensorNodeId, threshold: f64, value: f64) -> Result<(), AutogradError> {
         self.apply_tensor_unary_in_place("threshold_", target, Some(format!("threshold={threshold} value={value}")), |x| {
-            if x.is_nan() { x } else if x > threshold { x } else { value }
+            if x.is_nan() || x > threshold { x } else { value }
         })
     }
 
@@ -20157,21 +20268,18 @@ impl FrankenTorchSession {
     /// Equivalent to `torch.linalg.multi_dot(tensors)`. Multiplies
     /// the matrices left-to-right. For optimal parenthesization of
     /// long chains, consider dynamic programming (not implemented
-    /// here). First and last can be 1-D (treated as row/column
-    /// vectors); middle matrices must be 2-D.
+    /// here). Requires two or more tensors. First and last can be 1-D
+    /// (treated as row/column vectors); middle matrices must be 2-D.
     pub fn tensor_linalg_multi_dot(
         &mut self,
         tensors: &[TensorNodeId],
     ) -> Result<TensorNodeId, AutogradError> {
-        if tensors.is_empty() {
+        if tensors.len() < 2 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "multi_dot: need at least one tensor",
+                    reason: "multi_dot: need at least two tensors",
                 },
             )));
-        }
-        if tensors.len() == 1 {
-            return Ok(tensors[0]);
         }
         let mut result = self.tensor_matmul(tensors[0], tensors[1])?;
         for t in &tensors[2..] {
@@ -33130,7 +33238,7 @@ mod tests {
             .unwrap();
         s.tensor_random_(a, 0, 10).unwrap();
         let vals = s.tensor_values(a).unwrap();
-        assert!(vals.iter().all(|&v| v >= 0.0 && v < 10.0 && v.fract() == 0.0));
+        assert!(vals.iter().all(|&v| (0.0..10.0).contains(&v) && v.fract() == 0.0));
     }
 
     #[test]
