@@ -2042,6 +2042,40 @@ impl FrankenTorchSession {
         self.tensor_variable(samples, vec![num_samples], false)
     }
 
+    /// Alias for `arange`. Equivalent to `torch.arange(start, end, step)`.
+    pub fn tensor_arange(
+        &mut self,
+        start: f64,
+        end: f64,
+        step: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.arange(start, end, step, requires_grad)
+    }
+
+    /// Alias for `linspace`. Equivalent to `torch.linspace(start, end, steps)`.
+    pub fn tensor_linspace(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.linspace(start, end, steps, requires_grad)
+    }
+
+    /// Alias for `logspace`. Equivalent to `torch.logspace(start, end, steps, base)`.
+    pub fn tensor_logspace(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        base: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.logspace(start, end, steps, base, requires_grad)
+    }
+
     pub fn tensor_new_zeros(
         &mut self,
         _source: TensorNodeId,
