@@ -14462,6 +14462,48 @@ impl FrankenTorchSession {
         }
     }
 
+    /// In-place expit (sigmoid): 1 / (1 + exp(-x)).
+    pub fn tensor_expit_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("expit_", target, None, |x| 1.0 / (1.0 + (-x).exp()))
+    }
+
+    /// In-place sinc: sin(pi*x) / (pi*x), with sinc(0) = 1.
+    pub fn tensor_sinc_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("sinc_", target, None, |x| {
+            if x == 0.0 {
+                1.0
+            } else {
+                let pi_x = std::f64::consts::PI * x;
+                pi_x.sin() / pi_x
+            }
+        })
+    }
+
+    /// In-place mvlgamma (multivariate log-gamma).
+    pub fn tensor_mvlgamma_(&mut self, target: TensorNodeId, p: usize) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_mvlgamma(target, p)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("mvlgamma_", target, Some(format!("p={p}")));
+        Ok(())
+    }
+
+    /// In-place multigammaln (alias for mvlgamma_).
+    pub fn tensor_multigammaln_(&mut self, target: TensorNodeId, p: usize) -> Result<(), AutogradError> {
+        self.tensor_mvlgamma_(target, p)
+    }
+
+    /// In-place polygamma: n-th derivative of digamma.
+    pub fn tensor_polygamma_(&mut self, target: TensorNodeId, n: u32) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_polygamma(n, target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("polygamma_", target, Some(format!("n={n}")));
+        Ok(())
+    }
+
     /// In-place nan_to_num: replace NaN with nan, +inf with posinf, -inf with neginf.
     pub fn tensor_nan_to_num_(
         &mut self,
