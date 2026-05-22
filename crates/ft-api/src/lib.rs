@@ -12026,6 +12026,137 @@ impl FrankenTorchSession {
         self.tensor_variable(result, shape, false)
     }
 
+    /// Reduce source into input at indices using specified reduce operation.
+    ///
+    /// Equivalent to `torch.index_reduce(input, dim, index, source, reduce)`.
+    /// Reduce modes: "prod", "mean", "amax", "amin".
+    /// Tracked under frankentorch-p78l.
+    pub fn tensor_index_reduce(
+        &mut self,
+        input: TensorNodeId,
+        dim: i64,
+        index: TensorNodeId,
+        source: TensorNodeId,
+        reduce: &str,
+        include_self: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        if ndim == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_reduce: input must have at least 1 dimension",
+                },
+            )));
+        }
+
+        let dim = if dim < 0 { ndim as i64 + dim } else { dim } as usize;
+        if dim >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_reduce: dim out of range",
+                },
+            )));
+        }
+
+        let index_shape = self.tensor_shape(index)?;
+        if index_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_reduce: index must be 1D",
+                },
+            )));
+        }
+
+        let src_shape = self.tensor_shape(source)?;
+        if src_shape.len() != ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_reduce: source rank must match input rank",
+                },
+            )));
+        }
+        if src_shape[dim] != index_shape[0] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "index_reduce: source dim size must match index length",
+                },
+            )));
+        }
+
+        let dim_size = shape[dim];
+        let idx_vals = self.tensor_values(index)?;
+        let src_vals = self.tensor_values(source)?;
+        let input_vals = self.tensor_values(input)?;
+
+        let inner_stride: usize = shape[dim + 1..].iter().product();
+        let outer_stride: usize = shape[dim..].iter().product();
+        let outer_count: usize = shape[..dim].iter().product();
+        let src_outer_stride: usize = src_shape[dim..].iter().product();
+
+        let mut result = if include_self {
+            input_vals.clone()
+        } else {
+            match reduce {
+                "prod" => vec![1.0; input_vals.len()],
+                "mean" | "amax" => vec![f64::NEG_INFINITY; input_vals.len()],
+                "amin" => vec![f64::INFINITY; input_vals.len()],
+                _ => {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "index_reduce: reduce must be prod, mean, amax, or amin",
+                        },
+                    )));
+                }
+            }
+        };
+
+        let mut counts: Vec<usize> = vec![0; input_vals.len()];
+
+        for outer in 0..outer_count {
+            for (src_dim_idx, &idx_f) in idx_vals.iter().enumerate() {
+                let dst_dim_idx = idx_f as usize;
+                if dst_dim_idx >= dim_size {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "index_reduce: index out of bounds",
+                        },
+                    )));
+                }
+                for inner in 0..inner_stride {
+                    let src_idx = outer * src_outer_stride + src_dim_idx * inner_stride + inner;
+                    let dst_idx = outer * outer_stride + dst_dim_idx * inner_stride + inner;
+                    let src_val = src_vals[src_idx];
+                    match reduce {
+                        "prod" => result[dst_idx] *= src_val,
+                        "mean" => {
+                            if counts[dst_idx] == 0 && !include_self {
+                                result[dst_idx] = src_val;
+                            } else {
+                                result[dst_idx] += src_val;
+                            }
+                            counts[dst_idx] += 1;
+                        }
+                        "amax" => result[dst_idx] = result[dst_idx].max(src_val),
+                        "amin" => result[dst_idx] = result[dst_idx].min(src_val),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+
+        if reduce == "mean" {
+            for (i, &count) in counts.iter().enumerate() {
+                if count > 0 {
+                    let total = if include_self { count + 1 } else { count };
+                    result[i] /= total as f64;
+                }
+            }
+        }
+
+        self.tensor_variable(result, shape, false)
+    }
+
     pub fn tensor_values(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
         self.tensor_tape.values(node)
     }
@@ -50603,5 +50734,29 @@ mod tests {
         assert!((vals[1] - 2.0).abs() < 1e-10);
         assert!((vals[2] - 20.0).abs() < 1e-10);
         assert!((vals[4] - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_index_reduce_prod() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let index = s.tensor_variable(vec![0.0, 0.0, 2.0], vec![3], false).unwrap();
+        let source = s.tensor_variable(vec![2.0, 3.0, 4.0], vec![3], false).unwrap();
+        let result = s.tensor_index_reduce(input, 0, index, source, "prod", true).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 6.0).abs() < 1e-10); // 1.0 * 2.0 * 3.0
+        assert!((vals[1] - 2.0).abs() < 1e-10); // unchanged
+        assert!((vals[2] - 12.0).abs() < 1e-10); // 3.0 * 4.0
+    }
+
+    #[test]
+    fn test_index_reduce_amax() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let index = s.tensor_variable(vec![0.0, 0.0], vec![2], false).unwrap();
+        let source = s.tensor_variable(vec![5.0, 0.5], vec![2], false).unwrap();
+        let result = s.tensor_index_reduce(input, 0, index, source, "amax", true).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 5.0).abs() < 1e-10); // max(1.0, 5.0, 0.5)
     }
 }
