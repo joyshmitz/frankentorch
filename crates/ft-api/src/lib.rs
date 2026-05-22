@@ -6075,6 +6075,61 @@ impl FrankenTorchSession {
         self.tensor_ne(a_bool, b_bool)
     }
 
+    /// In-place logical AND: target = target && other (as 1.0/0.0).
+    pub fn tensor_logical_and_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_logical_and(target, other)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("logical_and_", target, None);
+        Ok(())
+    }
+
+    /// In-place logical OR: target = target || other (as 1.0/0.0).
+    pub fn tensor_logical_or_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_logical_or(target, other)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("logical_or_", target, None);
+        Ok(())
+    }
+
+    /// In-place logical XOR: target = target ^ other (as 1.0/0.0).
+    pub fn tensor_logical_xor_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_logical_xor(target, other)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("logical_xor_", target, None);
+        Ok(())
+    }
+
+    /// In-place logical NOT: target = !target (as 1.0/0.0).
+    pub fn tensor_logical_not_(
+        &mut self,
+        target: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_logical_not(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("logical_not_", target, None);
+        Ok(())
+    }
+
     /// Element-wise bitwise AND.
     ///
     /// Casts to i64, performs bitwise AND, casts back to f64. Non-differentiable.
