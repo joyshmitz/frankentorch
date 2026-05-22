@@ -7496,6 +7496,60 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// In-place fmod: target = target % other (truncated toward zero).
+    pub fn tensor_fmod_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| a - (a / b).trunc() * b)
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("fmod_", target, None);
+        Ok(())
+    }
+
+    /// In-place remainder: target = target % other (floored toward -inf).
+    pub fn tensor_remainder_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| a - (a / b).floor() * b)
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("remainder_", target, None);
+        Ok(())
+    }
+
     pub fn tensor_clamp(
         &mut self,
         input: TensorNodeId,
@@ -20696,6 +20750,60 @@ impl FrankenTorchSession {
             format!("lcm a={} b={} out={}", input.0, other.0, out.0),
         );
         Ok(out)
+    }
+
+    /// In-place gcd: target = gcd(target, other).
+    pub fn tensor_gcd_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| gcd_scalar(a as i64, b as i64) as f64)
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("gcd_", target, None);
+        Ok(())
+    }
+
+    /// In-place lcm: target = lcm(target, other).
+    pub fn tensor_lcm_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| lcm_scalar(a as i64, b as i64) as f64)
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("lcm_", target, None);
+        Ok(())
     }
 
     /// Element-wise entropy: -x * log(x).
@@ -54009,6 +54117,36 @@ mod tests {
         s.tensor_addcdiv_(b, t3, t4, 1.0).unwrap();
         let vals2 = s.tensor_values(b).unwrap();
         assert_eq!(vals2, vec![3.0, 5.0, 7.0]);
+    }
+
+    #[test]
+    fn test_tensor_fmod_remainder_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![7.0, -7.0, 7.0], vec![3], false).unwrap();
+        let d = s.tensor_variable(vec![3.0, 3.0, -3.0], vec![3], false).unwrap();
+        s.tensor_fmod_(a, d).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        assert_eq!(vals, vec![1.0, -1.0, 1.0]);
+        let b = s.tensor_variable(vec![7.0, -7.0, 7.0], vec![3], false).unwrap();
+        let d2 = s.tensor_variable(vec![3.0, 3.0, -3.0], vec![3], false).unwrap();
+        s.tensor_remainder_(b, d2).unwrap();
+        let vals2 = s.tensor_values(b).unwrap();
+        assert_eq!(vals2, vec![1.0, 2.0, -2.0]);
+    }
+
+    #[test]
+    fn test_tensor_gcd_lcm_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![12.0, 15.0, 20.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![8.0, 25.0, 12.0], vec![3], false).unwrap();
+        s.tensor_gcd_(a, b).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        assert_eq!(vals, vec![4.0, 5.0, 4.0]);
+        let c = s.tensor_variable(vec![4.0, 6.0, 3.0], vec![3], false).unwrap();
+        let d = s.tensor_variable(vec![6.0, 8.0, 5.0], vec![3], false).unwrap();
+        s.tensor_lcm_(c, d).unwrap();
+        let vals2 = s.tensor_values(c).unwrap();
+        assert_eq!(vals2, vec![12.0, 24.0, 15.0]);
     }
 
     #[test]
