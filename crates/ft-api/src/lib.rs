@@ -14066,6 +14066,27 @@ impl FrankenTorchSession {
         self.tensor_adjoint(input)
     }
 
+    /// 2-D tensor transpose property.
+    ///
+    /// Equivalent to `tensor.T` in PyTorch. For 2-D tensors, swaps dimensions.
+    /// For 0-D and 1-D tensors, returns the input unchanged.
+    #[allow(non_snake_case)]
+    pub fn tensor_T(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        if ndim <= 1 {
+            Ok(input)
+        } else if ndim == 2 {
+            self.tensor_transpose(input, 0, 1)
+        } else {
+            Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor.T is only valid for tensors with <= 2 dimensions",
+                },
+            )))
+        }
+    }
+
     /// Swap two dimensions; alias for `tensor_transpose`.
     ///
     /// Equivalent to `torch.swapaxes(input, dim0, dim1)`. PyTorch
@@ -14135,6 +14156,29 @@ impl FrankenTorchSession {
         }
         let last_dim = shape.len() - 1;
         self.tensor_flatten(input, 0, last_dim)
+    }
+
+    /// In-place flatten.
+    ///
+    /// Equivalent to `tensor.flatten_(start_dim, end_dim)`.
+    /// Since ft-api creates new nodes rather than views, this copies the
+    /// flattened values back to the target tensor.
+    pub fn tensor_flatten_(
+        &mut self,
+        target: TensorNodeId,
+        start_dim: usize,
+        end_dim: usize,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_flatten(target, start_dim, end_dim)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation(
+            "flatten_",
+            target,
+            Some(format!("start_dim={start_dim}, end_dim={end_dim}")),
+        );
+        Ok(())
     }
 
     /// Convert multi-dimensional indices to flat indices.
