@@ -1919,6 +1919,60 @@ impl FrankenTorchSession {
         self.randn_like(input, requires_grad)
     }
 
+    /// Alias for `rand`. Equivalent to `torch.rand(shape)`.
+    pub fn tensor_rand(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.rand(shape, requires_grad)
+    }
+
+    /// Alias for `randn`. Equivalent to `torch.randn(shape)`.
+    pub fn tensor_randn(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.randn(shape, requires_grad)
+    }
+
+    /// Alias for `randint`. Equivalent to `torch.randint(low, high, shape)`.
+    pub fn tensor_randint(
+        &mut self,
+        low: i64,
+        high: i64,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.randint(low, high, shape)
+    }
+
+    /// Create a tensor with same shape as input, filled with random integers.
+    ///
+    /// Equivalent to `torch.randint_like(input, low, high)`.
+    pub fn tensor_randint_like(
+        &mut self,
+        input: TensorNodeId,
+        low: i64,
+        high: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.randint(low, high, shape)
+    }
+
+    /// Create a random permutation of integers from 0 to n-1.
+    ///
+    /// Equivalent to `torch.randperm(n)`.
+    pub fn tensor_randperm(&mut self, n: usize) -> Result<TensorNodeId, AutogradError> {
+        let mut indices: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        // Fisher-Yates shuffle
+        for i in (1..n).rev() {
+            let j = (self.rng.next_f64() * (i + 1) as f64) as usize;
+            indices.swap(i, j);
+        }
+        self.tensor_variable(indices, vec![n], false)
+    }
+
     pub fn tensor_new_zeros(
         &mut self,
         _source: TensorNodeId,
