@@ -14972,6 +14972,27 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place scatter_reduce: applies scatter with a reduction operation.
+    pub fn tensor_scatter_reduce_(
+        &mut self,
+        target: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+        reduce: &str,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_scatter_reduce(target, dim, index, src, reduce)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation(
+            "scatter_reduce_",
+            target,
+            Some(format!("dim={dim} reduce={reduce}")),
+        );
+        Ok(())
+    }
+
     /// In-place addmm: beta * target + alpha * (mat1 @ mat2).
     pub fn tensor_addmm_(
         &mut self,
