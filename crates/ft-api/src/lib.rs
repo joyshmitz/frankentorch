@@ -10816,6 +10816,68 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Scaled dot-product attention mechanism.
+    ///
+    /// Equivalent to `torch.nn.functional.scaled_dot_product_attention`.
+    ///
+    /// Computes: `softmax(Q @ K^T / sqrt(d_k)) @ V` with optional masking and dropout.
+    ///
+    /// - `query`: [..., seq_len, d_k]
+    /// - `key`: [..., seq_len_kv, d_k]
+    /// - `value`: [..., seq_len_kv, d_v]
+    /// - `attn_mask`: optional mask tensor (None for causal, or explicit mask)
+    /// - `is_causal`: if true, applies causal (lower triangular) mask
+    /// - `scale`: optional scale factor (default: 1/sqrt(d_k))
+    pub fn tensor_scaled_dot_product_attention(
+        &mut self,
+        query: TensorNodeId,
+        key: TensorNodeId,
+        value: TensorNodeId,
+        attn_mask: Option<TensorNodeId>,
+        is_causal: bool,
+        scale: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let query_shape = self.tensor_shape(query)?;
+        let key_shape = self.tensor_shape(key)?;
+        if query_shape.len() < 2 || key_shape.len() < 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "scaled_dot_product_attention: query and key must be at least 2D",
+                },
+            )));
+        }
+        let d_k = query_shape[query_shape.len() - 1];
+        let scale_factor = scale.unwrap_or(1.0 / (d_k as f64).sqrt());
+        let key_t = self.tensor_transpose(key, key_shape.len() - 2, key_shape.len() - 1)?;
+        let scores = self.tensor_matmul(query, key_t)?;
+        let scores_shape = self.tensor_shape(scores)?;
+        let scale_t = self.full(scores_shape.clone(), scale_factor, false)?;
+        let scaled_scores = self.tensor_mul(scores, scale_t)?;
+        let masked_scores = if is_causal {
+            let seq_len = scores_shape[scores_shape.len() - 2];
+            let seq_len_kv = scores_shape[scores_shape.len() - 1];
+            let mut mask_vals = vec![0.0_f64; seq_len * seq_len_kv];
+            for i in 0..seq_len {
+                for j in 0..seq_len_kv {
+                    if j > i {
+                        mask_vals[i * seq_len_kv + j] = f64::NEG_INFINITY;
+                    }
+                }
+            }
+            let mask_node = self.tensor_variable(mask_vals, vec![seq_len, seq_len_kv], false)?;
+            let mask_shape = self.tensor_shape(mask_node)?;
+            let expanded_mask = self.tensor_expand(mask_node, scores_shape.clone())?;
+            self.tensor_add(scaled_scores, expanded_mask)?
+        } else if let Some(mask) = attn_mask {
+            self.tensor_add(scaled_scores, mask)?
+        } else {
+            scaled_scores
+        };
+        let ndim = scores_shape.len();
+        let attn_weights = self.tensor_softmax(masked_scores, ndim - 1)?;
+        self.tensor_matmul(attn_weights, value)
+    }
+
     /// Bilinear transformation: `y[k] = x1 @ W[k] @ x2^T + b[k]`.
     ///
     /// Equivalent to `torch.nn.functional.bilinear(input1, input2, weight, bias)`.
