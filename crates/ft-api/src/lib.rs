@@ -14171,6 +14171,15 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Copy variant of tensor.T.
+    ///
+    /// Equivalent to `tensor.t_copy()`.
+    /// Since ft-api creates copies, this is identical to `tensor_T`.
+    #[allow(non_snake_case)]
+    pub fn tensor_t_copy(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_T(input)
+    }
+
     /// Swap two dimensions; alias for `tensor_transpose`.
     ///
     /// Equivalent to `torch.swapaxes(input, dim0, dim1)`. PyTorch
@@ -15132,6 +15141,18 @@ impl FrankenTorchSession {
             .collect();
         let index_node = self.tensor_variable(indices, vec![diag_len], false)?;
         self.tensor_index_select(flat, 0, index_node)
+    }
+
+    /// Copy variant of diagonal.
+    ///
+    /// Equivalent to `tensor.diagonal_copy(offset)`.
+    /// Since ft-api creates copies, this is identical to `tensor_diagonal`.
+    pub fn tensor_diagonal_copy(
+        &mut self,
+        input: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagonal(input, offset)
     }
 
     /// Embed values from src into the diagonal of input.
@@ -28602,6 +28623,19 @@ impl FrankenTorchSession {
         // narrow to length 1, then squeeze that dimension
         let narrowed = self.tensor_narrow(input, dim, index, 1)?;
         self.tensor_squeeze(narrowed, dim)
+    }
+
+    /// Copy variant of select.
+    ///
+    /// Equivalent to `tensor.select_copy(dim, index)`.
+    /// Since ft-api creates copies, this is identical to `tensor_select`.
+    pub fn tensor_select_copy(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_select(input, dim, index)
     }
 
     // ── tensor_take_along_dim ──────────────────────────────────────────
