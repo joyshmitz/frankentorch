@@ -13162,6 +13162,22 @@ impl FrankenTorchSession {
         )
     }
 
+    pub fn tensor_clamp_min_(
+        &mut self,
+        target: TensorNodeId,
+        min_val: f64,
+    ) -> Result<(), AutogradError> {
+        self.tensor_clamp_(target, min_val, f64::INFINITY)
+    }
+
+    pub fn tensor_clamp_max_(
+        &mut self,
+        target: TensorNodeId,
+        max_val: f64,
+    ) -> Result<(), AutogradError> {
+        self.tensor_clamp_(target, f64::NEG_INFINITY, max_val)
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -52812,5 +52828,16 @@ mod tests {
         assert_eq!(x, y);
         let z = s.tensor_to(x, Device::Cpu).unwrap();
         assert_eq!(x, z);
+    }
+
+    #[test]
+    fn test_clamp_min_max_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![-1.0, 0.5, 2.0], vec![3], false).unwrap();
+        s.tensor_clamp_min_(x, 0.0).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![0.0, 0.5, 2.0]);
+        let y = s.tensor_variable(vec![-1.0, 0.5, 2.0], vec![3], false).unwrap();
+        s.tensor_clamp_max_(y, 1.0).unwrap();
+        assert_eq!(s.tensor_values(y).unwrap(), vec![-1.0, 0.5, 1.0]);
     }
 }
