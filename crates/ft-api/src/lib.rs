@@ -14868,6 +14868,21 @@ impl FrankenTorchSession {
         self.tensor_flip_(target, &[0])
     }
 
+    /// In-place sort along dim (returns indices).
+    pub fn tensor_sort_(
+        &mut self,
+        target: TensorNodeId,
+        dim: usize,
+        descending: bool,
+    ) -> Result<Vec<usize>, AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let (values, indices) = self.tensor_sort(target, dim, descending)?;
+        let result_vals = self.tensor_values(values)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("sort_", target, Some(format!("dim={dim} descending={descending}")));
+        Ok(indices)
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -54974,6 +54989,15 @@ mod tests {
         let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).unwrap();
         s.tensor_rot90_(x, 1, [0, 1]).unwrap();
         assert_eq!(s.tensor_values(x).unwrap(), vec![2.0, 4.0, 1.0, 3.0]);
+    }
+
+    #[test]
+    fn test_sort_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0], vec![6], false).unwrap();
+        let indices = s.tensor_sort_(x, 0, false).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![1.0, 1.0, 3.0, 4.0, 5.0, 9.0]);
+        assert_eq!(indices, vec![1, 3, 0, 2, 4, 5]);
     }
 
     #[test]
