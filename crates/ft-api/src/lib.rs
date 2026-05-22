@@ -1886,6 +1886,39 @@ impl FrankenTorchSession {
         self.full(shape, fill_value, requires_grad)
     }
 
+    /// Create an uninitialized tensor with the same shape as `input`.
+    ///
+    /// Equivalent to `torch.empty_like(input)`. Note: returns zeros in this implementation.
+    pub fn tensor_empty_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.empty_like(input, requires_grad)
+    }
+
+    /// Create a tensor of uniform random values [0, 1) with the same shape as `input`.
+    ///
+    /// Equivalent to `torch.rand_like(input)`.
+    pub fn tensor_rand_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.rand_like(input, requires_grad)
+    }
+
+    /// Create a tensor of standard normal random values with the same shape as `input`.
+    ///
+    /// Equivalent to `torch.randn_like(input)`.
+    pub fn tensor_randn_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.randn_like(input, requires_grad)
+    }
+
     pub fn tensor_new_zeros(
         &mut self,
         _source: TensorNodeId,
