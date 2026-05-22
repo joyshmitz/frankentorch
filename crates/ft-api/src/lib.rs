@@ -14391,6 +14391,15 @@ impl FrankenTorchSession {
         self.tensor_clone(node, false)
     }
 
+    /// Return the tensor's data without gradient tracking.
+    ///
+    /// Equivalent to `tensor.data` in PyTorch. In FrankenTorch, this is
+    /// an alias for `tensor_detach` since tensors are immutable and
+    /// value-semantics based (no shared storage).
+    pub fn tensor_data(&mut self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_detach(node)
+    }
+
     /// Return true (1.0) if any element in the tensor is non-zero.
     pub fn tensor_any(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         let values = self.tensor_tape.values(node)?;
@@ -52344,6 +52353,17 @@ mod tests {
         let shape = s.tensor_shape(reshaped).unwrap();
         assert_eq!(shape, vec![2, 3]);
         let vals = s.tensor_values(reshaped).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_tensor_data() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], true).unwrap();
+        assert!(s.tensor_requires_grad(x).unwrap());
+        let data = s.tensor_data(x).unwrap();
+        assert!(!s.tensor_requires_grad(data).unwrap());
+        let vals = s.tensor_values(data).unwrap();
         assert!((vals[0] - 1.0).abs() < 1e-10);
     }
 }
