@@ -1836,6 +1836,43 @@ impl FrankenTorchSession {
         self.full(shape, fill_value, requires_grad)
     }
 
+    pub fn tensor_new_zeros(
+        &mut self,
+        _source: TensorNodeId,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.zeros(shape, requires_grad)
+    }
+
+    pub fn tensor_new_ones(
+        &mut self,
+        _source: TensorNodeId,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.ones(shape, requires_grad)
+    }
+
+    pub fn tensor_new_full(
+        &mut self,
+        _source: TensorNodeId,
+        shape: Vec<usize>,
+        fill_value: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.full(shape, fill_value, requires_grad)
+    }
+
+    pub fn tensor_new_empty(
+        &mut self,
+        _source: TensorNodeId,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.zeros(shape, requires_grad)
+    }
+
     pub fn arange(
         &mut self,
         start: f64,
@@ -52703,5 +52740,20 @@ mod tests {
         let x = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
         assert!(!s.tensor_is_sparse(x).unwrap());
         assert!(!s.tensor_is_quantized(x).unwrap());
+    }
+
+    #[test]
+    fn test_new_factory_methods() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let source = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let z = s.tensor_new_zeros(source, vec![2, 3], false).unwrap();
+        assert_eq!(s.tensor_shape(z).unwrap(), vec![2, 3]);
+        assert_eq!(s.tensor_values(z).unwrap(), vec![0.0; 6]);
+        let o = s.tensor_new_ones(source, vec![2], false).unwrap();
+        assert_eq!(s.tensor_values(o).unwrap(), vec![1.0, 1.0]);
+        let f = s.tensor_new_full(source, vec![3], 5.0, false).unwrap();
+        assert_eq!(s.tensor_values(f).unwrap(), vec![5.0, 5.0, 5.0]);
+        let e = s.tensor_new_empty(source, vec![2], false).unwrap();
+        assert_eq!(s.tensor_shape(e).unwrap(), vec![2]);
     }
 }
