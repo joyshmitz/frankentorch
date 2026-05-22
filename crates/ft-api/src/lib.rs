@@ -11988,6 +11988,25 @@ impl FrankenTorchSession {
         self.tensor_variable(result, input_shape, false)
     }
 
+    /// Put values into a tensor along a specific dimension using indices.
+    ///
+    /// Equivalent to `numpy.put_along_axis` / PyTorch's `scatter` with
+    /// values. For each position in the index tensor, places the
+    /// corresponding value from `src` at that index position along `dim`.
+    ///
+    /// This is the inverse of `take_along_dim`.
+    pub fn tensor_put_along_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        indices: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // This is essentially tensor_scatter with specific semantics.
+        // Use scatter to implement: out = input.scatter(dim, indices, src)
+        self.tensor_scatter(input, dim, indices, src)
+    }
+
     /// Like `tensor_index_select`, but the input's gradient is also
     /// surfaced as a sparse COO tensor on the backward report
     /// (`TensorBackwardReport::sparse_gradient`). Only meaningful for
@@ -12837,6 +12856,112 @@ impl FrankenTorchSession {
         }
         let last_dim = shape.len() - 1;
         self.tensor_flatten(input, 0, last_dim)
+    }
+
+    /// Convert multi-dimensional indices to flat indices.
+    ///
+    /// Equivalent to `torch.ravel_multi_index(multi_index, dims)`.
+    /// Takes a tensor of shape `(ndim, ...)` where each row contains
+    /// indices for that dimension, and returns flat indices of shape `(...)`.
+    ///
+    /// Example: for dims=[2,3], indices [[0,1], [1,2]] -> [1, 5]
+    /// i.e., (0,1) -> 0*3+1=1, (1,2) -> 1*3+2=5
+    pub fn tensor_ravel_multi_index(
+        &mut self,
+        multi_index: TensorNodeId,
+        dims: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(multi_index)?;
+        if shape.is_empty() || shape[0] != dims.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "ravel_multi_index: first dim of multi_index must match dims length",
+                },
+            )));
+        }
+        let ndim = dims.len();
+        let out_shape: Vec<usize> = shape[1..].to_vec();
+        let out_size: usize = out_shape.iter().product();
+
+        let strides: Vec<usize> = {
+            let mut s = vec![1usize; ndim];
+            for i in (0..ndim - 1).rev() {
+                s[i] = s[i + 1] * dims[i + 1];
+            }
+            s
+        };
+
+        let strides_clone = strides.clone();
+        self.tensor_apply_function(
+            &[multi_index],
+            move |_ctx, inputs| {
+                let (vals, in_shape) = inputs[0];
+                let ndim = in_shape[0];
+                let n = in_shape[1..].iter().product::<usize>();
+                let mut result = vec![0.0_f64; n];
+                for i in 0..n {
+                    let mut flat_idx = 0usize;
+                    for d in 0..ndim {
+                        let idx = vals[d * n + i] as usize;
+                        flat_idx += idx * strides_clone[d];
+                    }
+                    result[i] = flat_idx as f64;
+                }
+                let out = if in_shape.len() == 1 { vec![1] } else { in_shape[1..].to_vec() };
+                Ok((result, out))
+            },
+            move |_ctx, _grad_outputs| {
+                // Index operations have undefined gradients
+                let _ = out_size;
+                Ok(vec![None])
+            },
+        )
+    }
+
+    /// Convert flat indices to multi-dimensional indices.
+    ///
+    /// Equivalent to `torch.unravel_index(indices, shape)`.
+    /// Takes flat indices and returns a tuple of tensors, one per dimension,
+    /// containing the multi-dimensional indices.
+    pub fn tensor_unravel_index(
+        &mut self,
+        indices: TensorNodeId,
+        shape: Vec<usize>,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        let idx_shape = self.tensor_shape(indices)?;
+        let ndim = shape.len();
+
+        let strides: Vec<usize> = {
+            let mut s = vec![1usize; ndim];
+            for i in (0..ndim - 1).rev() {
+                s[i] = s[i + 1] * shape[i + 1];
+            }
+            s
+        };
+
+        let mut result_tensors = Vec::with_capacity(ndim);
+        for d in 0..ndim {
+            let stride = strides[d];
+            let dim_size = shape[d];
+            let out_shape = idx_shape.clone();
+            self.tensor_apply_function(
+                &[indices],
+                move |_ctx, inputs| {
+                    let (vals, _in_shape) = inputs[0];
+                    let result: Vec<f64> = vals
+                        .iter()
+                        .map(|&v| ((v as usize / stride) % dim_size) as f64)
+                        .collect();
+                    Ok((result, out_shape.clone()))
+                },
+                move |_ctx, _grad_outputs| {
+                    // Index operations have undefined gradients
+                    Ok(vec![None])
+                },
+            )
+            .map(|t| result_tensors.push(t))?;
+        }
+        Ok(result_tensors)
     }
 
     /// Remove all size-1 dimensions from `input`.
