@@ -2196,6 +2196,30 @@ impl FrankenTorchSession {
         self.tensor_variable(rows, vec![2, n], false)
     }
 
+    /// Return the indices of the lower triangular part of a (row, col) matrix.
+    ///
+    /// Alias for `tril_indices`. Equivalent to `torch.tril_indices(row, col, offset)`.
+    pub fn tensor_tril_indices(
+        &mut self,
+        row: usize,
+        col: usize,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tril_indices(row, col, offset)
+    }
+
+    /// Return the indices of the upper triangular part of a (row, col) matrix.
+    ///
+    /// Alias for `triu_indices`. Equivalent to `torch.triu_indices(row, col, offset)`.
+    pub fn tensor_triu_indices(
+        &mut self,
+        row: usize,
+        col: usize,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.triu_indices(row, col, offset)
+    }
+
     /// Return the indices for the diagonal of an n×n matrix.
     ///
     /// Equivalent to `torch.diag_indices(n)`. Returns a tuple of two
@@ -2208,6 +2232,16 @@ impl FrankenTorchSession {
         let row_indices = self.tensor_variable(indices.clone(), vec![n], false)?;
         let col_indices = self.tensor_variable(indices, vec![n], false)?;
         Ok((row_indices, col_indices))
+    }
+
+    /// Return the indices for the diagonal of an n×n matrix.
+    ///
+    /// Alias for `diag_indices`. Equivalent to `torch.diag_indices(n)`.
+    pub fn tensor_diag_indices(
+        &mut self,
+        n: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.diag_indices(n)
     }
 
     /// Create a tensor filled with uniform random values in [0, 1).
