@@ -14361,6 +14361,19 @@ impl FrankenTorchSession {
         Ok(0)
     }
 
+    pub fn tensor_is_floating_point(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(self.tensor_dtype(node)?.is_floating_point())
+    }
+
+    pub fn tensor_is_complex(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(self.tensor_dtype(node)?.is_complex())
+    }
+
+    pub fn tensor_is_signed(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        let dtype = self.tensor_dtype(node)?;
+        Ok(dtype.is_floating_point() || dtype.is_complex() || matches!(dtype, DType::I64 | DType::I32))
+    }
+
     /// Alias for `tensor_dim`. Equivalent to `tensor.ndim` in PyTorch.
     pub fn tensor_ndim(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
         self.tensor_dim(node)
@@ -52627,5 +52640,14 @@ mod tests {
         assert_eq!(s.tensor_element_size(x).unwrap(), 8);
         assert_eq!(s.tensor_nbytes(x).unwrap(), 48);
         assert_eq!(s.tensor_storage_offset(x).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_dtype_queries() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let f64_tensor = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        assert!(s.tensor_is_floating_point(f64_tensor).unwrap());
+        assert!(!s.tensor_is_complex(f64_tensor).unwrap());
+        assert!(s.tensor_is_signed(f64_tensor).unwrap());
     }
 }
