@@ -13836,6 +13836,24 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Alias for `tensor_cat`. Equivalent to `torch.concat`.
+    pub fn tensor_concat(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cat(inputs, dim)
+    }
+
+    /// Alias for `tensor_cat`. NumPy-style naming.
+    pub fn tensor_concatenate(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cat(inputs, dim)
+    }
+
     pub fn tensor_stack(
         &mut self,
         inputs: &[TensorNodeId],
