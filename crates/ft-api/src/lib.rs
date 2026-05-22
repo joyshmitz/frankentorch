@@ -15297,6 +15297,23 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// Sample from Bernoulli distribution with element-wise probabilities.
+    ///
+    /// Equivalent to `torch.bernoulli(prob)`. Each output element is 1 with
+    /// probability prob[i], 0 otherwise. Returns a new tensor with same shape.
+    pub fn tensor_bernoulli(
+        &mut self,
+        prob: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(prob)?;
+        let prob_vals = self.tensor_values(prob)?;
+        let values: Vec<f64> = prob_vals
+            .iter()
+            .map(|&p| if self.rng.next_f64() < p { 1.0 } else { 0.0 })
+            .collect();
+        self.tensor_variable(values, shape, false)
+    }
+
     /// In-place random: fill with uniform integers from [from, to).
     pub fn tensor_random_(
         &mut self,
@@ -22518,6 +22535,41 @@ impl FrankenTorchSession {
         self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation("poisson_", tensor, Some(format!("lambd={lambd}")));
         Ok(())
+    }
+
+    /// Sample from Poisson distribution with element-wise rates.
+    ///
+    /// Equivalent to `torch.poisson(rate)`. Each output element is sampled
+    /// from Poisson(rate[i]). Returns a new tensor with same shape as rate.
+    pub fn tensor_poisson(
+        &mut self,
+        rate: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(rate)?;
+        let rate_vals = self.tensor_values(rate)?;
+        let values: Vec<f64> = rate_vals
+            .iter()
+            .map(|&lambd| {
+                if lambd < 0.0 {
+                    return f64::NAN;
+                }
+                if lambd == 0.0 {
+                    return 0.0;
+                }
+                let l = (-lambd).exp();
+                let mut k = 0i64;
+                let mut p = 1.0;
+                loop {
+                    k += 1;
+                    p *= self.rng.next_f64();
+                    if p <= l {
+                        break;
+                    }
+                }
+                (k - 1) as f64
+            })
+            .collect();
+        self.tensor_variable(values, shape, false)
     }
 
     /// Fill tensor with a constant value.
