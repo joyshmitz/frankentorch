@@ -13383,6 +13383,25 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("tan_", target, None, f64::tan)
     }
 
+    /// In-place square (x^2).
+    ///
+    /// Equivalent to `tensor.square_()` in PyTorch.
+    pub fn tensor_square_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("square_", target, None, |x| x * x)
+    }
+
+    /// In-place power (x^exponent).
+    ///
+    /// Equivalent to `tensor.pow_(exponent)` in PyTorch.
+    pub fn tensor_pow_(&mut self, target: TensorNodeId, exponent: f64) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place(
+            "pow_",
+            target,
+            Some(format!("exponent={exponent}")),
+            |x| x.powf(exponent),
+        )
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53371,5 +53390,16 @@ mod tests {
         let c = s.tensor_variable(v, vec![3], false).unwrap();
         s.tensor_tan_(c).unwrap();
         assert_eq!(s.tensor_shape(c).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_pow_square_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        s.tensor_square_(a).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        s.tensor_pow_(b, 3.0).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
