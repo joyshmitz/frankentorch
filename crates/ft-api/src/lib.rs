@@ -6260,6 +6260,43 @@ impl FrankenTorchSession {
         self.tensor_where(nan_mask, nan_const, step)
     }
 
+    /// In-place heaviside: target = 0 if target < 0, 1 if target > 0, values[i] if target == 0.
+    pub fn tensor_heaviside_(
+        &mut self,
+        target: TensorNodeId,
+        values: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let values_vals = self.tensor_values(values)?;
+        if target_vals.len() != values_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(values)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(values_vals.iter())
+            .map(|(&x, &v)| {
+                if x.is_nan() {
+                    f64::NAN
+                } else if x > 0.0 {
+                    1.0
+                } else if x < 0.0 {
+                    0.0
+                } else {
+                    v
+                }
+            })
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("heaviside_", target, None);
+        Ok(())
+    }
+
     /// Normalized sinc function: `sin(pi*x) / (pi*x)`, with `sinc(0) = 1`.
     ///
     /// Equivalent to `torch.sinc(input)`. Handles the x = 0 case via
@@ -54458,6 +54495,16 @@ mod tests {
         assert!(vals2[0] > 1.0 && vals2[0] < 2.0);
         assert!(vals2[1] > 2.0 && vals2[1] < 3.0);
         assert!(vals2[2] > 3.0 && vals2[2] < 4.0);
+    }
+
+    #[test]
+    fn test_tensor_heaviside_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-1.0, 0.0, 1.0, 2.0], vec![4], false).unwrap();
+        let v = s.tensor_variable(vec![0.5, 0.5, 0.5, 0.5], vec![4], false).unwrap();
+        s.tensor_heaviside_(a, v).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        assert_eq!(vals, vec![0.0, 0.5, 1.0, 1.0]);
     }
 
     #[test]
