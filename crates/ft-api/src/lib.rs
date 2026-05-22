@@ -14070,6 +14070,52 @@ impl FrankenTorchSession {
         self.tensor_view(input, other_shape)
     }
 
+    /// Create a tensor with specified size and stride, reading from input storage.
+    /// PyTorch's as_strided creates a view; FrankenTorch materializes a copy.
+    pub fn tensor_as_strided(
+        &mut self,
+        input: TensorNodeId,
+        size: Vec<usize>,
+        stride: Vec<usize>,
+        storage_offset: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if size.len() != stride.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "as_strided: size and stride must have same length",
+                },
+            )));
+        }
+        let offset = storage_offset.unwrap_or(0);
+        let values = self.tensor_tape.values(input)?;
+        let numel: usize = size.iter().product();
+        let mut result = Vec::with_capacity(numel);
+
+        fn index_to_offset(idx: usize, size: &[usize], stride: &[usize]) -> usize {
+            let mut offset = 0;
+            let mut remaining = idx;
+            for (i, &dim_size) in size.iter().enumerate().rev() {
+                let coord = remaining % dim_size;
+                remaining /= dim_size;
+                offset += coord * stride[i];
+            }
+            offset
+        }
+
+        for i in 0..numel {
+            let src_idx = offset + index_to_offset(i, &size, &stride);
+            if src_idx >= values.len() {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "as_strided: index out of bounds",
+                    },
+                )));
+            }
+            result.push(values[src_idx]);
+        }
+        self.tensor_variable(result, size, false)
+    }
+
     pub fn tensor_squeeze(
         &mut self,
         input: TensorNodeId,
