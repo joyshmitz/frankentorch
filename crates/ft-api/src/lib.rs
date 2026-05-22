@@ -14298,6 +14298,52 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("erfinv_", target, None, erfinv_approx)
     }
 
+    /// In-place digamma (psi function): d/dx ln(Gamma(x)).
+    pub fn tensor_digamma_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("digamma_", target, None, digamma_approx)
+    }
+
+    /// In-place lgamma: ln|Gamma(x)|.
+    pub fn tensor_lgamma_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("lgamma_", target, None, libm::lgamma)
+    }
+
+    /// In-place erfc: 1 - erf(x).
+    pub fn tensor_erfc_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("erfc_", target, None, libm::erfc)
+    }
+
+    /// In-place erfcx: scaled complementary error function exp(x^2) * erfc(x).
+    pub fn tensor_erfcx_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("erfcx_", target, None, erfcx_approx)
+    }
+
+    /// In-place i0: modified Bessel function of the first kind, order 0.
+    pub fn tensor_i0_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("i0_", target, None, i0_approx)
+    }
+
+    /// In-place i1: modified Bessel function of the first kind, order 1.
+    pub fn tensor_i1_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("i1_", target, None, i1_approx)
+    }
+
+    /// In-place ndtr: cumulative distribution function of standard normal.
+    pub fn tensor_ndtr_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        let sqrt2_inv = 1.0 / std::f64::consts::SQRT_2;
+        self.apply_tensor_unary_in_place("ndtr_", target, None, move |x| {
+            0.5 * libm::erfc(-x * sqrt2_inv)
+        })
+    }
+
+    /// In-place ndtri: inverse of ndtr (quantile function of standard normal).
+    pub fn tensor_ndtri_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        let sqrt2 = std::f64::consts::SQRT_2;
+        self.apply_tensor_unary_in_place("ndtri_", target, None, move |p| {
+            sqrt2 * erfinv_approx(2.0 * p - 1.0)
+        })
+    }
+
     /// In-place SiLU (Swish) activation: x * sigmoid(x).
     ///
     /// Equivalent to `tensor.silu_()` in PyTorch.
