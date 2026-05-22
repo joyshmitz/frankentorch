@@ -17226,6 +17226,27 @@ impl FrankenTorchSession {
         Ok((sign_id, logabsdet_id))
     }
 
+    /// Alias for `tensor_linalg_slogdet`.
+    ///
+    /// Equivalent to `torch.slogdet(input)`.
+    pub fn tensor_slogdet(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_slogdet(input)
+    }
+
+    /// Compute the log-determinant of a square matrix.
+    ///
+    /// Equivalent to `torch.logdet(input)`. Returns `log(|det(A)|)`.
+    /// This is the second element of `slogdet` and is more numerically
+    /// stable than `log(det(A))` for large matrices. Returns `-inf`
+    /// for singular matrices (det = 0).
+    pub fn tensor_logdet(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let (_sign, logabsdet) = self.tensor_linalg_slogdet(input)?;
+        Ok(logabsdet)
+    }
+
     /// Compute the Moore-Penrose pseudoinverse via SVD.
     ///
     /// Equivalent to `torch.linalg.pinv(input)`.
@@ -51905,5 +51926,28 @@ mod tests {
         let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
         let result = s.tensor_adjoint(x);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_slogdet_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 2x2 matrix with positive determinant: [[1,2],[3,4]]
+        // det = 1*4 - 2*3 = -2
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).unwrap();
+        let (sign, logabsdet) = s.tensor_slogdet(a).unwrap();
+        let sign_val = s.tensor_values(sign).unwrap();
+        let logabsdet_val = s.tensor_values(logabsdet).unwrap();
+        assert!((sign_val[0] - (-1.0)).abs() < 1e-10);
+        assert!((logabsdet_val[0] - 2.0_f64.ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_logdet_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Identity matrix: det = 1, log|det| = 0
+        let a = s.tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false).unwrap();
+        let logdet = s.tensor_logdet(a).unwrap();
+        let val = s.tensor_values(logdet).unwrap();
+        assert!(val[0].abs() < 1e-10);
     }
 }
