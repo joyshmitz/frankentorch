@@ -10642,6 +10642,60 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Bilinear transformation: `y[k] = x1 @ W[k] @ x2^T + b[k]`.
+    ///
+    /// Equivalent to `torch.nn.functional.bilinear(input1, input2, weight, bias)`.
+    /// `input1`: `[*, in1_features]`, `input2`: `[*, in2_features]`,
+    /// `weight`: `[out_features, in1_features, in2_features]`,
+    /// `bias` (optional): `[out_features]`.
+    pub fn functional_bilinear(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let weight_shape = self.tensor_shape(weight)?;
+        if weight_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "bilinear: weight must be 3-D [out_features, in1_features, in2_features]",
+                },
+            )));
+        }
+        let out_features = weight_shape[0];
+        let input1_shape = self.tensor_shape(input1)?;
+        let batch_shape: Vec<usize> = input1_shape[..input1_shape.len() - 1].to_vec();
+        let mut output_parts = Vec::with_capacity(out_features);
+        for k in 0..out_features {
+            let w_k = self.tensor_select(weight, 0, k)?;
+            let temp = self.tensor_matmul(input1, w_k)?;
+            let input2_t = self.tensor_transpose(input2, input1_shape.len() - 1, input1_shape.len() - 1)?;
+            let out_k = self.tensor_matmul(temp, input2_t)?;
+            output_parts.push(out_k);
+        }
+        let output = self.tensor_stack(&output_parts, batch_shape.len())?;
+        match bias {
+            Some(b) => {
+                let out_shape = self.tensor_shape(output)?;
+                let expanded = self.tensor_expand(b, out_shape)?;
+                self.tensor_add(output, expanded)
+            }
+            None => Ok(output),
+        }
+    }
+
+    /// Alias for functional_bilinear.
+    pub fn tensor_bilinear(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_bilinear(input1, input2, weight, bias)
+    }
+
     /// Apply a 1D convolution: `y = conv1d(input, weight, bias)`.
     ///
     /// Equivalent to `torch.nn.functional.conv1d(input, weight, bias, stride, padding)`.
