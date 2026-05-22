@@ -357,27 +357,38 @@ impl WeightedRandomSampler {
         self.num_samples == 0
     }
 
-    pub fn indices(&self) -> Vec<usize> {
-        if self.weights.is_empty() {
-            return Vec::new();
-        }
+    pub fn indices(&self) -> Result<Vec<usize>, AutogradError> {
         if self.num_samples == 0 {
-            return Vec::new();
+            return Err(transform_config_error(
+                "WeightedRandomSampler: num_samples must be > 0",
+            ));
         }
-
+        if self.weights.is_empty() {
+            return Err(transform_config_error(
+                "WeightedRandomSampler: weights must be non-empty",
+            ));
+        }
         let mut cumulative = Vec::with_capacity(self.weights.len());
         let mut total = 0.0;
         for &w in &self.weights {
-            total += sanitize_weight(w);
+            if !w.is_finite() {
+                return Err(transform_config_error(
+                    "WeightedRandomSampler: weights must be finite",
+                ));
+            }
+            if w < 0.0 {
+                return Err(transform_config_error(
+                    "WeightedRandomSampler: weights must be non-negative",
+                ));
+            }
+            total += w;
             cumulative.push(total);
         }
 
         if total <= 0.0 {
-            // All-zero weights: uniform sampling
-            let mut rng = SimpleRng::new(self.seed);
-            return (0..self.num_samples)
-                .map(|_| rng.next_below(self.weights.len()))
-                .collect();
+            return Err(transform_config_error(
+                "WeightedRandomSampler: sum of weights must be > 0",
+            ));
         }
 
         for threshold in &mut cumulative {
@@ -396,15 +407,7 @@ impl WeightedRandomSampler {
             };
             result.push(idx);
         }
-        result
-    }
-}
-
-fn sanitize_weight(weight: f64) -> f64 {
-    if weight.is_finite() {
-        weight.max(0.0)
-    } else {
-        0.0
+        Ok(result)
     }
 }
 
@@ -706,8 +709,7 @@ fn collate(
             if s_vals.len() != sample_numel {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason:
-                            "DataLoader: sample values length does not match declared tensor shape",
+                        reason: "DataLoader: sample values length does not match declared tensor shape",
                     },
                 )));
             }
@@ -1355,7 +1357,7 @@ mod tests {
         // Weight index 0 heavily, others very low
         let weights = vec![100.0, 0.1, 0.1, 0.1, 0.1];
         let s = WeightedRandomSampler::new(weights, 100).with_seed(42);
-        let indices = s.indices();
+        let indices = s.indices().expect("weighted samples");
         assert_eq!(indices.len(), 100);
         // Most samples should be index 0
         let count_zero = indices.iter().filter(|&&i| i == 0).count();
@@ -1367,36 +1369,23 @@ mod tests {
 
     #[test]
     fn weighted_random_sampler_all_zero_weights() {
-        // All-zero weights: uniform sampling
         let weights = vec![0.0, 0.0, 0.0];
         let s = WeightedRandomSampler::new(weights, 30).with_seed(99);
-        let indices = s.indices();
-        assert_eq!(indices.len(), 30);
-        assert!(indices.iter().all(|&i| i < 3));
+        assert!(s.indices().is_err());
     }
 
     #[test]
-    fn weighted_random_sampler_ignores_negative_weights() {
+    fn weighted_random_sampler_rejects_negative_weights() {
         let weights = vec![-10.0, 5.0, 0.0];
         let s = WeightedRandomSampler::new(weights, 50).with_seed(7);
-        let indices = s.indices();
-        assert_eq!(indices.len(), 50);
-        assert!(
-            indices.iter().all(|&i| i == 1),
-            "negative weights should be treated as zero and the only positive-weight index should dominate"
-        );
+        assert!(s.indices().is_err());
     }
 
     #[test]
-    fn weighted_random_sampler_ignores_nan_weights() {
+    fn weighted_random_sampler_rejects_nan_weights() {
         let weights = vec![f64::NAN, 5.0, 0.0];
         let s = WeightedRandomSampler::new(weights, 50).with_seed(7);
-        let indices = s.indices();
-        assert_eq!(indices.len(), 50);
-        assert!(
-            indices.iter().all(|&i| i == 1),
-            "non-finite weights should be treated as zero and the only finite positive-weight index should dominate"
-        );
+        assert!(s.indices().is_err());
     }
 
     #[test]
@@ -1426,7 +1415,7 @@ mod tests {
         let bs = BatchSampler::from_random(&rand, 3, false);
         let batches = bs.batches();
         assert_eq!(batches.len(), 3); // 3+3+2
-                                      // Total indices should be a permutation of 0..8
+        // Total indices should be a permutation of 0..8
         let all: Vec<usize> = batches.into_iter().flatten().collect();
         assert_eq!(all.len(), 8);
         let mut sorted = all.clone();
@@ -1515,9 +1504,11 @@ mod tests {
         let val_batch = val_loader.next_batch(&mut session).unwrap().unwrap();
         let val_targets = session.tensor_values(val_batch.target().unwrap()).unwrap();
         // All val targets should be in 7..10
-        assert!(val_targets
-            .iter()
-            .all(|&v| (v as usize) >= 7 && (v as usize) < 10));
+        assert!(
+            val_targets
+                .iter()
+                .all(|&v| (v as usize) >= 7 && (v as usize) < 10)
+        );
     }
 
     // ── Transform Tests ─────────────────────────────────────────────────
@@ -1817,8 +1808,12 @@ mod tests {
         let w = vec![1.0, 2.0, 3.0];
         let a = WeightedRandomSampler::new(w.clone(), 50)
             .with_seed(42)
-            .indices();
-        let b = WeightedRandomSampler::new(w, 50).with_seed(42).indices();
+            .indices()
+            .expect("weighted samples");
+        let b = WeightedRandomSampler::new(w, 50)
+            .with_seed(42)
+            .indices()
+            .expect("weighted samples");
         assert_eq!(a, b, "same seed must produce identical weighted samples");
     }
 
@@ -1826,16 +1821,13 @@ mod tests {
     fn weighted_random_sampler_empty_weights() {
         let s = WeightedRandomSampler::new(Vec::new(), 10).with_seed(42);
         assert_eq!(s.len(), 10);
-        assert!(
-            s.indices().is_empty(),
-            "empty weights should yield empty indices"
-        );
+        assert!(s.indices().is_err());
     }
 
     #[test]
     fn weighted_random_sampler_single_weight() {
         let s = WeightedRandomSampler::new(vec![5.0], 20).with_seed(42);
-        let indices = s.indices();
+        let indices = s.indices().expect("weighted samples");
         assert_eq!(indices.len(), 20);
         assert!(
             indices.iter().all(|&i| i == 0),
@@ -1844,33 +1836,24 @@ mod tests {
     }
 
     #[test]
-    fn weighted_random_sampler_infinity_weight_sanitized() {
+    fn weighted_random_sampler_rejects_infinity_weight() {
         let s = WeightedRandomSampler::new(vec![f64::INFINITY, 1.0], 50).with_seed(42);
-        let indices = s.indices();
-        assert_eq!(indices.len(), 50);
-        // Infinity is sanitized to 0, so only index 1 (weight 1.0) should appear
-        assert!(
-            indices.iter().all(|&i| i == 1),
-            "infinity weight should be sanitized to zero"
-        );
+        assert!(s.indices().is_err());
     }
 
     #[test]
-    fn weighted_random_sampler_preserves_mixed_weight_sequence() {
+    fn weighted_random_sampler_rejects_mixed_invalid_weight_sequence() {
         let s = WeightedRandomSampler::new(vec![1.0, f64::NAN, -5.0, 3.0, f64::INFINITY, 2.0], 16)
             .with_seed(123);
 
-        assert_eq!(
-            s.indices(),
-            vec![3, 3, 0, 3, 3, 5, 3, 5, 3, 0, 3, 3, 0, 3, 3, 5]
-        );
+        assert!(s.indices().is_err());
     }
 
     #[test]
     fn weighted_random_sampler_zero_num_samples() {
         let s = WeightedRandomSampler::new(vec![1.0, 2.0], 0).with_seed(42);
         assert!(s.is_empty());
-        assert!(s.indices().is_empty());
+        assert!(s.indices().is_err());
     }
 
     #[test]
@@ -1947,7 +1930,8 @@ mod tests {
         // Heavily weight index 0
         let sampler = WeightedRandomSampler::new(vec![100.0, 0.0, 0.0, 0.0, 0.0], 10).with_seed(42);
         let config = DataLoaderConfig::new(10);
-        let mut loader = DataLoader::with_indices(&ds, sampler.indices(), config);
+        let mut loader =
+            DataLoader::with_indices(&ds, sampler.indices().expect("weighted samples"), config);
 
         let batch = loader.next_batch(&mut session).unwrap().unwrap();
         let targets = session.tensor_values(batch.target().unwrap()).unwrap();
