@@ -2862,6 +2862,42 @@ impl FrankenTorchSession {
         self.tensor_tape.leaf(values, vec![steps], requires_grad)
     }
 
+    /// Create a 1-D tensor with geometrically spaced values.
+    ///
+    /// Equivalent to `numpy.geomspace(start, end, steps)`.
+    /// Values are evenly spaced on a log scale (geometric progression).
+    pub fn geomspace(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if start == 0.0 || end == 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "geomspace: start and end must be non-zero",
+                },
+            )));
+        }
+        if (start < 0.0) != (end < 0.0) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "geomspace: start and end must have the same sign",
+                },
+            )));
+        }
+        let values = if steps == 0 {
+            vec![]
+        } else if steps == 1 {
+            vec![start]
+        } else {
+            let ratio = (end / start).powf(1.0 / (steps - 1) as f64);
+            (0..steps).map(|i| start * ratio.powi(i as i32)).collect()
+        };
+        self.tensor_tape.leaf(values, vec![steps], requires_grad)
+    }
+
     /// Create a tensor without initializing values (filled with zeros in Rust).
     ///
     /// In Rust, memory is always initialized, so `empty` produces zeros.
