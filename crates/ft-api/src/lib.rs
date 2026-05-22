@@ -20942,6 +20942,23 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place xlog1py: target = target * log(1 + other).
+    ///
+    /// Equivalent to `torch.Tensor.xlog1py_(target, other)`.
+    /// Special case: 0 * log(1 + y) = 0 regardless of y (even if y == -1).
+    pub fn tensor_xlog1py_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_xlog1py(target, other)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("xlog1py_", target, None);
+        Ok(())
+    }
+
     // ── torch.special functions ──────────────────────────────────────────
 
     /// Element-wise sigmoid (expit) function: 1 / (1 + exp(-x)).
