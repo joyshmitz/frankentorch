@@ -1973,6 +1973,75 @@ impl FrankenTorchSession {
         self.tensor_variable(indices, vec![n], false)
     }
 
+    /// Sample from a multinomial distribution.
+    ///
+    /// Equivalent to `torch.multinomial(input, num_samples, replacement)`.
+    /// Input is 1D tensor of probabilities (non-negative, need not sum to 1).
+    /// Returns tensor of sampled indices.
+    pub fn tensor_multinomial(
+        &mut self,
+        input: TensorNodeId,
+        num_samples: usize,
+        replacement: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multinomial: input must be 1D",
+                },
+            )));
+        }
+        let n_classes = shape[0];
+        if !replacement && num_samples > n_classes {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multinomial: cannot sample more than n_classes without replacement",
+                },
+            )));
+        }
+        let weights = self.tensor_values(input)?;
+        let total: f64 = weights.iter().sum();
+        if total <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multinomial: sum of probabilities must be positive",
+                },
+            )));
+        }
+        let probs: Vec<f64> = weights.iter().map(|&w| w / total).collect();
+        let mut cdf: Vec<f64> = Vec::with_capacity(n_classes);
+        let mut cum = 0.0;
+        for &p in &probs {
+            cum += p;
+            cdf.push(cum);
+        }
+        let mut samples = Vec::with_capacity(num_samples);
+        let mut available = vec![true; n_classes];
+        for _ in 0..num_samples {
+            let r = self.rng.next_f64();
+            let mut idx = 0;
+            for (i, &c) in cdf.iter().enumerate() {
+                if available[i] && r < c {
+                    idx = i;
+                    break;
+                }
+                if i == n_classes - 1 {
+                    idx = i;
+                }
+            }
+            // For without replacement, skip unavailable
+            if !replacement {
+                while !available[idx] {
+                    idx = (idx + 1) % n_classes;
+                }
+                available[idx] = false;
+            }
+            samples.push(idx as f64);
+        }
+        self.tensor_variable(samples, vec![num_samples], false)
+    }
+
     pub fn tensor_new_zeros(
         &mut self,
         _source: TensorNodeId,
@@ -20068,6 +20137,14 @@ impl FrankenTorchSession {
 
     /// Alias for `tensor_linalg_multi_dot`.
     pub fn tensor_chain_matmul(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_multi_dot(tensors)
+    }
+
+    /// Alias for `tensor_chain_matmul`. Equivalent to `torch.linalg.multi_dot`.
+    pub fn tensor_multi_dot(
         &mut self,
         tensors: &[TensorNodeId],
     ) -> Result<TensorNodeId, AutogradError> {
