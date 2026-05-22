@@ -10276,6 +10276,17 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Alias for tensor_norm.
+    ///
+    /// Equivalent to `torch.linalg.norm(input, ord)`.
+    pub fn tensor_linalg_norm(
+        &mut self,
+        input: TensorNodeId,
+        ord: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_norm(input, ord)
+    }
+
     pub fn tensor_norm_dim(
         &mut self,
         input: TensorNodeId,
@@ -21246,6 +21257,17 @@ impl FrankenTorchSession {
             // Defensive: reshape to [1].
             self.tensor_reshape(result, vec![1])
         }
+    }
+
+    /// Alias for tensor_matrix_norm.
+    ///
+    /// Equivalent to `torch.linalg.matrix_norm(input, ord)`.
+    pub fn tensor_linalg_matrix_norm(
+        &mut self,
+        input: TensorNodeId,
+        ord: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_norm(input, ord)
     }
 
     /// Scatter values into positions indicated by a mask.
