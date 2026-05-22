@@ -11879,6 +11879,75 @@ impl FrankenTorchSession {
         self.tensor_variable(result, shape, false)
     }
 
+    /// Embed src tensor at a selected index along a dimension.
+    ///
+    /// Equivalent to `torch.select_scatter(input, src, dim, index)`.
+    /// Tracked under frankentorch-ksqe.
+    pub fn tensor_select_scatter(
+        &mut self,
+        input: TensorNodeId,
+        src: TensorNodeId,
+        dim: i64,
+        index: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        if ndim == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "select_scatter: input must have at least 1 dimension",
+                },
+            )));
+        }
+
+        let dim = if dim < 0 { ndim as i64 + dim } else { dim } as usize;
+        if dim >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "select_scatter: dim out of range",
+                },
+            )));
+        }
+
+        let dim_size = shape[dim];
+        let index = if index < 0 { dim_size as i64 + index } else { index } as usize;
+        if index >= dim_size {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "select_scatter: index out of range",
+                },
+            )));
+        }
+
+        let src_shape = self.tensor_shape(src)?;
+        let expected_src_shape: Vec<usize> = shape.iter().enumerate()
+            .filter(|&(i, _)| i != dim)
+            .map(|(_, &s)| s)
+            .collect();
+        if src_shape != expected_src_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "select_scatter: src shape must match input shape with dim removed",
+                },
+            )));
+        }
+
+        let mut result = self.tensor_values(input)?;
+        let src_vals = self.tensor_values(src)?;
+
+        let stride: usize = shape[dim + 1..].iter().product();
+        let outer_stride: usize = shape[dim..].iter().product();
+
+        for (src_idx, &val) in src_vals.iter().enumerate() {
+            let outer = src_idx / stride;
+            let inner = src_idx % stride;
+            let dst_idx = outer * outer_stride + index * stride + inner;
+            result[dst_idx] = val;
+        }
+
+        self.tensor_variable(result, shape, false)
+    }
+
     pub fn tensor_values(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
         self.tensor_tape.values(node)
     }
@@ -50405,5 +50474,30 @@ mod tests {
         let vals = s.tensor_values(result).unwrap();
         assert!((vals[1] - 5.0).abs() < 1e-10);
         assert!((vals[5] - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_select_scatter_row() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0, 30.0], vec![3], false).unwrap();
+        let result = s.tensor_select_scatter(input, src, 0, 1).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[3] - 10.0).abs() < 1e-10);
+        assert!((vals[4] - 20.0).abs() < 1e-10);
+        assert!((vals[5] - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_select_scatter_col() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0], vec![2], false).unwrap();
+        let result = s.tensor_select_scatter(input, src, 1, 0).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 10.0).abs() < 1e-10);
+        assert!((vals[1] - 2.0).abs() < 1e-10);
+        assert!((vals[3] - 20.0).abs() < 1e-10);
     }
 }
