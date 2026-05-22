@@ -177,3 +177,19 @@ fn view_as_real_requires_grad_complex_input_fails_loud() {
         "view_as_real requires_grad complex input",
     );
 }
+
+#[test]
+fn multi_dot_rejects_single_tensor_sequence() {
+    let mut session = strict_session();
+    let input = session
+        .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+        .unwrap();
+
+    let err = session
+        .tensor_linalg_multi_dot(&[input])
+        .expect_err("multi_dot requires two or more tensors");
+    assert!(
+        format!("{err:?}").contains("multi_dot: need at least two tensors"),
+        "unexpected multi_dot single-input error: {err:?}"
+    );
+}
