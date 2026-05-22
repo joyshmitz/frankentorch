@@ -18568,6 +18568,48 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Standard Gaussian cumulative distribution function.
+    ///
+    /// Equivalent to `torch.special.ndtr(input)`.
+    /// ndtr(x) = (1 + erf(x / sqrt(2))) / 2 = 0.5 * erfc(-x / sqrt(2))
+    /// Tracked under frankentorch-zykd.
+    pub fn tensor_ndtr(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let sqrt2_inv = 1.0 / std::f64::consts::SQRT_2;
+        let sqrt_2pi_inv = 1.0 / (2.0 * std::f64::consts::PI).sqrt();
+        let out = self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                let values: Vec<f64> = vals.iter().map(|&x| 0.5 * libm::erfc(-x * sqrt2_inv)).collect();
+                Ok((values, shape.to_vec()))
+            },
+            move |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let x_vals = &saved[0];
+                if grad_out.len() != x_vals.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "ndtr backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+                let grad_in: Vec<f64> = x_vals
+                    .iter()
+                    .zip(grad_out.iter())
+                    .map(|(&x, &go)| go * sqrt_2pi_inv * (-0.5 * x * x).exp())
+                    .collect();
+                Ok(vec![Some(grad_in)])
+            },
+        )?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("ndtr in={} out={}", input.0, out.0),
+        );
+        Ok(out)
+    }
+
     /// Multivariate log-gamma function.
     ///
     /// Equivalent to `torch.special.multigammaln(input, p)`.
@@ -51056,5 +51098,17 @@ mod tests {
         assert!(vals[0].abs() < 1e-10); // i1e(0) = 0
         assert!((vals[1] - 0.2079104).abs() < 1e-5); // i1e(1) = exp(-1)*I1(1)
         assert!((vals[2] - 0.2152692).abs() < 1e-5); // i1e(2) = exp(-2)*I1(2)
+    }
+
+    #[test]
+    fn test_ndtr_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0, 1.0, -1.0, 2.0], vec![4], false).unwrap();
+        let result = s.tensor_ndtr(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 0.5).abs() < 1e-10); // ndtr(0) = 0.5
+        assert!((vals[1] - 0.8413447).abs() < 1e-5); // ndtr(1)
+        assert!((vals[2] - 0.1586553).abs() < 1e-5); // ndtr(-1) = 1 - ndtr(1)
+        assert!((vals[3] - 0.9772499).abs() < 1e-5); // ndtr(2)
     }
 }
