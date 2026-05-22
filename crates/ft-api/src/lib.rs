@@ -14566,6 +14566,41 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("atanh_", target, None, f64::atanh)
     }
 
+    /// Numpy-style alias for tensor_abs_. Equivalent to `np.absolute`.
+    pub fn tensor_absolute_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_abs_(target)
+    }
+
+    /// Numpy-style alias for tensor_asin_. Equivalent to `np.arcsin`.
+    pub fn tensor_arcsin_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_asin_(target)
+    }
+
+    /// Numpy-style alias for tensor_acos_. Equivalent to `np.arccos`.
+    pub fn tensor_arccos_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_acos_(target)
+    }
+
+    /// Numpy-style alias for tensor_atan_. Equivalent to `np.arctan`.
+    pub fn tensor_arctan_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_atan_(target)
+    }
+
+    /// Numpy-style alias for tensor_asinh_. Equivalent to `np.arcsinh`.
+    pub fn tensor_arcsinh_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_asinh_(target)
+    }
+
+    /// Numpy-style alias for tensor_acosh_. Equivalent to `np.arccosh`.
+    pub fn tensor_arccosh_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_acosh_(target)
+    }
+
+    /// Numpy-style alias for tensor_atanh_. Equivalent to `np.arctanh`.
+    pub fn tensor_arctanh_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_atanh_(target)
+    }
+
     /// In-place hyperbolic cosine.
     ///
     /// Equivalent to `tensor.cosh_()` in PyTorch.
