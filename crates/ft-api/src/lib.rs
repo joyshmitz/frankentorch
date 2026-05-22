@@ -13515,6 +13515,24 @@ impl FrankenTorchSession {
         })
     }
 
+    /// In-place hardswish: x * hardsigmoid(x) = x * clamp(x/6 + 0.5, 0, 1).
+    ///
+    /// Equivalent to `F.hardswish(tensor, inplace=True)` in PyTorch.
+    pub fn tensor_hardswish_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("hardswish_", target, None, |x| {
+            x * (x / 6.0 + 0.5).clamp(0.0, 1.0)
+        })
+    }
+
+    /// In-place threshold: x if x > threshold else value.
+    ///
+    /// Equivalent to `F.threshold(tensor, threshold, value, inplace=True)` in PyTorch.
+    pub fn tensor_threshold_(&mut self, target: TensorNodeId, threshold: f64, value: f64) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("threshold_", target, Some(format!("threshold={threshold} value={value}")), |x| {
+            if x.is_nan() { x } else if x > threshold { x } else { value }
+        })
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53590,6 +53608,17 @@ mod tests {
         assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
         let b = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
         s.tensor_celu_(b, 1.0).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_hardswish_threshold_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_hardswish_(a).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_threshold_(b, 0.0, -10.0).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
