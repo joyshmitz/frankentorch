@@ -12760,6 +12760,50 @@ impl FrankenTorchSession {
         self.tensor_prelu(input, weight)
     }
 
+    /// Pad tensor with constant value. Alias for tensor_pad.
+    pub fn functional_pad(
+        &mut self,
+        input: TensorNodeId,
+        padding: &[usize],
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad(input, padding, value)
+    }
+
+    /// Interpolate tensor to target size. Alias for tensor_interpolate.
+    pub fn functional_interpolate(
+        &mut self,
+        input: TensorNodeId,
+        size: Option<Vec<usize>>,
+        scale_factor: Option<Vec<f64>>,
+        mode: &str,
+        align_corners: Option<bool>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_interpolate(input, size, scale_factor, mode, align_corners)
+    }
+
+    /// Compute affine transformation grid. Alias for tensor_affine_grid.
+    pub fn functional_affine_grid(
+        &mut self,
+        theta: TensorNodeId,
+        size: Vec<usize>,
+        align_corners: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_affine_grid(theta, size, align_corners)
+    }
+
+    /// Sample from input using grid coordinates. Alias for tensor_grid_sample.
+    pub fn functional_grid_sample(
+        &mut self,
+        input: TensorNodeId,
+        grid: TensorNodeId,
+        mode: GridSampleMode,
+        padding_mode: GridSamplePaddingMode,
+        align_corners: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_grid_sample(input, grid, mode, padding_mode, align_corners)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
