@@ -5487,6 +5487,233 @@ impl FrankenTorchSession {
         self.tensor_div(input, denom)
     }
 
+    // ── Loss Functions ───────────────────────────────────────────────────
+
+    /// Mean squared error loss.
+    ///
+    /// Equivalent to `torch.nn.functional.mse_loss(input, target, reduction)`.
+    /// Reduction can be "none", "mean", or "sum".
+    pub fn tensor_mse_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(input, target)?;
+        let sq = self.tensor_mul(diff, diff)?;
+        match reduction {
+            "none" => Ok(sq),
+            "mean" => self.tensor_mean(sq),
+            "sum" => self.tensor_sum(sq),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "mse_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// L1 loss (mean absolute error).
+    ///
+    /// Equivalent to `torch.nn.functional.l1_loss(input, target, reduction)`.
+    pub fn tensor_l1_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(input, target)?;
+        let abs_diff = self.tensor_abs(diff)?;
+        match reduction {
+            "none" => Ok(abs_diff),
+            "mean" => self.tensor_mean(abs_diff),
+            "sum" => self.tensor_sum(abs_diff),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "l1_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Smooth L1 loss (Huber loss with delta=1).
+    ///
+    /// Equivalent to `torch.nn.functional.smooth_l1_loss(input, target, reduction, beta)`.
+    /// Uses L2 loss for |x| < beta, L1 loss otherwise.
+    pub fn tensor_smooth_l1_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        beta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(input, target)?;
+        let abs_diff = self.tensor_abs(diff)?;
+        let shape = self.tensor_shape(abs_diff)?;
+        let beta_t = self.full(shape.clone(), beta, false)?;
+        let half = self.full(shape.clone(), 0.5, false)?;
+        let half_beta = self.full(shape, 0.5 * beta, false)?;
+        // L2 part: 0.5 * x^2 / beta
+        let sq_scaled = self.tensor_mul(diff, diff)?;
+        let l2_part = self.tensor_div(sq_scaled, beta_t)?;
+        let l2_part = self.tensor_mul(l2_part, half)?;
+        // L1 part: |x| - 0.5 * beta
+        let l1_part = self.tensor_sub(abs_diff, half_beta)?;
+        // mask: |x| < beta
+        let abs_diff2 = self.tensor_abs(diff)?;
+        let beta_t2 = self.full(self.tensor_shape(abs_diff2)?, beta, false)?;
+        let mask = self.tensor_lt(abs_diff2, beta_t2)?;
+        let loss = self.tensor_where(mask, l2_part, l1_part)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "smooth_l1_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Binary cross entropy loss.
+    ///
+    /// Equivalent to `torch.nn.functional.binary_cross_entropy(input, target, reduction)`.
+    /// Input should be probabilities in [0, 1].
+    pub fn tensor_bce_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // BCE = -[target * log(input) + (1-target) * log(1-input)]
+        let log_input = self.tensor_log(input)?;
+        let term1 = self.tensor_mul(target, log_input)?;
+        let shape = self.tensor_shape(input)?;
+        let ones = self.full(shape, 1.0, false)?;
+        let one_minus_target = self.tensor_sub(ones, target)?;
+        let one_minus_input = self.tensor_sub(ones, input)?;
+        let log_one_minus_input = self.tensor_log(one_minus_input)?;
+        let term2 = self.tensor_mul(one_minus_target, log_one_minus_input)?;
+        let sum_terms = self.tensor_add(term1, term2)?;
+        let loss = self.tensor_neg(sum_terms)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "bce_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Binary cross entropy with logits (numerically stable).
+    ///
+    /// Equivalent to `torch.nn.functional.binary_cross_entropy_with_logits`.
+    /// More numerically stable than sigmoid + BCE.
+    pub fn tensor_bce_with_logits_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // BCE_logits = max(input, 0) - input * target + log(1 + exp(-|input|))
+        let shape = self.tensor_shape(input)?;
+        let zeros = self.full(shape.clone(), 0.0, false)?;
+        let relu_input = self.tensor_maximum(input, zeros)?;
+        let input_target = self.tensor_mul(input, target)?;
+        let term1 = self.tensor_sub(relu_input, input_target)?;
+        let abs_input = self.tensor_abs(input)?;
+        let neg_abs_input = self.tensor_neg(abs_input)?;
+        let exp_term = self.tensor_exp(neg_abs_input)?;
+        let ones = self.full(shape, 1.0, false)?;
+        let one_plus_exp = self.tensor_add(ones, exp_term)?;
+        let log_term = self.tensor_log(one_plus_exp)?;
+        let loss = self.tensor_add(term1, log_term)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "bce_with_logits_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Negative log likelihood loss.
+    ///
+    /// Equivalent to `torch.nn.functional.nll_loss(input, target, reduction)`.
+    /// Input should be log-probabilities from log_softmax.
+    /// Target contains class indices (not one-hot encoded).
+    pub fn tensor_nll_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        let target_shape = self.tensor_shape(target)?;
+        if input_shape.len() != 2 || target_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nll_loss: input must be 2D (N, C), target must be 1D (N,)",
+                },
+            )));
+        }
+        if input_shape[0] != target_shape[0] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nll_loss: batch size mismatch",
+                },
+            )));
+        }
+        let n = input_shape[0];
+        let c = input_shape[1];
+        let input_vals = self.tensor_values(input)?;
+        let target_vals = self.tensor_values(target)?;
+        let mut losses = Vec::with_capacity(n);
+        for i in 0..n {
+            let class_idx = target_vals[i] as usize;
+            if class_idx >= c {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "nll_loss: target class index out of range",
+                    },
+                )));
+            }
+            losses.push(-input_vals[i * c + class_idx]);
+        }
+        let loss = self.tensor_variable(losses.clone(), vec![n], false)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "nll_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Cross entropy loss (log_softmax + nll_loss combined).
+    ///
+    /// Equivalent to `torch.nn.functional.cross_entropy(input, target, reduction)`.
+    /// Input should be raw logits. Target contains class indices.
+    pub fn tensor_cross_entropy(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let log_probs = self.tensor_log_softmax(input, 1)?;
+        self.tensor_nll_loss(log_probs, target, reduction)
+    }
+
     pub fn tensor_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.trace(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
