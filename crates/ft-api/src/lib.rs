@@ -13320,6 +13320,48 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("log1p_", target, None, f64::ln_1p)
     }
 
+    /// In-place arc cosine.
+    ///
+    /// Equivalent to `tensor.acos_()` in PyTorch.
+    pub fn tensor_acos_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("acos_", target, None, f64::acos)
+    }
+
+    /// In-place arc sine.
+    ///
+    /// Equivalent to `tensor.asin_()` in PyTorch.
+    pub fn tensor_asin_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("asin_", target, None, f64::asin)
+    }
+
+    /// In-place arc tangent.
+    ///
+    /// Equivalent to `tensor.atan_()` in PyTorch.
+    pub fn tensor_atan_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("atan_", target, None, f64::atan)
+    }
+
+    /// In-place inverse hyperbolic cosine.
+    ///
+    /// Equivalent to `tensor.acosh_()` in PyTorch.
+    pub fn tensor_acosh_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("acosh_", target, None, f64::acosh)
+    }
+
+    /// In-place inverse hyperbolic sine.
+    ///
+    /// Equivalent to `tensor.asinh_()` in PyTorch.
+    pub fn tensor_asinh_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("asinh_", target, None, f64::asinh)
+    }
+
+    /// In-place inverse hyperbolic tangent.
+    ///
+    /// Equivalent to `tensor.atanh_()` in PyTorch.
+    pub fn tensor_atanh_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("atanh_", target, None, f64::atanh)
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53269,5 +53311,29 @@ mod tests {
         let y = s.tensor_variable(vec![0.0, 0.1, 1.0], vec![3], false).unwrap();
         s.tensor_log1p_(y).unwrap();
         assert_eq!(s.tensor_shape(y).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_inverse_trig_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = vec![0.0, 0.5, 0.9];
+        let a = s.tensor_variable(v.clone(), vec![3], false).unwrap();
+        s.tensor_acos_(a).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(v.clone(), vec![3], false).unwrap();
+        s.tensor_asin_(b).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+        let c = s.tensor_variable(v.clone(), vec![3], false).unwrap();
+        s.tensor_atan_(c).unwrap();
+        assert_eq!(s.tensor_shape(c).unwrap(), vec![3]);
+        let d = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        s.tensor_acosh_(d).unwrap();
+        assert_eq!(s.tensor_shape(d).unwrap(), vec![3]);
+        let e = s.tensor_variable(v.clone(), vec![3], false).unwrap();
+        s.tensor_asinh_(e).unwrap();
+        assert_eq!(s.tensor_shape(e).unwrap(), vec![3]);
+        let f = s.tensor_variable(v, vec![3], false).unwrap();
+        s.tensor_atanh_(f).unwrap();
+        assert_eq!(s.tensor_shape(f).unwrap(), vec![3]);
     }
 }
