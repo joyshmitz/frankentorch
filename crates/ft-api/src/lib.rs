@@ -12909,6 +12909,53 @@ impl FrankenTorchSession {
         self.tensor_cosine_embedding_loss(input1, input2, target, margin, reduction)
     }
 
+    /// Cosine similarity between two tensors. Alias for tensor_cosine_similarity.
+    pub fn functional_cosine_similarity(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+        dim: usize,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cosine_similarity(x1, x2, dim, eps)
+    }
+
+    /// Pairwise distance between two tensors. Alias for tensor_pairwise_distance.
+    pub fn functional_pairwise_distance(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+        p: f64,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pairwise_distance(x1, x2, p, eps)
+    }
+
+    /// Triplet margin loss. Alias for tensor_triplet_margin_loss.
+    pub fn functional_triplet_margin_loss(
+        &mut self,
+        anchor: TensorNodeId,
+        positive: TensorNodeId,
+        negative: TensorNodeId,
+        margin: f64,
+        p: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triplet_margin_loss(anchor, positive, negative, margin, p, reduction)
+    }
+
+    /// Margin ranking loss. Alias for tensor_margin_ranking_loss.
+    pub fn functional_margin_ranking_loss(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_margin_ranking_loss(input1, input2, target, margin, reduction)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
