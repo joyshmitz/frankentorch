@@ -21852,6 +21852,22 @@ impl FrankenTorchSession {
         Ok((mantissa_node, exponent_node))
     }
 
+    /// In-place frexp: target becomes mantissa, returns exponent tensor.
+    ///
+    /// Equivalent to `torch.Tensor.frexp_()`. Updates target with mantissa
+    /// values and returns the exponent tensor separately.
+    pub fn tensor_frexp_(
+        &mut self,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let (mantissa, exponent) = self.tensor_frexp(target)?;
+        let mantissa_vals = self.tensor_values(mantissa)?;
+        self.update_tensor_values_for_float(target, mantissa_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("frexp_", target, None);
+        Ok(exponent)
+    }
+
     /// Element-wise greatest common divisor of two integer tensors.
     ///
     /// Equivalent to `torch.gcd(input, other)`. Inputs are treated as integers
