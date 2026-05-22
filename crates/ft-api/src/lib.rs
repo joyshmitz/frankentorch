@@ -2076,6 +2076,20 @@ impl FrankenTorchSession {
         self.tensor_variable(rows, vec![2, n], false)
     }
 
+    /// Return the indices for the diagonal of an n×n matrix.
+    ///
+    /// Equivalent to `torch.diag_indices(n)`. Returns a tuple of two
+    /// tensors (row_indices, col_indices) each of shape `[n]`.
+    pub fn diag_indices(
+        &mut self,
+        n: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let indices: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let row_indices = self.tensor_variable(indices.clone(), vec![n], false)?;
+        let col_indices = self.tensor_variable(indices, vec![n], false)?;
+        Ok((row_indices, col_indices))
+    }
+
     /// Create a tensor filled with uniform random values in [0, 1).
     pub fn rand(
         &mut self,
@@ -52411,5 +52425,16 @@ mod tests {
         let c = s.tensor_variable(vec![3.0; 6], vec![3, 2], false).unwrap();
         assert!(s.tensor_is_same_size(a, b).unwrap());
         assert!(!s.tensor_is_same_size(a, c).unwrap());
+    }
+
+    #[test]
+    fn test_diag_indices() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let (row_idx, col_idx) = s.diag_indices(3).unwrap();
+        let row_vals = s.tensor_values(row_idx).unwrap();
+        let col_vals = s.tensor_values(col_idx).unwrap();
+        // For 3x3 matrix, diagonal indices are (0,0), (1,1), (2,2)
+        assert_eq!(row_vals, vec![0.0, 1.0, 2.0]);
+        assert_eq!(col_vals, vec![0.0, 1.0, 2.0]);
     }
 }
