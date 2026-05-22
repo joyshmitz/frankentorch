@@ -14704,6 +14704,56 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place index add: adds src values at indices along dim.
+    pub fn tensor_index_add_(
+        &mut self,
+        target: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_index_add(target, dim, index, src)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("index_add_", target, Some(format!("dim={dim}")));
+        Ok(())
+    }
+
+    /// In-place index reduce: reduces src values at indices along dim using reduce op.
+    pub fn tensor_index_reduce_(
+        &mut self,
+        target: TensorNodeId,
+        dim: i64,
+        index: TensorNodeId,
+        source: TensorNodeId,
+        reduce: &str,
+        include_self: bool,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_index_reduce(target, dim, index, source, reduce, include_self)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("index_reduce_", target, Some(format!("dim={dim} reduce={reduce}")));
+        Ok(())
+    }
+
+    /// In-place renorm: scales slices along dim so their p-norm <= maxnorm.
+    pub fn tensor_renorm_(
+        &mut self,
+        target: TensorNodeId,
+        p: f64,
+        dim: usize,
+        maxnorm: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_renorm(target, p, dim, maxnorm)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("renorm_", target, Some(format!("p={p} dim={dim} maxnorm={maxnorm}")));
+        Ok(())
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -54732,6 +54782,28 @@ mod tests {
         let src = s.tensor_variable(vec![10.0, 20.0, 30.0], vec![1, 3], false).unwrap();
         s.tensor_slice_scatter_(x, src, 0, Some(1), Some(2), 1).unwrap();
         assert_eq!(s.tensor_values(x).unwrap(), vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn test_index_add_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false).unwrap();
+        let idx = s.tensor_variable(vec![0.0, 2.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 30.0], vec![2], false).unwrap();
+        s.tensor_index_add_(x, 0, idx, src).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![11.0, 2.0, 33.0, 4.0]);
+    }
+
+    #[test]
+    fn test_renorm_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![3.0, 4.0, 6.0, 8.0], vec![2, 2], false).unwrap();
+        s.tensor_renorm_(x, 2.0, 0, 5.0).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert!((vals[0] - 3.0).abs() < 1e-5);
+        assert!((vals[1] - 4.0).abs() < 1e-5);
+        assert!((vals[2] - 3.0).abs() < 1e-5);
+        assert!((vals[3] - 4.0).abs() < 1e-5);
     }
 
     #[test]
