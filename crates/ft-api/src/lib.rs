@@ -1787,6 +1787,43 @@ impl FrankenTorchSession {
             .leaf(vec![fill_value; numel], shape, requires_grad)
     }
 
+    /// Create a tensor of zeros with the same shape as `input`.
+    ///
+    /// Equivalent to `torch.zeros_like(input)`.
+    pub fn tensor_zeros_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.zeros(shape, requires_grad)
+    }
+
+    /// Create a tensor of ones with the same shape as `input`.
+    ///
+    /// Equivalent to `torch.ones_like(input)`.
+    pub fn tensor_ones_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.ones(shape, requires_grad)
+    }
+
+    /// Create a tensor filled with `fill_value` with the same shape as `input`.
+    ///
+    /// Equivalent to `torch.full_like(input, fill_value)`.
+    pub fn tensor_full_like(
+        &mut self,
+        input: TensorNodeId,
+        fill_value: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.full(shape, fill_value, requires_grad)
+    }
+
     pub fn arange(
         &mut self,
         start: f64,
@@ -52204,5 +52241,38 @@ mod tests {
         assert!((vals[1] - 1.0).abs() < 1e-10);
         assert!((vals[2] - 1.0).abs() < 1e-10);
         assert!((vals[3] - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_zeros_like() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let z = s.tensor_zeros_like(x, false).unwrap();
+        let shape = s.tensor_shape(z).unwrap();
+        let vals = s.tensor_values(z).unwrap();
+        assert_eq!(shape, vec![2, 3]);
+        assert!(vals.iter().all(|v| v.abs() < 1e-10));
+    }
+
+    #[test]
+    fn test_ones_like() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let o = s.tensor_ones_like(x, false).unwrap();
+        let shape = s.tensor_shape(o).unwrap();
+        let vals = s.tensor_values(o).unwrap();
+        assert_eq!(shape, vec![3]);
+        assert!(vals.iter().all(|v| (v - 1.0).abs() < 1e-10));
+    }
+
+    #[test]
+    fn test_full_like() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let f = s.tensor_full_like(x, 42.0, false).unwrap();
+        let shape = s.tensor_shape(f).unwrap();
+        let vals = s.tensor_values(f).unwrap();
+        assert_eq!(shape, vec![2]);
+        assert!(vals.iter().all(|v| (v - 42.0).abs() < 1e-10));
     }
 }
