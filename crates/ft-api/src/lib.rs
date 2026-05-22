@@ -20124,6 +20124,22 @@ impl FrankenTorchSession {
         self.tensor_variable(evals, vec![n], false)
     }
 
+    /// Alias for `tensor_linalg_eigh`. Equivalent to deprecated `torch.eigh`.
+    pub fn tensor_eigh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_eigh(input)
+    }
+
+    /// Alias for `tensor_linalg_eigvalsh`. Equivalent to `torch.eigvalsh`.
+    pub fn tensor_eigvalsh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_eigvalsh(input)
+    }
+
     /// Compute the SVD: A = U @ diag(S) @ Vh.
     ///
     /// If `full_matrices` is true, U is (m x m) and Vh is (n x n).
@@ -20155,6 +20171,19 @@ impl FrankenTorchSession {
         Ok((u_node, s_node, vh_node))
     }
 
+    /// Alias for `tensor_linalg_svd`. Equivalent to deprecated `torch.svd`.
+    ///
+    /// Note: PyTorch's deprecated torch.svd returns (U, S, V) where V is
+    /// the transpose of Vh. This alias returns the same as linalg_svd:
+    /// (U, S, Vh). For the deprecated behavior, transpose the third output.
+    pub fn tensor_svd(
+        &mut self,
+        input: TensorNodeId,
+        full_matrices: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_svd(input, full_matrices)
+    }
+
     /// Compute just the singular values of a matrix.
     ///
     /// Returns a 1D tensor of singular values sorted descending.
@@ -20175,6 +20204,14 @@ impl FrankenTorchSession {
         let s = ft_kernel_cpu::svdvals_contiguous_f64(&values, &meta)
             .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
         self.tensor_variable(s, vec![k], false)
+    }
+
+    /// Alias for `tensor_linalg_svdvals`. Equivalent to `torch.svdvals`.
+    pub fn tensor_svdvals(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_svdvals(input)
     }
 
     /// Compute the numerical rank of a matrix.
@@ -20920,6 +20957,15 @@ impl FrankenTorchSession {
         let q_node = self.tensor_variable(result.q, vec![input_m, result.m], false)?;
         let r_node = self.tensor_variable(result.r, vec![result.m, result.n], false)?;
         Ok((q_node, r_node))
+    }
+
+    /// Alias for `tensor_linalg_qr`. Equivalent to deprecated `torch.qr`.
+    pub fn tensor_qr(
+        &mut self,
+        input: TensorNodeId,
+        some: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_qr(input, some)
     }
 
     fn _compute_strides(shape: &[usize]) -> Vec<usize> {
