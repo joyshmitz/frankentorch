@@ -10113,6 +10113,38 @@ impl FrankenTorchSession {
         self.apply_variance_correction(input, dim, out, correction, true)
     }
 
+    /// Variance and mean along `dim` in a single call.
+    ///
+    /// Equivalent to `torch.var_mean(input, dim, correction)`. Returns
+    /// `(variance, mean)`. More efficient than computing separately since
+    /// mean is computed as part of variance calculation.
+    pub fn tensor_var_mean(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        correction: i64,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let var = self.tensor_var_dim(input, dim, correction)?;
+        let mean = self.tensor_mean_dim(input, dim)?;
+        Ok((var, mean))
+    }
+
+    /// Standard deviation and mean along `dim` in a single call.
+    ///
+    /// Equivalent to `torch.std_mean(input, dim, correction)`. Returns
+    /// `(std, mean)`. More efficient than computing separately since
+    /// mean is computed as part of std calculation.
+    pub fn tensor_std_mean(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        correction: i64,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let std = self.tensor_std_dim(input, dim, correction)?;
+        let mean = self.tensor_mean_dim(input, dim)?;
+        Ok((std, mean))
+    }
+
     /// Rescales the kernel's hard-coded `correction = 1` var/std result
     /// to an arbitrary `correction`.
     ///
@@ -58792,5 +58824,23 @@ mod tests {
         let b = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
         let shape = s.tensor_broadcast_shapes(&[a, b]).unwrap();
         assert_eq!(shape, vec![3, 3]);
+    }
+
+    #[test]
+    fn test_tensor_var_mean() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let (var, mean) = s.tensor_var_mean(a, 1, 1).unwrap();
+        assert_eq!(s.tensor_shape(var).unwrap(), vec![2]);
+        assert_eq!(s.tensor_shape(mean).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn test_tensor_std_mean() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let (std, mean) = s.tensor_std_mean(a, 1, 1).unwrap();
+        assert_eq!(s.tensor_shape(std).unwrap(), vec![2]);
+        assert_eq!(s.tensor_shape(mean).unwrap(), vec![2]);
     }
 }
