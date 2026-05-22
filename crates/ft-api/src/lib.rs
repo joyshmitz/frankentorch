@@ -13433,6 +13433,10 @@ impl FrankenTorchSession {
             TensorStorage::Complex128(values) => {
                 TensorStorage::Complex128(Arc::new(values.as_ref().clone()))
             }
+            TensorStorage::QInt8(values) => TensorStorage::QInt8(Arc::new(values.as_ref().clone())),
+            TensorStorage::QUInt8(values) => {
+                TensorStorage::QUInt8(Arc::new(values.as_ref().clone()))
+            }
         };
         Ok(DenseTensor::from_typed_storage(meta, storage)?)
     }
@@ -16333,10 +16337,7 @@ impl FrankenTorchSession {
     /// `tensor_linalg_pinv`. torch's legacy pinverse name is
     /// distinct from torch.linalg.pinv (still in wide use in
     /// older PyTorch codebases). Tracked under frankentorch-36op.
-    pub fn tensor_pinverse(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_pinverse(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_pinv(input)
     }
 
@@ -28065,7 +28066,9 @@ mod tests {
         // indices) pairs.
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let xs = vec![3.0, 1.0, 2.0, 6.0, 4.0, 5.0];
-        let a = session.tensor_variable(xs.clone(), vec![2, 3], false).unwrap();
+        let a = session
+            .tensor_variable(xs.clone(), vec![2, 3], false)
+            .unwrap();
         let b = session.tensor_variable(xs, vec![2, 3], false).unwrap();
         let (m_vals, m_idx) = session.tensor_msort(a).unwrap();
         let (s_vals, s_idx) = session.tensor_sort(b, 0, false).unwrap();
@@ -29878,7 +29881,10 @@ mod tests {
         assert!((vals[0] - 31.0).abs() < 1e-9 && (vals[1] - 50.0).abs() < 1e-9);
         let report = session.tensor_backward(out).expect("backward");
         // grad_i=1, grad_a=value*b, grad_b=value*a.
-        assert_eq!(session.tensor_gradient(&report, i).expect("gi"), &[1.0, 1.0]);
+        assert_eq!(
+            session.tensor_gradient(&report, i).expect("gi"),
+            &[1.0, 1.0]
+        );
         assert_eq!(
             session.tensor_gradient(&report, a).expect("ga"),
             &[10.0, 12.0]
@@ -34979,7 +34985,11 @@ mod tests {
         let v_c = s.tensor_values(canon_id).unwrap();
         assert_eq!(v_a.len(), v_c.len());
         for (i, (x, y)) in v_a.iter().zip(v_c.iter()).enumerate() {
-            assert_eq!(x.to_bits(), y.to_bits(), "i={i}: pinverse={x}, linalg_pinv={y}");
+            assert_eq!(
+                x.to_bits(),
+                y.to_bits(),
+                "i={i}: pinverse={x}, linalg_pinv={y}"
+            );
         }
     }
 
@@ -41684,14 +41694,23 @@ mod tests {
 
         macro_rules! check_unary {
             ($name:expr, $alias:ident, $canon:ident) => {{
-                let a = s.tensor_variable(xs.clone(), vec![xs.len()], false).unwrap();
-                let b = s.tensor_variable(xs.clone(), vec![xs.len()], false).unwrap();
+                let a = s
+                    .tensor_variable(xs.clone(), vec![xs.len()], false)
+                    .unwrap();
+                let b = s
+                    .tensor_variable(xs.clone(), vec![xs.len()], false)
+                    .unwrap();
                 let alias_id = s.$alias(a).unwrap();
                 let canon_id = s.$canon(b).unwrap();
                 let v_a = s.tensor_values(alias_id).unwrap();
                 let v_c = s.tensor_values(canon_id).unwrap();
                 for (i, (x, y)) in v_a.iter().zip(v_c.iter()).enumerate() {
-                    assert_eq!(x.to_bits(), y.to_bits(), "{} i={i}: alias={x}, canonical={y}", $name);
+                    assert_eq!(
+                        x.to_bits(),
+                        y.to_bits(),
+                        "{} i={i}: alias={x}, canonical={y}",
+                        $name
+                    );
                 }
             }};
         }
@@ -41712,7 +41731,11 @@ mod tests {
         let v_a = s.tensor_values(sm_alias).unwrap();
         let v_c = s.tensor_values(sm_canon).unwrap();
         for (i, (x, y)) in v_a.iter().zip(v_c.iter()).enumerate() {
-            assert_eq!(x.to_bits(), y.to_bits(), "softmax i={i}: alias={x}, canonical={y}");
+            assert_eq!(
+                x.to_bits(),
+                y.to_bits(),
+                "softmax i={i}: alias={x}, canonical={y}"
+            );
         }
 
         let c = s.tensor_variable(sm_xs.clone(), vec![4], false).unwrap();
@@ -41722,7 +41745,11 @@ mod tests {
         let v_a = s.tensor_values(lsm_alias).unwrap();
         let v_c = s.tensor_values(lsm_canon).unwrap();
         for (i, (x, y)) in v_a.iter().zip(v_c.iter()).enumerate() {
-            assert_eq!(x.to_bits(), y.to_bits(), "log_softmax i={i}: alias={x}, canonical={y}");
+            assert_eq!(
+                x.to_bits(),
+                y.to_bits(),
+                "log_softmax i={i}: alias={x}, canonical={y}"
+            );
         }
     }
 
@@ -46129,7 +46156,11 @@ mod tests {
             .unwrap();
         let out = s.tensor_xlogy(x, y).unwrap();
         let vals = s.tensor_values(out).unwrap();
-        assert!(vals[0].is_nan(), "xlogy(0, NaN) must be NaN, got {}", vals[0]);
+        assert!(
+            vals[0].is_nan(),
+            "xlogy(0, NaN) must be NaN, got {}",
+            vals[0]
+        );
         assert_eq!(vals[1], 0.0, "xlogy(0, -1) short-circuits to 0");
     }
 
