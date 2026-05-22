@@ -12995,6 +12995,28 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    pub fn tensor_copy_(
+        &mut self,
+        target: TensorNodeId,
+        source: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_shape = self.tensor_shape(target)?;
+        let source_shape = self.tensor_shape(source)?;
+        if target_shape != source_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: target_shape,
+                    rhs: source_shape,
+                },
+            )));
+        }
+        let source_vals = self.tensor_values(source)?;
+        self.update_tensor_values_for_float(target, source_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("copy_", target, None);
+        Ok(())
+    }
+
     /// In-place scalar multiplication: target = target * scalar.
     pub fn tensor_mul_scalar_(
         &mut self,
@@ -52755,5 +52777,14 @@ mod tests {
         assert_eq!(s.tensor_values(f).unwrap(), vec![5.0, 5.0, 5.0]);
         let e = s.tensor_new_empty(source, vec![2], false).unwrap();
         assert_eq!(s.tensor_shape(e).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn test_tensor_copy_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let target = s.tensor_variable(vec![0.0, 0.0, 0.0], vec![3], false).unwrap();
+        let source = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        s.tensor_copy_(target, source).unwrap();
+        assert_eq!(s.tensor_values(target).unwrap(), vec![1.0, 2.0, 3.0]);
     }
 }
