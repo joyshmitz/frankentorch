@@ -18327,6 +18327,24 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    pub fn tensor_uniform_(
+        &mut self,
+        tensor: TensorNodeId,
+        low: f64,
+        high: f64,
+    ) -> Result<(), AutogradError> {
+        self.init_uniform_(tensor, low, high)
+    }
+
+    pub fn tensor_normal_(
+        &mut self,
+        tensor: TensorNodeId,
+        mean: f64,
+        std: f64,
+    ) -> Result<(), AutogradError> {
+        self.init_normal_(tensor, mean, std)
+    }
+
     /// Fill tensor with a constant value.
     pub fn init_constant_(&mut self, tensor: TensorNodeId, val: f64) -> Result<(), AutogradError> {
         let numel = self.tensor_numel(tensor)?;
@@ -52862,5 +52880,18 @@ mod tests {
         let mh = s.tensor_mH(x).unwrap();
         let adjoint = s.tensor_adjoint(x).unwrap();
         assert_eq!(s.tensor_values(mh).unwrap(), s.tensor_values(adjoint).unwrap());
+    }
+
+    #[test]
+    fn test_uniform_normal_fill() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0; 100], vec![100], false).unwrap();
+        s.tensor_uniform_(x, 0.0, 1.0).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert!(vals.iter().all(|&v| v >= 0.0 && v <= 1.0));
+        let y = s.tensor_variable(vec![0.0; 100], vec![100], false).unwrap();
+        s.tensor_normal_(y, 0.0, 1.0).unwrap();
+        let vals2 = s.tensor_values(y).unwrap();
+        assert!(vals2.iter().any(|&v| v != 0.0));
     }
 }
