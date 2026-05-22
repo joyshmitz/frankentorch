@@ -7996,6 +7996,60 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// Alias for tensor_gt_. Equivalent to `torch.greater`.
+    pub fn tensor_greater_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.tensor_gt_(target, other)
+    }
+
+    /// Alias for tensor_ge_. Equivalent to `torch.greater_equal`.
+    pub fn tensor_greater_equal_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.tensor_ge_(target, other)
+    }
+
+    /// Alias for tensor_lt_. Equivalent to `torch.less`.
+    pub fn tensor_less_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.tensor_lt_(target, other)
+    }
+
+    /// Alias for tensor_le_. Equivalent to `torch.less_equal`.
+    pub fn tensor_less_equal_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.tensor_le_(target, other)
+    }
+
+    /// Alias for tensor_ne_. Equivalent to `torch.not_equal`.
+    pub fn tensor_not_equal_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.tensor_ne_(target, other)
+    }
+
+    /// Alias for tensor_eq_. Equivalent to `torch.equal`.
+    pub fn tensor_equal_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.tensor_eq_(target, other)
+    }
+
     pub fn tensor_atan2(
         &mut self,
         lhs: TensorNodeId,
