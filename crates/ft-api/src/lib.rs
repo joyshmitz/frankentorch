@@ -13620,6 +13620,40 @@ impl FrankenTorchSession {
         }
     }
 
+    /// In-place nan_to_num: replace NaN with nan, +inf with posinf, -inf with neginf.
+    pub fn tensor_nan_to_num_(
+        &mut self,
+        target: TensorNodeId,
+        nan: f64,
+        posinf: Option<f64>,
+        neginf: Option<f64>,
+    ) -> Result<(), AutogradError> {
+        let meta = self.tensor_tape.tensor_meta(target)?.clone();
+        let (default_posinf, default_neginf) = if meta.dtype() == DType::F32 {
+            (f64::from(f32::MAX), f64::from(f32::MIN))
+        } else {
+            (f64::MAX, f64::MIN)
+        };
+        let posinf_val = posinf.unwrap_or(default_posinf);
+        let neginf_val = neginf.unwrap_or(default_neginf);
+        self.apply_tensor_unary_in_place(
+            "nan_to_num_",
+            target,
+            Some(format!("nan={nan} posinf={posinf_val} neginf={neginf_val}")),
+            |x| {
+                if x.is_nan() {
+                    nan
+                } else if x == f64::INFINITY {
+                    posinf_val
+                } else if x == f64::NEG_INFINITY {
+                    neginf_val
+                } else {
+                    x
+                }
+            },
+        )
+    }
+
     /// In-place softshrink: x - lambd if x > lambd, x + lambd if x < -lambd, else 0.
     ///
     /// Equivalent to `F.softshrink(tensor, lambd)` in PyTorch (no native in-place).
@@ -53775,6 +53809,18 @@ mod tests {
         let b = s.tensor_variable(vec![0.1, 0.5, 0.9], vec![3], false).unwrap();
         s.tensor_logit_(b, Some(0.01)).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_nan_to_num_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.0], vec![4], false).unwrap();
+        s.tensor_nan_to_num_(a, 0.0, Some(99.0), Some(-99.0)).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        assert_eq!(vals[0], 0.0);
+        assert_eq!(vals[1], 99.0);
+        assert_eq!(vals[2], -99.0);
+        assert_eq!(vals[3], 1.0);
     }
 
     #[test]
