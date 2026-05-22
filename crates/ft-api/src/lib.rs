@@ -13586,6 +13586,31 @@ impl FrankenTorchSession {
         }
     }
 
+    /// In-place softshrink: x - lambd if x > lambd, x + lambd if x < -lambd, else 0.
+    ///
+    /// Equivalent to `F.softshrink(tensor, lambd)` in PyTorch (no native in-place).
+    pub fn tensor_softshrink_(&mut self, target: TensorNodeId, lambd: f64) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("softshrink_", target, Some(format!("lambd={lambd}")), |x| {
+            if x > lambd { x - lambd } else if x < -lambd { x + lambd } else { 0.0 }
+        })
+    }
+
+    /// In-place hardshrink: x if |x| > lambd, else 0.
+    ///
+    /// Equivalent to `F.hardshrink(tensor, lambd)` in PyTorch (no native in-place).
+    pub fn tensor_hardshrink_(&mut self, target: TensorNodeId, lambd: f64) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("hardshrink_", target, Some(format!("lambd={lambd}")), |x| {
+            if x.abs() > lambd { x } else { 0.0 }
+        })
+    }
+
+    /// In-place tanhshrink: x - tanh(x).
+    ///
+    /// Equivalent to `F.tanhshrink(tensor)` in PyTorch (no native in-place).
+    pub fn tensor_tanhshrink_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("tanhshrink_", target, None, |x| x - x.tanh())
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53695,5 +53720,19 @@ mod tests {
         let b = s.tensor_variable(vec![-2.0, 4.0, 8.0], vec![3], false).unwrap();
         s.tensor_relu6_(b).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_shrink_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-2.0, 0.3, 1.5], vec![3], false).unwrap();
+        s.tensor_softshrink_(a, 0.5).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![-1.0, 0.3, 2.0], vec![3], false).unwrap();
+        s.tensor_hardshrink_(b, 0.5).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+        let c = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_tanhshrink_(c).unwrap();
+        assert_eq!(s.tensor_shape(c).unwrap(), vec![3]);
     }
 }
