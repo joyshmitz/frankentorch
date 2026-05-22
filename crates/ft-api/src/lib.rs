@@ -18909,6 +18909,11 @@ impl FrankenTorchSession {
         self.tensor_dim(node)
     }
 
+    /// Alias for `tensor_dim`. Equivalent to `tensor.ndimension()` in PyTorch.
+    pub fn tensor_ndimension(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_dim(node)
+    }
+
     /// Alias for `tensor_shape`. Equivalent to `tensor.size()` in PyTorch.
     pub fn tensor_size(&self, node: TensorNodeId) -> Result<Vec<usize>, AutogradError> {
         self.tensor_shape(node)
