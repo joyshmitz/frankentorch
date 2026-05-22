@@ -9430,6 +9430,33 @@ impl FrankenTorchSession {
         Ok((quotient, remainder))
     }
 
+    /// In-place floor division.
+    ///
+    /// Equivalent to `tensor.floor_divide_(other)`.
+    pub fn tensor_floor_divide_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_floor_divide(target, other)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("floor_divide_", target, None);
+        Ok(())
+    }
+
+    /// In-place true division.
+    ///
+    /// Equivalent to `tensor.true_divide_(other)` or `tensor.div_(other)`.
+    pub fn tensor_true_divide_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.tensor_div_(target, other)
+    }
+
     /// Alias for `tensor_linalg_inv`. Equivalent to `torch.inverse(input)`,
     /// the deprecated-but-still-used alias for torch.linalg.inv.
     /// Tracked under frankentorch-5man.
