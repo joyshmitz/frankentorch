@@ -18394,6 +18394,45 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Modified Bessel function of the first kind, order 0.
+    ///
+    /// Equivalent to `torch.special.i0(input)`.
+    /// Tracked under frankentorch-qdvs.
+    pub fn tensor_i0(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let out = self.tensor_apply_function(
+            &[input],
+            |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                let values: Vec<f64> = vals.iter().map(|&x| i0_approx(x)).collect();
+                Ok((values, shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let x_vals = &saved[0];
+                if grad_out.len() != x_vals.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "i0 backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+                let grad_in: Vec<f64> = x_vals
+                    .iter()
+                    .zip(grad_out.iter())
+                    .map(|(&x, &go)| go * i1_approx(x))
+                    .collect();
+                Ok(vec![Some(grad_in)])
+            },
+        )?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("i0 in={} out={}", input.0, out.0),
+        );
+        Ok(out)
+    }
+
     /// Multivariate log-gamma function.
     ///
     /// Equivalent to `torch.special.multigammaln(input, p)`.
@@ -23315,6 +23354,35 @@ fn digamma_approx(mut x: f64) -> f64 {
         * (1.0 / 12.0
             - x2 * (1.0 / 120.0 - x2 * (1.0 / 252.0 - x2 * (1.0 / 240.0 - x2 * 5.0 / 660.0))));
     result
+}
+
+/// Modified Bessel function of the first kind, order 0.
+///
+/// Uses polynomial approximation from Abramowitz & Stegun.
+fn i0_approx(x: f64) -> f64 {
+    let ax = x.abs();
+    if ax < 3.75 {
+        let t = (x / 3.75).powi(2);
+        1.0 + t * (3.5156229 + t * (3.0899424 + t * (1.2067492 + t * (0.2659732 + t * (0.0360768 + t * 0.0045813)))))
+    } else {
+        let t = 3.75 / ax;
+        (ax.exp() / ax.sqrt()) * (0.39894228 + t * (0.01328592 + t * (0.00225319 + t * (-0.00157565 + t * (0.00916281 + t * (-0.02057706 + t * (0.02635537 + t * (-0.01647633 + t * 0.00392377))))))))
+    }
+}
+
+/// Modified Bessel function of the first kind, order 1.
+///
+/// Uses polynomial approximation from Abramowitz & Stegun.
+fn i1_approx(x: f64) -> f64 {
+    let ax = x.abs();
+    let result = if ax < 3.75 {
+        let t = (x / 3.75).powi(2);
+        ax * (0.5 + t * (0.87890594 + t * (0.51498869 + t * (0.15084934 + t * (0.02658733 + t * (0.00301532 + t * 0.00032411))))))
+    } else {
+        let t = 3.75 / ax;
+        (ax.exp() / ax.sqrt()) * (0.39894228 + t * (-0.03988024 + t * (-0.00362018 + t * (0.00163801 + t * (-0.01031555 + t * (0.02282967 + t * (-0.02895312 + t * (0.01787654 + t * (-0.00420059)))))))))
+    };
+    if x < 0.0 { -result } else { result }
 }
 
 /// Polygamma function of order n for n >= 1.
@@ -50758,5 +50826,26 @@ mod tests {
         let result = s.tensor_index_reduce(input, 0, index, source, "amax", true).unwrap();
         let vals = s.tensor_values(result).unwrap();
         assert!((vals[0] - 5.0).abs() < 1e-10); // max(1.0, 5.0, 0.5)
+    }
+
+    #[test]
+    fn test_i0_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0, 1.0, 2.0], vec![3], false).unwrap();
+        let result = s.tensor_i0(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-6); // I0(0) = 1
+        assert!((vals[1] - 1.2660658).abs() < 1e-5); // I0(1)
+        assert!((vals[2] - 2.2795853).abs() < 1e-5); // I0(2)
+    }
+
+    #[test]
+    fn test_i0_negative() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![-1.0, -2.0], vec![2], false).unwrap();
+        let result = s.tensor_i0(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.2660658).abs() < 1e-5); // I0(-1) = I0(1), even function
+        assert!((vals[1] - 2.2795853).abs() < 1e-5); // I0(-2) = I0(2)
     }
 }
