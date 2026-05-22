@@ -18521,6 +18521,53 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Exponentially scaled modified Bessel function of the first kind, order 1.
+    ///
+    /// Equivalent to `torch.special.i1e(input)`.
+    /// i1e(x) = exp(-|x|) * i1(x)
+    /// Tracked under frankentorch-hvjw.
+    pub fn tensor_i1e(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let out = self.tensor_apply_function(
+            &[input],
+            |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                let values: Vec<f64> = vals.iter().map(|&x| i1e_approx(x)).collect();
+                Ok((values, shape.to_vec()))
+            },
+            |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let x_vals = &saved[0];
+                if grad_out.len() != x_vals.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "i1e backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+                let grad_in: Vec<f64> = x_vals
+                    .iter()
+                    .zip(grad_out.iter())
+                    .map(|(&x, &go)| {
+                        let sign_x = if x >= 0.0 { 1.0 } else { -1.0 };
+                        if x.abs() < 1e-10 {
+                            go * 0.5
+                        } else {
+                            go * (i0e_approx(x) - i1e_approx(x) / x - sign_x * i1e_approx(x))
+                        }
+                    })
+                    .collect();
+                Ok(vec![Some(grad_in)])
+            },
+        )?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("i1e in={} out={}", input.0, out.0),
+        );
+        Ok(out)
+    }
+
     /// Multivariate log-gamma function.
     ///
     /// Equivalent to `torch.special.multigammaln(input, p)`.
@@ -50998,5 +51045,16 @@ mod tests {
         let vals = s.tensor_values(result).unwrap();
         assert!((vals[0] + 0.5651591).abs() < 1e-5); // I1(-1) = -I1(1), odd function
         assert!((vals[1] + 1.5906368).abs() < 1e-5); // I1(-2) = -I1(2)
+    }
+
+    #[test]
+    fn test_i1e_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0, 1.0, 2.0], vec![3], false).unwrap();
+        let result = s.tensor_i1e(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!(vals[0].abs() < 1e-10); // i1e(0) = 0
+        assert!((vals[1] - 0.2079104).abs() < 1e-5); // i1e(1) = exp(-1)*I1(1)
+        assert!((vals[2] - 0.2152692).abs() < 1e-5); // i1e(2) = exp(-2)*I1(2)
     }
 }
