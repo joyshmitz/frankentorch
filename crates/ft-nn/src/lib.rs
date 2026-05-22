@@ -8271,6 +8271,169 @@ impl Module for BatchNorm3d {
 
 // ── Upsampling Modules ─────────────────────────────────────────────────
 
+/// Interpolation algorithm for [`Upsample`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpsampleMode {
+    /// Nearest-neighbor interpolation.
+    Nearest,
+    /// Linear interpolation for 1D temporal inputs.
+    Linear,
+    /// Bilinear interpolation for 2D spatial inputs.
+    Bilinear,
+    /// Bicubic interpolation for 2D spatial inputs.
+    Bicubic,
+    /// Trilinear interpolation for 3D volumetric inputs.
+    Trilinear,
+}
+
+impl UpsampleMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Nearest => "nearest",
+            Self::Linear => "linear",
+            Self::Bilinear => "bilinear",
+            Self::Bicubic => "bicubic",
+            Self::Trilinear => "trilinear",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum UpsampleTarget {
+    UniformSize(usize),
+    Size(Vec<usize>),
+    UniformScaleFactor(f64),
+    ScaleFactor(Vec<f64>),
+}
+
+/// Generic PyTorch-style upsampling module.
+///
+/// This wraps `nn.functional.interpolate` semantics for 3D, 4D, and 5D inputs,
+/// defaulting to nearest-neighbor interpolation.
+pub struct Upsample {
+    target: UpsampleTarget,
+    mode: UpsampleMode,
+    align_corners: Option<bool>,
+}
+
+impl Upsample {
+    /// Create an Upsample module with the same output size for every spatial
+    /// dimension.
+    #[must_use]
+    pub fn with_uniform_size(size: usize) -> Self {
+        Self::new(UpsampleTarget::UniformSize(size))
+    }
+
+    /// Create an Upsample module with explicit per-axis output sizes.
+    #[must_use]
+    pub fn with_size(size: Vec<usize>) -> Self {
+        Self::new(UpsampleTarget::Size(size))
+    }
+
+    /// Create an Upsample module with the same scale factor for every spatial
+    /// dimension.
+    #[must_use]
+    pub fn with_uniform_scale_factor(scale_factor: f64) -> Self {
+        Self::new(UpsampleTarget::UniformScaleFactor(scale_factor))
+    }
+
+    /// Create an Upsample module with explicit per-axis scale factors.
+    #[must_use]
+    pub fn with_scale_factor(scale_factor: Vec<f64>) -> Self {
+        Self::new(UpsampleTarget::ScaleFactor(scale_factor))
+    }
+
+    /// Create an Upsample module from PyTorch-style optional `size` and
+    /// `scale_factor` arguments.
+    pub fn from_options(
+        size: Option<Vec<usize>>,
+        scale_factor: Option<Vec<f64>>,
+        mode: UpsampleMode,
+        align_corners: Option<bool>,
+    ) -> Result<Self, AutogradError> {
+        match (size, scale_factor) {
+            (Some(_), Some(_)) => Err(incompatible_error(
+                "Upsample accepts either size or scale_factor, not both",
+            )),
+            (None, None) => Err(incompatible_error("Upsample requires size or scale_factor")),
+            (Some(size), None) => Ok(Self::with_size(size)
+                .with_mode(mode)
+                .with_align_corners(align_corners)),
+            (None, Some(scale_factor)) => Ok(Self::with_scale_factor(scale_factor)
+                .with_mode(mode)
+                .with_align_corners(align_corners)),
+        }
+    }
+
+    fn new(target: UpsampleTarget) -> Self {
+        Self {
+            target,
+            mode: UpsampleMode::Nearest,
+            align_corners: None,
+        }
+    }
+
+    /// Set the interpolation mode.
+    #[must_use]
+    pub fn with_mode(mut self, mode: UpsampleMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Set the align-corners behavior used by linear-family modes.
+    #[must_use]
+    pub fn with_align_corners(mut self, align_corners: Option<bool>) -> Self {
+        self.align_corners = align_corners;
+        self
+    }
+
+    fn resolve_size(&self, spatial_dims: usize) -> Option<Vec<usize>> {
+        match &self.target {
+            UpsampleTarget::UniformSize(size) => Some(vec![*size; spatial_dims]),
+            UpsampleTarget::Size(size) => Some(size.clone()),
+            UpsampleTarget::UniformScaleFactor(_) | UpsampleTarget::ScaleFactor(_) => None,
+        }
+    }
+
+    fn resolve_scale_factor(&self, spatial_dims: usize) -> Option<Vec<f64>> {
+        match &self.target {
+            UpsampleTarget::UniformScaleFactor(scale_factor) => {
+                Some(vec![*scale_factor; spatial_dims])
+            }
+            UpsampleTarget::ScaleFactor(scale_factor) => Some(scale_factor.clone()),
+            UpsampleTarget::UniformSize(_) | UpsampleTarget::Size(_) => None,
+        }
+    }
+}
+
+impl Module for Upsample {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = session.tensor_shape(input)?;
+        if !(3..=5).contains(&input_shape.len()) {
+            return Err(incompatible_error(
+                "Upsample expects 3D, 4D, or 5D input [N, C, ...]",
+            ));
+        }
+
+        let spatial_dims = input_shape.len() - 2;
+        session.tensor_interpolate(
+            input,
+            self.resolve_size(spatial_dims),
+            self.resolve_scale_factor(spatial_dims),
+            self.mode.as_str(),
+            self.align_corners,
+        )
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 /// Nearest-neighbor upsampling for 1D inputs (3D tensors `[N, C, L]`).
 ///
 /// Repeats each element along the length dimension `scale_factor` times.
@@ -22451,6 +22614,109 @@ mod tests {
     }
 
     // ── Upsampling Module Tests ─────────────────────────────────────────
+
+    #[test]
+    fn generic_upsample_nearest_uniform_scale_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample::with_uniform_scale_factor(2.0);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 4, 4]);
+        assert_eq!(
+            vals,
+            &[
+                1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn generic_upsample_bilinear_default_align_corners_false() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample::with_scale_factor(vec![2.0, 2.0]).with_mode(UpsampleMode::Bilinear);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 4, 4]);
+        let expected = [
+            1.0, 1.25, 1.75, 2.0, 1.5, 1.75, 2.25, 2.5, 2.5, 2.75, 3.25, 3.5, 3.0, 3.25, 3.75, 4.0,
+        ];
+        for (actual, expected) in vals.iter().zip(expected) {
+            assert!(
+                (*actual - expected).abs() < 1e-12,
+                "actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn generic_upsample_uniform_size_linear_1d_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample::with_uniform_size(5)
+            .with_mode(UpsampleMode::Linear)
+            .with_align_corners(Some(true));
+
+        let x = session
+            .tensor_variable(vec![1.0, 3.0], vec![1, 1, 2], false)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 5]);
+        assert_eq!(vals, &[1.0, 1.5, 2.0, 2.5, 3.0]);
+    }
+
+    #[test]
+    fn generic_upsample_rejects_invalid_options_and_rank() {
+        assert!(
+            Upsample::from_options(
+                Some(vec![4, 4]),
+                Some(vec![2.0, 2.0]),
+                UpsampleMode::Nearest,
+                None,
+            )
+            .is_err()
+        );
+        assert!(Upsample::from_options(None, None, UpsampleMode::Nearest, None).is_err());
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .expect("variable");
+        let up = Upsample::with_uniform_scale_factor(2.0);
+        assert!(up.forward(&mut session, x).is_err());
+    }
+
+    #[test]
+    fn generic_upsample_has_no_parameters() {
+        let up = Upsample::with_uniform_scale_factor(2.0);
+        assert!(up.parameters().is_empty());
+    }
+
+    #[test]
+    fn generic_upsample_backward_nearest_repeats_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample::with_uniform_scale_factor(2.0);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], true)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+        let loss = session.tensor_sum(out).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session.tensor_gradient(&report, x).expect("input grad");
+
+        assert_eq!(grad, &[4.0, 4.0, 4.0, 4.0]);
+    }
 
     #[test]
     fn upsample1d_forward() {

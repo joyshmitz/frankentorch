@@ -7889,6 +7889,16 @@ impl FrankenTorchSession {
         self.tensor_clamp(input, min_val, max_val)
     }
 
+    /// In-place clip: alias for tensor_clamp_.
+    pub fn tensor_clip_(
+        &mut self,
+        target: TensorNodeId,
+        min_val: f64,
+        max_val: f64,
+    ) -> Result<(), AutogradError> {
+        self.tensor_clamp_(target, min_val, max_val)
+    }
+
     /// Alias for `tensor_sub`. Equivalent to `torch.subtract(lhs, rhs)`.
     /// Tracked under frankentorch-5man.
     pub fn tensor_subtract(
@@ -54110,6 +54120,14 @@ mod tests {
         let y = s.tensor_variable(vec![-1.0, 0.5, 2.0], vec![3], false).unwrap();
         s.tensor_clamp_max_(y, 1.0).unwrap();
         assert_eq!(s.tensor_values(y).unwrap(), vec![-1.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn test_clip_inplace_alias() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![-1.0, 0.5, 2.0], vec![3], false).unwrap();
+        s.tensor_clip_(x, 0.0, 1.0).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![0.0, 0.5, 1.0]);
     }
 
     #[test]
