@@ -10096,6 +10096,38 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Sum over dimensions to reduce tensor to target shape.
+    ///
+    /// Used in autograd backward pass to reduce broadcasted gradients
+    /// back to original shape. Sums over leading dimensions and
+    /// singleton-expanded dimensions.
+    pub fn tensor_sum_to_size(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape == target_shape {
+            return Ok(input);
+        }
+        let mut result = input;
+        let input_ndim = input_shape.len();
+        let target_ndim = target_shape.len();
+        // Sum over leading dimensions if input has more dims
+        for _ in 0..(input_ndim.saturating_sub(target_ndim)) {
+            result = self.tensor_sum_dim(result, 0)?;
+        }
+        // Sum over singleton dimensions in target
+        let current_shape = self.tensor_shape(result)?;
+        for (i, (&curr, &tgt)) in current_shape.iter().zip(target_shape.iter()).enumerate() {
+            if tgt == 1 && curr != 1 {
+                result = self.tensor_sum_dim(result, i)?;
+                result = self.tensor_unsqueeze(result, i)?;
+            }
+        }
+        Ok(result)
+    }
+
     pub fn tensor_mean_dim(
         &mut self,
         input: TensorNodeId,
