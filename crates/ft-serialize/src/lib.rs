@@ -1051,11 +1051,13 @@ fn ft_dtype_to_st(dtype: DType) -> Result<StDtype, TensorIOError> {
         DType::F32 => Ok(StDtype::F32),
         DType::F16 => Ok(StDtype::F16),
         DType::BF16 => Ok(StDtype::BF16),
-        DType::I64 | DType::I32 | DType::Bool => Err(TensorIOError::Corrupt {
-            reason: format!(
-                "integer/bool dtypes ({dtype:?}) are not supported by the DenseTensor SafeTensors bridge"
-            ),
-        }),
+        DType::I64 | DType::I32 | DType::Bool | DType::QInt8 | DType::QUInt8 => {
+            Err(TensorIOError::Corrupt {
+                reason: format!(
+                    "integer/bool/quantized dtypes ({dtype:?}) are not supported by the DenseTensor SafeTensors bridge"
+                ),
+            })
+        }
         DType::Complex64 | DType::Complex128 => Err(TensorIOError::Corrupt {
             reason: format!("complex dtypes ({dtype:?}) are not supported by SafeTensors"),
         }),
@@ -1149,6 +1151,18 @@ impl st_tensor::View for TensorViewAdapter<'_> {
                     bytes.extend_from_slice(&value.im.to_le_bytes());
                 }
                 Cow::Owned(bytes)
+            }
+            TensorStorage::QInt8(v) => {
+                let slice = &v[self.storage_start..self.storage_end];
+                let mut bytes = Vec::with_capacity(self.data_len);
+                for value in slice {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                Cow::Owned(bytes)
+            }
+            TensorStorage::QUInt8(v) => {
+                let slice = &v[self.storage_start..self.storage_end];
+                Cow::Owned(slice.to_vec())
             }
         }
     }

@@ -41090,6 +41090,340 @@ print(json.dumps({"bias_shape": list(module.bias.shape)}, sort_keys=True))
     }
 
     #[test]
+    fn quantized_linear_packed_weight_oracle_matches_torch() -> Result<(), String> {
+        use ft_api::FrankenTorchSession;
+        use ft_nn::{Module, QParams, QuantizedLinear, QuantizedStorageDType};
+
+        struct OracleCase {
+            name: &'static str,
+            dtype: QuantizedStorageDType,
+            in_features: usize,
+            out_features: usize,
+            weight: Vec<f64>,
+            bias: Vec<f64>,
+            input: Vec<f64>,
+            per_tensor_qparams: Option<QParams>,
+            per_channel_qparams: Option<(usize, Vec<QParams>)>,
+        }
+
+        fn dtype_name(dtype: QuantizedStorageDType) -> &'static str {
+            match dtype {
+                QuantizedStorageDType::QInt8 => "qint8",
+                QuantizedStorageDType::QUInt8 => "quint8",
+            }
+        }
+
+        fn qparams_json(qparams: QParams) -> Value {
+            json!({
+                "scale": qparams.scale,
+                "zero_point": qparams.zero_point,
+                "qmin": qparams.qmin,
+                "qmax": qparams.qmax,
+            })
+        }
+
+        fn array_f64(value: &Value, key: &str) -> Result<Vec<f64>, String> {
+            value
+                .get(key)
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("oracle response missing {key} array"))?
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    item.as_f64()
+                        .ok_or_else(|| format!("oracle {key}[{idx}] is not numeric: {item}"))
+                })
+                .collect()
+        }
+
+        fn array_i64(value: &Value, key: &str) -> Result<Vec<i64>, String> {
+            value
+                .get(key)
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("oracle response missing {key} array"))?
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    item.as_i64()
+                        .ok_or_else(|| format!("oracle {key}[{idx}] is not integer: {item}"))
+                })
+                .collect()
+        }
+
+        fn assert_close_vec(
+            case_name: &str,
+            got: &[f64],
+            want: &[f64],
+            abs_tol: f64,
+        ) -> Result<(), String> {
+            if got.len() != want.len() {
+                return Err(format!(
+                    "{case_name}: output length mismatch, got {} expected {}",
+                    got.len(),
+                    want.len()
+                ));
+            }
+            for (idx, (&actual, &expected)) in got.iter().zip(want.iter()).enumerate() {
+                if (actual - expected).abs() > abs_tol {
+                    return Err(format!(
+                        "{case_name}: output[{idx}] = {actual:?}, expected {expected:?}, tolerance {abs_tol}"
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        let (qint8_min, qint8_max) = QParams::qint8_range();
+        let (quint8_min, quint8_max) = QParams::quint8_range();
+        let cases = vec![
+            OracleCase {
+                name: "qint8_per_tensor_clamps_signed_edges",
+                dtype: QuantizedStorageDType::QInt8,
+                in_features: 3,
+                out_features: 2,
+                weight: vec![-40.0, -1.1, 0.0, 0.74, 4.2, 40.0],
+                bias: vec![0.25, -0.75],
+                input: vec![1.0, -2.0, 0.5, -1.5, 0.25, 2.0],
+                per_tensor_qparams: Some(QParams {
+                    scale: 0.25,
+                    zero_point: -3,
+                    qmin: qint8_min,
+                    qmax: qint8_max,
+                }),
+                per_channel_qparams: None,
+            },
+            OracleCase {
+                name: "quint8_per_tensor_clamps_unsigned_edges",
+                dtype: QuantizedStorageDType::QUInt8,
+                in_features: 3,
+                out_features: 2,
+                weight: vec![-40.0, -0.6, 0.0, 0.39, 5.0, 40.0],
+                bias: vec![-0.1, 0.3],
+                input: vec![0.25, -1.0, 2.0, -3.0, 0.5, 1.25],
+                per_tensor_qparams: Some(QParams {
+                    scale: 0.2,
+                    zero_point: 127,
+                    qmin: quint8_min,
+                    qmax: quint8_max,
+                }),
+                per_channel_qparams: None,
+            },
+            OracleCase {
+                name: "qint8_per_output_channel_uses_channel_qparams",
+                dtype: QuantizedStorageDType::QInt8,
+                in_features: 3,
+                out_features: 2,
+                weight: vec![-1.2, 0.4, 1.3, -20.0, 0.0, 70.0],
+                bias: vec![0.0, 1.25],
+                input: vec![1.0, 2.0, -1.0, -0.5, 1.5, 0.25],
+                per_tensor_qparams: None,
+                per_channel_qparams: Some((
+                    0,
+                    vec![
+                        QParams {
+                            scale: 0.1,
+                            zero_point: 0,
+                            qmin: qint8_min,
+                            qmax: qint8_max,
+                        },
+                        QParams {
+                            scale: 0.5,
+                            zero_point: -7,
+                            qmin: qint8_min,
+                            qmax: qint8_max,
+                        },
+                    ],
+                )),
+            },
+        ];
+
+        let payload_cases: Vec<Value> = cases
+            .iter()
+            .map(|case| {
+                let (channel_axis, channels) = match &case.per_channel_qparams {
+                    Some((axis, qparams)) => (
+                        Some(*axis),
+                        qparams
+                            .iter()
+                            .copied()
+                            .map(qparams_json)
+                            .collect::<Vec<_>>(),
+                    ),
+                    None => (None, Vec::new()),
+                };
+                json!({
+                    "name": case.name,
+                    "dtype": dtype_name(case.dtype),
+                    "in_features": case.in_features,
+                    "out_features": case.out_features,
+                    "weight": case.weight,
+                    "bias": case.bias,
+                    "input": case.input,
+                    "qparams": case.per_tensor_qparams.map(qparams_json),
+                    "channel_axis": channel_axis,
+                    "channels": channels,
+                })
+            })
+            .collect();
+        let payload = json!({ "cases": payload_cases });
+
+        let script = r#"
+import json
+import sys
+import torch
+
+payload = json.loads(sys.stdin.read())
+results = []
+for case in payload["cases"]:
+    dtype = torch.qint8 if case["dtype"] == "qint8" else torch.quint8
+    weight = torch.tensor(case["weight"], dtype=torch.float32).reshape(
+        case["out_features"],
+        case["in_features"],
+    )
+    if case["channel_axis"] is None:
+        qp = case["qparams"]
+        qweight = torch.quantize_per_tensor(
+            weight,
+            scale=float(qp["scale"]),
+            zero_point=int(qp["zero_point"]),
+            dtype=dtype,
+        )
+    else:
+        qweight = torch.quantize_per_channel(
+            weight,
+            scales=torch.tensor([float(qp["scale"]) for qp in case["channels"]], dtype=torch.float64),
+            zero_points=torch.tensor([int(qp["zero_point"]) for qp in case["channels"]], dtype=torch.int64),
+            axis=int(case["channel_axis"]),
+            dtype=dtype,
+        )
+
+    input_tensor = torch.tensor(case["input"], dtype=torch.float64).reshape(
+        -1,
+        case["in_features"],
+    )
+    bias = torch.tensor(case["bias"], dtype=torch.float64)
+    output = torch.nn.functional.linear(input_tensor, qweight.dequantize().to(torch.float64), bias)
+    results.append({
+        "name": case["name"],
+        "qvalues": [int(v) for v in qweight.int_repr().reshape(-1).tolist()],
+        "output": [float(v) for v in output.reshape(-1).tolist()],
+    })
+
+print(json.dumps({"cases": results}, sort_keys=True))
+"#;
+
+        let config = HarnessConfig::default_paths();
+        let oracle = match super::run_legacy_oracle_script(&config, script, &payload) {
+            Ok(value) => value,
+            Err(error)
+                if error.contains("ModuleNotFoundError")
+                    || error.contains("No module named 'torch'")
+                    || error.contains("failed to spawn legacy oracle") =>
+            {
+                eprintln!(
+                    "quantized_linear_packed_weight_oracle_matches_torch: torch oracle unavailable, skipping: {error}"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(format!("torch quantized oracle should run: {error}")),
+        };
+
+        let oracle_cases = oracle
+            .get("cases")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "oracle response missing cases array".to_string())?;
+        let mut oracle_by_name = BTreeMap::new();
+        for item in oracle_cases {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("oracle case missing name: {item}"))?;
+            oracle_by_name.insert(name, item);
+        }
+
+        // PyTorch quantization applies affine round/clamp, then linear
+        // consumes float32 dequantized weights. Keep packed qvalues exact
+        // and allow only one float32-scale rounding interval in output.
+        const OUTPUT_ABS_TOL: f64 = 1.0e-6;
+        for case in cases {
+            let oracle_case = oracle_by_name
+                .get(case.name)
+                .ok_or_else(|| format!("oracle did not return case {}", case.name))?;
+            let expected_qvalues = array_i64(oracle_case, "qvalues")?;
+            let expected_output = array_f64(oracle_case, "output")?;
+
+            let linear_result = match (case.per_tensor_qparams, case.per_channel_qparams) {
+                (Some(qparams), None) => QuantizedLinear::from_float_weights(
+                    case.weight,
+                    Some(case.bias),
+                    case.in_features,
+                    case.out_features,
+                    case.dtype,
+                    qparams,
+                ),
+                (None, Some((axis, qparams))) => QuantizedLinear::from_float_weights_per_channel(
+                    case.weight,
+                    Some(case.bias),
+                    case.in_features,
+                    case.out_features,
+                    case.dtype,
+                    axis,
+                    qparams,
+                ),
+                _ => {
+                    return Err(format!(
+                        "{}: invalid quantized linear oracle case",
+                        case.name
+                    ));
+                }
+            };
+            let linear = linear_result
+                .map_err(|error| format!("{}: QuantizedLinear failed: {error}", case.name))?;
+
+            let actual_qvalues: Vec<i64> = match case.dtype {
+                QuantizedStorageDType::QInt8 => linear
+                    .weight_storage()
+                    .qint8_values()
+                    .ok_or_else(|| format!("{}: expected qint8 storage", case.name))?
+                    .iter()
+                    .map(|&value| i64::from(value))
+                    .collect(),
+                QuantizedStorageDType::QUInt8 => linear
+                    .weight_storage()
+                    .quint8_values()
+                    .ok_or_else(|| format!("{}: expected quint8 storage", case.name))?
+                    .iter()
+                    .map(|&value| i64::from(value))
+                    .collect(),
+            };
+            assert_eq!(
+                actual_qvalues, expected_qvalues,
+                "{}: packed quantized weight bytes differ from torch",
+                case.name
+            );
+
+            let batch = case
+                .input
+                .len()
+                .checked_div(case.in_features)
+                .ok_or_else(|| format!("{}: invalid input shape", case.name))?;
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = session
+                .tensor_variable(case.input, vec![batch, case.in_features], false)
+                .map_err(|error| format!("{}: input tensor failed: {error}", case.name))?;
+            let output = linear
+                .forward(&mut session, input)
+                .map_err(|error| format!("{}: forward failed: {error}", case.name))?;
+            let actual_output = session
+                .tensor_values(output)
+                .map_err(|error| format!("{}: output values unavailable: {error}", case.name))?;
+            assert_close_vec(case.name, &actual_output, &expected_output, OUTPUT_ABS_TOL)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn conv_transpose_nd_init_fan_in_matches_pytorch_weight_shape_contract() -> Result<(), String> {
         use ft_api::FrankenTorchSession;
         use ft_nn::{ConvTranspose2d, ConvTranspose3d};
