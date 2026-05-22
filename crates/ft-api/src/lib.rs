@@ -13461,6 +13461,26 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("softplus_", target, None, |x| (1.0 + x.exp()).ln())
     }
 
+    /// In-place ELU activation: x if x > 0, else alpha * (exp(x) - 1).
+    ///
+    /// Equivalent to `F.elu(tensor, inplace=True)` in PyTorch.
+    pub fn tensor_elu_(&mut self, target: TensorNodeId, alpha: f64) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("elu_", target, Some(format!("alpha={alpha}")), |x| {
+            if x > 0.0 { x } else { alpha * (x.exp() - 1.0) }
+        })
+    }
+
+    /// In-place SELU activation: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
+    ///
+    /// Equivalent to `F.selu(tensor, inplace=True)` in PyTorch.
+    pub fn tensor_selu_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        const ALPHA: f64 = 1.6732632423543772848170429916717;
+        const SCALE: f64 = 1.0507009873554804934193349852946;
+        self.apply_tensor_unary_in_place("selu_", target, None, |x| {
+            if x > 0.0 { SCALE * x } else { SCALE * ALPHA * (x.exp() - 1.0) }
+        })
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53503,6 +53523,17 @@ mod tests {
         assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
         let b = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
         s.tensor_softplus_(b).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_elu_selu_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_elu_(a, 1.0).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_selu_(b).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
