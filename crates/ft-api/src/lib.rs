@@ -13058,6 +13058,61 @@ impl FrankenTorchSession {
         self.tensor_pixel_unshuffle(input, downscale_factor)
     }
 
+    /// Channel shuffle for grouped convolutions. Alias for tensor_channel_shuffle.
+    pub fn functional_channel_shuffle(
+        &mut self,
+        input: TensorNodeId,
+        groups: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_channel_shuffle(input, groups)
+    }
+
+    /// Hinge embedding loss. Alias for tensor_hinge_embedding_loss.
+    pub fn functional_hinge_embedding_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hinge_embedding_loss(input, target, margin, reduction)
+    }
+
+    /// Soft margin loss. Alias for tensor_soft_margin_loss.
+    pub fn functional_soft_margin_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_soft_margin_loss(input, target, reduction)
+    }
+
+    /// Gaussian NLL loss. Alias for tensor_gaussian_nll_loss.
+    pub fn functional_gaussian_nll_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        var: TensorNodeId,
+        reduction: &str,
+        full: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gaussian_nll_loss(input, target, var, reduction, full)
+    }
+
+    /// Poisson NLL loss. Alias for tensor_poisson_nll_loss.
+    pub fn functional_poisson_nll_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        log_input: bool,
+        full: bool,
+        eps: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_poisson_nll_loss(input, target, log_input, full, eps, reduction)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
