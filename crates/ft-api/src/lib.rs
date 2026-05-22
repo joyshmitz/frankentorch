@@ -13402,6 +13402,20 @@ impl FrankenTorchSession {
         )
     }
 
+    /// In-place degrees to radians conversion.
+    ///
+    /// Equivalent to `tensor.deg2rad_()` in PyTorch.
+    pub fn tensor_deg2rad_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("deg2rad_", target, None, |x| x * std::f64::consts::PI / 180.0)
+    }
+
+    /// In-place radians to degrees conversion.
+    ///
+    /// Equivalent to `tensor.rad2deg_()` in PyTorch.
+    pub fn tensor_rad2deg_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("rad2deg_", target, None, |x| x * 180.0 / std::f64::consts::PI)
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53400,6 +53414,17 @@ mod tests {
         assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
         let b = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
         s.tensor_pow_(b, 3.0).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_angle_conversion_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0, 90.0, 180.0], vec![3], false).unwrap();
+        s.tensor_deg2rad_(a).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI], vec![3], false).unwrap();
+        s.tensor_rad2deg_(b).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
