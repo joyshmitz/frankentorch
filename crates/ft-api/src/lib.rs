@@ -14705,6 +14705,39 @@ impl FrankenTorchSession {
         })
     }
 
+    /// In-place PReLU activation with learnable weight.
+    pub fn tensor_prelu_(
+        &mut self,
+        target: TensorNodeId,
+        weight: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_prelu(target, weight)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("prelu_", target, None);
+        Ok(())
+    }
+
+    /// In-place RReLU activation (inference mode, uses midpoint slope).
+    pub fn tensor_rrelu_(
+        &mut self,
+        target: TensorNodeId,
+        lower: f64,
+        upper: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_rrelu(target, lower, upper)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation(
+            "rrelu_",
+            target,
+            Some(format!("lower={lower} upper={upper}")),
+        );
+        Ok(())
+    }
+
     /// In-place CELU activation: max(0, x) + min(0, alpha * (exp(x/alpha) - 1)).
     ///
     /// Equivalent to `F.celu(tensor, alpha, inplace=True)` in PyTorch.
