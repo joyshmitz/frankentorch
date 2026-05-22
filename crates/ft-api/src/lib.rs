@@ -10481,6 +10481,20 @@ impl FrankenTorchSession {
         self.tensor_softmax(neg, dim)
     }
 
+    /// In-place softmin: softmax(-target, dim).
+    pub fn tensor_softmin_(
+        &mut self,
+        target: TensorNodeId,
+        dim: usize,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_softmin(target, dim)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("softmin_", target, Some(format!("dim={dim}")));
+        Ok(())
+    }
+
     pub fn tensor_log_softmax(
         &mut self,
         input: TensorNodeId,
