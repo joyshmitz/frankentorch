@@ -4008,6 +4008,125 @@ impl Module for Flatten {
     }
 }
 
+/// Unflatten module: expands one dimension into a target shape.
+pub struct Unflatten {
+    dim: isize,
+    unflattened_size: Vec<isize>,
+}
+
+impl Unflatten {
+    /// Create an Unflatten module that expands `dim` into `unflattened_size`.
+    ///
+    /// A single `-1` entry is inferred from the input dimension size. Named
+    /// tensor dimensions are out of scope for FrankenTorch's current tensor
+    /// metadata.
+    #[must_use]
+    pub fn new(dim: isize, unflattened_size: Vec<isize>) -> Self {
+        Self {
+            dim,
+            unflattened_size,
+        }
+    }
+
+    fn normalized_dim(&self, rank: usize) -> Result<usize, AutogradError> {
+        let rank = isize::try_from(rank).map_err(|_| overflow_error("Unflatten: rank overflow"))?;
+        let normalized = if self.dim < 0 {
+            rank.checked_add(self.dim)
+                .ok_or_else(|| overflow_error("Unflatten: dim normalization overflow"))?
+        } else {
+            self.dim
+        };
+        if normalized < 0 || normalized >= rank {
+            return Err(incompatible_error("Unflatten: dim out of range"));
+        }
+        usize::try_from(normalized)
+            .map_err(|_| overflow_error("Unflatten: dim conversion overflow"))
+    }
+
+    fn resolved_unflattened_size(&self, dim_size: usize) -> Result<Vec<usize>, AutogradError> {
+        if self.unflattened_size.is_empty() {
+            return Err(incompatible_error(
+                "Unflatten: unflattened_size must not be empty",
+            ));
+        }
+
+        let mut inferred_index = None;
+        let mut known_product = 1usize;
+        let mut resolved = Vec::with_capacity(self.unflattened_size.len());
+        for (idx, &size) in self.unflattened_size.iter().enumerate() {
+            if size == -1 {
+                if inferred_index.replace(idx).is_some() {
+                    return Err(incompatible_error(
+                        "Unflatten: at most one inferred dimension is allowed",
+                    ));
+                }
+                resolved.push(0);
+            } else if size < 0 {
+                return Err(incompatible_error(
+                    "Unflatten: dimensions must be non-negative or -1",
+                ));
+            } else {
+                let dim = usize::try_from(size)
+                    .map_err(|_| overflow_error("Unflatten: size conversion overflow"))?;
+                known_product = checked_mul(
+                    known_product,
+                    dim,
+                    "Unflatten: unflattened_size product overflow",
+                )?;
+                resolved.push(dim);
+            }
+        }
+
+        if let Some(index) = inferred_index {
+            if known_product == 0 || !dim_size.is_multiple_of(known_product) {
+                return Err(incompatible_error(
+                    "Unflatten: inferred size does not divide input dimension",
+                ));
+            }
+            let inferred = dim_size / known_product;
+            let Some(slot) = resolved.get_mut(index) else {
+                return Err(overflow_error("Unflatten: inferred index out of range"));
+            };
+            *slot = inferred;
+        } else if known_product != dim_size {
+            return Err(incompatible_error(
+                "Unflatten: unflattened_size product must match input dimension",
+            ));
+        }
+
+        Ok(resolved)
+    }
+}
+
+impl Module for Unflatten {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = session.tensor_shape(input)?;
+        let dim = self.normalized_dim(input_shape.len())?;
+        let Some(&dim_size) = input_shape.get(dim) else {
+            return Err(incompatible_error("Unflatten: dim out of range"));
+        };
+        let unflattened_size = self.resolved_unflattened_size(dim_size)?;
+        let output_rank = checked_add(
+            input_shape.len().saturating_sub(1),
+            unflattened_size.len(),
+            "Unflatten: output rank overflow",
+        );
+        let mut output_shape = Vec::with_capacity(output_rank?);
+        output_shape.extend(input_shape.iter().take(dim).copied());
+        output_shape.extend(unflattened_size);
+        output_shape.extend(input_shape.iter().skip(dim.saturating_add(1)).copied());
+        session.tensor_reshape(input, output_shape)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 /// LeakyReLU activation module (negative slope = 0.01).
 pub struct LeakyReLU;
 
@@ -18118,6 +18237,76 @@ mod tests {
         let (vals, meta) = session.tensor_values_meta(y).expect("values");
         assert_eq!(meta.shape(), &[1, 6]);
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn unflatten_module_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable((0..48).map(f64::from).collect(), vec![2, 6, 4], false)
+            .expect("variable");
+        let unflatten = Unflatten::new(1, vec![2, 3]);
+        let y = unflatten.forward(&mut session, x).expect("forward");
+        let (vals, meta) = session.tensor_values_meta(y).expect("values");
+        assert_eq!(meta.shape(), &[2, 2, 3, 4]);
+        assert_eq!(vals.len(), 48);
+        assert_eq!(vals[0], 0.0);
+        assert_eq!(vals[47], 47.0);
+    }
+
+    #[test]
+    fn unflatten_module_supports_negative_dim_and_inferred_size() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable((0..180).map(f64::from).collect(), vec![5, 12, 3], false)
+            .expect("variable");
+        let unflatten = Unflatten::new(-2, vec![2, -1, 3, 1]);
+        let y = unflatten.forward(&mut session, x).expect("forward");
+        let (_, meta) = session.tensor_values_meta(y).expect("values");
+        assert_eq!(meta.shape(), &[5, 2, 2, 3, 1, 3]);
+    }
+
+    #[test]
+    fn unflatten_module_backward_reshapes_gradient_to_input() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("variable");
+        let unflatten = Unflatten::new(1, vec![1, 3]);
+        let y = unflatten.forward(&mut session, x).expect("forward");
+        let loss = session.tensor_sum(y).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+        let grad = session.tensor_gradient(&report, x).expect("input gradient");
+        assert_eq!(grad, &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn unflatten_module_rejects_invalid_contracts() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("variable");
+
+        assert!(
+            Unflatten::new(2, vec![3, 1])
+                .forward(&mut session, x)
+                .is_err()
+        );
+        assert!(
+            Unflatten::new(1, vec![2, 2])
+                .forward(&mut session, x)
+                .is_err()
+        );
+        assert!(
+            Unflatten::new(1, vec![-1, -1])
+                .forward(&mut session, x)
+                .is_err()
+        );
+        assert!(
+            Unflatten::new(1, vec![-2, 3])
+                .forward(&mut session, x)
+                .is_err()
+        );
     }
 
     // ---- Additional activation module tests ----
