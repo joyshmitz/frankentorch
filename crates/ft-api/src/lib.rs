@@ -13362,6 +13362,27 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("atanh_", target, None, f64::atanh)
     }
 
+    /// In-place hyperbolic cosine.
+    ///
+    /// Equivalent to `tensor.cosh_()` in PyTorch.
+    pub fn tensor_cosh_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("cosh_", target, None, f64::cosh)
+    }
+
+    /// In-place hyperbolic sine.
+    ///
+    /// Equivalent to `tensor.sinh_()` in PyTorch.
+    pub fn tensor_sinh_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("sinh_", target, None, f64::sinh)
+    }
+
+    /// In-place tangent.
+    ///
+    /// Equivalent to `tensor.tan_()` in PyTorch.
+    pub fn tensor_tan_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("tan_", target, None, f64::tan)
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53335,5 +53356,20 @@ mod tests {
         let f = s.tensor_variable(v, vec![3], false).unwrap();
         s.tensor_atanh_(f).unwrap();
         assert_eq!(s.tensor_shape(f).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_hyperbolic_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let v = vec![0.0, 0.5, 1.0];
+        let a = s.tensor_variable(v.clone(), vec![3], false).unwrap();
+        s.tensor_cosh_(a).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(v.clone(), vec![3], false).unwrap();
+        s.tensor_sinh_(b).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+        let c = s.tensor_variable(v, vec![3], false).unwrap();
+        s.tensor_tan_(c).unwrap();
+        assert_eq!(s.tensor_shape(c).unwrap(), vec![3]);
     }
 }
