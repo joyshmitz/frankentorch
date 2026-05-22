@@ -14558,6 +14558,23 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place addmv: beta * target + alpha * (mat @ vec).
+    pub fn tensor_addmv_(
+        &mut self,
+        target: TensorNodeId,
+        mat: TensorNodeId,
+        vec_input: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_addmv(target, mat, vec_input, beta, alpha)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("addmv_", target, Some(format!("beta={beta} alpha={alpha}")));
+        Ok(())
+    }
+
     /// In-place baddbmm: beta * target + alpha * batch_matmul(batch1, batch2).
     pub fn tensor_baddbmm_(
         &mut self,
@@ -54998,6 +55015,16 @@ mod tests {
         let indices = s.tensor_sort_(x, 0, false).unwrap();
         assert_eq!(s.tensor_values(x).unwrap(), vec![1.0, 1.0, 3.0, 4.0, 5.0, 9.0]);
         assert_eq!(indices, vec![1, 3, 0, 2, 4, 5]);
+    }
+
+    #[test]
+    fn test_addmv_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let y = s.tensor_variable(vec![1.0, 1.0], vec![2], false).unwrap();
+        let mat = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).unwrap();
+        let vec_t = s.tensor_variable(vec![1.0, 1.0], vec![2], false).unwrap();
+        s.tensor_addmv_(y, mat, vec_t, 1.0, 1.0).unwrap();
+        assert_eq!(s.tensor_values(y).unwrap(), vec![4.0, 8.0]);
     }
 
     #[test]
