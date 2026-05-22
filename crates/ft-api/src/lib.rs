@@ -13278,6 +13278,13 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("reciprocal_", target, None, |x| 1.0 / x)
     }
 
+    /// In-place fractional part: x - floor(x) for each element.
+    ///
+    /// Equivalent to `tensor.frac_()` in PyTorch.
+    pub fn tensor_frac_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("frac_", target, None, |x| x - x.floor())
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53040,7 +53047,7 @@ mod tests {
         let x = s.tensor_variable(vec![0.0; 100], vec![100], false).unwrap();
         s.tensor_uniform_(x, 0.0, 1.0).unwrap();
         let vals = s.tensor_values(x).unwrap();
-        assert!(vals.iter().all(|&v| v >= 0.0 && v <= 1.0));
+        assert!(vals.iter().all(|&v| (0.0..=1.0).contains(&v)));
         let y = s.tensor_variable(vec![0.0; 100], vec![100], false).unwrap();
         s.tensor_normal_(y, 0.0, 1.0).unwrap();
         let vals2 = s.tensor_values(y).unwrap();
@@ -53188,6 +53195,14 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s.tensor_variable(vec![2.0, 4.0, 0.5], vec![3], false).unwrap();
         s.tensor_reciprocal_(x).unwrap();
+        assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_frac_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.5, -2.3, 3.0], vec![3], false).unwrap();
+        s.tensor_frac_(x).unwrap();
         assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
     }
 }
