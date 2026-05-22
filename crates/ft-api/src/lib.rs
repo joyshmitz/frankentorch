@@ -16489,6 +16489,42 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Compute the matrix product of a sequence of matrices.
+    ///
+    /// Equivalent to `torch.linalg.multi_dot(tensors)`. Multiplies
+    /// the matrices left-to-right. For optimal parenthesization of
+    /// long chains, consider dynamic programming (not implemented
+    /// here). First and last can be 1-D (treated as row/column
+    /// vectors); middle matrices must be 2-D.
+    pub fn tensor_linalg_multi_dot(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        if tensors.is_empty() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multi_dot: need at least one tensor",
+                },
+            )));
+        }
+        if tensors.len() == 1 {
+            return Ok(tensors[0]);
+        }
+        let mut result = self.tensor_matmul(tensors[0], tensors[1])?;
+        for t in &tensors[2..] {
+            result = self.tensor_matmul(result, *t)?;
+        }
+        Ok(result)
+    }
+
+    /// Alias for `tensor_linalg_multi_dot`.
+    pub fn tensor_chain_matmul(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_multi_dot(tensors)
+    }
+
     /// Solve a triangular linear system: A @ X = B.
     ///
     /// Equivalent to `torch.linalg.solve_triangular(A, B, upper)`.
@@ -51949,5 +51985,38 @@ mod tests {
         let logdet = s.tensor_logdet(a).unwrap();
         let val = s.tensor_values(logdet).unwrap();
         assert!(val[0].abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_multi_dot_two_matrices() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // A: 2x3, B: 3x2 => result: 2x2
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], false).unwrap();
+        let result = s.tensor_linalg_multi_dot(&[a, b]).unwrap();
+        let shape = s.tensor_shape(result).unwrap();
+        assert_eq!(shape, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_multi_dot_three_matrices() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // A: 2x3, B: 3x4, C: 4x2 => result: 2x2
+        let a = s.tensor_variable(vec![1.0; 6], vec![2, 3], false).unwrap();
+        let b = s.tensor_variable(vec![1.0; 12], vec![3, 4], false).unwrap();
+        let c = s.tensor_variable(vec![1.0; 8], vec![4, 2], false).unwrap();
+        let result = s.tensor_linalg_multi_dot(&[a, b, c]).unwrap();
+        let shape = s.tensor_shape(result).unwrap();
+        assert_eq!(shape, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_chain_matmul_alias() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0; 6], vec![2, 3], false).unwrap();
+        let b = s.tensor_variable(vec![1.0; 6], vec![3, 2], false).unwrap();
+        let result = s.tensor_chain_matmul(&[a, b]).unwrap();
+        let shape = s.tensor_shape(result).unwrap();
+        assert_eq!(shape, vec![2, 2]);
     }
 }
