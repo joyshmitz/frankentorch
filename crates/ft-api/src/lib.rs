@@ -5766,6 +5766,18 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Alias for tensor_bce_loss.
+    ///
+    /// Equivalent to `torch.nn.functional.binary_cross_entropy(input, target, reduction)`.
+    pub fn tensor_binary_cross_entropy(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bce_loss(input, target, reduction)
+    }
+
     /// Binary cross entropy with logits (numerically stable).
     ///
     /// Equivalent to `torch.nn.functional.binary_cross_entropy_with_logits`.
@@ -5799,6 +5811,18 @@ impl FrankenTorchSession {
                 },
             ))),
         }
+    }
+
+    /// Alias for tensor_bce_with_logits_loss.
+    ///
+    /// Equivalent to `torch.nn.functional.binary_cross_entropy_with_logits`.
+    pub fn tensor_binary_cross_entropy_with_logits(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bce_with_logits_loss(input, target, reduction)
     }
 
     /// Negative log likelihood loss.
