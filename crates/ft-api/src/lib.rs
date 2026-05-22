@@ -8054,6 +8054,18 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Swish activation (alias for SiLU).
+    ///
+    /// swish(x) = x * sigmoid(x). Also known as SiLU.
+    pub fn tensor_swish(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_silu(input)
+    }
+
+    /// In-place swish activation (alias for silu_).
+    pub fn tensor_swish_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_silu_(target)
+    }
+
     pub fn tensor_leaky_relu(
         &mut self,
         input: TensorNodeId,
