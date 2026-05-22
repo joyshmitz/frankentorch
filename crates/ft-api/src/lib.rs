@@ -6121,8 +6121,12 @@ impl FrankenTorchSession {
             .iter()
             .zip(other_vals.iter())
             .map(|(&a, &b)| {
-                let shift = (b as u32).min(63);
-                ((a as i64).wrapping_shl(shift)) as f64
+                let shift_i = b as i64;
+                if shift_i < 0 || shift_i > 63 {
+                    0.0
+                } else {
+                    ((a as i64).wrapping_shl(shift_i as u32)) as f64
+                }
             })
             .collect();
         let shape = self.tensor_shape(input)?;
@@ -6158,8 +6162,12 @@ impl FrankenTorchSession {
             .iter()
             .zip(other_vals.iter())
             .map(|(&a, &b)| {
-                let shift = (b as u32).min(63);
-                ((a as i64).wrapping_shr(shift)) as f64
+                let shift_i = b as i64;
+                if shift_i < 0 || shift_i > 63 {
+                    if (a as i64) < 0 { -1.0 } else { 0.0 }
+                } else {
+                    ((a as i64).wrapping_shr(shift_i as u32)) as f64
+                }
             })
             .collect();
         let shape = self.tensor_shape(input)?;
