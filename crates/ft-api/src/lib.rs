@@ -16037,6 +16037,47 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// Gumbel-softmax for differentiable sampling from categorical distributions.
+    ///
+    /// Equivalent to `torch.nn.functional.gumbel_softmax(logits, tau, hard, dim)`.
+    /// Samples from Gumbel(0,1), adds to logits, applies softmax with temperature tau.
+    /// If hard=true, returns one-hot encoded but gradients flow through soft sample.
+    pub fn tensor_gumbel_softmax(
+        &mut self,
+        logits: TensorNodeId,
+        tau: f64,
+        hard: bool,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(logits)?;
+        let numel: usize = shape.iter().product();
+        // Sample from Gumbel(0,1): -log(-log(U)) where U ~ Uniform(0,1)
+        let gumbel_noise: Vec<f64> = (0..numel)
+            .map(|_| {
+                let u = self.rng.next_f64().max(1e-20);
+                -(-u.ln()).ln()
+            })
+            .collect();
+        let gumbel = self.tensor_variable(gumbel_noise, shape, false)?;
+        let perturbed = self.tensor_add(logits, gumbel)?;
+        // Scale by temperature
+        let tau_tensor = self.full_like(perturbed, tau, false)?;
+        let scaled = self.tensor_div(perturbed, tau_tensor)?;
+        let soft = self.tensor_softmax(scaled, dim)?;
+        if hard {
+            // Straight-through: argmax for forward, soft gradients for backward
+            let (_, indices) = self.tensor_max_dim(soft, dim)?;
+            let dim_size = self.tensor_shape(soft)?[dim];
+            let hard_sample = self.tensor_one_hot(indices, dim_size)?;
+            // hard - soft.detach() + soft (straight-through estimator)
+            let soft_detached = self.tensor_detach(soft)?;
+            let diff = self.tensor_sub(hard_sample, soft_detached)?;
+            self.tensor_add(diff, soft)
+        } else {
+            Ok(soft)
+        }
+    }
+
     /// In-place inverse error function.
     ///
     /// Equivalent to `tensor.erfinv_()` in PyTorch.
