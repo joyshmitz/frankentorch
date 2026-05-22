@@ -14509,6 +14509,38 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place scatter: scatters src values into target at indices along dim.
+    pub fn tensor_scatter_(
+        &mut self,
+        target: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_scatter(target, dim, index, src)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("scatter_", target, Some(format!("dim={dim}")));
+        Ok(())
+    }
+
+    /// In-place scatter add: scatters and adds src values at indices along dim.
+    pub fn tensor_scatter_add_(
+        &mut self,
+        target: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_scatter_add(target, dim, index, src)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("scatter_add_", target, Some(format!("dim={dim}")));
+        Ok(())
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -54450,6 +54482,26 @@ mod tests {
         let src = s.tensor_variable(vec![10.0, 40.0], vec![2], false).unwrap();
         s.tensor_index_copy_(x, 0, idx, src).unwrap();
         assert_eq!(s.tensor_values(x).unwrap(), vec![1.0, 10.0, 3.0, 40.0]);
+    }
+
+    #[test]
+    fn test_scatter_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let idx = s.tensor_variable(vec![2.0, 0.0], vec![2], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 30.0], vec![2], false).unwrap();
+        s.tensor_scatter_(x, 0, idx, src).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![30.0, 2.0, 10.0]);
+    }
+
+    #[test]
+    fn test_scatter_add_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let idx = s.tensor_variable(vec![0.0, 0.0, 2.0], vec![3], false).unwrap();
+        let src = s.tensor_variable(vec![10.0, 20.0, 100.0], vec![3], false).unwrap();
+        s.tensor_scatter_add_(x, 0, idx, src).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![31.0, 2.0, 103.0]);
     }
 
     #[test]
