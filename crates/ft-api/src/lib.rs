@@ -13126,6 +13126,23 @@ impl FrankenTorchSession {
         self.tensor_scaled_dot_product_attention(query, key, value, attn_mask, is_causal, scale)
     }
 
+    /// Log-sigmoid activation. Alias for tensor_logsigmoid.
+    pub fn functional_logsigmoid(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logsigmoid(input)
+    }
+
+    /// Softmin activation. Alias for tensor_softmin.
+    pub fn functional_softmin(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softmin(input, dim)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
