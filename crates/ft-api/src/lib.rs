@@ -19554,6 +19554,100 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Constant padding for 1D tensors (wraps tensor_pad).
+    ///
+    /// Equivalent to `torch.nn.functional.pad` with 1D input.
+    pub fn tensor_constant_pad1d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad(input, &[padding.0, padding.1], value)
+    }
+
+    /// Constant padding for 2D tensors (wraps tensor_pad).
+    ///
+    /// Padding order: (left, right, top, bottom).
+    pub fn tensor_constant_pad2d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad(input, &[padding.0, padding.1, padding.2, padding.3], value)
+    }
+
+    /// Reflection padding for 1D tensors.
+    pub fn tensor_reflection_pad1d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad_mode(input, &[padding.0, padding.1], "reflect", 0.0)
+    }
+
+    /// Reflection padding for 2D tensors.
+    ///
+    /// Padding order: (left, right, top, bottom).
+    pub fn tensor_reflection_pad2d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad_mode(
+            input,
+            &[padding.0, padding.1, padding.2, padding.3],
+            "reflect",
+            0.0,
+        )
+    }
+
+    /// Replication (edge) padding for 1D tensors.
+    pub fn tensor_replication_pad1d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad_mode(input, &[padding.0, padding.1], "replicate", 0.0)
+    }
+
+    /// Replication (edge) padding for 2D tensors.
+    ///
+    /// Padding order: (left, right, top, bottom).
+    pub fn tensor_replication_pad2d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad_mode(
+            input,
+            &[padding.0, padding.1, padding.2, padding.3],
+            "replicate",
+            0.0,
+        )
+    }
+
+    /// Zero padding for 1D tensors (constant pad with value=0).
+    pub fn tensor_zero_pad1d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_constant_pad1d(input, padding, 0.0)
+    }
+
+    /// Zero padding for 2D tensors (constant pad with value=0).
+    ///
+    /// Padding order: (left, right, top, bottom).
+    pub fn tensor_zero_pad2d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_constant_pad2d(input, padding, 0.0)
+    }
+
     // -------------------------------------------------------------------
     // Linear Algebra: LU Decomposition
     // -------------------------------------------------------------------
