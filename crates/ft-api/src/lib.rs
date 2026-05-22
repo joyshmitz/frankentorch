@@ -14462,6 +14462,22 @@ impl FrankenTorchSession {
         Ok(self.tensor_dtype(node)?.is_quantized())
     }
 
+    pub fn tensor_cpu(&self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        Ok(node)
+    }
+
+    pub fn tensor_to(&self, node: TensorNodeId, device: Device) -> Result<TensorNodeId, AutogradError> {
+        let current = self.tensor_device(node)?;
+        if current == device {
+            return Ok(node);
+        }
+        Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                reason: "device transfer not yet supported",
+            },
+        )))
+    }
+
     /// Alias for `tensor_dim`. Equivalent to `tensor.ndim` in PyTorch.
     pub fn tensor_ndim(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
         self.tensor_dim(node)
@@ -52786,5 +52802,15 @@ mod tests {
         let source = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
         s.tensor_copy_(target, source).unwrap();
         assert_eq!(s.tensor_values(target).unwrap(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_tensor_cpu_and_to() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let y = s.tensor_cpu(x).unwrap();
+        assert_eq!(x, y);
+        let z = s.tensor_to(x, Device::Cpu).unwrap();
+        assert_eq!(x, z);
     }
 }
