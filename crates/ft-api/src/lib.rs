@@ -14870,6 +14870,24 @@ impl FrankenTorchSession {
         self.tensor_clamp_(target, f64::NEG_INFINITY, max_val)
     }
 
+    /// Alias for tensor_clamp_min_. Equivalent to `tensor.clip_(min=min_val)`.
+    pub fn tensor_clip_min_(
+        &mut self,
+        target: TensorNodeId,
+        min_val: f64,
+    ) -> Result<(), AutogradError> {
+        self.tensor_clamp_min_(target, min_val)
+    }
+
+    /// Alias for tensor_clamp_max_. Equivalent to `tensor.clip_(max=max_val)`.
+    pub fn tensor_clip_max_(
+        &mut self,
+        target: TensorNodeId,
+        max_val: f64,
+    ) -> Result<(), AutogradError> {
+        self.tensor_clamp_max_(target, max_val)
+    }
+
     /// In-place masked fill: fills target tensor at positions where mask is non-zero.
     pub fn tensor_masked_fill_(
         &mut self,
