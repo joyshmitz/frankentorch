@@ -23,6 +23,8 @@ pub enum DType {
     F32,
     F16,
     BF16,
+    QInt8,
+    QUInt8,
     I64,
     I32,
     Bool,
@@ -39,7 +41,7 @@ impl DType {
             Self::F64 | Self::I64 | Self::Complex64 => 8,
             Self::F32 | Self::I32 => 4,
             Self::F16 | Self::BF16 => 2,
-            Self::Bool => 1,
+            Self::QInt8 | Self::QUInt8 | Self::Bool => 1,
         }
     }
 
@@ -59,6 +61,12 @@ impl DType {
     #[must_use]
     pub fn is_integer(self) -> bool {
         matches!(self, Self::I32 | Self::I64)
+    }
+
+    /// Returns true for quantized storage dtypes.
+    #[must_use]
+    pub fn is_quantized(self) -> bool {
+        matches!(self, Self::QInt8 | Self::QUInt8)
     }
 
     /// Returns true for the boolean dtype.
@@ -144,13 +152,14 @@ impl DType {
         let rank = |d: Self| -> u8 {
             match d {
                 Self::Bool => 0,
-                Self::I32 => 1,
-                Self::I64 => 2,
-                Self::F16 | Self::BF16 => 3,
-                Self::F32 => 4,
-                Self::F64 => 5,
-                Self::Complex64 => 6,
-                Self::Complex128 => 7,
+                Self::QInt8 | Self::QUInt8 => 1,
+                Self::I32 => 2,
+                Self::I64 => 3,
+                Self::F16 | Self::BF16 => 4,
+                Self::F32 => 5,
+                Self::F64 => 6,
+                Self::Complex64 => 7,
+                Self::Complex128 => 8,
             }
         };
         if rank(self) >= rank(other) {
@@ -173,6 +182,40 @@ pub enum ExecutionMode {
     Hardened,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QuantizationParams {
+    scale_bits: u64,
+    zero_point: i64,
+}
+
+impl QuantizationParams {
+    /// Create affine quantization parameters.
+    ///
+    /// `scale` must be finite and strictly positive. It is stored by bit pattern
+    /// so tensor metadata remains equality/hash stable.
+    pub fn new(scale: f64, zero_point: i64) -> Result<Self, TensorMetaError> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(TensorMetaError::InvalidQuantizationScale {
+                scale_bits: scale.to_bits(),
+            });
+        }
+        Ok(Self {
+            scale_bits: scale.to_bits(),
+            zero_point,
+        })
+    }
+
+    #[must_use]
+    pub fn scale(self) -> f64 {
+        f64::from_bits(self.scale_bits)
+    }
+
+    #[must_use]
+    pub fn zero_point(self) -> i64 {
+        self.zero_point
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorMeta {
     shape: Vec<usize>,
@@ -180,6 +223,7 @@ pub struct TensorMeta {
     storage_offset: usize,
     dtype: DType,
     device: Device,
+    quantization: Option<QuantizationParams>,
 }
 
 impl TensorMeta {
@@ -191,6 +235,7 @@ impl TensorMeta {
             storage_offset: 0,
             dtype,
             device,
+            quantization: None,
         }
     }
 
@@ -203,7 +248,21 @@ impl TensorMeta {
             storage_offset: 0,
             dtype,
             device,
+            quantization: None,
         }
+    }
+
+    pub fn quantized_from_shape(
+        shape: Vec<usize>,
+        dtype: DType,
+        device: Device,
+        scale: f64,
+        zero_point: i64,
+    ) -> Result<Self, TensorMetaError> {
+        let quantization = QuantizationParams::new(scale, zero_point)?;
+        let meta = Self::from_shape(shape, dtype, device).with_quantization(quantization);
+        meta.validate()?;
+        Ok(meta)
     }
 
     pub fn from_shape_and_strides(
@@ -219,6 +278,29 @@ impl TensorMeta {
             storage_offset,
             dtype,
             device,
+            quantization: None,
+        };
+        meta.validate()?;
+        Ok(meta)
+    }
+
+    pub fn quantized_from_shape_and_strides(
+        shape: Vec<usize>,
+        strides: Vec<usize>,
+        storage_offset: usize,
+        dtype: DType,
+        device: Device,
+        scale: f64,
+        zero_point: i64,
+    ) -> Result<Self, TensorMetaError> {
+        let quantization = QuantizationParams::new(scale, zero_point)?;
+        let meta = Self {
+            shape,
+            strides,
+            storage_offset,
+            dtype,
+            device,
+            quantization: Some(quantization),
         };
         meta.validate()?;
         Ok(meta)
@@ -233,10 +315,30 @@ impl TensorMeta {
     #[must_use]
     pub fn with_dtype(mut self, dtype: DType) -> Self {
         self.dtype = dtype;
+        if !dtype.is_quantized() {
+            self.quantization = None;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_quantization(mut self, quantization: QuantizationParams) -> Self {
+        self.quantization = Some(quantization);
         self
     }
 
     pub fn validate(&self) -> Result<(), TensorMetaError> {
+        match (self.dtype.is_quantized(), self.quantization) {
+            (true, Some(_)) => {}
+            (true, None) => {
+                return Err(TensorMetaError::MissingQuantizationParams { dtype: self.dtype });
+            }
+            (false, Some(_)) => {
+                return Err(TensorMetaError::UnexpectedQuantizationParams { dtype: self.dtype });
+            }
+            (false, None) => {}
+        }
+
         if self.shape.len() != self.strides.len() {
             return Err(TensorMetaError::RankStrideMismatch {
                 rank: self.shape.len(),
@@ -294,6 +396,11 @@ impl TensorMeta {
     #[must_use]
     pub fn device(&self) -> Device {
         self.device
+    }
+
+    #[must_use]
+    pub fn quantization(&self) -> Option<QuantizationParams> {
+        self.quantization
     }
 
     #[must_use]
@@ -390,6 +497,7 @@ impl TensorMeta {
         self.storage_offset.hash(&mut hasher);
         self.dtype.hash(&mut hasher);
         self.device.hash(&mut hasher);
+        self.quantization.hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -438,6 +546,15 @@ pub enum TensorMetaError {
         index: usize,
         size: usize,
     },
+    MissingQuantizationParams {
+        dtype: DType,
+    },
+    UnexpectedQuantizationParams {
+        dtype: DType,
+    },
+    InvalidQuantizationScale {
+        scale_bits: u64,
+    },
 }
 
 impl fmt::Display for TensorMetaError {
@@ -466,6 +583,24 @@ impl fmt::Display for TensorMetaError {
                 write!(
                     f,
                     "index out of bounds at dim={dim}: index={index}, size={size}"
+                )
+            }
+            Self::MissingQuantizationParams { dtype } => {
+                write!(
+                    f,
+                    "quantized dtype {dtype:?} requires quantization metadata"
+                )
+            }
+            Self::UnexpectedQuantizationParams { dtype } => {
+                write!(
+                    f,
+                    "non-quantized dtype {dtype:?} cannot carry quantization metadata"
+                )
+            }
+            Self::InvalidQuantizationScale { scale_bits } => {
+                write!(
+                    f,
+                    "quantization scale must be finite and > 0: bits={scale_bits:#x}"
                 )
             }
         }
@@ -589,6 +724,8 @@ pub enum TensorStorage {
     F64(Arc<Vec<f64>>),
     F16(Arc<Vec<Float16>>),
     BF16(Arc<Vec<BFloat16>>),
+    QInt8(Arc<Vec<i8>>),
+    QUInt8(Arc<Vec<u8>>),
     Complex64(Arc<Vec<Complex64>>),
     Complex128(Arc<Vec<Complex128>>),
 }
@@ -601,6 +738,8 @@ impl TensorStorage {
             Self::F64(v) => v.len(),
             Self::F16(v) => v.len(),
             Self::BF16(v) => v.len(),
+            Self::QInt8(v) => v.len(),
+            Self::QUInt8(v) => v.len(),
             Self::Complex64(v) => v.len(),
             Self::Complex128(v) => v.len(),
         }
@@ -618,6 +757,8 @@ impl TensorStorage {
             Self::F64(_) => DType::F64,
             Self::F16(_) => DType::F16,
             Self::BF16(_) => DType::BF16,
+            Self::QInt8(_) => DType::QInt8,
+            Self::QUInt8(_) => DType::QUInt8,
             Self::Complex64(_) => DType::Complex64,
             Self::Complex128(_) => DType::Complex128,
         }
@@ -656,6 +797,22 @@ impl TensorStorage {
     }
 
     #[must_use]
+    pub fn as_qint8(&self) -> Option<&[i8]> {
+        match self {
+            Self::QInt8(v) => Some(v.as_slice()),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_quint8(&self) -> Option<&[u8]> {
+        match self {
+            Self::QUInt8(v) => Some(v.as_slice()),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub fn as_complex64(&self) -> Option<&[Complex64]> {
         match self {
             Self::Complex64(v) => Some(v.as_slice()),
@@ -680,6 +837,8 @@ impl TensorStorage {
             Self::F32(v) => v.iter().map(|&x| f64::from(x)).collect(),
             Self::F16(v) => v.iter().map(|&x| f64::from(x.to_f32())).collect(),
             Self::BF16(v) => v.iter().map(|&x| f64::from(x.to_f32())).collect(),
+            Self::QInt8(v) => v.iter().map(|&x| f64::from(x)).collect(),
+            Self::QUInt8(v) => v.iter().map(|&x| f64::from(x)).collect(),
             Self::Complex64(v) => v.iter().map(|z| f64::from(z.re)).collect(),
             Self::Complex128(v) => v.iter().map(|z| z.re).collect(),
         }
@@ -694,6 +853,8 @@ impl TensorStorage {
             Self::F64(v) => v.iter().map(|&x| x as f32).collect(),
             Self::F16(v) => v.iter().map(|&x| x.to_f32()).collect(),
             Self::BF16(v) => v.iter().map(|&x| x.to_f32()).collect(),
+            Self::QInt8(v) => v.iter().map(|&x| f32::from(x)).collect(),
+            Self::QUInt8(v) => v.iter().map(|&x| f32::from(x)).collect(),
             Self::Complex64(v) => v.iter().map(|z| z.re).collect(),
             Self::Complex128(v) => v.iter().map(|z| z.re as f32).collect(),
         }
@@ -797,7 +958,10 @@ impl DenseTensor {
         if meta.dtype() != storage.dtype() {
             return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
         }
-        if !meta.dtype().is_floating_point() && !meta.dtype().is_complex() {
+        if !meta.dtype().is_floating_point()
+            && !meta.dtype().is_complex()
+            && !meta.dtype().is_quantized()
+        {
             return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
         }
 
@@ -852,6 +1016,26 @@ impl DenseTensor {
         Self::from_typed_storage(meta, TensorStorage::BF16(Arc::new(storage)))
     }
 
+    pub fn from_storage_qint8(
+        meta: TensorMeta,
+        storage: Vec<i8>,
+    ) -> Result<Self, DenseTensorError> {
+        if meta.dtype() != DType::QInt8 {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        Self::from_typed_storage(meta, TensorStorage::QInt8(Arc::new(storage)))
+    }
+
+    pub fn from_storage_quint8(
+        meta: TensorMeta,
+        storage: Vec<u8>,
+    ) -> Result<Self, DenseTensorError> {
+        if meta.dtype() != DType::QUInt8 {
+            return Err(DenseTensorError::UnsupportedDType(meta.dtype()));
+        }
+        Self::from_typed_storage(meta, TensorStorage::QUInt8(Arc::new(storage)))
+    }
+
     pub fn from_contiguous_values(
         values: Vec<f64>,
         shape: Vec<usize>,
@@ -886,6 +1070,30 @@ impl DenseTensor {
     ) -> Result<Self, DenseTensorError> {
         let meta = TensorMeta::from_shape(shape, DType::BF16, device);
         Self::from_storage_bf16(meta, values)
+    }
+
+    pub fn from_contiguous_values_qint8(
+        values: Vec<i8>,
+        shape: Vec<usize>,
+        device: Device,
+        scale: f64,
+        zero_point: i64,
+    ) -> Result<Self, DenseTensorError> {
+        let meta =
+            TensorMeta::quantized_from_shape(shape, DType::QInt8, device, scale, zero_point)?;
+        Self::from_storage_qint8(meta, values)
+    }
+
+    pub fn from_contiguous_values_quint8(
+        values: Vec<u8>,
+        shape: Vec<usize>,
+        device: Device,
+        scale: f64,
+        zero_point: i64,
+    ) -> Result<Self, DenseTensorError> {
+        let meta =
+            TensorMeta::quantized_from_shape(shape, DType::QUInt8, device, scale, zero_point)?;
+        Self::from_storage_quint8(meta, values)
     }
 
     fn contiguous_required_len(meta: &TensorMeta) -> Result<usize, DenseTensorError> {
@@ -963,6 +1171,30 @@ impl DenseTensor {
         }
     }
 
+    pub fn contiguous_values_qint8(&self) -> Result<&[i8], DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = Self::storage_span_required_len(&self.meta)?;
+        match &self.storage {
+            TensorStorage::QInt8(v) => Ok(&v[start..end]),
+            _ => Err(DenseTensorError::UnsupportedDType(self.meta.dtype())),
+        }
+    }
+
+    pub fn contiguous_values_quint8(&self) -> Result<&[u8], DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let start = self.meta.storage_offset();
+        let end = Self::storage_span_required_len(&self.meta)?;
+        match &self.storage {
+            TensorStorage::QUInt8(v) => Ok(&v[start..end]),
+            _ => Err(DenseTensorError::UnsupportedDType(self.meta.dtype())),
+        }
+    }
+
     /// Returns contiguous values as f64, converting from any float type.
     /// Used by backward pass to keep gradient computation in f64.
     pub fn contiguous_values_as_f64(&self) -> Result<Vec<f64>, DenseTensorError> {
@@ -986,6 +1218,33 @@ impl DenseTensor {
                 Ok(v[start..end].iter().map(|z| f64::from(z.re)).collect())
             }
             TensorStorage::Complex128(v) => Ok(v[start..end].iter().map(|z| z.re).collect()),
+            TensorStorage::QInt8(v) => Ok(v[start..end].iter().map(|&x| f64::from(x)).collect()),
+            TensorStorage::QUInt8(v) => Ok(v[start..end].iter().map(|&x| f64::from(x)).collect()),
+        }
+    }
+
+    pub fn dequantized_values_as_f64(&self) -> Result<Vec<f64>, DenseTensorError> {
+        if !self.meta.is_contiguous() {
+            return Err(DenseTensorError::UnsupportedLayout);
+        }
+        let Some(qparams) = self.meta.quantization() else {
+            return Err(DenseTensorError::UnsupportedDType(self.meta.dtype()));
+        };
+        let scale = qparams.scale();
+        #[allow(clippy::cast_precision_loss)]
+        let zero_point = qparams.zero_point() as f64;
+        let start = self.meta.storage_offset();
+        let end = Self::storage_span_required_len(&self.meta)?;
+        match &self.storage {
+            TensorStorage::QInt8(v) => Ok(v[start..end]
+                .iter()
+                .map(|&q| (f64::from(q) - zero_point) * scale)
+                .collect()),
+            TensorStorage::QUInt8(v) => Ok(v[start..end]
+                .iter()
+                .map(|&q| (f64::from(q) - zero_point) * scale)
+                .collect()),
+            _ => Err(DenseTensorError::UnsupportedDType(self.meta.dtype())),
         }
     }
 
@@ -1036,8 +1295,23 @@ impl DenseTensor {
             return Ok(self.clone());
         }
         let new_meta = self.meta.clone().with_dtype(dtype);
-        let as_f32 = || -> Vec<f32> { self.storage.to_f32_vec() };
-        let as_f64 = || -> Vec<f64> { self.storage.to_f64_vec() };
+        let dequantized = if self.meta.dtype().is_quantized() {
+            Some(self.dequantized_values_as_f64()?)
+        } else {
+            None
+        };
+        let as_f64 = || -> Vec<f64> {
+            dequantized
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| self.storage.to_f64_vec())
+        };
+        let as_f32 = || -> Vec<f32> {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            {
+                as_f64().into_iter().map(|value| value as f32).collect()
+            }
+        };
         let new_storage = match dtype {
             DType::F64 => TensorStorage::F64(Arc::new(as_f64())),
             DType::F32 => TensorStorage::F32(Arc::new(as_f32())),
@@ -2128,9 +2402,9 @@ mod tests {
 
     use super::{
         BFloat16, DType, DenseBoolTensor, DenseI32Tensor, DenseI64Tensor, DenseTensor,
-        DenseTensorError, Device, Float16, ScalarTensor, SparseCOOTensor, SparseCSRTensor,
-        SparseTensorError, TensorMeta, TensorMetaError, TensorStorage, contiguous_strides,
-        ensure_compatible,
+        DenseTensorError, Device, Float16, QuantizationParams, ScalarTensor, SparseCOOTensor,
+        SparseCSRTensor, SparseTensorError, TensorMeta, TensorMetaError, TensorStorage,
+        contiguous_strides, ensure_compatible,
     };
 
     fn det_seed(parts: &[usize]) -> u64 {
@@ -2781,6 +3055,8 @@ mod tests {
     fn dtype_element_sizes() {
         assert_eq!(DType::F64.element_size(), 8);
         assert_eq!(DType::F32.element_size(), 4);
+        assert_eq!(DType::QInt8.element_size(), 1);
+        assert_eq!(DType::QUInt8.element_size(), 1);
         assert_eq!(DType::I64.element_size(), 8);
         assert_eq!(DType::I32.element_size(), 4);
     }
@@ -2789,6 +3065,8 @@ mod tests {
     fn dtype_is_floating_point() {
         assert!(DType::F64.is_floating_point());
         assert!(DType::F32.is_floating_point());
+        assert!(!DType::QInt8.is_floating_point());
+        assert!(!DType::QUInt8.is_floating_point());
         assert!(!DType::I64.is_floating_point());
         assert!(!DType::I32.is_floating_point());
     }
@@ -2797,8 +3075,101 @@ mod tests {
     fn dtype_is_integer() {
         assert!(!DType::F64.is_integer());
         assert!(!DType::F32.is_integer());
+        assert!(!DType::QInt8.is_integer());
+        assert!(!DType::QUInt8.is_integer());
         assert!(DType::I64.is_integer());
         assert!(DType::I32.is_integer());
+    }
+
+    #[test]
+    fn dtype_is_quantized() {
+        assert!(DType::QInt8.is_quantized());
+        assert!(DType::QUInt8.is_quantized());
+        assert!(!DType::F32.is_quantized());
+        assert!(!DType::I64.is_quantized());
+    }
+
+    #[test]
+    fn tensor_meta_requires_quantization_params_for_quantized_dtype() {
+        let missing = TensorMeta::from_shape(vec![2], DType::QInt8, Device::Cpu)
+            .validate()
+            .expect_err("qint8 metadata requires qparams");
+        assert!(matches!(
+            missing,
+            TensorMetaError::MissingQuantizationParams {
+                dtype: DType::QInt8
+            }
+        ));
+
+        let unexpected = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu)
+            .with_quantization(QuantizationParams::new(0.25, 3).expect("qparams"))
+            .validate()
+            .expect_err("f64 metadata cannot carry qparams");
+        assert!(matches!(
+            unexpected,
+            TensorMetaError::UnexpectedQuantizationParams { dtype: DType::F64 }
+        ));
+
+        let invalid_scale =
+            QuantizationParams::new(0.0, 0).expect_err("zero quantization scale must be rejected");
+        assert!(matches!(
+            invalid_scale,
+            TensorMetaError::InvalidQuantizationScale { .. }
+        ));
+    }
+
+    #[test]
+    fn dense_tensor_accepts_qint8_storage_with_quantized_meta() {
+        let tensor = DenseTensor::from_contiguous_values_qint8(
+            vec![-10, 0, 10],
+            vec![3],
+            Device::Cpu,
+            0.5,
+            0,
+        )
+        .expect("qint8 dense tensor");
+
+        assert_eq!(tensor.meta().dtype(), DType::QInt8);
+        let qparams = tensor
+            .meta()
+            .quantization()
+            .expect("quantization params should be present");
+        assert_eq!(qparams.scale(), 0.5);
+        assert_eq!(qparams.zero_point(), 0);
+        assert_eq!(
+            tensor.contiguous_values_qint8().expect("raw qint8"),
+            &[-10, 0, 10]
+        );
+        assert_eq!(
+            tensor
+                .dequantized_values_as_f64()
+                .expect("dequantized qint8"),
+            vec![-5.0, 0.0, 5.0]
+        );
+    }
+
+    #[test]
+    fn dense_tensor_accepts_quint8_storage_with_quantized_meta() {
+        let tensor = DenseTensor::from_contiguous_values_quint8(
+            vec![0, 128, 255],
+            vec![3],
+            Device::Cpu,
+            0.25,
+            128,
+        )
+        .expect("quint8 dense tensor");
+
+        assert_eq!(tensor.meta().dtype(), DType::QUInt8);
+        assert_eq!(
+            tensor.contiguous_values_quint8().expect("raw quint8"),
+            &[0, 128, 255]
+        );
+        assert_eq!(
+            tensor
+                .dequantized_values_as_f64()
+                .expect("dequantized quint8"),
+            vec![-32.0, 0.0, 31.75]
+        );
     }
 
     #[test]

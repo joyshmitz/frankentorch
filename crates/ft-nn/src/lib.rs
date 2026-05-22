@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, FunctionCtx, TensorNodeId};
-use ft_core::{DType, DenseTensor, DenseTensorError};
+use ft_core::{DType, DenseTensor, DenseTensorError, Device};
 use ft_dispatch::{DispatchError, DispatchKeyError};
 
 fn incompatible_error(reason: &'static str) -> AutogradError {
@@ -1931,9 +1931,7 @@ impl Module for LayerNorm {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         let ndim = input_shape.len();
         let num_norm_dims = self.normalized_shape.len();
@@ -2071,17 +2069,13 @@ impl Module for Dropout {
             return Ok(input);
         }
         if self.p >= 1.0 {
-            let shape = {
-                session.tensor_shape(input)?
-            };
+            let shape = { session.tensor_shape(input)? };
             let zeros = session.zeros(shape, false)?;
             return session.tensor_mul(input, zeros);
         }
 
         // Generate random mask: values in [0, 1), keep where > p
-        let shape = {
-            session.tensor_shape(input)?
-        };
+        let shape = { session.tensor_shape(input)? };
         let mask_rand = session.rand(shape.clone(), false)?;
 
         // Create threshold tensor
@@ -2155,9 +2149,7 @@ impl Module for Dropout2d {
         if !self.training.get() || self.p == 0.0 {
             return Ok(input);
         }
-        let shape = {
-            session.tensor_shape(input)?
-        };
+        let shape = { session.tensor_shape(input)? };
         if shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -2244,9 +2236,7 @@ impl Module for Dropout3d {
         if !self.training.get() || self.p == 0.0 {
             return Ok(input);
         }
-        let shape = {
-            session.tensor_shape(input)?
-        };
+        let shape = { session.tensor_shape(input)? };
         if shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -2426,7 +2416,15 @@ impl Embedding {
         num_embeddings: usize,
         embedding_dim: usize,
     ) -> Result<Self, AutogradError> {
-        Self::with_options(session, num_embeddings, embedding_dim, None, None, 2.0, false)
+        Self::with_options(
+            session,
+            num_embeddings,
+            embedding_dim,
+            None,
+            None,
+            2.0,
+            false,
+        )
     }
 
     /// Create a new Embedding with full PyTorch option parity.
@@ -2609,9 +2607,7 @@ impl Module for Embedding {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         let total = checked_shape_numel(&input_shape, "Embedding input shape overflow")?;
 
@@ -2643,8 +2639,7 @@ impl Module for Embedding {
                 let mut mask = vec![1.0_f64; total * self.embedding_dim];
                 for (row, &idx_f) in idx_vals.iter().enumerate() {
                     if idx_f >= 0.0 && idx_f.fract() == 0.0 && idx_f as usize == p {
-                        for v in &mut mask[row * self.embedding_dim
-                            ..(row + 1) * self.embedding_dim]
+                        for v in &mut mask[row * self.embedding_dim..(row + 1) * self.embedding_dim]
                         {
                             *v = 0.0;
                         }
@@ -3300,9 +3295,7 @@ impl Module for BatchNorm1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         // PyTorch BatchNorm1d accepts 2-D `[N, C]` and 3-D `[N, C, L]`.
         let length = match input_shape.len() {
@@ -3564,9 +3557,7 @@ impl Module for Conv1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -3697,9 +3688,7 @@ impl Module for AvgPool1d {
             "AvgPool1d kernel_size and stride must be greater than zero",
         )?;
 
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -4867,9 +4856,7 @@ impl Module for GroupNorm {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() < 2 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -5194,9 +5181,7 @@ impl Module for InstanceNorm2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -5258,9 +5243,7 @@ impl Module for MaxPool1d {
             "MaxPool1d kernel_size and stride must be greater than zero",
         )?;
 
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -5427,9 +5410,7 @@ impl Module for Conv2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -5604,9 +5585,7 @@ impl Module for MaxPool2d {
             "MaxPool2d kernel_size and stride dimensions must be greater than zero",
         )?;
 
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -5708,9 +5687,7 @@ impl Module for AdaptiveAvgPool2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -5865,9 +5842,7 @@ impl Module for AvgPool2d {
             ));
         }
 
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -6054,9 +6029,7 @@ impl Module for AvgPool3d {
             "AvgPool3d kernel_size and stride dimensions must be greater than zero",
         )?;
 
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -6181,9 +6154,7 @@ impl Module for MaxPool3d {
             "MaxPool3d kernel_size and stride dimensions must be greater than zero",
         )?;
 
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -6280,9 +6251,7 @@ impl Module for AdaptiveAvgPool1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -6367,9 +6336,7 @@ impl Module for AdaptiveAvgPool3d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -6508,9 +6475,7 @@ impl Module for AdaptiveMaxPool1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -6588,9 +6553,7 @@ impl Module for AdaptiveMaxPool2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -6701,9 +6664,7 @@ impl Module for AdaptiveMaxPool3d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -7522,9 +7483,7 @@ impl Module for BatchNorm2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -7804,9 +7763,7 @@ impl Module for Upsample1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -7871,9 +7828,7 @@ impl Module for Upsample2d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -8030,9 +7985,7 @@ impl Module for ConvTranspose1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -8259,9 +8212,7 @@ impl Module for Conv3d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -9037,9 +8988,7 @@ impl Module for ConvTranspose3d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
 
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -9314,9 +9263,7 @@ impl RNNCell {
         input: TensorNodeId,
         hx: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
         if input_shape.len() != 2 || input_shape[1] != self.input_size {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -9429,9 +9376,7 @@ impl LSTMCell {
         hx: TensorNodeId,
         cx: TensorNodeId,
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
         if input_shape.len() != 2 || input_shape[1] != self.input_size {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -9556,9 +9501,7 @@ impl GRUCell {
         input: TensorNodeId,
         hx: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = {
-            session.tensor_shape(input)?
-        };
+        let input_shape = { session.tensor_shape(input)? };
         if input_shape.len() != 2 || input_shape[1] != self.input_size {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -15431,6 +15374,332 @@ impl MinMaxObserver {
     }
 }
 
+/// Physical storage dtype for packed affine-quantized weights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuantizedStorageDType {
+    QInt8,
+    QUInt8,
+}
+
+impl QuantizedStorageDType {
+    #[must_use]
+    pub const fn qrange(self) -> (i64, i64) {
+        match self {
+            Self::QInt8 => QParams::qint8_range(),
+            Self::QUInt8 => QParams::quint8_range(),
+        }
+    }
+
+    fn validate_qparams(self, qparams: QParams) -> Result<(), AutogradError> {
+        if !qparams.scale.is_finite() || qparams.scale <= 0.0 {
+            return Err(incompatible_error(
+                "QuantizedLinear: scale must be finite and > 0",
+            ));
+        }
+        if qparams.qmin >= qparams.qmax {
+            return Err(incompatible_error("QuantizedLinear: qmin must be < qmax"));
+        }
+        if qparams.zero_point < qparams.qmin || qparams.zero_point > qparams.qmax {
+            return Err(incompatible_error(
+                "QuantizedLinear: zero_point must lie in [qmin, qmax]",
+            ));
+        }
+
+        let (storage_min, storage_max) = self.qrange();
+        if qparams.qmin < storage_min || qparams.qmax > storage_max {
+            return Err(incompatible_error(
+                "QuantizedLinear: qparams exceed storage dtype range",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Packed quantized weight bytes for [`QuantizedLinear`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuantizedLinearWeightStorage {
+    QInt8(Vec<i8>),
+    QUInt8(Vec<u8>),
+}
+
+impl QuantizedLinearWeightStorage {
+    fn from_float_values(
+        values: &[f64],
+        dtype: QuantizedStorageDType,
+        qparams: QParams,
+    ) -> Result<Self, AutogradError> {
+        dtype.validate_qparams(qparams)?;
+        match dtype {
+            QuantizedStorageDType::QInt8 => {
+                let mut packed = Vec::with_capacity(values.len());
+                for &value in values {
+                    let qvalue = quantize_f64_to_i64(value, qparams)?;
+                    let packed_value = i8::try_from(qvalue).map_err(|_| {
+                        incompatible_error("QuantizedLinear: qint8 value out of range")
+                    })?;
+                    packed.push(packed_value);
+                }
+                Ok(Self::QInt8(packed))
+            }
+            QuantizedStorageDType::QUInt8 => {
+                let mut packed = Vec::with_capacity(values.len());
+                for &value in values {
+                    let qvalue = quantize_f64_to_i64(value, qparams)?;
+                    let packed_value = u8::try_from(qvalue).map_err(|_| {
+                        incompatible_error("QuantizedLinear: quint8 value out of range")
+                    })?;
+                    packed.push(packed_value);
+                }
+                Ok(Self::QUInt8(packed))
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn dtype(&self) -> QuantizedStorageDType {
+        match self {
+            Self::QInt8(_) => QuantizedStorageDType::QInt8,
+            Self::QUInt8(_) => QuantizedStorageDType::QUInt8,
+        }
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::QInt8(values) => values.len(),
+            Self::QUInt8(values) => values.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[must_use]
+    pub fn qint8_values(&self) -> Option<&[i8]> {
+        match self {
+            Self::QInt8(values) => Some(values.as_slice()),
+            Self::QUInt8(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn quint8_values(&self) -> Option<&[u8]> {
+        match self {
+            Self::QInt8(_) => None,
+            Self::QUInt8(values) => Some(values.as_slice()),
+        }
+    }
+
+    #[must_use]
+    pub fn dequantized_values(&self, qparams: QParams) -> Vec<f64> {
+        match self {
+            Self::QInt8(values) => values
+                .iter()
+                .map(|&value| dequantize_i64(i64::from(value), qparams))
+                .collect(),
+            Self::QUInt8(values) => values
+                .iter()
+                .map(|&value| dequantize_i64(i64::from(value), qparams))
+                .collect(),
+        }
+    }
+
+    fn to_dense_tensor(
+        &self,
+        qparams: QParams,
+        shape: Vec<usize>,
+    ) -> Result<DenseTensor, AutogradError> {
+        self.dtype().validate_qparams(qparams)?;
+        match self {
+            Self::QInt8(values) => DenseTensor::from_contiguous_values_qint8(
+                values.clone(),
+                shape,
+                Device::Cpu,
+                qparams.scale,
+                qparams.zero_point,
+            )
+            .map_err(AutogradError::from),
+            Self::QUInt8(values) => DenseTensor::from_contiguous_values_quint8(
+                values.clone(),
+                shape,
+                Device::Cpu,
+                qparams.scale,
+                qparams.zero_point,
+            )
+            .map_err(AutogradError::from),
+        }
+    }
+}
+
+fn quantize_f64_to_i64(value: f64, qparams: QParams) -> Result<i64, AutogradError> {
+    if !value.is_finite() {
+        return Err(incompatible_error(
+            "QuantizedLinear: weight values must be finite",
+        ));
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let qmin = qparams.qmin as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let qmax = qparams.qmax as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let zero_point = qparams.zero_point as f64;
+    let qvalue = (value / qparams.scale)
+        .round_ties_even()
+        .mul_add(1.0, zero_point)
+        .clamp(qmin, qmax);
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(qvalue as i64)
+}
+
+fn dequantize_i64(value: i64, qparams: QParams) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    let value = value as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let zero_point = qparams.zero_point as f64;
+    (value - zero_point) * qparams.scale
+}
+
+/// Linear layer with packed 8-bit weights and dequantize-on-forward execution.
+///
+/// This mirrors the first executable slice of PyTorch quantized linear modules:
+/// weights are stored as QInt8/QUInt8 bytes, then materialized as a constant
+/// dense tensor for the existing matmul path.
+pub struct QuantizedLinear {
+    weight: QuantizedLinearWeightStorage,
+    weight_tensor: DenseTensor,
+    weight_qparams: QParams,
+    bias: Option<Vec<f64>>,
+    in_features: usize,
+    out_features: usize,
+}
+
+impl QuantizedLinear {
+    pub fn from_float_weights(
+        weight_values: Vec<f64>,
+        bias: Option<Vec<f64>>,
+        in_features: usize,
+        out_features: usize,
+        weight_dtype: QuantizedStorageDType,
+        weight_qparams: QParams,
+    ) -> Result<Self, AutogradError> {
+        if in_features == 0 {
+            return Err(incompatible_error(
+                "QuantizedLinear: in_features must be > 0",
+            ));
+        }
+        if out_features == 0 {
+            return Err(incompatible_error(
+                "QuantizedLinear: out_features must be > 0",
+            ));
+        }
+        let expected_len = checked_mul(
+            out_features,
+            in_features,
+            "QuantizedLinear: weight shape overflow",
+        )?;
+        if weight_values.len() != expected_len {
+            return Err(incompatible_error(
+                "QuantizedLinear: weight length must equal out_features * in_features",
+            ));
+        }
+        if let Some(bias_values) = &bias
+            && bias_values.len() != out_features
+        {
+            return Err(incompatible_error(
+                "QuantizedLinear: bias length must equal out_features",
+            ));
+        }
+
+        let weight = QuantizedLinearWeightStorage::from_float_values(
+            &weight_values,
+            weight_dtype,
+            weight_qparams,
+        )?;
+        let weight_tensor =
+            weight.to_dense_tensor(weight_qparams, vec![out_features, in_features])?;
+        Ok(Self {
+            weight,
+            weight_tensor,
+            weight_qparams,
+            bias,
+            in_features,
+            out_features,
+        })
+    }
+
+    #[must_use]
+    pub fn weight_storage(&self) -> &QuantizedLinearWeightStorage {
+        &self.weight
+    }
+
+    #[must_use]
+    pub fn weight_tensor(&self) -> &DenseTensor {
+        &self.weight_tensor
+    }
+
+    #[must_use]
+    pub fn weight_qparams(&self) -> QParams {
+        self.weight_qparams
+    }
+
+    #[must_use]
+    pub fn bias_values(&self) -> Option<&[f64]> {
+        self.bias.as_deref()
+    }
+
+    #[must_use]
+    pub fn in_features(&self) -> usize {
+        self.in_features
+    }
+
+    #[must_use]
+    pub fn out_features(&self) -> usize {
+        self.out_features
+    }
+}
+
+impl Module for QuantizedLinear {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let weight_values = self.weight_tensor.dequantized_values_as_f64()?;
+        let weight = session.tensor_variable(
+            weight_values,
+            vec![self.out_features, self.in_features],
+            false,
+        )?;
+        let weight_t = session.tensor_transpose(weight, 0, 1)?;
+        let output = session.tensor_matmul(input, weight_t)?;
+
+        match &self.bias {
+            Some(bias_values) => {
+                let out_shape = {
+                    let (_, meta) = session.tensor_values_meta(output)?;
+                    meta.shape().to_vec()
+                };
+                let bias =
+                    session.tensor_variable(bias_values.clone(), vec![self.out_features], false)?;
+                let mut bias_shape = vec![1usize; out_shape.len()];
+                if let Some(last) = bias_shape.last_mut() {
+                    *last = self.out_features;
+                }
+                let bias_reshaped = session.tensor_reshape(bias, bias_shape)?;
+                let expanded_bias = session.tensor_expand(bias_reshaped, out_shape)?;
+                session.tensor_add(output, expanded_bias)
+            }
+            None => Ok(output),
+        }
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ft_api::FrankenTorchSession;
@@ -16969,7 +17238,9 @@ mod tests {
 
         let loss = session.tensor_sum(y).expect("sum");
         let report = session.tensor_backward(loss).expect("backward");
-        let w_grad = session.tensor_gradient(&report, emb.weight()).expect("grad");
+        let w_grad = session
+            .tensor_gradient(&report, emb.weight())
+            .expect("grad");
         // padding row gradient stays zero; row 0 (selected once) is one.
         assert!(w_grad[3..6].iter().all(|&v| v == 0.0), "padding grad zero");
         assert!(w_grad[0..3].iter().all(|&v| v == 1.0), "row0 grad one");
@@ -16978,9 +17249,7 @@ mod tests {
     #[test]
     fn embedding_padding_idx_out_of_range_rejected() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        assert!(
-            Embedding::with_options(&mut session, 4, 3, Some(4), None, 2.0, false).is_err()
-        );
+        assert!(Embedding::with_options(&mut session, 4, 3, Some(4), None, 2.0, false).is_err());
     }
 
     #[test]
@@ -16994,9 +17263,7 @@ mod tests {
         session.no_grad_enter();
         let seed = session
             .tensor_variable(
-                vec![
-                    3.0, 4.0, 0.0, 0.0, 0.0, 0.5, 6.0, 8.0, 0.0, 1.0, 0.0, 0.0,
-                ],
+                vec![3.0, 4.0, 0.0, 0.0, 0.0, 0.5, 6.0, 8.0, 0.0, 1.0, 0.0, 0.0],
                 vec![4, 3],
                 false,
             )
@@ -17340,6 +17607,173 @@ mod tests {
                 qp.scale
             );
         }
+    }
+
+    #[test]
+    fn quantized_linear_qint8_forward_matches_dequantized_weights() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let qparams = QParams {
+            scale: 0.25,
+            zero_point: 0,
+            qmin: -128,
+            qmax: 127,
+        };
+        let linear = QuantizedLinear::from_float_weights(
+            vec![0.0, 0.5, -0.5, 1.0, -1.0, 0.25],
+            Some(vec![0.1, -0.2]),
+            3,
+            2,
+            QuantizedStorageDType::QInt8,
+            qparams,
+        )
+        .expect("quantized linear");
+
+        assert_eq!(linear.in_features(), 3);
+        assert_eq!(linear.out_features(), 2);
+        assert_eq!(
+            linear.weight_storage().qint8_values(),
+            Some(&[0, 2, -2, 4, -4, 1][..])
+        );
+        assert_eq!(linear.weight_qparams(), qparams);
+        assert_eq!(linear.bias_values(), Some(&[0.1, -0.2][..]));
+        assert_eq!(linear.weight_tensor().meta().dtype(), DType::QInt8);
+        let weight_quantization = linear
+            .weight_tensor()
+            .meta()
+            .quantization()
+            .expect("quantization params");
+        assert_eq!(weight_quantization.scale(), qparams.scale);
+        assert_eq!(weight_quantization.zero_point(), qparams.zero_point);
+        assert_eq!(
+            linear
+                .weight_tensor()
+                .dequantized_values_as_f64()
+                .expect("dequantized weights"),
+            vec![0.0, 0.5, -0.5, 1.0, -1.0, 0.25]
+        );
+        assert!(linear.parameters().is_empty());
+
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, -1.0, 0.5, 2.0], vec![2, 3], false)
+            .expect("input");
+        let output = linear.forward(&mut session, input).expect("forward");
+        let (values, meta) = session.tensor_values_meta(output).expect("values");
+
+        assert_eq!(meta.shape(), &[2, 2]);
+        let expected = [-0.4, -0.45, -0.65, -1.2];
+        for (actual, expected) in values.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "actual {actual} != expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn quantized_linear_quint8_storage_dequantizes_on_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let qparams = QParams {
+            scale: 0.25,
+            zero_point: 128,
+            qmin: 0,
+            qmax: 255,
+        };
+        let linear = QuantizedLinear::from_float_weights(
+            vec![0.0, 0.5],
+            None,
+            2,
+            1,
+            QuantizedStorageDType::QUInt8,
+            qparams,
+        )
+        .expect("quantized linear");
+
+        assert_eq!(
+            linear.weight_storage().dtype(),
+            QuantizedStorageDType::QUInt8
+        );
+        assert_eq!(
+            linear.weight_storage().quint8_values(),
+            Some(&[128, 130][..])
+        );
+        assert_eq!(linear.weight_tensor().meta().dtype(), DType::QUInt8);
+        let weight_quantization = linear
+            .weight_tensor()
+            .meta()
+            .quantization()
+            .expect("quantization params");
+        assert_eq!(weight_quantization.scale(), qparams.scale);
+        assert_eq!(weight_quantization.zero_point(), qparams.zero_point);
+
+        let input = session
+            .tensor_variable(vec![2.0, 4.0], vec![1, 2], false)
+            .expect("input");
+        let output = linear.forward(&mut session, input).expect("forward");
+        let values = session.tensor_values(output).expect("values");
+        assert_eq!(values.len(), 1);
+        assert!((values[0] - 2.0).abs() < 1e-12, "values[0]={}", values[0]);
+    }
+
+    #[test]
+    fn quantized_linear_rejects_invalid_storage_contracts() {
+        let valid = QParams {
+            scale: 0.25,
+            zero_point: 0,
+            qmin: -128,
+            qmax: 127,
+        };
+
+        assert!(
+            QuantizedLinear::from_float_weights(
+                vec![0.0, 1.0],
+                None,
+                0,
+                1,
+                QuantizedStorageDType::QInt8,
+                valid,
+            )
+            .is_err()
+        );
+        assert!(
+            QuantizedLinear::from_float_weights(
+                vec![0.0, 1.0],
+                Some(vec![0.0, 1.0]),
+                2,
+                1,
+                QuantizedStorageDType::QInt8,
+                valid,
+            )
+            .is_err()
+        );
+        assert!(
+            QuantizedLinear::from_float_weights(
+                vec![0.0, f64::NAN],
+                None,
+                2,
+                1,
+                QuantizedStorageDType::QInt8,
+                valid,
+            )
+            .is_err()
+        );
+
+        let qint8_with_uint_range = QParams {
+            scale: 0.25,
+            zero_point: 128,
+            qmin: 0,
+            qmax: 255,
+        };
+        assert!(
+            QuantizedLinear::from_float_weights(
+                vec![0.0, 1.0],
+                None,
+                2,
+                1,
+                QuantizedStorageDType::QInt8,
+                qint8_with_uint_range,
+            )
+            .is_err()
+        );
     }
 
     // ---- Softmax / LogSoftmax module tests ----
