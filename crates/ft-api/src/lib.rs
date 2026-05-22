@@ -14359,6 +14359,16 @@ impl FrankenTorchSession {
         self.tensor_tape.remove_tensor_hook(handle)
     }
 
+    /// Enable gradient retention for a non-leaf tensor during backward.
+    pub fn tensor_retain_grad(&mut self, node: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_tape.tensor_retain_grad(node)
+    }
+
+    /// Check if this tensor will retain its gradient after backward.
+    pub fn tensor_retains_grad(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_tape.tensor_retains_grad(node)
+    }
+
     /// Extract a single scalar value from a 0-d or 1-element tensor.
     pub fn tensor_item(&self, node: TensorNodeId) -> Result<f64, AutogradError> {
         let values = self.tensor_tape.values(node)?;
@@ -52436,5 +52446,21 @@ mod tests {
         // For 3x3 matrix, diagonal indices are (0,0), (1,1), (2,2)
         assert_eq!(row_vals, vec![0.0, 1.0, 2.0]);
         assert_eq!(col_vals, vec![0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_tensor_retain_grad() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 3.0], vec![2], true).unwrap();
+        let y = s.tensor_mul(x, x).unwrap();
+        let z = s.tensor_sum(y).unwrap();
+        assert!(!s.tensor_is_leaf(y).unwrap());
+        assert!(!s.tensor_retains_grad(y).unwrap());
+        s.tensor_retain_grad(y).unwrap();
+        assert!(s.tensor_retains_grad(y).unwrap());
+        s.tensor_backward(z).unwrap();
+        let y_grad = s.tensor_accumulated_gradient(y).unwrap();
+        assert!(y_grad.is_some());
+        assert_eq!(y_grad.unwrap(), vec![1.0, 1.0]);
     }
 }

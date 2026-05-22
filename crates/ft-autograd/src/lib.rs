@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fmt;
 use std::sync::Arc;
 
@@ -4153,6 +4153,7 @@ pub struct TensorTape {
     grad_enabled: bool,
     custom_functions: BTreeMap<usize, CustomFunctionRecord>,
     next_custom_function_id: usize,
+    retains_grad: BTreeSet<usize>,
 }
 
 impl Default for TensorTape {
@@ -4167,6 +4168,7 @@ impl Default for TensorTape {
             grad_enabled: true,
             custom_functions: BTreeMap::new(),
             next_custom_function_id: 0,
+            retains_grad: BTreeSet::new(),
         }
     }
 }
@@ -4225,6 +4227,30 @@ impl TensorTape {
 
     pub fn tensor_is_leaf(&self, id: TensorNodeId) -> Result<bool, AutogradError> {
         Ok(matches!(self.node(id)?.op, TensorNodeOp::Leaf))
+    }
+
+    pub fn tensor_retain_grad(&mut self, id: TensorNodeId) -> Result<(), AutogradError> {
+        let node = self.node(id)?;
+        if !node.requires_grad {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "retain_grad() can only be called on tensors with requires_grad=True",
+                },
+            )));
+        }
+        if matches!(node.op, TensorNodeOp::Leaf) {
+            return Ok(());
+        }
+        self.retains_grad.insert(id.0);
+        Ok(())
+    }
+
+    pub fn tensor_retains_grad(&self, id: TensorNodeId) -> Result<bool, AutogradError> {
+        let node = self.node(id)?;
+        if matches!(node.op, TensorNodeOp::Leaf) && node.requires_grad {
+            return Ok(true);
+        }
+        Ok(self.retains_grad.contains(&id.0))
     }
 
     pub fn tensor_grad_fn(&self, id: TensorNodeId) -> Result<Option<String>, AutogradError> {
@@ -14637,14 +14663,12 @@ impl TensorTape {
             }
         }
 
-        // Persist leaf gradients. Surface read errors instead of
-        // dropping the gradient on the floor (frankentorch-aba); a
-        // silently empty `vals` would leave persistent_grads untouched
-        // on the second and later backward passes, breaking
-        // accumulation contracts.
+        // Persist gradients for leaf tensors and those with retain_grad set.
         for (idx, grad_opt) in gradient_node_results.iter().enumerate() {
+            let is_leaf = self.nodes[idx].op == TensorNodeOp::Leaf;
+            let has_retain_grad = self.retains_grad.contains(&idx);
             if let Some(gid) = grad_opt
-                && self.nodes[idx].op == TensorNodeOp::Leaf
+                && (is_leaf || has_retain_grad)
                 && self.nodes[idx].requires_grad
             {
                 let vals = self.nodes[gid.0]
