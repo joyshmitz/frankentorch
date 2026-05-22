@@ -14491,6 +14491,14 @@ impl FrankenTorchSession {
         }
     }
 
+    pub fn tensor_is_contiguous(&self, _node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(true)
+    }
+
+    pub fn tensor_contiguous(&self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        Ok(node)
+    }
+
     /// Create a copy of a tensor detached from the computation graph.
     /// The resulting tensor has `requires_grad = false`.
     pub fn tensor_detach(&mut self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
@@ -52586,5 +52594,14 @@ mod tests {
         let pinv = s.tensor_pinv(m).unwrap();
         let linalg_pinv = s.tensor_linalg_pinv(m).unwrap();
         assert_eq!(s.tensor_values(pinv).unwrap(), s.tensor_values(linalg_pinv).unwrap());
+    }
+
+    #[test]
+    fn test_is_contiguous_and_contiguous() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        assert!(s.tensor_is_contiguous(x).unwrap());
+        let y = s.tensor_contiguous(x).unwrap();
+        assert_eq!(y, x);
     }
 }
