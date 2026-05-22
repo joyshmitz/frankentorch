@@ -6618,6 +6618,20 @@ impl FrankenTorchSession {
         self.tensor_trunc(input)
     }
 
+    /// Split into integer and fractional parts.
+    ///
+    /// Equivalent to `torch.modf(input)`. Returns `(integer_part, fractional_part)`
+    /// where `integer_part = trunc(input)` and `fractional_part = frac(input)`.
+    /// The fractional part has the same sign as input.
+    pub fn tensor_modf(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let integer_part = self.tensor_trunc(input)?;
+        let fractional_part = self.tensor_frac(input)?;
+        Ok((integer_part, fractional_part))
+    }
+
     /// `torch.absolute(input)` parity alias for `torch.abs`.
     ///
     /// PyTorch exposes `absolute` as a verbatim alias of `abs`. Common
@@ -7733,6 +7747,26 @@ impl FrankenTorchSession {
         self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
         self.record_tensor_in_place_operation("ldexp_", target, None);
         Ok(())
+    }
+
+    /// Scale by power of 2: `scalbn(input, n) = input * 2^n`.
+    ///
+    /// Equivalent to `torch.special.scalbn(input, n)`. Alias for ldexp.
+    pub fn tensor_scalbn(
+        &mut self,
+        input: TensorNodeId,
+        n: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ldexp(input, n)
+    }
+
+    /// In-place scalbn: target = target * 2^n.
+    pub fn tensor_scalbn_(
+        &mut self,
+        target: TensorNodeId,
+        n: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.tensor_ldexp_(target, n)
     }
 
     /// Numerically stable log-sigmoid: `log(sigmoid(x)) = -softplus(-x)`.
@@ -22259,6 +22293,47 @@ impl FrankenTorchSession {
             .collect();
         self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
         self.record_tensor_in_place_operation("geometric_", tensor, Some(format!("p={p}")));
+        Ok(())
+    }
+
+    /// Fill tensor with Poisson-distributed random values.
+    ///
+    /// Equivalent to `torch.poisson(input)` where each element is drawn
+    /// from Poisson(lambda). Uses Knuth's algorithm for small lambda.
+    pub fn tensor_poisson_(
+        &mut self,
+        tensor: TensorNodeId,
+        lambd: f64,
+    ) -> Result<(), AutogradError> {
+        if lambd < 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "poisson_: lambda must be non-negative",
+                },
+            )));
+        }
+        let numel = self.tensor_numel(tensor)?;
+        let l = (-lambd).exp();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                if lambd == 0.0 {
+                    return 0.0;
+                }
+                // Knuth algorithm for Poisson sampling
+                let mut k = 0i64;
+                let mut p = 1.0;
+                loop {
+                    k += 1;
+                    p *= self.rng.next_f64();
+                    if p <= l {
+                        break;
+                    }
+                }
+                (k - 1) as f64
+            })
+            .collect();
+        self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("poisson_", tensor, Some(format!("lambd={lambd}")));
         Ok(())
     }
 
@@ -58601,5 +58676,40 @@ mod tests {
             .unwrap();
         s.tensor_tanhshrink_(c).unwrap();
         assert_eq!(s.tensor_shape(c).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_scalbn() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let n = s.tensor_variable(vec![2.0, 1.0, 0.0], vec![3], false).unwrap();
+        let out = s.tensor_scalbn(a, n).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals, vec![4.0, 4.0, 3.0]); // 1*4, 2*2, 3*1
+    }
+
+    #[test]
+    fn test_tensor_modf() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![3.5, -2.7, 1.0], vec![3], false).unwrap();
+        let (int_part, frac_part) = s.tensor_modf(a).unwrap();
+        let int_vals = s.tensor_values(int_part).unwrap();
+        let frac_vals = s.tensor_values(frac_part).unwrap();
+        assert_eq!(int_vals, vec![3.0, -2.0, 1.0]);
+        assert!((frac_vals[0] - 0.5).abs() < 1e-10);
+        assert!((frac_vals[1] - (-0.7)).abs() < 1e-10);
+        assert!(frac_vals[2].abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_tensor_poisson_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0; 100], vec![100], false).unwrap();
+        s.tensor_poisson_(a, 5.0).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        // Poisson values should be non-negative integers, mean ~5
+        assert!(vals.iter().all(|&v| v >= 0.0 && v == v.floor()));
+        let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+        assert!(mean > 2.0 && mean < 10.0); // rough check
     }
 }
