@@ -14362,6 +14362,33 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("trunc_", target, None, f64::trunc)
     }
 
+    /// In-place fix: alias for trunc_. Rounds toward zero.
+    pub fn tensor_fix_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_trunc_(target)
+    }
+
+    /// In-place negative: target = -target.
+    pub fn tensor_negative_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_neg_(target)
+    }
+
+    /// In-place positive: identity operation (records the operation).
+    pub fn tensor_positive_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        self.record_tensor_in_place_operation("positive_", target, None);
+        Ok(())
+    }
+
+    /// In-place i0e: exponentially scaled modified Bessel function order 0.
+    pub fn tensor_i0e_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_i0e(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("i0e_", target, None);
+        Ok(())
+    }
+
     /// In-place signum: -1 for negative, 0 for zero, +1 for positive.
     ///
     /// Equivalent to `tensor.sign_()` in PyTorch.
