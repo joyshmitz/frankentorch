@@ -13258,7 +13258,24 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `tensor.sign_()` in PyTorch.
     pub fn tensor_sign_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
-        self.apply_tensor_unary_in_place("sign_", target, None, f64::signum)
+        self.apply_tensor_unary_in_place("sign_", target, None, |value| {
+            if value.is_nan() {
+                f64::NAN
+            } else if value == 0.0 {
+                0.0
+            } else if value > 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
+        })
+    }
+
+    /// In-place reciprocal: 1/x for each element.
+    ///
+    /// Equivalent to `tensor.reciprocal_()` in PyTorch.
+    pub fn tensor_reciprocal_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("reciprocal_", target, None, |x| 1.0 / x)
     }
 
     pub fn tensor_clamp_(
@@ -29652,7 +29669,7 @@ mod tests {
     fn tensor_unary_in_place_matches_out_of_place_variants() {
         type TId = ft_autograd::TensorNodeId;
 
-        let signed = vec![-1.5, -0.25, 0.0, 0.25, 1.5];
+        let signed = vec![-1.5, -0.25, -0.0, 0.0, 0.25, 1.5];
         let positive = vec![0.25, 0.5, 1.0, 2.0, 3.5];
 
         assert_tensor_unary_in_place_matches_out_of_place(
@@ -29679,6 +29696,11 @@ mod tests {
             &signed,
             |s: &mut FrankenTorchSession, t: TId| s.tensor_neg(t),
             |s: &mut FrankenTorchSession, t: TId| s.tensor_neg_(t),
+        );
+        assert_tensor_unary_in_place_matches_out_of_place(
+            &signed,
+            |s: &mut FrankenTorchSession, t: TId| s.tensor_sign(t),
+            |s: &mut FrankenTorchSession, t: TId| s.tensor_sign_(t),
         );
         assert_tensor_unary_in_place_matches_out_of_place(
             &signed,
@@ -53153,8 +53175,19 @@ mod tests {
     #[test]
     fn test_tensor_sign_() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = s.tensor_variable(vec![5.0, -3.0, 0.0], vec![3], false).unwrap();
+        let x = s
+            .tensor_variable(vec![5.0, -3.0, 0.0, -0.0], vec![4], false)
+            .unwrap();
         s.tensor_sign_(x).unwrap();
+        assert_eq!(s.tensor_shape(x).unwrap(), vec![4]);
+        assert_eq!(s.tensor_values(x).unwrap(), vec![1.0, -1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_tensor_reciprocal_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 4.0, 0.5], vec![3], false).unwrap();
+        s.tensor_reciprocal_(x).unwrap();
         assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
     }
 }
