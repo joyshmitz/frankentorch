@@ -13027,6 +13027,35 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    pub fn tensor_fill_diagonal_(
+        &mut self,
+        target: TensorNodeId,
+        fill_value: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let shape = self.tensor_shape(target)?;
+        if shape.len() != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "fill_diagonal_: input must be 2D",
+                },
+            )));
+        }
+        let (rows, cols) = (shape[0], shape[1]);
+        let diag_len = rows.min(cols);
+        let mut values = self.tensor_values(target)?;
+        for i in 0..diag_len {
+            values[i * cols + i] = fill_value;
+        }
+        self.update_tensor_values_for_float(target, values, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation(
+            "fill_diagonal_",
+            target,
+            Some(format!("fill_value={fill_value}")),
+        );
+        Ok(())
+    }
+
     /// In-place scalar multiplication: target = target * scalar.
     pub fn tensor_mul_scalar_(
         &mut self,
@@ -52893,5 +52922,14 @@ mod tests {
         s.tensor_normal_(y, 0.0, 1.0).unwrap();
         let vals2 = s.tensor_values(y).unwrap();
         assert!(vals2.iter().any(|&v| v != 0.0));
+    }
+
+    #[test]
+    fn test_fill_diagonal_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0; 9], vec![3, 3], false).unwrap();
+        s.tensor_fill_diagonal_(x, 1.0).unwrap();
+        let vals = s.tensor_values(x).unwrap();
+        assert_eq!(vals, vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
     }
 }
