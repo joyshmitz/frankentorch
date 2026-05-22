@@ -12804,6 +12804,111 @@ impl FrankenTorchSession {
         self.tensor_grid_sample(input, grid, mode, padding_mode, align_corners)
     }
 
+    /// MSE loss function. Alias for tensor_mse_loss.
+    pub fn functional_mse_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mse_loss(input, target, reduction)
+    }
+
+    /// L1 loss function. Alias for tensor_l1_loss.
+    pub fn functional_l1_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_l1_loss(input, target, reduction)
+    }
+
+    /// Smooth L1 loss function. Alias for tensor_smooth_l1_loss.
+    pub fn functional_smooth_l1_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        beta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_smooth_l1_loss(input, target, reduction, beta)
+    }
+
+    /// Cross entropy loss. Alias for tensor_cross_entropy.
+    pub fn functional_cross_entropy(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cross_entropy(input, target, reduction)
+    }
+
+    /// Binary cross entropy loss. Alias for tensor_bce_loss.
+    pub fn functional_binary_cross_entropy(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bce_loss(input, target, reduction)
+    }
+
+    /// Binary cross entropy with logits. Alias for tensor_bce_with_logits_loss.
+    pub fn functional_binary_cross_entropy_with_logits(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bce_with_logits_loss(input, target, reduction)
+    }
+
+    /// NLL loss function. Alias for tensor_nll_loss.
+    pub fn functional_nll_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nll_loss(input, target, reduction)
+    }
+
+    /// KL divergence loss. Alias for tensor_kl_div.
+    pub fn functional_kl_div(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        log_target: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_kl_div(input, target, reduction, log_target)
+    }
+
+    /// Huber loss function. Alias for tensor_huber_loss.
+    pub fn functional_huber_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        delta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_huber_loss(input, target, reduction, delta)
+    }
+
+    /// Cosine embedding loss. Alias for tensor_cosine_embedding_loss.
+    pub fn functional_cosine_embedding_loss(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cosine_embedding_loss(input1, input2, target, margin, reduction)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
