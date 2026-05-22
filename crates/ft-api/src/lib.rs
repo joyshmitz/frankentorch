@@ -886,6 +886,26 @@ impl FrankenTorchSession {
         self.tensor_to_dtype(input, DType::BF16)
     }
 
+    /// PyTorch-style alias for casting a tensor to int32.
+    ///
+    /// Equivalent to `tensor.int()` in PyTorch.
+    ///
+    /// Tape-level I32 conversion is not yet implemented; this call
+    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(I32))`.
+    pub fn tensor_int(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to_dtype(input, DType::I32)
+    }
+
+    /// PyTorch-style alias for casting a tensor to int64.
+    ///
+    /// Equivalent to `tensor.long()` in PyTorch.
+    ///
+    /// Tape-level I64 conversion is not yet implemented; this call
+    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(I64))`.
+    pub fn tensor_long(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to_dtype(input, DType::I64)
+    }
+
     /// Cast a tensor to the given dtype.
     ///
     /// Supported floating-point casts today: F32 ↔ F64. F16 and BF16
@@ -52967,5 +52987,31 @@ mod tests {
         let x = s.tensor_variable(vec![1.0; 24], vec![2, 3, 4], false).unwrap();
         let strides = s.tensor_stride(x).unwrap();
         assert_eq!(strides, vec![12, 4, 1]);
+    }
+
+    #[test]
+    fn test_tensor_int_long() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.5, 2.7, 3.1], vec![3], false).unwrap();
+        let int_result = s.tensor_int(x);
+        let long_result = s.tensor_long(x);
+        assert!(
+            matches!(
+                int_result,
+                Err(AutogradError::DenseTensor(ft_core::DenseTensorError::UnsupportedDType(
+                    DType::I32
+                )))
+            ),
+            "tensor_int should exist and return UnsupportedDType(I32) until tape-level I32 conversion lands"
+        );
+        assert!(
+            matches!(
+                long_result,
+                Err(AutogradError::DenseTensor(ft_core::DenseTensorError::UnsupportedDType(
+                    DType::I64
+                )))
+            ),
+            "tensor_long should exist and return UnsupportedDType(I64) until tape-level I64 conversion lands"
+        );
     }
 }
