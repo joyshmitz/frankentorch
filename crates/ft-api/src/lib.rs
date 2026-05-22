@@ -14550,6 +14550,14 @@ impl FrankenTorchSession {
         self.tensor_shape(node)
     }
 
+    /// Return the stride of each dimension.
+    ///
+    /// Equivalent to `tensor.stride()` in PyTorch.
+    pub fn tensor_stride(&self, node: TensorNodeId) -> Result<Vec<usize>, AutogradError> {
+        let tensor = self.tensor_tape.tensor(node)?;
+        Ok(tensor.meta().strides().to_vec())
+    }
+
     /// Check if two tensors have the same shape.
     ///
     /// Equivalent to `input.is_same_size(other)` in PyTorch.
@@ -52951,5 +52959,13 @@ mod tests {
         let acc_grad = s.tensor_accumulated_gradient(x).unwrap();
         assert_eq!(grad, acc_grad);
         assert_eq!(grad.unwrap(), vec![4.0, 6.0]);
+    }
+
+    #[test]
+    fn test_tensor_stride() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0; 24], vec![2, 3, 4], false).unwrap();
+        let strides = s.tensor_stride(x).unwrap();
+        assert_eq!(strides, vec![12, 4, 1]);
     }
 }
