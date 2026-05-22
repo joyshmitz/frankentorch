@@ -18210,6 +18210,26 @@ impl FrankenTorchSession {
         self.tensor_sigmoid(input)
     }
 
+    /// Alias for tensor_exp2 for torch.special.exp2 parity.
+    ///
+    /// Tracked under frankentorch-ktys.
+    pub fn tensor_special_exp2(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_exp2(input)
+    }
+
+    /// Alias for tensor_log2 for torch.special.log2 parity.
+    ///
+    /// Tracked under frankentorch-ktys.
+    pub fn tensor_special_log2(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log2(input)
+    }
+
     /// Element-wise inverse error function.
     ///
     /// Equivalent to `torch.special.erfinv(input)`.
@@ -51273,5 +51293,29 @@ mod tests {
         assert!(vals[0].abs() < 1e-5);
         assert!((vals[1] - 1.0).abs() < 1e-4);
         assert!((vals[2] + 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_special_exp2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0, 1.0, 2.0, 3.0], vec![4], false).unwrap();
+        let result = s.tensor_special_exp2(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 2.0).abs() < 1e-10);
+        assert!((vals[2] - 4.0).abs() < 1e-10);
+        assert!((vals[3] - 8.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_special_log2() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![1.0, 2.0, 4.0, 8.0], vec![4], false).unwrap();
+        let result = s.tensor_special_log2(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!(vals[0].abs() < 1e-10);
+        assert!((vals[1] - 1.0).abs() < 1e-10);
+        assert!((vals[2] - 2.0).abs() < 1e-10);
+        assert!((vals[3] - 3.0).abs() < 1e-10);
     }
 }
