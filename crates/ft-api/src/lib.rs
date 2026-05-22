@@ -23554,6 +23554,31 @@ impl FrankenTorchSession {
         self.tensor_polygamma(n, input)
     }
 
+    /// Second derivative of lgamma (trigamma function).
+    ///
+    /// Equivalent to `torch.special.polygamma(1, input)`. The trigamma
+    /// function psi'(x) is the derivative of digamma, commonly used in
+    /// gradient computations involving gamma functions.
+    pub fn tensor_trigamma(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_polygamma(1, input)
+    }
+
+    /// In-place trigamma: target = polygamma(1, target).
+    pub fn tensor_trigamma_(
+        &mut self,
+        target: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_trigamma(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("trigamma_", target, None);
+        Ok(())
+    }
+
     /// Modified Bessel function of the first kind, order 0.
     ///
     /// Equivalent to `torch.special.i0(input)`.
