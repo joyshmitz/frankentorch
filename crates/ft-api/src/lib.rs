@@ -14243,6 +14243,34 @@ impl FrankenTorchSession {
         self.tensor_clamp_(target, f64::NEG_INFINITY, max_val)
     }
 
+    /// In-place masked fill: fills target tensor at positions where mask is non-zero.
+    pub fn tensor_masked_fill_(
+        &mut self,
+        target: TensorNodeId,
+        mask: TensorNodeId,
+        value: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let mask_vals = self.tensor_values(mask)?;
+        if target_vals.len() != mask_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(mask)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(mask_vals.iter())
+            .map(|(&t, &m)| if m != 0.0 { value } else { t })
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("masked_fill_", target, Some(format!("value={value}")));
+        Ok(())
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -54128,6 +54156,15 @@ mod tests {
         let x = s.tensor_variable(vec![-1.0, 0.5, 2.0], vec![3], false).unwrap();
         s.tensor_clip_(x, 0.0, 1.0).unwrap();
         assert_eq!(s.tensor_values(x).unwrap(), vec![0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn test_masked_fill_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false).unwrap();
+        let mask = s.tensor_variable(vec![1.0, 0.0, 1.0, 0.0], vec![4], false).unwrap();
+        s.tensor_masked_fill_(x, mask, -9.0).unwrap();
+        assert_eq!(s.tensor_values(x).unwrap(), vec![-9.0, 2.0, -9.0, 4.0]);
     }
 
     #[test]
