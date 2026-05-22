@@ -9233,6 +9233,20 @@ impl FrankenTorchSession {
         self.tensor_floor(q)
     }
 
+    /// Return both quotient and remainder of division.
+    ///
+    /// Equivalent to `torch.divmod(input, other)` or calling
+    /// `(floor_divide(a,b), remainder(a,b))`. Returns `(quotient, remainder)`.
+    pub fn tensor_divmod(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let quotient = self.tensor_floor_divide(lhs, rhs)?;
+        let remainder = self.tensor_remainder(lhs, rhs)?;
+        Ok((quotient, remainder))
+    }
+
     /// Alias for `tensor_linalg_inv`. Equivalent to `torch.inverse(input)`,
     /// the deprecated-but-still-used alias for torch.linalg.inv.
     /// Tracked under frankentorch-5man.
