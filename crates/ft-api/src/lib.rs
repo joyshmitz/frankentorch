@@ -7614,6 +7614,51 @@ impl FrankenTorchSession {
         self.tensor_comparison(ComparisonOp::Ge, lhs, rhs)
     }
 
+    /// Alias for `tensor_gt`. Equivalent to `torch.greater(input, other)`.
+    pub fn tensor_greater(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gt(lhs, rhs)
+    }
+
+    /// Alias for `tensor_ge`. Equivalent to `torch.greater_equal(input, other)`.
+    pub fn tensor_greater_equal(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ge(lhs, rhs)
+    }
+
+    /// Alias for `tensor_lt`. Equivalent to `torch.less(input, other)`.
+    pub fn tensor_less(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lt(lhs, rhs)
+    }
+
+    /// Alias for `tensor_le`. Equivalent to `torch.less_equal(input, other)`.
+    pub fn tensor_less_equal(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_le(lhs, rhs)
+    }
+
+    /// Alias for `tensor_ne`. Equivalent to `torch.not_equal(input, other)`.
+    pub fn tensor_not_equal(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ne(lhs, rhs)
+    }
+
     /// Return `true` when tensors have identical shape and element values.
     ///
     /// NaN values are considered unequal (matching PyTorch `torch.equal`).
@@ -52018,5 +52063,30 @@ mod tests {
         let result = s.tensor_chain_matmul(&[a, b]).unwrap();
         let shape = s.tensor_shape(result).unwrap();
         assert_eq!(shape, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_comparison_aliases() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![2.0, 2.0, 2.0], vec![3], false).unwrap();
+
+        // greater: a > b → [false, false, true]
+        let gt_result = s.tensor_greater(a, b).unwrap();
+        let gt_vals = s.tensor_values(gt_result).unwrap();
+        assert!((gt_vals[0] - 0.0).abs() < 1e-10);
+        assert!((gt_vals[2] - 1.0).abs() < 1e-10);
+
+        // less: a < b → [true, false, false]
+        let lt_result = s.tensor_less(a, b).unwrap();
+        let lt_vals = s.tensor_values(lt_result).unwrap();
+        assert!((lt_vals[0] - 1.0).abs() < 1e-10);
+        assert!((lt_vals[2] - 0.0).abs() < 1e-10);
+
+        // not_equal: a != b → [true, false, true]
+        let ne_result = s.tensor_not_equal(a, b).unwrap();
+        let ne_vals = s.tensor_values(ne_result).unwrap();
+        assert!((ne_vals[0] - 1.0).abs() < 1e-10);
+        assert!((ne_vals[1] - 0.0).abs() < 1e-10);
     }
 }
