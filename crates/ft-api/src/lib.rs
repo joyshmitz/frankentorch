@@ -13416,6 +13416,20 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("rad2deg_", target, None, |x| x * 180.0 / std::f64::consts::PI)
     }
 
+    /// In-place error function.
+    ///
+    /// Equivalent to `tensor.erf_()` in PyTorch.
+    pub fn tensor_erf_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("erf_", target, None, libm::erf)
+    }
+
+    /// In-place inverse error function.
+    ///
+    /// Equivalent to `tensor.erfinv_()` in PyTorch.
+    pub fn tensor_erfinv_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("erfinv_", target, None, erfinv_approx)
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53425,6 +53439,17 @@ mod tests {
         assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
         let b = s.tensor_variable(vec![0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI], vec![3], false).unwrap();
         s.tensor_rad2deg_(b).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_erf_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
+        s.tensor_erf_(a).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![-0.5, 0.0, 0.5], vec![3], false).unwrap();
+        s.tensor_erfinv_(b).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
