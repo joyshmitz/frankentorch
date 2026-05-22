@@ -14469,6 +14469,133 @@ impl TensorTape {
                         rule: "d(rsqrt(x))/dx=-0.5*y^3 (cg)",
                     });
                 }
+                TensorNodeOp::Hardswish { input } => {
+                    // d(hardswish(x))/dx = 0 if x <= -3, 1 if x >= 3, else (2x+3)/6
+                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let grad_vals: Vec<f64> = incoming_vals
+                        .iter()
+                        .zip(input_vals.iter())
+                        .map(|(g, x)| {
+                            g * if *x <= -3.0 {
+                                0.0
+                            } else if *x >= 3.0 {
+                                1.0
+                            } else {
+                                (2.0 * x + 3.0) / 6.0
+                            }
+                        })
+                        .collect();
+                    let grad_in = self.leaf(grad_vals, input_shape, true)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(hardswish(x))/dx=(2x+3)/6|0|1 (cg)",
+                    });
+                }
+                TensorNodeOp::Hardsigmoid { input } => {
+                    // d(hardsigmoid(x))/dx = 0 if x <= -3 or x >= 3, else 1/6
+                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let grad_vals: Vec<f64> = incoming_vals
+                        .iter()
+                        .zip(input_vals.iter())
+                        .map(|(g, x)| {
+                            g * if *x <= -3.0 || *x >= 3.0 {
+                                0.0
+                            } else {
+                                1.0 / 6.0
+                            }
+                        })
+                        .collect();
+                    let grad_in = self.leaf(grad_vals, input_shape, true)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(hardsigmoid(x))/dx=1/6|0 (cg)",
+                    });
+                }
+                TensorNodeOp::Hardtanh { input } => {
+                    // d(hardtanh(x))/dx = 0 if x <= -1 or x >= 1, else 1
+                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let grad_vals: Vec<f64> = incoming_vals
+                        .iter()
+                        .zip(input_vals.iter())
+                        .map(|(g, x)| g * if *x <= -1.0 || *x >= 1.0 { 0.0 } else { 1.0 })
+                        .collect();
+                    let grad_in = self.leaf(grad_vals, input_shape, true)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(hardtanh(x))/dx=1|0 (cg)",
+                    });
+                }
+                TensorNodeOp::Softplus { input } => {
+                    // d(softplus(x))/dx = sigmoid(x) = 1 / (1 + exp(-x))
+                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let grad_vals: Vec<f64> = incoming_vals
+                        .iter()
+                        .zip(input_vals.iter())
+                        .map(|(g, x)| {
+                            let grad = if *x > 20.0 {
+                                1.0
+                            } else {
+                                1.0 / (1.0 + (-x).exp())
+                            };
+                            g * grad
+                        })
+                        .collect();
+                    let grad_in = self.leaf(grad_vals, input_shape, true)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(softplus(x))/dx=sigmoid(x) (cg)",
+                    });
+                }
+                TensorNodeOp::Mish { input } => {
+                    // mish(x) = x * tanh(softplus(x))
+                    // d/dx = tanh(sp) + x * sigmoid(x) * (1 - tanh(sp)^2)
+                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let grad_vals: Vec<f64> = incoming_vals
+                        .iter()
+                        .zip(input_vals.iter())
+                        .map(|(g, x)| {
+                            let sp = if *x > 20.0 { *x } else { x.exp().ln_1p() };
+                            let tsp = sp.tanh();
+                            let sig = 1.0 / (1.0 + (-x).exp());
+                            g * (tsp + x * sig * (1.0 - tsp * tsp))
+                        })
+                        .collect();
+                    let grad_in = self.leaf(grad_vals, input_shape, true)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(mish(x))/dx=tanh(sp)+x*sig*(1-tanh^2) (cg)",
+                    });
+                }
                 // For unsupported ops, fall back to non-differentiable gradient
                 _ => {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -23707,6 +23834,114 @@ mod tests {
         assert!((gx[0] - (-0.0625)).abs() < 1e-9);
         // x=1: rsqrt(1) = 1.0, d/dx = -0.5 * 1.0^3 = -0.5
         assert!((gx[1] - (-0.5)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn create_graph_hardswish_gradients() {
+        // hardswish gradient: 0 if x <= -3, 1 if x >= 3, else (2x+3)/6
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![-4.0, 0.0, 4.0], vec![3], true).expect("x");
+        let (h, _) = tape.hardswish(x, ExecutionMode::Strict).expect("hardswish");
+        let (s, _) = tape.sum(h, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        let gx = report.gradient(x).expect("gx");
+        assert!((gx[0] - 0.0).abs() < 1e-9); // x=-4 <= -3 -> 0
+        assert!((gx[1] - 0.5).abs() < 1e-9); // x=0 -> (0+3)/6 = 0.5
+        assert!((gx[2] - 1.0).abs() < 1e-9); // x=4 >= 3 -> 1
+    }
+
+    #[test]
+    fn create_graph_hardsigmoid_gradients() {
+        // hardsigmoid gradient: 0 if |x| >= 3, else 1/6
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![-4.0, 0.0, 4.0], vec![3], true).expect("x");
+        let (h, _) = tape.hardsigmoid(x, ExecutionMode::Strict).expect("hardsigmoid");
+        let (s, _) = tape.sum(h, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        let gx = report.gradient(x).expect("gx");
+        assert!((gx[0] - 0.0).abs() < 1e-9); // x=-4 <= -3 -> 0
+        assert!((gx[1] - (1.0 / 6.0)).abs() < 1e-9); // x=0 -> 1/6
+        assert!((gx[2] - 0.0).abs() < 1e-9); // x=4 >= 3 -> 0
+    }
+
+    #[test]
+    fn create_graph_hardtanh_gradients() {
+        // hardtanh gradient: 0 if |x| >= 1, else 1
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![-2.0, 0.0, 2.0], vec![3], true).expect("x");
+        let (h, _) = tape.hardtanh(x, ExecutionMode::Strict).expect("hardtanh");
+        let (s, _) = tape.sum(h, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        let gx = report.gradient(x).expect("gx");
+        assert!((gx[0] - 0.0).abs() < 1e-9); // x=-2 <= -1 -> 0
+        assert!((gx[1] - 1.0).abs() < 1e-9); // x=0 -> 1
+        assert!((gx[2] - 0.0).abs() < 1e-9); // x=2 >= 1 -> 0
+    }
+
+    #[test]
+    fn create_graph_softplus_gradients() {
+        // softplus gradient: sigmoid(x)
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![0.0], vec![1], true).expect("x");
+        let (sp, _) = tape.softplus(x, ExecutionMode::Strict).expect("softplus");
+        let (s, _) = tape.sum(sp, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        // sigmoid(0) = 0.5
+        assert!((report.gradient(x).expect("gx")[0] - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn create_graph_mish_gradients() {
+        // mish(x) = x * tanh(softplus(x))
+        // At x=0: sp=ln(2), tanh(ln(2))≈0.6, sig=0.5, d/dx≈0.6 + 0*...=0.6
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![0.0], vec![1], true).expect("x");
+        let (m, _) = tape.mish(x, ExecutionMode::Strict).expect("mish");
+        let (s, _) = tape.sum(m, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        let gx = report.gradient(x).expect("gx")[0];
+        // At x=0: sp=ln(2)≈0.693, tanh(0.693)≈0.6, so grad≈0.6
+        assert!(gx > 0.5 && gx < 0.7);
     }
 
     // ── frankentorch-igu: Property-based tests for tensor autograd ─────
