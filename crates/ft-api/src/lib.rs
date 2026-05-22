@@ -6044,6 +6044,33 @@ impl FrankenTorchSession {
         }
     }
 
+    /// In-place copysign: target = copysign(target, sign).
+    pub fn tensor_copysign_(
+        &mut self,
+        target: TensorNodeId,
+        sign: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let sign_vals = self.tensor_values(sign)?;
+        if target_vals.len() != sign_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(sign)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(sign_vals.iter())
+            .map(|(&m, &s)| m.copysign(s))
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("copysign_", target, None);
+        Ok(())
+    }
+
     /// `torch.nextafter(input, other)` parity: per-element next IEEE
     /// 754 representable value of `input` toward `other`.
     ///
@@ -6549,6 +6576,33 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let two_pow = self.tensor_exp2(other)?;
         self.tensor_mul(input, two_pow)
+    }
+
+    /// In-place ldexp: target = target * 2^other.
+    pub fn tensor_ldexp_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&x, &e)| x * 2.0_f64.powf(e))
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("ldexp_", target, None);
+        Ok(())
     }
 
     /// Numerically stable log-sigmoid: `log(sigmoid(x)) = -softplus(-x)`.
@@ -19886,6 +19940,39 @@ impl FrankenTorchSession {
             format!("xlogy x={} y={} out={}", x.0, y.0, out.0),
         );
         Ok(out)
+    }
+
+    /// In-place xlogy: target = target * log(other), with 0 * log(y) = 0 when y is not NaN.
+    pub fn tensor_xlogy_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&x, &y)| {
+                if x == 0.0 && !y.is_nan() {
+                    0.0
+                } else {
+                    x * y.ln()
+                }
+            })
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("xlogy_", target, None);
+        Ok(())
     }
 
     // ── torch.special functions ──────────────────────────────────────────
@@ -54287,6 +54374,28 @@ mod tests {
         s.tensor_logaddexp2_(c, d).unwrap();
         let vals2 = s.tensor_values(c).unwrap();
         assert!(vals2[0] > 1.0);
+    }
+
+    #[test]
+    fn test_tensor_copysign_ldexp_xlogy_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, -2.0, 3.0], vec![3], false).unwrap();
+        let signs = s.tensor_variable(vec![-1.0, 1.0, -1.0], vec![3], false).unwrap();
+        s.tensor_copysign_(a, signs).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        assert_eq!(vals, vec![-1.0, 2.0, -3.0]);
+        let b = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let exp = s.tensor_variable(vec![2.0, 3.0, 1.0], vec![3], false).unwrap();
+        s.tensor_ldexp_(b, exp).unwrap();
+        let vals2 = s.tensor_values(b).unwrap();
+        assert_eq!(vals2, vec![4.0, 16.0, 6.0]);
+        let x = s.tensor_variable(vec![0.0, 2.0, 3.0], vec![3], false).unwrap();
+        let y = s.tensor_variable(vec![0.5, std::f64::consts::E, std::f64::consts::E], vec![3], false).unwrap();
+        s.tensor_xlogy_(x, y).unwrap();
+        let vals3 = s.tensor_values(x).unwrap();
+        assert_eq!(vals3[0], 0.0);
+        assert!((vals3[1] - 2.0).abs() < 1e-10);
+        assert!((vals3[2] - 3.0).abs() < 1e-10);
     }
 
     #[test]
