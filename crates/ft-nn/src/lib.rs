@@ -14229,7 +14229,7 @@ impl Module for CircularPad2d {
     }
 }
 
-// ── PixelShuffle / PixelUnshuffle Modules ──────────────────────────────
+// ── PixelShuffle / PixelUnshuffle / ChannelShuffle Modules ─────────────
 
 /// Rearranges elements from channels into spatial dimensions.
 ///
@@ -14282,6 +14282,61 @@ impl Module for PixelUnshuffle {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         session.tensor_pixel_unshuffle(input, self.downscale_factor)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Divides channels into groups and shuffles group order.
+///
+/// Equivalent to `torch.nn.ChannelShuffle(groups)`.
+/// Input: `(N, C, *)` where `C % groups == 0`; output shape is unchanged.
+pub struct ChannelShuffle {
+    groups: usize,
+}
+
+impl ChannelShuffle {
+    #[must_use]
+    pub fn new(groups: usize) -> Self {
+        Self { groups }
+    }
+}
+
+impl Module for ChannelShuffle {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.groups == 0 {
+            return Err(incompatible_error(
+                "ChannelShuffle: groups must be greater than zero",
+            ));
+        }
+        let shape = session.tensor_shape(input)?;
+        if shape.len() < 2 {
+            return Err(incompatible_error(
+                "ChannelShuffle: input must have at least 2 dimensions",
+            ));
+        }
+        let channels = shape[1];
+        if channels % self.groups != 0 {
+            return Err(incompatible_error(
+                "ChannelShuffle: channels must be divisible by groups",
+            ));
+        }
+        let channels_per_group = channels / self.groups;
+        let mut grouped_shape = Vec::with_capacity(shape.len() + 1);
+        grouped_shape.push(shape[0]);
+        grouped_shape.push(self.groups);
+        grouped_shape.push(channels_per_group);
+        grouped_shape.extend(shape.iter().skip(2).copied());
+
+        let grouped = session.tensor_reshape(input, grouped_shape)?;
+        let shuffled = session.tensor_transpose(grouped, 1, 2)?;
+        session.tensor_reshape(shuffled, shape)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -27674,7 +27729,7 @@ mod tests {
         );
     }
 
-    // ── PixelShuffle / PixelUnshuffle Module Tests ──────────────────────
+    // ── PixelShuffle / PixelUnshuffle / ChannelShuffle Module Tests ─────
 
     #[test]
     fn pixel_shuffle_module_basic() {
@@ -27717,6 +27772,79 @@ mod tests {
         assert_eq!(session.tensor_shape(shuffled).unwrap(), &[1, 1, 4, 4]);
         let unshuffled = pus.forward(&mut session, shuffled).unwrap();
         assert_eq!(session.tensor_shape(unshuffled).unwrap(), &[1, 4, 2, 2]);
+    }
+
+    #[test]
+    fn channel_shuffle_module_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let shuffle = ChannelShuffle::new(2);
+        let input = session
+            .tensor_variable(
+                vec![
+                    1.0, 2.0, 3.0, 4.0, // channel 0
+                    5.0, 6.0, 7.0, 8.0, // channel 1
+                    9.0, 10.0, 11.0, 12.0, // channel 2
+                    13.0, 14.0, 15.0, 16.0, // channel 3
+                ],
+                vec![1, 4, 2, 2],
+                false,
+            )
+            .unwrap();
+        let out = shuffle.forward(&mut session, input).unwrap();
+
+        assert_eq!(session.tensor_shape(out).unwrap(), &[1, 4, 2, 2]);
+        assert_eq!(
+            session.tensor_values(out).unwrap(),
+            &[
+                1.0, 2.0, 3.0, 4.0, // channel 0
+                9.0, 10.0, 11.0, 12.0, // channel 2
+                5.0, 6.0, 7.0, 8.0, // channel 1
+                13.0, 14.0, 15.0, 16.0, // channel 3
+            ]
+        );
+    }
+
+    #[test]
+    fn channel_shuffle_module_backward_permutes_gradient_to_input() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let shuffle = ChannelShuffle::new(2);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 4, 1, 1], true)
+            .unwrap();
+        let out = shuffle.forward(&mut session, input).unwrap();
+        let weights = session
+            .tensor_variable(vec![10.0, 20.0, 30.0, 40.0], vec![1, 4, 1, 1], false)
+            .unwrap();
+        let weighted = session.tensor_mul(out, weights).unwrap();
+        let loss = session.tensor_sum(weighted).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("input gradient should flow through ChannelShuffle");
+
+        assert_eq!(grad, &[10.0, 30.0, 20.0, 40.0]);
+    }
+
+    #[test]
+    fn channel_shuffle_module_rejects_invalid_contracts() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .unwrap();
+
+        assert!(ChannelShuffle::new(0).forward(&mut session, input).is_err());
+        assert!(ChannelShuffle::new(2).forward(&mut session, input).is_err());
+
+        let rank1 = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        assert!(ChannelShuffle::new(1).forward(&mut session, rank1).is_err());
+    }
+
+    #[test]
+    fn channel_shuffle_module_no_params() {
+        let shuffle = ChannelShuffle::new(2);
+        assert!(shuffle.parameters().is_empty());
     }
 
     // ── CosineSimilarity Module Tests ───────────────────────────────────
