@@ -2029,20 +2029,21 @@ pub struct LocalResponseNorm {
 
 impl LocalResponseNorm {
     /// Create a LocalResponseNorm module with PyTorch default coefficients.
-    #[must_use]
-    pub fn new(size: usize) -> Self {
+    pub fn new(size: usize) -> Result<Self, AutogradError> {
         Self::with_params(size, 1e-4, 0.75, 1.0)
     }
 
     /// Create a LocalResponseNorm module with explicit coefficients.
-    #[must_use]
-    pub fn with_params(size: usize, alpha: f64, beta: f64, k: f64) -> Self {
-        Self {
+    pub fn with_params(size: usize, alpha: f64, beta: f64, k: f64) -> Result<Self, AutogradError> {
+        if size == 0 {
+            return Err(incompatible_error("LocalResponseNorm requires size > 0"));
+        }
+        Ok(Self {
             size,
             alpha,
             beta,
             k,
-        }
+        })
     }
 }
 
@@ -2065,10 +2066,6 @@ impl Module for LocalResponseNorm {
         if session.tensor_numel(input)? == 0 {
             return Ok(input);
         }
-        if self.size < 1 {
-            return Err(incompatible_error("LocalResponseNorm requires size > 0"));
-        }
-
         let slice_shape: Vec<usize> = input_shape
             .iter()
             .enumerate()
@@ -8347,6 +8344,90 @@ impl Module for Upsample2d {
         )?;
         // reshape → [N, C, H*scale_h, W*scale_w]
         session.tensor_reshape(x, vec![batch_size, channels, h_out, w_out])
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Nearest-neighbor upsampling for 3D inputs (5D tensors `[N, C, D, H, W]`).
+///
+/// Repeats each element along depth, height, and width by the configured scale
+/// factors. Output shape: `[N, C, D * scale_d, H * scale_h, W * scale_w]`.
+pub struct Upsample3d {
+    scale_d: usize,
+    scale_h: usize,
+    scale_w: usize,
+}
+
+impl Upsample3d {
+    /// Create a new Upsample3d. For a uniform scale, pass the same factor for
+    /// all three spatial dimensions.
+    #[must_use]
+    pub fn new(scale_d: usize, scale_h: usize, scale_w: usize) -> Self {
+        Self {
+            scale_d,
+            scale_h,
+            scale_w,
+        }
+    }
+}
+
+impl Module for Upsample3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = { session.tensor_shape(input)? };
+        let (batch_size, channels, d_in, h_in, w_in) = match input_shape.as_slice() {
+            [batch_size, channels, d_in, h_in, w_in] => {
+                (*batch_size, *channels, *d_in, *h_in, *w_in)
+            }
+            _ => {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "Upsample3d expects 5D input [N, C, D, H, W]",
+                    },
+                )));
+            }
+        };
+
+        match (self.scale_d, self.scale_h, self.scale_w) {
+            (0, _, _) | (_, 0, _) | (_, _, 0) => {
+                return Err(incompatible_error(
+                    "Upsample3d scale factors must be positive",
+                ));
+            }
+            (1, 1, 1) => return Ok(input),
+            _ => {}
+        }
+
+        let d_out = checked_mul(d_in, self.scale_d, "Upsample3d output depth overflow")?;
+        let h_out = checked_mul(h_in, self.scale_h, "Upsample3d output height overflow")?;
+        let w_out = checked_mul(w_in, self.scale_w, "Upsample3d output width overflow")?;
+
+        // Nearest-neighbor for 3D:
+        // [N, C, D, H, W] -> [N, C, D, 1, H, 1, W, 1]
+        let x =
+            session.tensor_reshape(input, vec![batch_size, channels, d_in, 1, h_in, 1, w_in, 1])?;
+        // expand -> [N, C, D, scale_d, H, scale_h, W, scale_w]
+        let x = session.tensor_expand(
+            x,
+            vec![
+                batch_size,
+                channels,
+                d_in,
+                self.scale_d,
+                h_in,
+                self.scale_h,
+                w_in,
+                self.scale_w,
+            ],
+        )?;
+        // reshape -> [N, C, D*scale_d, H*scale_h, W*scale_w]
+        session.tensor_reshape(x, vec![batch_size, channels, d_out, h_out, w_out])
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
@@ -18459,7 +18540,7 @@ mod tests {
     #[test]
     fn local_response_norm_matches_channel_window_formula() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let lrn = LocalResponseNorm::with_params(3, 3.0, 1.0, 1.0);
+        let lrn = LocalResponseNorm::with_params(3, 3.0, 1.0, 1.0).unwrap();
 
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3, 1], false)
@@ -18479,7 +18560,7 @@ mod tests {
     #[test]
     fn local_response_norm_preserves_higher_rank_shape() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let lrn = LocalResponseNorm::new(5);
+        let lrn = LocalResponseNorm::new(5).unwrap();
 
         let x = session
             .tensor_variable(vec![1.0; 2 * 3 * 2 * 2], vec![2, 3, 2, 2], false)
@@ -18492,7 +18573,7 @@ mod tests {
 
     #[test]
     fn local_response_norm_has_no_parameters() {
-        let lrn = LocalResponseNorm::new(3);
+        let lrn = LocalResponseNorm::new(3).unwrap();
         assert!(lrn.parameters().is_empty());
     }
 
@@ -18505,20 +18586,18 @@ mod tests {
             .expect("variable");
         assert!(
             LocalResponseNorm::new(3)
+                .unwrap()
                 .forward(&mut session, rank_two)
                 .is_err()
         );
 
-        let x = session
-            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3, 1], false)
-            .expect("variable");
-        assert!(LocalResponseNorm::new(0).forward(&mut session, x).is_err());
+        assert!(LocalResponseNorm::new(0).is_err());
     }
 
     #[test]
     fn local_response_norm_backward_produces_gradients() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let lrn = LocalResponseNorm::new(3);
+        let lrn = LocalResponseNorm::new(3).unwrap();
 
         let x = session
             .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 2, 2], true)
@@ -22215,6 +22294,91 @@ mod tests {
         assert!(up.parameters().is_empty());
     }
 
+    #[test]
+    fn upsample3d_forward() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample3d::new(2, 2, 1);
+
+        // [N=1, C=1, D=1, H=2, W=2] -> [1, 1, 2, 4, 2]
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 1, 2, 2], false)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+
+        let (vals, meta) = session.tensor_values_meta(out).expect("vals");
+        assert_eq!(meta.shape(), &[1, 1, 2, 4, 2]);
+        assert_eq!(
+            vals,
+            &[
+                1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0
+            ]
+        );
+    }
+
+    #[test]
+    fn upsample3d_scale_1_is_identity() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample3d::new(1, 1, 1);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 1, 2, 2], false)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+
+        let (in_vals, _) = session.tensor_values_meta(x).expect("input");
+        let (out_vals, _) = session.tensor_values_meta(out).expect("output");
+        assert_eq!(in_vals, out_vals);
+    }
+
+    #[test]
+    fn upsample3d_rejects_zero_scale_factors() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 1, 2, 2], false)
+            .expect("variable");
+
+        let zero_depth = Upsample3d::new(0, 2, 2);
+        assert!(zero_depth.forward(&mut session, x).is_err());
+
+        let zero_height = Upsample3d::new(2, 0, 2);
+        assert!(zero_height.forward(&mut session, x).is_err());
+
+        let zero_width = Upsample3d::new(2, 2, 0);
+        assert!(zero_width.forward(&mut session, x).is_err());
+    }
+
+    #[test]
+    fn upsample3d_rejects_wrong_dim() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample3d::new(2, 2, 2);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 1, 2, 2], false)
+            .expect("variable");
+        assert!(up.forward(&mut session, x).is_err());
+    }
+
+    #[test]
+    fn upsample3d_has_no_parameters() {
+        let up = Upsample3d::new(2, 2, 2);
+        assert!(up.parameters().is_empty());
+    }
+
+    #[test]
+    fn upsample3d_backward_produces_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let up = Upsample3d::new(2, 1, 2);
+
+        let x = session
+            .tensor_variable(vec![1.0, 2.0], vec![1, 1, 1, 1, 2], true)
+            .expect("variable");
+        let out = up.forward(&mut session, x).expect("forward");
+        let loss = session.tensor_sum(out).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+
+        assert!(session.tensor_gradient(&report, x).is_some());
+    }
+
     // ── ConvTranspose1d Tests ──────────────────────────────────────────
 
     #[test]
@@ -24178,6 +24342,127 @@ mod tests {
                 "Softmin sum-loss grad[{i}] should be ~0 (softmax sums to 1), got {g}"
             );
         }
+    }
+
+    // ── LocalResponseNorm Tests ────────────────────────────────────────
+
+    struct LocalResponseNormExpectedSpec {
+        n: usize,
+        channels: usize,
+        length: usize,
+        size: usize,
+        alpha: f64,
+        beta: f64,
+        k: f64,
+    }
+
+    fn expected_local_response_norm_1d(
+        values: &[f64],
+        spec: LocalResponseNormExpectedSpec,
+    ) -> Vec<f64> {
+        let mut expected = Vec::with_capacity(values.len());
+        let left = spec.size / 2;
+        let right = (spec.size - 1) / 2;
+        for batch in 0..spec.n {
+            for channel in 0..spec.channels {
+                let start = channel.saturating_sub(left);
+                let end = spec.channels.min(channel + right + 1);
+                for position in 0..spec.length {
+                    let input_idx =
+                        batch * spec.channels * spec.length + channel * spec.length + position;
+                    let square_sum: f64 = (start..end)
+                        .map(|neighbor| {
+                            let idx = batch * spec.channels * spec.length
+                                + neighbor * spec.length
+                                + position;
+                            values[idx] * values[idx]
+                        })
+                        .sum();
+                    let denom =
+                        (spec.k + spec.alpha * square_sum / spec.size as f64).powf(spec.beta);
+                    expected.push(values[input_idx] / denom);
+                }
+            }
+        }
+        expected
+    }
+
+    #[test]
+    fn local_response_norm_matches_channel_formula_and_shape() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let input = session
+            .tensor_variable(values.clone(), vec![1, 3, 2], false)
+            .unwrap();
+        let lrn = LocalResponseNorm::with_params(3, 0.6, 0.5, 2.0).unwrap();
+
+        let output = lrn.forward(&mut session, input).unwrap();
+        assert_eq!(session.tensor_shape(output).unwrap(), vec![1, 3, 2]);
+        assert!(lrn.parameters().is_empty());
+
+        let actual = session.tensor_values(output).unwrap();
+        let expected = expected_local_response_norm_1d(
+            &values,
+            LocalResponseNormExpectedSpec {
+                n: 1,
+                channels: 3,
+                length: 2,
+                size: 3,
+                alpha: 0.6,
+                beta: 0.5,
+                k: 2.0,
+            },
+        );
+        for (idx, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "LocalResponseNorm value mismatch at {idx}: actual={actual}, expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_response_norm_validates_size_and_rank() {
+        assert!(LocalResponseNorm::new(0).is_err());
+
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let lrn = LocalResponseNorm::new(3).unwrap();
+        assert!(lrn.forward(&mut session, input).is_err());
+    }
+
+    #[test]
+    fn local_response_norm_empty_input_returns_identity() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(Vec::new(), vec![1, 3, 0], false)
+            .unwrap();
+        let lrn = LocalResponseNorm::new(3).unwrap();
+        let output = lrn.forward(&mut session, input).unwrap();
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn local_response_norm_propagates_gradient_through_input() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![1, 3, 2], true)
+            .unwrap();
+        let lrn = LocalResponseNorm::new(3).unwrap();
+
+        let output = lrn.forward(&mut session, input).unwrap();
+        let loss = session.tensor_sum(output).unwrap();
+        let report = session.tensor_backward(loss).unwrap();
+        let grad = session
+            .tensor_gradient(&report, input)
+            .expect("LocalResponseNorm must propagate gradient through input");
+        assert_eq!(grad.len(), 6);
+        assert!(
+            grad.iter().all(|value| value.is_finite()),
+            "LocalResponseNorm gradient must be finite, got {grad:?}"
+        );
     }
 
     // ── RMSNorm Tests ──────────────────────────────────────────────────
