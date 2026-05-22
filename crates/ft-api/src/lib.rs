@@ -5633,6 +5633,80 @@ impl FrankenTorchSession {
         self.tensor_eq(input, zeros)
     }
 
+    /// Element-wise logical AND.
+    ///
+    /// Equivalent to `torch.logical_and(input, other)`. Returns 1.0 where
+    /// both inputs are non-zero, 0.0 otherwise. Non-differentiable.
+    pub fn tensor_logical_and(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(other)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "logical_and: autograd not supported (boolean ops are non-differentiable)",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let zeros = self.full(shape, 0.0, false)?;
+        let a_bool = self.tensor_ne(input, zeros)?;
+        let zeros2 = self.full(self.tensor_shape(other)?, 0.0, false)?;
+        let b_bool = self.tensor_ne(other, zeros2)?;
+        self.tensor_mul(a_bool, b_bool)
+    }
+
+    /// Element-wise logical OR.
+    ///
+    /// Equivalent to `torch.logical_or(input, other)`. Returns 1.0 where
+    /// at least one input is non-zero, 0.0 otherwise. Non-differentiable.
+    pub fn tensor_logical_or(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(other)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "logical_or: autograd not supported (boolean ops are non-differentiable)",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let zeros = self.full(shape.clone(), 0.0, false)?;
+        let a_bool = self.tensor_ne(input, zeros)?;
+        let zeros2 = self.full(self.tensor_shape(other)?, 0.0, false)?;
+        let b_bool = self.tensor_ne(other, zeros2)?;
+        let sum = self.tensor_add(a_bool, b_bool)?;
+        let ones = self.full(shape, 1.0, false)?;
+        self.tensor_minimum(sum, ones)
+    }
+
+    /// Element-wise logical XOR.
+    ///
+    /// Equivalent to `torch.logical_xor(input, other)`. Returns 1.0 where
+    /// exactly one input is non-zero, 0.0 otherwise. Non-differentiable.
+    pub fn tensor_logical_xor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(other)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "logical_xor: autograd not supported (boolean ops are non-differentiable)",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let zeros = self.full(shape, 0.0, false)?;
+        let a_bool = self.tensor_ne(input, zeros)?;
+        let zeros2 = self.full(self.tensor_shape(other)?, 0.0, false)?;
+        let b_bool = self.tensor_ne(other, zeros2)?;
+        self.tensor_ne(a_bool, b_bool)
+    }
+
     /// Element-wise copysign: `|magnitude| * sign(sign_tensor)`.
     ///
     /// Equivalent to `torch.copysign(magnitude, sign)`. Both inputs
@@ -52088,5 +52162,47 @@ mod tests {
         let ne_vals = s.tensor_values(ne_result).unwrap();
         assert!((ne_vals[0] - 1.0).abs() < 1e-10);
         assert!((ne_vals[1] - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_logical_and() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0, 1.0, 0.0, 1.0], vec![4], false).unwrap();
+        let b = s.tensor_variable(vec![0.0, 0.0, 1.0, 1.0], vec![4], false).unwrap();
+        let result = s.tensor_logical_and(a, b).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // AND: [0&0, 1&0, 0&1, 1&1] = [0, 0, 0, 1]
+        assert!((vals[0] - 0.0).abs() < 1e-10);
+        assert!((vals[1] - 0.0).abs() < 1e-10);
+        assert!((vals[2] - 0.0).abs() < 1e-10);
+        assert!((vals[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_logical_or() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0, 1.0, 0.0, 1.0], vec![4], false).unwrap();
+        let b = s.tensor_variable(vec![0.0, 0.0, 1.0, 1.0], vec![4], false).unwrap();
+        let result = s.tensor_logical_or(a, b).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // OR: [0|0, 1|0, 0|1, 1|1] = [0, 1, 1, 1]
+        assert!((vals[0] - 0.0).abs() < 1e-10);
+        assert!((vals[1] - 1.0).abs() < 1e-10);
+        assert!((vals[2] - 1.0).abs() < 1e-10);
+        assert!((vals[3] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_logical_xor() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.0, 1.0, 0.0, 1.0], vec![4], false).unwrap();
+        let b = s.tensor_variable(vec![0.0, 0.0, 1.0, 1.0], vec![4], false).unwrap();
+        let result = s.tensor_logical_xor(a, b).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        // XOR: [0^0, 1^0, 0^1, 1^1] = [0, 1, 1, 0]
+        assert!((vals[0] - 0.0).abs() < 1e-10);
+        assert!((vals[1] - 1.0).abs() < 1e-10);
+        assert!((vals[2] - 1.0).abs() < 1e-10);
+        assert!((vals[3] - 0.0).abs() < 1e-10);
     }
 }
