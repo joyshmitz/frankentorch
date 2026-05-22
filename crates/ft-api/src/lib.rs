@@ -13533,6 +13533,21 @@ impl FrankenTorchSession {
         })
     }
 
+    /// In-place logit: log(x / (1 - x)) with optional clamping.
+    ///
+    /// Equivalent to `tensor.logit_(eps)` in PyTorch.
+    pub fn tensor_logit_(&mut self, target: TensorNodeId, eps: Option<f64>) -> Result<(), AutogradError> {
+        match eps {
+            Some(e) => self.apply_tensor_unary_in_place("logit_", target, Some(format!("eps={e}")), |x| {
+                let clamped = x.clamp(e, 1.0 - e);
+                (clamped / (1.0 - clamped)).ln()
+            }),
+            None => self.apply_tensor_unary_in_place("logit_", target, None, |x| {
+                (x / (1.0 - x)).ln()
+            }),
+        }
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53619,6 +53634,17 @@ mod tests {
         assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
         let b = s.tensor_variable(vec![-1.0, 0.0, 1.0], vec![3], false).unwrap();
         s.tensor_threshold_(b, 0.0, -10.0).unwrap();
+        assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_logit_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![0.2, 0.5, 0.8], vec![3], false).unwrap();
+        s.tensor_logit_(a, None).unwrap();
+        assert_eq!(s.tensor_shape(a).unwrap(), vec![3]);
+        let b = s.tensor_variable(vec![0.1, 0.5, 0.9], vec![3], false).unwrap();
+        s.tensor_logit_(b, Some(0.01)).unwrap();
         assert_eq!(s.tensor_shape(b).unwrap(), vec![3]);
     }
 }
