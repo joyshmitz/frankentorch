@@ -6332,6 +6332,33 @@ impl FrankenTorchSession {
         }
     }
 
+    /// In-place hypot: target = sqrt(target^2 + other^2).
+    pub fn tensor_hypot_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&x, &y)| x.hypot(y))
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("hypot_", target, None);
+        Ok(())
+    }
+
     /// Convert from degrees to radians.
     ///
     /// Equivalent to `torch.deg2rad(input)`. Element-wise multiply by
@@ -7386,6 +7413,33 @@ impl FrankenTorchSession {
         rhs: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_atan2(lhs, rhs)
+    }
+
+    /// In-place atan2: target = atan2(target, other).
+    pub fn tensor_atan2_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&y, &x)| y.atan2(x))
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("atan2_", target, None);
+        Ok(())
     }
 
     /// Element-wise angle (in radians) for real tensors.
@@ -19627,6 +19681,60 @@ impl FrankenTorchSession {
             format!("logaddexp2 a={} b={} out={}", a.0, b.0, out.0),
         );
         Ok(out)
+    }
+
+    /// In-place logaddexp: target = log(exp(target) + exp(other)).
+    pub fn tensor_logaddexp_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| Self::stable_logaddexp_value(a, b))
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("logaddexp_", target, None);
+        Ok(())
+    }
+
+    /// In-place logaddexp2: target = log2(2^target + 2^other).
+    pub fn tensor_logaddexp2_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let target_vals = self.tensor_values(target)?;
+        let other_vals = self.tensor_values(other)?;
+        if target_vals.len() != other_vals.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: self.tensor_shape(target)?,
+                    rhs: self.tensor_shape(other)?,
+                },
+            )));
+        }
+        let result: Vec<f64> = target_vals
+            .iter()
+            .zip(other_vals.iter())
+            .map(|(&a, &b)| Self::stable_logaddexp2_value(a, b))
+            .collect();
+        self.update_tensor_values_for_float(target, result, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("logaddexp2_", target, None);
+        Ok(())
     }
 
     fn stable_logaddexp_value(a: f64, b: f64) -> f64 {
@@ -54147,6 +54255,38 @@ mod tests {
         s.tensor_lcm_(c, d).unwrap();
         let vals2 = s.tensor_values(c).unwrap();
         assert_eq!(vals2, vec![12.0, 24.0, 15.0]);
+    }
+
+    #[test]
+    fn test_tensor_hypot_atan2_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![3.0, 5.0, 8.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![4.0, 12.0, 15.0], vec![3], false).unwrap();
+        s.tensor_hypot_(a, b).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        assert_eq!(vals, vec![5.0, 13.0, 17.0]);
+        let y = s.tensor_variable(vec![1.0, -1.0, 0.0], vec![3], false).unwrap();
+        let x = s.tensor_variable(vec![1.0, 1.0, -1.0], vec![3], false).unwrap();
+        s.tensor_atan2_(y, x).unwrap();
+        let vals2 = s.tensor_values(y).unwrap();
+        assert!((vals2[0] - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+        assert!((vals2[1] + std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+        assert!((vals2[2] - std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_tensor_logaddexp_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        s.tensor_logaddexp_(a, b).unwrap();
+        let vals = s.tensor_values(a).unwrap();
+        assert!((vals[0] - (1.0 + (2.0_f64).ln())).abs() < 1e-10);
+        let c = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let d = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        s.tensor_logaddexp2_(c, d).unwrap();
+        let vals2 = s.tensor_values(c).unwrap();
+        assert!(vals2[0] > 1.0);
     }
 
     #[test]
