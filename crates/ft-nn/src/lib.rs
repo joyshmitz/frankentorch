@@ -5526,6 +5526,80 @@ impl Module for InstanceNorm2d {
     }
 }
 
+/// Instance normalization for 3D volumetric inputs.
+///
+/// Normalizes each channel of each sample independently over depth/height/width,
+/// equivalent to `GroupNorm` with `num_groups = num_channels`.
+///
+/// Input shape: `[N, C, D, H, W]` or unbatched `[C, D, H, W]` where `C` must
+/// equal `num_features`.
+pub struct InstanceNorm3d {
+    inner: GroupNorm,
+    num_features: usize,
+}
+
+impl InstanceNorm3d {
+    /// Create a new InstanceNorm3d module.
+    ///
+    /// * `num_features` - number of channels (C)
+    /// * `eps` - value added to variance for numerical stability (typically 1e-5)
+    /// * `affine` - if true, include learnable weight and bias parameters
+    pub fn new(
+        session: &mut FrankenTorchSession,
+        num_features: usize,
+        eps: f64,
+        affine: bool,
+    ) -> Result<Self, AutogradError> {
+        let inner = GroupNorm::new(session, num_features, num_features, eps, affine)?;
+        Ok(Self {
+            inner,
+            num_features,
+        })
+    }
+}
+
+impl Module for InstanceNorm3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = session.tensor_shape(input)?;
+
+        match input_shape.as_slice() {
+            [c, d, h, w] => {
+                if !matches!(c.cmp(&self.num_features), std::cmp::Ordering::Equal) {
+                    return Err(incompatible_error(
+                        "input channel dimension does not match num_features",
+                    ));
+                }
+                let batched = session.tensor_reshape(input, vec![1, *c, *d, *h, *w])?;
+                let normalized = self.inner.forward(session, batched)?;
+                session.tensor_reshape(normalized, input_shape)
+            }
+            [_n, c, _d, _h, _w] => {
+                if !matches!(c.cmp(&self.num_features), std::cmp::Ordering::Equal) {
+                    return Err(incompatible_error(
+                        "input channel dimension does not match num_features",
+                    ));
+                }
+                self.inner.forward(session, input)
+            }
+            _ => Err(incompatible_error(
+                "InstanceNorm3d expects 4D or 5D input ([C, D, H, W] or [N, C, D, H, W])",
+            )),
+        }
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        self.inner.parameters()
+    }
+
+    fn named_parameters_own(&self) -> Vec<(&'static str, TensorNodeId)> {
+        self.inner.named_parameters_own()
+    }
+}
+
 /// 1D max pooling module.
 ///
 /// Input: `[N, C, L]`. Output: `[N, C, L_out]` where `L_out = (L - kernel_size) / stride + 1`.
@@ -20494,6 +20568,116 @@ mod tests {
             .tensor_variable(
                 vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
                 vec![1, 2, 2, 2],
+                true,
+            )
+            .expect("variable");
+        let out = inn.forward(&mut session, x).expect("forward");
+        let loss = session.tensor_sum(out).expect("sum");
+        let report = session.tensor_backward(loss).expect("backward");
+
+        let x_grad = session.tensor_gradient(&report, x);
+        assert!(x_grad.is_some(), "input should have gradient");
+    }
+
+    // ---- InstanceNorm3d tests ----
+
+    #[test]
+    fn instancenorm3d_output_shape_batched() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let inn = InstanceNorm3d::new(&mut session, 3, 1e-5, true).expect("in3d");
+
+        let x = session
+            .tensor_variable(vec![1.0; 2 * 3 * 2 * 3 * 4], vec![2, 3, 2, 3, 4], true)
+            .expect("variable");
+        let out = inn.forward(&mut session, x).expect("forward");
+
+        let (_, meta) = session.tensor_values_meta(out).expect("values_meta");
+        assert_eq!(meta.shape(), &[2, 3, 2, 3, 4]);
+    }
+
+    #[test]
+    fn instancenorm3d_output_shape_unbatched() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let inn = InstanceNorm3d::new(&mut session, 3, 1e-5, false).expect("in3d");
+
+        let x = session
+            .tensor_variable(vec![1.0; 3 * 2 * 3 * 4], vec![3, 2, 3, 4], false)
+            .expect("variable");
+        let out = inn.forward(&mut session, x).expect("forward");
+
+        let (_, meta) = session.tensor_values_meta(out).expect("values_meta");
+        assert_eq!(meta.shape(), &[3, 2, 3, 4]);
+    }
+
+    #[test]
+    fn instancenorm3d_normalizes_per_channel_volume() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let inn = InstanceNorm3d::new(&mut session, 2, 1e-5, false).expect("in3d");
+
+        #[rustfmt::skip]
+        let data = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
+            10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0,
+        ];
+        let x = session
+            .tensor_variable(data, vec![1, 2, 2, 2, 2], true)
+            .expect("variable");
+        let out = inn.forward(&mut session, x).expect("forward");
+
+        let (vals, _) = session.tensor_values_meta(out).expect("values_meta");
+        for (channel, chunk) in vals.chunks(8).enumerate() {
+            let mean = chunk.iter().sum::<f64>() / 8.0;
+            assert!(
+                mean.abs() < 1e-6,
+                "channel {channel} mean should be ~0, got {mean}"
+            );
+        }
+    }
+
+    #[test]
+    fn instancenorm3d_affine_has_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let inn = InstanceNorm3d::new(&mut session, 4, 1e-5, true).expect("in3d");
+        assert_eq!(inn.parameters().len(), 2);
+        assert_eq!(inn.named_parameters_own().len(), 2);
+    }
+
+    #[test]
+    fn instancenorm3d_no_affine_has_no_parameters() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let inn = InstanceNorm3d::new(&mut session, 4, 1e-5, false).expect("in3d");
+        assert_eq!(inn.parameters().len(), 0);
+        assert!(inn.named_parameters_own().is_empty());
+    }
+
+    #[test]
+    fn instancenorm3d_rejects_wrong_rank_and_channels() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let inn = InstanceNorm3d::new(&mut session, 3, 1e-5, false).expect("in3d");
+
+        let wrong_rank = session
+            .tensor_variable(vec![1.0; 6], vec![1, 3, 2], false)
+            .expect("variable");
+        assert!(inn.forward(&mut session, wrong_rank).is_err());
+
+        let wrong_channels = session
+            .tensor_variable(vec![1.0; 2 * 2 * 2 * 2 * 2], vec![2, 2, 2, 2, 2], false)
+            .expect("variable");
+        assert!(inn.forward(&mut session, wrong_channels).is_err());
+    }
+
+    #[test]
+    fn instancenorm3d_backward_produces_gradients() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let inn = InstanceNorm3d::new(&mut session, 2, 1e-5, true).expect("in3d");
+
+        let x = session
+            .tensor_variable(
+                vec![
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0,
+                    16.0,
+                ],
+                vec![1, 2, 2, 2, 2],
                 true,
             )
             .expect("variable");
