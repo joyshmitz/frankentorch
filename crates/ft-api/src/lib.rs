@@ -13299,6 +13299,13 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("log10_", target, None, f64::log10)
     }
 
+    /// In-place reciprocal square root: 1/sqrt(x) for each element.
+    ///
+    /// Equivalent to `tensor.rsqrt_()` in PyTorch.
+    pub fn tensor_rsqrt_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("rsqrt_", target, None, |x| 1.0 / x.sqrt())
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53229,5 +53236,13 @@ mod tests {
         let y = s.tensor_variable(vec![1.0, 10.0, 100.0], vec![3], false).unwrap();
         s.tensor_log10_(y).unwrap();
         assert_eq!(s.tensor_shape(y).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_rsqrt_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 4.0, 9.0], vec![3], false).unwrap();
+        s.tensor_rsqrt_(x).unwrap();
+        assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
     }
 }
