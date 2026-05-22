@@ -2829,6 +2829,15 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Alias for tensor_matmul. Equivalent to torch.mm (matrix multiplication).
+    pub fn tensor_mm(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matmul(lhs, rhs)
+    }
+
     pub fn tensor_dot(
         &mut self,
         lhs: TensorNodeId,
@@ -2886,6 +2895,15 @@ impl FrankenTorchSession {
         let (out, event) = self.tensor_tape.outer(lhs, rhs, self.mode())?;
         self.record_tensor_operation(&event);
         Ok(out)
+    }
+
+    /// Alias for tensor_outer. Equivalent to torch.ger (generalized outer product).
+    pub fn tensor_ger(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_outer(lhs, rhs)
     }
 
     pub fn tensor_bmm(
