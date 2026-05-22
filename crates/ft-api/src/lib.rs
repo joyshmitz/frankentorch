@@ -14136,6 +14136,26 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place randint: fill with random integers in [low, high).
+    pub fn tensor_randint_(&mut self, target: TensorNodeId, low: i64, high: i64) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        if low >= high {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "randint_: low must be less than high",
+                },
+            )));
+        }
+        let numel = self.tensor_numel(target)?;
+        let range = (high - low) as f64;
+        let values: Vec<f64> = (0..numel)
+            .map(|_| low as f64 + (self.rng.next_f64() * range).floor())
+            .collect();
+        self.update_tensor_values_for_float(target, values, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("randint_", target, Some(format!("low={low} high={high}")));
+        Ok(())
+    }
+
     /// In-place fill: target = fill_value.
     pub fn tensor_fill_(
         &mut self,
