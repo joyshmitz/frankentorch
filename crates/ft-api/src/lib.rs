@@ -5982,6 +5982,115 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Margin ranking loss for ranking tasks.
+    ///
+    /// Equivalent to `torch.nn.functional.margin_ranking_loss`.
+    /// Loss = max(0, -y * (x1 - x2) + margin)
+    /// where y is +1 if x1 should be ranked higher, -1 otherwise.
+    pub fn tensor_margin_ranking_loss(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(input1, input2)?;
+        let target_diff = self.tensor_mul(target, diff)?;
+        let neg_target_diff = self.tensor_neg(target_diff)?;
+        let shape = self.tensor_shape(neg_target_diff)?;
+        let margin_t = self.full(shape.clone(), margin, false)?;
+        let with_margin = self.tensor_add(neg_target_diff, margin_t)?;
+        let zeros = self.full(shape, 0.0, false)?;
+        let loss = self.tensor_maximum(zeros, with_margin)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "margin_ranking_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Cosine embedding loss for similarity learning.
+    ///
+    /// Equivalent to `torch.nn.functional.cosine_embedding_loss`.
+    /// For target=1: loss = 1 - cos(x1, x2)
+    /// For target=-1: loss = max(0, cos(x1, x2) - margin)
+    pub fn tensor_cosine_embedding_loss(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // Compute cosine similarity (assuming last dimension)
+        let shape1 = self.tensor_shape(input1)?;
+        let dim = shape1.len() - 1;
+        let cos_sim = self.tensor_cosine_similarity(input1, input2, dim, 1e-8)?;
+        let shape = self.tensor_shape(cos_sim)?;
+        let ones = self.full(shape.clone(), 1.0, false)?;
+        let pos_loss = self.tensor_sub(ones, cos_sim)?;
+        let margin_t = self.full(shape.clone(), margin, false)?;
+        let neg_margin = self.tensor_sub(cos_sim, margin_t)?;
+        let zeros = self.full(shape.clone(), 0.0, false)?;
+        let neg_loss = self.tensor_maximum(zeros, neg_margin)?;
+        let mask_pos = self.tensor_eq(target, ones)?;
+        let loss = self.tensor_where(mask_pos, pos_loss, neg_loss)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "cosine_embedding_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Triplet margin loss for metric learning.
+    ///
+    /// Equivalent to `torch.nn.functional.triplet_margin_loss`.
+    /// Loss = max(0, d(anchor, positive) - d(anchor, negative) + margin)
+    pub fn tensor_triplet_margin_loss(
+        &mut self,
+        anchor: TensorNodeId,
+        positive: TensorNodeId,
+        negative: TensorNodeId,
+        margin: f64,
+        p: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        // Compute distances
+        let diff_pos = self.tensor_sub(anchor, positive)?;
+        let diff_neg = self.tensor_sub(anchor, negative)?;
+        let shape = self.tensor_shape(diff_pos)?;
+        let dim = shape.len() - 1;
+        let d_pos = self.tensor_norm_dim(diff_pos, p, dim)?;
+        let d_neg = self.tensor_norm_dim(diff_neg, p, dim)?;
+        let diff = self.tensor_sub(d_pos, d_neg)?;
+        let margin_shape = self.tensor_shape(diff)?;
+        let margin_t = self.full(margin_shape.clone(), margin, false)?;
+        let with_margin = self.tensor_add(diff, margin_t)?;
+        let zeros = self.full(margin_shape, 0.0, false)?;
+        let loss = self.tensor_maximum(zeros, with_margin)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "triplet_margin_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
     pub fn tensor_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.trace(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
