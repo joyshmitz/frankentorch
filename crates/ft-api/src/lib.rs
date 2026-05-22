@@ -18663,6 +18663,48 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
+    /// Inverse of standard Gaussian CDF (probit function).
+    ///
+    /// Equivalent to `torch.special.ndtri(input)`.
+    /// ndtri(p) = sqrt(2) * erfinv(2*p - 1)
+    /// Tracked under frankentorch-qzwe.
+    pub fn tensor_ndtri(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let sqrt2 = std::f64::consts::SQRT_2;
+        let sqrt_2pi = (2.0 * std::f64::consts::PI).sqrt();
+        let out = self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (vals, shape) = inputs[0];
+                let values: Vec<f64> = vals.iter().map(|&p| sqrt2 * erfinv_approx(2.0 * p - 1.0)).collect();
+                ctx.save_for_backward(values.clone(), shape.to_vec());
+                Ok((values, shape.to_vec()))
+            },
+            move |ctx, grad_outputs| {
+                let grad_out = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let y_vals = &saved[0];
+                if grad_out.len() != y_vals.len() {
+                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "ndtri backward: incoming gradient length mismatch",
+                        },
+                    )));
+                }
+                let grad_in: Vec<f64> = y_vals
+                    .iter()
+                    .zip(grad_out.iter())
+                    .map(|(&y, &go)| go * sqrt_2pi * (0.5 * y * y).exp())
+                    .collect();
+                Ok(vec![Some(grad_in)])
+            },
+        )?;
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("ndtri in={} out={}", input.0, out.0),
+        );
+        Ok(out)
+    }
+
     /// Multivariate log-gamma function.
     ///
     /// Equivalent to `torch.special.multigammaln(input, p)`.
@@ -51175,5 +51217,17 @@ mod tests {
         assert!((vals[1] - (-0.172847)).abs() < 1e-5); // log(0.8413...)
         assert!((vals[2] - (-1.841022)).abs() < 1e-5); // log(0.1586...)
         assert!((vals[3] - (-3.783184)).abs() < 1e-5); // log(0.0227...)
+    }
+
+    #[test]
+    fn test_ndtri_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.5, 0.8413447, 0.1586553, 0.9772499], vec![4], false).unwrap();
+        let result = s.tensor_ndtri(input).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!(vals[0].abs() < 1e-5); // ndtri(0.5) = 0
+        assert!((vals[1] - 1.0).abs() < 1e-4); // ndtri(0.8413...) ≈ 1
+        assert!((vals[2] + 1.0).abs() < 1e-4); // ndtri(0.1586...) ≈ -1
+        assert!((vals[3] - 2.0).abs() < 1e-4); // ndtri(0.9772...) ≈ 2
     }
 }
