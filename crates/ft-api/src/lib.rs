@@ -14395,6 +14395,14 @@ impl FrankenTorchSession {
         Ok(false)
     }
 
+    pub fn tensor_is_sparse(&self, _node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(false)
+    }
+
+    pub fn tensor_is_quantized(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        Ok(self.tensor_dtype(node)?.is_quantized())
+    }
+
     /// Alias for `tensor_dim`. Equivalent to `tensor.ndim` in PyTorch.
     pub fn tensor_ndim(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
         self.tensor_dim(node)
@@ -52687,5 +52695,13 @@ mod tests {
         assert!(s.tensor_is_cpu(x).unwrap());
         assert!(!s.tensor_is_cuda(x).unwrap());
         assert!(!s.tensor_is_pinned(x).unwrap());
+    }
+
+    #[test]
+    fn test_is_sparse_quantized() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        assert!(!s.tensor_is_sparse(x).unwrap());
+        assert!(!s.tensor_is_quantized(x).unwrap());
     }
 }
