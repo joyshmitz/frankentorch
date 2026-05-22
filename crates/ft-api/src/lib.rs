@@ -21781,6 +21781,28 @@ impl FrankenTorchSession {
         self.tensor_matrix_norm(input, ord)
     }
 
+    /// Frobenius norm of a matrix.
+    ///
+    /// Equivalent to `torch.linalg.norm(input, 'fro')`.
+    /// The Frobenius norm is sqrt(sum of squared elements).
+    pub fn tensor_frobenius_norm(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_norm(input, "fro")
+    }
+
+    /// Nuclear norm (trace norm) of a matrix.
+    ///
+    /// Equivalent to `torch.linalg.norm(input, 'nuc')`.
+    /// The nuclear norm is the sum of singular values.
+    pub fn tensor_nuclear_norm(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_norm(input, "nuc")
+    }
+
     /// Scatter values into positions indicated by a mask.
     ///
     /// Equivalent to `torch.Tensor.masked_scatter_(mask, source)`.
