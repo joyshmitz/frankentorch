@@ -14669,6 +14669,11 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("digamma_", target, None, digamma_approx)
     }
 
+    /// In-place psi: alias for digamma_.
+    pub fn tensor_psi_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_digamma_(target)
+    }
+
     /// In-place lgamma: ln|Gamma(x)|.
     pub fn tensor_lgamma_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
         self.apply_tensor_unary_in_place("lgamma_", target, None, libm::lgamma)
