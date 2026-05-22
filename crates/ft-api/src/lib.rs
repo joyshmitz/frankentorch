@@ -8947,6 +8947,87 @@ impl FrankenTorchSession {
         self.tensor_variable(result, shape, false)
     }
 
+    /// In-place isnan: target = isnan(target) ? 1.0 : 0.0.
+    pub fn tensor_isnan_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_isnan(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("isnan_", target, None);
+        Ok(())
+    }
+
+    /// In-place isinf: target = isinf(target) ? 1.0 : 0.0.
+    pub fn tensor_isinf_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_isinf(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("isinf_", target, None);
+        Ok(())
+    }
+
+    /// In-place isfinite: target = isfinite(target) ? 1.0 : 0.0.
+    pub fn tensor_isfinite_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_isfinite(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("isfinite_", target, None);
+        Ok(())
+    }
+
+    /// In-place isposinf: target = isposinf(target) ? 1.0 : 0.0.
+    pub fn tensor_isposinf_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_isposinf(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("isposinf_", target, None);
+        Ok(())
+    }
+
+    /// In-place isneginf: target = isneginf(target) ? 1.0 : 0.0.
+    pub fn tensor_isneginf_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_isneginf(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("isneginf_", target, None);
+        Ok(())
+    }
+
+    /// In-place isreal: target = isreal(target) ? 1.0 : 0.0.
+    pub fn tensor_isreal_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_isreal(target)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("isreal_", target, None);
+        Ok(())
+    }
+
+    /// In-place isclose: target = isclose(target, other) ? 1.0 : 0.0.
+    pub fn tensor_isclose_(
+        &mut self,
+        target: TensorNodeId,
+        other: TensorNodeId,
+        rtol: f64,
+        atol: f64,
+        equal_nan: bool,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_isclose(target, other, rtol, atol, equal_nan)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation(
+            "isclose_",
+            target,
+            Some(format!("rtol={rtol} atol={atol} equal_nan={equal_nan}")),
+        );
+        Ok(())
+    }
+
     pub fn tensor_sum(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.sum(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
