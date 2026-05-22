@@ -13306,6 +13306,20 @@ impl FrankenTorchSession {
         self.apply_tensor_unary_in_place("rsqrt_", target, None, |x| 1.0 / x.sqrt())
     }
 
+    /// In-place exp(x) - 1 for numerical stability near zero.
+    ///
+    /// Equivalent to `tensor.expm1_()` in PyTorch.
+    pub fn tensor_expm1_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("expm1_", target, None, f64::exp_m1)
+    }
+
+    /// In-place ln(1 + x) for numerical stability near zero.
+    ///
+    /// Equivalent to `tensor.log1p_()` in PyTorch.
+    pub fn tensor_log1p_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
+        self.apply_tensor_unary_in_place("log1p_", target, None, f64::ln_1p)
+    }
+
     pub fn tensor_clamp_(
         &mut self,
         target: TensorNodeId,
@@ -53244,5 +53258,16 @@ mod tests {
         let x = s.tensor_variable(vec![1.0, 4.0, 9.0], vec![3], false).unwrap();
         s.tensor_rsqrt_(x).unwrap();
         assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_expm1_log1p_() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 0.1, 1.0], vec![3], false).unwrap();
+        s.tensor_expm1_(x).unwrap();
+        assert_eq!(s.tensor_shape(x).unwrap(), vec![3]);
+        let y = s.tensor_variable(vec![0.0, 0.1, 1.0], vec![3], false).unwrap();
+        s.tensor_log1p_(y).unwrap();
+        assert_eq!(s.tensor_shape(y).unwrap(), vec![3]);
     }
 }
