@@ -19673,6 +19673,44 @@ impl FrankenTorchSession {
         self.tensor_reshape(permuted, vec![batch, out_channels, oh, ow])
     }
 
+    /// Rearrange channels by splitting into groups and interleaving.
+    ///
+    /// Equivalent to `torch.nn.functional.channel_shuffle(input, groups)`.
+    /// Input shape: `(N, C, H, W)` where C must be divisible by groups.
+    /// Tracked under frankentorch-gwqo.
+    pub fn tensor_channel_shuffle(
+        &mut self,
+        input: TensorNodeId,
+        groups: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "channel_shuffle: input must be a 4-D tensor (N, C, H, W)",
+                },
+            )));
+        }
+
+        let (batch, channels, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        if groups == 0 || channels % groups != 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "channel_shuffle: channels must be divisible by groups",
+                },
+            )));
+        }
+
+        let channels_per_group = channels / groups;
+
+        // reshape to (N, groups, channels_per_group, H, W)
+        let reshaped = self.tensor_reshape(input, vec![batch, groups, channels_per_group, h, w])?;
+        // transpose to (N, channels_per_group, groups, H, W)
+        let transposed = self.tensor_permute(reshaped, vec![0, 2, 1, 3, 4])?;
+        // reshape back to (N, C, H, W)
+        self.tensor_reshape(transposed, vec![batch, channels, h, w])
+    }
+
     // ── F.interpolate ────────────────────────────────────────────────────
 
     /// Interpolate (resize) a tensor using the specified mode.
@@ -51586,5 +51624,19 @@ mod tests {
         assert!((vals[1] + 0.2).abs() < 1e-10); // -1 * 0.2 (midpoint)
         assert!((vals[2] - 2.0).abs() < 1e-10);
         assert!((vals[3] + 0.4).abs() < 1e-10); // -2 * 0.2
+    }
+
+    #[test]
+    fn test_channel_shuffle_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // (1, 4, 1, 1) with channels [1, 2, 3, 4], groups=2
+        // After shuffle: [1, 3, 2, 4]
+        let input = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 4, 1, 1], false).unwrap();
+        let result = s.tensor_channel_shuffle(input, 2).unwrap();
+        let vals = s.tensor_values(result).unwrap();
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 3.0).abs() < 1e-10);
+        assert!((vals[2] - 2.0).abs() < 1e-10);
+        assert!((vals[3] - 4.0).abs() < 1e-10);
     }
 }
