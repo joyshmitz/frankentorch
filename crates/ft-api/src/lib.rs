@@ -7411,6 +7411,22 @@ impl FrankenTorchSession {
         self.tensor_clamp(input, f64::NEG_INFINITY, max_val)
     }
 
+    pub fn tensor_clip_min(
+        &mut self,
+        input: TensorNodeId,
+        min_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp_min(input, min_val)
+    }
+
+    pub fn tensor_clip_max(
+        &mut self,
+        input: TensorNodeId,
+        max_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp_max(input, max_val)
+    }
+
     /// `torch.clamp(input, min=min_tensor, max=max_tensor)` parity:
     /// per-element clamp with tensor bounds.
     ///
@@ -11573,6 +11589,7 @@ impl FrankenTorchSession {
     /// Hermitian transpose; alias for `tensor_adjoint`.
     ///
     /// Equivalent to accessing `.H` on a tensor in PyTorch.
+    #[allow(non_snake_case)]
     pub fn tensor_H(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_adjoint(input)
     }
@@ -12377,9 +12394,9 @@ impl FrankenTorchSession {
         }
 
         let mut result = self.tensor_values(input)?;
-        for i in 0..diag_len {
+        for (i, &value) in src_vals.iter().enumerate() {
             let idx = (row_start + i) * n + col_start + i;
-            result[idx] = src_vals[i];
+            result[idx] = value;
         }
 
         self.tensor_variable(result, shape, false)
@@ -12565,7 +12582,11 @@ impl FrankenTorchSession {
         let end = end.map(|e| if e < 0 { dim_size + e } else { e }).unwrap_or(dim_size).max(0).min(dim_size) as usize;
         let step = step as usize;
 
-        let slice_len = if end > start { (end - start + step - 1) / step } else { 0 };
+        let slice_len = if end > start {
+            (end - start).div_ceil(step)
+        } else {
+            0
+        };
 
         let src_shape = self.tensor_shape(src)?;
         let mut expected_shape = shape.clone();
@@ -19347,14 +19368,10 @@ impl FrankenTorchSession {
             move |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| {
-                    let z = -x * sqrt2_inv;
-                    if z < 0.0 {
-                        (0.5 * libm::erfc(z)).ln()
-                    } else {
-                        (0.5 * libm::erfc(z)).ln()
-                    }
-                }).collect();
+                let values: Vec<f64> = vals
+                    .iter()
+                    .map(|&x| (0.5 * libm::erfc(-x * sqrt2_inv)).ln())
+                    .collect();
                 Ok((values, shape.to_vec()))
             },
             move |ctx, grad_outputs| {
@@ -51985,7 +52002,7 @@ mod tests {
         let input = s.tensor_variable(vec![0.0, 1.0, -1.0, -2.0], vec![4], false).unwrap();
         let result = s.tensor_log_ndtr(input).unwrap();
         let vals = s.tensor_values(result).unwrap();
-        assert!((vals[0] - (-0.693147)).abs() < 1e-5); // log(0.5)
+        assert!((vals[0] - (-std::f64::consts::LN_2)).abs() < 1e-5); // log(0.5)
         assert!((vals[1] - (-0.172847)).abs() < 1e-5); // log(0.8413...)
         assert!((vals[2] - (-1.841022)).abs() < 1e-5); // log(0.1586...)
         assert!((vals[3] - (-3.783184)).abs() < 1e-5); // log(0.0227...)
@@ -52225,7 +52242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_H_3d_batch() {
+    fn test_h_3d_batch() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         // Batch of 2 matrices, each 2x3
         let x = s.tensor_variable(vec![1.0; 12], vec![2, 2, 3], false).unwrap();
@@ -52524,5 +52541,17 @@ mod tests {
         let arctan2 = s.tensor_arctan2(a, b).unwrap();
         let atan2 = s.tensor_atan2(a, b).unwrap();
         assert_eq!(s.tensor_values(arctan2).unwrap(), s.tensor_values(atan2).unwrap());
+    }
+
+    #[test]
+    fn test_clip_min_max_aliases() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![-1.0, 0.5, 2.0], vec![3], false).unwrap();
+        let clip_min = s.tensor_clip_min(x, 0.0).unwrap();
+        let clamp_min = s.tensor_clamp_min(x, 0.0).unwrap();
+        assert_eq!(s.tensor_values(clip_min).unwrap(), s.tensor_values(clamp_min).unwrap());
+        let clip_max = s.tensor_clip_max(x, 1.0).unwrap();
+        let clamp_max = s.tensor_clamp_max(x, 1.0).unwrap();
+        assert_eq!(s.tensor_values(clip_max).unwrap(), s.tensor_values(clamp_max).unwrap());
     }
 }
