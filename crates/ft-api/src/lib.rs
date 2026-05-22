@@ -24488,6 +24488,14 @@ impl FrankenTorchSession {
         self.tensor_gammaln(input)
     }
 
+    /// Alias for gammaln matching torch.special.gammaln.
+    pub fn tensor_special_gammaln(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gammaln(input)
+    }
+
     pub fn tensor_gammaln(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let out = self.tensor_apply_function(
             &[input],
