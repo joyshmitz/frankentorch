@@ -6038,6 +6038,109 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Gaussian negative log-likelihood loss.
+    ///
+    /// Equivalent to `torch.nn.functional.gaussian_nll_loss`.
+    /// Loss = 0.5 * (log(var) + (target - input)^2 / var + log(2π))
+    ///
+    /// - `input`: mean predictions
+    /// - `target`: observed values
+    /// - `var`: variance (must be positive)
+    /// - `full`: if true, include the constant log(2π) term
+    pub fn tensor_gaussian_nll_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        var: TensorNodeId,
+        reduction: &str,
+        full: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(target, input)?;
+        let diff_sq = self.tensor_mul(diff.clone(), diff)?;
+        let scaled = self.tensor_div(diff_sq, var)?;
+        let log_var = self.tensor_log(var)?;
+        let term = self.tensor_add(log_var, scaled)?;
+        let loss = if full {
+            let shape = self.tensor_shape(term)?;
+            let log_2pi = self.full(shape, (2.0 * std::f64::consts::PI).ln(), false)?;
+            let with_const = self.tensor_add(term, log_2pi)?;
+            let half = self.full(self.tensor_shape(with_const)?, 0.5, false)?;
+            self.tensor_mul(half, with_const)?
+        } else {
+            let half = self.full(self.tensor_shape(term)?, 0.5, false)?;
+            self.tensor_mul(half, term)?
+        };
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "gaussian_nll_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Poisson negative log-likelihood loss.
+    ///
+    /// Equivalent to `torch.nn.functional.poisson_nll_loss`.
+    /// Loss = exp(input) - target * input     if log_input=true
+    /// Loss = input - target * log(input)     if log_input=false
+    ///
+    /// - `input`: predicted rate (or log-rate if log_input=true)
+    /// - `target`: observed counts (non-negative integers)
+    /// - `log_input`: if true, input is log(rate)
+    /// - `full`: if true, add Stirling approx of log(target!)
+    /// - `eps`: small value for numerical stability when log_input=false
+    pub fn tensor_poisson_nll_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        log_input: bool,
+        full: bool,
+        eps: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let loss = if log_input {
+            let exp_input = self.tensor_exp(input)?;
+            let target_times_input = self.tensor_mul(target, input)?;
+            self.tensor_sub(exp_input, target_times_input)?
+        } else {
+            let shape = self.tensor_shape(input)?;
+            let eps_t = self.full(shape, eps, false)?;
+            let input_plus_eps = self.tensor_add(input, eps_t)?;
+            let log_input_eps = self.tensor_log(input_plus_eps)?;
+            let target_log = self.tensor_mul(target, log_input_eps)?;
+            self.tensor_sub(input, target_log)?
+        };
+        let loss = if full {
+            let shape = self.tensor_shape(target)?;
+            let ones = self.full(shape.clone(), 1.0, false)?;
+            let half = self.full(shape.clone(), 0.5, false)?;
+            let log_2pi = self.full(shape, (2.0 * std::f64::consts::PI).ln(), false)?;
+            let target_plus_1 = self.tensor_add(target, ones)?;
+            let log_target_p1 = self.tensor_log(target_plus_1)?;
+            let target_log_t = self.tensor_mul(target, log_target_p1)?;
+            let stirling_1 = self.tensor_sub(target_log_t, target)?;
+            let half_log_2pi_t = self.tensor_mul(half, log_2pi)?;
+            let stirling = self.tensor_add(stirling_1, half_log_2pi_t)?;
+            self.tensor_add(loss, stirling)?
+        } else {
+            loss
+        };
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "poisson_nll_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
     /// Margin ranking loss for ranking tasks.
     ///
     /// Equivalent to `torch.nn.functional.margin_ranking_loss`.
