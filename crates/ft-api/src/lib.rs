@@ -14541,6 +14541,74 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// In-place addmm: beta * target + alpha * (mat1 @ mat2).
+    pub fn tensor_addmm_(
+        &mut self,
+        target: TensorNodeId,
+        mat1: TensorNodeId,
+        mat2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_addmm(target, mat1, mat2, beta, alpha)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("addmm_", target, Some(format!("beta={beta} alpha={alpha}")));
+        Ok(())
+    }
+
+    /// In-place baddbmm: beta * target + alpha * batch_matmul(batch1, batch2).
+    pub fn tensor_baddbmm_(
+        &mut self,
+        target: TensorNodeId,
+        batch1: TensorNodeId,
+        batch2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_baddbmm(target, batch1, batch2, beta, alpha)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("baddbmm_", target, Some(format!("beta={beta} alpha={alpha}")));
+        Ok(())
+    }
+
+    /// In-place addbmm: beta * target + alpha * sum(batch_matmul(batch1, batch2)).
+    pub fn tensor_addbmm_(
+        &mut self,
+        target: TensorNodeId,
+        batch1: TensorNodeId,
+        batch2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_addbmm(target, batch1, batch2, beta, alpha)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("addbmm_", target, Some(format!("beta={beta} alpha={alpha}")));
+        Ok(())
+    }
+
+    /// In-place addr: beta * target + alpha * outer(vec1, vec2).
+    pub fn tensor_addr_(
+        &mut self,
+        target: TensorNodeId,
+        vec1: TensorNodeId,
+        vec2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<(), AutogradError> {
+        self.validate_tensor_in_place_target(target)?;
+        let result = self.tensor_addr(target, vec1, vec2, beta, alpha)?;
+        let result_vals = self.tensor_values(result)?;
+        self.update_tensor_values_for_float(target, result_vals, INPLACE_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation("addr_", target, Some(format!("beta={beta} alpha={alpha}")));
+        Ok(())
+    }
+
     pub fn backward(&mut self, root: NodeId) -> Result<BackwardReport, AutogradError> {
         let options = BackwardOptions::for_mode(self.mode());
         self.backward_with_options(root, options)
@@ -54502,6 +54570,26 @@ mod tests {
         let src = s.tensor_variable(vec![10.0, 20.0, 100.0], vec![3], false).unwrap();
         s.tensor_scatter_add_(x, 0, idx, src).unwrap();
         assert_eq!(s.tensor_values(x).unwrap(), vec![31.0, 2.0, 103.0]);
+    }
+
+    #[test]
+    fn test_addmm_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).unwrap();
+        let mat1 = s.tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false).unwrap();
+        let mat2 = s.tensor_variable(vec![2.0, 0.0, 0.0, 2.0], vec![2, 2], false).unwrap();
+        s.tensor_addmm_(m, mat1, mat2, 1.0, 1.0).unwrap();
+        assert_eq!(s.tensor_values(m).unwrap(), vec![3.0, 2.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn test_addr_inplace() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let m = s.tensor_variable(vec![1.0, 1.0, 1.0, 1.0], vec![2, 2], false).unwrap();
+        let v1 = s.tensor_variable(vec![1.0, 2.0], vec![2], false).unwrap();
+        let v2 = s.tensor_variable(vec![3.0, 4.0], vec![2], false).unwrap();
+        s.tensor_addr_(m, v1, v2, 1.0, 1.0).unwrap();
+        assert_eq!(s.tensor_values(m).unwrap(), vec![4.0, 5.0, 7.0, 9.0]);
     }
 
     #[test]
