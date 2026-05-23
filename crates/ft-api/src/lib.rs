@@ -14930,6 +14930,58 @@ impl FrankenTorchSession {
         self.tensor_multigammaln(input, p)
     }
 
+    /// x * log(y) with 0 * log(y) = 0. Alias for tensor_xlogy.
+    pub fn functional_xlogy(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_xlogy(x, y)
+    }
+
+    /// x * log1p(y) with 0 * log1p(y) = 0. Alias for tensor_xlog1py.
+    pub fn functional_xlog1py(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_xlog1py(x, y)
+    }
+
+    /// Construct complex from real+imag. Alias for tensor_complex.
+    pub fn functional_complex(
+        &mut self,
+        real: TensorNodeId,
+        imag: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_complex(real, imag)
+    }
+
+    /// Complex from polar coords. Alias for tensor_polar.
+    pub fn functional_polar(
+        &mut self,
+        abs: TensorNodeId,
+        angle: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_polar(abs, angle)
+    }
+
+    /// View complex as real. Alias for tensor_view_as_real.
+    pub fn functional_view_as_real(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_view_as_real(input)
+    }
+
+    /// View real as complex. Alias for tensor_view_as_complex.
+    pub fn functional_view_as_complex(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_view_as_complex(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
