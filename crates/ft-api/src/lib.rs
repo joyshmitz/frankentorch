@@ -15555,6 +15555,15 @@ impl FrankenTorchSession {
         self.tensor_special_zeta(s, a)
     }
 
+    /// Hurwitz zeta function. Alias for tensor_zeta.
+    pub fn functional_zeta(
+        &mut self,
+        s: TensorNodeId,
+        a: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_zeta(s, a)
+    }
+
     /// Base-2 exponential. Alias for tensor_special_exp2.
     pub fn functional_special_exp2(
         &mut self,
@@ -17214,6 +17223,28 @@ impl FrankenTorchSession {
         tol: Option<f64>,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_matrix_rank(input, tol)
+    }
+
+    /// Per-tensor quantization. Alias for tensor_quantize_per_tensor.
+    pub fn functional_quantize_per_tensor(
+        &mut self,
+        input: TensorNodeId,
+        scale: f64,
+        zero_point: i64,
+        qmin: i64,
+        qmax: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_quantize_per_tensor(input, scale, zero_point, qmin, qmax)
+    }
+
+    /// Per-tensor dequantization. Alias for tensor_dequantize_per_tensor.
+    pub fn functional_dequantize_per_tensor(
+        &mut self,
+        quantized: TensorNodeId,
+        scale: f64,
+        zero_point: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dequantize_per_tensor(quantized, scale, zero_point)
     }
 
     pub fn tensor_argmax(
