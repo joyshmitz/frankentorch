@@ -1859,6 +1859,174 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Create mel-scale filterbank matrix.
+    ///
+    /// Generates triangular filterbanks for computing mel spectrograms.
+    ///
+    /// Args:
+    /// - n_mels: number of mel filterbanks
+    /// - n_fft: FFT size (filterbank has n_fft/2 + 1 bins)
+    /// - sample_rate: audio sample rate in Hz
+    /// - f_min: minimum frequency in Hz (default 0)
+    /// - f_max: maximum frequency in Hz (default sample_rate/2)
+    ///
+    /// Returns: [n_mels, n_fft/2 + 1] filterbank matrix
+    pub fn mel_filterbank(
+        &mut self,
+        n_mels: usize,
+        n_fft: usize,
+        sample_rate: f64,
+        f_min: f64,
+        f_max: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let f_max = f_max.unwrap_or(sample_rate / 2.0);
+        let n_freqs = n_fft / 2 + 1;
+        let hz_to_mel = |hz: f64| 2595.0 * (1.0 + hz / 700.0).log10();
+        let mel_to_hz = |mel: f64| 700.0 * (10.0_f64.powf(mel / 2595.0) - 1.0);
+        let mel_min = hz_to_mel(f_min);
+        let mel_max = hz_to_mel(f_max);
+        let mel_points: Vec<f64> = (0..=n_mels + 1)
+            .map(|i| mel_to_hz(mel_min + (mel_max - mel_min) * i as f64 / (n_mels + 1) as f64))
+            .collect();
+        let freq_bins: Vec<f64> = (0..n_freqs)
+            .map(|i| i as f64 * sample_rate / n_fft as f64)
+            .collect();
+        let mut filterbank = vec![0.0; n_mels * n_freqs];
+        for m in 0..n_mels {
+            let f_left = mel_points[m];
+            let f_center = mel_points[m + 1];
+            let f_right = mel_points[m + 2];
+            for (k, &freq) in freq_bins.iter().enumerate() {
+                if freq >= f_left && freq <= f_center {
+                    filterbank[m * n_freqs + k] = (freq - f_left) / (f_center - f_left).max(1e-10);
+                } else if freq > f_center && freq <= f_right {
+                    filterbank[m * n_freqs + k] = (f_right - freq) / (f_right - f_center).max(1e-10);
+                }
+            }
+        }
+        self.tensor_variable(filterbank, vec![n_mels, n_freqs], false)
+    }
+
+    /// Compute mel spectrogram from power spectrogram.
+    ///
+    /// Args:
+    /// - spectrogram: [freq_bins, frames] power spectrogram (from STFT magnitude squared)
+    /// - mel_filterbank: [n_mels, freq_bins] mel filterbank matrix
+    ///
+    /// Returns: [n_mels, frames] mel spectrogram
+    pub fn melspectrogram(
+        &mut self,
+        spectrogram: TensorNodeId,
+        mel_filterbank: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let spec_shape = self.tensor_shape(spectrogram)?;
+        let fb_shape = self.tensor_shape(mel_filterbank)?;
+        if spec_shape.len() != 2 || fb_shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args(
+                "melspectrogram: spectrogram and filterbank must be 2D",
+            ));
+        }
+        if spec_shape[0] != fb_shape[1] {
+            return Err(Self::incompatible_tensor_args(
+                "melspectrogram: spectrogram freq bins must match filterbank columns",
+            ));
+        }
+        self.tensor_matmul(mel_filterbank, spectrogram)
+    }
+
+    /// Convert amplitude/power to decibels.
+    ///
+    /// Computes: 10 * log10(x + amin) - ref_db
+    ///
+    /// Args:
+    /// - x: input tensor (amplitude or power values)
+    /// - amin: minimum amplitude to prevent log(0) (default 1e-10)
+    /// - top_db: threshold maximum dynamic range (optional)
+    ///
+    /// Returns: tensor in decibels
+    pub fn amplitude_to_db(
+        &mut self,
+        x: TensorNodeId,
+        amin: f64,
+        top_db: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        let amin_t = self.full(shape.clone(), amin, false)?;
+        let x_clamped = self.tensor_maximum(x, amin_t)?;
+        let log_x = self.tensor_log10(x_clamped)?;
+        let ten = self.full(shape.clone(), 10.0, false)?;
+        let db = self.tensor_mul(ten, log_x)?;
+        if let Some(top) = top_db {
+            let db_vals = self.tensor_values(db)?;
+            let max_val = db_vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let threshold = max_val - top;
+            let thresh_t = self.full(shape, threshold, false)?;
+            self.tensor_maximum(db, thresh_t)
+        } else {
+            Ok(db)
+        }
+    }
+
+    /// Compute Mel-frequency cepstral coefficients (MFCCs).
+    ///
+    /// Args:
+    /// - mel_spec: [n_mels, frames] mel spectrogram (log-scaled recommended)
+    /// - n_mfcc: number of MFCCs to return
+    ///
+    /// Returns: [n_mfcc, frames] MFCC features
+    pub fn mfcc(
+        &mut self,
+        mel_spec: TensorNodeId,
+        n_mfcc: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(mel_spec)?;
+        if shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args("mfcc: mel_spec must be 2D"));
+        }
+        let n_mels = shape[0];
+        let frames = shape[1];
+        if n_mfcc > n_mels {
+            return Err(Self::incompatible_tensor_args("mfcc: n_mfcc must be <= n_mels"));
+        }
+        let mut dct_matrix = vec![0.0; n_mfcc * n_mels];
+        for k in 0..n_mfcc {
+            for n in 0..n_mels {
+                let angle = std::f64::consts::PI * k as f64 * (n as f64 + 0.5) / n_mels as f64;
+                dct_matrix[k * n_mels + n] = angle.cos() * (2.0 / n_mels as f64).sqrt();
+            }
+        }
+        if n_mfcc > 0 {
+            for n in 0..n_mels {
+                dct_matrix[n] *= (1.0 / 2.0_f64).sqrt();
+            }
+        }
+        let dct = self.tensor_variable(dct_matrix, vec![n_mfcc, n_mels], false)?;
+        self.tensor_matmul(dct, mel_spec)
+    }
+
+    /// Compute spectrogram magnitude from complex STFT output.
+    ///
+    /// Args:
+    /// - stft_complex: complex-valued STFT output [freq, frames] (complex64/128)
+    /// - power: exponent for magnitude (1.0 = amplitude, 2.0 = power)
+    ///
+    /// Returns: [freq, frames] magnitude spectrogram
+    pub fn spectrogram_magnitude(
+        &mut self,
+        stft_complex: TensorNodeId,
+        power: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let abs = self.tensor_abs(stft_complex)?;
+        if (power - 1.0).abs() < 1e-10 {
+            Ok(abs)
+        } else if (power - 2.0).abs() < 1e-10 {
+            self.tensor_mul(abs, abs)
+        } else {
+            let power_t = self.full(self.tensor_shape(abs)?, power, false)?;
+            self.tensor_pow_tensor(abs, power_t)
+        }
+    }
+
     pub fn zeros_f32(
         &mut self,
         shape: Vec<usize>,
