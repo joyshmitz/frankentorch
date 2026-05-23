@@ -2228,6 +2228,74 @@ impl FrankenTorchSession {
         self.tensor_variable(values, shape, requires_grad)
     }
 
+    /// Create a tensor filled with triangular-distributed random values.
+    ///
+    /// Samples from Triangular(low, high, mode).
+    pub fn tensor_triangular(
+        &mut self,
+        low: f64,
+        high: f64,
+        mode: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if low >= high {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "triangular: low must be less than high",
+                },
+            )));
+        }
+        if mode < low || mode > high {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "triangular: mode must be between low and high",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let fc = (mode - low) / (high - low);
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                let u = self.rng.next_f64();
+                if u < fc {
+                    low + ((high - low) * (mode - low) * u).sqrt()
+                } else {
+                    high - ((high - low) * (high - mode) * (1.0 - u)).sqrt()
+                }
+            })
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
+    /// Create a tensor filled with Pareto-distributed random values.
+    ///
+    /// Samples from Pareto(scale, alpha) with x_m = scale and shape α.
+    pub fn tensor_pareto(
+        &mut self,
+        scale: f64,
+        alpha: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if scale <= 0.0 || alpha <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pareto: scale and alpha must be positive",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                // Inverse CDF: scale / (1-U)^(1/alpha)
+                let u = self.rng.next_f64();
+                scale / (1.0 - u).powf(1.0 / alpha)
+            })
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
     /// Alias for `randint`. Equivalent to `torch.randint(low, high, shape)`.
     pub fn tensor_randint(
         &mut self,
@@ -16287,6 +16355,29 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_logistic(loc, scale, shape, requires_grad)
+    }
+
+    /// Triangular distribution samples. Alias for tensor_triangular.
+    pub fn functional_triangular(
+        &mut self,
+        low: f64,
+        high: f64,
+        mode: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triangular(low, high, mode, shape, requires_grad)
+    }
+
+    /// Pareto distribution samples. Alias for tensor_pareto.
+    pub fn functional_pareto(
+        &mut self,
+        scale: f64,
+        alpha: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pareto(scale, alpha, shape, requires_grad)
     }
 
     /// Random integers with same shape. Alias for tensor_randint_like.
