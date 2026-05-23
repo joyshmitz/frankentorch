@@ -15059,6 +15059,36 @@ impl FrankenTorchSession {
         self.tensor_ones_like(input, requires_grad)
     }
 
+    /// Filled tensor with same shape. Alias for tensor_full_like.
+    pub fn functional_full_like(
+        &mut self,
+        input: TensorNodeId,
+        fill_value: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_full_like(input, fill_value, requires_grad)
+    }
+
+    /// Empty tensor with same shape. Alias for tensor_empty_like.
+    pub fn functional_empty_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_empty_like(input, requires_grad)
+    }
+
+    /// Range tensor. Alias for tensor_arange.
+    pub fn functional_arange(
+        &mut self,
+        start: f64,
+        end: f64,
+        step: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arange(start, end, step, requires_grad)
+    }
+
     /// Uniform random [0,1) with same shape. Alias for tensor_rand_like.
     pub fn functional_rand_like(
         &mut self,
