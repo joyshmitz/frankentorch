@@ -15154,6 +15154,36 @@ impl FrankenTorchSession {
         self.functional_group_norm(input, input_shape[1], weight, bias, eps)
     }
 
+    /// Apply instance normalization over `[N, C, D, H, W]`.
+    ///
+    /// Equivalent to `torch.nn.functional.instance_norm` for 5D inputs.
+    pub fn tensor_instance_norm3d(
+        &mut self,
+        input: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_instance_norm3d(input, weight, bias, eps)
+    }
+
+    /// Apply instance normalization over `[N, C, D, H, W]`.
+    pub fn functional_instance_norm3d(
+        &mut self,
+        input: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "instance_norm3d: input must be 5-D [N, C, D, H, W]",
+            ));
+        }
+        self.functional_group_norm(input, input_shape[1], weight, bias, eps)
+    }
+
     /// Apply batch normalization over `[N, C]`.
     ///
     /// Equivalent to `torch.nn.functional.batch_norm` for 2D inputs.
