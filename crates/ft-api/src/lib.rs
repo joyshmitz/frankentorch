@@ -32635,6 +32635,120 @@ impl FrankenTorchSession {
         self.tensor_variable(output, cat_shape, false)
     }
 
+    // ── Attention Modules ──────────────────────────────────────────────
+
+    /// Squeeze-and-Excitation (SE) channel attention.
+    ///
+    /// Recalibrates channel-wise feature responses.
+    /// SE(x) = x * sigmoid(fc2(relu(fc1(gap(x)))))
+    ///
+    /// Args:
+    /// - x: [N, C, H, W] input features
+    /// - reduction: channel reduction ratio (typically 16)
+    /// - fc1_weight, fc1_bias: first FC layer [C/r, C]
+    /// - fc2_weight, fc2_bias: second FC layer [C, C/r]
+    #[allow(clippy::too_many_arguments)]
+    pub fn squeeze_excitation(
+        &mut self,
+        x: TensorNodeId,
+        fc1_weight: TensorNodeId,
+        fc1_bias: Option<TensorNodeId>,
+        fc2_weight: TensorNodeId,
+        fc2_bias: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("squeeze_excitation: x must be [N, C, H, W]"));
+        }
+        let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let gap = self.tensor_adaptive_avg_pool2d(x, (1, 1))?;
+        let gap_flat = self.tensor_reshape(gap, vec![n, c])?;
+        let fc1_out = self.tensor_linear(gap_flat, fc1_weight, fc1_bias)?;
+        let relu_out = self.tensor_relu(fc1_out)?;
+        let fc2_out = self.tensor_linear(relu_out, fc2_weight, fc2_bias)?;
+        let scale = self.tensor_sigmoid(fc2_out)?;
+        let scale_4d = self.tensor_reshape(scale, vec![n, c, 1, 1])?;
+        self.tensor_mul(x, scale_4d)
+    }
+
+    /// Channel attention module (from CBAM).
+    ///
+    /// Combines max and average pooling for channel attention.
+    /// CA(x) = sigmoid(MLP(MaxPool(x)) + MLP(AvgPool(x)))
+    #[allow(clippy::too_many_arguments)]
+    pub fn channel_attention(
+        &mut self,
+        x: TensorNodeId,
+        fc1_weight: TensorNodeId,
+        fc2_weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("channel_attention: x must be [N, C, H, W]"));
+        }
+        let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
+        let avg_pool = self.tensor_adaptive_avg_pool2d(x, (1, 1))?;
+        let (max_pool, _) = self.tensor_adaptive_max_pool2d(x, (1, 1))?;
+        let avg_flat = self.tensor_reshape(avg_pool, vec![n, c])?;
+        let max_flat = self.tensor_reshape(max_pool, vec![n, c])?;
+        let avg_fc1 = self.tensor_linear(avg_flat, fc1_weight, None)?;
+        let avg_relu = self.tensor_relu(avg_fc1)?;
+        let avg_fc2 = self.tensor_linear(avg_relu, fc2_weight, None)?;
+        let max_fc1 = self.tensor_linear(max_flat, fc1_weight, None)?;
+        let max_relu = self.tensor_relu(max_fc1)?;
+        let max_fc2 = self.tensor_linear(max_relu, fc2_weight, None)?;
+        let combined = self.tensor_add(avg_fc2, max_fc2)?;
+        let scale = self.tensor_sigmoid(combined)?;
+        let scale_4d = self.tensor_reshape(scale, vec![n, c, 1, 1])?;
+        self.tensor_mul(x, scale_4d)
+    }
+
+    /// Spatial attention module (from CBAM).
+    ///
+    /// Attends to important spatial locations.
+    /// SA(x) = sigmoid(conv(concat(MaxPool(x, dim=1), AvgPool(x, dim=1))))
+    pub fn spatial_attention(
+        &mut self,
+        x: TensorNodeId,
+        conv_weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("spatial_attention: x must be [N, C, H, W]"));
+        }
+        let (n, _, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let avg_map = self.tensor_mean_dim(x, 1)?;
+        let (max_map, _) = self.tensor_max_dim(x, 1)?;
+        let avg_map_4d = self.tensor_reshape(avg_map, vec![n, 1, h, w])?;
+        let max_map_4d = self.tensor_reshape(max_map, vec![n, 1, h, w])?;
+        let concat = self.tensor_cat(&[avg_map_4d, max_map_4d], 1)?;
+        let conv_out = self.tensor_conv2d(concat, conv_weight, None, (1, 1), (3, 3))?;
+        let scale = self.tensor_sigmoid(conv_out)?;
+        self.tensor_mul(x, scale)
+    }
+
+    /// Efficient Channel Attention (ECA) module.
+    ///
+    /// Uses 1D convolution instead of FC layers for efficiency.
+    /// ECA(x) = x * sigmoid(conv1d(gap(x)))
+    pub fn efficient_channel_attention(
+        &mut self,
+        x: TensorNodeId,
+        conv_weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("efficient_channel_attention: x must be [N, C, H, W]"));
+        }
+        let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
+        let gap = self.tensor_adaptive_avg_pool2d(x, (1, 1))?;
+        let gap_squeezed = self.tensor_reshape(gap, vec![n, 1, c])?;
+        let conv_out = self.tensor_conv1d(gap_squeezed, conv_weight, None, 1, 0)?;
+        let scale = self.tensor_sigmoid(conv_out)?;
+        let scale_4d = self.tensor_reshape(scale, vec![n, c, 1, 1])?;
+        self.tensor_mul(x, scale_4d)
+    }
+
     /// ArcFace (Additive Angular Margin) loss for face recognition.
     ///
     /// Given L2-normalized features [N, D] and L2-normalized weight [C, D],
