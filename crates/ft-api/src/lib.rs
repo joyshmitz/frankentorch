@@ -54243,6 +54243,71 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_inverse(input)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Bitwise operation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Element-wise bitwise AND.
+    pub fn bitwise_and_tensor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_and(input, other)
+    }
+
+    /// Element-wise bitwise OR.
+    pub fn bitwise_or_tensor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_or(input, other)
+    }
+
+    /// Element-wise bitwise XOR.
+    pub fn bitwise_xor_tensor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_xor(input, other)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Clamping utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Clamp tensor values between tensor min and max bounds.
+    pub fn clamp_tensor_tensor(
+        &mut self,
+        input: TensorNodeId,
+        min: TensorNodeId,
+        max: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp_tensor(input, min, max)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Complex and view utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Compute complex conjugate.
+    pub fn conj_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conj(input)
+    }
+
+    /// Make tensor contiguous in memory.
+    pub fn contiguous_tensor(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_contiguous(node)
+    }
 }
 
 pub use ft_autograd::{
