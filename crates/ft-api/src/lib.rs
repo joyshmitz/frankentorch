@@ -32448,6 +32448,193 @@ impl FrankenTorchSession {
         self.tensor_variable(vec![total_loss / (n * k) as f64], vec![1], false)
     }
 
+    // ── Feature Engineering Operations ─────────────────────────────────
+
+    /// Generate polynomial features up to degree d.
+    ///
+    /// For input [x1, x2], degree 2: [1, x1, x2, x1^2, x1*x2, x2^2]
+    ///
+    /// Args:
+    /// - x: [N, D] input features
+    /// - degree: maximum polynomial degree
+    /// - include_bias: whether to include the bias (1) term
+    ///
+    /// Returns: [N, num_features] polynomial features
+    pub fn polynomial_features(
+        &mut self,
+        x: TensorNodeId,
+        degree: usize,
+        include_bias: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args("polynomial_features: x must be [N, D]"));
+        }
+        let (n, d) = (shape[0], shape[1]);
+        let data = self.tensor_values(x)?;
+        let mut features: Vec<Vec<f64>> = vec![vec![]; n];
+        for i in 0..n {
+            if include_bias {
+                features[i].push(1.0);
+            }
+        }
+        for deg in 1..=degree {
+            let combos = Self::polynomial_combinations(d, deg);
+            for combo in combos {
+                for i in 0..n {
+                    let mut val = 1.0_f64;
+                    for &j in &combo {
+                        val *= data[i * d + j];
+                    }
+                    features[i].push(val);
+                }
+            }
+        }
+        let num_features = features[0].len();
+        let output: Vec<f64> = features.into_iter().flatten().collect();
+        self.tensor_variable(output, vec![n, num_features], false)
+    }
+
+    fn polynomial_combinations(d: usize, degree: usize) -> Vec<Vec<usize>> {
+        let mut result = Vec::new();
+        let mut combo = vec![0; degree];
+        Self::poly_combo_helper(d, degree, 0, 0, &mut combo, &mut result);
+        result
+    }
+
+    fn poly_combo_helper(
+        d: usize,
+        degree: usize,
+        start: usize,
+        pos: usize,
+        combo: &mut [usize],
+        result: &mut Vec<Vec<usize>>,
+    ) {
+        if pos == degree {
+            result.push(combo.to_vec());
+            return;
+        }
+        for i in start..d {
+            combo[pos] = i;
+            Self::poly_combo_helper(d, degree, i, pos + 1, combo, result);
+        }
+    }
+
+    /// Generate interaction features between columns.
+    ///
+    /// Creates pairwise products of all feature columns.
+    ///
+    /// Args:
+    /// - x: [N, D] input features
+    /// - include_self: whether to include x_i * x_i terms
+    ///
+    /// Returns: [N, D*(D-1)/2 or D*(D+1)/2] interaction features
+    pub fn interaction_features(
+        &mut self,
+        x: TensorNodeId,
+        include_self: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args("interaction_features: x must be [N, D]"));
+        }
+        let (n, d) = (shape[0], shape[1]);
+        let data = self.tensor_values(x)?;
+        let num_features = if include_self {
+            d * (d + 1) / 2
+        } else {
+            d * (d - 1) / 2
+        };
+        let mut output = Vec::with_capacity(n * num_features);
+        for i in 0..n {
+            for j in 0..d {
+                let start = if include_self { j } else { j + 1 };
+                for k in start..d {
+                    output.push(data[i * d + j] * data[i * d + k]);
+                }
+            }
+        }
+        self.tensor_variable(output, vec![n, num_features], false)
+    }
+
+    /// Bucketize continuous features into bins.
+    ///
+    /// Args:
+    /// - x: [N, D] input features
+    /// - boundaries: [B] bin boundaries (sorted)
+    ///
+    /// Returns: [N, D] indices of bins each value falls into
+    pub fn bucketize_features(
+        &mut self,
+        x: TensorNodeId,
+        boundaries: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let x_shape = self.tensor_shape(x)?;
+        let b_shape = self.tensor_shape(boundaries)?;
+        if b_shape.len() != 1 {
+            return Err(Self::incompatible_tensor_args("bucketize: boundaries must be 1D"));
+        }
+        let data = self.tensor_values(x)?;
+        let bounds = self.tensor_values(boundaries)?;
+        let output: Vec<f64> = data
+            .iter()
+            .map(|&v| {
+                bounds.iter().filter(|&&b| v >= b).count() as f64
+            })
+            .collect();
+        self.tensor_variable(output, x_shape, false)
+    }
+
+    /// Target encoding for categorical features.
+    ///
+    /// Encodes categories by mean of target variable.
+    /// With smoothing: (n_cat * mean_cat + m * global_mean) / (n_cat + m)
+    ///
+    /// Args:
+    /// - categories: [N] integer category indices
+    /// - targets: [N] target values
+    /// - num_categories: number of unique categories
+    /// - smoothing: smoothing parameter m
+    pub fn target_encode(
+        &mut self,
+        categories: TensorNodeId,
+        targets: TensorNodeId,
+        num_categories: usize,
+        smoothing: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let cat_shape = self.tensor_shape(categories)?;
+        let tgt_shape = self.tensor_shape(targets)?;
+        if cat_shape != tgt_shape || cat_shape.len() != 1 {
+            return Err(Self::incompatible_tensor_args("target_encode: mismatched shapes"));
+        }
+        let n = cat_shape[0];
+        let cat_data = self.tensor_values(categories)?;
+        let tgt_data = self.tensor_values(targets)?;
+        let global_mean: f64 = tgt_data.iter().sum::<f64>() / n as f64;
+        let mut cat_sums = vec![0.0; num_categories];
+        let mut cat_counts = vec![0usize; num_categories];
+        for i in 0..n {
+            let c = cat_data[i] as usize;
+            if c < num_categories {
+                cat_sums[c] += tgt_data[i];
+                cat_counts[c] += 1;
+            }
+        }
+        let output: Vec<f64> = cat_data
+            .iter()
+            .map(|&c| {
+                let ci = c as usize;
+                if ci >= num_categories {
+                    return global_mean;
+                }
+                let nc = cat_counts[ci] as f64;
+                let mean_c = if nc > 0.0 { cat_sums[ci] / nc } else { global_mean };
+                (nc * mean_c + smoothing * global_mean) / (nc + smoothing)
+            })
+            .collect();
+        self.tensor_variable(output, cat_shape, false)
+    }
+
     /// ArcFace (Additive Angular Margin) loss for face recognition.
     ///
     /// Given L2-normalized features [N, D] and L2-normalized weight [C, D],
