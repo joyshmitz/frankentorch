@@ -13297,6 +13297,18 @@ impl FrankenTorchSession {
         self.tensor_kron(a, b)
     }
 
+    /// Additive matrix-matrix multiplication: beta*input + alpha*(mat1 @ mat2). Alias for tensor_addmm.
+    pub fn functional_addmm(
+        &mut self,
+        input: TensorNodeId,
+        mat1: TensorNodeId,
+        mat2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addmm(input, mat1, mat2, beta, alpha)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
