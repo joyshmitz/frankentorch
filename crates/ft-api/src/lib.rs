@@ -53768,6 +53768,125 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_channel_shuffle(input, groups)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Hyperbolic arc function utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Inverse hyperbolic sine.
+    pub fn arcsinh_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arcsinh(input)
+    }
+
+    /// Inverse hyperbolic cosine.
+    pub fn arccosh_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arccosh(input)
+    }
+
+    /// Inverse hyperbolic tangent.
+    pub fn arctanh_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arctanh(input)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Comparison and statistics utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Check if two tensors are element-wise close.
+    pub fn allclose_tensor(
+        &self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+        rtol: f64,
+        atol: f64,
+        equal_nan: bool,
+    ) -> Result<bool, AutogradError> {
+        self.tensor_allclose(lhs, rhs, rtol, atol, equal_nan)
+    }
+
+    /// Covariance matrix of observations.
+    pub fn cov_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cov(input)
+    }
+
+    /// Correlation coefficient matrix.
+    pub fn corrcoef_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_corrcoef(input)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Transformation and alias utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Absolute value (alias for abs).
+    pub fn absolute_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_absolute(input)
+    }
+
+    /// Conjugate transpose (Hermitian transpose).
+    pub fn adjoint_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_adjoint(input)
+    }
+
+    /// Physical conjugate (materializes conjugate view).
+    pub fn conj_physical_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conj_physical(input)
+    }
+
+    /// Degrees to radians conversion.
+    pub fn deg2rad_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_deg2rad(input)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Diagonal and scatter utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Create diagonal matrix from flattened input.
+    pub fn diagflat_tensor(
+        &mut self,
+        input: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagflat(input, offset)
+    }
+
+    /// Scatter values into diagonal of a matrix.
+    pub fn diagonal_scatter_tensor(
+        &mut self,
+        input: TensorNodeId,
+        src: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagonal_scatter(input, src, offset)
+    }
 }
 
 pub use ft_autograd::{
