@@ -12865,6 +12865,26 @@ impl FrankenTorchSession {
         self.tensor_bce_with_logits_loss(input, target, reduction)
     }
 
+    /// Short alias for binary_cross_entropy. Alias for tensor_bce_loss.
+    pub fn functional_bce_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bce_loss(input, target, reduction)
+    }
+
+    /// Short alias for binary_cross_entropy_with_logits. Alias for tensor_bce_with_logits_loss.
+    pub fn functional_bce_with_logits_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bce_with_logits_loss(input, target, reduction)
+    }
+
     /// NLL loss function. Alias for tensor_nll_loss.
     pub fn functional_nll_loss(
         &mut self,
@@ -13963,6 +13983,15 @@ impl FrankenTorchSession {
         self.tensor_pow(input, exponent)
     }
 
+    /// Float power (same as pow). Alias for tensor_float_power.
+    pub fn functional_float_power(
+        &mut self,
+        input: TensorNodeId,
+        exponent: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_float_power(input, exponent)
+    }
+
     /// Sum all elements. Alias for tensor_sum.
     pub fn functional_sum(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_sum(input)
@@ -14103,6 +14132,60 @@ impl FrankenTorchSession {
         rhs: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_not_equal(lhs, rhs)
+    }
+
+    /// Element-wise equality. Alias for tensor_eq.
+    pub fn functional_eq(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_eq(lhs, rhs)
+    }
+
+    /// Element-wise not equal (ne alias). Alias for tensor_ne.
+    pub fn functional_ne(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ne(lhs, rhs)
+    }
+
+    /// Element-wise less than (lt alias). Alias for tensor_lt.
+    pub fn functional_lt(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lt(lhs, rhs)
+    }
+
+    /// Element-wise greater than (gt alias). Alias for tensor_gt.
+    pub fn functional_gt(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gt(lhs, rhs)
+    }
+
+    /// Element-wise less than or equal (le alias). Alias for tensor_le.
+    pub fn functional_le(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_le(lhs, rhs)
+    }
+
+    /// Element-wise greater than or equal (ge alias). Alias for tensor_ge.
+    pub fn functional_ge(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ge(lhs, rhs)
     }
 
     /// Element-wise logical NOT. Alias for tensor_logical_not.
@@ -15811,6 +15894,22 @@ impl FrankenTorchSession {
         ord: f64,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_norm(input, ord)
+    }
+
+    /// Frobenius norm of matrix. Alias for tensor_frobenius_norm.
+    pub fn functional_frobenius_norm(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_frobenius_norm(input)
+    }
+
+    /// Nuclear norm (trace norm) of matrix. Alias for tensor_nuclear_norm.
+    pub fn functional_nuclear_norm(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nuclear_norm(input)
     }
 
     /// Solve linear system. Alias for tensor_linalg_solve.
