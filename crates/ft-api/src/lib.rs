@@ -55053,6 +55053,129 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_cross(input, other)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Pooling utilities (additional)
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// 1D max pooling.
+    pub fn max_pool1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: usize,
+        stride: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_max_pool1d(input, kernel_size, stride)
+    }
+
+    /// 3D max pooling.
+    pub fn max_pool3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_max_pool3d(input, kernel_size, stride)
+    }
+
+    /// 1D Lp pooling.
+    pub fn lp_pool1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: usize,
+        stride: Option<usize>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lp_pool1d(input, norm_type, kernel_size, stride, ceil_mode)
+    }
+
+    /// 2D Lp pooling.
+    pub fn lp_pool2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: (usize, usize),
+        stride: Option<(usize, usize)>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lp_pool2d(input, norm_type, kernel_size, stride, ceil_mode)
+    }
+
+    /// 3D Lp pooling.
+    pub fn lp_pool3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: (usize, usize, usize),
+        stride: Option<(usize, usize, usize)>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lp_pool3d(input, norm_type, kernel_size, stride, ceil_mode)
+    }
+
+    /// 1D max unpooling.
+    pub fn max_unpool1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: usize,
+        stride: Option<usize>,
+        padding: usize,
+        output_size: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_max_unpool1d(input, indices, kernel_size, stride, padding, output_size)
+    }
+
+    /// 2D max unpooling.
+    pub fn max_unpool2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: (usize, usize),
+        stride: Option<(usize, usize)>,
+        padding: (usize, usize),
+        output_size: Option<(usize, usize)>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_max_unpool2d(input, indices, kernel_size, stride, padding, output_size)
+    }
+
+    /// 3D max unpooling.
+    pub fn max_unpool3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: Option<(usize, usize, usize)>,
+        padding: (usize, usize, usize),
+        output_size: Option<(usize, usize, usize)>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_max_unpool3d(input, indices, kernel_size, stride, padding, output_size)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Tensor manipulation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Select a single index from a dimension.
+    pub fn select_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_select(input, dim, index)
+    }
+
+    /// Copy variant of select.
+    pub fn select_copy_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_select_copy(input, dim, index)
+    }
 }
 
 pub use ft_autograd::{
