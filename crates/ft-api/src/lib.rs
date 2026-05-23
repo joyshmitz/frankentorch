@@ -32304,6 +32304,150 @@ impl FrankenTorchSession {
         Ok(anomalies)
     }
 
+    // ── Landmark Detection Losses ──────────────────────────────────────
+
+    /// Wing loss for facial landmark detection.
+    ///
+    /// Behaves like log loss for small errors and linear for large errors.
+    /// wing(x) = w * ln(1 + |x|/eps) if |x| < w, else |x| - C
+    /// where C = w - w * ln(1 + w/eps)
+    ///
+    /// Args:
+    /// - pred: predicted coordinates
+    /// - target: ground truth coordinates
+    /// - w: threshold where loss transitions from log to linear
+    /// - eps: controls curvature of log region
+    pub fn wing_loss(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+        w: f64,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let pred_shape = self.tensor_shape(pred)?;
+        let target_shape = self.tensor_shape(target)?;
+        if pred_shape != target_shape {
+            return Err(Self::incompatible_tensor_args("wing_loss: shapes must match"));
+        }
+        let pred_data = self.tensor_values(pred)?;
+        let target_data = self.tensor_values(target)?;
+        let c = w - w * (1.0 + w / eps).ln();
+        let loss: Vec<f64> = pred_data
+            .iter()
+            .zip(target_data.iter())
+            .map(|(&p, &t)| {
+                let diff = (p - t).abs();
+                if diff < w {
+                    w * (1.0 + diff / eps).ln()
+                } else {
+                    diff - c
+                }
+            })
+            .collect();
+        let loss_t = self.tensor_variable(loss, pred_shape, false)?;
+        self.tensor_mean(loss_t)
+    }
+
+    /// Adaptive Wing loss for robust facial landmark detection.
+    ///
+    /// Addresses limitations of Wing loss by using adaptive parameter
+    /// based on the ground truth position.
+    ///
+    /// Args:
+    /// - pred: predicted landmarks [N, num_landmarks, 2]
+    /// - target: ground truth landmarks [N, num_landmarks, 2]
+    /// - omega, theta, eps, alpha: loss parameters
+    pub fn adaptive_wing_loss(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+        omega: f64,
+        theta: f64,
+        eps: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let pred_shape = self.tensor_shape(pred)?;
+        let target_shape = self.tensor_shape(target)?;
+        if pred_shape != target_shape {
+            return Err(Self::incompatible_tensor_args(
+                "adaptive_wing_loss: shapes must match",
+            ));
+        }
+        let pred_data = self.tensor_values(pred)?;
+        let target_data = self.tensor_values(target)?;
+        let a = omega * (1.0 / (1.0 + (theta / eps).powf(alpha - target_data[0])));
+        let c = theta * a - omega * ((1.0 + (theta / eps).powf(alpha - target_data[0])).ln());
+        let loss: Vec<f64> = pred_data
+            .iter()
+            .zip(target_data.iter())
+            .map(|(&p, &t)| {
+                let diff = (p - t).abs();
+                if diff < theta {
+                    omega * ((1.0 + (diff / eps).powf(alpha - t)).ln())
+                } else {
+                    a * diff - c
+                }
+            })
+            .collect();
+        let loss_t = self.tensor_variable(loss, pred_shape, false)?;
+        self.tensor_mean(loss_t)
+    }
+
+    /// Weighted mean squared error for heatmap-based landmark detection.
+    ///
+    /// Commonly used in stacked hourglass networks.
+    /// Applies higher weight to pixels near the ground truth position.
+    pub fn heatmap_mse_loss(
+        &mut self,
+        pred_heatmap: TensorNodeId,
+        target_heatmap: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(pred_heatmap, target_heatmap)?;
+        let sq_diff = self.tensor_mul(diff, diff)?;
+        self.tensor_mean(sq_diff)
+    }
+
+    /// Ordinal regression loss for depth/age estimation.
+    ///
+    /// Converts regression to classification of ordinal ranks.
+    /// loss = sum_k BCE(pred_k, [k <= target])
+    ///
+    /// Args:
+    /// - pred: [N, K] logits for K ordinal ranks
+    /// - target: [N] integer target values in [0, K]
+    pub fn ordinal_regression_loss(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let pred_shape = self.tensor_shape(pred)?;
+        let target_shape = self.tensor_shape(target)?;
+        if pred_shape.len() != 2 || target_shape.len() != 1 {
+            return Err(Self::incompatible_tensor_args(
+                "ordinal_regression_loss: pred must be [N, K], target must be [N]",
+            ));
+        }
+        let (n, k) = (pred_shape[0], pred_shape[1]);
+        if target_shape[0] != n {
+            return Err(Self::incompatible_tensor_args(
+                "ordinal_regression_loss: batch sizes must match",
+            ));
+        }
+        let pred_data = self.tensor_values(pred)?;
+        let target_data = self.tensor_values(target)?;
+        let mut total_loss = 0.0;
+        for i in 0..n {
+            let t = target_data[i] as usize;
+            for j in 0..k {
+                let p = 1.0 / (1.0 + (-pred_data[i * k + j]).exp());
+                let y = if j < t { 1.0 } else { 0.0 };
+                let bce = -y * p.max(1e-10).ln() - (1.0 - y) * (1.0 - p).max(1e-10).ln();
+                total_loss += bce;
+            }
+        }
+        self.tensor_variable(vec![total_loss / (n * k) as f64], vec![1], false)
+    }
+
     /// ArcFace (Additive Angular Margin) loss for face recognition.
     ///
     /// Given L2-normalized features [N, D] and L2-normalized weight [C, D],
