@@ -45330,6 +45330,189 @@ impl FrankenTorchSession {
         let sum_loss = self.tensor_sum_dim(neg_loss, 1)?;
         self.tensor_mean(sum_loss)
     }
+
+    // ── Modern Regularization ─────────────────────────────────────────────
+
+    /// DropPath (Stochastic Depth) for residual connections.
+    ///
+    /// Randomly drops entire residual branches during training.
+    /// Returns x * scale where scale = 0 or 1/keep_prob per sample.
+    pub fn drop_path(
+        &mut self,
+        x: TensorNodeId,
+        drop_prob: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !training || drop_prob == 0.0 {
+            return Ok(x);
+        }
+        let keep_prob = 1.0 - drop_prob;
+        let shape = self.tensor_shape(x)?;
+        let n = shape[0];
+        let rand = self.tensor_rand(vec![n], false)?;
+        let thresh = self.full(vec![n], drop_prob, false)?;
+        let mask = self.tensor_ge(rand, thresh)?;
+        let mask_float = self.tensor_to_f64(mask)?;
+        let scale = self.full(vec![n], 1.0 / keep_prob, false)?;
+        let mask_scaled = self.tensor_mul(mask_float, scale)?;
+        let mut new_shape = vec![n];
+        for _ in 1..shape.len() {
+            new_shape.push(1);
+        }
+        let mask_shaped = self.tensor_reshape(mask_scaled, new_shape)?;
+        self.tensor_mul(x, mask_shaped)
+    }
+
+    // ── Token/Patch Operations ────────────────────────────────────────────
+
+    /// Token mixing (MLP-Mixer style).
+    ///
+    /// Mixes information across token dimension using linear projection.
+    /// Input: [N, T, C] where T is number of tokens.
+    pub fn token_mixing(
+        &mut self,
+        x: TensorNodeId,
+        weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args("token_mixing: x must be [N, T, C]"));
+        }
+        let x_t = self.tensor_transpose(x, 1, 2)?;
+        let mixed_t = self.tensor_matmul(x_t, weight)?;
+        self.tensor_transpose(mixed_t, 1, 2)
+    }
+
+    /// Channel mixing (MLP-Mixer style).
+    ///
+    /// Mixes information across channel dimension.
+    /// Input: [N, T, C] where C is number of channels.
+    pub fn channel_mixing(
+        &mut self,
+        x: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args("channel_mixing: x must be [N, T, C]"));
+        }
+        self.tensor_linear(x, weight, bias)
+    }
+
+    /// Relative position bias for attention.
+    ///
+    /// Computes relative position bias table lookup for window attention.
+    /// Returns bias selected from table based on index.
+    pub fn relative_position_bias(
+        &mut self,
+        table: TensorNodeId,
+        index: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel = self.tensor_numel(index)?;
+        let flat_index = self.tensor_reshape(index, vec![numel])?;
+        self.tensor_index_select(table, 0, flat_index)
+    }
+
+    // ── Gating Mechanisms ─────────────────────────────────────────────────
+
+    /// Gated Linear Unit (GLU).
+    ///
+    /// Splits input in half along dim, applies sigmoid to second half,
+    /// multiplies with first half: x1 * sigmoid(x2).
+    pub fn glu(
+        &mut self,
+        x: TensorNodeId,
+        dim: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        let ndim = shape.len() as i64;
+        let d = if dim < 0 { ndim + dim } else { dim } as usize;
+        let chunks = self.tensor_chunk(x, 2, d)?;
+        let a = chunks[0];
+        let b = chunks[1];
+        let gate = self.tensor_sigmoid(b)?;
+        self.tensor_mul(a, gate)
+    }
+
+    /// Gated GELU (GeGLU variant).
+    ///
+    /// x1 * gelu(x2) instead of sigmoid gate.
+    pub fn geglu(
+        &mut self,
+        x: TensorNodeId,
+        dim: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        let ndim = shape.len() as i64;
+        let d = if dim < 0 { ndim + dim } else { dim } as usize;
+        let chunks = self.tensor_chunk(x, 2, d)?;
+        let a = chunks[0];
+        let b = chunks[1];
+        let gate = self.tensor_gelu(b)?;
+        self.tensor_mul(a, gate)
+    }
+
+    /// SwiGLU activation.
+    ///
+    /// x1 * swish(x2) = x1 * silu(x2).
+    pub fn swiglu(
+        &mut self,
+        x: TensorNodeId,
+        dim: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        let ndim = shape.len() as i64;
+        let d = if dim < 0 { ndim + dim } else { dim } as usize;
+        let chunks = self.tensor_chunk(x, 2, d)?;
+        let a = chunks[0];
+        let b = chunks[1];
+        let gate = self.tensor_silu(b)?;
+        self.tensor_mul(a, gate)
+    }
+
+    // ── Normalization Variants ────────────────────────────────────────────
+
+    /// Power normalization (useful for RL and some CV tasks).
+    ///
+    /// Normalizes input by its p-norm: x / (||x||_p + eps).
+    pub fn power_norm(
+        &mut self,
+        x: TensorNodeId,
+        p: f64,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let norm = self.tensor_norm(x, p)?;
+        let eps_tensor = self.full(vec![1], eps, false)?;
+        let denom = self.tensor_add(norm, eps_tensor)?;
+        self.tensor_div(x, denom)
+    }
+
+    /// Filter Response Normalization (FRN).
+    ///
+    /// Wu & He "Filter Response Normalization Layer" - replaces BN
+    /// without requiring batch statistics.
+    pub fn filter_response_norm(
+        &mut self,
+        x: TensorNodeId,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("filter_response_norm: x must be [N, C, H, W]"));
+        }
+        let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let x_flat = self.tensor_reshape(x, vec![n, c, h * w])?;
+        let x_sq = self.tensor_mul(x_flat, x_flat)?;
+        let nu2 = self.tensor_mean_dim(x_sq, 2)?;
+        let eps_tensor = self.full(vec![n, c], eps, false)?;
+        let nu2_eps = self.tensor_add(nu2, eps_tensor)?;
+        let denom = self.tensor_sqrt(nu2_eps)?;
+        let denom_expanded = self.tensor_unsqueeze(denom, 2)?;
+        let x_norm = self.tensor_div(x_flat, denom_expanded)?;
+        self.tensor_reshape(x_norm, vec![n, c, h, w])
+    }
+
 }
 
 pub use ft_autograd::{
