@@ -31203,6 +31203,273 @@ impl FrankenTorchSession {
         self.tensor_variable(vec![total], vec![1], false)
     }
 
+    // ── Point Cloud Operations ─────────────────────────────────────────
+
+    /// Farthest point sampling for point clouds (PointNet++).
+    ///
+    /// Iteratively selects points that are farthest from the already selected set.
+    /// Used to downsample point clouds while preserving spatial coverage.
+    ///
+    /// Args:
+    /// - points: [N, 3] or [B, N, 3] input point cloud coordinates
+    /// - num_samples: number of points to sample
+    ///
+    /// Returns: [num_samples] or [B, num_samples] indices of selected points
+    pub fn farthest_point_sampling(
+        &mut self,
+        points: TensorNodeId,
+        num_samples: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(points)?;
+        let (batch_size, n_points, coords) = match shape.len() {
+            2 => (1, shape[0], shape[1]),
+            3 => (shape[0], shape[1], shape[2]),
+            _ => return Err(Self::incompatible_tensor_args(
+                "farthest_point_sampling: points must be [N, 3] or [B, N, 3]",
+            )),
+        };
+        if coords != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "farthest_point_sampling: last dimension must be 3 (xyz)",
+            ));
+        }
+        if num_samples > n_points {
+            return Err(Self::incompatible_tensor_args(
+                "farthest_point_sampling: num_samples > number of points",
+            ));
+        }
+        let data = self.tensor_values(points)?;
+        let mut all_indices = Vec::with_capacity(batch_size * num_samples);
+        for b in 0..batch_size {
+            let batch_offset = b * n_points * 3;
+            let mut distances = vec![f64::MAX; n_points];
+            let mut indices = Vec::with_capacity(num_samples);
+            let first = self.rng.next_u64() as usize % n_points;
+            indices.push(first);
+            for _ in 1..num_samples {
+                let last = *indices.last().unwrap();
+                let (lx, ly, lz) = (
+                    data[batch_offset + last * 3],
+                    data[batch_offset + last * 3 + 1],
+                    data[batch_offset + last * 3 + 2],
+                );
+                let mut farthest_idx = 0;
+                let mut max_dist = f64::NEG_INFINITY;
+                for i in 0..n_points {
+                    let (px, py, pz) = (
+                        data[batch_offset + i * 3],
+                        data[batch_offset + i * 3 + 1],
+                        data[batch_offset + i * 3 + 2],
+                    );
+                    let d = (px - lx).powi(2) + (py - ly).powi(2) + (pz - lz).powi(2);
+                    distances[i] = distances[i].min(d);
+                    if distances[i] > max_dist {
+                        max_dist = distances[i];
+                        farthest_idx = i;
+                    }
+                }
+                indices.push(farthest_idx);
+            }
+            all_indices.extend(indices.into_iter().map(|i| i as f64));
+        }
+        let out_shape = if shape.len() == 2 {
+            vec![num_samples]
+        } else {
+            vec![batch_size, num_samples]
+        };
+        self.tensor_variable(all_indices, out_shape, false)
+    }
+
+    /// Ball query: find all points within a radius of query points.
+    ///
+    /// For each query point, finds up to `max_samples` points within `radius`.
+    /// Used in PointNet++ for local neighborhood aggregation.
+    ///
+    /// Args:
+    /// - points: [N, 3] or [B, N, 3] point cloud coordinates
+    /// - queries: [M, 3] or [B, M, 3] query point coordinates
+    /// - radius: search radius
+    /// - max_samples: maximum number of neighbors per query
+    ///
+    /// Returns: [M, max_samples] or [B, M, max_samples] neighbor indices (padded with -1)
+    pub fn ball_query(
+        &mut self,
+        points: TensorNodeId,
+        queries: TensorNodeId,
+        radius: f64,
+        max_samples: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let p_shape = self.tensor_shape(points)?;
+        let q_shape = self.tensor_shape(queries)?;
+        let (batch_size, n_points, n_queries) = match (p_shape.len(), q_shape.len()) {
+            (2, 2) => (1, p_shape[0], q_shape[0]),
+            (3, 3) if p_shape[0] == q_shape[0] => (p_shape[0], p_shape[1], q_shape[1]),
+            _ => return Err(Self::incompatible_tensor_args(
+                "ball_query: points and queries must have compatible shapes",
+            )),
+        };
+        let p_data = self.tensor_values(points)?;
+        let q_data = self.tensor_values(queries)?;
+        let r_sq = radius * radius;
+        let mut indices = vec![-1.0; batch_size * n_queries * max_samples];
+        for b in 0..batch_size {
+            let p_off = b * n_points * 3;
+            let q_off = b * n_queries * 3;
+            let i_off = b * n_queries * max_samples;
+            for qi in 0..n_queries {
+                let (qx, qy, qz) = (
+                    q_data[q_off + qi * 3],
+                    q_data[q_off + qi * 3 + 1],
+                    q_data[q_off + qi * 3 + 2],
+                );
+                let mut count = 0;
+                for pi in 0..n_points {
+                    if count >= max_samples {
+                        break;
+                    }
+                    let (px, py, pz) = (
+                        p_data[p_off + pi * 3],
+                        p_data[p_off + pi * 3 + 1],
+                        p_data[p_off + pi * 3 + 2],
+                    );
+                    let d_sq = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2);
+                    if d_sq <= r_sq {
+                        indices[i_off + qi * max_samples + count] = pi as f64;
+                        count += 1;
+                    }
+                }
+            }
+        }
+        let out_shape = if p_shape.len() == 2 {
+            vec![n_queries, max_samples]
+        } else {
+            vec![batch_size, n_queries, max_samples]
+        };
+        self.tensor_variable(indices, out_shape, false)
+    }
+
+    /// K-nearest neighbors search for point clouds.
+    ///
+    /// For each query point, finds the k nearest points.
+    ///
+    /// Args:
+    /// - points: [N, 3] or [B, N, 3] point cloud coordinates
+    /// - queries: [M, 3] or [B, M, 3] query point coordinates
+    /// - k: number of nearest neighbors to find
+    ///
+    /// Returns: ([M, k] or [B, M, k] indices, [M, k] or [B, M, k] distances)
+    pub fn knn_search(
+        &mut self,
+        points: TensorNodeId,
+        queries: TensorNodeId,
+        k: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let p_shape = self.tensor_shape(points)?;
+        let q_shape = self.tensor_shape(queries)?;
+        let (batch_size, n_points, n_queries) = match (p_shape.len(), q_shape.len()) {
+            (2, 2) => (1, p_shape[0], q_shape[0]),
+            (3, 3) if p_shape[0] == q_shape[0] => (p_shape[0], p_shape[1], q_shape[1]),
+            _ => return Err(Self::incompatible_tensor_args(
+                "knn_search: points and queries must have compatible shapes",
+            )),
+        };
+        if k > n_points {
+            return Err(Self::incompatible_tensor_args("knn_search: k > number of points"));
+        }
+        let p_data = self.tensor_values(points)?;
+        let q_data = self.tensor_values(queries)?;
+        let mut indices = vec![0.0; batch_size * n_queries * k];
+        let mut distances = vec![0.0; batch_size * n_queries * k];
+        for b in 0..batch_size {
+            let p_off = b * n_points * 3;
+            let q_off = b * n_queries * 3;
+            let out_off = b * n_queries * k;
+            for qi in 0..n_queries {
+                let (qx, qy, qz) = (
+                    q_data[q_off + qi * 3],
+                    q_data[q_off + qi * 3 + 1],
+                    q_data[q_off + qi * 3 + 2],
+                );
+                let mut dists: Vec<(usize, f64)> = (0..n_points)
+                    .map(|pi| {
+                        let (px, py, pz) = (
+                            p_data[p_off + pi * 3],
+                            p_data[p_off + pi * 3 + 1],
+                            p_data[p_off + pi * 3 + 2],
+                        );
+                        let d = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2);
+                        (pi, d)
+                    })
+                    .collect();
+                dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                for (j, (pi, d)) in dists.into_iter().take(k).enumerate() {
+                    indices[out_off + qi * k + j] = pi as f64;
+                    distances[out_off + qi * k + j] = d.sqrt();
+                }
+            }
+        }
+        let out_shape = if p_shape.len() == 2 {
+            vec![n_queries, k]
+        } else {
+            vec![batch_size, n_queries, k]
+        };
+        let idx_t = self.tensor_variable(indices, out_shape.clone(), false)?;
+        let dist_t = self.tensor_variable(distances, out_shape, false)?;
+        Ok((idx_t, dist_t))
+    }
+
+    /// Group points by indices for PointNet++ set abstraction.
+    ///
+    /// Gathers point features according to index tensor.
+    ///
+    /// Args:
+    /// - points: [N, C] or [B, N, C] point features
+    /// - indices: [M, K] or [B, M, K] indices to gather
+    ///
+    /// Returns: [M, K, C] or [B, M, K, C] grouped features
+    pub fn group_points(
+        &mut self,
+        points: TensorNodeId,
+        indices: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let p_shape = self.tensor_shape(points)?;
+        let i_shape = self.tensor_shape(indices)?;
+        let (batch_size, n_points, c, m, k) = match (p_shape.len(), i_shape.len()) {
+            (2, 2) => (1, p_shape[0], p_shape[1], i_shape[0], i_shape[1]),
+            (3, 3) if p_shape[0] == i_shape[0] => {
+                (p_shape[0], p_shape[1], p_shape[2], i_shape[1], i_shape[2])
+            }
+            _ => return Err(Self::incompatible_tensor_args(
+                "group_points: shapes must be compatible",
+            )),
+        };
+        let p_data = self.tensor_values(points)?;
+        let i_data = self.tensor_values(indices)?;
+        let mut output = vec![0.0; batch_size * m * k * c];
+        for b in 0..batch_size {
+            let p_off = b * n_points * c;
+            let i_off = b * m * k;
+            let o_off = b * m * k * c;
+            for mi in 0..m {
+                for ki in 0..k {
+                    let idx = i_data[i_off + mi * k + ki] as i64;
+                    if idx >= 0 && (idx as usize) < n_points {
+                        for ci in 0..c {
+                            output[o_off + mi * k * c + ki * c + ci] =
+                                p_data[p_off + idx as usize * c + ci];
+                        }
+                    }
+                }
+            }
+        }
+        let out_shape = if p_shape.len() == 2 {
+            vec![m, k, c]
+        } else {
+            vec![batch_size, m, k, c]
+        };
+        self.tensor_variable(output, out_shape, false)
+    }
+
     /// ArcFace (Additive Angular Margin) loss for face recognition.
     ///
     /// Given L2-normalized features [N, D] and L2-normalized weight [C, D],
