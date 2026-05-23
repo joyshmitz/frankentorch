@@ -54414,6 +54414,57 @@ impl FrankenTorchSession {
     ) -> Result<bool, AutogradError> {
         self.tensor_is_complex(node)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Tensor property utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Check if tensor is a leaf (created by user, not an op result).
+    pub fn is_leaf_tensor(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        self.tensor_is_leaf(node)
+    }
+
+    /// Check if tensor is contiguous in memory.
+    pub fn is_contiguous_tensor(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        self.tensor_is_contiguous(node)
+    }
+
+    /// Check if tensor has a conjugate view flag.
+    pub fn is_conj_tensor(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        self.tensor_is_conj(node)
+    }
+
+    /// Get gradient function name for non-leaf tensors.
+    pub fn grad_fn_tensor(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<Option<String>, AutogradError> {
+        self.tensor_grad_fn(node)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Advanced indexing utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Put values at specified indices.
+    pub fn index_put_tensor(
+        &mut self,
+        input: TensorNodeId,
+        indices: &[TensorNodeId],
+        values: TensorNodeId,
+        accumulate: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_put(input, indices, values, accumulate)
+    }
 }
 
 pub use ft_autograd::{
