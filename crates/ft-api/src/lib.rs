@@ -30206,6 +30206,43 @@ impl FrankenTorchSession {
         self.tensor_mean(stacked)
     }
 
+    /// Quantile (pinball) loss for quantile regression.
+    ///
+    /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
+    /// where q is the quantile (0 < q < 1). q=0.5 gives median regression.
+    pub fn quantile_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        quantile: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !(0.0..=1.0).contains(&quantile) {
+            return Err(Self::incompatible_tensor_args(
+                "quantile_loss: quantile must be in [0, 1]",
+            ));
+        }
+        let in_shape = self.tensor_shape(input)?;
+        let tgt_shape = self.tensor_shape(target)?;
+        if in_shape != tgt_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: in_shape.clone(),
+                    rhs: tgt_shape,
+                },
+            )));
+        }
+        let diff = self.tensor_sub(target, input)?;
+        let neg_diff = self.tensor_neg(diff)?;
+        let pos_part = self.tensor_clamp_min(diff, 0.0)?;
+        let neg_part = self.tensor_clamp_min(neg_diff, 0.0)?;
+        let q_tensor = self.full(in_shape.clone(), quantile, false)?;
+        let one_minus_q = self.full(in_shape, 1.0 - quantile, false)?;
+        let pos_loss = self.tensor_mul(q_tensor, pos_part)?;
+        let neg_loss = self.tensor_mul(one_minus_q, neg_part)?;
+        let loss = self.tensor_add(pos_loss, neg_loss)?;
+        self.tensor_mean(loss)
+    }
+
     /// Poisson negative log likelihood loss.
     ///
     /// Equivalent to `torch.nn.functional.poisson_nll_loss(input, target, log_input, full, eps)`.
