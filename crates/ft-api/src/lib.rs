@@ -15011,6 +15011,102 @@ impl FrankenTorchSession {
         Ok(output)
     }
 
+    /// Root Mean Square Layer Normalization.
+    ///
+    /// Unlike layer_norm, RMS norm does not center the input (no mean subtraction).
+    /// It only scales by the root mean square. Used in modern LLMs like LLaMA.
+    /// Computes: `x / sqrt(mean(x^2) + eps) * weight`
+    pub fn functional_rms_norm(
+        &mut self,
+        input: TensorNodeId,
+        normalized_shape: Vec<usize>,
+        weight: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if normalized_shape.is_empty() {
+            return Err(Self::incompatible_tensor_args(
+                "rms_norm: normalized_shape must be non-empty",
+            ));
+        }
+        let input_shape = self.tensor_shape(input)?;
+        let ndim = input_shape.len();
+        let normalized_ndim = normalized_shape.len();
+        if ndim < normalized_ndim {
+            return Err(Self::incompatible_tensor_args(
+                "rms_norm: input has fewer dimensions than normalized_shape",
+            ));
+        }
+
+        let normalized_numel = Self::checked_shape_numel(
+            &normalized_shape,
+            "rms_norm: normalized shape volume overflow",
+        )?;
+        if normalized_numel == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "rms_norm: normalized_shape must not contain zero dimensions",
+            ));
+        }
+
+        let start = ndim - normalized_ndim;
+        for (offset, &expected) in normalized_shape.iter().enumerate() {
+            if input_shape[start + offset] != expected {
+                return Err(Self::incompatible_tensor_args(
+                    "rms_norm: input trailing dimensions do not match normalized_shape",
+                ));
+            }
+        }
+
+        if let Some(w) = weight {
+            let w_shape = self.tensor_shape(w)?;
+            if w_shape != normalized_shape {
+                return Err(Self::incompatible_tensor_args(
+                    "rms_norm: weight shape must match normalized_shape",
+                ));
+            }
+        }
+
+        let batch_numel = if start == 0 {
+            1
+        } else {
+            Self::checked_shape_numel(
+                &input_shape[..start],
+                "rms_norm: batch shape volume overflow",
+            )?
+        };
+        let flat = self.tensor_reshape(input, vec![batch_numel, normalized_numel])?;
+
+        let sq = self.tensor_mul(flat, flat)?;
+        let mean_sq = self.tensor_mean_dim(sq, 1)?;
+        let mean_sq = self.tensor_unsqueeze(mean_sq, 1)?;
+        let mean_sq = self.tensor_expand(mean_sq, vec![batch_numel, normalized_numel])?;
+        let eps_t = self.full(vec![batch_numel, normalized_numel], eps, false)?;
+        let rms = self.tensor_add(mean_sq, eps_t)?;
+        let rms = self.tensor_sqrt(rms)?;
+        let normalized = self.tensor_div(flat, rms)?;
+        let mut output = self.tensor_reshape(normalized, input_shape.clone())?;
+
+        if let Some(weight) = weight {
+            let mut affine_shape = vec![1usize; start];
+            affine_shape.extend_from_slice(&normalized_shape);
+            let weight = self.tensor_reshape(weight, affine_shape)?;
+            let weight = self.tensor_expand(weight, input_shape)?;
+            output = self.tensor_mul(weight, output)?;
+        }
+
+        Ok(output)
+    }
+
+    /// Alias for `functional_rms_norm`.
+    pub fn tensor_rms_norm(
+        &mut self,
+        input: TensorNodeId,
+        normalized_shape: Vec<usize>,
+        weight: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_rms_norm(input, normalized_shape, weight, eps)
+    }
+
     /// Apply group normalization over channel groups.
     ///
     /// Equivalent to `torch.nn.functional.group_norm`.
