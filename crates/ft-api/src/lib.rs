@@ -14578,6 +14578,79 @@ impl FrankenTorchSession {
         self.tensor_floor_divide(lhs, rhs)
     }
 
+    /// Add scaled product: input + value * tensor1 * tensor2. Alias for tensor_addcmul.
+    pub fn functional_addcmul(
+        &mut self,
+        input: TensorNodeId,
+        tensor1: TensorNodeId,
+        tensor2: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addcmul(input, tensor1, tensor2, value)
+    }
+
+    /// Add scaled quotient: input + value * tensor1 / tensor2. Alias for tensor_addcdiv.
+    pub fn functional_addcdiv(
+        &mut self,
+        input: TensorNodeId,
+        tensor1: TensorNodeId,
+        tensor2: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addcdiv(input, tensor1, tensor2, value)
+    }
+
+    /// Clamp with tensor bounds. Alias for tensor_clamp_tensor.
+    pub fn functional_clamp_tensor(
+        &mut self,
+        input: TensorNodeId,
+        min: TensorNodeId,
+        max: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp_tensor(input, min, max)
+    }
+
+    /// Quotient and remainder. Alias for tensor_divmod.
+    pub fn functional_divmod(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_divmod(lhs, rhs)
+    }
+
+    /// Round toward zero. Alias for tensor_fix.
+    pub fn functional_fix(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fix(input)
+    }
+
+    /// Base-10 exponential. Alias for tensor_exp10.
+    pub fn functional_exp10(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_exp10(input)
+    }
+
+    /// Inverse complementary error function. Alias for tensor_erfcinv.
+    pub fn functional_erfcinv(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_erfcinv(input)
+    }
+
+    /// Chain matrix multiplication. Alias for tensor_chain_matmul.
+    pub fn functional_chain_matmul(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_chain_matmul(tensors)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
