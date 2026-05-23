@@ -54549,6 +54549,48 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cholesky_inverse(cholesky_factor, upper)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Special functions utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Entropy of the input: -x * log(x).
+    pub fn entr_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_entr(input)
+    }
+
+    /// Inverse complementary error function.
+    pub fn erfcinv_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_erfcinv(input)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // FFT shift utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Shift zero-frequency component to center.
+    pub fn fftshift_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fftshift(input, dim)
+    }
+
+    /// Inverse of fftshift (shift zero-frequency back to origin).
+    pub fn ifftshift_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ifftshift(input, dim)
+    }
 }
 
 pub use ft_autograd::{
