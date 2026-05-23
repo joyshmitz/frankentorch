@@ -30892,6 +30892,116 @@ impl FrankenTorchSession {
         self.tensor_variable(anchors, vec![total_anchors, 4], false)
     }
 
+    /// Encode target boxes relative to anchor boxes (box parameterization).
+    ///
+    /// Computes (tx, ty, tw, th) where:
+    /// - tx = (target_cx - anchor_cx) / anchor_w
+    /// - ty = (target_cy - anchor_cy) / anchor_h
+    /// - tw = log(target_w / anchor_w)
+    /// - th = log(target_h / anchor_h)
+    ///
+    /// Used for training detection heads. Both inputs in (x1, y1, x2, y2) format.
+    pub fn encode_boxes(
+        &mut self,
+        anchors: TensorNodeId,
+        targets: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let anchor_shape = self.tensor_shape(anchors)?;
+        let target_shape = self.tensor_shape(targets)?;
+        if anchor_shape.len() != 2 || anchor_shape[1] != 4 {
+            return Err(Self::incompatible_tensor_args("encode_boxes: anchors must be [N, 4]"));
+        }
+        if target_shape != anchor_shape {
+            return Err(Self::incompatible_tensor_args("encode_boxes: shapes must match"));
+        }
+        let n = anchor_shape[0];
+        let a_x1 = self.tensor_narrow(anchors, 1, 0, 1)?;
+        let a_y1 = self.tensor_narrow(anchors, 1, 1, 1)?;
+        let a_x2 = self.tensor_narrow(anchors, 1, 2, 1)?;
+        let a_y2 = self.tensor_narrow(anchors, 1, 3, 1)?;
+        let t_x1 = self.tensor_narrow(targets, 1, 0, 1)?;
+        let t_y1 = self.tensor_narrow(targets, 1, 1, 1)?;
+        let t_x2 = self.tensor_narrow(targets, 1, 2, 1)?;
+        let t_y2 = self.tensor_narrow(targets, 1, 3, 1)?;
+        let a_w = self.tensor_sub(a_x2, a_x1)?;
+        let a_h = self.tensor_sub(a_y2, a_y1)?;
+        let t_w = self.tensor_sub(t_x2, t_x1)?;
+        let t_h = self.tensor_sub(t_y2, t_y1)?;
+        let two = self.full(vec![n, 1], 2.0, false)?;
+        let a_cx = self.tensor_add(a_x1, a_x2)?;
+        let a_cx = self.tensor_div(a_cx, two)?;
+        let a_cy = self.tensor_add(a_y1, a_y2)?;
+        let a_cy = self.tensor_div(a_cy, two)?;
+        let t_cx = self.tensor_add(t_x1, t_x2)?;
+        let t_cx = self.tensor_div(t_cx, two)?;
+        let t_cy = self.tensor_add(t_y1, t_y2)?;
+        let t_cy = self.tensor_div(t_cy, two)?;
+        let eps = self.full(vec![n, 1], 1e-7, false)?;
+        let a_w_safe = self.tensor_add(a_w, eps)?;
+        let a_h_safe = self.tensor_add(a_h, eps)?;
+        let t_w_safe = self.tensor_add(t_w, eps)?;
+        let t_h_safe = self.tensor_add(t_h, eps)?;
+        let dx = self.tensor_sub(t_cx, a_cx)?;
+        let tx = self.tensor_div(dx, a_w_safe)?;
+        let dy = self.tensor_sub(t_cy, a_cy)?;
+        let ty = self.tensor_div(dy, a_h_safe)?;
+        let w_ratio = self.tensor_div(t_w_safe, a_w_safe)?;
+        let tw = self.tensor_log(w_ratio)?;
+        let h_ratio = self.tensor_div(t_h_safe, a_h_safe)?;
+        let th = self.tensor_log(h_ratio)?;
+        self.tensor_cat(&[tx, ty, tw, th], 1)
+    }
+
+    /// Decode predicted deltas to boxes using anchor boxes.
+    ///
+    /// Inverse of encode_boxes. Converts (tx, ty, tw, th) predictions
+    /// back to (x1, y1, x2, y2) format.
+    pub fn decode_boxes(
+        &mut self,
+        anchors: TensorNodeId,
+        deltas: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let anchor_shape = self.tensor_shape(anchors)?;
+        let delta_shape = self.tensor_shape(deltas)?;
+        if anchor_shape.len() != 2 || anchor_shape[1] != 4 {
+            return Err(Self::incompatible_tensor_args("decode_boxes: anchors must be [N, 4]"));
+        }
+        if delta_shape != anchor_shape {
+            return Err(Self::incompatible_tensor_args("decode_boxes: shapes must match"));
+        }
+        let n = anchor_shape[0];
+        let a_x1 = self.tensor_narrow(anchors, 1, 0, 1)?;
+        let a_y1 = self.tensor_narrow(anchors, 1, 1, 1)?;
+        let a_x2 = self.tensor_narrow(anchors, 1, 2, 1)?;
+        let a_y2 = self.tensor_narrow(anchors, 1, 3, 1)?;
+        let tx = self.tensor_narrow(deltas, 1, 0, 1)?;
+        let ty = self.tensor_narrow(deltas, 1, 1, 1)?;
+        let tw = self.tensor_narrow(deltas, 1, 2, 1)?;
+        let th = self.tensor_narrow(deltas, 1, 3, 1)?;
+        let a_w = self.tensor_sub(a_x2, a_x1)?;
+        let a_h = self.tensor_sub(a_y2, a_y1)?;
+        let two = self.full(vec![n, 1], 2.0, false)?;
+        let a_cx = self.tensor_add(a_x1, a_x2)?;
+        let a_cx = self.tensor_div(a_cx, two)?;
+        let a_cy = self.tensor_add(a_y1, a_y2)?;
+        let a_cy = self.tensor_div(a_cy, two)?;
+        let dx = self.tensor_mul(tx, a_w)?;
+        let pred_cx = self.tensor_add(dx, a_cx)?;
+        let dy = self.tensor_mul(ty, a_h)?;
+        let pred_cy = self.tensor_add(dy, a_cy)?;
+        let exp_tw = self.tensor_exp(tw)?;
+        let pred_w = self.tensor_mul(exp_tw, a_w)?;
+        let exp_th = self.tensor_exp(th)?;
+        let pred_h = self.tensor_mul(exp_th, a_h)?;
+        let half_w = self.tensor_div(pred_w, two)?;
+        let half_h = self.tensor_div(pred_h, two)?;
+        let x1 = self.tensor_sub(pred_cx, half_w)?;
+        let y1 = self.tensor_sub(pred_cy, half_h)?;
+        let x2 = self.tensor_add(pred_cx, half_w)?;
+        let y2 = self.tensor_add(pred_cy, half_h)?;
+        self.tensor_cat(&[x1, y1, x2, y2], 1)
+    }
+
     /// Compute IoU (Intersection over Union) between two sets of boxes.
     ///
     /// Args:
