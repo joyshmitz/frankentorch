@@ -12723,6 +12723,161 @@ impl FrankenTorchSession {
         self.tensor_add(scaled, b_t)
     }
 
+    /// Spatial dropout for 1D inputs (drops entire channels).
+    ///
+    /// Equivalent to `torch.nn.functional.dropout1d(input, p, training)`.
+    /// Input shape: `[N, C, L]`. Drops entire channels (dim 1) randomly.
+    pub fn functional_dropout1d(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(Self::incompatible_tensor_args(
+                "dropout1d: probability p must be in [0, 1]",
+            ));
+        }
+        if !training || p == 0.0 {
+            return Ok(input);
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "dropout1d: input must be 3-D [N, C, L]",
+            ));
+        }
+        let (n, c, l) = (shape[0], shape[1], shape[2]);
+        let scale = 1.0 / (1.0 - p);
+
+        let mut mask_vals = Vec::with_capacity(n * c * l);
+        for _ in 0..n {
+            for _ in 0..c {
+                let keep = if self.rng.next_f64() < p { 0.0 } else { scale };
+                for _ in 0..l {
+                    mask_vals.push(keep);
+                }
+            }
+        }
+
+        let mask = self.tensor_variable(mask_vals, shape, false)?;
+        self.tensor_mul(input, mask)
+    }
+
+    /// Spatial dropout for 2D inputs (drops entire feature maps).
+    ///
+    /// Equivalent to `torch.nn.functional.dropout2d(input, p, training)`.
+    /// Input shape: `[N, C, H, W]`. Drops entire channels (dim 1) randomly.
+    pub fn functional_dropout2d(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(Self::incompatible_tensor_args(
+                "dropout2d: probability p must be in [0, 1]",
+            ));
+        }
+        if !training || p == 0.0 {
+            return Ok(input);
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "dropout2d: input must be 4-D [N, C, H, W]",
+            ));
+        }
+        let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let spatial = h * w;
+        let scale = 1.0 / (1.0 - p);
+
+        let mut mask_vals = Vec::with_capacity(n * c * spatial);
+        for _ in 0..n {
+            for _ in 0..c {
+                let keep = if self.rng.next_f64() < p { 0.0 } else { scale };
+                for _ in 0..spatial {
+                    mask_vals.push(keep);
+                }
+            }
+        }
+
+        let mask = self.tensor_variable(mask_vals, shape, false)?;
+        self.tensor_mul(input, mask)
+    }
+
+    /// Spatial dropout for 3D inputs (drops entire feature volumes).
+    ///
+    /// Equivalent to `torch.nn.functional.dropout3d(input, p, training)`.
+    /// Input shape: `[N, C, D, H, W]`. Drops entire channels (dim 1) randomly.
+    pub fn functional_dropout3d(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(Self::incompatible_tensor_args(
+                "dropout3d: probability p must be in [0, 1]",
+            ));
+        }
+        if !training || p == 0.0 {
+            return Ok(input);
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "dropout3d: input must be 5-D [N, C, D, H, W]",
+            ));
+        }
+        let (n, c, d, h, w) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+        let spatial = d * h * w;
+        let scale = 1.0 / (1.0 - p);
+
+        let mut mask_vals = Vec::with_capacity(n * c * spatial);
+        for _ in 0..n {
+            for _ in 0..c {
+                let keep = if self.rng.next_f64() < p { 0.0 } else { scale };
+                for _ in 0..spatial {
+                    mask_vals.push(keep);
+                }
+            }
+        }
+
+        let mask = self.tensor_variable(mask_vals, shape, false)?;
+        self.tensor_mul(input, mask)
+    }
+
+    /// Alias for `functional_dropout1d`.
+    pub fn tensor_dropout1d(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_dropout1d(input, p, training)
+    }
+
+    /// Alias for `functional_dropout2d`.
+    pub fn tensor_dropout2d(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_dropout2d(input, p, training)
+    }
+
+    /// Alias for `functional_dropout3d`.
+    pub fn tensor_dropout3d(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_dropout3d(input, p, training)
+    }
+
     /// Look up embeddings from a weight matrix.
     ///
     /// Equivalent to `torch.nn.functional.embedding(input, weight)`.
