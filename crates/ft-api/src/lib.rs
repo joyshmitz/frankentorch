@@ -15230,6 +15230,69 @@ impl FrankenTorchSession {
         self.tensor_special_expit(input)
     }
 
+    /// Element-wise max. Alias for tensor_max.
+    pub fn functional_max(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_max(lhs, rhs)
+    }
+
+    /// Element-wise min. Alias for tensor_min.
+    pub fn functional_min(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_min(lhs, rhs)
+    }
+
+    /// Broadcasting element-wise max. Alias for tensor_maximum.
+    pub fn functional_maximum(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_maximum(lhs, rhs)
+    }
+
+    /// Broadcasting element-wise min. Alias for tensor_minimum.
+    pub fn functional_minimum(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_minimum(lhs, rhs)
+    }
+
+    /// NaN-aware max. Alias for tensor_nanmax.
+    pub fn functional_nanmax(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nanmax(input)
+    }
+
+    /// NaN-aware min. Alias for tensor_nanmin.
+    pub fn functional_nanmin(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nanmin(input)
+    }
+
+    /// Replace NaN/inf. Alias for tensor_nan_to_num.
+    pub fn functional_nan_to_num(
+        &mut self,
+        input: TensorNodeId,
+        nan: f64,
+        posinf: Option<f64>,
+        neginf: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nan_to_num(input, nan, posinf, neginf)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
