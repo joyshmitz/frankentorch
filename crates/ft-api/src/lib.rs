@@ -15140,6 +15140,62 @@ impl FrankenTorchSession {
         self.tensor_combinations(input, r, with_replacement)
     }
 
+    /// 1-D FFT. Alias for tensor_fft.
+    pub fn functional_fft(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft(input, n)
+    }
+
+    /// 1-D inverse FFT. Alias for tensor_ifft.
+    pub fn functional_ifft(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ifft(input, n)
+    }
+
+    /// 1-D real FFT. Alias for tensor_rfft.
+    pub fn functional_rfft(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rfft(input, n)
+    }
+
+    /// 1-D inverse real FFT. Alias for tensor_irfft.
+    pub fn functional_irfft(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_irfft(input, n)
+    }
+
+    /// Hann window. Alias for tensor_hann_window.
+    pub fn functional_hann_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hann_window(window_length, periodic)
+    }
+
+    /// Hamming window. Alias for tensor_hamming_window.
+    pub fn functional_hamming_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+        alpha: f64,
+        beta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hamming_window(window_length, periodic, alpha, beta)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
