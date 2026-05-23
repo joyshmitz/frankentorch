@@ -1957,6 +1957,110 @@ impl FrankenTorchSession {
         self.randn(shape, requires_grad)
     }
 
+    /// Create a tensor filled with normally distributed random values.
+    ///
+    /// Equivalent to `torch.normal(mean, std, size)`.
+    /// Samples from N(mean, std²).
+    pub fn tensor_normal(
+        &mut self,
+        mean: f64,
+        std: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if std < 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "normal: std must be non-negative",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| mean + std * self.rng.next_normal())
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
+    /// Create a tensor filled with uniformly distributed random values.
+    ///
+    /// Equivalent to `torch.empty(size).uniform_(from, to)` or similar.
+    /// Samples from U(from, to).
+    pub fn tensor_uniform(
+        &mut self,
+        from: f64,
+        to: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if from >= to {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "uniform: 'from' must be less than 'to'",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let range = to - from;
+        let values: Vec<f64> = (0..numel)
+            .map(|_| from + range * self.rng.next_f64())
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
+    /// Create a tensor filled with exponentially distributed random values.
+    ///
+    /// Equivalent to `torch.empty(size).exponential_(lambd)`.
+    /// Samples from Exp(lambda) with PDF: lambda * exp(-lambda * x).
+    pub fn tensor_exponential(
+        &mut self,
+        lambd: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if lambd <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "exponential: lambda must be positive",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| -self.rng.next_f64().ln() / lambd)
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
+    /// Create a tensor filled with geometrically distributed random values.
+    ///
+    /// Equivalent to `torch.empty(size).geometric_(p)`.
+    /// Samples from Geom(p): number of Bernoulli trials until first success.
+    pub fn tensor_geometric(
+        &mut self,
+        p: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if p <= 0.0 || p > 1.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "geometric: p must be in (0, 1]",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let log_1_minus_p = (1.0 - p).ln();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                // Inverse CDF: ceil(ln(U) / ln(1-p))
+                let u = self.rng.next_f64();
+                (u.ln() / log_1_minus_p).ceil()
+            })
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
     /// Alias for `randint`. Equivalent to `torch.randint(low, high, shape)`.
     pub fn tensor_randint(
         &mut self,
@@ -15908,6 +16012,48 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_randn(shape, requires_grad)
+    }
+
+    /// Normal distribution samples. Alias for tensor_normal.
+    pub fn functional_normal(
+        &mut self,
+        mean: f64,
+        std: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_normal(mean, std, shape, requires_grad)
+    }
+
+    /// Uniform distribution samples. Alias for tensor_uniform.
+    pub fn functional_uniform(
+        &mut self,
+        from: f64,
+        to: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_uniform(from, to, shape, requires_grad)
+    }
+
+    /// Exponential distribution samples. Alias for tensor_exponential.
+    pub fn functional_exponential(
+        &mut self,
+        lambd: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_exponential(lambd, shape, requires_grad)
+    }
+
+    /// Geometric distribution samples. Alias for tensor_geometric.
+    pub fn functional_geometric(
+        &mut self,
+        p: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_geometric(p, shape, requires_grad)
     }
 
     /// Random integers with same shape. Alias for tensor_randint_like.
