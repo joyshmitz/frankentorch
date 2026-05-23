@@ -13764,6 +13764,56 @@ impl FrankenTorchSession {
         self.tensor_diagflat(input, offset)
     }
 
+    /// Clone tensor with gradient tracking. Alias for tensor_clone.
+    pub fn functional_clone(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clone(input, requires_grad)
+    }
+
+    /// Return contiguous tensor (no-op in FrankenTorch). Alias for tensor_contiguous.
+    pub fn functional_contiguous(&self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_contiguous(input)
+    }
+
+    /// View tensor with new shape. Alias for tensor_view.
+    pub fn functional_view(
+        &mut self,
+        input: TensorNodeId,
+        new_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_view(input, new_shape)
+    }
+
+    /// View tensor with same shape as other. Alias for tensor_view_as.
+    pub fn functional_view_as(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_view_as(input, other)
+    }
+
+    /// Reshape tensor to same shape as other. Alias for tensor_reshape_as.
+    pub fn functional_reshape_as(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reshape_as(input, other)
+    }
+
+    /// Expand tensor to same shape as other. Alias for tensor_expand_as.
+    pub fn functional_expand_as(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expand_as(input, other)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
