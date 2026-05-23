@@ -15303,6 +15303,24 @@ impl FrankenTorchSession {
         self.tensor_addr(input, vec1, vec2, beta, alpha)
     }
 
+    /// Unbind along dim. Alias for tensor_unbind.
+    pub fn functional_unbind(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_unbind(input, dim)
+    }
+
+    /// Multi-index to flat index. Alias for ravel_multi_index.
+    pub fn functional_ravel_multi_index(
+        &mut self,
+        multi_index: &[TensorNodeId],
+        shape: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.ravel_multi_index(multi_index, shape)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
