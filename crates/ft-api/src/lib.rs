@@ -30377,6 +30377,105 @@ impl FrankenTorchSession {
         self.tensor_mean(stacked)
     }
 
+    /// ArcFace (Additive Angular Margin) loss for face recognition.
+    ///
+    /// Given L2-normalized features [N, D] and L2-normalized weight [C, D],
+    /// computes cosine similarity then applies angular margin penalty
+    /// cos(arccos(cos_theta_y) + m) for target class. Commonly used in
+    /// face verification/identification.
+    ///
+    /// Args:
+    /// - features: L2-normalized embeddings [N, D]
+    /// - weight: L2-normalized class centers [C, D]
+    /// - labels: integer class indices [N]
+    /// - s: scale factor (commonly 64.0)
+    /// - m: angular margin in radians (commonly 0.5)
+    pub fn arcface_loss(
+        &mut self,
+        features: TensorNodeId,
+        weight: TensorNodeId,
+        labels: TensorNodeId,
+        s: f64,
+        m: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let feat_shape = self.tensor_shape(features)?;
+        let weight_shape = self.tensor_shape(weight)?;
+        if feat_shape.len() != 2 || weight_shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args(
+                "arcface_loss: features and weight must be 2D",
+            ));
+        }
+        let n = feat_shape[0];
+        let d = feat_shape[1];
+        let c = weight_shape[0];
+        if weight_shape[1] != d {
+            return Err(Self::incompatible_tensor_args(
+                "arcface_loss: feature dim must match weight dim",
+            ));
+        }
+        let weight_t = self.tensor_transpose(weight, 0, 1)?;
+        let cos_theta = self.tensor_matmul(features, weight_t)?;
+        let cos_theta_clamped = self.tensor_clamp(cos_theta, -1.0 + 1e-7, 1.0 - 1e-7)?;
+        let theta = self.tensor_acos(cos_theta_clamped)?;
+        let m_tensor = self.full(vec![n, c], m, false)?;
+        let theta_plus_m = self.tensor_add(theta, m_tensor)?;
+        let cos_theta_plus_m = self.tensor_cos(theta_plus_m)?;
+        let one_hot = self.tensor_one_hot(labels, c)?;
+        let ones = self.full(vec![n, c], 1.0, false)?;
+        let not_one_hot = self.tensor_sub(ones, one_hot)?;
+        let target_cos = self.tensor_mul(one_hot, cos_theta_plus_m)?;
+        let other_cos = self.tensor_mul(not_one_hot, cos_theta)?;
+        let logits = self.tensor_add(target_cos, other_cos)?;
+        let scale_tensor = self.full(vec![1], s, false)?;
+        let scaled_logits = self.tensor_mul(logits, scale_tensor)?;
+        self.tensor_cross_entropy(scaled_logits, labels, "mean")
+    }
+
+    /// CosFace (Large Margin Cosine) loss for face recognition.
+    ///
+    /// Similar to ArcFace but applies margin in cosine space: cos(theta) - m
+    /// instead of cos(theta + m). Simpler and often achieves similar results.
+    ///
+    /// Args:
+    /// - features: L2-normalized embeddings [N, D]
+    /// - weight: L2-normalized class centers [C, D]
+    /// - labels: integer class indices [N]
+    /// - s: scale factor (commonly 64.0)
+    /// - m: cosine margin (commonly 0.35)
+    pub fn cosface_loss(
+        &mut self,
+        features: TensorNodeId,
+        weight: TensorNodeId,
+        labels: TensorNodeId,
+        s: f64,
+        m: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let feat_shape = self.tensor_shape(features)?;
+        let weight_shape = self.tensor_shape(weight)?;
+        if feat_shape.len() != 2 || weight_shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args(
+                "cosface_loss: features and weight must be 2D",
+            ));
+        }
+        let n = feat_shape[0];
+        let d = feat_shape[1];
+        let c = weight_shape[0];
+        if weight_shape[1] != d {
+            return Err(Self::incompatible_tensor_args(
+                "cosface_loss: feature dim must match weight dim",
+            ));
+        }
+        let weight_t = self.tensor_transpose(weight, 0, 1)?;
+        let cos_theta = self.tensor_matmul(features, weight_t)?;
+        let one_hot = self.tensor_one_hot(labels, c)?;
+        let margin_tensor = self.full(vec![n, c], m, false)?;
+        let margin_penalty = self.tensor_mul(one_hot, margin_tensor)?;
+        let penalized_logits = self.tensor_sub(cos_theta, margin_penalty)?;
+        let scale_tensor = self.full(vec![1], s, false)?;
+        let scaled_logits = self.tensor_mul(penalized_logits, scale_tensor)?;
+        self.tensor_cross_entropy(scaled_logits, labels, "mean")
+    }
+
     /// Quantile (pinball) loss for quantile regression.
     ///
     /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
