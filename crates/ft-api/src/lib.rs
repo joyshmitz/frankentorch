@@ -14609,6 +14609,39 @@ impl FrankenTorchSession {
         self.tensor_argsort(input, dim, descending)
     }
 
+    /// Sort along dim 0 ascending. Alias for tensor_msort.
+    pub fn functional_msort(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, Vec<usize>), AutogradError> {
+        self.tensor_msort(input)
+    }
+
+    /// k-th smallest value and index. Alias for tensor_kthvalue.
+    pub fn functional_kthvalue(
+        &mut self,
+        input: TensorNodeId,
+        k: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_kthvalue(input, k)
+    }
+
+    /// NaN-aware sum. Alias for tensor_nansum.
+    pub fn functional_nansum(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nansum(input)
+    }
+
+    /// NaN-aware mean. Alias for tensor_nanmean.
+    pub fn functional_nanmean(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nanmean(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
