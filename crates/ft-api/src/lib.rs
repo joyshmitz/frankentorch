@@ -52105,6 +52105,140 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rot90(input, k, dims)
     }
+
+    // ── Min/Max Variants ───────────────────────────────────────────────────
+
+    /// Element-wise max ignoring NaN.
+    pub fn fmax_tensor(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fmax(a, b)
+    }
+
+    /// Element-wise min ignoring NaN.
+    pub fn fmin_tensor(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fmin(a, b)
+    }
+
+    // ── Tensor Creation Aliases ────────────────────────────────────────────
+
+    /// Create zeros tensor.
+    pub fn zeros_tensor(
+        &mut self,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.zeros(shape, false)
+    }
+
+    /// Create ones tensor.
+    pub fn ones_tensor(
+        &mut self,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.ones(shape, false)
+    }
+
+    /// Create full tensor.
+    pub fn full_tensor(
+        &mut self,
+        shape: Vec<usize>,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.full(shape, value, false)
+    }
+
+    /// Create empty tensor (uninitialized).
+    pub fn empty_tensor(
+        &mut self,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.empty(shape, false)
+    }
+
+    /// Create eye (identity) tensor.
+    pub fn eye_tensor(
+        &mut self,
+        n: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_eye(n, None, false)
+    }
+
+    // ── Random Creation Aliases ────────────────────────────────────────────
+
+    /// Create random tensor (uniform [0, 1)).
+    pub fn rand_tensor(
+        &mut self,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.rand(shape, false)
+    }
+
+    /// Create random tensor (standard normal).
+    pub fn randn_tensor(
+        &mut self,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.randn(shape, false)
+    }
+
+    /// Create random integer tensor.
+    pub fn randint_simple(
+        &mut self,
+        low: i64,
+        high: i64,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randint(low, high, shape)
+    }
+
+    /// Random permutation of 0..n.
+    pub fn randperm_simple(
+        &mut self,
+        n: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randperm(n)
+    }
+
+    // ── Like Operations ────────────────────────────────────────────────────
+
+    /// Create full with same shape/dtype.
+    pub fn full_like_tensor(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_full_like(input, value, false)
+    }
+
+    /// Create empty with same shape/dtype.
+    pub fn empty_like_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_empty_like(input, false)
+    }
+
+    /// Create rand with same shape/dtype.
+    pub fn rand_like_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rand_like(input, false)
+    }
+
+    /// Create randn with same shape/dtype.
+    pub fn randn_like_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randn_like(input, false)
+    }
 }
 
 pub use ft_autograd::{
