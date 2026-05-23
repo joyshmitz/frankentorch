@@ -16668,6 +16668,147 @@ impl FrankenTorchSession {
         Ok((output, updated_mean, updated_var))
     }
 
+    /// Apply batch normalization over `[N, C, D, H, W]`.
+    ///
+    /// Equivalent to `torch.nn.functional.batch_norm` for 5D inputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tensor_batch_norm3d(
+        &mut self,
+        input: TensorNodeId,
+        running_mean: Option<TensorNodeId>,
+        running_var: Option<TensorNodeId>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        training: bool,
+        momentum: f64,
+        eps: f64,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.functional_batch_norm3d(
+            input,
+            running_mean,
+            running_var,
+            weight,
+            bias,
+            training,
+            momentum,
+            eps,
+        )
+    }
+
+    /// Apply batch normalization over `[N, C, D, H, W]`.
+    ///
+    /// Returns `(output, updated_running_mean, updated_running_var)`. In eval mode the
+    /// returned running-stat tensors are `None`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn functional_batch_norm3d(
+        &mut self,
+        input: TensorNodeId,
+        running_mean: Option<TensorNodeId>,
+        running_var: Option<TensorNodeId>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        training: bool,
+        momentum: f64,
+        eps: f64,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "batch_norm3d: input must be 5-D [N, C, D, H, W]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let channels = input_shape[1];
+        let depth = input_shape[2];
+        let height = input_shape[3];
+        let width = input_shape[4];
+        let sample_count = batch_size * depth * height * width;
+        self.validate_optional_affine(weight, bias, &[channels], "batch_norm3d")?;
+
+        let permuted = self.tensor_permute(input, vec![0, 2, 3, 4, 1])?;
+        let flat = self.tensor_reshape(permuted, vec![sample_count, channels])?;
+        let (normalized_flat, updated_mean, updated_var) = if training {
+            let batch_mean = self.tensor_mean_dim(flat, 0)?;
+            let mean_us = self.tensor_unsqueeze(batch_mean, 0)?;
+            let mean_exp = self.tensor_expand(mean_us, vec![sample_count, channels])?;
+            let diff = self.tensor_sub(flat, mean_exp)?;
+            let diff_sq = self.tensor_mul(diff, diff)?;
+            let batch_var = self.tensor_mean_dim(diff_sq, 0)?;
+            let eps_t = self.full(vec![channels], eps, false)?;
+            let std_t = self.tensor_add(batch_var, eps_t)?;
+            let std_t = self.tensor_sqrt(std_t)?;
+            let std_us = self.tensor_unsqueeze(std_t, 0)?;
+            let std_exp = self.tensor_expand(std_us, vec![sample_count, channels])?;
+            let normalized = self.tensor_div(diff, std_exp)?;
+
+            let momentum_pair = if running_mean.is_some() || running_var.is_some() {
+                let one_minus = self.full(vec![channels], 1.0 - momentum, false)?;
+                let momentum_t = self.full(vec![channels], momentum, false)?;
+                Some((one_minus, momentum_t))
+            } else {
+                None
+            };
+
+            let updated_mean = if let Some(running_mean) = running_mean {
+                let (one_minus, momentum_t) =
+                    momentum_pair.expect("allocated when running_mean.is_some()");
+                let prev_term = self.tensor_mul(running_mean, one_minus)?;
+                let batch_term = self.tensor_mul(batch_mean, momentum_t)?;
+                Some(self.tensor_add(prev_term, batch_term)?)
+            } else {
+                None
+            };
+
+            let updated_var = if let Some(running_var) = running_var {
+                let bessel = if sample_count > 1 {
+                    sample_count as f64 / (sample_count as f64 - 1.0)
+                } else {
+                    1.0
+                };
+                let bessel_t = self.full(vec![channels], bessel, false)?;
+                let unbiased_batch_var = self.tensor_mul(batch_var, bessel_t)?;
+                let (one_minus, momentum_t) =
+                    momentum_pair.expect("allocated when running_var.is_some()");
+                let prev_term = self.tensor_mul(running_var, one_minus)?;
+                let batch_term = self.tensor_mul(unbiased_batch_var, momentum_t)?;
+                Some(self.tensor_add(prev_term, batch_term)?)
+            } else {
+                None
+            };
+
+            (normalized, updated_mean, updated_var)
+        } else {
+            let running_mean = running_mean.ok_or_else(|| {
+                Self::incompatible_tensor_args(
+                    "batch_norm3d: running_mean is required when training is false",
+                )
+            })?;
+            let running_var = running_var.ok_or_else(|| {
+                Self::incompatible_tensor_args(
+                    "batch_norm3d: running_var is required when training is false",
+                )
+            })?;
+            let mean_us = self.tensor_unsqueeze(running_mean, 0)?;
+            let mean_exp = self.tensor_expand(mean_us, vec![sample_count, channels])?;
+            let diff = self.tensor_sub(flat, mean_exp)?;
+            let eps_t = self.full(vec![channels], eps, false)?;
+            let std_t = self.tensor_add(running_var, eps_t)?;
+            let std_t = self.tensor_sqrt(std_t)?;
+            let std_us = self.tensor_unsqueeze(std_t, 0)?;
+            let std_exp = self.tensor_expand(std_us, vec![sample_count, channels])?;
+            (self.tensor_div(diff, std_exp)?, None, None)
+        };
+
+        let reshaped = self.tensor_reshape(
+            normalized_flat,
+            vec![batch_size, depth, height, width, channels],
+        )?;
+        let output = self.tensor_permute(reshaped, vec![0, 4, 1, 2, 3])?;
+        let output = self.apply_optional_affine(output, &input_shape, 1, weight, bias)?;
+        Ok((output, updated_mean, updated_var))
+    }
+
     /// Softmax along dimension. Alias for tensor_softmax.
     pub fn functional_softmax(
         &mut self,
