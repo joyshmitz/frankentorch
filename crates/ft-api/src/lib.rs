@@ -32913,6 +32913,103 @@ impl FrankenTorchSession {
         Ok((keep, new_scores))
     }
 
+    /// Matrix NMS for instance segmentation (YOLACT, SOLOv2).
+    ///
+    /// Decays scores based on IoU with all higher-scoring instances.
+    /// More efficient than sequential NMS for instance segmentation.
+    ///
+    /// Args:
+    /// - scores: [N] confidence scores
+    /// - masks: [N, H, W] instance masks
+    /// - sigma: decay coefficient
+    /// - pre_nms_top_k: keep top-k before NMS
+    /// - post_nms_top_k: keep top-k after NMS
+    ///
+    /// Returns: (indices, new_scores) of kept instances
+    pub fn matrix_nms(
+        &mut self,
+        scores: TensorNodeId,
+        masks: TensorNodeId,
+        sigma: f64,
+        pre_nms_top_k: usize,
+        post_nms_top_k: usize,
+    ) -> Result<(Vec<usize>, Vec<f64>), AutogradError> {
+        let scores_shape = self.tensor_shape(scores)?;
+        let masks_shape = self.tensor_shape(masks)?;
+        if scores_shape.len() != 1 || masks_shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "matrix_nms: scores [N], masks [N, H, W]",
+            ));
+        }
+        let n = scores_shape[0];
+        if n == 0 {
+            return Ok((vec![], vec![]));
+        }
+        let (h, w) = (masks_shape[1], masks_shape[2]);
+        let mask_area = h * w;
+        let scores_data = self.tensor_values(scores)?;
+        let masks_data = self.tensor_values(masks)?;
+        let mut indices: Vec<usize> = (0..n).collect();
+        indices.sort_by(|&a, &b| {
+            scores_data[b]
+                .partial_cmp(&scores_data[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let top_k = pre_nms_top_k.min(n);
+        indices.truncate(top_k);
+        let k = indices.len();
+        let mut iou_matrix = vec![0.0_f64; k * k];
+        for i in 0..k {
+            let mi = &masks_data[indices[i] * mask_area..(indices[i] + 1) * mask_area];
+            for j in (i + 1)..k {
+                let mj = &masks_data[indices[j] * mask_area..(indices[j] + 1) * mask_area];
+                let mut inter = 0.0_f64;
+                let mut union_i = 0.0_f64;
+                let mut union_j = 0.0_f64;
+                for (a, b) in mi.iter().zip(mj.iter()) {
+                    let ai = if *a > 0.5 { 1.0 } else { 0.0 };
+                    let bi = if *b > 0.5 { 1.0 } else { 0.0 };
+                    inter += ai * bi;
+                    union_i += ai;
+                    union_j += bi;
+                }
+                let union_val = (union_i + union_j - inter).max(1e-6_f64);
+                let iou = inter / union_val;
+                iou_matrix[i * k + j] = iou;
+                iou_matrix[j * k + i] = iou;
+            }
+        }
+        let mut decay_factors = vec![1.0_f64; k];
+        for i in 0..k {
+            for j in 0..i {
+                let iou = iou_matrix[i * k + j];
+                let decay = (-iou * iou / sigma).exp();
+                decay_factors[i] *= decay;
+            }
+        }
+        let new_scores: Vec<f64> = indices
+            .iter()
+            .enumerate()
+            .map(|(i, &idx)| scores_data[idx] * decay_factors[i])
+            .collect();
+        let mut sorted_indices: Vec<usize> = (0..k).collect();
+        sorted_indices.sort_by(|&a, &b| {
+            new_scores[b]
+                .partial_cmp(&new_scores[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let final_k = post_nms_top_k.min(k);
+        let final_indices: Vec<usize> = sorted_indices[..final_k]
+            .iter()
+            .map(|&i| indices[i])
+            .collect();
+        let final_scores: Vec<f64> = sorted_indices[..final_k]
+            .iter()
+            .map(|&i| new_scores[i])
+            .collect();
+        Ok((final_indices, final_scores))
+    }
+
     /// Generate anchor boxes for object detection.
     ///
     /// Creates anchors at each spatial location for given aspect ratios and scales.
