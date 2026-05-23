@@ -46382,6 +46382,76 @@ impl FrankenTorchSession {
             _ => Err(Self::incompatible_tensor_args("reduce_batch: unknown reduction")),
         }
     }
+
+    // ── Sequence Utilities ────────────────────────────────────────────────
+
+    /// Create attention mask from sequence lengths.
+    ///
+    /// Returns mask of shape [batch, max_len] with 1s for valid positions.
+    pub fn length_to_mask(
+        &mut self,
+        lengths: &[usize],
+        max_len: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let batch_size = lengths.len();
+        let mut mask_data = vec![0.0_f64; batch_size * max_len];
+        for (i, &len) in lengths.iter().enumerate() {
+            for j in 0..len.min(max_len) {
+                mask_data[i * max_len + j] = 1.0;
+            }
+        }
+        self.tensor_variable(mask_data, vec![batch_size, max_len], false)
+    }
+
+    // ── Pooling Utilities ─────────────────────────────────────────────────
+
+    /// Global average pooling for any dimension.
+    ///
+    /// Averages over all spatial dimensions.
+    pub fn global_avg_pool(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        match shape.len() {
+            3 => {
+                let pooled = self.tensor_mean_dim(x, 2)?;
+                Ok(pooled)
+            }
+            4 => {
+                let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
+                self.tensor_adaptive_avg_pool2d(x, (1, 1))
+            }
+            5 => {
+                let (n, c, _, _, _) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+                self.tensor_adaptive_avg_pool3d(x, (1, 1, 1))
+            }
+            _ => Err(Self::incompatible_tensor_args("global_avg_pool: unsupported dim")),
+        }
+    }
+
+    /// Global max pooling for any dimension.
+    pub fn global_max_pool(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        match shape.len() {
+            3 => {
+                let (pooled, _) = self.tensor_max_dim(x, 2)?;
+                Ok(pooled)
+            }
+            4 => {
+                let (pooled, _) = self.tensor_adaptive_max_pool2d(x, (1, 1))?;
+                Ok(pooled)
+            }
+            5 => {
+                let (pooled, _) = self.tensor_adaptive_max_pool3d(x, (1, 1, 1))?;
+                Ok(pooled)
+            }
+            _ => Err(Self::incompatible_tensor_args("global_max_pool: unsupported dim")),
+        }
+    }
 }
 
 pub use ft_autograd::{
