@@ -12778,6 +12778,17 @@ impl FrankenTorchSession {
         self.tensor_pad(input, padding, value)
     }
 
+    /// Pad tensor with mode. Alias for tensor_pad_mode.
+    pub fn functional_pad_mode(
+        &mut self,
+        input: TensorNodeId,
+        padding: &[usize],
+        mode: &str,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad_mode(input, padding, mode, value)
+    }
+
     /// Interpolate tensor to target size. Alias for tensor_interpolate.
     pub fn functional_interpolate(
         &mut self,
@@ -14127,6 +14138,15 @@ impl FrankenTorchSession {
         self.tensor_sum_dim(input, dim)
     }
 
+    /// Sum and reduce to target shape. Alias for tensor_sum_to_size.
+    pub fn functional_sum_to_size(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sum_to_size(input, target_shape)
+    }
+
     /// Mean along dimension. Alias for tensor_mean_dim.
     pub fn functional_mean_dim(
         &mut self,
@@ -15115,6 +15135,34 @@ impl FrankenTorchSession {
         shape: Vec<usize>,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_randint(low, high, shape)
+    }
+
+    /// Uniform random tensor. Alias for tensor_rand.
+    pub fn functional_rand(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rand(shape, requires_grad)
+    }
+
+    /// Normal random tensor. Alias for tensor_randn.
+    pub fn functional_randn(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randn(shape, requires_grad)
+    }
+
+    /// Random integers with same shape. Alias for tensor_randint_like.
+    pub fn functional_randint_like(
+        &mut self,
+        input: TensorNodeId,
+        low: i64,
+        high: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randint_like(input, low, high)
     }
 
     /// Random permutation. Alias for tensor_randperm.
