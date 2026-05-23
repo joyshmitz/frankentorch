@@ -45513,6 +45513,239 @@ impl FrankenTorchSession {
         self.tensor_reshape(x_norm, vec![n, c, h, w])
     }
 
+    // ── Image Transform Utilities ─────────────────────────────────────────
+
+    /// Center crop an image tensor.
+    ///
+    /// Input: [N, C, H, W], output: [N, C, crop_h, crop_w].
+    pub fn center_crop(
+        &mut self,
+        x: TensorNodeId,
+        crop_h: usize,
+        crop_w: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("center_crop: x must be [N, C, H, W]"));
+        }
+        let (h, w) = (shape[2], shape[3]);
+        let y_start = (h - crop_h) / 2;
+        let x_start = (w - crop_w) / 2;
+        let sliced_h = self.tensor_narrow(x, 2, y_start, crop_h)?;
+        self.tensor_narrow(sliced_h, 3, x_start, crop_w)
+    }
+
+    /// Resize with scale factor using nearest neighbor.
+    ///
+    /// Simple 2x or 0.5x scaling via repeat/pooling.
+    pub fn resize_scale(
+        &mut self,
+        x: TensorNodeId,
+        scale: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("resize_scale: x must be [N, C, H, W]"));
+        }
+        let (h, w) = (shape[2], shape[3]);
+        let new_h = ((h as f64) * scale).round() as usize;
+        let new_w = ((w as f64) * scale).round() as usize;
+        self.tensor_interpolate(x, Some(vec![new_h, new_w]), None, "nearest", None)
+    }
+
+    /// Horizontal flip (left-right).
+    pub fn hflip(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_flip(x, &[3])
+    }
+
+    /// Vertical flip (up-down).
+    pub fn vflip(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_flip(x, &[2])
+    }
+
+    /// Rotate 90 degrees clockwise.
+    pub fn rotate90(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let transposed = self.tensor_transpose(x, 2, 3)?;
+        self.tensor_flip(transposed, &[3])
+    }
+
+    /// Rotate 180 degrees.
+    pub fn rotate180(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_flip(x, &[2, 3])
+    }
+
+    /// Rotate 270 degrees (90 degrees counter-clockwise).
+    pub fn rotate270(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let transposed = self.tensor_transpose(x, 2, 3)?;
+        self.tensor_flip(transposed, &[2])
+    }
+
+    /// Grayscale conversion using standard luminosity weights.
+    ///
+    /// Input: [N, 3, H, W] RGB, output: [N, 1, H, W].
+    pub fn rgb_to_grayscale(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 || shape[1] != 3 {
+            return Err(Self::incompatible_tensor_args("rgb_to_grayscale: x must be [N, 3, H, W]"));
+        }
+        let (n, _, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let weights = self.tensor_variable(vec![0.2989, 0.5870, 0.1140], vec![1, 3, 1, 1], false)?;
+        let weighted = self.tensor_mul(x, weights)?;
+        self.tensor_sum_dim(weighted, 1)
+    }
+
+    // ── Model Initialization ──────────────────────────────────────────────
+
+    /// Xavier/Glorot uniform initialization bounds.
+    ///
+    /// Returns the bound for uniform[-bound, bound].
+    pub fn xavier_uniform_bound(fan_in: usize, fan_out: usize, gain: f64) -> f64 {
+        gain * (6.0 / (fan_in + fan_out) as f64).sqrt()
+    }
+
+    /// Xavier/Glorot normal initialization std.
+    pub fn xavier_normal_std(fan_in: usize, fan_out: usize, gain: f64) -> f64 {
+        gain * (2.0 / (fan_in + fan_out) as f64).sqrt()
+    }
+
+    /// Kaiming/He uniform initialization bound.
+    pub fn kaiming_uniform_bound(fan_in: usize, a: f64) -> f64 {
+        let gain = (2.0 / (1.0 + a * a)).sqrt();
+        gain * (3.0 / fan_in as f64).sqrt()
+    }
+
+    /// Kaiming/He normal initialization std.
+    pub fn kaiming_normal_std(fan_in: usize, a: f64) -> f64 {
+        let gain = (2.0 / (1.0 + a * a)).sqrt();
+        gain / (fan_in as f64).sqrt()
+    }
+
+    /// Initialize tensor with Xavier uniform.
+    pub fn init_xavier_uniform(
+        &mut self,
+        shape: Vec<usize>,
+        gain: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let fan_in = if shape.len() >= 2 { shape[1] } else { shape[0] };
+        let fan_out = shape[0];
+        let bound = Self::xavier_uniform_bound(fan_in, fan_out, gain);
+        self.tensor_uniform(-bound, bound, shape, requires_grad)
+    }
+
+    /// Initialize tensor with Xavier normal.
+    pub fn init_xavier_normal(
+        &mut self,
+        shape: Vec<usize>,
+        gain: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let fan_in = if shape.len() >= 2 { shape[1] } else { shape[0] };
+        let fan_out = shape[0];
+        let std = Self::xavier_normal_std(fan_in, fan_out, gain);
+        let base = self.tensor_randn(shape, requires_grad)?;
+        let scale = self.full(vec![1], std, false)?;
+        self.tensor_mul(base, scale)
+    }
+
+    /// Initialize tensor with Kaiming uniform.
+    pub fn init_kaiming_uniform(
+        &mut self,
+        shape: Vec<usize>,
+        a: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let fan_in = if shape.len() >= 2 { shape[1] } else { shape[0] };
+        let bound = Self::kaiming_uniform_bound(fan_in, a);
+        self.tensor_uniform(-bound, bound, shape, requires_grad)
+    }
+
+    /// Initialize tensor with Kaiming normal.
+    pub fn init_kaiming_normal(
+        &mut self,
+        shape: Vec<usize>,
+        a: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let fan_in = if shape.len() >= 2 { shape[1] } else { shape[0] };
+        let std = Self::kaiming_normal_std(fan_in, a);
+        let base = self.tensor_randn(shape, requires_grad)?;
+        let scale = self.full(vec![1], std, false)?;
+        self.tensor_mul(base, scale)
+    }
+
+    /// Orthogonal initialization.
+    ///
+    /// Uses QR decomposition for orthogonal matrices.
+    pub fn init_orthogonal(
+        &mut self,
+        shape: Vec<usize>,
+        gain: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if shape.len() < 2 {
+            return Err(Self::incompatible_tensor_args("init_orthogonal: need at least 2D"));
+        }
+        let rows = shape[0];
+        let cols: usize = shape[1..].iter().product();
+        let flat_shape = vec![rows, cols];
+        let a = self.tensor_randn(flat_shape, false)?;
+        let (q, _r) = self.tensor_linalg_qr(a, true)?;
+        let gain_tensor = self.full(vec![1], gain, false)?;
+        let scaled = self.tensor_mul(q, gain_tensor)?;
+        if requires_grad {
+            self.tensor_requires_grad_(scaled, true)?;
+        }
+        self.tensor_reshape(scaled, shape)
+    }
+
+    // ── Gradient Utilities ────────────────────────────────────────────────
+
+    /// Gradient clipping by value.
+    ///
+    /// Clips gradient values to [-clip_value, clip_value].
+    pub fn clip_grad_value(
+        &mut self,
+        grad: TensorNodeId,
+        clip_value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp(grad, -clip_value, clip_value)
+    }
+
+    /// Gradient clipping by norm (per-tensor).
+    ///
+    /// Scales gradient so its norm doesn't exceed max_norm.
+    pub fn clip_grad_norm(
+        &mut self,
+        grad: TensorNodeId,
+        max_norm: f64,
+        norm_type: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let norm = self.tensor_norm(grad, norm_type)?;
+        let max_tensor = self.full(vec![1], max_norm, false)?;
+        let clip_coef = self.tensor_div(max_tensor, norm)?;
+        let one = self.full(vec![1], 1.0, false)?;
+        let coef = self.tensor_min(clip_coef, one)?;
+        self.tensor_mul(grad, coef)
+    }
 }
 
 pub use ft_autograd::{
