@@ -14364,6 +14364,59 @@ impl FrankenTorchSession {
         self.tensor_cross(a, b)
     }
 
+    /// Bitwise AND. Alias for tensor_bitwise_and.
+    pub fn functional_bitwise_and(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_and(input, other)
+    }
+
+    /// Bitwise OR. Alias for tensor_bitwise_or.
+    pub fn functional_bitwise_or(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_or(input, other)
+    }
+
+    /// Bitwise XOR. Alias for tensor_bitwise_xor.
+    pub fn functional_bitwise_xor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_xor(input, other)
+    }
+
+    /// Bitwise NOT. Alias for tensor_bitwise_not.
+    pub fn functional_bitwise_not(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_not(input)
+    }
+
+    /// Bitwise left shift. Alias for tensor_bitwise_left_shift.
+    pub fn functional_bitwise_left_shift(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_left_shift(input, other)
+    }
+
+    /// Bitwise right shift. Alias for tensor_bitwise_right_shift.
+    pub fn functional_bitwise_right_shift(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bitwise_right_shift(input, other)
+    }
+
     /// Normalized sinc function. Alias for tensor_sinc.
     pub fn functional_sinc(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_sinc(input)
