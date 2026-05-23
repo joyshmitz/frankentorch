@@ -1933,6 +1933,17 @@ impl FrankenTorchSession {
         self.empty(shape, requires_grad)
     }
 
+    /// Create a 0-dimensional (scalar) tensor from a single value.
+    ///
+    /// Equivalent to `torch.scalar_tensor(value)` or `torch.tensor(value)`.
+    pub fn tensor_scalar(
+        &mut self,
+        value: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_variable(vec![value], vec![], requires_grad)
+    }
+
     /// Create a tensor of zeros with the same shape as `input`.
     ///
     /// Equivalent to `torch.zeros_like(input)`.
@@ -19246,6 +19257,15 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_empty(shape, requires_grad)
+    }
+
+    /// Create a scalar tensor. Alias for tensor_scalar.
+    pub fn functional_scalar(
+        &mut self,
+        value: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_scalar(value, requires_grad)
     }
 
     pub fn tensor_argmax(
