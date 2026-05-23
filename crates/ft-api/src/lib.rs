@@ -54180,6 +54180,69 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_elu(input)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Additional FFT utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// N-dimensional discrete Fourier transform.
+    pub fn fftn_tensor(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<&[usize]>,
+        dims: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fftn(input, s, dims)
+    }
+
+    /// N-dimensional inverse discrete Fourier transform.
+    pub fn ifftn_tensor(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<&[usize]>,
+        dims: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ifftn(input, s, dims)
+    }
+
+    /// 1D inverse real FFT.
+    pub fn irfft_tensor(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_irfft(input, n)
+    }
+
+    /// 2D inverse real FFT.
+    pub fn irfft2_tensor(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<(usize, usize)>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_irfft2(input, s)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Additional mathematical utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Greatest common divisor of two integer tensors.
+    pub fn gcd_tensor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gcd(input, other)
+    }
+
+    /// Matrix inverse.
+    pub fn inverse_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_inverse(input)
+    }
 }
 
 pub use ft_autograd::{
