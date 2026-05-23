@@ -50286,6 +50286,325 @@ impl FrankenTorchSession {
         let scalar = self.full(vec![1], value, false)?;
         self.tensor_div(input, scalar)
     }
+
+    // ── Tensor Copying ────────────────────────────────────────────────────
+
+    /// Create a copy of tensor (alias for clone_tensor).
+    pub fn copy_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.clone_tensor(input)
+    }
+
+    // ── Reduce Utilities ──────────────────────────────────────────────────
+
+    /// Check if any element is true (nonzero).
+    pub fn any_nonzero(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_any(input)
+    }
+
+    /// Check if all elements are true (nonzero).
+    pub fn all_nonzero(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_all(input)
+    }
+
+    // ── Sign Utilities ────────────────────────────────────────────────────
+
+    /// Get sign of tensor elements (-1, 0, or 1).
+    pub fn sign_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sign(input)
+    }
+
+    /// Get absolute value of tensor.
+    pub fn abs_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_abs(input)
+    }
+
+    /// Negate tensor.
+    pub fn neg_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_neg(input)
+    }
+
+    // ── Rounding Utilities ────────────────────────────────────────────────
+
+    /// Floor tensor elements.
+    pub fn floor_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_floor(input)
+    }
+
+    /// Ceil tensor elements.
+    pub fn ceil_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ceil(input)
+    }
+
+    /// Round tensor elements to nearest integer.
+    pub fn round_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_round(input)
+    }
+
+    /// Truncate tensor elements toward zero.
+    pub fn trunc_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_trunc(input)
+    }
+
+    // ── Trigonometric Utilities ───────────────────────────────────────────
+
+    /// Sine of tensor elements.
+    pub fn sin_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sin(input)
+    }
+
+    /// Cosine of tensor elements.
+    pub fn cos_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cos(input)
+    }
+
+    /// Tangent of tensor elements.
+    pub fn tan_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tan(input)
+    }
+
+    /// Hyperbolic sine of tensor elements.
+    pub fn sinh_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sinh(input)
+    }
+
+    /// Hyperbolic cosine of tensor elements.
+    pub fn cosh_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cosh(input)
+    }
+
+    /// Hyperbolic tangent of tensor elements.
+    pub fn tanh_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tanh(input)
+    }
+
+    // ── Exponential/Log Utilities ─────────────────────────────────────────
+
+    /// Exponential of tensor elements.
+    pub fn exp_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_exp(input)
+    }
+
+    /// Natural logarithm of tensor elements.
+    pub fn log_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log(input)
+    }
+
+    /// Base-2 logarithm of tensor elements.
+    pub fn log2_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log2(input)
+    }
+
+    /// Base-10 logarithm of tensor elements.
+    pub fn log10_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log10(input)
+    }
+
+    /// Square root of tensor elements.
+    pub fn sqrt_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sqrt(input)
+    }
+
+    /// Reciprocal square root of tensor elements.
+    pub fn rsqrt_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rsqrt(input)
+    }
+
+    // ── Matrix Multiplication Utilities ───────────────────────────────────
+
+    /// Matrix multiplication of two 2D tensors.
+    pub fn mm(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mm(a, b)
+    }
+
+    /// Batched matrix multiplication.
+    pub fn bmm(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bmm(a, b)
+    }
+
+    /// Matrix-vector multiplication.
+    pub fn mv(
+        &mut self,
+        matrix: TensorNodeId,
+        vector: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mv(matrix, vector)
+    }
+
+    /// General matrix multiplication (matmul).
+    pub fn matmul_tensors(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matmul(a, b)
+    }
+
+    // ── Addmm/Addmv Utilities ─────────────────────────────────────────────
+
+    /// Add matrix multiplication result: beta*input + alpha*(mat1 @ mat2).
+    pub fn addmm_simple(
+        &mut self,
+        input: TensorNodeId,
+        mat1: TensorNodeId,
+        mat2: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addmm(input, mat1, mat2, 1.0, 1.0)
+    }
+
+    /// Add matrix-vector multiplication: beta*input + alpha*(mat @ vec).
+    pub fn addmv_simple(
+        &mut self,
+        input: TensorNodeId,
+        mat: TensorNodeId,
+        vec: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addmv(input, mat, vec, 1.0, 1.0)
+    }
+
+    // ── Inverse Trigonometric Utilities ───────────────────────────────────
+
+    /// Arcsine of tensor elements.
+    pub fn asin_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_asin(input)
+    }
+
+    /// Arccosine of tensor elements.
+    pub fn acos_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_acos(input)
+    }
+
+    /// Arctangent of tensor elements.
+    pub fn atan_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_atan(input)
+    }
+
+    /// Two-argument arctangent.
+    pub fn atan2_tensor(
+        &mut self,
+        y: TensorNodeId,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_atan2(y, x)
+    }
+
+    // ── Additional Math Utilities ─────────────────────────────────────────
+
+    /// Reciprocal of tensor elements.
+    pub fn reciprocal_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reciprocal(input)
+    }
+
+    /// Square of tensor elements.
+    pub fn square_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_square(input)
+    }
+
+    /// Cube of tensor elements.
+    pub fn cube_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pow(input, 3.0)
+    }
+
+    /// exp(x) - 1 with better precision for small x.
+    pub fn expm1_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expm1(input)
+    }
+
+    /// log(1 + x) with better precision for small x.
+    pub fn log1p_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log1p(input)
+    }
 }
 
 pub use ft_autograd::{
