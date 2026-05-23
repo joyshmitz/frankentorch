@@ -47831,6 +47831,85 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ge(a, b)
     }
+
+    // ── Broadcasting Utilities ───────────────────────────────────────────
+
+    /// Broadcast two tensors to the same shape.
+    pub fn broadcast_tensors_pair(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let broadcasted = self.tensor_broadcast_tensors(&[a, b])?;
+        Ok((broadcasted[0], broadcasted[1]))
+    }
+
+    /// Compute broadcast shape without actually broadcasting.
+    pub fn infer_broadcast_shape(
+        &self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<Vec<usize>, AutogradError> {
+        self.tensor_broadcast_shapes(&[a, b])
+    }
+
+    // ── Tensor Splitting ─────────────────────────────────────────────────
+
+    /// Split tensor into equal chunks along dimension.
+    pub fn split_equal(
+        &mut self,
+        input: TensorNodeId,
+        chunks: usize,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_chunk(input, chunks, dim)
+    }
+
+    /// Split tensor into a list of sizes along dimension.
+    pub fn split_with_sizes(
+        &mut self,
+        input: TensorNodeId,
+        sizes: &[usize],
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_split_with_sizes(input, sizes, dim)
+    }
+
+    // ── Rounding Utilities ───────────────────────────────────────────────
+
+    /// Round to nearest integer.
+    pub fn round_nearest(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_round(input)
+    }
+
+    /// Truncate to integer part.
+    pub fn truncate(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_trunc(input)
+    }
+
+    /// Fractional part.
+    pub fn fractional(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_frac(input)
+    }
+
+    // ── Exponential/Log Variants ─────────────────────────────────────────
+
+    /// Compute 2^x.
+    pub fn exp2_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_exp2(input)
+    }
 }
 
 pub use ft_autograd::{
