@@ -13387,6 +13387,24 @@ impl FrankenTorchSession {
         self.tensor_linalg_eigvalsh(input)
     }
 
+    /// Upper triangular part of matrix. Alias for tensor_triu.
+    pub fn functional_triu(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triu(input, diagonal)
+    }
+
+    /// Lower triangular part of matrix. Alias for tensor_tril.
+    pub fn functional_tril(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tril(input, diagonal)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
