@@ -13849,6 +13849,61 @@ impl FrankenTorchSession {
         self.tensor_frac(input)
     }
 
+    /// Element-wise sine. Alias for tensor_sin.
+    pub fn functional_sin(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sin(input)
+    }
+
+    /// Element-wise cosine. Alias for tensor_cos.
+    pub fn functional_cos(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cos(input)
+    }
+
+    /// Element-wise tangent. Alias for tensor_tan.
+    pub fn functional_tan(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tan(input)
+    }
+
+    /// Element-wise hyperbolic sine. Alias for tensor_sinh.
+    pub fn functional_sinh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sinh(input)
+    }
+
+    /// Element-wise hyperbolic cosine. Alias for tensor_cosh.
+    pub fn functional_cosh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cosh(input)
+    }
+
+    /// Element-wise inverse sine. Alias for tensor_asin.
+    pub fn functional_asin(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_asin(input)
+    }
+
+    /// Element-wise inverse cosine. Alias for tensor_acos.
+    pub fn functional_acos(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_acos(input)
+    }
+
+    /// Element-wise inverse tangent. Alias for tensor_atan.
+    pub fn functional_atan(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_atan(input)
+    }
+
+    /// Element-wise inverse hyperbolic sine. Alias for tensor_asinh.
+    pub fn functional_asinh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_asinh(input)
+    }
+
+    /// Element-wise inverse hyperbolic cosine. Alias for tensor_acosh.
+    pub fn functional_acosh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_acosh(input)
+    }
+
+    /// Element-wise inverse hyperbolic tangent. Alias for tensor_atanh.
+    pub fn functional_atanh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_atanh(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
