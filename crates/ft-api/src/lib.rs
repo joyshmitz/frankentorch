@@ -13963,6 +13963,66 @@ impl FrankenTorchSession {
         self.tensor_pow(input, exponent)
     }
 
+    /// Sum all elements. Alias for tensor_sum.
+    pub fn functional_sum(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sum(input)
+    }
+
+    /// Mean of all elements. Alias for tensor_mean.
+    pub fn functional_mean(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mean(input)
+    }
+
+    /// Product of all elements. Alias for tensor_prod.
+    pub fn functional_prod(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_prod(input)
+    }
+
+    /// Variance of all elements. Alias for tensor_var.
+    pub fn functional_var(
+        &mut self,
+        input: TensorNodeId,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_var(input, correction)
+    }
+
+    /// Std deviation of all elements. Alias for tensor_std.
+    pub fn functional_std(
+        &mut self,
+        input: TensorNodeId,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_std(input, correction)
+    }
+
+    /// Sum along dimension. Alias for tensor_sum_dim.
+    pub fn functional_sum_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sum_dim(input, dim)
+    }
+
+    /// Mean along dimension. Alias for tensor_mean_dim.
+    pub fn functional_mean_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mean_dim(input, dim)
+    }
+
+    /// Product along dimension. Alias for tensor_prod_dim.
+    pub fn functional_prod_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_prod_dim(input, dim)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
