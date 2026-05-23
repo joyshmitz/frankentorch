@@ -46213,6 +46213,94 @@ impl FrankenTorchSession {
         let scaled = self.tensor_div(x, temp)?;
         self.tensor_log_softmax(scaled, dim)
     }
+
+    // ── Comparison Utilities ──────────────────────────────────────────────
+
+    /// Check if two tensors are element-wise close (allclose).
+    pub fn allclose(
+        &self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        rtol: f64,
+        atol: f64,
+    ) -> Result<bool, AutogradError> {
+        let a_vals = self.tensor_values(a)?;
+        let b_vals = self.tensor_values(b)?;
+        if a_vals.len() != b_vals.len() {
+            return Ok(false);
+        }
+        Ok(a_vals
+            .iter()
+            .zip(b_vals.iter())
+            .all(|(a, b)| (a - b).abs() <= atol + rtol * b.abs()))
+    }
+
+    /// Check if two tensors are exactly equal.
+    pub fn array_equal(&self, a: TensorNodeId, b: TensorNodeId) -> Result<bool, AutogradError> {
+        let a_shape = self.tensor_shape(a)?;
+        let b_shape = self.tensor_shape(b)?;
+        if a_shape != b_shape {
+            return Ok(false);
+        }
+        let a_vals = self.tensor_values(a)?;
+        let b_vals = self.tensor_values(b)?;
+        Ok(a_vals == b_vals)
+    }
+
+    /// Check if any element is True.
+    pub fn any(&self, x: TensorNodeId) -> Result<bool, AutogradError> {
+        let vals = self.tensor_values(x)?;
+        Ok(vals.iter().any(|&v| v != 0.0))
+    }
+
+    /// Check if all elements are True.
+    pub fn all(&self, x: TensorNodeId) -> Result<bool, AutogradError> {
+        let vals = self.tensor_values(x)?;
+        Ok(vals.iter().all(|&v| v != 0.0))
+    }
+
+    // ── Tensor Info Utilities ─────────────────────────────────────────────
+
+    /// Get tensor min and max values.
+    pub fn minmax(&self, x: TensorNodeId) -> Result<(f64, f64), AutogradError> {
+        let vals = self.tensor_values(x)?;
+        let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        Ok((min, max))
+    }
+
+    /// Get tensor value range (max - min).
+    pub fn ptp(&self, x: TensorNodeId) -> Result<f64, AutogradError> {
+        let (min, max) = self.minmax(x)?;
+        Ok(max - min)
+    }
+
+    /// Count non-zero elements.
+    pub fn count_nonzero(&self, x: TensorNodeId) -> Result<usize, AutogradError> {
+        let vals = self.tensor_values(x)?;
+        Ok(vals.iter().filter(|&&v| v != 0.0).count())
+    }
+
+    // ── Tensor Type Utilities ─────────────────────────────────────────────
+
+    /// Check if tensor values are all integers.
+    pub fn is_integer(&self, x: TensorNodeId) -> Result<bool, AutogradError> {
+        let vals = self.tensor_values(x)?;
+        Ok(vals.iter().all(|v| v.fract() == 0.0))
+    }
+
+    /// Check if tensor values are all non-negative.
+    pub fn is_nonnegative(&self, x: TensorNodeId) -> Result<bool, AutogradError> {
+        let vals = self.tensor_values(x)?;
+        Ok(vals.iter().all(|&v| v >= 0.0))
+    }
+
+    /// Check if tensor values are all positive.
+    pub fn is_positive(&self, x: TensorNodeId) -> Result<bool, AutogradError> {
+        let vals = self.tensor_values(x)?;
+        Ok(vals.iter().all(|&v| v > 0.0))
+    }
+
 }
 
 pub use ft_autograd::{
