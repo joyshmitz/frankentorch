@@ -14777,6 +14777,271 @@ impl FrankenTorchSession {
         self.tensor_reshape(pooled, vec![batch_size, channels, output_h, output_w])
     }
 
+    /// Apply 3D max pooling over `[N, C, D, H, W]`.
+    pub fn functional_max_pool3d(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (kernel_d, kernel_h, kernel_w) = kernel_size;
+        let stride_d = if stride.0 == 0 { kernel_d } else { stride.0 };
+        let stride_h = if stride.1 == 0 { kernel_h } else { stride.1 };
+        let stride_w = if stride.2 == 0 { kernel_w } else { stride.2 };
+        if kernel_d == 0 || kernel_h == 0 || kernel_w == 0 || stride_d == 0 || stride_h == 0 || stride_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "max_pool3d: kernel_size and stride dimensions must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "max_pool3d: input must be 5-D [N, C, D, H, W]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let channels = input_shape[1];
+        let input_d = input_shape[2];
+        let input_h = input_shape[3];
+        let input_w = input_shape[4];
+        if input_d < kernel_d || input_h < kernel_h || input_w < kernel_w {
+            return Err(Self::incompatible_tensor_args(
+                "max_pool3d: input smaller than kernel size",
+            ));
+        }
+
+        let output_d = (input_d - kernel_d) / stride_d;
+        let output_d = Self::checked_add(output_d, 1, "max_pool3d output depth overflow")?;
+        let output_h = (input_h - kernel_h) / stride_h;
+        let output_h = Self::checked_add(output_h, 1, "max_pool3d output height overflow")?;
+        let output_w = (input_w - kernel_w) / stride_w;
+        let output_w = Self::checked_add(output_w, 1, "max_pool3d output width overflow")?;
+        let flat_width = Self::checked_shape_numel(
+            &[kernel_d, kernel_h, kernel_w],
+            "max_pool3d kernel size overflow",
+        )?;
+        let flattened_channels = Self::checked_mul(
+            batch_size,
+            channels,
+            "max_pool3d flattened channels overflow",
+        )?;
+        let patch_count = Self::checked_shape_numel(
+            &[output_d, output_h, output_w],
+            "max_pool3d patch count overflow",
+        )?;
+        let mut patches = Vec::with_capacity(patch_count);
+        for out_d in 0..output_d {
+            let depth_start = Self::checked_mul(out_d, stride_d, "max_pool3d depth start overflow")?;
+            let depth_slice = self.tensor_narrow(input, 2, depth_start, kernel_d)?;
+            for out_h in 0..output_h {
+                let row_start = Self::checked_mul(out_h, stride_h, "max_pool3d row start overflow")?;
+                let row_slice = self.tensor_narrow(depth_slice, 3, row_start, kernel_h)?;
+                for out_w in 0..output_w {
+                    let col_start = Self::checked_mul(out_w, stride_w, "max_pool3d col start overflow")?;
+                    let patch = self.tensor_narrow(row_slice, 4, col_start, kernel_w)?;
+                    let flat = self.tensor_reshape(patch, vec![flattened_channels, flat_width])?;
+                    let (max_vals, _) = self.tensor_max_dim(flat, 1)?;
+                    let max_vals = self.tensor_reshape(max_vals, vec![batch_size, channels, 1])?;
+                    patches.push(max_vals);
+                }
+            }
+        }
+
+        let pooled = self.tensor_cat(&patches, 2)?;
+        self.tensor_reshape(pooled, vec![batch_size, channels, output_d, output_h, output_w])
+    }
+
+    /// Apply 3D max pooling. Alias for `functional_max_pool3d`.
+    pub fn tensor_max_pool3d(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_max_pool3d(input, kernel_size, stride)
+    }
+
+    /// Apply 3D average pooling over `[N, C, D, H, W]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn functional_avg_pool3d(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        ceil_mode: bool,
+        count_include_pad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (kernel_d, kernel_h, kernel_w) = kernel_size;
+        let stride_d = if stride.0 == 0 { kernel_d } else { stride.0 };
+        let stride_h = if stride.1 == 0 { kernel_h } else { stride.1 };
+        let stride_w = if stride.2 == 0 { kernel_w } else { stride.2 };
+        let (padding_d, padding_h, padding_w) = padding;
+        if kernel_d == 0 || kernel_h == 0 || kernel_w == 0 || stride_d == 0 || stride_h == 0 || stride_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "avg_pool3d: kernel_size and stride dimensions must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "avg_pool3d: input must be 5-D [N, C, D, H, W]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let channels = input_shape[1];
+        let input_d = input_shape[2];
+        let input_h = input_shape[3];
+        let input_w = input_shape[4];
+
+        let padded = if padding_d > 0 || padding_h > 0 || padding_w > 0 {
+            self.tensor_pad(
+                input,
+                &[padding_w, padding_w, padding_h, padding_h, padding_d, padding_d],
+                0.0,
+            )?
+        } else {
+            input
+        };
+        let pad_d = Self::checked_mul(padding_d, 2, "avg_pool3d padding overflow")?;
+        let pad_h = Self::checked_mul(padding_h, 2, "avg_pool3d padding overflow")?;
+        let pad_w = Self::checked_mul(padding_w, 2, "avg_pool3d padding overflow")?;
+        let padded_d = Self::checked_add(input_d, pad_d, "avg_pool3d padding overflow")?;
+        let padded_h = Self::checked_add(input_h, pad_h, "avg_pool3d padding overflow")?;
+        let padded_w = Self::checked_add(input_w, pad_w, "avg_pool3d padding overflow")?;
+        if padded_d < kernel_d || padded_h < kernel_h || padded_w < kernel_w {
+            return Err(Self::incompatible_tensor_args(
+                "avg_pool3d: input smaller than kernel size after padding",
+            ));
+        }
+
+        let output_d = if ceil_mode {
+            (padded_d - kernel_d).div_ceil(stride_d)
+        } else {
+            (padded_d - kernel_d) / stride_d
+        };
+        let mut output_d = Self::checked_add(output_d, 1, "avg_pool3d output depth overflow")?;
+        if ceil_mode && output_d > 0 {
+            let last_start = Self::checked_mul(output_d - 1, stride_d, "avg_pool3d output depth overflow")?;
+            let input_pad_boundary = Self::checked_add(input_d, padding_d, "avg_pool3d output depth overflow")?;
+            if last_start >= input_pad_boundary {
+                output_d -= 1;
+            }
+        }
+        let output_h = if ceil_mode {
+            (padded_h - kernel_h).div_ceil(stride_h)
+        } else {
+            (padded_h - kernel_h) / stride_h
+        };
+        let mut output_h = Self::checked_add(output_h, 1, "avg_pool3d output height overflow")?;
+        if ceil_mode && output_h > 0 {
+            let last_start = Self::checked_mul(output_h - 1, stride_h, "avg_pool3d output height overflow")?;
+            let input_pad_boundary = Self::checked_add(input_h, padding_h, "avg_pool3d output height overflow")?;
+            if last_start >= input_pad_boundary {
+                output_h -= 1;
+            }
+        }
+        let output_w = if ceil_mode {
+            (padded_w - kernel_w).div_ceil(stride_w)
+        } else {
+            (padded_w - kernel_w) / stride_w
+        };
+        let mut output_w = Self::checked_add(output_w, 1, "avg_pool3d output width overflow")?;
+        if ceil_mode && output_w > 0 {
+            let last_start = Self::checked_mul(output_w - 1, stride_w, "avg_pool3d output width overflow")?;
+            let input_pad_boundary = Self::checked_add(input_w, padding_w, "avg_pool3d output width overflow")?;
+            if last_start >= input_pad_boundary {
+                output_w -= 1;
+            }
+        }
+
+        let flattened_channels = Self::checked_mul(
+            batch_size,
+            channels,
+            "avg_pool3d flattened channels overflow",
+        )?;
+        let patch_count = Self::checked_shape_numel(
+            &[output_d, output_h, output_w],
+            "avg_pool3d patch count overflow",
+        )?;
+        let mut patches = Vec::with_capacity(patch_count);
+        for out_d in 0..output_d {
+            let depth_start = Self::checked_mul(out_d, stride_d, "avg_pool3d depth start overflow")?;
+            let depth_end = Self::checked_add(depth_start, kernel_d, "avg_pool3d depth end overflow")?.min(padded_d);
+            let depth_len = depth_end - depth_start;
+            let valid_depth_start = depth_start.saturating_sub(padding_d).min(input_d);
+            let valid_depth_end = depth_end.saturating_sub(padding_d).min(input_d);
+            let valid_depth_len = valid_depth_end.saturating_sub(valid_depth_start);
+            for out_h in 0..output_h {
+                let row_start = Self::checked_mul(out_h, stride_h, "avg_pool3d row start overflow")?;
+                let row_end = Self::checked_add(row_start, kernel_h, "avg_pool3d row end overflow")?.min(padded_h);
+                let row_len = row_end - row_start;
+                let valid_row_start = row_start.saturating_sub(padding_h).min(input_h);
+                let valid_row_end = row_end.saturating_sub(padding_h).min(input_h);
+                let valid_row_len = valid_row_end.saturating_sub(valid_row_start);
+                for out_w in 0..output_w {
+                    let col_start = Self::checked_mul(out_w, stride_w, "avg_pool3d col start overflow")?;
+                    let col_end = Self::checked_add(col_start, kernel_w, "avg_pool3d col end overflow")?.min(padded_w);
+                    let col_len = col_end - col_start;
+                    let valid_col_start = col_start.saturating_sub(padding_w).min(input_w);
+                    let valid_col_end = col_end.saturating_sub(padding_w).min(input_w);
+                    let valid_col_len = valid_col_end.saturating_sub(valid_col_start);
+                    let (patch, flat_len) = if count_include_pad {
+                        let depth_slice = self.tensor_narrow(padded, 2, depth_start, depth_len)?;
+                        let row_slice = self.tensor_narrow(depth_slice, 3, row_start, row_len)?;
+                        let patch = self.tensor_narrow(row_slice, 4, col_start, col_len)?;
+                        let flat_len = Self::checked_shape_numel(
+                            &[depth_len, row_len, col_len],
+                            "avg_pool3d patch size overflow",
+                        )?;
+                        (patch, flat_len)
+                    } else {
+                        if valid_depth_len == 0 || valid_row_len == 0 || valid_col_len == 0 {
+                            return Err(Self::incompatible_tensor_args(
+                                "avg_pool3d: pooling window contains no input elements",
+                            ));
+                        }
+                        let depth_slice = self.tensor_narrow(input, 2, valid_depth_start, valid_depth_len)?;
+                        let row_slice = self.tensor_narrow(depth_slice, 3, valid_row_start, valid_row_len)?;
+                        let patch = self.tensor_narrow(row_slice, 4, valid_col_start, valid_col_len)?;
+                        let flat_len = Self::checked_shape_numel(
+                            &[valid_depth_len, valid_row_len, valid_col_len],
+                            "avg_pool3d valid patch size overflow",
+                        )?;
+                        (patch, flat_len)
+                    };
+                    let flat = self.tensor_reshape(patch, vec![flattened_channels, flat_len])?;
+                    let sum = self.tensor_sum_dim(flat, 1)?;
+                    let divisor = self.full(vec![flattened_channels], flat_len as f64, false)?;
+                    let avg = self.tensor_div(sum, divisor)?;
+                    let avg = self.tensor_reshape(avg, vec![batch_size, channels, 1])?;
+                    patches.push(avg);
+                }
+            }
+        }
+
+        let pooled = self.tensor_cat(&patches, 2)?;
+        self.tensor_reshape(pooled, vec![batch_size, channels, output_d, output_h, output_w])
+    }
+
+    /// Apply 3D average pooling. Alias for `functional_avg_pool3d`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tensor_avg_pool3d(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        ceil_mode: bool,
+        count_include_pad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_avg_pool3d(input, kernel_size, stride, padding, ceil_mode, count_include_pad)
+    }
+
     /// Adaptive average pooling for 1-D input. Alias for `functional_adaptive_avg_pool1d`.
     pub fn tensor_adaptive_avg_pool1d(
         &mut self,
