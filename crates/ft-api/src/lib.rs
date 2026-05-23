@@ -15061,6 +15061,49 @@ impl FrankenTorchSession {
         self.tensor_scatter_reduce(input, dim, index, src, reduce)
     }
 
+    /// Index put with accumulate option. Alias for tensor_index_put.
+    pub fn functional_index_put(
+        &mut self,
+        input: TensorNodeId,
+        indices: &[TensorNodeId],
+        values: TensorNodeId,
+        accumulate: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_put(input, indices, values, accumulate)
+    }
+
+    /// Copy src at index positions. Alias for tensor_index_copy.
+    pub fn functional_index_copy(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_copy(input, dim, index, src)
+    }
+
+    /// Fill at index with scalar. Alias for tensor_index_fill.
+    pub fn functional_index_fill(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_fill(input, dim, index, value)
+    }
+
+    /// Scatter source where mask is true. Alias for tensor_masked_scatter.
+    pub fn functional_masked_scatter(
+        &mut self,
+        input: TensorNodeId,
+        mask: TensorNodeId,
+        source: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_masked_scatter(input, mask, source)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
