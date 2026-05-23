@@ -14841,6 +14841,52 @@ impl FrankenTorchSession {
         self.tensor_array_split(input, sections, dim)
     }
 
+    /// Vector dot product. Alias for tensor_vdot.
+    pub fn functional_vdot(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_vdot(input, other)
+    }
+
+    /// Heaviside step function. Alias for tensor_heaviside.
+    pub fn functional_heaviside(
+        &mut self,
+        input: TensorNodeId,
+        values: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_heaviside(input, values)
+    }
+
+    /// Variance and mean in one call. Alias for tensor_var_mean.
+    pub fn functional_var_mean(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        correction: i64,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_var_mean(input, dim, correction)
+    }
+
+    /// Standard deviation and mean in one call. Alias for tensor_std_mean.
+    pub fn functional_std_mean(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        correction: i64,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_std_mean(input, dim, correction)
+    }
+
+    /// Sign and log-determinant. Alias for tensor_slogdet.
+    pub fn functional_slogdet(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_slogdet(input)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
