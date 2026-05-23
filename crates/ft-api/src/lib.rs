@@ -4565,6 +4565,35 @@ impl FrankenTorchSession {
         self.tensor_variable(slopes, vec![num_heads], false)
     }
 
+    /// Generate a sliding window attention mask.
+    ///
+    /// Creates a mask for sliding window attention used in models like Mistral.
+    /// Positions can only attend to positions within `window_size` distance.
+    ///
+    /// Returns a mask of shape `[seq_len, seq_len]` where:
+    /// - 0.0 for positions within the window (allow attention)
+    /// - -inf for positions outside the window (block attention)
+    ///
+    /// When `causal` is true, also enforces causal masking (no attending to future).
+    pub fn sliding_window_mask(
+        &mut self,
+        seq_len: usize,
+        window_size: usize,
+        causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut mask = vec![0.0_f64; seq_len * seq_len];
+        for i in 0..seq_len {
+            for j in 0..seq_len {
+                let is_in_window = ((i as i64) - (j as i64)).abs() <= window_size as i64;
+                let is_causal_ok = !causal || j <= i;
+                if !(is_in_window && is_causal_ok) {
+                    mask[i * seq_len + j] = f64::NEG_INFINITY;
+                }
+            }
+        }
+        self.tensor_variable(mask, vec![seq_len, seq_len], false)
+    }
+
     /// Tensor contraction over specified dimensions (generalised matrix multiply).
     ///
     /// `dims` is the number of trailing dimensions of `a` to contract with
