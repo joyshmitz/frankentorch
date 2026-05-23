@@ -16751,6 +16751,58 @@ impl FrankenTorchSession {
         self.tensor_linalg_cross(input, other)
     }
 
+    /// LU decomposition. Alias for tensor_linalg_lu.
+    pub fn functional_linalg_lu(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_lu(input)
+    }
+
+    /// LU factorization. Alias for tensor_linalg_lu_factor.
+    pub fn functional_linalg_lu_factor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_lu_factor(input)
+    }
+
+    /// LU factorization with info. Alias for tensor_linalg_lu_factor_ex.
+    pub fn functional_linalg_lu_factor_ex(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_lu_factor_ex(input)
+    }
+
+    /// Solve linear system using LU. Alias for tensor_linalg_lu_solve.
+    pub fn functional_linalg_lu_solve(
+        &mut self,
+        lu: TensorNodeId,
+        pivots: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_lu_solve(lu, pivots, b)
+    }
+
+    /// Least squares solution. Alias for tensor_linalg_lstsq.
+    pub fn functional_linalg_lstsq(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_lstsq(a, b)
+    }
+
+    /// Matrix rank. Alias for tensor_linalg_matrix_rank.
+    pub fn functional_linalg_matrix_rank(
+        &mut self,
+        input: TensorNodeId,
+        tol: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_matrix_rank(input, tol)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
