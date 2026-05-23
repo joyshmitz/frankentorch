@@ -49649,6 +49649,286 @@ impl FrankenTorchSession {
         let mean = self.mean_value(input)?;
         Ok((min, max, mean))
     }
+
+    // ── Reshape Utilities ─────────────────────────────────────────────────
+
+    /// Reshape to 1D (flatten all dimensions).
+    pub fn reshape_flat(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel = self.tensor_numel(input)?;
+        self.tensor_reshape(input, vec![numel])
+    }
+
+    /// Reshape to 2D with inferred second dimension.
+    pub fn reshape_2d(
+        &mut self,
+        input: TensorNodeId,
+        first_dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel = self.tensor_numel(input)?;
+        let second_dim = numel / first_dim;
+        self.tensor_reshape(input, vec![first_dim, second_dim])
+    }
+
+    /// Reshape to 3D with inferred third dimension.
+    pub fn reshape_3d(
+        &mut self,
+        input: TensorNodeId,
+        first_dim: usize,
+        second_dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel = self.tensor_numel(input)?;
+        let third_dim = numel / (first_dim * second_dim);
+        self.tensor_reshape(input, vec![first_dim, second_dim, third_dim])
+    }
+
+    // ── Expand Utilities ──────────────────────────────────────────────────
+
+    /// Expand tensor to match target shape (broadcasting).
+    pub fn expand_to_shape(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expand(input, target_shape)
+    }
+
+    /// Expand singleton dimensions to specified sizes.
+    pub fn expand_as(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let target_shape = self.tensor_shape(target)?;
+        self.tensor_expand(input, target_shape)
+    }
+
+    // ── Channel Operations (NCHW format) ──────────────────────────────────
+
+    /// Get number of channels (for NCHW tensor).
+    pub fn num_channels(&self, input: TensorNodeId) -> Result<usize, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() < 2 {
+            return Err(Self::incompatible_tensor_args("expected NCHW"));
+        }
+        Ok(shape[1])
+    }
+
+    /// Split channels into groups.
+    pub fn split_channels(
+        &mut self,
+        input: TensorNodeId,
+        num_groups: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_chunk(input, num_groups, 1)
+    }
+
+    // ── Contraction Utilities ─────────────────────────────────────────────
+
+    /// Vector dot product.
+    pub fn vector_dot(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dot(a, b)
+    }
+
+    /// Outer product of two vectors.
+    pub fn vector_outer(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_outer(a, b)
+    }
+
+    /// Element-wise product and sum (inner product for same-shape tensors).
+    pub fn inner_product(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let prod = self.tensor_mul(a, b)?;
+        self.tensor_sum(prod)
+    }
+
+    // ── Cosine Similarity ─────────────────────────────────────────────────
+
+    /// Cosine similarity between two tensors.
+    pub fn cosine_sim(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cosine_similarity(a, b, 0, eps)
+    }
+
+    /// Cosine similarity along specified dimension.
+    pub fn cosine_sim_dim(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        dim: usize,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cosine_similarity(a, b, dim, eps)
+    }
+
+    // ── Random Utilities ──────────────────────────────────────────────────
+
+    /// Generate random tensor from uniform distribution [0, 1).
+    pub fn rand_uniform(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rand(shape, requires_grad)
+    }
+
+    /// Generate random tensor from standard normal distribution.
+    pub fn rand_normal(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randn(shape, requires_grad)
+    }
+
+    /// Generate random tensor from uniform distribution [low, high).
+    pub fn rand_uniform_range(
+        &mut self,
+        shape: Vec<usize>,
+        low: f64,
+        high: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let u = self.tensor_rand(shape, requires_grad)?;
+        let range = high - low;
+        let range_t = self.full(vec![1], range, false)?;
+        let scaled = self.tensor_mul(u, range_t)?;
+        let low_t = self.full(vec![1], low, false)?;
+        self.tensor_add(scaled, low_t)
+    }
+
+    /// Generate random integers in range [low, high).
+    pub fn randint_range(
+        &mut self,
+        shape: Vec<usize>,
+        low: i64,
+        high: i64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let u = self.tensor_rand(shape, requires_grad)?;
+        let range = (high - low) as f64;
+        let range_t = self.full(vec![1], range, false)?;
+        let scaled = self.tensor_mul(u, range_t)?;
+        let low_t = self.full(vec![1], low as f64, false)?;
+        let shifted = self.tensor_add(scaled, low_t)?;
+        self.tensor_floor(shifted)
+    }
+
+    // ── Sampling Utilities ────────────────────────────────────────────────
+
+    /// Sample from multinomial distribution.
+    pub fn multinomial_sample(
+        &mut self,
+        probs: TensorNodeId,
+        num_samples: usize,
+        replacement: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multinomial(probs, num_samples, replacement)
+    }
+
+    // ── Regularization Utilities ──────────────────────────────────────────
+
+    /// Compute L2 regularization loss on a list of parameters.
+    pub fn l2_reg_loss(
+        &mut self,
+        params: &[TensorNodeId],
+        weight_decay: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut total = self.full(vec![], 0.0, false)?;
+        for &param in params {
+            let squared = self.tensor_mul(param, param)?;
+            let sum = self.tensor_sum(squared)?;
+            total = self.tensor_add(total, sum)?;
+        }
+        let decay_t = self.full(vec![1], weight_decay * 0.5, false)?;
+        self.tensor_mul(total, decay_t)
+    }
+
+    /// Compute L1 regularization loss on a list of parameters.
+    pub fn l1_reg_loss(
+        &mut self,
+        params: &[TensorNodeId],
+        weight_decay: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut total = self.full(vec![], 0.0, false)?;
+        for &param in params {
+            let abs_val = self.tensor_abs(param)?;
+            let sum = self.tensor_sum(abs_val)?;
+            total = self.tensor_add(total, sum)?;
+        }
+        let decay_t = self.full(vec![1], weight_decay, false)?;
+        self.tensor_mul(total, decay_t)
+    }
+
+    // ── Early Stopping Helpers ────────────────────────────────────────────
+
+    /// Check if loss improved (decreased).
+    pub fn loss_improved(&self, current: f64, best: f64, min_delta: f64) -> bool {
+        current < best - min_delta
+    }
+
+    /// Check if metric improved (increased).
+    pub fn metric_improved(&self, current: f64, best: f64, min_delta: f64) -> bool {
+        current > best + min_delta
+    }
+
+    // ── Tensor Assertions ─────────────────────────────────────────────────
+
+    /// Assert tensor has expected shape.
+    pub fn assert_shape(
+        &self,
+        input: TensorNodeId,
+        expected: &[usize],
+    ) -> Result<(), AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape != expected {
+            return Err(Self::incompatible_tensor_args("shape mismatch"));
+        }
+        Ok(())
+    }
+
+    /// Assert tensor has expected number of dimensions.
+    pub fn assert_ndim(
+        &self,
+        input: TensorNodeId,
+        expected: usize,
+    ) -> Result<(), AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != expected {
+            return Err(Self::incompatible_tensor_args("ndim mismatch"));
+        }
+        Ok(())
+    }
+
+    /// Assert tensor has at least expected number of dimensions.
+    pub fn assert_min_ndim(
+        &self,
+        input: TensorNodeId,
+        min_ndim: usize,
+    ) -> Result<(), AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() < min_ndim {
+            return Err(Self::incompatible_tensor_args("too few dims"));
+        }
+        Ok(())
+    }
 }
 
 pub use ft_autograd::{
