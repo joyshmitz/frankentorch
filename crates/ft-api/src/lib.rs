@@ -14948,6 +14948,87 @@ impl FrankenTorchSession {
         self.tensor_multinomial(input, num_samples, replacement)
     }
 
+    /// Log-sum-exp along dimension. Alias for tensor_logsumexp.
+    pub fn functional_logsumexp(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logsumexp(input, dim)
+    }
+
+    /// Numerically stable log(exp(a) + exp(b)). Alias for tensor_logaddexp.
+    pub fn functional_logaddexp(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logaddexp(a, b)
+    }
+
+    /// Numerically stable log2(2^a + 2^b). Alias for tensor_logaddexp2.
+    pub fn functional_logaddexp2(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logaddexp2(a, b)
+    }
+
+    /// Log-determinant. Alias for tensor_logdet.
+    pub fn functional_logdet(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logdet(input)
+    }
+
+    /// Matrix inverse. Alias for tensor_inverse.
+    pub fn functional_inverse(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_inverse(input)
+    }
+
+    /// Element-wise close comparison. Alias for tensor_isclose.
+    pub fn functional_isclose(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+        rtol: f64,
+        atol: f64,
+        equal_nan: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_isclose(lhs, rhs, rtol, atol, equal_nan)
+    }
+
+    /// Membership test. Alias for tensor_isin.
+    pub fn functional_isin(
+        &mut self,
+        elements: TensorNodeId,
+        test_elements: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_isin(elements, test_elements)
+    }
+
+    /// Singular values. Alias for tensor_linalg_svdvals.
+    pub fn functional_linalg_svdvals(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_svdvals(input)
+    }
+
+    /// Condition number. Alias for tensor_linalg_cond.
+    pub fn functional_linalg_cond(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_cond(input, p)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
