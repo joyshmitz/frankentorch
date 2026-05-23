@@ -13872,6 +13872,25 @@ impl FrankenTorchSession {
         self.tensor_view(input, new_shape)
     }
 
+    /// Reshape tensor. Alias for tensor_reshape.
+    pub fn functional_reshape(
+        &mut self,
+        input: TensorNodeId,
+        new_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reshape(input, new_shape)
+    }
+
+    /// Transpose dimensions. Alias for tensor_transpose.
+    pub fn functional_transpose(
+        &mut self,
+        input: TensorNodeId,
+        dim0: usize,
+        dim1: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_transpose(input, dim0, dim1)
+    }
+
     /// View tensor with same shape as other. Alias for tensor_view_as.
     pub fn functional_view_as(
         &mut self,
