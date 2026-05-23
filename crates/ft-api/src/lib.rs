@@ -13892,6 +13892,173 @@ impl FrankenTorchSession {
         self.functional_dropout3d(input, p, training)
     }
 
+    /// DropBlock regularization for convolutional networks.
+    ///
+    /// Drops contiguous blocks of feature map instead of individual elements.
+    /// More effective than dropout for conv layers (Ghiasi et al., 2018).
+    ///
+    /// Args:
+    /// - input: [N, C, H, W] feature maps
+    /// - block_size: size of square blocks to drop
+    /// - p: probability of dropping (gamma is computed internally)
+    /// - training: apply dropblock only during training
+    pub fn dropblock2d(
+        &mut self,
+        input: TensorNodeId,
+        block_size: usize,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !training || p == 0.0 {
+            return Ok(input);
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("dropblock2d: input must be [N, C, H, W]"));
+        }
+        let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let block_size = block_size.min(h).min(w);
+        let feat_area = (h * w) as f64;
+        let block_area = (block_size * block_size) as f64;
+        let valid_h = h - block_size + 1;
+        let valid_w = w - block_size + 1;
+        let valid_area = (valid_h * valid_w) as f64;
+        let gamma = p * feat_area / (block_area * valid_area);
+        let mut mask = vec![1.0; n * c * h * w];
+        for bi in 0..n {
+            for ci in 0..c {
+                for yi in 0..valid_h {
+                    for xi in 0..valid_w {
+                        if self.rng.next_f64() < gamma {
+                            for by in 0..block_size {
+                                for bx in 0..block_size {
+                                    let idx = bi * c * h * w + ci * h * w + (yi + by) * w + (xi + bx);
+                                    mask[idx] = 0.0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let kept: f64 = mask.iter().sum();
+        let total = mask.len() as f64;
+        let scale = total / kept.max(1.0);
+        let mask_scaled: Vec<f64> = mask.into_iter().map(|m| m * scale).collect();
+        let mask_t = self.tensor_variable(mask_scaled, shape, false)?;
+        self.tensor_mul(input, mask_t)
+    }
+
+    /// Stochastic depth (drop path) regularization.
+    ///
+    /// Randomly drops entire residual branches during training.
+    /// Used in EfficientNet, DeiT, and other deep networks.
+    ///
+    /// Args:
+    /// - input: input tensor (the residual branch output)
+    /// - drop_prob: probability of dropping the entire branch
+    /// - training: apply stochastic depth only during training
+    pub fn stochastic_depth(
+        &mut self,
+        input: TensorNodeId,
+        drop_prob: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !training || drop_prob == 0.0 {
+            return Ok(input);
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.is_empty() {
+            return Ok(input);
+        }
+        let batch_size = shape[0];
+        let mut keep_mask = Vec::with_capacity(batch_size);
+        let keep_prob = 1.0 - drop_prob;
+        for _ in 0..batch_size {
+            let keep = if self.rng.next_f64() < keep_prob { 1.0 / keep_prob } else { 0.0 };
+            keep_mask.push(keep);
+        }
+        let broadcast_shape: Vec<usize> = std::iter::once(batch_size)
+            .chain(std::iter::repeat(1).take(shape.len() - 1))
+            .collect();
+        let mask_t = self.tensor_variable(keep_mask, broadcast_shape, false)?;
+        self.tensor_mul(input, mask_t)
+    }
+
+    /// Label smoothing cross entropy loss.
+    ///
+    /// Softens the target distribution by mixing with uniform distribution.
+    /// CE with soft labels: (1 - smoothing) * one_hot + smoothing / num_classes
+    ///
+    /// Args:
+    /// - logits: [N, C] unnormalized logits
+    /// - targets: [N] integer class indices
+    /// - smoothing: label smoothing factor (0 = no smoothing)
+    pub fn label_smoothing_cross_entropy(
+        &mut self,
+        logits: TensorNodeId,
+        targets: TensorNodeId,
+        smoothing: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(logits)?;
+        if shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args(
+                "label_smoothing_cross_entropy: logits must be [N, C]",
+            ));
+        }
+        let (n, c) = (shape[0], shape[1]);
+        let target_data = self.tensor_values(targets)?;
+        let mut soft_targets = vec![smoothing / c as f64; n * c];
+        let confidence = 1.0 - smoothing;
+        for i in 0..n {
+            let cls = target_data[i] as usize;
+            if cls < c {
+                soft_targets[i * c + cls] += confidence;
+            }
+        }
+        let soft_t = self.tensor_variable(soft_targets, vec![n, c], false)?;
+        let log_probs = self.tensor_log_softmax(logits, 1)?;
+        let neg_log_probs = self.tensor_neg(log_probs)?;
+        let losses = self.tensor_mul(soft_t, neg_log_probs)?;
+        let sum_losses = self.tensor_sum_dim(losses, 1)?;
+        self.tensor_mean(sum_losses)
+    }
+
+    /// Shake-Shake regularization for ResNet branches.
+    ///
+    /// Randomly interpolates between two branches during training.
+    /// During inference, uses average of branches.
+    ///
+    /// Args:
+    /// - branch1: first branch output
+    /// - branch2: second branch output
+    /// - training: use random interpolation during training
+    pub fn shake_shake(
+        &mut self,
+        branch1: TensorNodeId,
+        branch2: TensorNodeId,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(branch1)?;
+        if training && !shape.is_empty() {
+            let batch_size = shape[0];
+            let alphas: Vec<f64> = (0..batch_size).map(|_| self.rng.next_f64()).collect();
+            let broadcast_shape: Vec<usize> = std::iter::once(batch_size)
+                .chain(std::iter::repeat(1).take(shape.len() - 1))
+                .collect();
+            let alpha_t = self.tensor_variable(alphas.clone(), broadcast_shape.clone(), false)?;
+            let one_minus_alpha: Vec<f64> = alphas.into_iter().map(|a| 1.0 - a).collect();
+            let one_minus_alpha_t = self.tensor_variable(one_minus_alpha, broadcast_shape, false)?;
+            let scaled1 = self.tensor_mul(branch1, alpha_t)?;
+            let scaled2 = self.tensor_mul(branch2, one_minus_alpha_t)?;
+            self.tensor_add(scaled1, scaled2)
+        } else {
+            let sum = self.tensor_add(branch1, branch2)?;
+            let half = self.full(shape, 0.5, false)?;
+            self.tensor_mul(sum, half)
+        }
+    }
+
     /// Look up embeddings from a weight matrix.
     ///
     /// Equivalent to `torch.nn.functional.embedding(input, weight)`.
