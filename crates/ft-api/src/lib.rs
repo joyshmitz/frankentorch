@@ -30984,6 +30984,108 @@ impl FrankenTorchSession {
         self.tensor_mean(loss)
     }
 
+    /// Complete-IoU (CIoU) loss for bounding box regression.
+    ///
+    /// CIoU = DIoU + aspect ratio consistency term v.
+    /// State-of-the-art for YOLOv5/v7/v8 box regression.
+    ///
+    /// Args:
+    /// - pred_boxes: [N, 4] predicted boxes (x1, y1, x2, y2)
+    /// - target_boxes: [N, 4] target boxes (x1, y1, x2, y2)
+    ///
+    /// Returns: mean CIoU loss
+    pub fn ciou_loss(
+        &mut self,
+        pred_boxes: TensorNodeId,
+        target_boxes: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let pred_shape = self.tensor_shape(pred_boxes)?;
+        let target_shape = self.tensor_shape(target_boxes)?;
+        if pred_shape.len() != 2 || pred_shape[1] != 4 {
+            return Err(Self::incompatible_tensor_args("ciou_loss: pred_boxes must be [N, 4]"));
+        }
+        if target_shape != pred_shape {
+            return Err(Self::incompatible_tensor_args(
+                "ciou_loss: pred and target must have same shape",
+            ));
+        }
+        let n = pred_shape[0];
+        let p_x1 = self.tensor_narrow(pred_boxes, 1, 0, 1)?;
+        let p_y1 = self.tensor_narrow(pred_boxes, 1, 1, 1)?;
+        let p_x2 = self.tensor_narrow(pred_boxes, 1, 2, 1)?;
+        let p_y2 = self.tensor_narrow(pred_boxes, 1, 3, 1)?;
+        let t_x1 = self.tensor_narrow(target_boxes, 1, 0, 1)?;
+        let t_y1 = self.tensor_narrow(target_boxes, 1, 1, 1)?;
+        let t_x2 = self.tensor_narrow(target_boxes, 1, 2, 1)?;
+        let t_y2 = self.tensor_narrow(target_boxes, 1, 3, 1)?;
+        let p_w = self.tensor_sub(p_x2, p_x1)?;
+        let p_h = self.tensor_sub(p_y2, p_y1)?;
+        let t_w = self.tensor_sub(t_x2, t_x1)?;
+        let t_h = self.tensor_sub(t_y2, t_y1)?;
+        let eps = self.full(vec![n, 1], 1e-7, false)?;
+        let p_h_safe = self.tensor_add(p_h, eps)?;
+        let t_h_safe = self.tensor_add(t_h, eps)?;
+        let p_ratio = self.tensor_div(p_w, p_h_safe)?;
+        let t_ratio = self.tensor_div(t_w, t_h_safe)?;
+        let p_atan = self.tensor_atan(p_ratio)?;
+        let t_atan = self.tensor_atan(t_ratio)?;
+        let atan_diff = self.tensor_sub(t_atan, p_atan)?;
+        let atan_diff_sq = self.tensor_mul(atan_diff, atan_diff)?;
+        let four_over_pi_sq = self.full(vec![n, 1], 4.0 / (std::f64::consts::PI * std::f64::consts::PI), false)?;
+        let v = self.tensor_mul(four_over_pi_sq, atan_diff_sq)?;
+        let pred_area = self.tensor_mul(p_w, p_h)?;
+        let target_area = self.tensor_mul(t_w, t_h)?;
+        let inter_x1 = self.tensor_maximum(p_x1, t_x1)?;
+        let inter_y1 = self.tensor_maximum(p_y1, t_y1)?;
+        let inter_x2 = self.tensor_minimum(p_x2, t_x2)?;
+        let inter_y2 = self.tensor_minimum(p_y2, t_y2)?;
+        let inter_w = self.tensor_sub(inter_x2, inter_x1)?;
+        let inter_h = self.tensor_sub(inter_y2, inter_y1)?;
+        let zero = self.full(vec![n, 1], 0.0, false)?;
+        let inter_w = self.tensor_maximum(inter_w, zero)?;
+        let inter_h = self.tensor_maximum(inter_h, zero)?;
+        let inter_area = self.tensor_mul(inter_w, inter_h)?;
+        let union_area = self.tensor_add(pred_area, target_area)?;
+        let union_area = self.tensor_sub(union_area, inter_area)?;
+        let union_safe = self.tensor_add(union_area, eps)?;
+        let iou = self.tensor_div(inter_area, union_safe)?;
+        let two = self.full(vec![n, 1], 2.0, false)?;
+        let p_cx = self.tensor_add(p_x1, p_x2)?;
+        let p_cx = self.tensor_div(p_cx, two)?;
+        let p_cy = self.tensor_add(p_y1, p_y2)?;
+        let p_cy = self.tensor_div(p_cy, two)?;
+        let t_cx = self.tensor_add(t_x1, t_x2)?;
+        let t_cx = self.tensor_div(t_cx, two)?;
+        let t_cy = self.tensor_add(t_y1, t_y2)?;
+        let t_cy = self.tensor_div(t_cy, two)?;
+        let dx = self.tensor_sub(p_cx, t_cx)?;
+        let dy = self.tensor_sub(p_cy, t_cy)?;
+        let dx_sq = self.tensor_mul(dx, dx)?;
+        let dy_sq = self.tensor_mul(dy, dy)?;
+        let rho_sq = self.tensor_add(dx_sq, dy_sq)?;
+        let enc_x1 = self.tensor_minimum(p_x1, t_x1)?;
+        let enc_y1 = self.tensor_minimum(p_y1, t_y1)?;
+        let enc_x2 = self.tensor_maximum(p_x2, t_x2)?;
+        let enc_y2 = self.tensor_maximum(p_y2, t_y2)?;
+        let enc_w = self.tensor_sub(enc_x2, enc_x1)?;
+        let enc_h = self.tensor_sub(enc_y2, enc_y1)?;
+        let enc_w_sq = self.tensor_mul(enc_w, enc_w)?;
+        let enc_h_sq = self.tensor_mul(enc_h, enc_h)?;
+        let c_sq = self.tensor_add(enc_w_sq, enc_h_sq)?;
+        let c_sq_safe = self.tensor_add(c_sq, eps)?;
+        let center_penalty = self.tensor_div(rho_sq, c_sq_safe)?;
+        let one = self.full(vec![n, 1], 1.0, false)?;
+        let one_minus_iou = self.tensor_sub(one, iou)?;
+        let one_minus_iou_v = self.tensor_add(one_minus_iou, v)?;
+        let one_minus_iou_v_safe = self.tensor_add(one_minus_iou_v, eps)?;
+        let alpha = self.tensor_div(v, one_minus_iou_v_safe)?;
+        let alpha_v = self.tensor_mul(alpha, v)?;
+        let ciou = self.tensor_sub(iou, center_penalty)?;
+        let ciou = self.tensor_sub(ciou, alpha_v)?;
+        let loss = self.tensor_sub(one, ciou)?;
+        self.tensor_mean(loss)
+    }
+
     /// Quantile (pinball) loss for quantile regression.
     ///
     /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
