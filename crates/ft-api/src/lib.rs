@@ -12703,6 +12703,14 @@ impl FrankenTorchSession {
         self.tensor_silu(input)
     }
 
+    /// Swish activation. Alias for tensor_swish.
+    pub fn functional_swish(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_swish(input)
+    }
+
     /// Mish activation. Alias for tensor_mish.
     pub fn functional_mish(
         &mut self,
@@ -13290,6 +13298,15 @@ impl FrankenTorchSession {
         self.tensor_dot(lhs, rhs)
     }
 
+    /// N-D vector dot product. Alias for tensor_vecdot.
+    pub fn functional_vecdot(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_vecdot(a, b)
+    }
+
     /// Outer product. Alias for tensor_outer.
     pub fn functional_outer(
         &mut self,
@@ -13865,6 +13882,16 @@ impl FrankenTorchSession {
         self.tensor_sign(input)
     }
 
+    /// Complex-aware sign (sgn). Alias for tensor_sgn.
+    pub fn functional_sgn(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sgn(input)
+    }
+
+    /// Sign bit test. Alias for tensor_signbit.
+    pub fn functional_signbit(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_signbit(input)
+    }
+
     /// Element-wise floor. Alias for tensor_floor.
     pub fn functional_floor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_floor(input)
@@ -14044,6 +14071,26 @@ impl FrankenTorchSession {
         correction: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_std(input, correction)
+    }
+
+    /// Variance along dimension. Alias for tensor_var_dim.
+    pub fn functional_var_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_var_dim(input, dim, correction)
+    }
+
+    /// Std deviation along dimension. Alias for tensor_std_dim.
+    pub fn functional_std_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_std_dim(input, dim, correction)
     }
 
     /// Sum along dimension. Alias for tensor_sum_dim.
@@ -16660,6 +16707,60 @@ impl FrankenTorchSession {
         value: f64,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_constant_pad2d(input, padding, value)
+    }
+
+    /// 1D reflection padding. Alias for tensor_reflection_pad1d.
+    pub fn functional_reflection_pad1d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reflection_pad1d(input, padding)
+    }
+
+    /// 2D reflection padding. Alias for tensor_reflection_pad2d.
+    pub fn functional_reflection_pad2d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reflection_pad2d(input, padding)
+    }
+
+    /// 1D replication padding. Alias for tensor_replication_pad1d.
+    pub fn functional_replication_pad1d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_replication_pad1d(input, padding)
+    }
+
+    /// 2D replication padding. Alias for tensor_replication_pad2d.
+    pub fn functional_replication_pad2d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_replication_pad2d(input, padding)
+    }
+
+    /// 1D zero padding. Alias for tensor_zero_pad1d.
+    pub fn functional_zero_pad1d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_zero_pad1d(input, padding)
+    }
+
+    /// 2D zero padding. Alias for tensor_zero_pad2d.
+    pub fn functional_zero_pad2d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_zero_pad2d(input, padding)
     }
 
     /// Generalized outer product. Alias for tensor_ger.
