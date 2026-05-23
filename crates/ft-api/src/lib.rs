@@ -14363,6 +14363,46 @@ impl FrankenTorchSession {
         self.tensor_select(input, dim, index)
     }
 
+    /// Swap two axes (numpy-style). Alias for tensor_swapaxes.
+    pub fn functional_swapaxes(
+        &mut self,
+        input: TensorNodeId,
+        dim0: usize,
+        dim1: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_swapaxes(input, dim0, dim1)
+    }
+
+    /// Swap two dimensions. Alias for tensor_swapdims.
+    pub fn functional_swapdims(
+        &mut self,
+        input: TensorNodeId,
+        dim0: usize,
+        dim1: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_swapdims(input, dim0, dim1)
+    }
+
+    /// Move dimension to new position. Alias for tensor_movedim.
+    pub fn functional_movedim(
+        &mut self,
+        input: TensorNodeId,
+        source: usize,
+        destination: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_movedim(input, source, destination)
+    }
+
+    /// Move axis to new position. Alias for tensor_moveaxis.
+    pub fn functional_moveaxis(
+        &mut self,
+        input: TensorNodeId,
+        source: usize,
+        destination: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_moveaxis(input, source, destination)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
