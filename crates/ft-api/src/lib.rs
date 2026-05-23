@@ -55352,6 +55352,116 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_nanquantile(input, q)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Distribution sampling utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Gumbel distribution sampling.
+    pub fn gumbel_tensor(
+        &mut self,
+        mu: f64,
+        beta: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gumbel(mu, beta, shape, requires_grad)
+    }
+
+    /// Laplace distribution sampling.
+    pub fn laplace_tensor(
+        &mut self,
+        loc: f64,
+        scale: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_laplace(loc, scale, shape, requires_grad)
+    }
+
+    /// Half-normal distribution sampling.
+    pub fn half_normal_tensor(
+        &mut self,
+        scale: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_half_normal(scale, shape, requires_grad)
+    }
+
+    /// Half-Cauchy distribution sampling.
+    pub fn half_cauchy_tensor(
+        &mut self,
+        scale: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_half_cauchy(scale, shape, requires_grad)
+    }
+
+    /// Gamma distribution sampling.
+    pub fn gamma_tensor(
+        &mut self,
+        concentration: f64,
+        rate: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gamma(concentration, rate, shape, requires_grad)
+    }
+
+    /// Beta distribution sampling.
+    pub fn beta_tensor(
+        &mut self,
+        concentration1: f64,
+        concentration0: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_beta(concentration1, concentration0, shape, requires_grad)
+    }
+
+    /// Chi-squared distribution sampling.
+    pub fn chi2_tensor(
+        &mut self,
+        df: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_chi2(df, shape, requires_grad)
+    }
+
+    /// Binomial distribution sampling.
+    pub fn binomial_tensor(
+        &mut self,
+        n: u64,
+        p: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_binomial(n, p, shape, requires_grad)
+    }
+
+    /// Dirichlet distribution sampling.
+    pub fn dirichlet_tensor(
+        &mut self,
+        alpha: &[f64],
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dirichlet(alpha, shape, requires_grad)
+    }
+
+    /// Fisher-Snedecor (F) distribution sampling.
+    pub fn fishersnedecor_tensor(
+        &mut self,
+        df1: f64,
+        df2: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fishersnedecor(df1, df2, shape, requires_grad)
+    }
 }
 
 pub use ft_autograd::{
