@@ -4364,6 +4364,165 @@ impl FrankenTorchSession {
         Ok((output, attn_weights_out))
     }
 
+    /// Extract non-overlapping patches from images (Vision Transformer).
+    ///
+    /// Converts image into sequence of flattened patch embeddings.
+    /// For ViT: image [B, C, H, W] -> patches [B, num_patches, patch_dim]
+    ///
+    /// Args:
+    /// - images: [B, C, H, W] input images
+    /// - patch_size: size of each square patch
+    ///
+    /// Returns: [B, num_patches, C * patch_size * patch_size]
+    pub fn patch_embed(
+        &mut self,
+        images: TensorNodeId,
+        patch_size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(images)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("patch_embed: images must be [B, C, H, W]"));
+        }
+        let (b, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        if h % patch_size != 0 || w % patch_size != 0 {
+            return Err(Self::incompatible_tensor_args(
+                "patch_embed: H and W must be divisible by patch_size",
+            ));
+        }
+        let nh = h / patch_size;
+        let nw = w / patch_size;
+        let num_patches = nh * nw;
+        let patch_dim = c * patch_size * patch_size;
+        let data = self.tensor_values(images)?;
+        let mut patches = vec![0.0; b * num_patches * patch_dim];
+        for bi in 0..b {
+            for ph in 0..nh {
+                for pw in 0..nw {
+                    let patch_idx = ph * nw + pw;
+                    for ch in 0..c {
+                        for py in 0..patch_size {
+                            for px in 0..patch_size {
+                                let ih = ph * patch_size + py;
+                                let iw = pw * patch_size + px;
+                                let src_idx = bi * c * h * w + ch * h * w + ih * w + iw;
+                                let dst_idx = bi * num_patches * patch_dim
+                                    + patch_idx * patch_dim
+                                    + ch * patch_size * patch_size
+                                    + py * patch_size
+                                    + px;
+                                patches[dst_idx] = data[src_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.tensor_variable(patches, vec![b, num_patches, patch_dim], false)
+    }
+
+    /// Partition tensor into non-overlapping windows (Swin Transformer).
+    ///
+    /// Args:
+    /// - x: [B, H, W, C] input features
+    /// - window_size: size of each square window
+    ///
+    /// Returns: [num_windows * B, window_size, window_size, C]
+    pub fn window_partition(
+        &mut self,
+        x: TensorNodeId,
+        window_size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("window_partition: x must be [B, H, W, C]"));
+        }
+        let (b, h, w, c) = (shape[0], shape[1], shape[2], shape[3]);
+        if h % window_size != 0 || w % window_size != 0 {
+            return Err(Self::incompatible_tensor_args(
+                "window_partition: H and W must be divisible by window_size",
+            ));
+        }
+        let nh = h / window_size;
+        let nw = w / window_size;
+        let num_windows = nh * nw;
+        let data = self.tensor_values(x)?;
+        let mut windows = vec![0.0; b * num_windows * window_size * window_size * c];
+        for bi in 0..b {
+            for wh in 0..nh {
+                for ww in 0..nw {
+                    let win_idx = bi * num_windows + wh * nw + ww;
+                    for wy in 0..window_size {
+                        for wx in 0..window_size {
+                            let ih = wh * window_size + wy;
+                            let iw = ww * window_size + wx;
+                            for ch in 0..c {
+                                let src_idx = bi * h * w * c + ih * w * c + iw * c + ch;
+                                let dst_idx = win_idx * window_size * window_size * c
+                                    + wy * window_size * c
+                                    + wx * c
+                                    + ch;
+                                windows[dst_idx] = data[src_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.tensor_variable(windows, vec![b * num_windows, window_size, window_size, c], false)
+    }
+
+    /// Reverse window_partition operation (Swin Transformer).
+    ///
+    /// Args:
+    /// - windows: [num_windows * B, window_size, window_size, C]
+    /// - window_size: size of each square window
+    /// - h, w: original height and width
+    ///
+    /// Returns: [B, H, W, C]
+    pub fn window_reverse(
+        &mut self,
+        windows: TensorNodeId,
+        window_size: usize,
+        h: usize,
+        w: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(windows)?;
+        if shape.len() != 4 || shape[1] != window_size || shape[2] != window_size {
+            return Err(Self::incompatible_tensor_args(
+                "window_reverse: windows must be [N, window_size, window_size, C]",
+            ));
+        }
+        let c = shape[3];
+        let nh = h / window_size;
+        let nw = w / window_size;
+        let num_windows = nh * nw;
+        let b = shape[0] / num_windows;
+        let data = self.tensor_values(windows)?;
+        let mut output = vec![0.0; b * h * w * c];
+        for bi in 0..b {
+            for wh in 0..nh {
+                for ww in 0..nw {
+                    let win_idx = bi * num_windows + wh * nw + ww;
+                    for wy in 0..window_size {
+                        for wx in 0..window_size {
+                            let ih = wh * window_size + wy;
+                            let iw = ww * window_size + wx;
+                            for ch in 0..c {
+                                let src_idx = win_idx * window_size * window_size * c
+                                    + wy * window_size * c
+                                    + wx * c
+                                    + ch;
+                                let dst_idx = bi * h * w * c + ih * w * c + iw * c + ch;
+                                output[dst_idx] = data[src_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.tensor_variable(output, vec![b, h, w, c], false)
+    }
+
     /// Alias for `multi_head_attention_forward`.
     #[allow(clippy::too_many_arguments)]
     pub fn functional_multi_head_attention_forward(
