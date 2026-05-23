@@ -24835,6 +24835,507 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    // ── RNN Sequence Utilities ─────────────────────────────────────────
+
+    /// Pad a list of variable-length sequences with a given padding value.
+    ///
+    /// Equivalent to `torch.nn.utils.rnn.pad_sequence(sequences, batch_first, padding_value)`.
+    /// Takes a list of sequences (each as TensorNodeId) and pads them to the same length.
+    /// Returns a single tensor with shape:
+    /// - `[max_len, batch_size, *]` if `batch_first=false`
+    /// - `[batch_size, max_len, *]` if `batch_first=true`
+    pub fn pad_sequence(
+        &mut self,
+        sequences: &[TensorNodeId],
+        batch_first: bool,
+        padding_value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if sequences.is_empty() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pad_sequence: sequences list must not be empty",
+                },
+            )));
+        }
+
+        let shapes: Vec<_> = sequences
+            .iter()
+            .map(|&s| self.tensor_shape(s))
+            .collect::<Result<_, _>>()?;
+
+        let max_len = shapes.iter().map(|s| s[0]).max().unwrap_or(0);
+        let batch_size = sequences.len();
+        let trailing_shape: Vec<usize> = if shapes[0].len() > 1 {
+            shapes[0][1..].to_vec()
+        } else {
+            vec![]
+        };
+
+        let trailing_numel: usize = trailing_shape.iter().product::<usize>().max(1);
+        let total_numel = if batch_first {
+            batch_size * max_len * trailing_numel
+        } else {
+            max_len * batch_size * trailing_numel
+        };
+
+        let mut padded = vec![padding_value; total_numel];
+
+        for (b, (&seq, shape)) in sequences.iter().zip(shapes.iter()).enumerate() {
+            let seq_len = shape[0];
+            let seq_data = self.tensor_values(seq)?;
+
+            for t in 0..seq_len {
+                for f in 0..trailing_numel {
+                    let src_idx = t * trailing_numel + f;
+                    let dst_idx = if batch_first {
+                        b * max_len * trailing_numel + t * trailing_numel + f
+                    } else {
+                        t * batch_size * trailing_numel + b * trailing_numel + f
+                    };
+                    if src_idx < seq_data.len() {
+                        padded[dst_idx] = seq_data[src_idx];
+                    }
+                }
+            }
+        }
+
+        let out_shape = if batch_first {
+            let mut s = vec![batch_size, max_len];
+            s.extend(&trailing_shape);
+            s
+        } else {
+            let mut s = vec![max_len, batch_size];
+            s.extend(&trailing_shape);
+            s
+        };
+
+        self.tensor_variable(padded, out_shape, false)
+    }
+
+    /// Pack a list of variable-length sequences (already sorted by length, descending).
+    ///
+    /// Equivalent to `torch.nn.utils.rnn.pack_sequence(sequences, enforce_sorted)`.
+    /// Returns a tuple of (packed_data, batch_sizes, sorted_indices, unsorted_indices).
+    /// - `packed_data`: Flattened tensor containing all timesteps
+    /// - `batch_sizes`: Number of sequences at each timestep
+    /// - `sorted_indices`: Permutation used for sorting (if any)
+    /// - `unsorted_indices`: Inverse permutation
+    pub fn pack_sequence(
+        &mut self,
+        sequences: &[TensorNodeId],
+        enforce_sorted: bool,
+    ) -> Result<(TensorNodeId, Vec<usize>, Vec<usize>, Vec<usize>), AutogradError> {
+        if sequences.is_empty() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pack_sequence: sequences list must not be empty",
+                },
+            )));
+        }
+
+        let shapes: Vec<_> = sequences
+            .iter()
+            .map(|&s| self.tensor_shape(s))
+            .collect::<Result<_, _>>()?;
+        let lengths: Vec<usize> = shapes.iter().map(|s| s[0]).collect();
+
+        let sorted_indices: Vec<usize> = if enforce_sorted {
+            (0..lengths.len()).collect()
+        } else {
+            let mut idx: Vec<usize> = (0..lengths.len()).collect();
+            idx.sort_by(|&a, &b| lengths[b].cmp(&lengths[a]));
+            idx
+        };
+
+        let sorted_lengths: Vec<usize> = sorted_indices.iter().map(|&i| lengths[i]).collect();
+
+        let max_len = sorted_lengths[0];
+        let trailing_shape: Vec<usize> = if shapes[0].len() > 1 {
+            shapes[0][1..].to_vec()
+        } else {
+            vec![]
+        };
+        let trailing_numel: usize = trailing_shape.iter().product::<usize>().max(1);
+
+        let mut batch_sizes = Vec::with_capacity(max_len);
+        for t in 0..max_len {
+            let count = sorted_lengths.iter().filter(|&&len| len > t).count();
+            batch_sizes.push(count);
+        }
+
+        let total_elements: usize = batch_sizes.iter().sum();
+        let mut packed_data = Vec::with_capacity(total_elements * trailing_numel);
+
+        for t in 0..max_len {
+            for (b, &orig_idx) in sorted_indices.iter().enumerate() {
+                if sorted_lengths[b] > t {
+                    let seq_data = self.tensor_values(sequences[orig_idx])?;
+                    for f in 0..trailing_numel {
+                        let idx = t * trailing_numel + f;
+                        if idx < seq_data.len() {
+                            packed_data.push(seq_data[idx]);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut unsorted_indices = vec![0usize; sorted_indices.len()];
+        for (sorted_pos, &orig_idx) in sorted_indices.iter().enumerate() {
+            unsorted_indices[orig_idx] = sorted_pos;
+        }
+
+        let packed_shape = if trailing_shape.is_empty() {
+            vec![packed_data.len()]
+        } else {
+            let mut s = vec![total_elements];
+            s.extend(&trailing_shape);
+            s
+        };
+
+        let packed_tensor = self.tensor_variable(packed_data, packed_shape, false)?;
+
+        Ok((packed_tensor, batch_sizes, sorted_indices, unsorted_indices))
+    }
+
+    /// Pack a padded batch of sequences.
+    ///
+    /// Equivalent to `torch.nn.utils.rnn.pack_padded_sequence(input, lengths, batch_first, enforce_sorted)`.
+    /// Takes a padded tensor and sequence lengths, returns packed representation.
+    pub fn pack_padded_sequence(
+        &mut self,
+        input: TensorNodeId,
+        lengths: &[usize],
+        batch_first: bool,
+        enforce_sorted: bool,
+    ) -> Result<(TensorNodeId, Vec<usize>, Vec<usize>, Vec<usize>), AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let data = self.tensor_values(input)?;
+
+        let (max_len, batch_size) = if batch_first {
+            (shape[1], shape[0])
+        } else {
+            (shape[0], shape[1])
+        };
+
+        if lengths.len() != batch_size {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "pack_padded_sequence: lengths count must equal batch_size",
+                },
+            )));
+        }
+
+        let trailing_shape: Vec<usize> = if shape.len() > 2 { shape[2..].to_vec() } else { vec![] };
+        let trailing_numel: usize = trailing_shape.iter().product::<usize>().max(1);
+
+        let sorted_indices: Vec<usize> = if enforce_sorted {
+            (0..batch_size).collect()
+        } else {
+            let mut idx: Vec<usize> = (0..batch_size).collect();
+            idx.sort_by(|&a, &b| lengths[b].cmp(&lengths[a]));
+            idx
+        };
+
+        let sorted_lengths: Vec<usize> = sorted_indices.iter().map(|&i| lengths[i]).collect();
+
+        let actual_max_len = *sorted_lengths.iter().max().unwrap_or(&0);
+        let mut batch_sizes = Vec::with_capacity(actual_max_len);
+        for t in 0..actual_max_len {
+            let count = sorted_lengths.iter().filter(|&&len| len > t).count();
+            batch_sizes.push(count);
+        }
+
+        let total_elements: usize = batch_sizes.iter().sum();
+        let mut packed_data = Vec::with_capacity(total_elements * trailing_numel);
+
+        for t in 0..actual_max_len {
+            for (b, &orig_idx) in sorted_indices.iter().enumerate() {
+                if sorted_lengths[b] > t {
+                    for f in 0..trailing_numel {
+                        let idx = if batch_first {
+                            orig_idx * max_len * trailing_numel + t * trailing_numel + f
+                        } else {
+                            t * batch_size * trailing_numel + orig_idx * trailing_numel + f
+                        };
+                        if idx < data.len() {
+                            packed_data.push(data[idx]);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut unsorted_indices = vec![0usize; sorted_indices.len()];
+        for (sorted_pos, &orig_idx) in sorted_indices.iter().enumerate() {
+            unsorted_indices[orig_idx] = sorted_pos;
+        }
+
+        let packed_shape = if trailing_shape.is_empty() {
+            vec![packed_data.len()]
+        } else {
+            let mut s = vec![total_elements];
+            s.extend(&trailing_shape);
+            s
+        };
+
+        let packed_tensor = self.tensor_variable(packed_data, packed_shape, false)?;
+
+        Ok((packed_tensor, batch_sizes, sorted_indices, unsorted_indices))
+    }
+
+    /// Unpack a packed sequence back to padded form.
+    ///
+    /// Equivalent to `torch.nn.utils.rnn.pad_packed_sequence(packed, batch_first, padding_value, total_length)`.
+    /// Takes packed data and batch_sizes, returns (padded_tensor, lengths).
+    pub fn pad_packed_sequence(
+        &mut self,
+        packed_data: TensorNodeId,
+        batch_sizes: &[usize],
+        batch_first: bool,
+        padding_value: f64,
+        total_length: Option<usize>,
+    ) -> Result<(TensorNodeId, Vec<usize>), AutogradError> {
+        let data = self.tensor_values(packed_data)?;
+        let packed_shape = self.tensor_shape(packed_data)?;
+
+        let trailing_shape: Vec<usize> = if packed_shape.len() > 1 {
+            packed_shape[1..].to_vec()
+        } else {
+            vec![]
+        };
+        let trailing_numel: usize = trailing_shape.iter().product::<usize>().max(1);
+
+        let max_len = total_length.unwrap_or(batch_sizes.len());
+        let batch_size = *batch_sizes.first().unwrap_or(&0);
+
+        let total_numel = if batch_first {
+            batch_size * max_len * trailing_numel
+        } else {
+            max_len * batch_size * trailing_numel
+        };
+
+        let mut padded = vec![padding_value; total_numel];
+
+        let mut lengths = vec![0usize; batch_size];
+        for (t, &bs) in batch_sizes.iter().enumerate() {
+            for b in 0..bs {
+                if lengths[b] <= t {
+                    lengths[b] = t + 1;
+                }
+            }
+        }
+
+        let mut data_idx = 0;
+        for (t, &bs) in batch_sizes.iter().enumerate() {
+            for b in 0..bs {
+                for f in 0..trailing_numel {
+                    let dst_idx = if batch_first {
+                        b * max_len * trailing_numel + t * trailing_numel + f
+                    } else {
+                        t * batch_size * trailing_numel + b * trailing_numel + f
+                    };
+                    if data_idx < data.len() && dst_idx < padded.len() {
+                        padded[dst_idx] = data[data_idx];
+                    }
+                    data_idx += 1;
+                }
+            }
+        }
+
+        let out_shape = if batch_first {
+            let mut s = vec![batch_size, max_len];
+            s.extend(&trailing_shape);
+            s
+        } else {
+            let mut s = vec![max_len, batch_size];
+            s.extend(&trailing_shape);
+            s
+        };
+
+        let out_tensor = self.tensor_variable(padded, out_shape, false)?;
+
+        Ok((out_tensor, lengths))
+    }
+
+    // ── RNN Cell Functions ─────────────────────────────────────────────
+
+    /// Single step of a vanilla RNN cell with tanh activation.
+    ///
+    /// Equivalent to `torch.nn.RNNCell` with `nonlinearity='tanh'`.
+    /// Computes: `h' = tanh(W_ih @ x + b_ih + W_hh @ h + b_hh)`
+    pub fn rnn_tanh_cell(
+        &mut self,
+        input: TensorNodeId,
+        hidden: TensorNodeId,
+        w_ih: TensorNodeId,
+        w_hh: TensorNodeId,
+        b_ih: Option<TensorNodeId>,
+        b_hh: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let igates = self.tensor_mm(input, w_ih)?;
+        let hgates = self.tensor_mm(hidden, w_hh)?;
+        let mut gates = self.tensor_add(igates, hgates)?;
+
+        if let Some(bias_ih) = b_ih {
+            gates = self.tensor_add(gates, bias_ih)?;
+        }
+        if let Some(bias_hh) = b_hh {
+            gates = self.tensor_add(gates, bias_hh)?;
+        }
+
+        self.tensor_tanh(gates)
+    }
+
+    /// Single step of a vanilla RNN cell with ReLU activation.
+    ///
+    /// Equivalent to `torch.nn.RNNCell` with `nonlinearity='relu'`.
+    /// Computes: `h' = relu(W_ih @ x + b_ih + W_hh @ h + b_hh)`
+    pub fn rnn_relu_cell(
+        &mut self,
+        input: TensorNodeId,
+        hidden: TensorNodeId,
+        w_ih: TensorNodeId,
+        w_hh: TensorNodeId,
+        b_ih: Option<TensorNodeId>,
+        b_hh: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let igates = self.tensor_mm(input, w_ih)?;
+        let hgates = self.tensor_mm(hidden, w_hh)?;
+        let mut gates = self.tensor_add(igates, hgates)?;
+
+        if let Some(bias_ih) = b_ih {
+            gates = self.tensor_add(gates, bias_ih)?;
+        }
+        if let Some(bias_hh) = b_hh {
+            gates = self.tensor_add(gates, bias_hh)?;
+        }
+
+        self.tensor_relu(gates)
+    }
+
+    /// Single step of an LSTM cell.
+    ///
+    /// Equivalent to `torch.nn.LSTMCell`.
+    /// Returns (h', c') tuple for the new hidden and cell states.
+    pub fn lstm_cell(
+        &mut self,
+        input: TensorNodeId,
+        hx: (TensorNodeId, TensorNodeId),
+        w_ih: TensorNodeId,
+        w_hh: TensorNodeId,
+        b_ih: Option<TensorNodeId>,
+        b_hh: Option<TensorNodeId>,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let (h, c) = hx;
+
+        let mut gates = self.tensor_mm(input, w_ih)?;
+        let hgates = self.tensor_mm(h, w_hh)?;
+        gates = self.tensor_add(gates, hgates)?;
+
+        if let Some(bias_ih) = b_ih {
+            gates = self.tensor_add(gates, bias_ih)?;
+        }
+        if let Some(bias_hh) = b_hh {
+            gates = self.tensor_add(gates, bias_hh)?;
+        }
+
+        let hidden_size = self.tensor_shape(h)?[self.tensor_shape(h)?.len() - 1];
+        let gates_data = self.tensor_values(gates)?;
+        let c_data = self.tensor_values(c)?;
+
+        let batch_size = gates_data.len() / (4 * hidden_size);
+        let mut new_h = Vec::with_capacity(batch_size * hidden_size);
+        let mut new_c = Vec::with_capacity(batch_size * hidden_size);
+
+        for b in 0..batch_size {
+            for i in 0..hidden_size {
+                let gate_base = b * 4 * hidden_size;
+                let i_gate = gates_data[gate_base + i];
+                let f_gate = gates_data[gate_base + hidden_size + i];
+                let g_gate = gates_data[gate_base + 2 * hidden_size + i];
+                let o_gate = gates_data[gate_base + 3 * hidden_size + i];
+
+                let i_gate = 1.0 / (1.0 + (-i_gate).exp());
+                let f_gate = 1.0 / (1.0 + (-f_gate).exp());
+                let g_gate = g_gate.tanh();
+                let o_gate = 1.0 / (1.0 + (-o_gate).exp());
+
+                let c_idx = b * hidden_size + i;
+                let c_val = f_gate * c_data[c_idx] + i_gate * g_gate;
+                let h_val = o_gate * c_val.tanh();
+
+                new_c.push(c_val);
+                new_h.push(h_val);
+            }
+        }
+
+        let h_shape = self.tensor_shape(h)?;
+        let new_h_tensor = self.tensor_variable(new_h, h_shape.clone(), false)?;
+        let new_c_tensor = self.tensor_variable(new_c, h_shape, false)?;
+
+        Ok((new_h_tensor, new_c_tensor))
+    }
+
+    /// Single step of a GRU cell.
+    ///
+    /// Equivalent to `torch.nn.GRUCell`.
+    /// Returns h' for the new hidden state.
+    pub fn gru_cell(
+        &mut self,
+        input: TensorNodeId,
+        hidden: TensorNodeId,
+        w_ih: TensorNodeId,
+        w_hh: TensorNodeId,
+        b_ih: Option<TensorNodeId>,
+        b_hh: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut gi = self.tensor_mm(input, w_ih)?;
+        let mut gh = self.tensor_mm(hidden, w_hh)?;
+
+        if let Some(bias_ih) = b_ih {
+            gi = self.tensor_add(gi, bias_ih)?;
+        }
+        if let Some(bias_hh) = b_hh {
+            gh = self.tensor_add(gh, bias_hh)?;
+        }
+
+        let hidden_size = self.tensor_shape(hidden)?[self.tensor_shape(hidden)?.len() - 1];
+        let gi_data = self.tensor_values(gi)?;
+        let gh_data = self.tensor_values(gh)?;
+        let h_data = self.tensor_values(hidden)?;
+
+        let batch_size = gi_data.len() / (3 * hidden_size);
+        let mut new_h = Vec::with_capacity(batch_size * hidden_size);
+
+        for b in 0..batch_size {
+            for i in 0..hidden_size {
+                let gi_base = b * 3 * hidden_size;
+                let gh_base = b * 3 * hidden_size;
+
+                let r_i = gi_data[gi_base + i];
+                let z_i = gi_data[gi_base + hidden_size + i];
+                let n_i = gi_data[gi_base + 2 * hidden_size + i];
+
+                let r_h = gh_data[gh_base + i];
+                let z_h = gh_data[gh_base + hidden_size + i];
+                let n_h = gh_data[gh_base + 2 * hidden_size + i];
+
+                let r = 1.0 / (1.0 + (-(r_i + r_h)).exp());
+                let z = 1.0 / (1.0 + (-(z_i + z_h)).exp());
+                let n = (n_i + r * n_h).tanh();
+
+                let h_idx = b * hidden_size + i;
+                let h_val = (1.0 - z) * n + z * h_data[h_idx];
+
+                new_h.push(h_val);
+            }
+        }
+
+        let h_shape = self.tensor_shape(hidden)?;
+        self.tensor_variable(new_h, h_shape, false)
+    }
+
     #[must_use]
     pub fn evidence(&self) -> &[EvidenceEntry] {
         self.runtime.ledger().entries()
