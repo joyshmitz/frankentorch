@@ -14484,6 +14484,59 @@ impl FrankenTorchSession {
         self.tensor_clip_max(input, max_val)
     }
 
+    /// Absolute value. Alias for tensor_absolute.
+    pub fn functional_absolute(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_absolute(input)
+    }
+
+    /// Subtraction. Alias for tensor_subtract.
+    pub fn functional_subtract(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_subtract(lhs, rhs)
+    }
+
+    /// Multiplication. Alias for tensor_multiply.
+    pub fn functional_multiply(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multiply(lhs, rhs)
+    }
+
+    /// Division. Alias for tensor_divide.
+    pub fn functional_divide(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_divide(lhs, rhs)
+    }
+
+    /// True division. Alias for tensor_true_divide.
+    pub fn functional_true_divide(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_true_divide(lhs, rhs)
+    }
+
+    /// Floor division. Alias for tensor_floor_divide.
+    pub fn functional_floor_divide(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_floor_divide(lhs, rhs)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
