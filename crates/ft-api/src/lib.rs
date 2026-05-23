@@ -13187,6 +13187,19 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Apply 1D transposed convolution. Alias for `functional_conv_transpose1d`.
+    pub fn tensor_conv_transpose1d(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_conv_transpose1d(input, weight, bias, stride, padding, output_padding)
+    }
+
     /// Apply 1D transposed convolution.
     ///
     /// Equivalent to `torch.nn.functional.conv_transpose1d(input, weight, bias, stride, padding, output_padding)`.
@@ -13302,6 +13315,19 @@ impl FrankenTorchSession {
             }
             None => Ok(result),
         }
+    }
+
+    /// Apply 2D transposed convolution. Alias for `functional_conv_transpose2d`.
+    pub fn tensor_conv_transpose2d(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_conv_transpose2d(input, weight, bias, stride, padding, output_padding)
     }
 
     /// Apply 2D transposed convolution.
@@ -13768,6 +13794,33 @@ impl FrankenTorchSession {
 
         let pooled = self.tensor_cat(&patches, 2)?;
         self.tensor_reshape(pooled, vec![batch_size, channels, output_h, output_w])
+    }
+
+    /// Adaptive average pooling for 1-D input. Alias for `functional_adaptive_avg_pool1d`.
+    pub fn tensor_adaptive_avg_pool1d(
+        &mut self,
+        input: TensorNodeId,
+        output_size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_adaptive_avg_pool1d(input, output_size)
+    }
+
+    /// Adaptive average pooling for 2-D input. Alias for `functional_adaptive_avg_pool2d`.
+    pub fn tensor_adaptive_avg_pool2d(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_adaptive_avg_pool2d(input, output_size)
+    }
+
+    /// Adaptive average pooling for 3-D input. Alias for `functional_adaptive_avg_pool3d`.
+    pub fn tensor_adaptive_avg_pool3d(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_adaptive_avg_pool3d(input, output_size)
     }
 
     /// Adaptive average pooling for 1-D input `[N, C, L]`.
@@ -15304,6 +15357,15 @@ impl FrankenTorchSession {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_inv(input)
+    }
+
+    /// Solve linear system Ax = b. Alias for tensor_linalg_solve.
+    pub fn tensor_solve(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_solve(a, b)
     }
 
     /// Solve linear system Ax = b. Alias for tensor_linalg_solve.
