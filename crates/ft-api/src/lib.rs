@@ -30476,6 +30476,48 @@ impl FrankenTorchSession {
         self.tensor_cross_entropy(scaled_logits, labels, "mean")
     }
 
+    /// Center loss for embedding learning.
+    ///
+    /// Penalizes distance from class centers to encourage intra-class
+    /// compactness. Commonly used with softmax loss for face recognition.
+    ///
+    /// Args:
+    /// - features: embeddings [N, D]
+    /// - labels: class indices [N]
+    /// - centers: class centers [C, D]
+    ///
+    /// Returns: mean squared distance from each sample to its class center.
+    pub fn center_loss(
+        &mut self,
+        features: TensorNodeId,
+        labels: TensorNodeId,
+        centers: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let feat_shape = self.tensor_shape(features)?;
+        let centers_shape = self.tensor_shape(centers)?;
+        if feat_shape.len() != 2 || centers_shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args(
+                "center_loss: features and centers must be 2D",
+            ));
+        }
+        let n = feat_shape[0];
+        let d = feat_shape[1];
+        if centers_shape[1] != d {
+            return Err(Self::incompatible_tensor_args(
+                "center_loss: feature dim must match center dim",
+            ));
+        }
+        let c = centers_shape[0];
+        let one_hot = self.tensor_one_hot(labels, c)?;
+        let selected_centers = self.tensor_matmul(one_hot, centers)?;
+        let diff = self.tensor_sub(features, selected_centers)?;
+        let diff_sq = self.tensor_mul(diff, diff)?;
+        let sum_sq = self.tensor_sum_dim(diff_sq, 1)?;
+        let half = self.full(vec![1], 0.5, false)?;
+        let scaled = self.tensor_mul(sum_sq, half)?;
+        self.tensor_mean(scaled)
+    }
+
     /// Quantile (pinball) loss for quantile regression.
     ///
     /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
