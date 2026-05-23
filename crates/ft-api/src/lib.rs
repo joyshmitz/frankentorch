@@ -48053,6 +48053,562 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_contiguous(input)
     }
+
+    // ── Sorting Operations ────────────────────────────────────────────────
+
+    /// Get indices that would sort tensor along dimension.
+    pub fn argsort_asc(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_argsort(input, dim, false)
+    }
+
+    /// Get indices that would sort tensor descending along dimension.
+    pub fn argsort_desc(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_argsort(input, dim, true)
+    }
+
+    // ── Flip/Roll Operations ──────────────────────────────────────────────
+
+    /// Flip tensor along a single dimension.
+    pub fn flip_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_flip(input, &[dim])
+    }
+
+    /// Flip tensor along multiple dimensions.
+    pub fn flip_dims(
+        &mut self,
+        input: TensorNodeId,
+        dims: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_flip(input, dims)
+    }
+
+    /// Roll tensor along dimension by shift amount.
+    pub fn roll_dim(
+        &mut self,
+        input: TensorNodeId,
+        shift: i64,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_roll(input, shift, dim)
+    }
+
+    // ── Reduction Variants ────────────────────────────────────────────────
+
+    /// Log-sum-exp along dimension (numerically stable).
+    pub fn logsumexp_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logsumexp(input, dim)
+    }
+
+    /// Cumulative max (flattened).
+    pub fn cummax_all(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_cummax(input)
+    }
+
+    /// Cumulative min (flattened).
+    pub fn cummin_all(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_cummin(input)
+    }
+
+    /// Cumulative product along dimension.
+    pub fn cumprod_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cumprod(input, dim)
+    }
+
+    // ── Gradient Utilities ────────────────────────────────────────────────
+
+    /// Detach tensor from computation graph.
+    pub fn detach_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_detach(input)
+    }
+
+    /// Check if tensor requires gradient.
+    pub fn requires_grad(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_tape.tensor_requires_grad(input)
+    }
+
+    // ── Indexing Utilities ────────────────────────────────────────────────
+
+    /// Select elements using indices along dimension.
+    pub fn index_select_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        indices: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_select(input, dim, indices)
+    }
+
+    /// Gather elements along dimension using indices.
+    pub fn gather_along_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        indices: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gather(input, dim, indices)
+    }
+
+    /// Scatter values into tensor along dimension.
+    pub fn scatter_along_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        indices: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_scatter(input, dim, indices, src)
+    }
+
+    // ── Shape Queries ─────────────────────────────────────────────────────
+
+    /// Get tensor shape as Vec.
+    pub fn shape_vec(&self, input: TensorNodeId) -> Result<Vec<usize>, AutogradError> {
+        self.tensor_shape(input)
+    }
+
+    /// Get tensor size at dimension.
+    pub fn size_at_dim(&self, input: TensorNodeId, dim: usize) -> Result<usize, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if dim >= shape.len() {
+            return Err(Self::incompatible_tensor_args("dim out of bounds"));
+        }
+        Ok(shape[dim])
+    }
+
+    /// Get total number of elements.
+    pub fn num_elements(&self, input: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_numel(input)
+    }
+
+    // ── Clamping Variants ─────────────────────────────────────────────────
+
+    /// Clamp to non-negative values.
+    pub fn clamp_nonnegative(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let zero = self.full(vec![1], 0.0, false)?;
+        self.tensor_maximum(input, zero)
+    }
+
+    /// Clamp to range [0, 1].
+    pub fn clamp_unit(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp(input, 0.0, 1.0)
+    }
+
+    // ── Einsum Shortcuts ──────────────────────────────────────────────────
+
+    /// Batch matrix multiplication (einsum "bij,bjk->bik").
+    pub fn batch_matmul(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bmm(a, b)
+    }
+
+    /// Batched dot product (einsum "bi,bi->b").
+    pub fn batch_dot(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let prod = self.tensor_mul(a, b)?;
+        self.tensor_sum_dim(prod, 1)
+    }
+
+    /// Matrix trace (sum of diagonal elements).
+    pub fn matrix_trace(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diag = self.tensor_diagonal(input, 0)?;
+        self.tensor_sum(diag)
+    }
+
+    // ── Padding Shortcuts ─────────────────────────────────────────────────
+
+    /// Pad tensor with zeros (constant padding).
+    pub fn pad_zeros(
+        &mut self,
+        input: TensorNodeId,
+        pad: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad(input, pad, 0.0)
+    }
+
+    /// Pad tensor with a constant value.
+    pub fn pad_value(
+        &mut self,
+        input: TensorNodeId,
+        pad: &[usize],
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad(input, pad, value)
+    }
+
+    // ── Convolution Shortcuts ─────────────────────────────────────────────
+
+    /// 1D convolution with default settings.
+    pub fn conv1d_simple(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conv1d(input, weight, None, 1, 0)
+    }
+
+    /// 2D convolution with default settings.
+    pub fn conv2d_simple(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conv2d(input, weight, None, (1, 1), (0, 0))
+    }
+
+    // ── Pooling Shortcuts ─────────────────────────────────────────────────
+
+    /// 2D max pooling with default settings (kernel=2, stride=2).
+    pub fn maxpool2d_2x2(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_max_pool2d(input, (2, 2), (2, 2))
+    }
+
+    /// 2D average pooling with default settings (kernel=2, stride=2).
+    pub fn avgpool2d_2x2(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_avg_pool2d(input, (2, 2), (2, 2), (0, 0), false, true)
+    }
+
+    /// Adaptive average pooling to output size.
+    pub fn adaptive_avg_pool2d_size(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_adaptive_avg_pool2d(input, output_size)
+    }
+
+    // ── Normalization Shortcuts ───────────────────────────────────────────
+
+    /// Batch normalization 2D in eval mode.
+    pub fn batch_norm2d_eval(
+        &mut self,
+        input: TensorNodeId,
+        running_mean: TensorNodeId,
+        running_var: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, _, _) = self.tensor_batch_norm2d(
+            input,
+            Some(running_mean),
+            Some(running_var),
+            weight,
+            bias,
+            false,
+            0.1,
+            eps,
+        )?;
+        Ok(out)
+    }
+
+    /// Layer normalization with defaults.
+    pub fn layer_norm_simple(
+        &mut self,
+        input: TensorNodeId,
+        normalized_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_layer_norm(input, normalized_shape, None, None, 1e-5)
+    }
+
+    // ── Activation Variants ───────────────────────────────────────────────
+
+    /// Softplus activation.
+    pub fn softplus_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softplus(input)
+    }
+
+    /// Leaky ReLU activation.
+    pub fn leaky_relu_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_leaky_relu(input)
+    }
+
+    /// ELU activation.
+    pub fn elu_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_elu(input)
+    }
+
+    /// CELU activation.
+    pub fn celu_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_celu(input, 1.0)
+    }
+
+    /// SELU (scaled ELU).
+    pub fn selu_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_selu(input)
+    }
+
+    /// PReLU with learnable weight.
+    pub fn prelu_activation(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_prelu(input, weight)
+    }
+
+    /// RReLU with default range.
+    pub fn rrelu_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rrelu(input, 0.125, 1.0 / 3.0)
+    }
+
+    /// ReLU6 (clamps to [0, 6]).
+    pub fn relu6_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_relu6(input)
+    }
+
+    /// Log-sigmoid activation.
+    pub fn logsigmoid_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logsigmoid(input)
+    }
+
+    // ── Dropout Variants ──────────────────────────────────────────────────
+
+    /// Dropout with probability p.
+    pub fn dropout_train(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dropout(input, p, true)
+    }
+
+    /// Dropout in eval mode (identity).
+    pub fn dropout_eval(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clone(input, self.tensor_tape.tensor_requires_grad(input)?)
+    }
+
+    /// Alpha-dropout (SELU compatible).
+    pub fn alpha_dropout(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_alpha_dropout(input, p, training)
+    }
+
+    // ── Tensor Creation Shortcuts ─────────────────────────────────────────
+
+    /// Create scalar tensor.
+    pub fn scalar_tensor(
+        &mut self,
+        value: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.full(vec![], value, requires_grad)
+    }
+
+    /// Create 1D tensor from slice.
+    pub fn tensor_1d(
+        &mut self,
+        data: &[f64],
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.leaf(data.to_vec(), vec![data.len()], requires_grad)
+    }
+
+    /// Create 2D tensor from flat data with shape.
+    pub fn tensor_2d(
+        &mut self,
+        data: Vec<f64>,
+        rows: usize,
+        cols: usize,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tape.leaf(data, vec![rows, cols], requires_grad)
+    }
+
+    /// Create tensor filled with a specific integer value.
+    pub fn full_int(
+        &mut self,
+        shape: Vec<usize>,
+        value: i64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.full(shape, value as f64, requires_grad)
+    }
+
+    /// Create zeros with same shape as input.
+    pub fn zeros_like_tensor(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_zeros_like(input, requires_grad)
+    }
+
+    /// Create ones with same shape as input.
+    pub fn ones_like_tensor(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ones_like(input, requires_grad)
+    }
+
+    // ── Advanced Reduction ────────────────────────────────────────────────
+
+    /// Product of all elements.
+    pub fn prod_all(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_prod(input)
+    }
+
+    /// Product along dimension.
+    pub fn prod_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_prod_dim(input, dim)
+    }
+
+    /// Norm along dimension.
+    pub fn norm_dim(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_norm_dim(input, p, dim)
+    }
+
+    /// Max norm (infinity norm) - max of absolute values.
+    pub fn inf_norm(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let abs = self.tensor_abs(input)?;
+        let shape = self.tensor_shape(abs)?;
+        let flat = self.tensor_flatten(abs, 0, shape.len() - 1)?;
+        self.tensor_amax(flat, 0)
+    }
+
+    // ── Where/Select Operations ───────────────────────────────────────────
+
+    /// Element-wise select based on condition.
+    pub fn where_select(
+        &mut self,
+        condition: TensorNodeId,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_where(condition, x, y)
+    }
+
+    /// Replace NaN values with specified value.
+    pub fn nan_to_num_val(
+        &mut self,
+        input: TensorNodeId,
+        nan_value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nan_to_num(input, nan_value, Some(f64::MAX), Some(f64::MIN))
+    }
+
+    // ── FFT Operations ────────────────────────────────────────────────────
+
+    /// 1D FFT (full length).
+    pub fn fft_full(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft(input, None)
+    }
+
+    /// 1D inverse FFT (full length).
+    pub fn ifft_full(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ifft(input, None)
+    }
+
+    /// Real-valued FFT (full length).
+    pub fn rfft_full(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rfft(input, None)
+    }
 }
 
 pub use ft_autograd::{
