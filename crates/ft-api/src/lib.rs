@@ -53963,6 +53963,110 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_dropout3d(input, p, training)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // FFT utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// 1D discrete Fourier transform.
+    pub fn fft_tensor(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft(input, n)
+    }
+
+    /// 1D inverse discrete Fourier transform.
+    pub fn ifft_tensor(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ifft(input, n)
+    }
+
+    /// 1D real FFT (positive frequencies only).
+    pub fn rfft_tensor(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rfft(input, n)
+    }
+
+    /// 2D discrete Fourier transform.
+    pub fn fft2_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft2(input)
+    }
+
+    /// 2D inverse discrete Fourier transform.
+    pub fn ifft2_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ifft2(input)
+    }
+
+    /// 2D real FFT.
+    pub fn rfft2_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rfft2(input)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Additional operation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Floor division (integer quotient).
+    pub fn floor_divide_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_floor_divide(lhs, rhs)
+    }
+
+    /// GeGLU activation (GELU-Gated Linear Unit).
+    pub fn geglu_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_geglu(input, dim)
+    }
+
+    /// Expand tensor to match another tensor's shape.
+    pub fn expand_as_tensor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expand_as(input, other)
+    }
+
+    /// Base-10 exponential.
+    pub fn exp10_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_exp10(input)
+    }
+
+    /// Compute p-norm distance between two tensors.
+    pub fn dist_tensor(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dist(a, b, p)
+    }
 }
 
 pub use ft_autograd::{
