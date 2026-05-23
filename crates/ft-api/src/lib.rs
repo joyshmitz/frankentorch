@@ -34619,6 +34619,50 @@ impl FrankenTorchSession {
         Ok(())
     }
 
+    /// Initialize tensor with truncated normal distribution.
+    ///
+    /// Samples from N(mean, std^2) but values are clipped to [a, b] and
+    /// resampled until within bounds. Common in vision transformers (ViT).
+    /// Default bounds are [-2, 2] standard deviations from mean.
+    pub fn init_trunc_normal_(
+        &mut self,
+        tensor: TensorNodeId,
+        mean: f64,
+        std: f64,
+        a: f64,
+        b: f64,
+    ) -> Result<(), AutogradError> {
+        if std <= 0.0 {
+            return Err(Self::incompatible_tensor_args(
+                "init_trunc_normal_: std must be positive",
+            ));
+        }
+        if a >= b {
+            return Err(Self::incompatible_tensor_args(
+                "init_trunc_normal_: a must be less than b",
+            ));
+        }
+        let numel = self.tensor_numel(tensor)?;
+        let mut values = Vec::with_capacity(numel);
+        for _ in 0..numel {
+            let mut sample;
+            loop {
+                sample = mean + std * self.rng.next_normal();
+                if sample >= a && sample <= b {
+                    break;
+                }
+            }
+            values.push(sample);
+        }
+        self.update_tensor_values_for_float(tensor, values, INIT_FLOAT_REASON)?;
+        self.record_tensor_in_place_operation(
+            "init_trunc_normal_",
+            tensor,
+            Some(format!("mean={mean} std={std} a={a} b={b}")),
+        );
+        Ok(())
+    }
+
     // ── nan_to_num ──────────────────────────────────────────────────────
     /// Replace NaN, positive infinity, and negative infinity with specified values.
     ///
