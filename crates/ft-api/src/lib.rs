@@ -13838,6 +13838,20 @@ impl FrankenTorchSession {
     }
 
     /// Apply layer normalization over the trailing `normalized_shape` dimensions.
+    ///
+    /// Equivalent to `torch.nn.functional.layer_norm`.
+    pub fn tensor_layer_norm(
+        &mut self,
+        input: TensorNodeId,
+        normalized_shape: Vec<usize>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_layer_norm(input, normalized_shape, weight, bias, eps)
+    }
+
+    /// Apply layer normalization over the trailing `normalized_shape` dimensions.
     pub fn functional_layer_norm(
         &mut self,
         input: TensorNodeId,
@@ -13923,6 +13937,20 @@ impl FrankenTorchSession {
     }
 
     /// Apply group normalization over channel groups.
+    ///
+    /// Equivalent to `torch.nn.functional.group_norm`.
+    pub fn tensor_group_norm(
+        &mut self,
+        input: TensorNodeId,
+        num_groups: usize,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_group_norm(input, num_groups, weight, bias, eps)
+    }
+
+    /// Apply group normalization over channel groups.
     pub fn functional_group_norm(
         &mut self,
         input: TensorNodeId,
@@ -13992,6 +14020,32 @@ impl FrankenTorchSession {
     }
 
     /// Apply instance normalization over `[N, C, L]`.
+    ///
+    /// Equivalent to `torch.nn.functional.instance_norm` for 3D inputs.
+    pub fn tensor_instance_norm1d(
+        &mut self,
+        input: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_instance_norm1d(input, weight, bias, eps)
+    }
+
+    /// Apply instance normalization over `[N, C, H, W]`.
+    ///
+    /// Equivalent to `torch.nn.functional.instance_norm` for 4D inputs.
+    pub fn tensor_instance_norm2d(
+        &mut self,
+        input: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_instance_norm2d(input, weight, bias, eps)
+    }
+
+    /// Apply instance normalization over `[N, C, L]`.
     pub fn functional_instance_norm1d(
         &mut self,
         input: TensorNodeId,
@@ -14023,6 +14077,60 @@ impl FrankenTorchSession {
             ));
         }
         self.functional_group_norm(input, input_shape[1], weight, bias, eps)
+    }
+
+    /// Apply batch normalization over `[N, C]`.
+    ///
+    /// Equivalent to `torch.nn.functional.batch_norm` for 2D inputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tensor_batch_norm1d(
+        &mut self,
+        input: TensorNodeId,
+        running_mean: Option<TensorNodeId>,
+        running_var: Option<TensorNodeId>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        training: bool,
+        momentum: f64,
+        eps: f64,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.functional_batch_norm1d(
+            input,
+            running_mean,
+            running_var,
+            weight,
+            bias,
+            training,
+            momentum,
+            eps,
+        )
+    }
+
+    /// Apply batch normalization over `[N, C, H, W]`.
+    ///
+    /// Equivalent to `torch.nn.functional.batch_norm` for 4D inputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tensor_batch_norm2d(
+        &mut self,
+        input: TensorNodeId,
+        running_mean: Option<TensorNodeId>,
+        running_var: Option<TensorNodeId>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        training: bool,
+        momentum: f64,
+        eps: f64,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.functional_batch_norm2d(
+            input,
+            running_mean,
+            running_var,
+            weight,
+            bias,
+            training,
+            momentum,
+            eps,
+        )
     }
 
     /// Apply batch normalization over `[N, C]`.
