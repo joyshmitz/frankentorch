@@ -49044,6 +49044,302 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_lerp(start, end, weight)
     }
+
+    // ── Type Checking ─────────────────────────────────────────────────────
+
+    /// Check if tensor has valid gradient.
+    pub fn has_grad(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_tape.tensor_requires_grad(input)
+    }
+
+    // ── Positional Encoding ───────────────────────────────────────────────
+
+    /// Create sinusoidal positional encoding.
+    pub fn sinusoidal_position_encoding(
+        &mut self,
+        seq_len: usize,
+        d_model: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut encoding = Vec::with_capacity(seq_len * d_model);
+        for pos in 0..seq_len {
+            for i in 0..d_model {
+                let angle = (pos as f64) / (10000_f64).powf((2 * (i / 2)) as f64 / d_model as f64);
+                if i % 2 == 0 {
+                    encoding.push(angle.sin());
+                } else {
+                    encoding.push(angle.cos());
+                }
+            }
+        }
+        self.tensor_tape.leaf(encoding, vec![seq_len, d_model], false)
+    }
+
+    // ── Relative Position Bias ────────────────────────────────────────────
+
+    /// Create relative position indices for attention.
+    pub fn relative_position_indices(
+        &mut self,
+        seq_len: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut indices = Vec::with_capacity(seq_len * seq_len);
+        for i in 0..seq_len {
+            for j in 0..seq_len {
+                indices.push((j as i64 - i as i64 + seq_len as i64 - 1) as f64);
+            }
+        }
+        self.tensor_tape.leaf(indices, vec![seq_len, seq_len], false)
+    }
+
+    // ── Tensor Statistics ─────────────────────────────────────────────────
+
+    /// Compute variance along last dimension.
+    pub fn var_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.tensor_var_dim(input, shape.len() - 1, 1)
+    }
+
+    /// Compute standard deviation along last dimension.
+    pub fn std_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.tensor_std_dim(input, shape.len() - 1, 1)
+    }
+
+    // ── Batch Statistics ──────────────────────────────────────────────────
+
+    /// Compute batch mean (mean along dim 0).
+    pub fn batch_mean(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mean_dim(input, 0)
+    }
+
+    /// Compute batch variance (variance along dim 0).
+    pub fn batch_var(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_var_dim(input, 0, 1)
+    }
+
+    // ── Activation In-Place Wrappers ──────────────────────────────────────
+
+    /// ReLU activation (returns new tensor).
+    pub fn relu_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_relu(input)
+    }
+
+    /// Sigmoid activation (returns new tensor).
+    pub fn sigmoid_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sigmoid(input)
+    }
+
+    /// Tanh activation (returns new tensor).
+    pub fn tanh_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tanh(input)
+    }
+
+    /// GELU activation (returns new tensor).
+    pub fn gelu_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gelu(input)
+    }
+
+    /// SiLU/Swish activation (returns new tensor).
+    pub fn silu_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_silu(input)
+    }
+
+    /// Mish activation (returns new tensor).
+    pub fn mish_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mish(input)
+    }
+
+    // ── Elementwise Binary Operations ─────────────────────────────────────
+
+    /// Element-wise minimum of two tensors.
+    pub fn elementwise_min(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_minimum(a, b)
+    }
+
+    /// Element-wise maximum of two tensors.
+    pub fn elementwise_max(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_maximum(a, b)
+    }
+
+    /// Element-wise floor division.
+    pub fn floor_divide(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_floor_divide(a, b)
+    }
+
+    // ── Power Operations ──────────────────────────────────────────────────
+
+    /// Raise tensor to scalar power.
+    pub fn pow_value(
+        &mut self,
+        input: TensorNodeId,
+        exponent: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pow(input, exponent)
+    }
+
+    /// Raise scalar to tensor powers.
+    pub fn scalar_pow_tensor(
+        &mut self,
+        base: f64,
+        exponents: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(exponents)?;
+        let base_tensor = self.full(shape, base, false)?;
+        self.tensor_pow_tensor(base_tensor, exponents)
+    }
+
+    // ── Comparison Operations ─────────────────────────────────────────────
+
+    /// Count non-zero elements.
+    pub fn nonzero_count(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<usize, AutogradError> {
+        let count = self.tensor_count_nonzero(input)?;
+        let values = self.tensor_values(count)?;
+        Ok(values[0] as usize)
+    }
+
+    // ── Batch Operations ──────────────────────────────────────────────────
+
+    /// Split batch into chunks.
+    pub fn split_batch(
+        &mut self,
+        input: TensorNodeId,
+        chunk_size: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let batch_size = shape[0];
+        let num_chunks = (batch_size + chunk_size - 1) / chunk_size;
+        self.tensor_chunk(input, num_chunks, 0)
+    }
+
+    /// Get single batch element.
+    pub fn get_batch_item(
+        &mut self,
+        input: TensorNodeId,
+        index: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
+        let indices = self.tensor_tape.leaf(vec![index as f64], vec![1], requires_grad)?;
+        let selected = self.tensor_index_select(input, 0, indices)?;
+        self.tensor_squeeze(selected, 0)
+    }
+
+    // ── Sequence Operations ───────────────────────────────────────────────
+
+    /// Pad sequence to length.
+    pub fn pad_sequence_end(
+        &mut self,
+        input: TensorNodeId,
+        target_len: usize,
+        pad_value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let current_len = shape[shape.len() - 1];
+        if current_len >= target_len {
+            return Ok(input);
+        }
+        let pad_len = target_len - current_len;
+        let mut pad = vec![0; shape.len() * 2];
+        pad[0] = pad_len;
+        self.tensor_pad(input, &pad, pad_value)
+    }
+
+    /// Truncate sequence to length.
+    pub fn truncate_sequence(
+        &mut self,
+        input: TensorNodeId,
+        max_len: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let current_len = shape[shape.len() - 1];
+        if current_len <= max_len {
+            return Ok(input);
+        }
+        let dim = shape.len() - 1;
+        self.tensor_narrow(input, dim, 0, max_len)
+    }
+
+    // ── Image-like Operations ─────────────────────────────────────────────
+
+    /// Normalize image tensor (NCHW format).
+    pub fn normalize_image(
+        &mut self,
+        input: TensorNodeId,
+        mean: &[f64],
+        std: &[f64],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("expected NCHW"));
+        }
+        let c = shape[1];
+        let mean_t = self.tensor_tape.leaf(mean.to_vec(), vec![1, c, 1, 1], false)?;
+        let std_t = self.tensor_tape.leaf(std.to_vec(), vec![1, c, 1, 1], false)?;
+        let centered = self.tensor_sub(input, mean_t)?;
+        self.tensor_div(centered, std_t)
+    }
+
+    /// Denormalize image tensor (NCHW format).
+    pub fn denormalize_image(
+        &mut self,
+        input: TensorNodeId,
+        mean: &[f64],
+        std: &[f64],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("expected NCHW"));
+        }
+        let c = shape[1];
+        let mean_t = self.tensor_tape.leaf(mean.to_vec(), vec![1, c, 1, 1], false)?;
+        let std_t = self.tensor_tape.leaf(std.to_vec(), vec![1, c, 1, 1], false)?;
+        let scaled = self.tensor_mul(input, std_t)?;
+        self.tensor_add(scaled, mean_t)
+    }
 }
 
 pub use ft_autograd::{
