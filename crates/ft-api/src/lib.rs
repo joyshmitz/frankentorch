@@ -6306,6 +6306,234 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Connectionist Temporal Classification loss.
+    ///
+    /// Equivalent to `torch.nn.functional.ctc_loss`.
+    /// Used for sequence-to-sequence problems where alignment is unknown.
+    ///
+    /// - `log_probs`: Log probabilities, shape (T, N, C) - time, batch, classes
+    /// - `targets`: Target sequences concatenated, shape (sum of target lengths,)
+    /// - `input_lengths`: Length of each input sequence, shape (N,)
+    /// - `target_lengths`: Length of each target sequence, shape (N,)
+    /// - `blank`: Index of the blank label (default 0)
+    /// - `zero_infinity`: If true, infinities in loss are zeroed
+    pub fn tensor_ctc_loss(
+        &mut self,
+        log_probs: TensorNodeId,
+        targets: TensorNodeId,
+        input_lengths: TensorNodeId,
+        target_lengths: TensorNodeId,
+        blank: usize,
+        reduction: &str,
+        zero_infinity: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let lp_shape = self.tensor_shape(log_probs)?;
+        if lp_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "ctc_loss: log_probs must be 3D (T, N, C)",
+                },
+            )));
+        }
+        let t_len = lp_shape[0];
+        let batch_size = lp_shape[1];
+        let num_classes = lp_shape[2];
+        if blank >= num_classes {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "ctc_loss: blank index out of range",
+                },
+            )));
+        }
+        let lp_vals = self.tensor_values(log_probs)?;
+        let tgt_vals = self.tensor_values(targets)?;
+        let in_lens = self.tensor_values(input_lengths)?;
+        let tgt_lens = self.tensor_values(target_lengths)?;
+        if in_lens.len() != batch_size || tgt_lens.len() != batch_size {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "ctc_loss: length arrays must match batch size",
+                },
+            )));
+        }
+        let mut losses = Vec::with_capacity(batch_size);
+        let mut tgt_offset = 0usize;
+        for b in 0..batch_size {
+            let in_len = in_lens[b] as usize;
+            let tgt_len = tgt_lens[b] as usize;
+            if in_len > t_len {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "ctc_loss: input length exceeds time dimension",
+                    },
+                )));
+            }
+            let target_seq: Vec<usize> = tgt_vals[tgt_offset..tgt_offset + tgt_len]
+                .iter()
+                .map(|&x| x as usize)
+                .collect();
+            tgt_offset += tgt_len;
+            // CTC forward pass with alpha probabilities
+            // State space: 2*L + 1 where L is target length (interleaved with blanks)
+            let state_len = 2 * tgt_len + 1;
+            let neg_inf = f64::NEG_INFINITY;
+            let mut alpha = vec![vec![neg_inf; state_len]; in_len + 1];
+            alpha[0][0] = 0.0; // Start at blank
+            if state_len > 1 {
+                alpha[0][1] = 0.0; // Or first label
+            }
+            let get_label = |s: usize| -> usize {
+                if s % 2 == 0 {
+                    blank
+                } else {
+                    target_seq[s / 2]
+                }
+            };
+            for t in 0..in_len {
+                let lp_offset = (t * batch_size + b) * num_classes;
+                for s in 0..state_len {
+                    let label = get_label(s);
+                    let lp = lp_vals[lp_offset + label];
+                    let mut score = alpha[t][s];
+                    if s > 0 {
+                        score = log_sum_exp(score, alpha[t][s - 1]);
+                    }
+                    if s > 1 && get_label(s) != get_label(s - 2) {
+                        score = log_sum_exp(score, alpha[t][s - 2]);
+                    }
+                    alpha[t + 1][s] = score + lp;
+                }
+            }
+            let final_score = if state_len > 1 {
+                log_sum_exp(alpha[in_len][state_len - 1], alpha[in_len][state_len - 2])
+            } else if state_len == 1 {
+                alpha[in_len][0]
+            } else {
+                0.0
+            };
+            let loss = -final_score;
+            let loss = if zero_infinity && !loss.is_finite() {
+                0.0
+            } else {
+                loss
+            };
+            losses.push(loss);
+        }
+        let loss = self.tensor_variable(losses, vec![batch_size], false)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "ctc_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
+    /// Multi-class margin loss (SVM-style).
+    ///
+    /// Equivalent to `torch.nn.functional.multi_margin_loss`.
+    /// Loss = sum_j max(0, margin - x[y] + x[j])^p / C for j != y
+    /// where C is the number of classes.
+    ///
+    /// - `input`: Shape (N, C), raw scores for each class
+    /// - `target`: Shape (N,), target class indices
+    /// - `p`: Power (1 or 2)
+    /// - `margin`: Margin value (default 1.0)
+    /// - `weight`: Optional per-class weights, shape (C,)
+    pub fn tensor_multi_margin_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        p: usize,
+        margin: f64,
+        weight: Option<TensorNodeId>,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if p != 1 && p != 2 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multi_margin_loss: p must be 1 or 2",
+                },
+            )));
+        }
+        let input_shape = self.tensor_shape(input)?;
+        let target_shape = self.tensor_shape(target)?;
+        if input_shape.len() != 2 || target_shape.len() != 1 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multi_margin_loss: input must be 2D (N, C), target must be 1D (N,)",
+                },
+            )));
+        }
+        let n = input_shape[0];
+        let c = input_shape[1];
+        if target_shape[0] != n {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multi_margin_loss: batch size mismatch",
+                },
+            )));
+        }
+        let input_vals = self.tensor_values(input)?;
+        let target_vals = self.tensor_values(target)?;
+        let weights = if let Some(w) = weight {
+            let w_shape = self.tensor_shape(w)?;
+            if w_shape.len() != 1 || w_shape[0] != c {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "multi_margin_loss: weight must be 1D with length C",
+                    },
+                )));
+            }
+            Some(self.tensor_values(w)?)
+        } else {
+            None
+        };
+        let mut losses = Vec::with_capacity(n);
+        for i in 0..n {
+            let y = target_vals[i] as usize;
+            if y >= c {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "multi_margin_loss: target class index out of range",
+                    },
+                )));
+            }
+            let x_y = input_vals[i * c + y];
+            let mut sum = 0.0;
+            for j in 0..c {
+                if j != y {
+                    let x_j = input_vals[i * c + j];
+                    let margin_term = margin - x_y + x_j;
+                    if margin_term > 0.0 {
+                        let loss_j = if p == 1 {
+                            margin_term
+                        } else {
+                            margin_term * margin_term
+                        };
+                        let w = weights.as_ref().map_or(1.0, |ws| ws[y]);
+                        sum += w * loss_j;
+                    }
+                }
+            }
+            losses.push(sum / c as f64);
+        }
+        let loss = self.tensor_variable(losses, vec![n], false)?;
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "multi_margin_loss: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
     pub fn tensor_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.trace(input, self.mode())?;
         self.record_tensor_reduction_operation(&event);
@@ -12993,6 +13221,41 @@ impl FrankenTorchSession {
         reduction: &str,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_margin_ranking_loss(input1, input2, target, margin, reduction)
+    }
+
+    /// CTC loss for sequence-to-sequence tasks. Alias for tensor_ctc_loss.
+    pub fn functional_ctc_loss(
+        &mut self,
+        log_probs: TensorNodeId,
+        targets: TensorNodeId,
+        input_lengths: TensorNodeId,
+        target_lengths: TensorNodeId,
+        blank: usize,
+        reduction: &str,
+        zero_infinity: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ctc_loss(
+            log_probs,
+            targets,
+            input_lengths,
+            target_lengths,
+            blank,
+            reduction,
+            zero_infinity,
+        )
+    }
+
+    /// Multi-class margin loss (SVM-style). Alias for tensor_multi_margin_loss.
+    pub fn functional_multi_margin_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        p: usize,
+        margin: f64,
+        weight: Option<TensorNodeId>,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multi_margin_loss(input, target, p, margin, weight, reduction)
     }
 
     /// Threshold activation. Alias for tensor_threshold.
@@ -34529,6 +34792,20 @@ pub use ft_autograd::{
 /// Inverse error function approximation (Winitzki 2008, refined).
 ///
 /// Accurate to ~1e-9 over [-1, 1].
+/// Numerically stable log-sum-exp for two values.
+///
+/// Returns log(exp(a) + exp(b)) without overflow.
+fn log_sum_exp(a: f64, b: f64) -> f64 {
+    if a == f64::NEG_INFINITY {
+        return b;
+    }
+    if b == f64::NEG_INFINITY {
+        return a;
+    }
+    let max = a.max(b);
+    max + ((a - max).exp() + (b - max).exp()).ln()
+}
+
 /// Cubic interpolation weight (Keys, 1981 / Catmull-Rom spline, a = -0.75).
 ///
 /// Used by bicubic interpolation in F.interpolate.
