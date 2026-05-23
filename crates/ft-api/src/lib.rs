@@ -54465,6 +54465,37 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_index_put(input, indices, values, accumulate)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Concatenation and stacking utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Concatenate tensors along a dimension (alias for cat).
+    pub fn concat_tensor(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_concat(inputs, dim)
+    }
+
+    /// Concatenate tensors (NumPy-style naming).
+    pub fn concatenate_tensor(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_concatenate(inputs, dim)
+    }
+
+    /// Construct complex tensor from real and imaginary parts.
+    pub fn complex_tensor(
+        &mut self,
+        real: TensorNodeId,
+        imag: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_complex(real, imag)
+    }
 }
 
 pub use ft_autograd::{
