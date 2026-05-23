@@ -30243,6 +30243,32 @@ impl FrankenTorchSession {
         self.tensor_mean(loss)
     }
 
+    /// Log-cosh loss for regression.
+    ///
+    /// Computes `mean(log(cosh(pred - target)))`.
+    /// Smooth alternative to L1 loss, approximates L1 for large errors
+    /// and L2 for small errors. Less sensitive to outliers than MSE.
+    pub fn log_cosh_loss(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let in_shape = self.tensor_shape(input)?;
+        let tgt_shape = self.tensor_shape(target)?;
+        if in_shape != tgt_shape {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: in_shape,
+                    rhs: tgt_shape,
+                },
+            )));
+        }
+        let diff = self.tensor_sub(input, target)?;
+        let cosh_diff = self.tensor_cosh(diff)?;
+        let log_cosh = self.tensor_log(cosh_diff)?;
+        self.tensor_mean(log_cosh)
+    }
+
     /// Poisson negative log likelihood loss.
     ///
     /// Equivalent to `torch.nn.functional.poisson_nll_loss(input, target, log_input, full, eps)`.
