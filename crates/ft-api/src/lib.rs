@@ -14403,6 +14403,35 @@ impl FrankenTorchSession {
         self.tensor_moveaxis(input, source, destination)
     }
 
+    /// Flatten tensor to 1D. Alias for tensor_ravel.
+    pub fn functional_ravel(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ravel(input)
+    }
+
+    /// Ensure at least 1D. Alias for tensor_atleast_1d.
+    pub fn functional_atleast_1d(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_atleast_1d(input)
+    }
+
+    /// Ensure at least 2D. Alias for tensor_atleast_2d.
+    pub fn functional_atleast_2d(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_atleast_2d(input)
+    }
+
+    /// Ensure at least 3D. Alias for tensor_atleast_3d.
+    pub fn functional_atleast_3d(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_atleast_3d(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
