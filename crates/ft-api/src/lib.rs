@@ -15414,6 +15414,52 @@ impl FrankenTorchSession {
         self.tensor_nanquantile(input, q)
     }
 
+    /// Standard Gaussian CDF. Alias for tensor_ndtr.
+    pub fn functional_ndtr(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ndtr(input)
+    }
+
+    /// Log of standard Gaussian CDF. Alias for tensor_log_ndtr.
+    pub fn functional_log_ndtr(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log_ndtr(input)
+    }
+
+    /// Inverse of standard Gaussian CDF. Alias for tensor_ndtri.
+    pub fn functional_ndtri(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ndtri(input)
+    }
+
+    /// Next representable floating-point value. Alias for tensor_nextafter.
+    pub fn functional_nextafter(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nextafter(input, other)
+    }
+
+    /// Reduce along dimension using index. Alias for tensor_index_reduce.
+    pub fn functional_index_reduce(
+        &mut self,
+        input: TensorNodeId,
+        dim: i64,
+        index: TensorNodeId,
+        source: TensorNodeId,
+        reduce: &str,
+        include_self: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_reduce(input, dim, index, source, reduce, include_self)
+    }
+
     /// Max along dimension with indices. Alias for tensor_max_dim.
     pub fn functional_max_dim(
         &mut self,
