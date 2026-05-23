@@ -14287,6 +14287,31 @@ impl FrankenTorchSession {
         self.tensor_remainder(lhs, rhs)
     }
 
+    /// Load exponent (x * 2^exp). Alias for tensor_ldexp.
+    pub fn functional_ldexp(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ldexp(input, other)
+    }
+
+    /// Decompose into integer and fractional parts. Alias for tensor_modf.
+    pub fn functional_modf(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_modf(input)
+    }
+
+    /// Decompose into mantissa and exponent. Alias for tensor_frexp.
+    pub fn functional_frexp(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_frexp(input)
+    }
+
     /// NaN-tolerant element-wise max. Alias for tensor_fmax.
     pub fn functional_fmax(
         &mut self,
@@ -15095,6 +15120,16 @@ impl FrankenTorchSession {
         dim: usize,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_trapz(y, x, dim)
+    }
+
+    /// Cumulative trapezoidal integration. Alias for tensor_cumulative_trapezoid.
+    pub fn functional_cumulative_trapezoid(
+        &mut self,
+        y: TensorNodeId,
+        x: Option<TensorNodeId>,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cumulative_trapezoid(y, x, dim)
     }
 
     /// Logit function. Alias for tensor_logit.
