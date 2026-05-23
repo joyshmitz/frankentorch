@@ -15017,6 +15017,50 @@ impl FrankenTorchSession {
         self.tensor_take_along_dim(input, indices, dim)
     }
 
+    /// Put values at flat indices. Alias for tensor_put.
+    pub fn functional_put(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        values: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_put(input, indices, values)
+    }
+
+    /// Put along dim (scatter alias). Alias for tensor_put_along_dim.
+    pub fn functional_put_along_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        indices: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_put_along_dim(input, dim, indices, src)
+    }
+
+    /// Add at index positions. Alias for tensor_index_add.
+    pub fn functional_index_add(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_add(input, dim, index, src)
+    }
+
+    /// Scatter with reduction. Alias for tensor_scatter_reduce.
+    pub fn functional_scatter_reduce(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+        reduce: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_scatter_reduce(input, dim, index, src, reduce)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
