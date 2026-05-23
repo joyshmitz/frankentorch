@@ -31718,6 +31718,236 @@ impl FrankenTorchSession {
         self.tensor_variable(data, shape, false)
     }
 
+    // ── Time Series Operations ─────────────────────────────────────────
+
+    /// Simple moving average over a sliding window.
+    ///
+    /// Args:
+    /// - input: [..., seq_len] input tensor
+    /// - window_size: size of the averaging window
+    ///
+    /// Returns: [..., seq_len] moving averages (first window_size-1 values use partial windows)
+    pub fn moving_average(
+        &mut self,
+        input: TensorNodeId,
+        window_size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if window_size == 0 {
+            return Err(Self::incompatible_tensor_args("moving_average: window_size must be > 0"));
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.is_empty() {
+            return Err(Self::incompatible_tensor_args("moving_average: input must be non-empty"));
+        }
+        let seq_len = *shape.last().unwrap();
+        let batch_size: usize = shape[..shape.len() - 1].iter().product();
+        let data = self.tensor_values(input)?;
+        let mut output = vec![0.0; data.len()];
+        for bi in 0..batch_size {
+            let mut window_sum = 0.0;
+            for i in 0..seq_len {
+                window_sum += data[bi * seq_len + i];
+                if i >= window_size {
+                    window_sum -= data[bi * seq_len + i - window_size];
+                    output[bi * seq_len + i] = window_sum / window_size as f64;
+                } else {
+                    output[bi * seq_len + i] = window_sum / (i + 1) as f64;
+                }
+            }
+        }
+        self.tensor_variable(output, shape, false)
+    }
+
+    /// Exponential weighted moving average (EWMA).
+    ///
+    /// EWMA_t = alpha * x_t + (1 - alpha) * EWMA_{t-1}
+    ///
+    /// Args:
+    /// - input: [..., seq_len] input tensor
+    /// - alpha: smoothing factor in (0, 1]. Higher = more weight on recent values.
+    pub fn ewma(
+        &mut self,
+        input: TensorNodeId,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if alpha <= 0.0 || alpha > 1.0 {
+            return Err(Self::incompatible_tensor_args("ewma: alpha must be in (0, 1]"));
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.is_empty() {
+            return Err(Self::incompatible_tensor_args("ewma: input must be non-empty"));
+        }
+        let seq_len = *shape.last().unwrap();
+        let batch_size: usize = shape[..shape.len() - 1].iter().product();
+        let data = self.tensor_values(input)?;
+        let mut output = vec![0.0; data.len()];
+        for bi in 0..batch_size {
+            let mut ewma_val = data[bi * seq_len];
+            output[bi * seq_len] = ewma_val;
+            for i in 1..seq_len {
+                ewma_val = alpha * data[bi * seq_len + i] + (1.0 - alpha) * ewma_val;
+                output[bi * seq_len + i] = ewma_val;
+            }
+        }
+        self.tensor_variable(output, shape, false)
+    }
+
+    /// Lag features for time series.
+    ///
+    /// Creates lagged versions of the input for autoregressive modeling.
+    ///
+    /// Args:
+    /// - input: [..., seq_len] input tensor
+    /// - lags: list of lag values (e.g., [1, 7, 30] for day, week, month)
+    ///
+    /// Returns: [..., seq_len, num_lags] tensor with lagged values (padded with 0)
+    pub fn lag_features(
+        &mut self,
+        input: TensorNodeId,
+        lags: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.is_empty() || lags.is_empty() {
+            return Err(Self::incompatible_tensor_args("lag_features: invalid input"));
+        }
+        let seq_len = *shape.last().unwrap();
+        let batch_size: usize = shape[..shape.len() - 1].iter().product();
+        let num_lags = lags.len();
+        let data = self.tensor_values(input)?;
+        let mut output = vec![0.0; batch_size * seq_len * num_lags];
+        for bi in 0..batch_size {
+            for i in 0..seq_len {
+                for (li, &lag) in lags.iter().enumerate() {
+                    if i >= lag {
+                        output[bi * seq_len * num_lags + i * num_lags + li] =
+                            data[bi * seq_len + i - lag];
+                    }
+                }
+            }
+        }
+        let mut out_shape = shape.clone();
+        out_shape.push(num_lags);
+        self.tensor_variable(output, out_shape, false)
+    }
+
+    /// Rolling statistics (min, max, mean, std) over a window.
+    ///
+    /// Args:
+    /// - input: [..., seq_len] input tensor
+    /// - window_size: size of the rolling window
+    ///
+    /// Returns: [..., seq_len, 4] tensor with (min, max, mean, std) per position
+    pub fn rolling_stats(
+        &mut self,
+        input: TensorNodeId,
+        window_size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if window_size == 0 {
+            return Err(Self::incompatible_tensor_args("rolling_stats: window_size must be > 0"));
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.is_empty() {
+            return Err(Self::incompatible_tensor_args("rolling_stats: input must be non-empty"));
+        }
+        let seq_len = *shape.last().unwrap();
+        let batch_size: usize = shape[..shape.len() - 1].iter().product();
+        let data = self.tensor_values(input)?;
+        let mut output = vec![0.0; batch_size * seq_len * 4];
+        for bi in 0..batch_size {
+            for i in 0..seq_len {
+                let start = i.saturating_sub(window_size - 1);
+                let window: Vec<f64> = (start..=i)
+                    .map(|j| data[bi * seq_len + j])
+                    .collect();
+                let n = window.len() as f64;
+                let min_v = window.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max_v = window.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let mean_v = window.iter().sum::<f64>() / n;
+                let var_v = window.iter().map(|&x| (x - mean_v).powi(2)).sum::<f64>() / n;
+                let std_v = var_v.sqrt();
+                let base = bi * seq_len * 4 + i * 4;
+                output[base] = min_v;
+                output[base + 1] = max_v;
+                output[base + 2] = mean_v;
+                output[base + 3] = std_v;
+            }
+        }
+        let mut out_shape = shape.clone();
+        out_shape.push(4);
+        self.tensor_variable(output, out_shape, false)
+    }
+
+    /// Seasonal decomposition (additive model).
+    ///
+    /// Decomposes time series into trend, seasonal, and residual components.
+    /// Uses simple moving average for trend extraction.
+    ///
+    /// Args:
+    /// - input: [seq_len] 1D time series
+    /// - period: seasonal period (e.g., 7 for weekly, 12 for monthly)
+    ///
+    /// Returns: (trend, seasonal, residual) each of shape [seq_len]
+    pub fn seasonal_decompose(
+        &mut self,
+        input: TensorNodeId,
+        period: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 1 {
+            return Err(Self::incompatible_tensor_args(
+                "seasonal_decompose: input must be 1D [seq_len]",
+            ));
+        }
+        let seq_len = shape[0];
+        if period == 0 || period > seq_len {
+            return Err(Self::incompatible_tensor_args(
+                "seasonal_decompose: invalid period",
+            ));
+        }
+        let data = self.tensor_values(input)?;
+        let mut trend = vec![0.0; seq_len];
+        let half = period / 2;
+        for i in half..(seq_len - half) {
+            let window: f64 = (i - half..i + half + period % 2)
+                .map(|j| data[j])
+                .sum();
+            trend[i] = window / period as f64;
+        }
+        for i in 0..half {
+            trend[i] = trend[half];
+        }
+        for i in (seq_len - half)..seq_len {
+            trend[i] = trend[seq_len - half - 1];
+        }
+        let detrended: Vec<f64> = data.iter().zip(trend.iter()).map(|(d, t)| d - t).collect();
+        let mut seasonal_pattern = vec![0.0; period];
+        let mut counts = vec![0; period];
+        for (i, &val) in detrended.iter().enumerate() {
+            seasonal_pattern[i % period] += val;
+            counts[i % period] += 1;
+        }
+        for i in 0..period {
+            if counts[i] > 0 {
+                seasonal_pattern[i] /= counts[i] as f64;
+            }
+        }
+        let pattern_mean: f64 = seasonal_pattern.iter().sum::<f64>() / period as f64;
+        for v in &mut seasonal_pattern {
+            *v -= pattern_mean;
+        }
+        let seasonal: Vec<f64> = (0..seq_len).map(|i| seasonal_pattern[i % period]).collect();
+        let residual: Vec<f64> = data
+            .iter()
+            .zip(trend.iter())
+            .zip(seasonal.iter())
+            .map(|((d, t), s)| d - t - s)
+            .collect();
+        let trend_t = self.tensor_variable(trend, vec![seq_len], false)?;
+        let seasonal_t = self.tensor_variable(seasonal, vec![seq_len], false)?;
+        let residual_t = self.tensor_variable(residual, vec![seq_len], false)?;
+        Ok((trend_t, seasonal_t, residual_t))
+    }
+
     /// ArcFace (Additive Angular Margin) loss for face recognition.
     ///
     /// Given L2-normalized features [N, D] and L2-normalized weight [C, D],
