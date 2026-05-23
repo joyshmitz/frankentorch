@@ -2296,6 +2296,55 @@ impl FrankenTorchSession {
         self.tensor_variable(values, shape, requires_grad)
     }
 
+    /// Create a tensor filled with half-normal distributed random values.
+    ///
+    /// Samples from HalfNormal(scale): |N(0, scale²)|.
+    pub fn tensor_half_normal(
+        &mut self,
+        scale: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if scale <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "half_normal: scale must be positive",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| (scale * self.rng.next_normal()).abs())
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
+    /// Create a tensor filled with half-Cauchy distributed random values.
+    ///
+    /// Samples from HalfCauchy(scale): |Cauchy(0, scale)|.
+    pub fn tensor_half_cauchy(
+        &mut self,
+        scale: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if scale <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "half_cauchy: scale must be positive",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                let u = self.rng.next_f64();
+                (scale * (std::f64::consts::PI * (u - 0.5)).tan()).abs()
+            })
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
     /// Alias for `randint`. Equivalent to `torch.randint(low, high, shape)`.
     pub fn tensor_randint(
         &mut self,
@@ -16378,6 +16427,26 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_pareto(scale, alpha, shape, requires_grad)
+    }
+
+    /// Half-normal distribution samples. Alias for tensor_half_normal.
+    pub fn functional_half_normal(
+        &mut self,
+        scale: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_half_normal(scale, shape, requires_grad)
+    }
+
+    /// Half-Cauchy distribution samples. Alias for tensor_half_cauchy.
+    pub fn functional_half_cauchy(
+        &mut self,
+        scale: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_half_cauchy(scale, shape, requires_grad)
     }
 
     /// Random integers with same shape. Alias for tensor_randint_like.
