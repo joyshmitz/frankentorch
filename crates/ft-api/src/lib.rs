@@ -51641,6 +51641,306 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_scatter(input, dim, index, src)
     }
+
+    /// Scatter add along dimension.
+    pub fn scatter_add_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_scatter_add(input, dim, index, src)
+    }
+
+    /// Index add along dimension.
+    pub fn index_add_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        source: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_add(input, dim, index, source)
+    }
+
+    /// Index copy along dimension.
+    pub fn index_copy_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        source: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_copy(input, dim, index, source)
+    }
+
+    /// Index fill along dimension.
+    pub fn index_fill_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_fill(input, dim, index, value)
+    }
+
+    // ── Split/Chunk Utilities ──────────────────────────────────────────────
+
+    /// Split tensor into chunks.
+    pub fn split_tensor(
+        &mut self,
+        input: TensorNodeId,
+        split_sizes: &[usize],
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_split(input, split_sizes, dim)
+    }
+
+    /// Split tensor into equal chunks.
+    pub fn chunk_tensor(
+        &mut self,
+        input: TensorNodeId,
+        chunks: usize,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_chunk(input, chunks, dim)
+    }
+
+    /// Split allowing uneven chunks.
+    pub fn array_split_tensor(
+        &mut self,
+        input: TensorNodeId,
+        sections: usize,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_array_split(input, sections, dim)
+    }
+
+    /// Unbind tensor along dimension.
+    pub fn unbind_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_unbind(input, dim)
+    }
+
+    // ── Narrow Utilities ───────────────────────────────────────────────────
+
+    /// Narrow tensor along dimension.
+    pub fn narrow_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        start: usize,
+        length: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_narrow(input, dim, start, length)
+    }
+
+    /// Narrow tensor returning a copy.
+    pub fn narrow_copy_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        start: usize,
+        length: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_narrow_copy(input, dim, start, length)
+    }
+
+    // ── Concatenation Utilities ────────────────────────────────────────────
+
+    /// Concatenate tensors along dimension.
+    pub fn cat_tensor(
+        &mut self,
+        tensors: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cat(tensors, dim)
+    }
+
+    /// Stack tensors along new dimension.
+    pub fn stack_tensor(
+        &mut self,
+        tensors: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_stack(tensors, dim)
+    }
+
+    /// Horizontal stack (column-wise).
+    pub fn hstack_tensor(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hstack(tensors)
+    }
+
+    /// Vertical stack (row-wise).
+    pub fn vstack_tensor(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_vstack(tensors)
+    }
+
+    /// Depth stack (along third dimension).
+    pub fn dstack_tensor(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dstack(tensors)
+    }
+
+    // ── View/As Strided Utilities ──────────────────────────────────────────
+
+    /// View tensor with as_strided.
+    pub fn as_strided_tensor(
+        &mut self,
+        input: TensorNodeId,
+        size: Vec<usize>,
+        stride: Vec<usize>,
+        storage_offset: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_as_strided(input, size, stride, storage_offset)
+    }
+
+    // ── Diagonal Utilities ─────────────────────────────────────────────────
+
+    /// Extract diagonal from matrix.
+    pub fn diag_tensor(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diag(input, diagonal)
+    }
+
+    /// Extract diagonal from matrix.
+    pub fn diagonal_tensor(
+        &mut self,
+        input: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagonal(input, offset)
+    }
+
+    /// Embed values as diagonal.
+    pub fn diag_embed_tensor(
+        &mut self,
+        input: TensorNodeId,
+        offset: i32,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diag_embed(input, offset)
+    }
+
+    // ── Triangular Utilities ───────────────────────────────────────────────
+
+    /// Lower triangular part.
+    pub fn tril_tensor(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tril(input, diagonal)
+    }
+
+    /// Upper triangular part.
+    pub fn triu_tensor(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triu(input, diagonal)
+    }
+
+    // ── Mask Utilities ─────────────────────────────────────────────────────
+
+    /// Masked fill with value.
+    pub fn masked_fill_tensor(
+        &mut self,
+        input: TensorNodeId,
+        mask: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_masked_fill(input, mask, value)
+    }
+
+    /// Masked select.
+    pub fn masked_select_tensor(
+        &mut self,
+        input: TensorNodeId,
+        mask: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_masked_select(input, mask)
+    }
+
+    // ── Where/Conditional Utilities ────────────────────────────────────────
+
+    /// Conditional selection: where(condition, x, y).
+    pub fn where_tensor(
+        &mut self,
+        condition: TensorNodeId,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_where(condition, x, y)
+    }
+
+    /// Nonzero indices.
+    pub fn nonzero_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nonzero(input)
+    }
+
+    // ── Sort Utilities ─────────────────────────────────────────────────────
+
+    /// Sort tensor along dimension.
+    pub fn sort_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        descending: bool,
+    ) -> Result<(TensorNodeId, Vec<usize>), AutogradError> {
+        self.tensor_sort(input, dim, descending)
+    }
+
+    /// Argsort tensor along dimension.
+    pub fn argsort_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        descending: bool,
+    ) -> Result<Vec<usize>, AutogradError> {
+        let (_values, indices) = self.tensor_sort(input, dim, descending)?;
+        Ok(indices)
+    }
+
+    // ── Unique Utilities ───────────────────────────────────────────────────
+
+    /// Find unique values.
+    pub fn unique_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (unique, _inverse, _counts) = self.tensor_unique(input, true, false, false)?;
+        Ok(unique)
+    }
+
+    /// Find unique values with counts.
+    pub fn unique_with_counts(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let (unique, _inverse, counts) = self.tensor_unique(input, true, false, true)?;
+        let counts_tensor = counts.expect("counts requested");
+        Ok((unique, counts_tensor))
+    }
 }
 
 pub use ft_autograd::{
