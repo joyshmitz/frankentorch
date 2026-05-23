@@ -13261,6 +13261,42 @@ impl FrankenTorchSession {
         self.tensor_mv(input, vec_input)
     }
 
+    /// Vector dot product. Alias for tensor_dot.
+    pub fn functional_dot(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dot(lhs, rhs)
+    }
+
+    /// Outer product. Alias for tensor_outer.
+    pub fn functional_outer(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_outer(lhs, rhs)
+    }
+
+    /// Inner product. Alias for tensor_inner.
+    pub fn functional_inner(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_inner(a, b)
+    }
+
+    /// Kronecker product. Alias for tensor_kron.
+    pub fn functional_kron(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_kron(a, b)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
