@@ -14235,6 +14235,150 @@ impl FrankenTorchSession {
         self.functional_adaptive_max_pool3d(input, output_size)
     }
 
+    /// Lp-norm pooling for 1-D input `[N, C, L]`.
+    ///
+    /// Equivalent to `torch.nn.LPPool1d`. Computes the Lp norm over each pooling window.
+    pub fn functional_lp_pool1d(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: usize,
+        stride: Option<usize>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.require_f64_tensor_storage(input)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "lp_pool1d: input must be 3-D [N, C, L]",
+            ));
+        }
+        let (n, c, l_in) = (shape[0], shape[1], shape[2]);
+        let stride = stride.unwrap_or(kernel_size);
+
+        let l_out = if ceil_mode {
+            (l_in + stride - 1) / stride
+        } else {
+            (l_in.saturating_sub(kernel_size)) / stride + 1
+        };
+
+        if l_out == 0 {
+            return self.empty(vec![n, c, 0], false);
+        }
+
+        let input_data = self.tensor_values(input)?;
+        let total_out = n * c * l_out;
+        let mut out_data = vec![0.0; total_out];
+
+        for batch in 0..n {
+            for channel in 0..c {
+                for ol in 0..l_out {
+                    let start = ol * stride;
+                    let end = (start + kernel_size).min(l_in);
+                    let mut sum_pow = 0.0;
+                    for il in start..end {
+                        let in_idx = batch * c * l_in + channel * l_in + il;
+                        sum_pow += input_data[in_idx].abs().powf(norm_type);
+                    }
+                    let out_idx = batch * c * l_out + channel * l_out + ol;
+                    out_data[out_idx] = sum_pow.powf(1.0 / norm_type);
+                }
+            }
+        }
+
+        self.tensor_variable(out_data, vec![n, c, l_out], false)
+    }
+
+    /// Lp-norm pooling for 2-D input `[N, C, H, W]`.
+    ///
+    /// Equivalent to `torch.nn.LPPool2d`. Computes the Lp norm over each pooling window.
+    pub fn functional_lp_pool2d(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: (usize, usize),
+        stride: Option<(usize, usize)>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.require_f64_tensor_storage(input)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "lp_pool2d: input must be 4-D [N, C, H, W]",
+            ));
+        }
+        let (n, c, h_in, w_in) = (shape[0], shape[1], shape[2], shape[3]);
+        let (kh, kw) = kernel_size;
+        let (sh, sw) = stride.unwrap_or(kernel_size);
+
+        let h_out = if ceil_mode {
+            (h_in + sh - 1) / sh
+        } else {
+            (h_in.saturating_sub(kh)) / sh + 1
+        };
+        let w_out = if ceil_mode {
+            (w_in + sw - 1) / sw
+        } else {
+            (w_in.saturating_sub(kw)) / sw + 1
+        };
+
+        if h_out == 0 || w_out == 0 {
+            return self.empty(vec![n, c, h_out, w_out], false);
+        }
+
+        let input_data = self.tensor_values(input)?;
+        let total_out = n * c * h_out * w_out;
+        let mut out_data = vec![0.0; total_out];
+
+        for batch in 0..n {
+            for channel in 0..c {
+                for oh in 0..h_out {
+                    let h_start = oh * sh;
+                    let h_end = (h_start + kh).min(h_in);
+                    for ow in 0..w_out {
+                        let w_start = ow * sw;
+                        let w_end = (w_start + kw).min(w_in);
+                        let mut sum_pow = 0.0;
+                        for ih in h_start..h_end {
+                            for iw in w_start..w_end {
+                                let in_idx = batch * c * h_in * w_in + channel * h_in * w_in + ih * w_in + iw;
+                                sum_pow += input_data[in_idx].abs().powf(norm_type);
+                            }
+                        }
+                        let out_idx = batch * c * h_out * w_out + channel * h_out * w_out + oh * w_out + ow;
+                        out_data[out_idx] = sum_pow.powf(1.0 / norm_type);
+                    }
+                }
+            }
+        }
+
+        self.tensor_variable(out_data, vec![n, c, h_out, w_out], false)
+    }
+
+    /// Alias for `functional_lp_pool1d`.
+    pub fn tensor_lp_pool1d(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: usize,
+        stride: Option<usize>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_lp_pool1d(input, norm_type, kernel_size, stride, ceil_mode)
+    }
+
+    /// Alias for `functional_lp_pool2d`.
+    pub fn tensor_lp_pool2d(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: (usize, usize),
+        stride: Option<(usize, usize)>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_lp_pool2d(input, norm_type, kernel_size, stride, ceil_mode)
+    }
+
     /// Apply layer normalization over the trailing `normalized_shape` dimensions.
     ///
     /// Equivalent to `torch.nn.functional.layer_norm`.
