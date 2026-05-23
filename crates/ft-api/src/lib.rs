@@ -53241,6 +53241,55 @@ impl FrankenTorchSession {
     pub fn is_floating_point_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_is_floating_point(node)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Additional activation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// SELU activation.
+    pub fn selu_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_selu(input)
+    }
+
+    /// CELU activation.
+    pub fn celu_tensor(
+        &mut self,
+        input: TensorNodeId,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_celu(input, alpha)
+    }
+
+    /// Hard sigmoid activation.
+    pub fn hardsigmoid_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hardsigmoid(input)
+    }
+
+    /// Softmin along dimension.
+    pub fn softmin_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softmin(input, dim)
+    }
+
+    /// Gumbel-softmax for differentiable categorical sampling.
+    pub fn gumbel_softmax_tensor(
+        &mut self,
+        logits: TensorNodeId,
+        tau: f64,
+        hard: bool,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gumbel_softmax(logits, tau, hard, dim)
+    }
 }
 
 pub use ft_autograd::{
