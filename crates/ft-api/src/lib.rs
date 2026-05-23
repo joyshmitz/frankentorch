@@ -14483,6 +14483,35 @@ impl FrankenTorchSession {
         self.tensor_dsplit(input, sections)
     }
 
+    /// Complex conjugate. Alias for tensor_conj.
+    pub fn functional_conj(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conj(input)
+    }
+
+    /// Physical conjugate. Alias for tensor_conj_physical.
+    pub fn functional_conj_physical(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conj_physical(input)
+    }
+
+    /// Resolve conjugate view. Alias for tensor_resolve_conj.
+    pub fn functional_resolve_conj(
+        &self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_resolve_conj(input)
+    }
+
+    /// Hermitian adjoint (conjugate transpose). Alias for tensor_adjoint.
+    pub fn functional_adjoint(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_adjoint(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
