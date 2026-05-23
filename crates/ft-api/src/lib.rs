@@ -14887,6 +14887,67 @@ impl FrankenTorchSession {
         self.tensor_slogdet(input)
     }
 
+    /// Zeros with same shape. Alias for tensor_zeros_like.
+    pub fn functional_zeros_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_zeros_like(input, requires_grad)
+    }
+
+    /// Ones with same shape. Alias for tensor_ones_like.
+    pub fn functional_ones_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ones_like(input, requires_grad)
+    }
+
+    /// Uniform random [0,1) with same shape. Alias for tensor_rand_like.
+    pub fn functional_rand_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rand_like(input, requires_grad)
+    }
+
+    /// Normal random with same shape. Alias for tensor_randn_like.
+    pub fn functional_randn_like(
+        &mut self,
+        input: TensorNodeId,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randn_like(input, requires_grad)
+    }
+
+    /// Random integers. Alias for tensor_randint.
+    pub fn functional_randint(
+        &mut self,
+        low: i64,
+        high: i64,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randint(low, high, shape)
+    }
+
+    /// Random permutation. Alias for tensor_randperm.
+    pub fn functional_randperm(&mut self, n: usize) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_randperm(n)
+    }
+
+    /// Multinomial sampling. Alias for tensor_multinomial.
+    pub fn functional_multinomial(
+        &mut self,
+        input: TensorNodeId,
+        num_samples: usize,
+        replacement: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multinomial(input, num_samples, replacement)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
