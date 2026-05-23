@@ -18961,6 +18961,24 @@ impl FrankenTorchSession {
         self.tensor_fishersnedecor(df1, df2, shape, requires_grad)
     }
 
+    /// Relative entropy. Alias for tensor_rel_entr.
+    pub fn functional_rel_entr(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rel_entr(x, y)
+    }
+
+    /// Relative entropy. Alias for tensor_special_rel_entr.
+    pub fn functional_special_rel_entr(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_rel_entr(x, y)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
@@ -32237,6 +32255,60 @@ impl FrankenTorchSession {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_entr(input)
+    }
+
+    /// Relative entropy (element-wise).
+    ///
+    /// Computes x * log(x / y) with special cases:
+    /// - rel_entr(0, y) = 0 when y >= 0
+    /// - rel_entr(x, y) = +inf when x > 0 and y <= 0
+    /// - rel_entr(x, y) = +inf when x < 0
+    ///
+    /// Equivalent to `scipy.special.rel_entr`.
+    pub fn tensor_rel_entr(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        let zeros = self.full(shape.clone(), 0.0, false)?;
+        let inf = self.full(shape.clone(), f64::INFINITY, false)?;
+
+        // x < 0 => +inf
+        let x_neg = self.tensor_lt(x, zeros)?;
+
+        // y <= 0 AND x > 0 => +inf
+        let y_le_zero = self.tensor_le(y, zeros)?;
+        let x_pos = self.tensor_gt(x, zeros)?;
+        let y_invalid = self.tensor_logical_and(y_le_zero, x_pos)?;
+
+        // x == 0 => 0
+        let x_eq_zero = self.tensor_eq(x, zeros)?;
+
+        // General case: x * log(x / y)
+        let ratio = self.tensor_div(x, y)?;
+        let log_ratio = self.tensor_log(ratio)?;
+        let x_log_ratio = self.tensor_mul(x, log_ratio)?;
+
+        // Apply conditions: x<0 => inf, y<=0 && x>0 => inf, x==0 => 0, else x*log(x/y)
+        let result = self.tensor_where(x_neg, inf, x_log_ratio)?;
+        let result = self.tensor_where(y_invalid, inf, result)?;
+        let result = self.tensor_where(x_eq_zero, zeros, result)?;
+
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!("rel_entr x={} y={} out={}", x.0, y.0, result.0),
+        );
+        Ok(result)
+    }
+
+    /// Alias for `tensor_rel_entr`. Equivalent to `scipy.special.rel_entr`.
+    pub fn tensor_special_rel_entr(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rel_entr(x, y)
     }
 
     // ── logcumsumexp ─────────────────────────────────────────────────────
