@@ -2061,6 +2061,89 @@ impl FrankenTorchSession {
         self.tensor_variable(values, shape, requires_grad)
     }
 
+    /// Create a tensor filled with log-normally distributed random values.
+    ///
+    /// Equivalent to `torch.empty(size).log_normal_(mean, std)`.
+    /// Samples from LogNormal(mean, std): exp(N(mean, std²)).
+    pub fn tensor_log_normal(
+        &mut self,
+        mean: f64,
+        std: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if std < 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "log_normal: std must be non-negative",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| (mean + std * self.rng.next_normal()).exp())
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
+    /// Create a tensor filled with Cauchy-distributed random values.
+    ///
+    /// Equivalent to `torch.empty(size).cauchy_(median, sigma)`.
+    /// Samples from Cauchy(median, sigma).
+    pub fn tensor_cauchy(
+        &mut self,
+        median: f64,
+        sigma: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if sigma <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "cauchy: sigma must be positive",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                // Inverse CDF: median + sigma * tan(pi * (U - 0.5))
+                let u = self.rng.next_f64();
+                median + sigma * (std::f64::consts::PI * (u - 0.5)).tan()
+            })
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
+    /// Create a tensor filled with Gumbel-distributed random values.
+    ///
+    /// Equivalent to `torch.empty(size).gumbel_(mu, beta)` (beta is scale).
+    /// Samples from Gumbel(mu, beta).
+    pub fn tensor_gumbel(
+        &mut self,
+        mu: f64,
+        beta: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if beta <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "gumbel: beta must be positive",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                // Inverse CDF: mu - beta * ln(-ln(U))
+                let u = self.rng.next_f64();
+                mu - beta * (-u.ln()).ln()
+            })
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
     /// Alias for `randint`. Equivalent to `torch.randint(low, high, shape)`.
     pub fn tensor_randint(
         &mut self,
@@ -16054,6 +16137,39 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_geometric(p, shape, requires_grad)
+    }
+
+    /// Log-normal distribution samples. Alias for tensor_log_normal.
+    pub fn functional_log_normal(
+        &mut self,
+        mean: f64,
+        std: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log_normal(mean, std, shape, requires_grad)
+    }
+
+    /// Cauchy distribution samples. Alias for tensor_cauchy.
+    pub fn functional_cauchy(
+        &mut self,
+        median: f64,
+        sigma: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cauchy(median, sigma, shape, requires_grad)
+    }
+
+    /// Gumbel distribution samples. Alias for tensor_gumbel.
+    pub fn functional_gumbel(
+        &mut self,
+        mu: f64,
+        beta: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gumbel(mu, beta, shape, requires_grad)
     }
 
     /// Random integers with same shape. Alias for tensor_randint_like.
