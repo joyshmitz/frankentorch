@@ -30636,6 +30636,129 @@ impl FrankenTorchSession {
         self.tensor_add(soft_term, hard_term)
     }
 
+    /// Non-maximum suppression for object detection.
+    ///
+    /// Filters overlapping boxes keeping only highest-scoring ones.
+    /// Returns indices of kept boxes.
+    ///
+    /// Args:
+    /// - boxes: [N, 4] in format (x1, y1, x2, y2)
+    /// - scores: [N] confidence scores
+    /// - iou_threshold: IoU threshold for suppression
+    ///
+    /// Note: This is non-differentiable (used for inference only).
+    pub fn nms(
+        &mut self,
+        boxes: TensorNodeId,
+        scores: TensorNodeId,
+        iou_threshold: f64,
+    ) -> Result<Vec<usize>, AutogradError> {
+        let boxes_shape = self.tensor_shape(boxes)?;
+        let scores_shape = self.tensor_shape(scores)?;
+        if boxes_shape.len() != 2 || boxes_shape[1] != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "nms: boxes must be [N, 4]",
+            ));
+        }
+        if scores_shape.len() != 1 || scores_shape[0] != boxes_shape[0] {
+            return Err(Self::incompatible_tensor_args(
+                "nms: scores must be [N] matching boxes",
+            ));
+        }
+        let n = boxes_shape[0];
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        let boxes_data = self.tensor_values(boxes)?;
+        let scores_data = self.tensor_values(scores)?;
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| {
+            scores_data[b]
+                .partial_cmp(&scores_data[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut keep = Vec::new();
+        let mut suppressed = vec![false; n];
+        for &i in &order {
+            if suppressed[i] {
+                continue;
+            }
+            keep.push(i);
+            let x1_i = boxes_data[i * 4];
+            let y1_i = boxes_data[i * 4 + 1];
+            let x2_i = boxes_data[i * 4 + 2];
+            let y2_i = boxes_data[i * 4 + 3];
+            let area_i = (x2_i - x1_i).max(0.0) * (y2_i - y1_i).max(0.0);
+            for &j in &order {
+                if suppressed[j] || j == i {
+                    continue;
+                }
+                let x1_j = boxes_data[j * 4];
+                let y1_j = boxes_data[j * 4 + 1];
+                let x2_j = boxes_data[j * 4 + 2];
+                let y2_j = boxes_data[j * 4 + 3];
+                let area_j = (x2_j - x1_j).max(0.0) * (y2_j - y1_j).max(0.0);
+                let inter_x1 = x1_i.max(x1_j);
+                let inter_y1 = y1_i.max(y1_j);
+                let inter_x2 = x2_i.min(x2_j);
+                let inter_y2 = y2_i.min(y2_j);
+                let inter_area = (inter_x2 - inter_x1).max(0.0) * (inter_y2 - inter_y1).max(0.0);
+                let union_area = area_i + area_j - inter_area;
+                let iou = if union_area > 0.0 {
+                    inter_area / union_area
+                } else {
+                    0.0
+                };
+                if iou > iou_threshold {
+                    suppressed[j] = true;
+                }
+            }
+        }
+        Ok(keep)
+    }
+
+    /// Batched non-maximum suppression.
+    ///
+    /// Like nms but handles multiple images with class labels.
+    /// Returns indices of kept boxes.
+    ///
+    /// Args:
+    /// - boxes: [N, 4] in format (x1, y1, x2, y2)
+    /// - scores: [N] confidence scores
+    /// - idxs: [N] class/image indices (boxes with different idx don't suppress each other)
+    /// - iou_threshold: IoU threshold for suppression
+    pub fn batched_nms(
+        &mut self,
+        boxes: TensorNodeId,
+        scores: TensorNodeId,
+        idxs: TensorNodeId,
+        iou_threshold: f64,
+    ) -> Result<Vec<usize>, AutogradError> {
+        let boxes_shape = self.tensor_shape(boxes)?;
+        if boxes_shape.len() != 2 || boxes_shape[1] != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "batched_nms: boxes must be [N, 4]",
+            ));
+        }
+        let n = boxes_shape[0];
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        let boxes_data = self.tensor_values(boxes)?;
+        let idxs_data = self.tensor_values(idxs)?;
+        let max_coord = boxes_data.iter().copied().fold(0.0_f64, f64::max);
+        let mut offset_boxes = Vec::with_capacity(n * 4);
+        for i in 0..n {
+            let offset = idxs_data[i] * (max_coord + 1.0);
+            offset_boxes.push(boxes_data[i * 4] + offset);
+            offset_boxes.push(boxes_data[i * 4 + 1] + offset);
+            offset_boxes.push(boxes_data[i * 4 + 2] + offset);
+            offset_boxes.push(boxes_data[i * 4 + 3] + offset);
+        }
+        let offset_boxes_tensor = self.tensor_variable(offset_boxes, vec![n, 4], false)?;
+        self.nms(offset_boxes_tensor, scores, iou_threshold)
+    }
+
     /// Quantile (pinball) loss for quantile regression.
     ///
     /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
