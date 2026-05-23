@@ -15104,6 +15104,42 @@ impl FrankenTorchSession {
         self.tensor_masked_scatter(input, mask, source)
     }
 
+    /// Block diagonal matrix. Alias for tensor_block_diag.
+    pub fn functional_block_diag(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_block_diag(tensors)
+    }
+
+    /// Vandermonde matrix. Alias for tensor_vander.
+    pub fn functional_vander(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+        increasing: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_vander(input, n, increasing)
+    }
+
+    /// Cartesian product. Alias for tensor_cartesian_prod.
+    pub fn functional_cartesian_prod(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cartesian_prod(tensors)
+    }
+
+    /// r-length combinations. Alias for tensor_combinations.
+    pub fn functional_combinations(
+        &mut self,
+        input: TensorNodeId,
+        r: usize,
+        with_replacement: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_combinations(input, r, with_replacement)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
