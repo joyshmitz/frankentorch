@@ -14379,6 +14379,214 @@ impl FrankenTorchSession {
         self.functional_lp_pool2d(input, norm_type, kernel_size, stride, ceil_mode)
     }
 
+    /// Inverse of max_pool1d using indices from a previous max_pool1d operation.
+    ///
+    /// Equivalent to `torch.nn.functional.max_unpool1d(input, indices, kernel_size, stride, padding, output_size)`.
+    pub fn functional_max_unpool1d(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: usize,
+        stride: Option<usize>,
+        padding: usize,
+        output_size: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.require_f64_tensor_storage(input)?;
+        self.require_f64_tensor_storage(indices)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "max_unpool1d: input must be 3-D [N, C, L]",
+            ));
+        }
+        let (n, c, l_in) = (shape[0], shape[1], shape[2]);
+        let stride = stride.unwrap_or(kernel_size);
+
+        let l_out = output_size.unwrap_or_else(|| (l_in - 1) * stride - 2 * padding + kernel_size);
+
+        let input_data = self.tensor_values(input)?;
+        let indices_data = self.tensor_values(indices)?;
+        let mut out_data = vec![0.0; n * c * l_out];
+
+        for batch in 0..n {
+            for channel in 0..c {
+                for il in 0..l_in {
+                    let in_idx = batch * c * l_in + channel * l_in + il;
+                    let target_l = indices_data[in_idx] as usize;
+                    if target_l < l_out {
+                        let out_idx = batch * c * l_out + channel * l_out + target_l;
+                        out_data[out_idx] = input_data[in_idx];
+                    }
+                }
+            }
+        }
+
+        self.tensor_variable(out_data, vec![n, c, l_out], false)
+    }
+
+    /// Inverse of max_pool2d using indices from a previous max_pool2d operation.
+    ///
+    /// Equivalent to `torch.nn.functional.max_unpool2d(input, indices, kernel_size, stride, padding, output_size)`.
+    pub fn functional_max_unpool2d(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: (usize, usize),
+        stride: Option<(usize, usize)>,
+        padding: (usize, usize),
+        output_size: Option<(usize, usize)>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.require_f64_tensor_storage(input)?;
+        self.require_f64_tensor_storage(indices)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "max_unpool2d: input must be 4-D [N, C, H, W]",
+            ));
+        }
+        let (n, c, h_in, w_in) = (shape[0], shape[1], shape[2], shape[3]);
+        let (kh, kw) = kernel_size;
+        let (sh, sw) = stride.unwrap_or(kernel_size);
+        let (ph, pw) = padding;
+
+        let (h_out, w_out) = output_size.unwrap_or_else(|| {
+            let h = (h_in - 1) * sh - 2 * ph + kh;
+            let w = (w_in - 1) * sw - 2 * pw + kw;
+            (h, w)
+        });
+
+        let input_data = self.tensor_values(input)?;
+        let indices_data = self.tensor_values(indices)?;
+        let mut out_data = vec![0.0; n * c * h_out * w_out];
+
+        for batch in 0..n {
+            for channel in 0..c {
+                for ih in 0..h_in {
+                    for iw in 0..w_in {
+                        let in_idx = batch * c * h_in * w_in + channel * h_in * w_in + ih * w_in + iw;
+                        let flat_idx = indices_data[in_idx] as usize;
+                        let target_h = flat_idx / w_out;
+                        let target_w = flat_idx % w_out;
+                        if target_h < h_out && target_w < w_out {
+                            let out_idx = batch * c * h_out * w_out + channel * h_out * w_out + target_h * w_out + target_w;
+                            out_data[out_idx] = input_data[in_idx];
+                        }
+                    }
+                }
+            }
+        }
+
+        self.tensor_variable(out_data, vec![n, c, h_out, w_out], false)
+    }
+
+    /// Inverse of max_pool3d using indices from a previous max_pool3d operation.
+    ///
+    /// Equivalent to `torch.nn.functional.max_unpool3d(input, indices, kernel_size, stride, padding, output_size)`.
+    pub fn functional_max_unpool3d(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: Option<(usize, usize, usize)>,
+        padding: (usize, usize, usize),
+        output_size: Option<(usize, usize, usize)>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.require_f64_tensor_storage(input)?;
+        self.require_f64_tensor_storage(indices)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "max_unpool3d: input must be 5-D [N, C, D, H, W]",
+            ));
+        }
+        let (n, c, d_in, h_in, w_in) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+        let (kd, kh, kw) = kernel_size;
+        let (sd, sh, sw) = stride.unwrap_or(kernel_size);
+        let (pd, ph, pw) = padding;
+
+        let (d_out, h_out, w_out) = output_size.unwrap_or_else(|| {
+            let d = (d_in - 1) * sd - 2 * pd + kd;
+            let h = (h_in - 1) * sh - 2 * ph + kh;
+            let w = (w_in - 1) * sw - 2 * pw + kw;
+            (d, h, w)
+        });
+
+        let input_data = self.tensor_values(input)?;
+        let indices_data = self.tensor_values(indices)?;
+        let mut out_data = vec![0.0; n * c * d_out * h_out * w_out];
+        let hw_out = h_out * w_out;
+
+        for batch in 0..n {
+            for channel in 0..c {
+                for id in 0..d_in {
+                    for ih in 0..h_in {
+                        for iw in 0..w_in {
+                            let in_idx = batch * c * d_in * h_in * w_in
+                                + channel * d_in * h_in * w_in
+                                + id * h_in * w_in
+                                + ih * w_in
+                                + iw;
+                            let flat_idx = indices_data[in_idx] as usize;
+                            let target_d = flat_idx / hw_out;
+                            let remainder = flat_idx % hw_out;
+                            let target_h = remainder / w_out;
+                            let target_w = remainder % w_out;
+                            if target_d < d_out && target_h < h_out && target_w < w_out {
+                                let out_idx = batch * c * d_out * hw_out
+                                    + channel * d_out * hw_out
+                                    + target_d * hw_out
+                                    + target_h * w_out
+                                    + target_w;
+                                out_data[out_idx] = input_data[in_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.tensor_variable(out_data, vec![n, c, d_out, h_out, w_out], false)
+    }
+
+    /// Alias for `functional_max_unpool1d`.
+    pub fn tensor_max_unpool1d(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: usize,
+        stride: Option<usize>,
+        padding: usize,
+        output_size: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_max_unpool1d(input, indices, kernel_size, stride, padding, output_size)
+    }
+
+    /// Alias for `functional_max_unpool2d`.
+    pub fn tensor_max_unpool2d(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: (usize, usize),
+        stride: Option<(usize, usize)>,
+        padding: (usize, usize),
+        output_size: Option<(usize, usize)>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_max_unpool2d(input, indices, kernel_size, stride, padding, output_size)
+    }
+
+    /// Alias for `functional_max_unpool3d`.
+    pub fn tensor_max_unpool3d(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: Option<(usize, usize, usize)>,
+        padding: (usize, usize, usize),
+        output_size: Option<(usize, usize, usize)>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_max_unpool3d(input, indices, kernel_size, stride, padding, output_size)
+    }
+
     /// Apply layer normalization over the trailing `normalized_shape` dimensions.
     ///
     /// Equivalent to `torch.nn.functional.layer_norm`.
