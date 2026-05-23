@@ -13346,6 +13346,31 @@ impl FrankenTorchSession {
         self.tensor_linalg_svd(input, full_matrices)
     }
 
+    /// Matrix inverse. Alias for tensor_linalg_inv.
+    pub fn functional_inv(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_inv(input)
+    }
+
+    /// Solve linear system Ax = b. Alias for tensor_linalg_solve.
+    pub fn functional_solve(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_solve(a, b)
+    }
+
+    /// Moore-Penrose pseudo-inverse. Alias for tensor_linalg_pinv.
+    pub fn functional_pinv(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_pinv(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
