@@ -15613,6 +15613,104 @@ impl FrankenTorchSession {
         self.functional_lp_pool1d(input, norm_type, kernel_size, stride, ceil_mode)
     }
 
+    /// Lp pooling for 3D input `[N, C, D, H, W]`.
+    ///
+    /// Equivalent to `torch.nn.LpPool3d`. Computes the Lp norm over each
+    /// local region defined by `kernel_size`.
+    pub fn functional_lp_pool3d(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: (usize, usize, usize),
+        stride: Option<(usize, usize, usize)>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.require_f64_tensor_storage(input)?;
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "lp_pool3d: input must be 5-D [N, C, D, H, W]",
+            ));
+        }
+        let (n, c, d_in, h_in, w_in) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+        let (kd, kh, kw) = kernel_size;
+        let (sd, sh, sw) = stride.unwrap_or(kernel_size);
+
+        let d_out = if ceil_mode {
+            (d_in + sd - 1) / sd
+        } else {
+            (d_in.saturating_sub(kd)) / sd + 1
+        };
+        let h_out = if ceil_mode {
+            (h_in + sh - 1) / sh
+        } else {
+            (h_in.saturating_sub(kh)) / sh + 1
+        };
+        let w_out = if ceil_mode {
+            (w_in + sw - 1) / sw
+        } else {
+            (w_in.saturating_sub(kw)) / sw + 1
+        };
+
+        if d_out == 0 || h_out == 0 || w_out == 0 {
+            return self.empty(vec![n, c, d_out, h_out, w_out], false);
+        }
+
+        let input_data = self.tensor_values(input)?;
+        let total_out = n * c * d_out * h_out * w_out;
+        let mut out_data = vec![0.0; total_out];
+
+        for batch in 0..n {
+            for channel in 0..c {
+                for od in 0..d_out {
+                    let d_start = od * sd;
+                    let d_end = (d_start + kd).min(d_in);
+                    for oh in 0..h_out {
+                        let h_start = oh * sh;
+                        let h_end = (h_start + kh).min(h_in);
+                        for ow in 0..w_out {
+                            let w_start = ow * sw;
+                            let w_end = (w_start + kw).min(w_in);
+                            let mut sum_pow = 0.0;
+                            for id in d_start..d_end {
+                                for ih in h_start..h_end {
+                                    for iw in w_start..w_end {
+                                        let in_idx = batch * c * d_in * h_in * w_in
+                                            + channel * d_in * h_in * w_in
+                                            + id * h_in * w_in
+                                            + ih * w_in
+                                            + iw;
+                                        sum_pow += input_data[in_idx].abs().powf(norm_type);
+                                    }
+                                }
+                            }
+                            let out_idx = batch * c * d_out * h_out * w_out
+                                + channel * d_out * h_out * w_out
+                                + od * h_out * w_out
+                                + oh * w_out
+                                + ow;
+                            out_data[out_idx] = sum_pow.powf(1.0 / norm_type);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.tensor_variable(out_data, vec![n, c, d_out, h_out, w_out], false)
+    }
+
+    /// Alias for `functional_lp_pool3d`.
+    pub fn tensor_lp_pool3d(
+        &mut self,
+        input: TensorNodeId,
+        norm_type: f64,
+        kernel_size: (usize, usize, usize),
+        stride: Option<(usize, usize, usize)>,
+        ceil_mode: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_lp_pool3d(input, norm_type, kernel_size, stride, ceil_mode)
+    }
+
     /// Alias for `functional_lp_pool2d`.
     pub fn tensor_lp_pool2d(
         &mut self,
