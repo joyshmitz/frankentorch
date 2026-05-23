@@ -13904,6 +13904,65 @@ impl FrankenTorchSession {
         self.tensor_atanh(input)
     }
 
+    /// Element-wise negation. Alias for tensor_neg.
+    pub fn functional_neg(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_neg(input)
+    }
+
+    /// Element-wise exponential. Alias for tensor_exp.
+    pub fn functional_exp(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_exp(input)
+    }
+
+    /// Element-wise base-2 exponential. Alias for tensor_exp2.
+    pub fn functional_exp2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_exp2(input)
+    }
+
+    /// Element-wise exp(x)-1. Alias for tensor_expm1.
+    pub fn functional_expm1(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expm1(input)
+    }
+
+    /// Element-wise natural log. Alias for tensor_log.
+    pub fn functional_log(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log(input)
+    }
+
+    /// Element-wise base-2 log. Alias for tensor_log2.
+    pub fn functional_log2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log2(input)
+    }
+
+    /// Element-wise base-10 log. Alias for tensor_log10.
+    pub fn functional_log10(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log10(input)
+    }
+
+    /// Element-wise log(1+x). Alias for tensor_log1p.
+    pub fn functional_log1p(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log1p(input)
+    }
+
+    /// Element-wise square root. Alias for tensor_sqrt.
+    pub fn functional_sqrt(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sqrt(input)
+    }
+
+    /// Element-wise reciprocal square root. Alias for tensor_rsqrt.
+    pub fn functional_rsqrt(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rsqrt(input)
+    }
+
+    /// Element-wise power. Alias for tensor_pow.
+    pub fn functional_pow(
+        &mut self,
+        input: TensorNodeId,
+        exponent: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pow(input, exponent)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
