@@ -13371,6 +13371,22 @@ impl FrankenTorchSession {
         self.tensor_linalg_pinv(input)
     }
 
+    /// Eigenvalue decomposition for symmetric/Hermitian matrices. Alias for tensor_linalg_eigh.
+    pub fn functional_eigh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_eigh(input)
+    }
+
+    /// Eigenvalues of symmetric/Hermitian matrices. Alias for tensor_linalg_eigvalsh.
+    pub fn functional_eigvalsh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_eigvalsh(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
