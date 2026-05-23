@@ -13814,6 +13814,41 @@ impl FrankenTorchSession {
         self.tensor_expand_as(input, other)
     }
 
+    /// Element-wise absolute value. Alias for tensor_abs.
+    pub fn functional_abs(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_abs(input)
+    }
+
+    /// Element-wise sign. Alias for tensor_sign.
+    pub fn functional_sign(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sign(input)
+    }
+
+    /// Element-wise floor. Alias for tensor_floor.
+    pub fn functional_floor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_floor(input)
+    }
+
+    /// Element-wise ceiling. Alias for tensor_ceil.
+    pub fn functional_ceil(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ceil(input)
+    }
+
+    /// Element-wise rounding. Alias for tensor_round.
+    pub fn functional_round(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_round(input)
+    }
+
+    /// Element-wise truncation. Alias for tensor_trunc.
+    pub fn functional_trunc(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_trunc(input)
+    }
+
+    /// Element-wise fractional part. Alias for tensor_frac.
+    pub fn functional_frac(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_frac(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
