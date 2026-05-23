@@ -48609,6 +48609,441 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rfft(input, None)
     }
+
+    // ── Squeeze/Unsqueeze Shortcuts ───────────────────────────────────────
+
+    /// Remove all dimensions of size 1.
+    pub fn squeeze_all(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let mut result = input;
+        for (dim, &size) in shape.iter().enumerate().rev() {
+            if size == 1 {
+                result = self.tensor_squeeze(result, dim)?;
+            }
+        }
+        Ok(result)
+    }
+
+    /// Add dimension at the front (batch dimension).
+    pub fn add_batch_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_unsqueeze(input, 0)
+    }
+
+    /// Remove batch dimension (first dimension).
+    pub fn remove_batch_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_squeeze(input, 0)
+    }
+
+    // ── Tensor Info Operations ────────────────────────────────────────────
+
+    /// Check if tensor is empty (has 0 elements).
+    pub fn is_empty(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        let numel = self.tensor_numel(input)?;
+        Ok(numel == 0)
+    }
+
+    /// Check if tensor is a scalar (0 dimensions).
+    pub fn is_scalar(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        Ok(shape.is_empty())
+    }
+
+    /// Check if tensor has given shape.
+    pub fn has_shape(&self, input: TensorNodeId, expected: &[usize]) -> Result<bool, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        Ok(shape == expected)
+    }
+
+    // ── Diagonal Operations ───────────────────────────────────────────────
+
+    /// Extract main diagonal.
+    pub fn diag_main(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagonal(input, 0)
+    }
+
+    /// Extract diagonal with offset.
+    pub fn diag_offset(
+        &mut self,
+        input: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagonal(input, offset)
+    }
+
+    /// Create diagonal matrix from 1D tensor.
+    pub fn diag_embed_main(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diag_embed(input, 0)
+    }
+
+    // ── Triangular Operations ─────────────────────────────────────────────
+
+    /// Get lower triangular part.
+    pub fn tril_main(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tril(input, 0)
+    }
+
+    /// Get upper triangular part.
+    pub fn triu_main(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triu(input, 0)
+    }
+
+    // ── Matrix Utilities ──────────────────────────────────────────────────
+
+    /// Transpose last two dimensions (batch matrix transpose).
+    pub fn transpose_batch(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        if ndim < 2 {
+            return Err(Self::incompatible_tensor_args("need at least 2 dims"));
+        }
+        self.tensor_transpose(input, ndim - 2, ndim - 1)
+    }
+
+    /// Swap two dimensions.
+    pub fn swap_dims(
+        &mut self,
+        input: TensorNodeId,
+        dim0: usize,
+        dim1: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_transpose(input, dim0, dim1)
+    }
+
+    // ── Reduction with Keepdim ────────────────────────────────────────────
+
+    /// Mean along dimension, keeping dimension.
+    pub fn mean_keepdim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let result = self.tensor_mean_dim(input, dim)?;
+        self.tensor_unsqueeze(result, dim)
+    }
+
+    /// Sum along dimension, keeping dimension.
+    pub fn sum_keepdim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let result = self.tensor_sum_dim(input, dim)?;
+        self.tensor_unsqueeze(result, dim)
+    }
+
+    /// Max along dimension, keeping dimension.
+    pub fn max_keepdim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let result = self.tensor_amax(input, dim)?;
+        self.tensor_unsqueeze(result, dim)
+    }
+
+    /// Min along dimension, keeping dimension.
+    pub fn min_keepdim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let result = self.tensor_amin(input, dim)?;
+        self.tensor_unsqueeze(result, dim)
+    }
+
+
+    // ── Softmax Variants ──────────────────────────────────────────────────
+
+    /// Softmax along last dimension.
+    pub fn softmax_last(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.tensor_softmax(input, shape.len() - 1)
+    }
+
+    /// Log-softmax along last dimension.
+    pub fn log_softmax_last(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.tensor_log_softmax(input, shape.len() - 1)
+    }
+
+    /// Softmax along first dimension (batch softmax).
+    pub fn softmax_first(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softmax(input, 0)
+    }
+
+    // ── Normalization Utilities ───────────────────────────────────────────
+
+    /// Center data (subtract mean).
+    pub fn center(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mean = self.tensor_mean(input)?;
+        self.tensor_sub(input, mean)
+    }
+
+    /// Standardize data (subtract mean, divide by std).
+    pub fn standardize(
+        &mut self,
+        input: TensorNodeId,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mean = self.tensor_mean(input)?;
+        let std = self.tensor_std(input, 1)?;
+        let centered = self.tensor_sub(input, mean)?;
+        let eps_tensor = self.full(vec![1], eps, false)?;
+        let std_safe = self.tensor_add(std, eps_tensor)?;
+        self.tensor_div(centered, std_safe)
+    }
+
+    // ── Distance Utilities ────────────────────────────────────────────────
+
+    /// Squared L2 distance between two tensors.
+    pub fn l2_distance_squared(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(a, b)?;
+        let squared = self.tensor_mul(diff, diff)?;
+        self.tensor_sum(squared)
+    }
+
+    /// L1 distance (Manhattan) between two tensors.
+    pub fn l1_distance(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(a, b)?;
+        let abs_diff = self.tensor_abs(diff)?;
+        self.tensor_sum(abs_diff)
+    }
+
+    // ── Attention Helpers ─────────────────────────────────────────────────
+
+    /// Scale queries for attention (divide by sqrt(d_k)).
+    pub fn attention_scale(
+        &mut self,
+        queries: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(queries)?;
+        let d_k = shape[shape.len() - 1] as f64;
+        let scale = 1.0 / d_k.sqrt();
+        let scale_tensor = self.full(vec![1], scale, false)?;
+        self.tensor_mul(queries, scale_tensor)
+    }
+
+    /// Compute attention scores (Q @ K^T / sqrt(d_k)).
+    pub fn attention_scores(
+        &mut self,
+        queries: TensorNodeId,
+        keys: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scaled_q = self.attention_scale(queries)?;
+        let keys_t = self.transpose_batch(keys)?;
+        self.tensor_matmul(scaled_q, keys_t)
+    }
+
+    // ── Gradient Clipping Helpers ─────────────────────────────────────────
+
+    /// Compute gradient norm.
+    pub fn compute_grad_norm(
+        &mut self,
+        grads: &[TensorNodeId],
+        norm_type: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if grads.is_empty() {
+            return self.full(vec![], 0.0, false);
+        }
+        let mut total_norm = self.full(vec![], 0.0, false)?;
+        for &grad in grads {
+            let norm = self.tensor_norm(grad, norm_type)?;
+            let norm_pow = if norm_type == 2.0 {
+                self.tensor_mul(norm, norm)?
+            } else {
+                self.tensor_pow(norm, norm_type)?
+            };
+            total_norm = self.tensor_add(total_norm, norm_pow)?;
+        }
+        if norm_type == 2.0 {
+            self.tensor_sqrt(total_norm)
+        } else {
+            let inv_norm = 1.0 / norm_type;
+            self.tensor_pow(total_norm, inv_norm)
+        }
+    }
+
+    // ── Weight Operations ─────────────────────────────────────────────────
+
+    /// Scale weights by factor.
+    pub fn scale_weights(
+        &mut self,
+        weights: TensorNodeId,
+        scale: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scale_tensor = self.full(vec![1], scale, false)?;
+        self.tensor_mul(weights, scale_tensor)
+    }
+
+    /// Add noise to weights for regularization.
+    pub fn add_weight_noise(
+        &mut self,
+        weights: TensorNodeId,
+        std: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(weights)?;
+        let requires_grad = self.tensor_tape.tensor_requires_grad(weights)?;
+        let noise = self.tensor_randn(shape, requires_grad)?;
+        let scaled_noise = self.scale_weights(noise, std)?;
+        self.tensor_add(weights, scaled_noise)
+    }
+
+    // ── Loss Utility Functions ────────────────────────────────────────────
+
+    /// Hinge loss for SVM-style classification.
+    pub fn hinge_loss(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let one = self.full(vec![1], 1.0, false)?;
+        let prod = self.tensor_mul(pred, target)?;
+        let margin = self.tensor_sub(one, prod)?;
+        let zero = self.full(vec![1], 0.0, false)?;
+        let loss = self.tensor_maximum(margin, zero)?;
+        self.tensor_mean(loss)
+    }
+
+    // ── Tensor Manipulation ───────────────────────────────────────────────
+
+    /// Tile tensor to fill target shape.
+    pub fn tile_to_shape(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let mut repeats = Vec::with_capacity(target_shape.len());
+        for (i, &target_dim) in target_shape.iter().enumerate() {
+            let src_dim = if i < shape.len() { shape[i] } else { 1 };
+            repeats.push((target_dim + src_dim - 1) / src_dim);
+        }
+        self.tensor_repeat(input, &repeats)
+    }
+
+    // ── Concatenation Variants ────────────────────────────────────────────
+
+    /// Concatenate tensors along batch dimension.
+    pub fn cat_batch(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cat(tensors, 0)
+    }
+
+    /// Concatenate two tensors along specified dimension.
+    pub fn cat_pair(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cat(&[a, b], dim)
+    }
+
+    /// Stack tensors along new dimension 0.
+    pub fn stack_batch(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_stack(tensors, 0)
+    }
+
+    // ── Mask Operations ───────────────────────────────────────────────────
+
+    /// Apply boolean mask to select elements.
+    pub fn masked_select_bool(
+        &mut self,
+        input: TensorNodeId,
+        mask: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_masked_select(input, mask)
+    }
+
+    /// Fill tensor where mask is true.
+    pub fn masked_fill_value(
+        &mut self,
+        input: TensorNodeId,
+        mask: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_masked_fill(input, mask, value)
+    }
+
+    // ── Unique Operations ─────────────────────────────────────────────────
+
+    /// Get unique elements (sorted).
+    pub fn unique_sorted(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (unique, _, _) = self.tensor_unique(input, true, false, false)?;
+        Ok(unique)
+    }
+
+    /// Count occurrences of each value.
+    pub fn value_counts(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bincount(input, None, 0)
+    }
+
+    // ── Interpolation ─────────────────────────────────────────────────────
+
+    /// Linear interpolation between two tensors.
+    pub fn lerp_tensors(
+        &mut self,
+        start: TensorNodeId,
+        end: TensorNodeId,
+        weight: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lerp(start, end, weight)
+    }
 }
 
 pub use ft_autograd::{
