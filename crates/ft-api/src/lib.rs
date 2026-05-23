@@ -14642,6 +14642,41 @@ impl FrankenTorchSession {
         self.tensor_nanmean(input)
     }
 
+    /// Median value. Alias for tensor_median.
+    pub fn functional_median(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_median(input)
+    }
+
+    /// p-norm distance. Alias for tensor_dist.
+    pub fn functional_dist(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dist(a, b, p)
+    }
+
+    /// Mode (most frequent value). Alias for tensor_mode.
+    pub fn functional_mode(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_mode(input)
+    }
+
+    /// Quantile. Alias for tensor_quantile.
+    pub fn functional_quantile(
+        &mut self,
+        input: TensorNodeId,
+        q: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_quantile(input, q)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
