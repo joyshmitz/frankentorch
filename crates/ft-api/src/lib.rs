@@ -13319,6 +13319,33 @@ impl FrankenTorchSession {
         self.tensor_stft(input, n_fft, options)
     }
 
+    /// Cholesky decomposition. Alias for tensor_linalg_cholesky.
+    pub fn functional_cholesky(
+        &mut self,
+        input: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_cholesky(input, upper)
+    }
+
+    /// QR decomposition. Alias for tensor_linalg_qr.
+    pub fn functional_qr(
+        &mut self,
+        input: TensorNodeId,
+        reduced: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_qr(input, reduced)
+    }
+
+    /// SVD decomposition. Alias for tensor_linalg_svd.
+    pub fn functional_svd(
+        &mut self,
+        input: TensorNodeId,
+        full_matrices: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_svd(input, full_matrices)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
