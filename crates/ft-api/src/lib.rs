@@ -12521,6 +12521,128 @@ impl FrankenTorchSession {
         self.tensor_mul(a, b_sig)
     }
 
+    /// SwiGLU activation (Swish-Gated Linear Unit).
+    ///
+    /// Splits the input tensor in half along `dim`. The size of `dim` must be even.
+    /// Computes: `a * swish(b)` where `swish(x) = x * sigmoid(x)`.
+    /// Used in modern LLMs like LLaMA and PaLM.
+    pub fn tensor_swiglu(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if dim >= shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim,
+                    ndim: shape.len(),
+                },
+            )));
+        }
+        let dim_size = shape[dim];
+        if dim_size % 2 != 0 {
+            return Err(Self::incompatible_tensor_args(
+                "swiglu: input size along dim must be even",
+            ));
+        }
+        let half = dim_size / 2;
+        let a = self.tensor_narrow(input, dim, 0, half)?;
+        let b = self.tensor_narrow(input, dim, half, half)?;
+        let b_swish = self.tensor_silu(b)?;
+        self.tensor_mul(a, b_swish)
+    }
+
+    /// GeGLU activation (GELU-Gated Linear Unit).
+    ///
+    /// Splits the input tensor in half along `dim`. The size of `dim` must be even.
+    /// Computes: `a * gelu(b)`.
+    /// Used in some transformer architectures.
+    pub fn tensor_geglu(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if dim >= shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim,
+                    ndim: shape.len(),
+                },
+            )));
+        }
+        let dim_size = shape[dim];
+        if dim_size % 2 != 0 {
+            return Err(Self::incompatible_tensor_args(
+                "geglu: input size along dim must be even",
+            ));
+        }
+        let half = dim_size / 2;
+        let a = self.tensor_narrow(input, dim, 0, half)?;
+        let b = self.tensor_narrow(input, dim, half, half)?;
+        let b_gelu = self.tensor_gelu(b)?;
+        self.tensor_mul(a, b_gelu)
+    }
+
+    /// ReGLU activation (ReLU-Gated Linear Unit).
+    ///
+    /// Splits the input tensor in half along `dim`. The size of `dim` must be even.
+    /// Computes: `a * relu(b)`.
+    pub fn tensor_reglu(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if dim >= shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim,
+                    ndim: shape.len(),
+                },
+            )));
+        }
+        let dim_size = shape[dim];
+        if dim_size % 2 != 0 {
+            return Err(Self::incompatible_tensor_args(
+                "reglu: input size along dim must be even",
+            ));
+        }
+        let half = dim_size / 2;
+        let a = self.tensor_narrow(input, dim, 0, half)?;
+        let b = self.tensor_narrow(input, dim, half, half)?;
+        let b_relu = self.tensor_relu(b)?;
+        self.tensor_mul(a, b_relu)
+    }
+
+    /// Alias for `tensor_swiglu`.
+    pub fn functional_swiglu(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_swiglu(input, dim)
+    }
+
+    /// Alias for `tensor_geglu`.
+    pub fn functional_geglu(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_geglu(input, dim)
+    }
+
+    /// Alias for `tensor_reglu`.
+    pub fn functional_reglu(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reglu(input, dim)
+    }
+
     /// Compute the softmin along a dimension: `softmax(-input, dim)`.
     ///
     /// Equivalent to `torch.nn.functional.softmin(input, dim)`. Just a
@@ -13035,7 +13157,6 @@ impl FrankenTorchSession {
                 }
             }
             let mask_node = self.tensor_variable(mask_vals, vec![seq_len, seq_len_kv], false)?;
-            let mask_shape = self.tensor_shape(mask_node)?;
             let expanded_mask = self.tensor_expand(mask_node, scores_shape.clone())?;
             self.tensor_add(scaled_scores, expanded_mask)?
         } else if let Some(mask) = attn_mask {
