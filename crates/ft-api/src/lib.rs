@@ -46077,6 +46077,142 @@ impl FrankenTorchSession {
             .collect();
         self.tensor_variable(new_vals, shape, false)
     }
+
+    // ── Reduction with Broadcasting ───────────────────────────────────────
+
+    /// Compute mean along multiple dimensions.
+    pub fn mean_dims(
+        &mut self,
+        x: TensorNodeId,
+        dims: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut result = x;
+        for &d in dims.iter().rev() {
+            result = self.tensor_mean_dim(result, d)?;
+        }
+        Ok(result)
+    }
+
+    /// Compute sum along multiple dimensions.
+    pub fn sum_dims(
+        &mut self,
+        x: TensorNodeId,
+        dims: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut result = x;
+        for &d in dims.iter().rev() {
+            result = self.tensor_sum_dim(result, d)?;
+        }
+        Ok(result)
+    }
+
+    /// Compute variance along multiple dimensions.
+    pub fn var_dims(
+        &mut self,
+        x: TensorNodeId,
+        dims: &[usize],
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mean = self.mean_dims(x, dims)?;
+        let diff = self.tensor_sub(x, mean)?;
+        let sq_diff = self.tensor_mul(diff, diff)?;
+        let sum_sq = self.sum_dims(sq_diff, dims)?;
+        let shape = self.tensor_shape(x)?;
+        let n: usize = dims.iter().map(|&d| shape[d]).product();
+        let denom = (n as i64 - correction).max(1) as f64;
+        let denom_tensor = self.full(vec![1], denom, false)?;
+        self.tensor_div(sum_sq, denom_tensor)
+    }
+
+    /// Compute std along multiple dimensions.
+    pub fn std_dims(
+        &mut self,
+        x: TensorNodeId,
+        dims: &[usize],
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let var = self.var_dims(x, dims, correction)?;
+        self.tensor_sqrt(var)
+    }
+
+    // ── Shape Utilities ───────────────────────────────────────────────────
+
+    /// Pad tensor to target shape with zeros.
+    pub fn pad_to_shape(
+        &mut self,
+        x: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape == target_shape {
+            return Ok(x);
+        }
+        if shape.len() != target_shape.len() {
+            return Err(Self::incompatible_tensor_args("pad_to_shape: dimension mismatch"));
+        }
+        let mut result = x;
+        for (i, (&current, &target)) in shape.iter().zip(target_shape.iter()).enumerate() {
+            if current < target {
+                let pad_size = target - current;
+                let pad_shape: Vec<usize> = shape
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &s)| if j == i { pad_size } else if j > i { target_shape[j] } else { s })
+                    .collect();
+                let zeros = self.zeros(pad_shape, false)?;
+                result = self.tensor_cat(&[result, zeros], i)?;
+            }
+        }
+        Ok(result)
+    }
+
+    /// Truncate tensor to target shape.
+    pub fn truncate_to_shape(
+        &mut self,
+        x: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape == target_shape {
+            return Ok(x);
+        }
+        if shape.len() != target_shape.len() {
+            return Err(Self::incompatible_tensor_args("truncate_to_shape: dimension mismatch"));
+        }
+        let mut result = x;
+        for (i, (&current, &target)) in shape.iter().zip(target_shape.iter()).enumerate() {
+            if current > target {
+                result = self.tensor_narrow(result, i, 0, target)?;
+            }
+        }
+        Ok(result)
+    }
+
+    // ── Activation Helpers ────────────────────────────────────────────────
+
+    /// Softmax with temperature scaling.
+    pub fn softmax_temperature(
+        &mut self,
+        x: TensorNodeId,
+        dim: usize,
+        temperature: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let temp = self.full(vec![1], temperature, false)?;
+        let scaled = self.tensor_div(x, temp)?;
+        self.tensor_softmax(scaled, dim)
+    }
+
+    /// Log-softmax with temperature scaling.
+    pub fn log_softmax_temperature(
+        &mut self,
+        x: TensorNodeId,
+        dim: usize,
+        temperature: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let temp = self.full(vec![1], temperature, false)?;
+        let scaled = self.tensor_div(x, temp)?;
+        self.tensor_log_softmax(scaled, dim)
+    }
 }
 
 pub use ft_autograd::{
