@@ -15063,6 +15063,40 @@ impl FrankenTorchSession {
         self.tensor_triangular_solve(a, b, upper)
     }
 
+    /// Hermitian FFT. Alias for tensor_hfft.
+    pub fn functional_hfft(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hfft(input, n)
+    }
+
+    /// Inverse Hermitian FFT. Alias for tensor_ihfft.
+    pub fn functional_ihfft(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ihfft(input)
+    }
+
+    /// Pseudo-inverse. Alias for tensor_pinverse.
+    pub fn functional_pinverse(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pinverse(input)
+    }
+
+    /// Least squares solution. Alias for tensor_lstsq.
+    pub fn functional_lstsq(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lstsq(a, b)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
