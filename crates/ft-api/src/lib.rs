@@ -14435,6 +14435,14 @@ impl FrankenTorchSession {
         self.tensor_trigamma(input)
     }
 
+    /// Psi function (digamma alias). Alias for tensor_psi.
+    pub fn functional_psi(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_psi(input)
+    }
+
     /// Element-wise power with tensor exponent. Alias for tensor_pow_tensor.
     pub fn functional_pow_tensor(
         &mut self,
@@ -14469,6 +14477,15 @@ impl FrankenTorchSession {
         other: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ldexp(input, other)
+    }
+
+    /// Scale by power of 2 (x * 2^n). Alias for tensor_scalbn.
+    pub fn functional_scalbn(
+        &mut self,
+        input: TensorNodeId,
+        n: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_scalbn(input, n)
     }
 
     /// Decompose into integer and fractional parts. Alias for tensor_modf.
@@ -15046,6 +15063,14 @@ impl FrankenTorchSession {
         prob: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_bernoulli(prob)
+    }
+
+    /// Poisson sampling. Alias for tensor_poisson.
+    pub fn functional_poisson(
+        &mut self,
+        rate: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_poisson(rate)
     }
 
     /// Log-sum-exp along dimension. Alias for tensor_logsumexp.
