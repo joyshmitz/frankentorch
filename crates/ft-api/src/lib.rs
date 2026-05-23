@@ -54067,6 +54067,119 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_dist(a, b, p)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Comparison utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Element-wise equality comparison.
+    pub fn eq_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_eq(lhs, rhs)
+    }
+
+    /// Element-wise greater-than comparison.
+    pub fn gt_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gt(lhs, rhs)
+    }
+
+    /// Element-wise greater-than-or-equal comparison.
+    pub fn ge_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ge(lhs, rhs)
+    }
+
+    /// Check if two tensors are identical.
+    pub fn equal_tensor(
+        &self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        self.tensor_equal(lhs, rhs)
+    }
+
+    /// Alias for gt (greater than).
+    pub fn greater_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_greater(lhs, rhs)
+    }
+
+    /// Alias for ge (greater than or equal).
+    pub fn greater_equal_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_greater_equal(lhs, rhs)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Complex number utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Extract imaginary part of complex tensor.
+    pub fn imag_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_imag(input)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Split utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Split tensor horizontally (along dim 1 for 2D+, dim 0 for 1D).
+    pub fn hsplit_tensor(
+        &mut self,
+        input: TensorNodeId,
+        sections: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_hsplit(input, sections)
+    }
+
+    /// Split tensor vertically (along dim 0).
+    pub fn vsplit_tensor(
+        &mut self,
+        input: TensorNodeId,
+        sections: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_vsplit(input, sections)
+    }
+
+    /// Split tensor along depth (dim 2).
+    pub fn dsplit_tensor(
+        &mut self,
+        input: TensorNodeId,
+        sections: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_dsplit(input, sections)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Activation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// ELU activation function.
+    pub fn elu_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_elu(input)
+    }
 }
 
 pub use ft_autograd::{
