@@ -53525,6 +53525,136 @@ impl FrankenTorchSession {
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
         self.tensor_adaptive_max_pool3d(input, output_size)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Activation and gating utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// GELU activation function.
+    pub fn gelu_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gelu(input)
+    }
+
+    /// Gated Linear Unit activation.
+    pub fn glu_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_glu(input, dim)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Mathematical operation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Hypotenuse (Euclidean norm of two values).
+    pub fn hypot_tensor(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hypot(x, y)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Shape manipulation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Fold a tensor to combine sliding local blocks.
+    pub fn fold_tensor(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize),
+        kernel_size: (usize, usize),
+        dilation: (usize, usize),
+        padding: (usize, usize),
+        stride: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fold(input, output_size, kernel_size, dilation, padding, stride)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Window function utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Create a Hann window.
+    pub fn hann_window_tensor(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hann_window(window_length, periodic)
+    }
+
+    /// Create a Hamming window.
+    pub fn hamming_window_tensor(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+        alpha: f64,
+        beta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hamming_window(window_length, periodic, alpha, beta)
+    }
+
+    /// Create a Blackman window.
+    pub fn blackman_window_tensor(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_blackman_window(window_length, periodic)
+    }
+
+    /// Create a Bartlett window.
+    pub fn bartlett_window_tensor(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bartlett_window(window_length, periodic)
+    }
+
+    /// Create a Kaiser window.
+    pub fn kaiser_window_tensor(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+        beta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_kaiser_window(window_length, periodic, beta)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Histogram and counting utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Compute histogram of a tensor.
+    pub fn histogram_tensor(
+        &mut self,
+        input: TensorNodeId,
+        bins: usize,
+        min_val: f64,
+        max_val: f64,
+        weight: Option<TensorNodeId>,
+        density: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_histogram(input, bins, min_val, max_val, weight, density)
+    }
+
+    /// Count occurrences of each value in a 1D tensor.
+    pub fn bincount_tensor(
+        &mut self,
+        input: TensorNodeId,
+        weights: Option<TensorNodeId>,
+        minlength: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bincount(input, weights, minlength)
+    }
 }
 
 pub use ft_autograd::{
