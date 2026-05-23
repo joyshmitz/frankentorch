@@ -2345,6 +2345,53 @@ impl FrankenTorchSession {
         self.tensor_variable(values, shape, requires_grad)
     }
 
+    /// Create a tensor filled with von Mises distributed random values.
+    ///
+    /// Samples from vonMises(loc, concentration) on the circle.
+    /// Uses rejection sampling for concentration > 0.
+    pub fn tensor_von_mises(
+        &mut self,
+        loc: f64,
+        concentration: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if concentration < 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "von_mises: concentration must be non-negative",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                if concentration == 0.0 {
+                    // Uniform on circle
+                    return loc + 2.0 * std::f64::consts::PI * self.rng.next_f64()
+                        - std::f64::consts::PI;
+                }
+                // Best-Fisher algorithm for von Mises sampling
+                let tau = 1.0 + (1.0 + 4.0 * concentration * concentration).sqrt();
+                let rho = (tau - (2.0 * tau).sqrt()) / (2.0 * concentration);
+                let r = (1.0 + rho * rho) / (2.0 * rho);
+                loop {
+                    let u1 = self.rng.next_f64();
+                    let z = (std::f64::consts::PI * u1).cos();
+                    let f = (1.0 + r * z) / (r + z);
+                    let c = concentration * (r - f);
+                    let u2 = self.rng.next_f64();
+                    if u2 < c * (2.0 - c) || u2 <= c * (-c).exp() {
+                        let u3 = self.rng.next_f64();
+                        let sign = if u3 < 0.5 { -1.0 } else { 1.0 };
+                        return loc + sign * f.acos();
+                    }
+                }
+            })
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
     /// Alias for `randint`. Equivalent to `torch.randint(low, high, shape)`.
     pub fn tensor_randint(
         &mut self,
@@ -16447,6 +16494,17 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_half_cauchy(scale, shape, requires_grad)
+    }
+
+    /// Von Mises distribution samples. Alias for tensor_von_mises.
+    pub fn functional_von_mises(
+        &mut self,
+        loc: f64,
+        concentration: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_von_mises(loc, concentration, shape, requires_grad)
     }
 
     /// Random integers with same shape. Alias for tensor_randint_like.
