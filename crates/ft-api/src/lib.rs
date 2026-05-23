@@ -55176,6 +55176,44 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_select_copy(input, dim, index)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Loss function utilities (additional)
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Multi-class margin loss.
+    pub fn multi_margin_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        p: usize,
+        margin: f64,
+        weight: Option<TensorNodeId>,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multi_margin_loss(input, target, p, margin, weight, reduction)
+    }
+
+    /// Multi-label margin loss.
+    pub fn multilabel_margin_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multilabel_margin_loss(input, target, reduction)
+    }
+
+    /// Multi-label soft margin loss.
+    pub fn multilabel_soft_margin_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multilabel_soft_margin_loss(input, target, weight, reduction)
+    }
 }
 
 pub use ft_autograd::{
