@@ -53290,6 +53290,68 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_gumbel_softmax(logits, tau, hard, dim)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Additional loss function utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Hinge embedding loss for margin classification.
+    pub fn hinge_embedding_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hinge_embedding_loss(input, target, margin, reduction)
+    }
+
+    /// Soft margin loss for binary classification.
+    pub fn soft_margin_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_soft_margin_loss(input, target, reduction)
+    }
+
+    /// Gaussian negative log-likelihood loss.
+    pub fn gaussian_nll_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        var: TensorNodeId,
+        reduction: &str,
+        full: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gaussian_nll_loss(input, target, var, reduction, full)
+    }
+
+    /// Poisson negative log-likelihood loss.
+    pub fn poisson_nll_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        log_input: bool,
+        full: bool,
+        eps: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_poisson_nll_loss(input, target, log_input, full, eps, reduction)
+    }
+
+    /// Margin ranking loss for ranking tasks.
+    pub fn margin_ranking_loss_tensor(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_margin_ranking_loss(input1, input2, target, margin, reduction)
+    }
 }
 
 pub use ft_autograd::{
