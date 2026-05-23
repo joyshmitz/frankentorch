@@ -15641,6 +15641,62 @@ impl FrankenTorchSession {
         self.tensor_ifftshift(input, dim)
     }
 
+    /// FFT shift (multi-dim). Alias for tensor_fft_fftshift.
+    pub fn functional_fft_fftshift(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft_fftshift(input, dim)
+    }
+
+    /// Inverse FFT shift (multi-dim). Alias for tensor_fft_ifftshift.
+    pub fn functional_fft_ifftshift(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft_ifftshift(input, dim)
+    }
+
+    /// DFT sample frequencies. Alias for tensor_fft_fftfreq.
+    pub fn functional_fft_fftfreq(
+        &mut self,
+        n: usize,
+        d: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft_fftfreq(n, d)
+    }
+
+    /// DFT sample frequencies for real input. Alias for tensor_fft_rfftfreq.
+    pub fn functional_fft_rfftfreq(
+        &mut self,
+        n: usize,
+        d: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft_rfftfreq(n, d)
+    }
+
+    /// 1D constant padding. Alias for tensor_constant_pad1d.
+    pub fn functional_constant_pad1d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_constant_pad1d(input, padding, value)
+    }
+
+    /// 2D constant padding. Alias for tensor_constant_pad2d.
+    pub fn functional_constant_pad2d(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_constant_pad2d(input, padding, value)
+    }
+
     /// Generalized outer product. Alias for tensor_ger.
     pub fn functional_ger(
         &mut self,
