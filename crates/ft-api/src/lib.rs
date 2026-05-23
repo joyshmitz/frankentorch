@@ -53195,6 +53195,52 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_column_stack(inputs)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Misc tensor utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Replace NaN, +inf, -inf with specified values.
+    pub fn nan_to_num_tensor(
+        &mut self,
+        input: TensorNodeId,
+        nan: f64,
+        posinf: Option<f64>,
+        neginf: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nan_to_num(input, nan, posinf, neginf)
+    }
+
+    /// Block diagonal matrix from 2D tensors.
+    pub fn block_diag_tensor(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_block_diag(tensors)
+    }
+
+    /// All r-length combinations of elements.
+    pub fn combinations_tensor(
+        &mut self,
+        input: TensorNodeId,
+        r: usize,
+        with_replacement: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_combinations(input, r, with_replacement)
+    }
+
+    /// Broadcast tensors to common shape.
+    pub fn broadcast_tensors_tensor(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_broadcast_tensors(tensors)
+    }
+
+    /// Check if tensor dtype is floating point.
+    pub fn is_floating_point_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_floating_point(node)
+    }
 }
 
 pub use ft_autograd::{
