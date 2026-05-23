@@ -15321,6 +15321,50 @@ impl FrankenTorchSession {
         self.ravel_multi_index(multi_index, shape)
     }
 
+    /// Cholesky decomposition. Alias for tensor_linalg_cholesky.
+    pub fn functional_linalg_cholesky(
+        &mut self,
+        input: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_cholesky(input, upper)
+    }
+
+    /// Solve via Cholesky factor. Alias for tensor_cholesky_solve.
+    pub fn functional_cholesky_solve(
+        &mut self,
+        b: TensorNodeId,
+        cholesky_factor: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cholesky_solve(b, cholesky_factor, upper)
+    }
+
+    /// Inverse via Cholesky. Alias for tensor_cholesky_inverse.
+    pub fn functional_cholesky_inverse(
+        &mut self,
+        cholesky_factor: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cholesky_inverse(cholesky_factor, upper)
+    }
+
+    /// Matrix inverse. Alias for tensor_linalg_inv.
+    pub fn functional_linalg_inv(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_inv(input)
+    }
+
+    /// Matrix determinant. Alias for tensor_linalg_det.
+    pub fn functional_linalg_det(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_det(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
