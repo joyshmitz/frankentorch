@@ -15097,6 +15097,57 @@ impl FrankenTorchSession {
         self.tensor_lstsq(a, b)
     }
 
+    /// Vector dot product (linalg). Alias for tensor_linalg_vecdot.
+    pub fn functional_linalg_vecdot(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_vecdot(x, y)
+    }
+
+    /// Sign and log-determinant (linalg). Alias for tensor_linalg_slogdet.
+    pub fn functional_linalg_slogdet(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_slogdet(input)
+    }
+
+    /// Multi-matrix dot product (linalg). Alias for tensor_linalg_multi_dot.
+    pub fn functional_linalg_multi_dot(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_multi_dot(tensors)
+    }
+
+    /// Matrix norm. Alias for tensor_matrix_norm.
+    pub fn functional_matrix_norm(
+        &mut self,
+        input: TensorNodeId,
+        ord: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_norm(input, ord)
+    }
+
+    /// Matrix rank. Alias for tensor_matrix_rank.
+    pub fn functional_matrix_rank(
+        &mut self,
+        input: TensorNodeId,
+        tol: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_rank(input, tol)
+    }
+
+    /// Matrix transpose. Alias for tensor_matrix_transpose.
+    pub fn functional_matrix_transpose(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_transpose(input)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
