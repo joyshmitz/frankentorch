@@ -4505,6 +4505,66 @@ impl FrankenTorchSession {
         self.sinusoidal_positional_encoding(max_len, d_model)
     }
 
+    /// Generate ALiBi (Attention with Linear Biases) position biases.
+    ///
+    /// ALiBi is a simple, effective positional encoding method that adds linear
+    /// biases to attention scores. Used in MPT, BLOOM, and other modern LLMs.
+    ///
+    /// Returns a bias tensor of shape `[num_heads, seq_len, seq_len]` to add to
+    /// attention scores before softmax.
+    ///
+    /// The bias for head h at position i attending to position j is:
+    ///   -slope[h] * |i - j|
+    /// where slope[h] = 2^(-8 * h / num_heads) for h in 0..num_heads.
+    pub fn alibi_bias(
+        &mut self,
+        num_heads: usize,
+        seq_len: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if num_heads == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "alibi_bias: num_heads must be positive",
+                },
+            )));
+        }
+        let mut slopes = Vec::with_capacity(num_heads);
+        let ratio = 8.0 / num_heads as f64;
+        for h in 0..num_heads {
+            slopes.push(2.0_f64.powf(-ratio * (h + 1) as f64));
+        }
+        let mut bias = vec![0.0_f64; num_heads * seq_len * seq_len];
+        for h in 0..num_heads {
+            for i in 0..seq_len {
+                for j in 0..seq_len {
+                    let distance = (i as i64 - j as i64).abs() as f64;
+                    bias[h * seq_len * seq_len + i * seq_len + j] = -slopes[h] * distance;
+                }
+            }
+        }
+        self.tensor_variable(bias, vec![num_heads, seq_len, seq_len], false)
+    }
+
+    /// Get ALiBi slopes for given number of heads.
+    ///
+    /// Returns slope values `[num_heads]` where slope[h] = 2^(-8*h/num_heads).
+    /// Useful when you want to compute ALiBi bias manually or with different patterns.
+    pub fn alibi_slopes(
+        &mut self,
+        num_heads: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if num_heads == 0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "alibi_slopes: num_heads must be positive",
+                },
+            )));
+        }
+        let ratio = 8.0 / num_heads as f64;
+        let slopes: Vec<f64> = (0..num_heads).map(|h| 2.0_f64.powf(-ratio * (h + 1) as f64)).collect();
+        self.tensor_variable(slopes, vec![num_heads], false)
+    }
+
     /// Tensor contraction over specified dimensions (generalised matrix multiply).
     ///
     /// `dims` is the number of trailing dimensions of `a` to contract with
