@@ -47519,6 +47519,154 @@ impl FrankenTorchSession {
         let scale_t = self.full(vec![1], scale, false)?;
         self.tensor_mul(query, scale_t)
     }
+
+    // ── Tensor Property Queries ──────────────────────────────────────────
+
+    /// Get total number of dimensions.
+    pub fn ndim(&self, input: TensorNodeId) -> Result<usize, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        Ok(shape.len())
+    }
+
+    /// Check if tensor is 1D.
+    pub fn is_1d(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        Ok(shape.len() == 1)
+    }
+
+    /// Check if tensor is 2D.
+    pub fn is_2d(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        Ok(shape.len() == 2)
+    }
+
+    /// Check if tensor is square matrix.
+    pub fn is_square(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        Ok(shape.len() == 2 && shape[0] == shape[1])
+    }
+
+    /// Check if tensor is contiguous (always true for dense).
+    pub fn is_contiguous(&self, _input: TensorNodeId) -> bool {
+        true
+    }
+
+    // ── Tensor Creation Shortcuts ────────────────────────────────────────
+
+    /// Create identity matrix.
+    pub fn identity_matrix(
+        &mut self,
+        n: usize,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.eye(n, requires_grad)
+    }
+
+    /// Create diagonal matrix from 1D tensor.
+    pub fn diagonal_matrix(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diag(input, 0)
+    }
+
+    /// Create triangular matrix (lower).
+    pub fn lower_triangular(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tril(input, 0)
+    }
+
+    /// Create triangular matrix (upper).
+    pub fn upper_triangular(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triu(input, 0)
+    }
+
+    // ── Loss Convenience Functions ───────────────────────────────────────
+
+    /// Mean squared error loss.
+    pub fn mse_loss_simple(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mse_loss(pred, target, "mean")
+    }
+
+    /// Mean absolute error loss.
+    pub fn mae_loss_simple(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(pred, target)?;
+        let abs_diff = self.tensor_abs(diff)?;
+        self.tensor_mean(abs_diff)
+    }
+
+    /// Binary cross entropy loss with logits.
+    pub fn bce_with_logits_simple(
+        &mut self,
+        logits: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_binary_cross_entropy_with_logits(logits, target, "mean")
+    }
+
+    /// Cross entropy loss (logits -> softmax -> nll).
+    pub fn cross_entropy_simple(
+        &mut self,
+        logits: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cross_entropy(logits, target, "mean")
+    }
+
+    // ── Activation Convenience ───────────────────────────────────────────
+
+    /// Apply softmax along last dimension.
+    pub fn softmax_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_softmax(input, last_dim)
+    }
+
+    /// Apply log_softmax along last dimension.
+    pub fn log_softmax_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_log_softmax(input, last_dim)
+    }
+
+    /// Apply argmax along last dimension.
+    pub fn argmax_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_argmax(input, last_dim)
+    }
+
+    /// Apply argmin along last dimension.
+    pub fn argmin_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_argmin(input, last_dim)
+    }
 }
 
 pub use ft_autograd::{
