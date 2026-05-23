@@ -15409,6 +15409,49 @@ impl FrankenTorchSession {
         self.tensor_linalg_qr(input, reduced)
     }
 
+    /// Matrix norm. Alias for tensor_linalg_matrix_norm.
+    pub fn functional_linalg_matrix_norm(
+        &mut self,
+        input: TensorNodeId,
+        ord: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_matrix_norm(input, ord)
+    }
+
+    /// Eigenvalues and eigenvectors of symmetric/Hermitian matrix. Alias for tensor_linalg_eigh.
+    pub fn functional_linalg_eigh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_eigh(input)
+    }
+
+    /// Eigenvalues of symmetric/Hermitian matrix. Alias for tensor_linalg_eigvalsh.
+    pub fn functional_linalg_eigvalsh(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_eigvalsh(input)
+    }
+
+    /// Vector norm. Alias for tensor_linalg_vector_norm.
+    pub fn functional_linalg_vector_norm(
+        &mut self,
+        input: TensorNodeId,
+        ord: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_vector_norm(input, ord)
+    }
+
+    /// Cross product. Alias for tensor_linalg_cross.
+    pub fn functional_linalg_cross(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_cross(input, other)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
