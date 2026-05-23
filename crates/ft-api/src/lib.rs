@@ -15258,6 +15258,51 @@ impl FrankenTorchSession {
         self.tensor_ifftshift(input, dim)
     }
 
+    /// Generalized outer product. Alias for tensor_ger.
+    pub fn functional_ger(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ger(lhs, rhs)
+    }
+
+    /// Batch matmul + add (summed). Alias for tensor_addbmm.
+    pub fn functional_addbmm(
+        &mut self,
+        input: TensorNodeId,
+        batch1: TensorNodeId,
+        batch2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addbmm(input, batch1, batch2, beta, alpha)
+    }
+
+    /// Matrix-vector multiply + add. Alias for tensor_addmv.
+    pub fn functional_addmv(
+        &mut self,
+        input: TensorNodeId,
+        mat: TensorNodeId,
+        vec_input: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addmv(input, mat, vec_input, beta, alpha)
+    }
+
+    /// Rank-1 update. Alias for tensor_addr.
+    pub fn functional_addr(
+        &mut self,
+        input: TensorNodeId,
+        vec1: TensorNodeId,
+        vec2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addr(input, vec1, vec2, beta, alpha)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
