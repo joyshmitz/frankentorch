@@ -46762,6 +46762,269 @@ impl FrankenTorchSession {
         let pad = self.full(pad_shape, pad_id, false)?;
         self.tensor_cat(&[input, pad], shape.len() - 1)
     }
+
+    // ── Numerical Stability Utilities ────────────────────────────────────
+
+    /// Clamp values to avoid numerical instability (log of small numbers etc).
+    pub fn clamp_for_log(
+        &mut self,
+        input: TensorNodeId,
+        min_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp_min(input, min_val)
+    }
+
+    /// Safe log: clamps input to avoid -inf.
+    pub fn safe_log(
+        &mut self,
+        input: TensorNodeId,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let clamped = self.tensor_clamp_min(input, eps)?;
+        self.tensor_log(clamped)
+    }
+
+    /// Safe division: avoids div by zero by adding eps to denominator.
+    pub fn safe_div(
+        &mut self,
+        num: TensorNodeId,
+        denom: TensorNodeId,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let eps_tensor = self.full(vec![1], eps, false)?;
+        let safe_denom = self.tensor_add(denom, eps_tensor)?;
+        self.tensor_div(num, safe_denom)
+    }
+
+    /// Numerically stable sigmoid using tanh: sigmoid(x) = 0.5 * (tanh(x/2) + 1).
+    pub fn stable_sigmoid(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let half = self.full(vec![1], 0.5, false)?;
+        let half_x = self.tensor_mul(input, half)?;
+        let tanh_half = self.tensor_tanh(half_x)?;
+        let one = self.full(vec![1], 1.0, false)?;
+        let plus_one = self.tensor_add(tanh_half, one)?;
+        self.tensor_mul(plus_one, half)
+    }
+
+    /// Softsign activation: x / (1 + |x|).
+    pub fn softsign(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let abs_x = self.tensor_abs(input)?;
+        let one = self.full(vec![1], 1.0, false)?;
+        let denom = self.tensor_add(abs_x, one)?;
+        self.tensor_div(input, denom)
+    }
+
+    /// Threshold activation: replaces values <= threshold with value.
+    pub fn threshold_activation(
+        &mut self,
+        input: TensorNodeId,
+        thresh: f64,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let data = self.tensor_values(input)?;
+        let requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
+        let result: Vec<f64> = data.iter().map(|&x| if x > thresh { x } else { value }).collect();
+        self.tensor_variable(result, shape, requires_grad)
+    }
+
+    // ── Batch Utilities ──────────────────────────────────────────────────
+
+    /// Get batch size from a batched tensor.
+    pub fn batch_size(&self, input: TensorNodeId) -> Result<usize, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.is_empty() {
+            return Err(Self::incompatible_tensor_args("batch_size: scalar has no batch dimension"));
+        }
+        Ok(shape[0])
+    }
+
+    /// Repeat tensor along batch dimension.
+    pub fn repeat_batch(
+        &mut self,
+        input: TensorNodeId,
+        repeats: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let mut repeat_dims = vec![1; shape.len()];
+        repeat_dims[0] = repeats;
+        self.tensor_repeat(input, &repeat_dims)
+    }
+
+    /// Interleave batches from two tensors: [a0, b0, a1, b1, ...].
+    pub fn interleave_batch(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape_a = self.tensor_shape(a)?;
+        let shape_b = self.tensor_shape(b)?;
+        if shape_a != shape_b {
+            return Err(Self::incompatible_tensor_args("interleave_batch: shapes must match"));
+        }
+        let stacked = self.tensor_stack(&[a, b], 1)?;
+        let mut new_shape = shape_a.clone();
+        new_shape[0] *= 2;
+        self.tensor_reshape(stacked, new_shape)
+    }
+
+    // ── Sequence Utilities ───────────────────────────────────────────────
+
+    /// Get the last token from each sequence in a batch: [B, T, D] -> [B, D].
+    pub fn get_last_token(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() < 2 {
+            return Err(Self::incompatible_tensor_args("get_last_token: requires at least 2D tensor"));
+        }
+        let t = shape[1];
+        let sliced = self.tensor_narrow(input, 1, t - 1, 1)?;
+        self.tensor_squeeze(sliced, 1)
+    }
+
+    /// Get the first token from each sequence in a batch: [B, T, D] -> [B, D].
+    pub fn get_first_token(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let sliced = self.tensor_narrow(input, 1, 0, 1)?;
+        self.tensor_squeeze(sliced, 1)
+    }
+
+    /// Shift sequence left (for causal language modeling targets).
+    pub fn shift_left(
+        &mut self,
+        input: TensorNodeId,
+        pad_value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() < 2 {
+            return Err(Self::incompatible_tensor_args("shift_left: requires at least 2D tensor"));
+        }
+        let t = shape[1];
+        let shifted = self.tensor_narrow(input, 1, 1, t - 1)?;
+        let mut pad_shape = shape.clone();
+        pad_shape[1] = 1;
+        let pad = self.full(pad_shape, pad_value, false)?;
+        self.tensor_cat(&[shifted, pad], 1)
+    }
+
+    /// Shift sequence right (for decoder input from targets).
+    pub fn shift_right(
+        &mut self,
+        input: TensorNodeId,
+        pad_value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() < 2 {
+            return Err(Self::incompatible_tensor_args("shift_right: requires at least 2D tensor"));
+        }
+        let t = shape[1];
+        let shifted = self.tensor_narrow(input, 1, 0, t - 1)?;
+        let mut pad_shape = shape.clone();
+        pad_shape[1] = 1;
+        let pad = self.full(pad_shape, pad_value, false)?;
+        self.tensor_cat(&[pad, shifted], 1)
+    }
+
+    // ── Tensor Norm Utilities ────────────────────────────────────────────
+
+    /// Compute Frobenius norm: sqrt(sum(x^2)).
+    pub fn frobenius_norm(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let sq = self.tensor_mul(input, input)?;
+        let sum = self.tensor_sum(sq)?;
+        self.tensor_sqrt(sum)
+    }
+
+    /// Compute L1 norm: sum(|x|).
+    pub fn l1_norm(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let abs = self.tensor_abs(input)?;
+        self.tensor_sum(abs)
+    }
+
+    /// Compute max norm: max(|x|).
+    pub fn max_norm(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let abs = self.tensor_abs(input)?;
+        let shape = self.tensor_shape(abs)?;
+        let ndim = shape.len();
+        let flat = if ndim > 1 {
+            self.tensor_flatten(abs, 0, ndim - 1)?
+        } else {
+            abs
+        };
+        self.tensor_amax(flat, 0)
+    }
+
+    /// Normalize tensor to unit norm.
+    pub fn normalize_to_unit(
+        &mut self,
+        input: TensorNodeId,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let norm = self.frobenius_norm(input)?;
+        let eps_tensor = self.full(vec![1], eps, false)?;
+        let safe_norm = self.tensor_add(norm, eps_tensor)?;
+        self.tensor_div(input, safe_norm)
+    }
+
+    // ── Reduction Utilities ──────────────────────────────────────────────
+
+    /// Compute mean along last dimension.
+    pub fn mean_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_mean_dim(input, last_dim)
+    }
+
+    /// Compute sum along last dimension.
+    pub fn sum_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_sum_dim(input, last_dim)
+    }
+
+    /// Compute max along last dimension (values only).
+    pub fn max_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_amax(input, last_dim)
+    }
+
+    /// Compute min along last dimension (values only).
+    pub fn min_last_dim(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_amin(input, last_dim)
+    }
 }
 
 pub use ft_autograd::{
