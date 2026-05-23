@@ -4536,6 +4536,129 @@ impl FrankenTorchSession {
         Ok((unique_node, inverse_node, counts_node))
     }
 
+    /// Return unique slices of the input tensor along a given dimension.
+    ///
+    /// Equivalent to `torch.unique(input, dim=dim)` or `torch.unique_dim`.
+    /// Returns unique slices along the specified dimension, optionally with
+    /// inverse indices and counts.
+    pub fn tensor_unique_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        sorted: bool,
+        return_inverse: bool,
+        return_counts: bool,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "unique_dim: autograd not supported (uniqueness is non-differentiable)",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        if dim >= shape.len() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "unique_dim: dimension out of range",
+                },
+            )));
+        }
+        let vals = self.tensor_values(input)?;
+        let dim_size = shape[dim];
+        // Calculate the size of each slice along dim
+        let outer_size: usize = shape[..dim].iter().product();
+        let inner_size: usize = shape[dim + 1..].iter().product();
+        let slice_numel = inner_size;
+        let total_slices = outer_size * dim_size;
+        // Extract slices and find unique ones
+        let mut slices: Vec<(usize, Vec<f64>)> = Vec::with_capacity(total_slices);
+        for outer in 0..outer_size {
+            for d in 0..dim_size {
+                let mut slice_data = Vec::with_capacity(slice_numel);
+                for inner in 0..inner_size {
+                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
+                    slice_data.push(vals[idx]);
+                }
+                slices.push((outer * dim_size + d, slice_data));
+            }
+        }
+        // Group by outer and find unique within each
+        // For simplicity, treat entire slice as key and deduplicate globally
+        let mut unique_indices: Vec<usize> = Vec::new();
+        let mut seen: std::collections::HashMap<Vec<i64>, usize> = std::collections::HashMap::new();
+        let mut inverse: Vec<f64> = Vec::with_capacity(slices.len());
+        let mut counts_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for (idx, slice) in slices.iter() {
+            // Convert to bits for comparison (handles NaN)
+            let key: Vec<i64> = slice.iter().map(|&v| v.to_bits() as i64).collect();
+            if let Some(&unique_idx) = seen.get(&key) {
+                inverse.push(unique_idx as f64);
+                *counts_map.entry(unique_idx).or_insert(0) += 1;
+            } else {
+                let new_idx = unique_indices.len();
+                seen.insert(key, new_idx);
+                unique_indices.push(*idx);
+                inverse.push(new_idx as f64);
+                counts_map.insert(new_idx, 1);
+            }
+        }
+        if sorted {
+            // Sort unique slices lexicographically
+            unique_indices.sort_by(|&a, &b| {
+                let slice_a = &slices[a].1;
+                let slice_b = &slices[b].1;
+                for (va, vb) in slice_a.iter().zip(slice_b.iter()) {
+                    match va.partial_cmp(vb) {
+                        Some(std::cmp::Ordering::Equal) => continue,
+                        Some(ord) => return ord,
+                        None => {
+                            // Handle NaN
+                            if va.is_nan() && vb.is_nan() {
+                                continue;
+                            } else if va.is_nan() {
+                                return std::cmp::Ordering::Greater;
+                            } else {
+                                return std::cmp::Ordering::Less;
+                            }
+                        }
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+        // Build output tensor
+        let unique_count = unique_indices.len();
+        let mut new_shape = shape.clone();
+        new_shape[dim] = unique_count;
+        let mut out_vals = Vec::with_capacity(outer_size * unique_count * inner_size);
+        for outer in 0..outer_size {
+            for ui in 0..unique_count {
+                let orig_d = unique_indices[ui] % dim_size;
+                for inner in 0..inner_size {
+                    let idx = outer * dim_size * inner_size + orig_d * inner_size + inner;
+                    out_vals.push(vals[idx]);
+                }
+            }
+        }
+        let unique_node = self.tensor_variable(out_vals, new_shape, false)?;
+        let inverse_node = if return_inverse {
+            let n = inverse.len();
+            Some(self.tensor_variable(inverse, vec![n], false)?)
+        } else {
+            None
+        };
+        let counts_node = if return_counts {
+            let counts: Vec<f64> = (0..unique_count)
+                .map(|i| *counts_map.get(&i).unwrap_or(&0) as f64)
+                .collect();
+            Some(self.tensor_variable(counts, vec![unique_count], false)?)
+        } else {
+            None
+        };
+        Ok((unique_node, inverse_node, counts_node))
+    }
+
     /// Count the number of occurrences of each value in a 1-D non-negative integer tensor.
     ///
     /// Equivalent to `torch.bincount(input, weights=None, minlength=0)`.
@@ -16883,6 +17006,18 @@ impl FrankenTorchSession {
         return_counts: bool,
     ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
         self.tensor_unique_consecutive(input, return_inverse, return_counts)
+    }
+
+    /// Unique slices along a dimension. Alias for tensor_unique_dim.
+    pub fn functional_unique_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        sorted: bool,
+        return_inverse: bool,
+        return_counts: bool,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.tensor_unique_dim(input, dim, sorted, return_inverse, return_counts)
     }
 
     /// Covariance matrix. Alias for tensor_cov.
