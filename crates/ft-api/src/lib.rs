@@ -13154,6 +13154,25 @@ impl FrankenTorchSession {
         self.tensor_gumbel_softmax(logits, tau, hard, dim)
     }
 
+    /// Pairwise distance within a batch. Alias for tensor_pdist.
+    pub fn functional_pdist(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pdist(input, p)
+    }
+
+    /// Pairwise distance between two batches. Alias for tensor_cdist.
+    pub fn functional_cdist(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cdist(x1, x2, p)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
