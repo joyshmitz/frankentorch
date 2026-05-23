@@ -14105,6 +14105,41 @@ impl FrankenTorchSession {
         self.tensor_not_equal(lhs, rhs)
     }
 
+    /// Element-wise logical NOT. Alias for tensor_logical_not.
+    pub fn functional_logical_not(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logical_not(input)
+    }
+
+    /// Element-wise logical AND. Alias for tensor_logical_and.
+    pub fn functional_logical_and(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logical_and(input, other)
+    }
+
+    /// Element-wise logical OR. Alias for tensor_logical_or.
+    pub fn functional_logical_or(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logical_or(input, other)
+    }
+
+    /// Element-wise logical XOR. Alias for tensor_logical_xor.
+    pub fn functional_logical_xor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logical_xor(input, other)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
