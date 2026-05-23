@@ -35998,6 +35998,175 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Apply FFT (or inverse FFT) along a specific dimension.
+    /// Used by fftn/ifftn for iterative dimension-wise transforms.
+    fn tensor_fft_along_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        inverse: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let dtype = self.tensor_dtype(input)?;
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        if dim >= ndim {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "fft_along_dim: dimension out of range",
+                },
+            )));
+        }
+        let is_complex = dtype == DType::Complex128 || dtype == DType::Complex64;
+        let dim_size = shape[dim];
+        let total_elements: usize = shape.iter().product();
+        let stride_outer: usize = shape[..dim].iter().product();
+        let stride_inner: usize = shape[dim + 1..].iter().product();
+        let mut re_data;
+        let mut im_data;
+        if is_complex {
+            let real_view = self.tensor_view_as_real(input)?;
+            let vals = self.tensor_values(real_view)?;
+            let half = vals.len() / 2;
+            re_data = vals[..half].to_vec();
+            im_data = vals[half..].to_vec();
+        } else {
+            let vals = self.tensor_values(input)?;
+            re_data = vals;
+            im_data = vec![0.0_f64; total_elements];
+        }
+        for outer in 0..stride_outer {
+            for inner in 0..stride_inner {
+                let mut re_slice = vec![0.0_f64; dim_size];
+                let mut im_slice = vec![0.0_f64; dim_size];
+                for k in 0..dim_size {
+                    let idx = outer * dim_size * stride_inner + k * stride_inner + inner;
+                    re_slice[k] = re_data[idx];
+                    im_slice[k] = im_data[idx];
+                }
+                Self::dft_inplace_1d(&mut re_slice, &mut im_slice, inverse);
+                for k in 0..dim_size {
+                    let idx = outer * dim_size * stride_inner + k * stride_inner + inner;
+                    re_data[idx] = re_slice[k];
+                    im_data[idx] = im_slice[k];
+                }
+            }
+        }
+        let re_node = self.tensor_variable(re_data, shape.clone(), false)?;
+        let im_node = self.tensor_variable(im_data, shape, false)?;
+        self.tensor_complex(re_node, im_node)
+    }
+
+    /// Resize tensor by padding with zeros or cropping.
+    fn tensor_resize_with_pad_or_crop(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let current_shape = self.tensor_shape(input)?;
+        if current_shape == target_shape {
+            return Ok(input);
+        }
+        let vals = self.tensor_values(input)?;
+        let mut result = vec![0.0_f64; target_shape.iter().product()];
+        fn copy_recursive(
+            src: &[f64],
+            dst: &mut [f64],
+            src_shape: &[usize],
+            dst_shape: &[usize],
+            src_idx: usize,
+            dst_idx: usize,
+            dim: usize,
+            _src_stride: usize,
+            _dst_stride: usize,
+        ) {
+            if dim == src_shape.len() {
+                dst[dst_idx] = src[src_idx];
+                return;
+            }
+            let copy_len = src_shape[dim].min(dst_shape[dim]);
+            let new_src_stride = if dim + 1 < src_shape.len() {
+                src_shape[dim + 1..].iter().product()
+            } else {
+                1
+            };
+            let new_dst_stride = if dim + 1 < dst_shape.len() {
+                dst_shape[dim + 1..].iter().product()
+            } else {
+                1
+            };
+            for i in 0..copy_len {
+                copy_recursive(
+                    src,
+                    dst,
+                    src_shape,
+                    dst_shape,
+                    src_idx + i * new_src_stride,
+                    dst_idx + i * new_dst_stride,
+                    dim + 1,
+                    new_src_stride,
+                    new_dst_stride,
+                );
+            }
+        }
+        let src_stride: usize = if current_shape.is_empty() { 1 } else { current_shape.iter().product() };
+        let dst_stride: usize = if target_shape.is_empty() { 1 } else { target_shape.iter().product() };
+        copy_recursive(&vals, &mut result, &current_shape, target_shape, 0, 0, 0, src_stride, dst_stride);
+        self.tensor_variable(result, target_shape.to_vec(), false)
+    }
+
+    /// Extend a half-spectrum complex tensor to full length using Hermitian symmetry.
+    fn tensor_hermitian_extend(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        full_len: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let half_len = shape[dim];
+        if half_len > full_len {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "hermitian_extend: half_len exceeds full_len",
+                },
+            )));
+        }
+        let real_view = self.tensor_view_as_real(input)?;
+        let vals = self.tensor_values(real_view)?;
+        let half_vals = vals.len() / 2;
+        let re_data = &vals[..half_vals];
+        let im_data = &vals[half_vals..];
+        let mut out_shape = shape.clone();
+        out_shape[dim] = full_len;
+        let out_total: usize = out_shape.iter().product();
+        let mut re_out = vec![0.0_f64; out_total];
+        let mut im_out = vec![0.0_f64; out_total];
+        let stride_outer: usize = shape[..dim].iter().product();
+        let stride_inner: usize = shape[dim + 1..].iter().product();
+        let out_stride_inner: usize = out_shape[dim + 1..].iter().product();
+        for outer in 0..stride_outer {
+            for inner in 0..stride_inner {
+                for k in 0..half_len {
+                    let src_idx = outer * half_len * stride_inner + k * stride_inner + inner;
+                    let dst_idx = outer * full_len * out_stride_inner + k * out_stride_inner + inner;
+                    re_out[dst_idx] = re_data[src_idx];
+                    im_out[dst_idx] = im_data[src_idx];
+                }
+                for k in half_len..full_len {
+                    let conj_k = full_len - k;
+                    if conj_k < half_len {
+                        let src_idx = outer * half_len * stride_inner + conj_k * stride_inner + inner;
+                        let dst_idx = outer * full_len * out_stride_inner + k * out_stride_inner + inner;
+                        re_out[dst_idx] = re_data[src_idx];
+                        im_out[dst_idx] = -im_data[src_idx];
+                    }
+                }
+            }
+        }
+        let re_node = self.tensor_variable(re_out, out_shape.clone(), false)?;
+        let im_node = self.tensor_variable(im_out, out_shape, false)?;
+        self.tensor_complex(re_node, im_node)
+    }
+
     /// Compute the 1-D Discrete Fourier Transform.
     ///
     /// Equivalent to `torch.fft.fft(input, n)`.
@@ -36517,6 +36686,216 @@ impl FrankenTorchSession {
         out_shape.push(out_rows);
         out_shape.push(out_cols);
         self.tensor_variable(re_full, out_shape, false)
+    }
+
+    /// Compute the N-dimensional Discrete Fourier Transform.
+    ///
+    /// Equivalent to `torch.fft.fftn(input, s, dim)`.
+    /// If `dims` is None, transforms all dimensions. `s` can specify output sizes.
+    pub fn tensor_fftn(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<&[usize]>,
+        dims: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "fftn: autograd not supported (Wirtinger calculus not yet implemented)",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        let transform_dims: Vec<usize> = match dims {
+            Some(d) => d.iter().copied().collect(),
+            None => (0..ndim).collect(),
+        };
+        if transform_dims.is_empty() {
+            let vals = self.tensor_values(input)?;
+            let re_node = self.tensor_variable(vals.clone(), shape.clone(), false)?;
+            let im_node = self.tensor_zeros(shape, false)?;
+            return self.tensor_complex(re_node, im_node);
+        }
+        let mut current = input;
+        for &dim in &transform_dims {
+            if dim >= ndim {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "fftn: dimension out of range",
+                    },
+                )));
+            }
+            current = self.tensor_fft_along_dim(current, dim, false)?;
+        }
+        if let Some(target_sizes) = s {
+            let current_shape = self.tensor_shape(current)?;
+            let mut new_shape = current_shape.clone();
+            for (i, &target_sz) in target_sizes.iter().enumerate() {
+                if i < transform_dims.len() {
+                    new_shape[transform_dims[i]] = target_sz;
+                }
+            }
+            if new_shape != current_shape {
+                let re_view = self.tensor_real(current)?;
+                let im_view = self.tensor_imag(current)?;
+                let re_resized = self.tensor_resize_with_pad_or_crop(re_view, &new_shape)?;
+                let im_resized = self.tensor_resize_with_pad_or_crop(im_view, &new_shape)?;
+                current = self.tensor_complex(re_resized, im_resized)?;
+            }
+        }
+        Ok(current)
+    }
+
+    /// Compute the N-dimensional Inverse Discrete Fourier Transform.
+    ///
+    /// Equivalent to `torch.fft.ifftn(input, s, dim)`.
+    /// If `dims` is None, transforms all dimensions.
+    pub fn tensor_ifftn(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<&[usize]>,
+        dims: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "ifftn: autograd not supported",
+                },
+            )));
+        }
+        let dtype = self.tensor_dtype(input)?;
+        if dtype != DType::Complex128 && dtype != DType::Complex64 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "ifftn: input must be complex",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        let transform_dims: Vec<usize> = match dims {
+            Some(d) => d.iter().copied().collect(),
+            None => (0..ndim).collect(),
+        };
+        if transform_dims.is_empty() {
+            return Ok(input);
+        }
+        let mut current = input;
+        for &dim in &transform_dims {
+            if dim >= ndim {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "ifftn: dimension out of range",
+                    },
+                )));
+            }
+            current = self.tensor_fft_along_dim(current, dim, true)?;
+        }
+        if let Some(target_sizes) = s {
+            let current_shape = self.tensor_shape(current)?;
+            let mut new_shape = current_shape.clone();
+            for (i, &target_sz) in target_sizes.iter().enumerate() {
+                if i < transform_dims.len() {
+                    new_shape[transform_dims[i]] = target_sz;
+                }
+            }
+            if new_shape != current_shape {
+                let re_view = self.tensor_real(current)?;
+                let im_view = self.tensor_imag(current)?;
+                let re_resized = self.tensor_resize_with_pad_or_crop(re_view, &new_shape)?;
+                let im_resized = self.tensor_resize_with_pad_or_crop(im_view, &new_shape)?;
+                current = self.tensor_complex(re_resized, im_resized)?;
+            }
+        }
+        Ok(current)
+    }
+
+    /// Compute the N-dimensional real FFT.
+    ///
+    /// Equivalent to `torch.fft.rfftn(input, s, dim)`.
+    /// Computes the FFT of real input, returning complex output with Hermitian symmetry.
+    /// The last transformed dimension has size n//2+1.
+    pub fn tensor_rfftn(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<&[usize]>,
+        dims: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "rfftn: autograd not supported",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        let transform_dims: Vec<usize> = match dims {
+            Some(d) => d.iter().copied().collect(),
+            None => (0..ndim).collect(),
+        };
+        if transform_dims.is_empty() {
+            let vals = self.tensor_values(input)?;
+            let re_node = self.tensor_variable(vals, shape.clone(), false)?;
+            let im_node = self.tensor_zeros(shape, false)?;
+            return self.tensor_complex(re_node, im_node);
+        }
+        let full_fft = self.tensor_fftn(input, s, dims)?;
+        if let Some(&last_dim) = transform_dims.last() {
+            let current_shape = self.tensor_shape(full_fft)?;
+            let full_len = current_shape[last_dim];
+            let half_len = full_len / 2 + 1;
+            self.tensor_narrow(full_fft, last_dim, 0, half_len)
+        } else {
+            Ok(full_fft)
+        }
+    }
+
+    /// Compute the N-dimensional inverse real FFT.
+    ///
+    /// Equivalent to `torch.fft.irfftn(input, s, dim)`.
+    /// Computes the inverse FFT, returning real output.
+    /// Input should be complex with Hermitian symmetry.
+    pub fn tensor_irfftn(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<&[usize]>,
+        dims: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "irfftn: autograd not supported",
+                },
+            )));
+        }
+        let dtype = self.tensor_dtype(input)?;
+        if dtype != DType::Complex128 && dtype != DType::Complex64 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "irfftn: input must be complex",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len();
+        let transform_dims: Vec<usize> = match dims {
+            Some(d) => d.iter().copied().collect(),
+            None => (0..ndim).collect(),
+        };
+        if transform_dims.is_empty() {
+            return self.tensor_real(input);
+        }
+        let last_dim = *transform_dims.last().unwrap();
+        let half_len = shape[last_dim];
+        let full_len = match s {
+            Some(sizes) if !sizes.is_empty() => sizes[sizes.len() - 1],
+            _ => (half_len - 1) * 2,
+        };
+        let full_complex = self.tensor_hermitian_extend(input, last_dim, full_len)?;
+        let ifft_result = self.tensor_ifftn(full_complex, s, dims)?;
+        self.tensor_real(ifft_result)
     }
 
     /// Compute the Hermitian FFT (complex Hermitian input -> real output).
