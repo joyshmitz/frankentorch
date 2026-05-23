@@ -46452,6 +46452,171 @@ impl FrankenTorchSession {
             _ => Err(Self::incompatible_tensor_args("global_max_pool: unsupported dim")),
         }
     }
+
+    // ── Index Utilities ───────────────────────────────────────────────────
+
+    /// Create index tensor from range.
+    pub fn arange_tensor(
+        &mut self,
+        start: usize,
+        end: usize,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let data: Vec<f64> = (start..end).map(|x| x as f64).collect();
+        self.tensor_variable(data, vec![end - start], requires_grad)
+    }
+
+    /// Create linspace tensor.
+    pub fn linspace_tensor(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if steps == 0 {
+            return self.tensor_variable(vec![], vec![0], requires_grad);
+        }
+        if steps == 1 {
+            return self.tensor_variable(vec![start], vec![1], requires_grad);
+        }
+        let step = (end - start) / (steps - 1) as f64;
+        let data: Vec<f64> = (0..steps).map(|i| start + step * i as f64).collect();
+        self.tensor_variable(data, vec![steps], requires_grad)
+    }
+
+    /// Create logspace tensor.
+    pub fn logspace_tensor(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        base: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if steps == 0 {
+            return self.tensor_variable(vec![], vec![0], requires_grad);
+        }
+        if steps == 1 {
+            return self.tensor_variable(vec![base.powf(start)], vec![1], requires_grad);
+        }
+        let step = (end - start) / (steps - 1) as f64;
+        let data: Vec<f64> = (0..steps)
+            .map(|i| base.powf(start + step * i as f64))
+            .collect();
+        self.tensor_variable(data, vec![steps], requires_grad)
+    }
+
+    /// Create meshgrid from 1D tensors.
+    pub fn meshgrid_2d(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let x_vals = self.tensor_values(x)?;
+        let y_vals = self.tensor_values(y)?;
+        let nx = x_vals.len();
+        let ny = y_vals.len();
+        let mut xx_data = Vec::with_capacity(ny * nx);
+        let mut yy_data = Vec::with_capacity(ny * nx);
+        for yv in &y_vals {
+            for xv in &x_vals {
+                xx_data.push(*xv);
+                yy_data.push(*yv);
+            }
+        }
+        let xx = self.tensor_variable(xx_data, vec![ny, nx], false)?;
+        let yy = self.tensor_variable(yy_data, vec![ny, nx], false)?;
+        Ok((xx, yy))
+    }
+
+    // ── Tensor Operations ─────────────────────────────────────────────────
+
+    /// Outer product of two 1D tensors.
+    pub fn outer_product(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let a_shape = self.tensor_shape(a)?;
+        let b_shape = self.tensor_shape(b)?;
+        if a_shape.len() != 1 || b_shape.len() != 1 {
+            return Err(Self::incompatible_tensor_args("outer_product: inputs must be 1D"));
+        }
+        let a_col = self.tensor_unsqueeze(a, 1)?;
+        let b_row = self.tensor_unsqueeze(b, 0)?;
+        self.tensor_matmul(a_col, b_row)
+    }
+
+    /// Kronecker product of two 2D tensors.
+    pub fn kron(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let a_shape = self.tensor_shape(a)?;
+        let b_shape = self.tensor_shape(b)?;
+        if a_shape.len() != 2 || b_shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args("kron: inputs must be 2D"));
+        }
+        let (m, n) = (a_shape[0], a_shape[1]);
+        let (p, q) = (b_shape[0], b_shape[1]);
+        let a_vals = self.tensor_values(a)?;
+        let b_vals = self.tensor_values(b)?;
+        let mut result = vec![0.0_f64; m * p * n * q];
+        for i in 0..m {
+            for j in 0..n {
+                let a_val = a_vals[i * n + j];
+                for k in 0..p {
+                    for l in 0..q {
+                        let b_val = b_vals[k * q + l];
+                        let row = i * p + k;
+                        let col = j * q + l;
+                        result[row * (n * q) + col] = a_val * b_val;
+                    }
+                }
+            }
+        }
+        self.tensor_variable(result, vec![m * p, n * q], false)
+    }
+
+    /// Block diagonal matrix from a list of 2D tensors.
+    pub fn block_diag(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        if tensors.is_empty() {
+            return Err(Self::incompatible_tensor_args("block_diag: empty tensor list"));
+        }
+        let mut total_rows = 0;
+        let mut total_cols = 0;
+        let mut shapes = Vec::new();
+        for &t in tensors {
+            let shape = self.tensor_shape(t)?;
+            if shape.len() != 2 {
+                return Err(Self::incompatible_tensor_args("block_diag: tensors must be 2D"));
+            }
+            shapes.push((shape[0], shape[1]));
+            total_rows += shape[0];
+            total_cols += shape[1];
+        }
+        let mut result = vec![0.0_f64; total_rows * total_cols];
+        let mut row_offset = 0;
+        let mut col_offset = 0;
+        for (&t, &(rows, cols)) in tensors.iter().zip(shapes.iter()) {
+            let vals = self.tensor_values(t)?;
+            for i in 0..rows {
+                for j in 0..cols {
+                    let row = row_offset + i;
+                    let col = col_offset + j;
+                    result[row * total_cols + col] = vals[i * cols + j];
+                }
+            }
+            row_offset += rows;
+            col_offset += cols;
+        }
+        self.tensor_variable(result, vec![total_rows, total_cols], false)
+    }
 }
 
 pub use ft_autograd::{
