@@ -54496,6 +54496,59 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_complex(real, imag)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Clipping utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Clip values to a minimum (alias for clamp_min).
+    pub fn clip_min_tensor(
+        &mut self,
+        input: TensorNodeId,
+        min_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clip_min(input, min_val)
+    }
+
+    /// Clip values to a maximum (alias for clamp_max).
+    pub fn clip_max_tensor(
+        &mut self,
+        input: TensorNodeId,
+        max_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clip_max(input, max_val)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Division and diagonal utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Element-wise division.
+    pub fn div_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_div(lhs, rhs)
+    }
+
+    /// Extract diagonal (copy version).
+    pub fn diagonal_copy_tensor(
+        &mut self,
+        input: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagonal_copy(input, offset)
+    }
+
+    /// Inverse from Cholesky decomposition.
+    pub fn cholesky_inverse_tensor(
+        &mut self,
+        cholesky_factor: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cholesky_inverse(cholesky_factor, upper)
+    }
 }
 
 pub use ft_autograd::{
