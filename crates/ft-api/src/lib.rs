@@ -47025,6 +47025,191 @@ impl FrankenTorchSession {
         let last_dim = shape.len() - 1;
         self.tensor_amin(input, last_dim)
     }
+
+    // ── Shape Manipulation Utilities ─────────────────────────────────────
+
+    /// Add a dimension at the end of the tensor.
+    pub fn unsqueeze_last(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        self.tensor_unsqueeze(input, shape.len())
+    }
+
+    /// Add a dimension at the beginning of the tensor.
+    pub fn unsqueeze_first(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_unsqueeze(input, 0)
+    }
+
+    /// Broadcast tensor to match target shape.
+    pub fn broadcast_to(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expand(input, target_shape)
+    }
+
+    /// Flatten all dimensions.
+    pub fn flatten_all(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let numel: usize = shape.iter().product();
+        self.tensor_reshape(input, vec![numel])
+    }
+
+    /// Flatten except batch dimension.
+    pub fn flatten_except_batch(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() <= 1 {
+            return Ok(input);
+        }
+        let batch = shape[0];
+        let rest: usize = shape[1..].iter().product();
+        self.tensor_reshape(input, vec![batch, rest])
+    }
+
+    // ── Masking Utilities ────────────────────────────────────────────────
+
+    /// Create a mask from length values (for variable-length sequences).
+    pub fn lengths_to_mask(
+        &mut self,
+        lengths: TensorNodeId,
+        max_len: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let lengths_data = self.tensor_values(lengths)?;
+        let batch_size = lengths_data.len();
+        let mut mask_data = vec![0.0f64; batch_size * max_len];
+        for (b, &len) in lengths_data.iter().enumerate() {
+            let len_usize = len as usize;
+            for t in 0..len_usize.min(max_len) {
+                mask_data[b * max_len + t] = 1.0;
+            }
+        }
+        self.tensor_variable(mask_data, vec![batch_size, max_len], false)
+    }
+
+    /// Apply mask to tensor (sets masked positions to value).
+    pub fn masked_fill(
+        &mut self,
+        input: TensorNodeId,
+        mask: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let value_tensor = self.full(vec![1], value, false)?;
+        self.tensor_where(mask, value_tensor, input)
+    }
+
+    // ── Embedding Utilities ──────────────────────────────────────────────
+
+    /// Simple embedding lookup (like nn.Embedding without trainable weights).
+    pub fn embedding_lookup(
+        &mut self,
+        weight: TensorNodeId,
+        indices: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_select(weight, 0, indices)
+    }
+
+    /// Sum of embeddings for a bag of indices.
+    pub fn embedding_bag_sum(
+        &mut self,
+        weight: TensorNodeId,
+        indices: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let embedded = self.tensor_index_select(weight, 0, indices)?;
+        self.tensor_sum_dim(embedded, 0)
+    }
+
+    /// Mean of embeddings for a bag of indices.
+    pub fn embedding_bag_mean(
+        &mut self,
+        weight: TensorNodeId,
+        indices: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let embedded = self.tensor_index_select(weight, 0, indices)?;
+        self.tensor_mean_dim(embedded, 0)
+    }
+
+    // ── Distance Utilities ───────────────────────────────────────────────
+
+    /// Compute pairwise L2 distance squared between two sets of vectors.
+    pub fn pairwise_distance_squared(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let diff = self.tensor_sub(x, y)?;
+        let sq = self.tensor_mul(diff, diff)?;
+        let shape = self.tensor_shape(sq)?;
+        let last_dim = shape.len() - 1;
+        self.tensor_sum_dim(sq, last_dim)
+    }
+
+    /// Compute cosine distance: 1 - cosine_similarity.
+    pub fn cosine_distance(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        let last_dim = shape.len() - 1;
+        let sim = self.tensor_cosine_similarity(x, y, last_dim, eps)?;
+        let one = self.full(vec![1], 1.0, false)?;
+        self.tensor_sub(one, sim)
+    }
+
+    // ── Comparison Utilities ─────────────────────────────────────────────
+
+    /// Check if all elements are True (> 0).
+    pub fn all_true(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        let data = self.tensor_values(input)?;
+        Ok(data.iter().all(|&x| x > 0.0))
+    }
+
+    /// Check if any element is True (> 0).
+    pub fn any_true(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        let data = self.tensor_values(input)?;
+        Ok(data.iter().any(|&x| x > 0.0))
+    }
+
+    // ── Gradient Control ─────────────────────────────────────────────────
+
+    /// Detach tensor from computation graph (creates a leaf copy).
+    pub fn detach_copy(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let data = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        self.tensor_variable(data, shape, false)
+    }
+
+    /// Create a copy with gradients enabled.
+    pub fn requires_grad_copy(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let data = self.tensor_values(input)?;
+        let shape = self.tensor_shape(input)?;
+        self.tensor_variable(data, shape, true)
+    }
 }
 
 pub use ft_autograd::{
