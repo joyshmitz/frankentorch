@@ -26547,6 +26547,83 @@ impl FrankenTorchSession {
         self.tensor_div(weight, sigma_tensor)
     }
 
+    /// Flatten a list of parameter tensors into a single 1-D vector.
+    ///
+    /// Equivalent to `torch.nn.utils.convert_parameters.parameters_to_vector(parameters)`.
+    /// Useful for optimization algorithms that work on flat parameter vectors.
+    pub fn parameters_to_vector(
+        &mut self,
+        params: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        if params.is_empty() {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "parameters_to_vector: empty parameter list",
+                },
+            )));
+        }
+        let mut all_vals = Vec::new();
+        for &p in params {
+            let vals = self.tensor_values(p)?;
+            all_vals.extend(vals);
+        }
+        let total_len = all_vals.len();
+        self.tensor_variable(all_vals, vec![total_len], false)
+    }
+
+    /// Unflatten a 1-D vector into parameter tensors.
+    ///
+    /// Equivalent to `torch.nn.utils.convert_parameters.vector_to_parameters(vec, parameters)`.
+    /// Copies values from `vec` into `params` tensors in-place.
+    pub fn vector_to_parameters(
+        &mut self,
+        vec: TensorNodeId,
+        params: &[TensorNodeId],
+    ) -> Result<(), AutogradError> {
+        let vec_vals = self.tensor_values(vec)?;
+        let mut offset = 0;
+        for &p in params {
+            let shape = self.tensor_shape(p)?;
+            let numel: usize = shape.iter().product();
+            if offset + numel > vec_vals.len() {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "vector_to_parameters: vector too short for parameters",
+                    },
+                )));
+            }
+            let vals: Vec<f64> = vec_vals[offset..offset + numel].to_vec();
+            self.tensor_tape.update_tensor_values(p, vals)?;
+            offset += numel;
+        }
+        Ok(())
+    }
+
+    /// Compute the total number of elements in a list of parameters.
+    ///
+    /// Useful for pre-allocating vectors or checking sizes.
+    pub fn count_parameters(&mut self, params: &[TensorNodeId]) -> Result<usize, AutogradError> {
+        let mut total = 0;
+        for &p in params {
+            let shape = self.tensor_shape(p)?;
+            let numel: usize = shape.iter().product();
+            total += numel;
+        }
+        Ok(total)
+    }
+
+    /// Get shapes of all parameters as a vector.
+    pub fn parameter_shapes(
+        &mut self,
+        params: &[TensorNodeId],
+    ) -> Result<Vec<Vec<usize>>, AutogradError> {
+        let mut shapes = Vec::with_capacity(params.len());
+        for &p in params {
+            shapes.push(self.tensor_shape(p)?);
+        }
+        Ok(shapes)
+    }
+
     // ── RNN Sequence Utilities ─────────────────────────────────────────
 
     /// Pad a list of variable-length sequences with a given padding value.
