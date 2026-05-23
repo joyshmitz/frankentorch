@@ -13143,6 +13143,17 @@ impl FrankenTorchSession {
         self.tensor_softmin(input, dim)
     }
 
+    /// Gumbel-softmax sampling. Alias for tensor_gumbel_softmax.
+    pub fn functional_gumbel_softmax(
+        &mut self,
+        logits: TensorNodeId,
+        tau: f64,
+        hard: bool,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gumbel_softmax(logits, tau, hard, dim)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
