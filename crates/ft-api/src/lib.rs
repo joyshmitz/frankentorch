@@ -47667,6 +47667,170 @@ impl FrankenTorchSession {
         let last_dim = shape.len() - 1;
         self.tensor_argmin(input, last_dim)
     }
+
+    // ── Pooling Utilities ────────────────────────────────────────────────
+
+    /// Global average pooling for 2D input (N, C, H, W) -> (N, C).
+    pub fn global_avg_pool2d(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("global_avg_pool2d: requires 4D input"));
+        }
+        let (h, w) = (shape[2], shape[3]);
+        let pooled = self.tensor_avg_pool2d(input, (h, w), (1, 1), (0, 0), false, true)?;
+        let out_shape = vec![shape[0], shape[1]];
+        self.tensor_reshape(pooled, out_shape)
+    }
+
+    /// Global max pooling for 2D input (N, C, H, W) -> (N, C).
+    pub fn global_max_pool2d(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("global_max_pool2d: requires 4D input"));
+        }
+        let (h, w) = (shape[2], shape[3]);
+        let pooled = self.tensor_max_pool2d(input, (h, w), (1, 1))?;
+        let out_shape = vec![shape[0], shape[1]];
+        self.tensor_reshape(pooled, out_shape)
+    }
+
+    // ── View Utilities ───────────────────────────────────────────────────
+
+    /// View as a different shape (must be compatible).
+    pub fn view(
+        &mut self,
+        input: TensorNodeId,
+        shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reshape(input, shape)
+    }
+
+    /// View tensor with a single inferred dimension.
+    pub fn view_infer(
+        &mut self,
+        input: TensorNodeId,
+        shape: &[i64],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let numel = self.tensor_numel(input)?;
+        let mut infer_idx = None;
+        let mut known_product: i64 = 1;
+        for (i, &dim) in shape.iter().enumerate() {
+            if dim == -1 {
+                if infer_idx.is_some() {
+                    return Err(Self::incompatible_tensor_args("view_infer: only one -1 dimension allowed"));
+                }
+                infer_idx = Some(i);
+            } else {
+                known_product *= dim;
+            }
+        }
+        let final_shape: Vec<usize> = match infer_idx {
+            Some(idx) => {
+                let inferred = (numel as i64) / known_product;
+                shape.iter().enumerate()
+                    .map(|(i, &d)| if i == idx { inferred as usize } else { d as usize })
+                    .collect()
+            }
+            None => shape.iter().map(|&d| d as usize).collect(),
+        };
+        self.tensor_reshape(input, final_shape)
+    }
+
+    // ── Einops-style Utilities ───────────────────────────────────────────
+
+    /// Rearrange from (B, H, W, C) to (B, C, H, W) (channels last to first).
+    pub fn channels_last_to_first(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_permute(input, vec![0, 3, 1, 2])
+    }
+
+    /// Rearrange from (B, C, H, W) to (B, H, W, C) (channels first to last).
+    pub fn channels_first_to_last(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_permute(input, vec![0, 2, 3, 1])
+    }
+
+    /// Split tensor along batch dimension into groups.
+    pub fn batch_to_groups(
+        &mut self,
+        input: TensorNodeId,
+        num_groups: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape[0] % num_groups != 0 {
+            return Err(Self::incompatible_tensor_args("batch_to_groups: batch size must be divisible by num_groups"));
+        }
+        let group_size = shape[0] / num_groups;
+        let mut new_shape = vec![num_groups, group_size];
+        new_shape.extend(&shape[1..]);
+        self.tensor_reshape(input, new_shape)
+    }
+
+    // ── Comparison Operations ────────────────────────────────────────────
+
+    /// Element-wise equal comparison (returns 1.0 for true, 0.0 for false).
+    pub fn equal(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_eq(a, b)
+    }
+
+    /// Element-wise not equal comparison.
+    pub fn not_equal(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ne(a, b)
+    }
+
+    /// Element-wise less than comparison.
+    pub fn less_than(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lt(a, b)
+    }
+
+    /// Element-wise less than or equal comparison.
+    pub fn less_equal(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_le(a, b)
+    }
+
+    /// Element-wise greater than comparison.
+    pub fn greater_than(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gt(a, b)
+    }
+
+    /// Element-wise greater than or equal comparison.
+    pub fn greater_equal(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ge(a, b)
+    }
 }
 
 pub use ft_autograd::{
