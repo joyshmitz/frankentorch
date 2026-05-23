@@ -2425,6 +2425,52 @@ impl FrankenTorchSession {
         self.tensor_variable(values, shape, requires_grad)
     }
 
+    /// Create a tensor filled with chi-squared distributed random values.
+    ///
+    /// Samples from Chi2(df) = Gamma(df/2, 0.5).
+    pub fn tensor_chi2(
+        &mut self,
+        df: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if df <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "chi2: degrees of freedom must be positive",
+                },
+            )));
+        }
+        self.tensor_gamma(df / 2.0, 0.5, shape, requires_grad)
+    }
+
+    /// Create a tensor filled with Student's t-distributed random values.
+    ///
+    /// Samples from StudentT(df) using Z / sqrt(V/df) where Z ~ N(0,1), V ~ Chi2(df).
+    pub fn tensor_studentt(
+        &mut self,
+        df: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if df <= 0.0 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "studentt: degrees of freedom must be positive",
+                },
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let values: Vec<f64> = (0..numel)
+            .map(|_| {
+                let z = self.rng.next_normal();
+                let v = self.sample_gamma(df / 2.0) * 2.0; // Chi2(df)
+                z / (v / df).sqrt()
+            })
+            .collect();
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
     /// Create a tensor filled with von Mises distributed random values.
     ///
     /// Samples from vonMises(loc, concentration) on the circle.
@@ -18704,6 +18750,26 @@ impl FrankenTorchSession {
         qmax: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fake_quantize_per_tensor(input, scale, zero_point, qmin, qmax)
+    }
+
+    /// Chi-squared distribution. Alias for tensor_chi2.
+    pub fn functional_chi2(
+        &mut self,
+        df: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_chi2(df, shape, requires_grad)
+    }
+
+    /// Student's t distribution. Alias for tensor_studentt.
+    pub fn functional_studentt(
+        &mut self,
+        df: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_studentt(df, shape, requires_grad)
     }
 
     pub fn tensor_argmax(
