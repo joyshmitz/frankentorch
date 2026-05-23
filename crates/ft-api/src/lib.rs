@@ -11271,6 +11271,176 @@ impl FrankenTorchSession {
         self.tensor_dequantize_per_tensor(q, scale, zero_point)
     }
 
+    /// Per-channel affine quantization along a specified axis.
+    ///
+    /// Each channel has its own scale and zero_point. For example, with axis=0
+    /// and input shape [C, H, W], each of C channels gets its own quantization
+    /// parameters from scales[c] and zero_points[c].
+    ///
+    /// Equivalent to `torch.quantize_per_channel(input, scales, zero_points, axis, dtype)`.
+    pub fn tensor_quantize_per_channel(
+        &mut self,
+        input: TensorNodeId,
+        scales: &[f64],
+        zero_points: &[i64],
+        axis: i64,
+        qmin: i64,
+        qmax: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        let ndim = shape.len() as i64;
+        let axis_norm = if axis < 0 { ndim + axis } else { axis } as usize;
+
+        if axis_norm >= shape.len() {
+            return Err(Self::incompatible_tensor_args(
+                "quantize_per_channel: axis out of bounds",
+            ));
+        }
+        if scales.len() != shape[axis_norm] || zero_points.len() != shape[axis_norm] {
+            return Err(Self::incompatible_tensor_args(
+                "quantize_per_channel: scales/zero_points length must match dim at axis",
+            ));
+        }
+        for &s in scales {
+            if !s.is_finite() || s <= 0.0 {
+                return Err(Self::incompatible_tensor_args(
+                    "quantize_per_channel: all scales must be finite and > 0",
+                ));
+            }
+        }
+
+        let input_data = self.tensor_values(input)?;
+        let numel = input_data.len();
+        let mut out_data = vec![0.0; numel];
+
+        let stride_before: usize = shape[..axis_norm].iter().product();
+        let channel_size = shape[axis_norm];
+        let stride_after: usize = shape[(axis_norm + 1)..].iter().product::<usize>().max(1);
+
+        #[allow(clippy::cast_precision_loss)]
+        let qmin_f = qmin as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let qmax_f = qmax as f64;
+
+        for before in 0..stride_before {
+            for c in 0..channel_size {
+                let inv_scale = 1.0 / scales[c];
+                #[allow(clippy::cast_precision_loss)]
+                let zp = zero_points[c] as f64;
+                for after in 0..stride_after {
+                    let idx = before * channel_size * stride_after + c * stride_after + after;
+                    let x = input_data[idx];
+                    let q = (x * inv_scale).round_ties_even() + zp;
+                    out_data[idx] = q.clamp(qmin_f, qmax_f);
+                }
+            }
+        }
+
+        self.tensor_variable(out_data, shape, false)
+    }
+
+    /// Per-channel affine dequantization along a specified axis.
+    ///
+    /// Equivalent to `torch.dequantize` for per-channel quantized tensors.
+    pub fn tensor_dequantize_per_channel(
+        &mut self,
+        quantized: TensorNodeId,
+        scales: &[f64],
+        zero_points: &[i64],
+        axis: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(quantized)?;
+        let ndim = shape.len() as i64;
+        let axis_norm = if axis < 0 { ndim + axis } else { axis } as usize;
+
+        if axis_norm >= shape.len() {
+            return Err(Self::incompatible_tensor_args(
+                "dequantize_per_channel: axis out of bounds",
+            ));
+        }
+        if scales.len() != shape[axis_norm] || zero_points.len() != shape[axis_norm] {
+            return Err(Self::incompatible_tensor_args(
+                "dequantize_per_channel: scales/zero_points length must match dim at axis",
+            ));
+        }
+
+        let q_data = self.tensor_values(quantized)?;
+        let numel = q_data.len();
+        let mut out_data = vec![0.0; numel];
+
+        let stride_before: usize = shape[..axis_norm].iter().product();
+        let channel_size = shape[axis_norm];
+        let stride_after: usize = shape[(axis_norm + 1)..].iter().product::<usize>().max(1);
+
+        for before in 0..stride_before {
+            for c in 0..channel_size {
+                let scale = scales[c];
+                #[allow(clippy::cast_precision_loss)]
+                let zp = zero_points[c] as f64;
+                for after in 0..stride_after {
+                    let idx = before * channel_size * stride_after + c * stride_after + after;
+                    let q = q_data[idx];
+                    out_data[idx] = (q - zp) * scale;
+                }
+            }
+        }
+
+        self.tensor_variable(out_data, shape, false)
+    }
+
+    /// Per-channel fake quantization for quantization-aware training.
+    ///
+    /// Equivalent to `torch.fake_quantize_per_channel_affine`.
+    pub fn tensor_fake_quantize_per_channel(
+        &mut self,
+        input: TensorNodeId,
+        scales: &[f64],
+        zero_points: &[i64],
+        axis: i64,
+        qmin: i64,
+        qmax: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let q = self.tensor_quantize_per_channel(input, scales, zero_points, axis, qmin, qmax)?;
+        self.tensor_dequantize_per_channel(q, scales, zero_points, axis)
+    }
+
+    /// Alias for tensor_quantize_per_channel.
+    pub fn functional_quantize_per_channel(
+        &mut self,
+        input: TensorNodeId,
+        scales: &[f64],
+        zero_points: &[i64],
+        axis: i64,
+        qmin: i64,
+        qmax: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_quantize_per_channel(input, scales, zero_points, axis, qmin, qmax)
+    }
+
+    /// Alias for tensor_dequantize_per_channel.
+    pub fn functional_dequantize_per_channel(
+        &mut self,
+        quantized: TensorNodeId,
+        scales: &[f64],
+        zero_points: &[i64],
+        axis: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dequantize_per_channel(quantized, scales, zero_points, axis)
+    }
+
+    /// Alias for tensor_fake_quantize_per_channel.
+    pub fn functional_fake_quantize_per_channel(
+        &mut self,
+        input: TensorNodeId,
+        scales: &[f64],
+        zero_points: &[i64],
+        axis: i64,
+        qmin: i64,
+        qmax: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fake_quantize_per_channel(input, scales, zero_points, axis, qmin, qmax)
+    }
+
     fn validate_qparams(
         scale: f64,
         zero_point: i64,
