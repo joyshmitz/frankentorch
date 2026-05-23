@@ -17062,6 +17062,201 @@ impl FrankenTorchSession {
         self.tensor_unfold(input, dimension, size, step)
     }
 
+    /// Fold combines an array of sliding local blocks into a large tensor.
+    /// This is the inverse operation of `unfold` for 2D batched images.
+    ///
+    /// Input shape: `[N, C * kernel_h * kernel_w, L]` where L is the number of blocks
+    /// Output shape: `[N, C, output_h, output_w]`
+    ///
+    /// Equivalent to `torch.nn.functional.fold(input, output_size, kernel_size, ...)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn functional_fold(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize),
+        kernel_size: (usize, usize),
+        dilation: (usize, usize),
+        padding: (usize, usize),
+        stride: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fold(input, output_size, kernel_size, dilation, padding, stride)
+    }
+
+    /// Fold combines an array of sliding local blocks into a large tensor.
+    /// This is the inverse operation of `unfold` for 2D batched images.
+    ///
+    /// Input shape: `[N, C * kernel_h * kernel_w, L]` where L is the number of blocks
+    /// Output shape: `[N, C, output_h, output_w]`
+    #[allow(clippy::too_many_arguments)]
+    pub fn tensor_fold(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize),
+        kernel_size: (usize, usize),
+        dilation: (usize, usize),
+        padding: (usize, usize),
+        stride: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (output_h, output_w) = output_size;
+        let (kernel_h, kernel_w) = kernel_size;
+        let (dilation_h, dilation_w) = dilation;
+        let (padding_h, padding_w) = padding;
+        let (stride_h, stride_w) = stride;
+
+        if kernel_h == 0 || kernel_w == 0 || stride_h == 0 || stride_w == 0 || dilation_h == 0 || dilation_w == 0 {
+            return Err(Self::incompatible_tensor_args(
+                "fold: kernel_size, stride, and dilation must be greater than zero",
+            ));
+        }
+
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 3 {
+            return Err(Self::incompatible_tensor_args(
+                "fold: input must be 3-D [N, C*kernel_h*kernel_w, L]",
+            ));
+        }
+
+        let batch_size = input_shape[0];
+        let blocks_size = input_shape[1];
+        let num_blocks = input_shape[2];
+
+        let kernel_numel = Self::checked_mul(kernel_h, kernel_w, "fold: kernel size overflow")?;
+        if blocks_size % kernel_numel != 0 {
+            return Err(Self::incompatible_tensor_args(
+                "fold: input dim 1 must be divisible by kernel_h * kernel_w",
+            ));
+        }
+        let channels = blocks_size / kernel_numel;
+
+        let effective_kh = (kernel_h - 1) * dilation_h + 1;
+        let effective_kw = (kernel_w - 1) * dilation_w + 1;
+        let pad_h_2 = Self::checked_mul(padding_h, 2, "fold: padding overflow")?;
+        let pad_w_2 = Self::checked_mul(padding_w, 2, "fold: padding overflow")?;
+        let padded_h = Self::checked_add(output_h, pad_h_2, "fold: padded height overflow")?;
+        let padded_w = Self::checked_add(output_w, pad_w_2, "fold: padded width overflow")?;
+
+        if padded_h < effective_kh || padded_w < effective_kw {
+            return Err(Self::incompatible_tensor_args(
+                "fold: output_size too small for given kernel and padding",
+            ));
+        }
+
+        let expected_blocks_h = (padded_h - effective_kh) / stride_h + 1;
+        let expected_blocks_w = (padded_w - effective_kw) / stride_w + 1;
+        let expected_num_blocks = Self::checked_mul(
+            expected_blocks_h,
+            expected_blocks_w,
+            "fold: expected blocks overflow",
+        )?;
+
+        if num_blocks != expected_num_blocks {
+            return Err(Self::incompatible_tensor_args(
+                "fold: number of blocks L does not match expected from output_size/kernel/stride/padding",
+            ));
+        }
+
+        let out_shape = vec![batch_size, channels, output_h, output_w];
+        let out_numel = Self::checked_shape_numel(&out_shape, "fold: output shape overflow")?;
+
+        let in_numel = Self::checked_shape_numel(&input_shape, "fold: input shape overflow")?;
+
+        let out_shape_clone = out_shape.clone();
+
+        self.tensor_apply_function(
+            &[input],
+            move |_ctx, inputs| {
+                let (vals, _shape) = inputs[0];
+                let mut result = vec![0.0_f64; out_numel];
+
+                for n in 0..batch_size {
+                    for block_idx in 0..num_blocks {
+                        let block_h = block_idx / expected_blocks_w;
+                        let block_w = block_idx % expected_blocks_w;
+                        let base_h = block_h * stride_h;
+                        let base_w = block_w * stride_w;
+
+                        for c in 0..channels {
+                            for kh in 0..kernel_h {
+                                for kw in 0..kernel_w {
+                                    let h_pos_padded = base_h + kh * dilation_h;
+                                    let w_pos_padded = base_w + kw * dilation_w;
+
+                                    if h_pos_padded >= padding_h
+                                        && h_pos_padded < padding_h + output_h
+                                        && w_pos_padded >= padding_w
+                                        && w_pos_padded < padding_w + output_w
+                                    {
+                                        let h_pos = h_pos_padded - padding_h;
+                                        let w_pos = w_pos_padded - padding_w;
+
+                                        let in_c_idx = c * kernel_numel + kh * kernel_w + kw;
+                                        let in_idx = n * blocks_size * num_blocks
+                                            + in_c_idx * num_blocks
+                                            + block_idx;
+
+                                        let out_idx = n * channels * output_h * output_w
+                                            + c * output_h * output_w
+                                            + h_pos * output_w
+                                            + w_pos;
+
+                                        result[out_idx] += vals[in_idx];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok((result, out_shape_clone.clone()))
+            },
+            move |_ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let mut grad_in = vec![0.0_f64; in_numel];
+
+                for n in 0..batch_size {
+                    for block_idx in 0..num_blocks {
+                        let block_h = block_idx / expected_blocks_w;
+                        let block_w = block_idx % expected_blocks_w;
+                        let base_h = block_h * stride_h;
+                        let base_w = block_w * stride_w;
+
+                        for c in 0..channels {
+                            for kh in 0..kernel_h {
+                                for kw in 0..kernel_w {
+                                    let h_pos_padded = base_h + kh * dilation_h;
+                                    let w_pos_padded = base_w + kw * dilation_w;
+
+                                    if h_pos_padded >= padding_h
+                                        && h_pos_padded < padding_h + output_h
+                                        && w_pos_padded >= padding_w
+                                        && w_pos_padded < padding_w + output_w
+                                    {
+                                        let h_pos = h_pos_padded - padding_h;
+                                        let w_pos = w_pos_padded - padding_w;
+
+                                        let in_c_idx = c * kernel_numel + kh * kernel_w + kw;
+                                        let in_idx = n * blocks_size * num_blocks
+                                            + in_c_idx * num_blocks
+                                            + block_idx;
+
+                                        let out_idx = n * channels * output_h * output_w
+                                            + c * output_h * output_w
+                                            + h_pos * output_w
+                                            + w_pos;
+
+                                        grad_in[in_idx] += g[out_idx];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(vec![Some(grad_in)])
+            },
+        )
+    }
+
     /// Pixel shuffle for sub-pixel convolution. Alias for tensor_pixel_shuffle.
     pub fn functional_pixel_shuffle(
         &mut self,
