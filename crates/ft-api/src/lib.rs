@@ -13192,6 +13192,39 @@ impl FrankenTorchSession {
         self.tensor_tensordot(a, b, dims)
     }
 
+    /// Matrix trace. Alias for tensor_trace.
+    pub fn functional_trace(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_trace(input)
+    }
+
+    /// Matrix determinant. Alias for tensor_det.
+    pub fn functional_det(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_det(input)
+    }
+
+    /// Matrix power (A^n). Alias for tensor_matrix_power.
+    pub fn functional_matrix_power(
+        &mut self,
+        input: TensorNodeId,
+        n: i32,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_power(input, n)
+    }
+
+    /// Matrix exponential. Alias for tensor_matrix_exp.
+    pub fn functional_matrix_exp(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_exp(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
