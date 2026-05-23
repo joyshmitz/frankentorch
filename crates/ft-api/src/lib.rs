@@ -30518,6 +30518,73 @@ impl FrankenTorchSession {
         self.tensor_mean(scaled)
     }
 
+    /// Ring loss for unit-norm feature regularization.
+    ///
+    /// Encourages feature vectors to have unit norm by penalizing
+    /// deviation: L = mean((||x|| - R)^2) where R is the target radius.
+    /// Commonly used with softmax loss to normalize features.
+    ///
+    /// Args:
+    /// - features: embeddings [N, D]
+    /// - radius: target L2 norm (typically 1.0)
+    pub fn ring_loss(
+        &mut self,
+        features: TensorNodeId,
+        radius: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(features)?;
+        if shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args(
+                "ring_loss: features must be 2D [N, D]",
+            ));
+        }
+        let n = shape[0];
+        let norms = self.tensor_norm_dim(features, 2.0, 1)?;
+        let target = self.full(vec![n], radius, false)?;
+        let diff = self.tensor_sub(norms, target)?;
+        let diff_sq = self.tensor_mul(diff, diff)?;
+        self.tensor_mean(diff_sq)
+    }
+
+    /// N-pair loss for deep metric learning.
+    ///
+    /// Multi-class extension of triplet loss. For N pairs of (anchor, positive),
+    /// compares each anchor to all N-1 negative samples. More efficient than
+    /// triplet loss as it uses all negatives in the batch.
+    ///
+    /// Args:
+    /// - anchors: anchor embeddings [N, D]
+    /// - positives: positive embeddings [N, D]
+    /// - temperature: temperature scaling (default 1.0)
+    ///
+    /// Returns: mean N-pair loss over all anchors.
+    pub fn n_pair_loss(
+        &mut self,
+        anchors: TensorNodeId,
+        positives: TensorNodeId,
+        temperature: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let anchor_shape = self.tensor_shape(anchors)?;
+        let pos_shape = self.tensor_shape(positives)?;
+        if anchor_shape.len() != 2 || pos_shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args(
+                "n_pair_loss: anchors and positives must be 2D",
+            ));
+        }
+        if anchor_shape != pos_shape {
+            return Err(Self::incompatible_tensor_args(
+                "n_pair_loss: anchors and positives must have same shape",
+            ));
+        }
+        let n = anchor_shape[0];
+        let pos_t = self.tensor_transpose(positives, 0, 1)?;
+        let similarity = self.tensor_matmul(anchors, pos_t)?;
+        let temp = self.full(vec![1], temperature, false)?;
+        let scaled_sim = self.tensor_div(similarity, temp)?;
+        let labels = self.arange(0.0, n as f64, 1.0, false)?;
+        self.tensor_cross_entropy(scaled_sim, labels, "mean")
+    }
+
     /// Quantile (pinball) loss for quantile regression.
     ///
     /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
