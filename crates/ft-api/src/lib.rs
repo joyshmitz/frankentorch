@@ -13728,6 +13728,42 @@ impl FrankenTorchSession {
         self.tensor_baddbmm(input, batch1, batch2, beta, alpha)
     }
 
+    /// Create diagonal matrix or extract diagonal. Alias for tensor_diag.
+    pub fn functional_diag(
+        &mut self,
+        input: TensorNodeId,
+        diagonal: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diag(input, diagonal)
+    }
+
+    /// Extract diagonal from 2D matrix. Alias for tensor_diagonal.
+    pub fn functional_diagonal(
+        &mut self,
+        input: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagonal(input, offset)
+    }
+
+    /// Embed 1D tensor as diagonal in 2D matrix. Alias for tensor_diag_embed.
+    pub fn functional_diag_embed(
+        &mut self,
+        input: TensorNodeId,
+        offset: i32,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diag_embed(input, offset)
+    }
+
+    /// Flatten input and place on diagonal. Alias for tensor_diagflat.
+    pub fn functional_diagflat(
+        &mut self,
+        input: TensorNodeId,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_diagflat(input, offset)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
