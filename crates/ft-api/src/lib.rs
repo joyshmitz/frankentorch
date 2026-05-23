@@ -14244,6 +14244,51 @@ impl FrankenTorchSession {
         self.tensor_digamma(input)
     }
 
+    /// Element-wise power with tensor exponent. Alias for tensor_pow_tensor.
+    pub fn functional_pow_tensor(
+        &mut self,
+        input: TensorNodeId,
+        exponent: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pow_tensor(input, exponent)
+    }
+
+    /// Element-wise fmod. Alias for tensor_fmod.
+    pub fn functional_fmod(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fmod(lhs, rhs)
+    }
+
+    /// Element-wise remainder. Alias for tensor_remainder.
+    pub fn functional_remainder(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_remainder(lhs, rhs)
+    }
+
+    /// NaN-tolerant element-wise max. Alias for tensor_fmax.
+    pub fn functional_fmax(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fmax(lhs, rhs)
+    }
+
+    /// NaN-tolerant element-wise min. Alias for tensor_fmin.
+    pub fn functional_fmin(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fmin(lhs, rhs)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
