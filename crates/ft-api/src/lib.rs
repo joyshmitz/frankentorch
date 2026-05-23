@@ -26669,6 +26669,94 @@ impl FrankenTorchSession {
         Ok((fused_weight, fused_bias))
     }
 
+    // ── Pruning Utilities ──────────────────────────────────────────────
+
+    /// Create a pruning mask based on L1 magnitude.
+    ///
+    /// Equivalent to `torch.nn.utils.prune.l1_unstructured`.
+    /// Returns a binary mask where `amount` fraction of smallest-magnitude weights are zeroed.
+    ///
+    /// - `tensor`: weight tensor to create mask for
+    /// - `amount`: fraction of weights to prune (0.0 to 1.0)
+    pub fn prune_l1_unstructured_mask(
+        &mut self,
+        tensor: TensorNodeId,
+        amount: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !(0.0..=1.0).contains(&amount) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "prune_l1_unstructured_mask: amount must be in [0, 1]",
+                },
+            )));
+        }
+        let vals = self.tensor_values(tensor)?;
+        let shape = self.tensor_shape(tensor)?;
+        let numel = vals.len();
+        let num_to_prune = (numel as f64 * amount).round() as usize;
+        if num_to_prune == 0 {
+            return self.tensor_ones(shape, false);
+        }
+        if num_to_prune >= numel {
+            return self.tensor_zeros(shape, false);
+        }
+        let mut indexed: Vec<(usize, f64)> = vals.iter().map(|&v| v.abs()).enumerate().collect();
+        indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut mask = vec![1.0_f64; numel];
+        for i in 0..num_to_prune {
+            mask[indexed[i].0] = 0.0;
+        }
+        self.tensor_variable(mask, shape, false)
+    }
+
+    /// Create a random pruning mask.
+    ///
+    /// Equivalent to `torch.nn.utils.prune.random_unstructured`.
+    /// Returns a binary mask with `amount` fraction of weights randomly zeroed.
+    pub fn prune_random_unstructured_mask(
+        &mut self,
+        tensor: TensorNodeId,
+        amount: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if !(0.0..=1.0).contains(&amount) {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "prune_random_unstructured_mask: amount must be in [0, 1]",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(tensor)?;
+        let numel: usize = shape.iter().product();
+        let rand_tensor = self.tensor_rand(shape.clone(), false)?;
+        let rand_vals = self.tensor_values(rand_tensor)?;
+        let mask: Vec<f64> = rand_vals.iter().map(|&v| if v >= amount { 1.0 } else { 0.0 }).collect();
+        self.tensor_variable(mask, shape, false)
+    }
+
+    /// Apply a pruning mask to a tensor.
+    ///
+    /// Returns `tensor * mask`, zeroing out pruned weights.
+    pub fn apply_pruning_mask(
+        &mut self,
+        tensor: TensorNodeId,
+        mask: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mul(tensor, mask)
+    }
+
+    /// Compute sparsity of a tensor (fraction of zeros).
+    pub fn compute_sparsity(
+        &mut self,
+        tensor: TensorNodeId,
+    ) -> Result<f64, AutogradError> {
+        let vals = self.tensor_values(tensor)?;
+        if vals.is_empty() {
+            return Ok(0.0);
+        }
+        let num_zeros = vals.iter().filter(|&&v| v == 0.0).count();
+        Ok(num_zeros as f64 / vals.len() as f64)
+    }
+
     // ── RNN Sequence Utilities ─────────────────────────────────────────
 
     /// Pad a list of variable-length sequences with a given padding value.
