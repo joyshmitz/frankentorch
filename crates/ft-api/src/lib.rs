@@ -13405,6 +13405,35 @@ impl FrankenTorchSession {
         self.tensor_tril(input, diagonal)
     }
 
+    /// Flip tensor along specified dimensions. Alias for tensor_flip.
+    pub fn functional_flip(
+        &mut self,
+        input: TensorNodeId,
+        dims: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_flip(input, dims)
+    }
+
+    /// Rotate tensor 90 degrees k times in plane of dims. Alias for tensor_rot90.
+    pub fn functional_rot90(
+        &mut self,
+        input: TensorNodeId,
+        k: i32,
+        dims: [usize; 2],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rot90(input, k, dims)
+    }
+
+    /// Roll tensor along a dimension. Alias for tensor_roll.
+    pub fn functional_roll(
+        &mut self,
+        input: TensorNodeId,
+        shift: i64,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_roll(input, shift, dim)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
