@@ -53655,6 +53655,119 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_bincount(input, weights, minlength)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Linear algebra utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Matrix-matrix multiply with add: out = beta*input + alpha*(mat1 @ mat2).
+    pub fn addmm_tensor(
+        &mut self,
+        input: TensorNodeId,
+        mat1: TensorNodeId,
+        mat2: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addmm(input, mat1, mat2, beta, alpha)
+    }
+
+    /// Matrix-vector multiply with add: out = beta*input + alpha*(mat @ vec).
+    pub fn addmv_tensor(
+        &mut self,
+        input: TensorNodeId,
+        mat: TensorNodeId,
+        vec_input: TensorNodeId,
+        beta: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addmv(input, mat, vec_input, beta, alpha)
+    }
+
+    /// Bilinear transformation.
+    pub fn bilinear_tensor(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bilinear(input1, input2, weight, bias)
+    }
+
+    /// Chain matrix multiplication of multiple matrices.
+    pub fn chain_matmul_tensor(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_chain_matmul(tensors)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Trigonometric utilities (arc functions)
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Arc sine (inverse sine).
+    pub fn arcsin_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arcsin(input)
+    }
+
+    /// Arc cosine (inverse cosine).
+    pub fn arccos_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arccos(input)
+    }
+
+    /// Arc tangent (inverse tangent).
+    pub fn arctan_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arctan(input)
+    }
+
+    /// Two-argument arc tangent.
+    pub fn arctan2_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arctan2(lhs, rhs)
+    }
+
+    /// Phase angle of complex number (or arctangent of real).
+    pub fn angle_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_angle(input)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Other mathematical utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Cube root.
+    pub fn cbrt_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cbrt(input)
+    }
+
+    /// Channel shuffle for grouped convolutions.
+    pub fn channel_shuffle_tensor(
+        &mut self,
+        input: TensorNodeId,
+        groups: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_channel_shuffle(input, groups)
+    }
 }
 
 pub use ft_autograd::{
