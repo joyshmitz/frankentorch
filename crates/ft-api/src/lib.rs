@@ -52560,6 +52560,177 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_logsumexp(input, dim)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Clamping utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Clamp all elements to [min, max].
+    pub fn clamp_tensor(
+        &mut self,
+        input: TensorNodeId,
+        min_val: f64,
+        max_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp(input, min_val, max_val)
+    }
+
+    /// Clamp all elements to >= min.
+    pub fn clamp_min_tensor(
+        &mut self,
+        input: TensorNodeId,
+        min_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp_min(input, min_val)
+    }
+
+    /// Clamp all elements to <= max.
+    pub fn clamp_max_tensor(
+        &mut self,
+        input: TensorNodeId,
+        max_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp_max(input, max_val)
+    }
+
+    /// Clamp with tensor bounds.
+    pub fn clamp_tensor_bounds(
+        &mut self,
+        input: TensorNodeId,
+        min: TensorNodeId,
+        max: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clamp_tensor(input, min, max)
+    }
+
+    /// Clip (alias for clamp).
+    pub fn clip_tensor(
+        &mut self,
+        input: TensorNodeId,
+        min_val: f64,
+        max_val: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_clip(input, min_val, max_val)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Matrix norm utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Frobenius norm of a matrix.
+    pub fn frobenius_norm_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_frobenius_norm(input)
+    }
+
+    /// Nuclear norm (sum of singular values).
+    pub fn nuclear_norm_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nuclear_norm(input)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Scatter/gather utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Take values along dimension using indices.
+    pub fn take_along_dim_tensor(
+        &mut self,
+        input: TensorNodeId,
+        indices: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_take_along_dim(input, indices, dim)
+    }
+
+    /// Scatter values with reduction.
+    pub fn scatter_reduce_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: TensorNodeId,
+        src: TensorNodeId,
+        reduce: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_scatter_reduce(input, dim, index, src, reduce)
+    }
+
+    /// Scatter values into positions indicated by mask.
+    pub fn masked_scatter_tensor(
+        &mut self,
+        input: TensorNodeId,
+        mask: TensorNodeId,
+        source: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_masked_scatter(input, mask, source)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Padding utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Constant-value padding.
+    pub fn pad_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: &[usize],
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad(input, padding, value)
+    }
+
+    /// Pad with specified mode (constant, reflect, replicate, circular).
+    pub fn pad_mode_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: &[usize],
+        mode: &str,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pad_mode(input, padding, mode, value)
+    }
+
+    /// Constant padding for 1D.
+    pub fn constant_pad1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_constant_pad1d(input, padding, value)
+    }
+
+    /// Constant padding for 2D.
+    pub fn constant_pad2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_constant_pad2d(input, padding, value)
+    }
+
+    /// Circular padding for 1D.
+    pub fn circular_pad1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_circular_pad1d(input, padding)
+    }
+
+    /// Circular padding for 2D.
+    pub fn circular_pad2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_circular_pad2d(input, padding)
+    }
 }
 
 pub use ft_autograd::{
