@@ -13512,6 +13512,17 @@ impl FrankenTorchSession {
         self.tensor_narrow(input, dim, start, length)
     }
 
+    /// Narrow tensor with copy. Alias for tensor_narrow_copy.
+    pub fn functional_narrow_copy(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        start: usize,
+        length: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_narrow_copy(input, dim, start, length)
+    }
+
     /// Expand tensor to target shape. Alias for tensor_expand.
     pub fn functional_expand(
         &mut self,
@@ -14946,6 +14957,14 @@ impl FrankenTorchSession {
         replacement: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_multinomial(input, num_samples, replacement)
+    }
+
+    /// Bernoulli sampling. Alias for tensor_bernoulli.
+    pub fn functional_bernoulli(
+        &mut self,
+        prob: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bernoulli(prob)
     }
 
     /// Log-sum-exp along dimension. Alias for tensor_logsumexp.
@@ -16411,6 +16430,15 @@ impl FrankenTorchSession {
         with_replacement: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_combinations(input, r, with_replacement)
+    }
+
+    /// r-length combinations with replacement. Alias for tensor_combinations_with_replacement.
+    pub fn functional_combinations_with_replacement(
+        &mut self,
+        input: TensorNodeId,
+        r: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_combinations_with_replacement(input, r)
     }
 
     /// 1-D FFT. Alias for tensor_fft.
