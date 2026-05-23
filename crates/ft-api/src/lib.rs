@@ -14289,6 +14289,24 @@ impl FrankenTorchSession {
         self.tensor_fmin(lhs, rhs)
     }
 
+    /// Two-argument arctangent. Alias for tensor_atan2.
+    pub fn functional_atan2(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_atan2(lhs, rhs)
+    }
+
+    /// 3D cross product. Alias for tensor_cross.
+    pub fn functional_cross(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cross(a, b)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
