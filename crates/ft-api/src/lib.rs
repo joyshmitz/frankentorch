@@ -52731,6 +52731,224 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_circular_pad2d(input, padding)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Activation function utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Softmax along dimension.
+    pub fn softmax_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softmax(input, dim)
+    }
+
+    /// Log softmax along dimension.
+    pub fn log_softmax_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_log_softmax(input, dim)
+    }
+
+    /// Softplus activation.
+    pub fn softplus_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softplus(input)
+    }
+
+    /// Mish activation.
+    pub fn mish_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mish(input)
+    }
+
+    /// Hard swish activation.
+    pub fn hardswish_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hardswish(input)
+    }
+
+    /// Hard tanh activation.
+    pub fn hardtanh_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hardtanh(input)
+    }
+
+    /// Parametric ReLU activation.
+    pub fn prelu_tensor(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_prelu(input, weight)
+    }
+
+    /// Randomized leaky ReLU activation.
+    pub fn rrelu_tensor(
+        &mut self,
+        input: TensorNodeId,
+        lower: f64,
+        upper: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rrelu(input, lower, upper)
+    }
+
+    /// Threshold activation.
+    pub fn threshold_tensor(
+        &mut self,
+        input: TensorNodeId,
+        threshold: f64,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_threshold(input, threshold, value)
+    }
+
+    /// Softshrink activation.
+    pub fn softshrink_tensor(
+        &mut self,
+        input: TensorNodeId,
+        lambd: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softshrink(input, lambd)
+    }
+
+    /// Hardshrink activation.
+    pub fn hardshrink_tensor(
+        &mut self,
+        input: TensorNodeId,
+        lambd: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hardshrink(input, lambd)
+    }
+
+    /// Dropout for training.
+    pub fn dropout_tensor(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dropout(input, p, training)
+    }
+
+    /// Alpha dropout for SELU networks.
+    pub fn alpha_dropout_tensor(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_alpha_dropout(input, p, training)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Loss function utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Mean squared error loss.
+    pub fn mse_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mse_loss(input, target, reduction)
+    }
+
+    /// L1 loss (mean absolute error).
+    pub fn l1_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_l1_loss(input, target, reduction)
+    }
+
+    /// Smooth L1 loss.
+    pub fn smooth_l1_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        beta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_smooth_l1_loss(input, target, reduction, beta)
+    }
+
+    /// Huber loss.
+    pub fn huber_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        delta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_huber_loss(input, target, reduction, delta)
+    }
+
+    /// Cross entropy loss.
+    pub fn cross_entropy_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cross_entropy(input, target, reduction)
+    }
+
+    /// Negative log likelihood loss.
+    pub fn nll_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nll_loss(input, target, reduction)
+    }
+
+    /// Binary cross entropy loss.
+    pub fn binary_cross_entropy_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_binary_cross_entropy(input, target, reduction)
+    }
+
+    /// Binary cross entropy with logits.
+    pub fn binary_cross_entropy_with_logits_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_binary_cross_entropy_with_logits(input, target, reduction)
+    }
+
+    /// KL divergence loss.
+    pub fn kl_div_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+        log_target: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_kl_div(input, target, reduction, log_target)
+    }
 }
 
 pub use ft_autograd::{
