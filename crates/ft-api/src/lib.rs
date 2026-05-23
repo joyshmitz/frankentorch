@@ -14327,6 +14327,15 @@ impl FrankenTorchSession {
         self.tensor_imag(input)
     }
 
+    /// Tile tensor by repeating along dimensions. Alias for tensor_tile.
+    pub fn functional_tile(
+        &mut self,
+        input: TensorNodeId,
+        dims: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tile(input, dims)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
