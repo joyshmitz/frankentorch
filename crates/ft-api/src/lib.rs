@@ -34484,6 +34484,31 @@ impl FrankenTorchSession {
         self.init_normal_(tensor, 0.0, std)
     }
 
+    /// LeCun uniform initialization (for SELU activations).
+    ///
+    /// Fills with U(-bound, bound) where bound = sqrt(3 / fan_in).
+    /// Recommended for SELU activation networks.
+    pub fn init_lecun_uniform_(
+        &mut self,
+        tensor: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        let (fan_in, _) = self.calculate_fan_in_and_fan_out(tensor)?;
+        let bound = (3.0 / fan_in as f64).sqrt();
+        self.init_uniform_(tensor, -bound, bound)
+    }
+
+    /// LeCun normal initialization (for SELU activations).
+    ///
+    /// Fills with N(0, 1/fan_in). Recommended for SELU activation networks.
+    pub fn init_lecun_normal_(
+        &mut self,
+        tensor: TensorNodeId,
+    ) -> Result<(), AutogradError> {
+        let (fan_in, _) = self.calculate_fan_in_and_fan_out(tensor)?;
+        let std = (1.0 / fan_in as f64).sqrt();
+        self.init_normal_(tensor, 0.0, std)
+    }
+
     /// Orthogonal initialization using QR decomposition.
     ///
     /// Fills a 2-D tensor with a (semi-)orthogonal matrix. For non-square tensors,
