@@ -13309,6 +13309,16 @@ impl FrankenTorchSession {
         self.tensor_addmm(input, mat1, mat2, beta, alpha)
     }
 
+    /// Short-time Fourier transform. Alias for tensor_stft.
+    pub fn functional_stft(
+        &mut self,
+        input: TensorNodeId,
+        n_fft: usize,
+        options: StftOptions,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_stft(input, n_fft, options)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
