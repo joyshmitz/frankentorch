@@ -14734,6 +14734,57 @@ impl FrankenTorchSession {
         self.tensor_chain_matmul(tensors)
     }
 
+    /// Multi-matrix dot product. Alias for tensor_multi_dot.
+    pub fn functional_multi_dot(
+        &mut self,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multi_dot(tensors)
+    }
+
+    /// Linearly spaced values. Alias for tensor_linspace.
+    pub fn functional_linspace(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linspace(start, end, steps, requires_grad)
+    }
+
+    /// Logarithmically spaced values. Alias for tensor_logspace.
+    pub fn functional_logspace(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        base: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logspace(start, end, steps, base, requires_grad)
+    }
+
+    /// Lower triangular indices. Alias for tensor_tril_indices.
+    pub fn functional_tril_indices(
+        &mut self,
+        row: usize,
+        col: usize,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tril_indices(row, col, offset)
+    }
+
+    /// Upper triangular indices. Alias for tensor_triu_indices.
+    pub fn functional_triu_indices(
+        &mut self,
+        row: usize,
+        col: usize,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triu_indices(row, col, offset)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
