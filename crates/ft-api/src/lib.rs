@@ -13434,6 +13434,73 @@ impl FrankenTorchSession {
         self.tensor_roll(input, shift, dim)
     }
 
+    /// Remove a size-one dimension. Alias for tensor_squeeze.
+    pub fn functional_squeeze(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_squeeze(input, dim)
+    }
+
+    /// Insert a size-one dimension. Alias for tensor_unsqueeze.
+    pub fn functional_unsqueeze(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_unsqueeze(input, dim)
+    }
+
+    /// Permute tensor dimensions. Alias for tensor_permute.
+    pub fn functional_permute(
+        &mut self,
+        input: TensorNodeId,
+        dims: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_permute(input, dims)
+    }
+
+    /// Flatten dimensions start_dim to end_dim. Alias for tensor_flatten.
+    pub fn functional_flatten(
+        &mut self,
+        input: TensorNodeId,
+        start_dim: usize,
+        end_dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_flatten(input, start_dim, end_dim)
+    }
+
+    /// Unflatten a dimension into multiple. Alias for tensor_unflatten.
+    pub fn functional_unflatten(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        sizes: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_unflatten(input, dim, sizes)
+    }
+
+    /// Narrow tensor along dimension. Alias for tensor_narrow.
+    pub fn functional_narrow(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        start: usize,
+        length: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_narrow(input, dim, start, length)
+    }
+
+    /// Expand tensor to target shape. Alias for tensor_expand.
+    pub fn functional_expand(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expand(input, target_shape)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
