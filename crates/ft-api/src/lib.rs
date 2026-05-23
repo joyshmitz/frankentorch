@@ -2803,6 +2803,25 @@ impl FrankenTorchSession {
         self.logspace(start, end, steps, base, requires_grad)
     }
 
+    /// Create a 2-D identity matrix.
+    ///
+    /// Equivalent to `torch.eye(n, m)`. Creates an n x m matrix with ones on the diagonal.
+    /// If m is None, creates a square n x n identity matrix.
+    pub fn tensor_eye(
+        &mut self,
+        n: usize,
+        m: Option<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let cols = m.unwrap_or(n);
+        let mut values = vec![0.0; n * cols];
+        let diag_len = n.min(cols);
+        for i in 0..diag_len {
+            values[i * cols + i] = 1.0;
+        }
+        self.tensor_variable(values, vec![n, cols], requires_grad)
+    }
+
     pub fn tensor_new_zeros(
         &mut self,
         _source: TensorNodeId,
@@ -19143,6 +19162,16 @@ impl FrankenTorchSession {
         density: bool,
     ) -> Result<(TensorNodeId, Vec<TensorNodeId>), AutogradError> {
         self.tensor_histogramdd(input, bins, ranges, density)
+    }
+
+    /// Identity matrix. Alias for tensor_eye.
+    pub fn functional_eye(
+        &mut self,
+        n: usize,
+        m: Option<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_eye(n, m, requires_grad)
     }
 
     pub fn tensor_argmax(
