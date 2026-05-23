@@ -15148,6 +15148,88 @@ impl FrankenTorchSession {
         self.tensor_matrix_transpose(input)
     }
 
+    /// Modified Bessel I0. Alias for tensor_special_i0.
+    pub fn functional_special_i0(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_i0(input)
+    }
+
+    /// Scaled Bessel I0. Alias for tensor_special_i0e.
+    pub fn functional_special_i0e(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_i0e(input)
+    }
+
+    /// Modified Bessel I1. Alias for tensor_special_i1.
+    pub fn functional_special_i1(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_i1(input)
+    }
+
+    /// Scaled Bessel I1. Alias for tensor_special_i1e.
+    pub fn functional_special_i1e(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_i1e(input)
+    }
+
+    /// Log-NDTR. Alias for tensor_special_log_ndtr.
+    pub fn functional_special_log_ndtr(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_log_ndtr(input)
+    }
+
+    /// NDTR (normal CDF). Alias for tensor_special_ndtr.
+    pub fn functional_special_ndtr(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_ndtr(input)
+    }
+
+    /// NDTRI (inverse normal CDF). Alias for tensor_special_ndtri.
+    pub fn functional_special_ndtri(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_ndtri(input)
+    }
+
+    /// xlogy. Alias for tensor_special_xlogy.
+    pub fn functional_special_xlogy(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_xlogy(x, y)
+    }
+
+    /// Logit. Alias for tensor_special_logit.
+    pub fn functional_special_logit(
+        &mut self,
+        input: TensorNodeId,
+        eps: Option<f64>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_logit(input, eps)
+    }
+
+    /// Expit (sigmoid). Alias for tensor_special_expit.
+    pub fn functional_special_expit(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_special_expit(input)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
