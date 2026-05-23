@@ -30585,6 +30585,57 @@ impl FrankenTorchSession {
         self.tensor_cross_entropy(scaled_sim, labels, "mean")
     }
 
+    /// Knowledge distillation loss.
+    ///
+    /// Combines cross-entropy with hard labels and KL divergence with
+    /// soft teacher logits. Standard approach for model compression.
+    ///
+    /// Args:
+    /// - student_logits: student model logits [N, C]
+    /// - teacher_logits: teacher model logits [N, C]
+    /// - labels: hard labels [N]
+    /// - temperature: softening temperature (typically 4.0)
+    /// - alpha: weight for soft loss (typically 0.9)
+    ///
+    /// Returns: alpha * soft_loss + (1-alpha) * hard_loss
+    pub fn distillation_loss(
+        &mut self,
+        student_logits: TensorNodeId,
+        teacher_logits: TensorNodeId,
+        labels: TensorNodeId,
+        temperature: f64,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let student_shape = self.tensor_shape(student_logits)?;
+        let teacher_shape = self.tensor_shape(teacher_logits)?;
+        if student_shape.len() != 2 || teacher_shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args(
+                "distillation_loss: logits must be 2D [N, C]",
+            ));
+        }
+        if student_shape != teacher_shape {
+            return Err(Self::incompatible_tensor_args(
+                "distillation_loss: student and teacher must have same shape",
+            ));
+        }
+        let temp_tensor = self.full(vec![1], temperature, false)?;
+        let student_scaled = self.tensor_div(student_logits, temp_tensor)?;
+        let teacher_scaled = self.tensor_div(teacher_logits, temp_tensor)?;
+        let student_log_soft = self.tensor_log_softmax(student_scaled, 1)?;
+        let teacher_soft = self.tensor_softmax(teacher_scaled, 1)?;
+        let kl_elem = self.tensor_mul(teacher_soft, student_log_soft)?;
+        let neg_kl_elem = self.tensor_neg(kl_elem)?;
+        let soft_loss = self.tensor_mean(neg_kl_elem)?;
+        let t_sq = self.full(vec![1], temperature * temperature, false)?;
+        let soft_loss_scaled = self.tensor_mul(soft_loss, t_sq)?;
+        let hard_loss = self.tensor_cross_entropy(student_logits, labels, "mean")?;
+        let alpha_tensor = self.full(vec![1], alpha, false)?;
+        let one_minus_alpha = self.full(vec![1], 1.0 - alpha, false)?;
+        let soft_term = self.tensor_mul(alpha_tensor, soft_loss_scaled)?;
+        let hard_term = self.tensor_mul(one_minus_alpha, hard_loss)?;
+        self.tensor_add(soft_term, hard_term)
+    }
+
     /// Quantile (pinball) loss for quantile regression.
     ///
     /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
