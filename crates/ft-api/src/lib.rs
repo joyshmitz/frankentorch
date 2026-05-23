@@ -13225,6 +13225,42 @@ impl FrankenTorchSession {
         self.tensor_matrix_exp(input)
     }
 
+    /// Matrix multiplication. Alias for tensor_matmul.
+    pub fn functional_matmul(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matmul(lhs, rhs)
+    }
+
+    /// 2D matrix multiplication. Alias for tensor_mm.
+    pub fn functional_mm(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mm(lhs, rhs)
+    }
+
+    /// Batched matrix multiplication. Alias for tensor_bmm.
+    pub fn functional_bmm(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bmm(lhs, rhs)
+    }
+
+    /// Matrix-vector product. Alias for tensor_mv.
+    pub fn functional_mv(
+        &mut self,
+        input: TensorNodeId,
+        vec_input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mv(input, vec_input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
