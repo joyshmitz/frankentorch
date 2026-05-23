@@ -15196,6 +15196,68 @@ impl FrankenTorchSession {
         self.tensor_hamming_window(window_length, periodic, alpha, beta)
     }
 
+    /// Blackman window. Alias for tensor_blackman_window.
+    pub fn functional_blackman_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_blackman_window(window_length, periodic)
+    }
+
+    /// Bartlett window. Alias for tensor_bartlett_window.
+    pub fn functional_bartlett_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bartlett_window(window_length, periodic)
+    }
+
+    /// Kaiser window. Alias for tensor_kaiser_window.
+    pub fn functional_kaiser_window(
+        &mut self,
+        window_length: usize,
+        periodic: bool,
+        beta: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_kaiser_window(window_length, periodic, beta)
+    }
+
+    /// 2-D FFT. Alias for tensor_fft2.
+    pub fn functional_fft2(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fft2(input)
+    }
+
+    /// 2-D inverse FFT. Alias for tensor_ifft2.
+    pub fn functional_ifft2(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ifft2(input)
+    }
+
+    /// FFT shift (center DC). Alias for tensor_fftshift.
+    pub fn functional_fftshift(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_fftshift(input, dim)
+    }
+
+    /// Inverse FFT shift. Alias for tensor_ifftshift.
+    pub fn functional_ifftshift(
+        &mut self,
+        input: TensorNodeId,
+        dim: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ifftshift(input, dim)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
