@@ -45746,6 +45746,180 @@ impl FrankenTorchSession {
         let coef = self.tensor_min(clip_coef, one)?;
         self.tensor_mul(grad, coef)
     }
+
+    // ── Higher-Level Building Blocks ──────────────────────────────────────
+
+    /// MLP block: Linear -> activation -> Linear.
+    ///
+    /// Two-layer MLP with configurable hidden dimension.
+    pub fn mlp_block(
+        &mut self,
+        x: TensorNodeId,
+        w1: TensorNodeId,
+        b1: Option<TensorNodeId>,
+        w2: TensorNodeId,
+        b2: Option<TensorNodeId>,
+        activation: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let hidden = self.tensor_linear(x, w1, b1)?;
+        let activated = match activation {
+            "relu" => self.tensor_relu(hidden)?,
+            "gelu" => self.tensor_gelu(hidden)?,
+            "silu" | "swish" => self.tensor_silu(hidden)?,
+            "tanh" => self.tensor_tanh(hidden)?,
+            _ => hidden,
+        };
+        self.tensor_linear(activated, w2, b2)
+    }
+
+    /// Pre-norm residual block: x + sublayer(norm(x)).
+    pub fn prenorm_residual(
+        &mut self,
+        x: TensorNodeId,
+        sublayer_output: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_add(x, sublayer_output)
+    }
+
+    /// Post-norm residual block: norm(x + sublayer(x)).
+    pub fn postnorm_residual(
+        &mut self,
+        x: TensorNodeId,
+        sublayer_output: TensorNodeId,
+        gamma: TensorNodeId,
+        beta: TensorNodeId,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let residual = self.tensor_add(x, sublayer_output)?;
+        let shape = self.tensor_shape(residual)?;
+        let norm_shape = vec![shape[shape.len() - 1]];
+        self.tensor_layer_norm(residual, norm_shape, Some(gamma), Some(beta), eps)
+    }
+
+    /// Squeeze-and-excitation block (SE-Net style).
+    ///
+    /// Global pool -> FC -> ReLU -> FC -> Sigmoid -> Scale.
+    pub fn se_block(
+        &mut self,
+        x: TensorNodeId,
+        fc1: TensorNodeId,
+        fc2: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
+        let pooled = self.tensor_adaptive_avg_pool2d(x, (1, 1))?;
+        let flat = self.tensor_reshape(pooled, vec![n, c])?;
+        let fc1_out = self.tensor_linear(flat, fc1, None)?;
+        let relu_out = self.tensor_relu(fc1_out)?;
+        let fc2_out = self.tensor_linear(relu_out, fc2, None)?;
+        let scale = self.tensor_sigmoid(fc2_out)?;
+        let scale_4d = self.tensor_reshape(scale, vec![n, c, 1, 1])?;
+        self.tensor_mul(x, scale_4d)
+    }
+
+    // ── Metric Functions ──────────────────────────────────────────────────
+
+    /// Accuracy for classification.
+    ///
+    /// Computes percentage of correct predictions.
+    pub fn accuracy(
+        &mut self,
+        logits: TensorNodeId,
+        targets: TensorNodeId,
+    ) -> Result<f64, AutogradError> {
+        let preds = self.tensor_argmax(logits, 1)?;
+        let correct = self.tensor_eq(preds, targets)?;
+        let correct_float = self.tensor_to_f64(correct)?;
+        let sum = self.tensor_sum(correct_float)?;
+        let n = self.tensor_numel(targets)?;
+        let sum_val = self.tensor_values(sum)?[0];
+        Ok(sum_val / n as f64)
+    }
+
+    /// Precision for binary classification.
+    pub fn precision(
+        &mut self,
+        predictions: TensorNodeId,
+        targets: TensorNodeId,
+    ) -> Result<f64, AutogradError> {
+        let tp = self.tensor_logical_and(predictions, targets)?;
+        let tp_float = self.tensor_to_f64(tp)?;
+        let tp_sum = self.tensor_sum(tp_float)?;
+        let pred_float = self.tensor_to_f64(predictions)?;
+        let pred_sum = self.tensor_sum(pred_float)?;
+        let tp_val = self.tensor_values(tp_sum)?[0];
+        let pred_val = self.tensor_values(pred_sum)?[0];
+        Ok(if pred_val > 0.0 { tp_val / pred_val } else { 0.0 })
+    }
+
+    /// Recall for binary classification.
+    pub fn recall(
+        &mut self,
+        predictions: TensorNodeId,
+        targets: TensorNodeId,
+    ) -> Result<f64, AutogradError> {
+        let tp = self.tensor_logical_and(predictions, targets)?;
+        let tp_float = self.tensor_to_f64(tp)?;
+        let tp_sum = self.tensor_sum(tp_float)?;
+        let target_float = self.tensor_to_f64(targets)?;
+        let target_sum = self.tensor_sum(target_float)?;
+        let tp_val = self.tensor_values(tp_sum)?[0];
+        let target_val = self.tensor_values(target_sum)?[0];
+        Ok(if target_val > 0.0 { tp_val / target_val } else { 0.0 })
+    }
+
+    /// F1 score for binary classification.
+    pub fn f1_score(
+        &mut self,
+        predictions: TensorNodeId,
+        targets: TensorNodeId,
+    ) -> Result<f64, AutogradError> {
+        let p = self.precision(predictions, targets)?;
+        let r = self.recall(predictions, targets)?;
+        Ok(if p + r > 0.0 { 2.0 * p * r / (p + r) } else { 0.0 })
+    }
+
+    // ── Distance Functions ────────────────────────────────────────────────
+
+    /// Pairwise Euclidean distance.
+    ///
+    /// Computes distance between all pairs of rows in x1 and x2.
+    /// Returns [N, M] where N = x1.shape[0], M = x2.shape[0].
+    pub fn pairwise_euclidean(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let x1_sq = self.tensor_mul(x1, x1)?;
+        let x1_sq_sum = self.tensor_sum_dim(x1_sq, 1)?;
+        let x2_sq = self.tensor_mul(x2, x2)?;
+        let x2_sq_sum = self.tensor_sum_dim(x2_sq, 1)?;
+        let x2_t = self.tensor_transpose(x2, 0, 1)?;
+        let cross = self.tensor_matmul(x1, x2_t)?;
+        let two = self.full(vec![1], 2.0, false)?;
+        let cross_2 = self.tensor_mul(cross, two)?;
+        let x1_sq_expanded = self.tensor_unsqueeze(x1_sq_sum, 1)?;
+        let x2_sq_expanded = self.tensor_unsqueeze(x2_sq_sum, 0)?;
+        let dist_sq = self.tensor_add(x1_sq_expanded, x2_sq_expanded)?;
+        let dist_sq = self.tensor_sub(dist_sq, cross_2)?;
+        let zero = self.full(vec![1], 0.0, false)?;
+        let dist_sq_clamp = self.tensor_max(dist_sq, zero)?;
+        self.tensor_sqrt(dist_sq_clamp)
+    }
+
+    /// Pairwise cosine similarity.
+    ///
+    /// Returns [N, M] similarity matrix.
+    pub fn pairwise_cosine(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let x1_norm = self.tensor_normalize(x1, 2.0, 1, 1e-12)?;
+        let x2_norm = self.tensor_normalize(x2, 2.0, 1, 1e-12)?;
+        let x2_t = self.tensor_transpose(x2_norm, 0, 1)?;
+        self.tensor_matmul(x1_norm, x2_t)
+    }
 }
 
 pub use ft_autograd::{
