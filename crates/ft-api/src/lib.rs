@@ -14307,6 +14307,26 @@ impl FrankenTorchSession {
         self.tensor_cross(a, b)
     }
 
+    /// Normalized sinc function. Alias for tensor_sinc.
+    pub fn functional_sinc(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sinc(input)
+    }
+
+    /// Phase angle. Alias for tensor_angle.
+    pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_angle(input)
+    }
+
+    /// Real component of complex tensor. Alias for tensor_real.
+    pub fn functional_real(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_real(input)
+    }
+
+    /// Imaginary component of complex tensor. Alias for tensor_imag.
+    pub fn functional_imag(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_imag(input)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
