@@ -14432,6 +14432,57 @@ impl FrankenTorchSession {
         self.tensor_atleast_3d(input)
     }
 
+    /// Horizontal stack. Alias for tensor_hstack.
+    pub fn functional_hstack(
+        &mut self,
+        inputs: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hstack(inputs)
+    }
+
+    /// Vertical stack. Alias for tensor_vstack.
+    pub fn functional_vstack(
+        &mut self,
+        inputs: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_vstack(inputs)
+    }
+
+    /// Depth stack (along dim 2). Alias for tensor_dstack.
+    pub fn functional_dstack(
+        &mut self,
+        inputs: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dstack(inputs)
+    }
+
+    /// Horizontal split. Alias for tensor_hsplit.
+    pub fn functional_hsplit(
+        &mut self,
+        input: TensorNodeId,
+        sections: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_hsplit(input, sections)
+    }
+
+    /// Vertical split. Alias for tensor_vsplit.
+    pub fn functional_vsplit(
+        &mut self,
+        input: TensorNodeId,
+        sections: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_vsplit(input, sections)
+    }
+
+    /// Depth split. Alias for tensor_dsplit.
+    pub fn functional_dsplit(
+        &mut self,
+        input: TensorNodeId,
+        sections: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_dsplit(input, sections)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
