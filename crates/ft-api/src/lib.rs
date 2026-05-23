@@ -31514,6 +31514,241 @@ impl FrankenTorchSession {
         self.tensor_mean(loss)
     }
 
+    /// ROI Align: extract fixed-size feature maps from regions of interest.
+    ///
+    /// Used in Mask R-CNN and modern detection architectures.
+    /// Uses bilinear interpolation for sub-pixel sampling.
+    ///
+    /// Args:
+    /// - features: [N, C, H, W] input feature map
+    /// - boxes: [K, 5] boxes in format (batch_idx, x1, y1, x2, y2), normalized [0, 1]
+    /// - output_size: (height, width) of output feature maps
+    /// - spatial_scale: scale factor mapping input coords to feature map coords
+    /// - sampling_ratio: number of sampling points per bin (0 = adaptive)
+    ///
+    /// Returns: [K, C, output_h, output_w] extracted features
+    pub fn roi_align(
+        &mut self,
+        features: TensorNodeId,
+        boxes: TensorNodeId,
+        output_size: (usize, usize),
+        spatial_scale: f64,
+        sampling_ratio: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let feat_shape = self.tensor_shape(features)?;
+        let box_shape = self.tensor_shape(boxes)?;
+        if feat_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("roi_align: features must be [N, C, H, W]"));
+        }
+        if box_shape.len() != 2 || box_shape[1] != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "roi_align: boxes must be [K, 5] with (batch_idx, x1, y1, x2, y2)",
+            ));
+        }
+        let c = feat_shape[1];
+        let h = feat_shape[2];
+        let w = feat_shape[3];
+        let k = box_shape[0];
+        let (out_h, out_w) = output_size;
+        let feat_data = self.tensor_values(features)?;
+        let box_data = self.tensor_values(boxes)?;
+        let mut output = vec![0.0; k * c * out_h * out_w];
+        let sample_pts = if sampling_ratio == 0 { 2 } else { sampling_ratio };
+        for roi_idx in 0..k {
+            let batch_idx = box_data[roi_idx * 5] as usize;
+            let x1 = box_data[roi_idx * 5 + 1] * spatial_scale;
+            let y1 = box_data[roi_idx * 5 + 2] * spatial_scale;
+            let x2 = box_data[roi_idx * 5 + 3] * spatial_scale;
+            let y2 = box_data[roi_idx * 5 + 4] * spatial_scale;
+            let roi_w = (x2 - x1).max(1e-6);
+            let roi_h = (y2 - y1).max(1e-6);
+            let bin_w = roi_w / out_w as f64;
+            let bin_h = roi_h / out_h as f64;
+            for ch in 0..c {
+                for ph in 0..out_h {
+                    for pw in 0..out_w {
+                        let mut sum = 0.0;
+                        let mut count = 0;
+                        for iy in 0..sample_pts {
+                            for ix in 0..sample_pts {
+                                let y = y1 + bin_h * (ph as f64 + (iy as f64 + 0.5) / sample_pts as f64);
+                                let x = x1 + bin_w * (pw as f64 + (ix as f64 + 0.5) / sample_pts as f64);
+                                if y >= 0.0 && y < h as f64 && x >= 0.0 && x < w as f64 {
+                                    let y_low = y.floor() as usize;
+                                    let x_low = x.floor() as usize;
+                                    let y_high = (y_low + 1).min(h - 1);
+                                    let x_high = (x_low + 1).min(w - 1);
+                                    let ly = y - y.floor();
+                                    let lx = x - x.floor();
+                                    let hy = 1.0 - ly;
+                                    let hx = 1.0 - lx;
+                                    let base = batch_idx * c * h * w + ch * h * w;
+                                    let v1 = feat_data[base + y_low * w + x_low];
+                                    let v2 = feat_data[base + y_low * w + x_high];
+                                    let v3 = feat_data[base + y_high * w + x_low];
+                                    let v4 = feat_data[base + y_high * w + x_high];
+                                    sum += hy * hx * v1 + hy * lx * v2 + ly * hx * v3 + ly * lx * v4;
+                                    count += 1;
+                                }
+                            }
+                        }
+                        let out_idx = roi_idx * c * out_h * out_w + ch * out_h * out_w + ph * out_w + pw;
+                        output[out_idx] = if count > 0 { sum / count as f64 } else { 0.0 };
+                    }
+                }
+            }
+        }
+        self.tensor_variable(output, vec![k, c, out_h, out_w], false)
+    }
+
+    /// ROI Pool: extract fixed-size feature maps using max pooling.
+    ///
+    /// Original operation from Faster R-CNN. For better gradients,
+    /// prefer roi_align which uses bilinear interpolation.
+    ///
+    /// Args:
+    /// - features: [N, C, H, W] input feature map
+    /// - boxes: [K, 5] boxes in format (batch_idx, x1, y1, x2, y2)
+    /// - output_size: (height, width) of output feature maps
+    /// - spatial_scale: scale factor mapping input coords to feature map coords
+    ///
+    /// Returns: [K, C, output_h, output_w] extracted features
+    pub fn roi_pool(
+        &mut self,
+        features: TensorNodeId,
+        boxes: TensorNodeId,
+        output_size: (usize, usize),
+        spatial_scale: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let feat_shape = self.tensor_shape(features)?;
+        let box_shape = self.tensor_shape(boxes)?;
+        if feat_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("roi_pool: features must be [N, C, H, W]"));
+        }
+        if box_shape.len() != 2 || box_shape[1] != 5 {
+            return Err(Self::incompatible_tensor_args(
+                "roi_pool: boxes must be [K, 5] with (batch_idx, x1, y1, x2, y2)",
+            ));
+        }
+        let c = feat_shape[1];
+        let h = feat_shape[2];
+        let w = feat_shape[3];
+        let k = box_shape[0];
+        let (out_h, out_w) = output_size;
+        let feat_data = self.tensor_values(features)?;
+        let box_data = self.tensor_values(boxes)?;
+        let mut output = vec![f64::NEG_INFINITY; k * c * out_h * out_w];
+        for roi_idx in 0..k {
+            let batch_idx = box_data[roi_idx * 5] as usize;
+            let x1 = (box_data[roi_idx * 5 + 1] * spatial_scale).round() as i64;
+            let y1 = (box_data[roi_idx * 5 + 2] * spatial_scale).round() as i64;
+            let x2 = (box_data[roi_idx * 5 + 3] * spatial_scale).round() as i64;
+            let y2 = (box_data[roi_idx * 5 + 4] * spatial_scale).round() as i64;
+            let roi_w = (x2 - x1).max(1) as usize;
+            let roi_h = (y2 - y1).max(1) as usize;
+            for ch in 0..c {
+                for ph in 0..out_h {
+                    let h_start = (ph * roi_h / out_h) as i64 + y1;
+                    let h_end = ((ph + 1) * roi_h / out_h) as i64 + y1;
+                    for pw in 0..out_w {
+                        let w_start = (pw * roi_w / out_w) as i64 + x1;
+                        let w_end = ((pw + 1) * roi_w / out_w) as i64 + x1;
+                        let mut max_val = f64::NEG_INFINITY;
+                        for iy in h_start.max(0)..h_end.min(h as i64) {
+                            for ix in w_start.max(0)..w_end.min(w as i64) {
+                                let idx = batch_idx * c * h * w + ch * h * w + iy as usize * w + ix as usize;
+                                max_val = max_val.max(feat_data[idx]);
+                            }
+                        }
+                        let out_idx = roi_idx * c * out_h * out_w + ch * out_h * out_w + ph * out_w + pw;
+                        output[out_idx] = if max_val.is_finite() { max_val } else { 0.0 };
+                    }
+                }
+            }
+        }
+        self.tensor_variable(output, vec![k, c, out_h, out_w], false)
+    }
+
+    /// PS (Position-Sensitive) ROI Pool for R-FCN detection.
+    ///
+    /// Pools from position-sensitive score maps where different spatial
+    /// regions of an ROI pool from different channels.
+    ///
+    /// Args:
+    /// - features: [N, C, H, W] where C = num_classes * output_h * output_w
+    /// - boxes: [K, 5] boxes (batch_idx, x1, y1, x2, y2)
+    /// - output_size: spatial size of output (same for h and w)
+    /// - spatial_scale: scale factor for coordinates
+    ///
+    /// Returns: [K, num_classes, output_size, output_size]
+    pub fn ps_roi_pool(
+        &mut self,
+        features: TensorNodeId,
+        boxes: TensorNodeId,
+        output_size: usize,
+        spatial_scale: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let feat_shape = self.tensor_shape(features)?;
+        let box_shape = self.tensor_shape(boxes)?;
+        if feat_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("ps_roi_pool: features must be [N, C, H, W]"));
+        }
+        if box_shape.len() != 2 || box_shape[1] != 5 {
+            return Err(Self::incompatible_tensor_args("ps_roi_pool: boxes must be [K, 5]"));
+        }
+        let c = feat_shape[1];
+        let h = feat_shape[2];
+        let w = feat_shape[3];
+        let k = box_shape[0];
+        let bins = output_size * output_size;
+        if c % bins != 0 {
+            return Err(Self::incompatible_tensor_args(
+                "ps_roi_pool: C must be divisible by output_size^2",
+            ));
+        }
+        let num_classes = c / bins;
+        let feat_data = self.tensor_values(features)?;
+        let box_data = self.tensor_values(boxes)?;
+        let mut output = vec![0.0; k * num_classes * output_size * output_size];
+        for roi_idx in 0..k {
+            let batch_idx = box_data[roi_idx * 5] as usize;
+            let x1 = box_data[roi_idx * 5 + 1] * spatial_scale;
+            let y1 = box_data[roi_idx * 5 + 2] * spatial_scale;
+            let x2 = box_data[roi_idx * 5 + 3] * spatial_scale;
+            let y2 = box_data[roi_idx * 5 + 4] * spatial_scale;
+            let roi_w = (x2 - x1).max(1e-6);
+            let roi_h = (y2 - y1).max(1e-6);
+            let bin_w = roi_w / output_size as f64;
+            let bin_h = roi_h / output_size as f64;
+            for cls in 0..num_classes {
+                for ph in 0..output_size {
+                    for pw in 0..output_size {
+                        let ch = cls * bins + ph * output_size + pw;
+                        let h_start = (y1 + ph as f64 * bin_h).floor() as i64;
+                        let h_end = (y1 + (ph + 1) as f64 * bin_h).ceil() as i64;
+                        let w_start = (x1 + pw as f64 * bin_w).floor() as i64;
+                        let w_end = (x1 + (pw + 1) as f64 * bin_w).ceil() as i64;
+                        let mut sum = 0.0;
+                        let mut count = 0;
+                        for iy in h_start.max(0)..h_end.min(h as i64) {
+                            for ix in w_start.max(0)..w_end.min(w as i64) {
+                                let idx = batch_idx * c * h * w + ch * h * w + iy as usize * w + ix as usize;
+                                sum += feat_data[idx];
+                                count += 1;
+                            }
+                        }
+                        let out_idx = roi_idx * num_classes * output_size * output_size
+                            + cls * output_size * output_size
+                            + ph * output_size
+                            + pw;
+                        output[out_idx] = if count > 0 { sum / count as f64 } else { 0.0 };
+                    }
+                }
+            }
+        }
+        self.tensor_variable(output, vec![k, num_classes, output_size, output_size], false)
+    }
+
     /// Quantile (pinball) loss for quantile regression.
     ///
     /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
