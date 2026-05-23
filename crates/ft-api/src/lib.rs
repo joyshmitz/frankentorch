@@ -53887,6 +53887,82 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_diagonal_scatter(input, src, offset)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Convolution utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// 3D convolution.
+    pub fn conv3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conv3d(input, weight, bias, stride, padding)
+    }
+
+    /// 1D transposed convolution.
+    pub fn conv_transpose1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conv_transpose1d(input, weight, bias, stride, padding, output_padding)
+    }
+
+    /// 2D transposed convolution.
+    pub fn conv_transpose2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_conv_transpose2d(input, weight, bias, stride, padding, output_padding)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Dropout utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// 1D feature dropout for spatial data.
+    pub fn dropout1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dropout1d(input, p, training)
+    }
+
+    /// 2D feature dropout for spatial data.
+    pub fn dropout2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dropout2d(input, p, training)
+    }
+
+    /// 3D feature dropout for spatial data.
+    pub fn dropout3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dropout3d(input, p, training)
+    }
 }
 
 pub use ft_autograd::{
