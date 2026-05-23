@@ -53043,6 +53043,48 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_interpolate(input, size, scale_factor, mode, align_corners)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Index generation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Lower triangular indices.
+    pub fn tril_indices_tensor(
+        &mut self,
+        row: usize,
+        col: usize,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tril_indices(row, col, offset)
+    }
+
+    /// Upper triangular indices.
+    pub fn triu_indices_tensor(
+        &mut self,
+        row: usize,
+        col: usize,
+        offset: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triu_indices(row, col, offset)
+    }
+
+    /// Diagonal indices for n×n matrix.
+    pub fn diag_indices_tensor(
+        &mut self,
+        n: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_diag_indices(n)
+    }
+
+    /// Vandermonde matrix.
+    pub fn vander_tensor(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+        increasing: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_vander(input, n, increasing)
+    }
 }
 
 pub use ft_autograd::{
