@@ -31002,6 +31002,72 @@ impl FrankenTorchSession {
         self.tensor_cat(&[x1, y1, x2, y2], 1)
     }
 
+    /// Clip boxes to image boundaries.
+    ///
+    /// Clamps box coordinates to [0, width/height] for valid predictions.
+    ///
+    /// Args:
+    /// - boxes: [N, 4] in format (x1, y1, x2, y2)
+    /// - image_size: (height, width) of image
+    ///
+    /// Returns: [N, 4] clipped boxes
+    pub fn clip_boxes(
+        &mut self,
+        boxes: TensorNodeId,
+        image_size: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(boxes)?;
+        if shape.len() != 2 || shape[1] != 4 {
+            return Err(Self::incompatible_tensor_args("clip_boxes: boxes must be [N, 4]"));
+        }
+        let (h, w) = image_size;
+        let n = shape[0];
+        let x1 = self.tensor_narrow(boxes, 1, 0, 1)?;
+        let y1 = self.tensor_narrow(boxes, 1, 1, 1)?;
+        let x2 = self.tensor_narrow(boxes, 1, 2, 1)?;
+        let y2 = self.tensor_narrow(boxes, 1, 3, 1)?;
+        let x1 = self.tensor_clamp(x1, 0.0, w as f64)?;
+        let y1 = self.tensor_clamp(y1, 0.0, h as f64)?;
+        let x2 = self.tensor_clamp(x2, 0.0, w as f64)?;
+        let y2 = self.tensor_clamp(y2, 0.0, h as f64)?;
+        self.tensor_cat(&[x1, y1, x2, y2], 1)
+    }
+
+    /// Remove small boxes below minimum size.
+    ///
+    /// Filters out boxes with width or height below threshold.
+    ///
+    /// Args:
+    /// - boxes: [N, 4] in format (x1, y1, x2, y2)
+    /// - min_size: minimum box dimension
+    ///
+    /// Returns: indices of kept boxes
+    pub fn remove_small_boxes(
+        &mut self,
+        boxes: TensorNodeId,
+        min_size: f64,
+    ) -> Result<Vec<usize>, AutogradError> {
+        let shape = self.tensor_shape(boxes)?;
+        if shape.len() != 2 || shape[1] != 4 {
+            return Err(Self::incompatible_tensor_args("remove_small_boxes: boxes must be [N, 4]"));
+        }
+        let n = shape[0];
+        let boxes_data = self.tensor_values(boxes)?;
+        let mut keep = Vec::new();
+        for i in 0..n {
+            let x1 = boxes_data[i * 4];
+            let y1 = boxes_data[i * 4 + 1];
+            let x2 = boxes_data[i * 4 + 2];
+            let y2 = boxes_data[i * 4 + 3];
+            let w = x2 - x1;
+            let h = y2 - y1;
+            if w >= min_size && h >= min_size {
+                keep.push(i);
+            }
+        }
+        Ok(keep)
+    }
+
     /// Compute IoU (Intersection over Union) between two sets of boxes.
     ///
     /// Args:
