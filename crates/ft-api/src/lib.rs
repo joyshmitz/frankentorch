@@ -14179,6 +14179,40 @@ impl FrankenTorchSession {
         self.tensor_isreal(input)
     }
 
+    /// Element-wise square. Alias for tensor_square.
+    pub fn functional_square(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_square(input)
+    }
+
+    /// Element-wise reciprocal. Alias for tensor_reciprocal.
+    pub fn functional_reciprocal(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reciprocal(input)
+    }
+
+    /// Copy sign from sign tensor. Alias for tensor_copysign.
+    pub fn functional_copysign(
+        &mut self,
+        magnitude: TensorNodeId,
+        sign: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_copysign(magnitude, sign)
+    }
+
+    /// Hypotenuse of right triangle. Alias for tensor_hypot.
+    pub fn functional_hypot(
+        &mut self,
+        x: TensorNodeId,
+        y: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hypot(x, y)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
