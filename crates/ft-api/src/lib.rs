@@ -55285,6 +55285,73 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fft_ifftshift(input, dim)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Sorting and uniqueness utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Sort along first dimension (msort).
+    pub fn msort_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, Vec<usize>), AutogradError> {
+        self.tensor_msort(input)
+    }
+
+    /// Return k largest/smallest elements.
+    pub fn topk_tensor(
+        &mut self,
+        input: TensorNodeId,
+        k: usize,
+        dim: usize,
+        largest: bool,
+        sorted: bool,
+    ) -> Result<(TensorNodeId, Vec<usize>), AutogradError> {
+        self.tensor_topk(input, k, dim, largest, sorted)
+    }
+
+    /// Remove consecutive duplicate values.
+    pub fn unique_consecutive_tensor(
+        &mut self,
+        input: TensorNodeId,
+        return_inverse: bool,
+        return_counts: bool,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.tensor_unique_consecutive(input, return_inverse, return_counts)
+    }
+
+    /// Unique slices along a dimension.
+    pub fn unique_dim_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        sorted: bool,
+        return_inverse: bool,
+        return_counts: bool,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.tensor_unique_dim(input, dim, sorted, return_inverse, return_counts)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // NaN-aware statistics utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Median ignoring NaN values.
+    pub fn nanmedian_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nanmedian(input)
+    }
+
+    /// Quantile ignoring NaN values.
+    pub fn nanquantile_tensor(
+        &mut self,
+        input: TensorNodeId,
+        q: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nanquantile(input, q)
+    }
 }
 
 pub use ft_autograd::{
