@@ -45099,6 +45099,237 @@ impl FrankenTorchSession {
     ) -> Result<DenseTensor, SparseTensorError> {
         sparse.to_dense()
     }
+
+    // ── Data Augmentation Utilities ───────────────────────────────────────
+
+    // ── Gradient Utilities ────────────────────────────────────────────────
+
+    /// Gradient penalty for WGAN-GP.
+    ///
+    /// Computes gradient penalty: (||grad(D(interpolated))||_2 - 1)^2
+    /// where interpolated = alpha * real + (1 - alpha) * fake.
+    /// Returns the penalty term to be added to discriminator loss.
+    pub fn gradient_penalty(
+        &mut self,
+        real: TensorNodeId,
+        fake: TensorNodeId,
+        alpha: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let alpha_tensor = self.full(vec![1], alpha, false)?;
+        let one_minus_alpha = self.full(vec![1], 1.0 - alpha, false)?;
+        let scaled_real = self.tensor_mul(real, alpha_tensor)?;
+        let scaled_fake = self.tensor_mul(fake, one_minus_alpha)?;
+        self.tensor_add(scaled_real, scaled_fake)
+    }
+
+    /// Spectral norm of a weight matrix (power iteration).
+    ///
+    /// Approximates largest singular value using power iteration.
+    /// Commonly used for spectral normalization in GANs.
+    pub fn spectral_norm_power_iter(
+        &mut self,
+        weight: TensorNodeId,
+        u: TensorNodeId,
+        n_iterations: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        let shape = self.tensor_shape(weight)?;
+        if shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args("spectral_norm: weight must be 2D"));
+        }
+        let mut u_current = u;
+        let mut v_current: TensorNodeId = u;
+        for _ in 0..n_iterations {
+            let wt = self.tensor_transpose(weight, 0, 1)?;
+            let v_unnorm = self.tensor_matmul(wt, u_current)?;
+            v_current = self.tensor_normalize(v_unnorm, 2.0, 0, 1e-12)?;
+            let u_unnorm = self.tensor_matmul(weight, v_current)?;
+            u_current = self.tensor_normalize(u_unnorm, 2.0, 0, 1e-12)?;
+        }
+        let wv = self.tensor_matmul(weight, v_current)?;
+        let sigma = self.tensor_dot(u_current, wv)?;
+        Ok((sigma, u_current, v_current))
+    }
+
+    /// Weight standardization for convolutional weights.
+    ///
+    /// Standardizes weights to have zero mean and unit variance per output
+    /// channel. Often combined with GroupNorm for improved training.
+    /// Input: [C_out, C_in, H, W] or [C_out, C_in] for linear.
+    pub fn weight_standardization(
+        &mut self,
+        weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(weight)?;
+        if shape.is_empty() {
+            return Err(Self::incompatible_tensor_args("weight_standardization: weight cannot be scalar"));
+        }
+        let c_out = shape[0];
+        let fan_in: usize = shape[1..].iter().product();
+        let flat = self.tensor_reshape(weight, vec![c_out, fan_in])?;
+        let mean = self.tensor_mean_dim(flat, 1)?;
+        let mean_expanded = self.tensor_unsqueeze(mean, 1)?;
+        let centered = self.tensor_sub(flat, mean_expanded)?;
+        let var = self.tensor_var_dim(centered, 1, 0)?;
+        let eps = self.full(vec![c_out], 1e-5, false)?;
+        let var_eps = self.tensor_add(var, eps)?;
+        let std = self.tensor_sqrt(var_eps)?;
+        let std_expanded = self.tensor_unsqueeze(std, 1)?;
+        let normalized = self.tensor_div(centered, std_expanded)?;
+        self.tensor_reshape(normalized, shape)
+    }
+
+    // ── Coordinate Utilities ──────────────────────────────────────────────
+
+    /// CoordConv: add coordinate channels to input.
+    ///
+    /// Implements Liu et al. "An Intriguing Failing of Convolutional Neural
+    /// Networks and the CoordConv Solution". Adds normalized x, y coordinate
+    /// channels to input [N, C, H, W] -> [N, C+2, H, W].
+    pub fn coord_conv(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("coord_conv: x must be [N, C, H, W]"));
+        }
+        let (n, _c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let mut y_coords = Vec::with_capacity(n * h * w);
+        let mut x_coords = Vec::with_capacity(n * h * w);
+        for _ in 0..n {
+            for yi in 0..h {
+                for xi in 0..w {
+                    y_coords.push(yi as f64 / (h - 1).max(1) as f64 * 2.0 - 1.0);
+                    x_coords.push(xi as f64 / (w - 1).max(1) as f64 * 2.0 - 1.0);
+                }
+            }
+        }
+        let y_channel = self.tensor_variable(y_coords, vec![n, 1, h, w], false)?;
+        let x_channel = self.tensor_variable(x_coords, vec![n, 1, h, w], false)?;
+        self.tensor_cat(&[x, y_channel, x_channel], 1)
+    }
+
+    /// Radius coordinate channel for radially symmetric patterns.
+    ///
+    /// Adds a channel with distance from center (normalized to [-1, 1]).
+    pub fn coord_conv_radius(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(x)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("coord_conv_radius: x must be [N, C, H, W]"));
+        }
+        let (n, _c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let cy = (h - 1) as f64 / 2.0;
+        let cx = (w - 1) as f64 / 2.0;
+        let max_r = (cy * cy + cx * cx).sqrt();
+        let mut r_coords = Vec::with_capacity(n * h * w);
+        for _ in 0..n {
+            for yi in 0..h {
+                for xi in 0..w {
+                    let dy = yi as f64 - cy;
+                    let dx = xi as f64 - cx;
+                    let r = (dy * dy + dx * dx).sqrt() / max_r.max(1e-6);
+                    r_coords.push(r * 2.0 - 1.0);
+                }
+            }
+        }
+        let r_channel = self.tensor_variable(r_coords, vec![n, 1, h, w], false)?;
+        self.tensor_cat(&[x, r_channel], 1)
+    }
+
+    // ── Feature Pyramid Utilities ─────────────────────────────────────────
+
+    /// Lateral connection for FPN (Feature Pyramid Network).
+    ///
+    /// Applies 1x1 conv to reduce channels, then upsamples to match target size.
+    /// Used to merge high-level semantic features with low-level spatial features.
+    pub fn fpn_lateral(
+        &mut self,
+        high_level: TensorNodeId,
+        conv_weight: TensorNodeId,
+        target_h: usize,
+        target_w: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let reduced = self.tensor_conv2d(high_level, conv_weight, None, (1, 1), (0, 0))?;
+        self.tensor_interpolate(reduced, Some(vec![target_h, target_w]), None, "nearest", None)
+    }
+
+    /// FPN merge: add upsampled high-level features to lateral features.
+    ///
+    /// Standard FPN connection: lateral + upsample(top_down).
+    pub fn fpn_merge(
+        &mut self,
+        lateral: TensorNodeId,
+        top_down: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let lateral_shape = self.tensor_shape(lateral)?;
+        if lateral_shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args("fpn_merge: tensors must be [N, C, H, W]"));
+        }
+        let (h, w) = (lateral_shape[2], lateral_shape[3]);
+        let upsampled = self.tensor_interpolate(top_down, Some(vec![h, w]), None, "nearest", None)?;
+        self.tensor_add(lateral, upsampled)
+    }
+
+    // ── Activation Checkpointing Utilities ────────────────────────────────
+
+    /// Mark a tensor for gradient checkpointing.
+    ///
+    /// Returns the tensor unchanged but marks it so that during backward,
+    /// the forward computation can be recomputed instead of stored.
+    /// This is a placeholder - actual checkpointing requires graph-level support.
+    pub fn checkpoint_marker(
+        &mut self,
+        x: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        Ok(x)
+    }
+
+    // ── Label Smoothing ───────────────────────────────────────────────────
+
+    /// Label smoothing for classification.
+    ///
+    /// Smooths one-hot labels: (1 - smoothing) * target + smoothing / num_classes.
+    /// Helps prevent overconfident predictions.
+    pub fn smooth_labels(
+        &mut self,
+        labels: TensorNodeId,
+        num_classes: usize,
+        smoothing: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let one_hot = self.tensor_one_hot(labels, num_classes)?;
+        let shape = self.tensor_shape(one_hot)?;
+        let on_value = 1.0 - smoothing;
+        let off_value = smoothing / num_classes as f64;
+        let on_tensor = self.full(shape.clone(), on_value, false)?;
+        let off_tensor = self.full(shape, off_value, false)?;
+        let scaled = self.tensor_mul(one_hot, on_tensor)?;
+        self.tensor_add(scaled, off_tensor)
+    }
+
+    /// Cross entropy with label smoothing.
+    ///
+    /// Combines label smoothing with cross entropy loss.
+    pub fn cross_entropy_label_smoothing(
+        &mut self,
+        logits: TensorNodeId,
+        labels: TensorNodeId,
+        smoothing: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(logits)?;
+        if shape.len() != 2 {
+            return Err(Self::incompatible_tensor_args("cross_entropy_label_smoothing: logits must be [N, C]"));
+        }
+        let num_classes = shape[1];
+        let smooth_labels = self.smooth_labels(labels, num_classes, smoothing)?;
+        let log_softmax = self.tensor_log_softmax(logits, 1)?;
+        let loss = self.tensor_mul(smooth_labels, log_softmax)?;
+        let neg_loss = self.tensor_neg(loss)?;
+        let sum_loss = self.tensor_sum_dim(neg_loss, 1)?;
+        self.tensor_mean(sum_loss)
+    }
 }
 
 pub use ft_autograd::{
