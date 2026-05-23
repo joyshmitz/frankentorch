@@ -30759,6 +30759,145 @@ impl FrankenTorchSession {
         self.nms(offset_boxes_tensor, scores, iou_threshold)
     }
 
+    /// Compute IoU (Intersection over Union) between two sets of boxes.
+    ///
+    /// Args:
+    /// - boxes1: [N, 4] in format (x1, y1, x2, y2)
+    /// - boxes2: [M, 4] in format (x1, y1, x2, y2)
+    ///
+    /// Returns: [N, M] IoU matrix
+    pub fn box_iou(
+        &mut self,
+        boxes1: TensorNodeId,
+        boxes2: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape1 = self.tensor_shape(boxes1)?;
+        let shape2 = self.tensor_shape(boxes2)?;
+        if shape1.len() != 2 || shape1[1] != 4 {
+            return Err(Self::incompatible_tensor_args("box_iou: boxes1 must be [N, 4]"));
+        }
+        if shape2.len() != 2 || shape2[1] != 4 {
+            return Err(Self::incompatible_tensor_args("box_iou: boxes2 must be [M, 4]"));
+        }
+        let n = shape1[0];
+        let m = shape2[0];
+        let b1_x1 = self.tensor_narrow(boxes1, 1, 0, 1)?;
+        let b1_y1 = self.tensor_narrow(boxes1, 1, 1, 1)?;
+        let b1_x2 = self.tensor_narrow(boxes1, 1, 2, 1)?;
+        let b1_y2 = self.tensor_narrow(boxes1, 1, 3, 1)?;
+        let b2_x1 = self.tensor_narrow(boxes2, 1, 0, 1)?;
+        let b2_y1 = self.tensor_narrow(boxes2, 1, 1, 1)?;
+        let b2_x2 = self.tensor_narrow(boxes2, 1, 2, 1)?;
+        let b2_y2 = self.tensor_narrow(boxes2, 1, 3, 1)?;
+        let b1_w = self.tensor_sub(b1_x2, b1_x1)?;
+        let b1_h = self.tensor_sub(b1_y2, b1_y1)?;
+        let b2_w = self.tensor_sub(b2_x2, b2_x1)?;
+        let b2_h = self.tensor_sub(b2_y2, b2_y1)?;
+        let area1 = self.tensor_mul(b1_w, b1_h)?;
+        let area2 = self.tensor_mul(b2_w, b2_h)?;
+        let b1_x1_exp = self.tensor_expand(b1_x1, vec![n, m])?;
+        let b1_y1_exp = self.tensor_expand(b1_y1, vec![n, m])?;
+        let b1_x2_exp = self.tensor_expand(b1_x2, vec![n, m])?;
+        let b1_y2_exp = self.tensor_expand(b1_y2, vec![n, m])?;
+        let b2_x1_t = self.tensor_transpose(b2_x1, 0, 1)?;
+        let b2_y1_t = self.tensor_transpose(b2_y1, 0, 1)?;
+        let b2_x2_t = self.tensor_transpose(b2_x2, 0, 1)?;
+        let b2_y2_t = self.tensor_transpose(b2_y2, 0, 1)?;
+        let b2_x1_exp = self.tensor_expand(b2_x1_t, vec![n, m])?;
+        let b2_y1_exp = self.tensor_expand(b2_y1_t, vec![n, m])?;
+        let b2_x2_exp = self.tensor_expand(b2_x2_t, vec![n, m])?;
+        let b2_y2_exp = self.tensor_expand(b2_y2_t, vec![n, m])?;
+        let inter_x1 = self.tensor_maximum(b1_x1_exp, b2_x1_exp)?;
+        let inter_y1 = self.tensor_maximum(b1_y1_exp, b2_y1_exp)?;
+        let inter_x2 = self.tensor_minimum(b1_x2_exp, b2_x2_exp)?;
+        let inter_y2 = self.tensor_minimum(b1_y2_exp, b2_y2_exp)?;
+        let inter_w = self.tensor_sub(inter_x2, inter_x1)?;
+        let inter_h = self.tensor_sub(inter_y2, inter_y1)?;
+        let zero = self.full(vec![n, m], 0.0, false)?;
+        let inter_w = self.tensor_maximum(inter_w, zero)?;
+        let inter_h = self.tensor_maximum(inter_h, zero)?;
+        let inter_area = self.tensor_mul(inter_w, inter_h)?;
+        let area1_exp = self.tensor_expand(area1, vec![n, m])?;
+        let area2_t = self.tensor_transpose(area2, 0, 1)?;
+        let area2_exp = self.tensor_expand(area2_t, vec![n, m])?;
+        let union_area = self.tensor_add(area1_exp, area2_exp)?;
+        let union_area = self.tensor_sub(union_area, inter_area)?;
+        let eps = self.full(vec![n, m], 1e-7, false)?;
+        let union_area_safe = self.tensor_add(union_area, eps)?;
+        self.tensor_div(inter_area, union_area_safe)
+    }
+
+    /// Generalized IoU (GIoU) loss for bounding box regression.
+    ///
+    /// GIoU = IoU - (C - Union) / C where C is the smallest enclosing box.
+    /// Loss = 1 - GIoU. Differentiable alternative to IoU loss.
+    ///
+    /// Args:
+    /// - pred_boxes: [N, 4] predicted boxes (x1, y1, x2, y2)
+    /// - target_boxes: [N, 4] target boxes (x1, y1, x2, y2)
+    ///
+    /// Returns: mean GIoU loss
+    pub fn giou_loss(
+        &mut self,
+        pred_boxes: TensorNodeId,
+        target_boxes: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let pred_shape = self.tensor_shape(pred_boxes)?;
+        let target_shape = self.tensor_shape(target_boxes)?;
+        if pred_shape.len() != 2 || pred_shape[1] != 4 {
+            return Err(Self::incompatible_tensor_args("giou_loss: pred_boxes must be [N, 4]"));
+        }
+        if target_shape != pred_shape {
+            return Err(Self::incompatible_tensor_args(
+                "giou_loss: pred and target must have same shape",
+            ));
+        }
+        let n = pred_shape[0];
+        let p_x1 = self.tensor_narrow(pred_boxes, 1, 0, 1)?;
+        let p_y1 = self.tensor_narrow(pred_boxes, 1, 1, 1)?;
+        let p_x2 = self.tensor_narrow(pred_boxes, 1, 2, 1)?;
+        let p_y2 = self.tensor_narrow(pred_boxes, 1, 3, 1)?;
+        let t_x1 = self.tensor_narrow(target_boxes, 1, 0, 1)?;
+        let t_y1 = self.tensor_narrow(target_boxes, 1, 1, 1)?;
+        let t_x2 = self.tensor_narrow(target_boxes, 1, 2, 1)?;
+        let t_y2 = self.tensor_narrow(target_boxes, 1, 3, 1)?;
+        let p_w = self.tensor_sub(p_x2, p_x1)?;
+        let p_h = self.tensor_sub(p_y2, p_y1)?;
+        let t_w = self.tensor_sub(t_x2, t_x1)?;
+        let t_h = self.tensor_sub(t_y2, t_y1)?;
+        let pred_area = self.tensor_mul(p_w, p_h)?;
+        let target_area = self.tensor_mul(t_w, t_h)?;
+        let inter_x1 = self.tensor_maximum(p_x1, t_x1)?;
+        let inter_y1 = self.tensor_maximum(p_y1, t_y1)?;
+        let inter_x2 = self.tensor_minimum(p_x2, t_x2)?;
+        let inter_y2 = self.tensor_minimum(p_y2, t_y2)?;
+        let inter_w = self.tensor_sub(inter_x2, inter_x1)?;
+        let inter_h = self.tensor_sub(inter_y2, inter_y1)?;
+        let zero = self.full(vec![n, 1], 0.0, false)?;
+        let inter_w = self.tensor_maximum(inter_w, zero)?;
+        let inter_h = self.tensor_maximum(inter_h, zero)?;
+        let inter_area = self.tensor_mul(inter_w, inter_h)?;
+        let union_area = self.tensor_add(pred_area, target_area)?;
+        let union_area = self.tensor_sub(union_area, inter_area)?;
+        let eps = self.full(vec![n, 1], 1e-7, false)?;
+        let union_safe = self.tensor_add(union_area, eps)?;
+        let iou = self.tensor_div(inter_area, union_safe)?;
+        let enc_x1 = self.tensor_minimum(p_x1, t_x1)?;
+        let enc_y1 = self.tensor_minimum(p_y1, t_y1)?;
+        let enc_x2 = self.tensor_maximum(p_x2, t_x2)?;
+        let enc_y2 = self.tensor_maximum(p_y2, t_y2)?;
+        let enc_w = self.tensor_sub(enc_x2, enc_x1)?;
+        let enc_h = self.tensor_sub(enc_y2, enc_y1)?;
+        let enc_area = self.tensor_mul(enc_w, enc_h)?;
+        let enc_safe = self.tensor_add(enc_area, eps)?;
+        let c_minus_union = self.tensor_sub(enc_area, union_area)?;
+        let penalty = self.tensor_div(c_minus_union, enc_safe)?;
+        let giou = self.tensor_sub(iou, penalty)?;
+        let one = self.full(vec![n, 1], 1.0, false)?;
+        let loss = self.tensor_sub(one, giou)?;
+        self.tensor_mean(loss)
+    }
+
     /// Quantile (pinball) loss for quantile regression.
     ///
     /// Computes: `q * max(0, target - pred) + (1-q) * max(0, pred - target)`
