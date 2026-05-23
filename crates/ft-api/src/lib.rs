@@ -49929,6 +49929,363 @@ impl FrankenTorchSession {
         }
         Ok(())
     }
+
+    // ── Tensor Comparison Utilities ───────────────────────────────────────
+
+    /// Check if two tensors have same shape.
+    pub fn same_shape(
+        &self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        let shape_a = self.tensor_shape(a)?;
+        let shape_b = self.tensor_shape(b)?;
+        Ok(shape_a == shape_b)
+    }
+
+    /// Check if tensor is broadcastable to target shape.
+    pub fn is_broadcastable(
+        &self,
+        input: TensorNodeId,
+        target_shape: &[usize],
+    ) -> Result<bool, AutogradError> {
+        let shape = self.tensor_shape(input)?;
+        if shape.len() > target_shape.len() {
+            return Ok(false);
+        }
+        let offset = target_shape.len() - shape.len();
+        for (i, &dim) in shape.iter().enumerate() {
+            if dim != 1 && dim != target_shape[offset + i] {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    // ── Index Manipulation ────────────────────────────────────────────────
+
+    /// Create range tensor [0, n).
+    pub fn arange_simple(
+        &mut self,
+        n: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arange(0.0, n as f64, 1.0, false)
+    }
+
+    /// Create range tensor [start, end) with step.
+    pub fn arange_range(
+        &mut self,
+        start: f64,
+        end: f64,
+        step: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_arange(start, end, step, false)
+    }
+
+    /// Create linspace tensor.
+    pub fn linspace_n(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linspace(start, end, steps, false)
+    }
+
+    /// Create logspace tensor.
+    pub fn logspace_n(
+        &mut self,
+        start: f64,
+        end: f64,
+        steps: usize,
+        base: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logspace(start, end, steps, base, false)
+    }
+
+    // ── Eye/Identity Utilities ────────────────────────────────────────────
+
+    /// Create square identity matrix of size n.
+    pub fn eye_square(
+        &mut self,
+        n: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_eye(n, None, false)
+    }
+
+    /// Create rectangular identity matrix m x n.
+    pub fn eye_rect(
+        &mut self,
+        m: usize,
+        n: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_eye(m, Some(n), false)
+    }
+
+    // ── Meshgrid Utilities ────────────────────────────────────────────────
+
+    /// Create meshgrid from list of tensors.
+    pub fn meshgrid_tensors(
+        &mut self,
+        inputs: &[TensorNodeId],
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_meshgrid(inputs)
+    }
+
+    // ── Variance/Std Utilities ────────────────────────────────────────────
+
+    /// Compute variance with Bessel correction.
+    pub fn var_bessel(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_var(input, 1)
+    }
+
+    /// Compute variance without Bessel correction.
+    pub fn var_population(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_var(input, 0)
+    }
+
+    /// Compute standard deviation with Bessel correction.
+    pub fn std_bessel(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_std(input, 1)
+    }
+
+    /// Compute standard deviation without Bessel correction.
+    pub fn std_population(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_std(input, 0)
+    }
+
+    // ── Loss Function Shortcuts ───────────────────────────────────────────
+
+    /// Mean absolute error loss (L1 loss).
+    pub fn mae_loss(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_l1_loss(pred, target, "mean")
+    }
+
+    /// Binary cross-entropy loss (with logits).
+    pub fn bce_logits_loss(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_binary_cross_entropy_with_logits(pred, target, "mean")
+    }
+
+    /// Negative log likelihood loss (mean reduction).
+    pub fn nll_mean_loss(
+        &mut self,
+        pred: TensorNodeId,
+        target: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_nll_loss(pred, target, "mean")
+    }
+
+    // ── Sigmoid Variants ──────────────────────────────────────────────────
+
+    /// Hard sigmoid activation.
+    pub fn hard_sigmoid_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hardsigmoid(input)
+    }
+
+    /// Hard swish activation.
+    pub fn hard_swish_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hardswish(input)
+    }
+
+    /// Hard tanh activation.
+    pub fn hard_tanh_activation(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hardtanh(input)
+    }
+
+    // ── Dimension Utilities ───────────────────────────────────────────────
+
+    /// Move dimension to new position.
+    pub fn movedim_single(
+        &mut self,
+        input: TensorNodeId,
+        source: usize,
+        destination: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_movedim(input, source, destination)
+    }
+
+    /// Permute dimensions according to order.
+    pub fn permute_dims(
+        &mut self,
+        input: TensorNodeId,
+        dims: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_permute(input, dims)
+    }
+
+    // ── Narrow/Slice Utilities ────────────────────────────────────────────
+
+    /// Select a slice along dimension.
+    pub fn narrow_slice(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        start: usize,
+        length: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_narrow(input, dim, start, length)
+    }
+
+    /// Select single index along dimension.
+    pub fn select_index(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_select(input, dim, index)
+    }
+
+    // ── Unbind/Split Utilities ────────────────────────────────────────────
+
+    /// Unbind tensor along dimension (split into list of tensors).
+    pub fn unbind_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_unbind(input, dim)
+    }
+
+    /// Split tensor into equal-sized chunks.
+    pub fn chunk_equal(
+        &mut self,
+        input: TensorNodeId,
+        chunks: usize,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_chunk(input, chunks, dim)
+    }
+
+    // ── Tensor to Scalar ──────────────────────────────────────────────────
+
+    /// Extract scalar value from single-element tensor.
+    pub fn item(&mut self, input: TensorNodeId) -> Result<f64, AutogradError> {
+        let numel = self.tensor_numel(input)?;
+        if numel != 1 {
+            return Err(Self::incompatible_tensor_args("not a scalar"));
+        }
+        let vals = self.tensor_values(input)?;
+        Ok(vals[0])
+    }
+
+    /// Extract all values as Vec.
+    pub fn to_vec(&self, input: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
+        self.tensor_values(input)
+    }
+
+    // ── Comparison with Scalar ────────────────────────────────────────────
+
+    /// Element-wise greater than scalar.
+    pub fn gt_scalar(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scalar = self.full(vec![1], value, false)?;
+        self.tensor_gt(input, scalar)
+    }
+
+    /// Element-wise less than scalar.
+    pub fn lt_scalar(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scalar = self.full(vec![1], value, false)?;
+        self.tensor_lt(input, scalar)
+    }
+
+    /// Element-wise equal to scalar.
+    pub fn eq_scalar(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scalar = self.full(vec![1], value, false)?;
+        self.tensor_eq(input, scalar)
+    }
+
+    /// Element-wise not equal to scalar.
+    pub fn ne_scalar(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scalar = self.full(vec![1], value, false)?;
+        self.tensor_ne(input, scalar)
+    }
+
+    // ── Arithmetic with Scalar ────────────────────────────────────────────
+
+    /// Add scalar to tensor.
+    pub fn add_value(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scalar = self.full(vec![1], value, false)?;
+        self.tensor_add(input, scalar)
+    }
+
+    /// Subtract scalar from tensor.
+    pub fn sub_value(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scalar = self.full(vec![1], value, false)?;
+        self.tensor_sub(input, scalar)
+    }
+
+    /// Multiply tensor by scalar.
+    pub fn mul_value(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scalar = self.full(vec![1], value, false)?;
+        self.tensor_mul(input, scalar)
+    }
+
+    /// Divide tensor by scalar.
+    pub fn div_value(
+        &mut self,
+        input: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let scalar = self.full(vec![1], value, false)?;
+        self.tensor_div(input, scalar)
+    }
 }
 
 pub use ft_autograd::{
