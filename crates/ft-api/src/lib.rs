@@ -54591,6 +54591,258 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ifftshift(input, dim)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Normalization utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Layer normalization over trailing dimensions.
+    pub fn layer_norm_tensor(
+        &mut self,
+        input: TensorNodeId,
+        normalized_shape: Vec<usize>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_layer_norm(input, normalized_shape, weight, bias, eps)
+    }
+
+    /// Root Mean Square Layer Normalization (used in LLaMA).
+    pub fn rms_norm_tensor(
+        &mut self,
+        input: TensorNodeId,
+        normalized_shape: Vec<usize>,
+        weight: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rms_norm(input, normalized_shape, weight, eps)
+    }
+
+    /// Local Response Normalization (AlexNet-style).
+    pub fn local_response_norm_tensor(
+        &mut self,
+        input: TensorNodeId,
+        size: usize,
+        alpha: f64,
+        beta: f64,
+        k: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_local_response_norm(input, size, alpha, beta, k)
+    }
+
+    /// Instance normalization for 1D inputs [N, C, L].
+    pub fn instance_norm1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_instance_norm1d(input, weight, bias, eps)
+    }
+
+    /// Instance normalization for 3D inputs [N, C, D, H, W].
+    pub fn instance_norm3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_instance_norm3d(input, weight, bias, eps)
+    }
+
+    /// Batch normalization for 1D inputs [N, C].
+    #[allow(clippy::too_many_arguments)]
+    pub fn batch_norm1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        running_mean: Option<TensorNodeId>,
+        running_var: Option<TensorNodeId>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        training: bool,
+        momentum: f64,
+        eps: f64,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.tensor_batch_norm1d(input, running_mean, running_var, weight, bias, training, momentum, eps)
+    }
+
+    /// Batch normalization for 2D inputs [N, C, H, W].
+    #[allow(clippy::too_many_arguments)]
+    pub fn batch_norm2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        running_mean: Option<TensorNodeId>,
+        running_var: Option<TensorNodeId>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        training: bool,
+        momentum: f64,
+        eps: f64,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.tensor_batch_norm2d(input, running_mean, running_var, weight, bias, training, momentum, eps)
+    }
+
+    /// Batch normalization for 3D inputs [N, C, D, H, W].
+    #[allow(clippy::too_many_arguments)]
+    pub fn batch_norm3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        running_mean: Option<TensorNodeId>,
+        running_var: Option<TensorNodeId>,
+        weight: Option<TensorNodeId>,
+        bias: Option<TensorNodeId>,
+        training: bool,
+        momentum: f64,
+        eps: f64,
+    ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
+        self.tensor_batch_norm3d(input, running_mean, running_var, weight, bias, training, momentum, eps)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Padding utilities (additional)
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Reflection padding for 1D tensors.
+    pub fn reflection_pad1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reflection_pad1d(input, padding)
+    }
+
+    /// Reflection padding for 2D tensors.
+    pub fn reflection_pad2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reflection_pad2d(input, padding)
+    }
+
+    /// Reflection padding for 3D tensors.
+    pub fn reflection_pad3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reflection_pad3d(input, padding)
+    }
+
+    /// Replication padding for 1D tensors.
+    pub fn replication_pad1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_replication_pad1d(input, padding)
+    }
+
+    /// Replication padding for 2D tensors.
+    pub fn replication_pad2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_replication_pad2d(input, padding)
+    }
+
+    /// Replication padding for 3D tensors.
+    pub fn replication_pad3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_replication_pad3d(input, padding)
+    }
+
+    /// Zero padding for 1D tensors.
+    pub fn zero_pad1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_zero_pad1d(input, padding)
+    }
+
+    /// Zero padding for 2D tensors.
+    pub fn zero_pad2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_zero_pad2d(input, padding)
+    }
+
+    /// Circular padding for 3D tensors.
+    pub fn circular_pad3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        padding: (usize, usize, usize, usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_circular_pad3d(input, padding)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Norm utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Compute p-norm of tensor.
+    pub fn norm_tensor(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_norm(input, p)
+    }
+
+    /// Compute p-norm along a dimension.
+    pub fn norm_dim_tensor(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_norm_dim(input, p, dim)
+    }
+
+    /// Linear algebra norm (alias for norm_tensor).
+    pub fn linalg_norm_tensor(
+        &mut self,
+        input: TensorNodeId,
+        ord: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_norm(input, ord)
+    }
+
+    /// Normalize tensor to unit norm along a dimension.
+    pub fn normalize_tensor(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        dim: usize,
+        eps: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_normalize(input, p, dim, eps)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Histogram utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Multi-dimensional histogram.
+    pub fn histogramdd_tensor(
+        &mut self,
+        input: TensorNodeId,
+        bins: &[usize],
+        ranges: Option<&[(f64, f64)]>,
+        density: bool,
+    ) -> Result<(TensorNodeId, Vec<TensorNodeId>), AutogradError> {
+        self.tensor_histogramdd(input, bins, ranges, density)
+    }
 }
 
 pub use ft_autograd::{
