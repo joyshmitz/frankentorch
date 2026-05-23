@@ -14785,6 +14785,62 @@ impl FrankenTorchSession {
         self.tensor_triu_indices(row, col, offset)
     }
 
+    /// Diagonal indices. Alias for tensor_diag_indices.
+    pub fn functional_diag_indices(
+        &mut self,
+        n: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_diag_indices(n)
+    }
+
+    /// Greatest common divisor. Alias for tensor_gcd.
+    pub fn functional_gcd(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_gcd(input, other)
+    }
+
+    /// Least common multiple. Alias for tensor_lcm.
+    pub fn functional_lcm(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_lcm(input, other)
+    }
+
+    /// Broadcast to target shape. Alias for tensor_broadcast_to.
+    pub fn functional_broadcast_to(
+        &mut self,
+        input: TensorNodeId,
+        target_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_broadcast_to(input, target_shape)
+    }
+
+    /// Create strided view. Alias for tensor_as_strided.
+    pub fn functional_as_strided(
+        &mut self,
+        input: TensorNodeId,
+        size: Vec<usize>,
+        stride: Vec<usize>,
+        storage_offset: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_as_strided(input, size, stride, storage_offset)
+    }
+
+    /// Split into unequal chunks. Alias for tensor_array_split.
+    pub fn functional_array_split(
+        &mut self,
+        input: TensorNodeId,
+        sections: usize,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_array_split(input, sections, dim)
+    }
+
     /// Phase angle. Alias for tensor_angle.
     pub fn functional_angle(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
