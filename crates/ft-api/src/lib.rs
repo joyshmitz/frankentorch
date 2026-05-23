@@ -13501,6 +13501,53 @@ impl FrankenTorchSession {
         self.tensor_expand(input, target_shape)
     }
 
+    /// Concatenate tensors along a dimension. Alias for tensor_cat.
+    pub fn functional_cat(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cat(inputs, dim)
+    }
+
+    /// Stack tensors along a new dimension. Alias for tensor_stack.
+    pub fn functional_stack(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_stack(inputs, dim)
+    }
+
+    /// Split tensor into chunks. Alias for tensor_split.
+    pub fn functional_split(
+        &mut self,
+        input: TensorNodeId,
+        split_sizes: &[usize],
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_split(input, split_sizes, dim)
+    }
+
+    /// Chunk tensor into n parts. Alias for tensor_chunk.
+    pub fn functional_chunk(
+        &mut self,
+        input: TensorNodeId,
+        chunks: usize,
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_chunk(input, chunks, dim)
+    }
+
+    /// Repeat tensor along dimensions. Alias for tensor_repeat.
+    pub fn functional_repeat(
+        &mut self,
+        input: TensorNodeId,
+        repeats: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_repeat(input, repeats)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
