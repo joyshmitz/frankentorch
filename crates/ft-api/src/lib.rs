@@ -54308,6 +54308,64 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_contiguous(node)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Additional loss function utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Binary cross entropy loss.
+    pub fn bce_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bce_loss(input, target, reduction)
+    }
+
+    /// Binary cross entropy with logits (numerically stable).
+    pub fn bce_with_logits_loss_tensor(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bce_with_logits_loss(input, target, reduction)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Compound arithmetic utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Add multiply: input + value * tensor1 * tensor2.
+    pub fn addcmul_tensor(
+        &mut self,
+        input: TensorNodeId,
+        tensor1: TensorNodeId,
+        tensor2: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addcmul(input, tensor1, tensor2, value)
+    }
+
+    /// Add divide: input + value * tensor1 / tensor2.
+    pub fn addcdiv_tensor(
+        &mut self,
+        input: TensorNodeId,
+        tensor1: TensorNodeId,
+        tensor2: TensorNodeId,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_addcdiv(input, tensor1, tensor2, value)
+    }
+
+    /// Indices where tensor is non-zero.
+    pub fn argwhere_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_argwhere(input)
+    }
 }
 
 pub use ft_autograd::{
