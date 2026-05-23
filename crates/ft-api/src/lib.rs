@@ -14023,6 +14023,43 @@ impl FrankenTorchSession {
         self.tensor_prod_dim(input, dim)
     }
 
+    /// Index of max element along dimension. Alias for tensor_argmax.
+    pub fn functional_argmax(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_argmax(input, dim)
+    }
+
+    /// Index of min element along dimension. Alias for tensor_argmin.
+    pub fn functional_argmin(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_argmin(input, dim)
+    }
+
+    /// Vector p-norm. Alias for tensor_norm.
+    pub fn functional_norm(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_norm(input, p)
+    }
+
+    /// p-norm along dimension. Alias for tensor_norm_dim.
+    pub fn functional_norm_dim(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_norm_dim(input, p, dim)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
