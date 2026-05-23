@@ -4640,6 +4640,57 @@ impl FrankenTorchSession {
         self.tensor_reshape(tiled, final_shape)
     }
 
+    /// Update KV cache with new key/value tensors for incremental decoding.
+    ///
+    /// Concatenates new K/V with cached K/V along the sequence dimension.
+    ///
+    /// - `cache`: optional existing cache `[batch, num_heads, cache_len, head_dim]`
+    /// - `new_kv`: new K or V tensor `[batch, num_heads, new_len, head_dim]`
+    ///
+    /// Returns updated cache tensor `[batch, num_heads, cache_len + new_len, head_dim]`.
+    ///
+    /// If cache is None, returns new_kv as-is.
+    pub fn update_kv_cache(
+        &mut self,
+        cache: Option<TensorNodeId>,
+        new_kv: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        match cache {
+            Some(c) => {
+                let seq_dim = 2;
+                self.tensor_cat(&[c, new_kv], seq_dim)
+            }
+            None => Ok(new_kv),
+        }
+    }
+
+    /// Truncate KV cache to maximum length for sliding window attention.
+    ///
+    /// Keeps only the last `max_len` positions in the cache.
+    ///
+    /// - `cache`: KV cache `[batch, num_heads, seq_len, head_dim]`
+    /// - `max_len`: maximum sequence length to keep
+    pub fn truncate_kv_cache(
+        &mut self,
+        cache: TensorNodeId,
+        max_len: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(cache)?;
+        if shape.len() != 4 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "truncate_kv_cache: cache must be 4-D",
+                },
+            )));
+        }
+        let seq_len = shape[2];
+        if seq_len <= max_len {
+            return Ok(cache);
+        }
+        let start = seq_len - max_len;
+        self.tensor_narrow(cache, 2, start, max_len)
+    }
+
     /// Tensor contraction over specified dimensions (generalised matrix multiply).
     ///
     /// `dims` is the number of trailing dimensions of `a` to contract with
