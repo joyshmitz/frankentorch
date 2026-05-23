@@ -14872,6 +14872,64 @@ impl FrankenTorchSession {
         self.tensor_sincos(input)
     }
 
+    /// Expit (sigmoid). Alias for tensor_expit.
+    pub fn functional_expit(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_expit(input)
+    }
+
+    /// Polygamma function. Alias for tensor_polygamma.
+    pub fn functional_polygamma(
+        &mut self,
+        n: u32,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_polygamma(n, input)
+    }
+
+    /// Scaled Bessel I0. Alias for tensor_i0e.
+    pub fn functional_i0e(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_i0e(input)
+    }
+
+    /// Scaled Bessel I1. Alias for tensor_i1e.
+    pub fn functional_i1e(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_i1e(input)
+    }
+
+    /// Scaled complementary error function. Alias for tensor_erfcx.
+    pub fn functional_erfcx(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_erfcx(input)
+    }
+
+    /// Entropy. Alias for tensor_entr.
+    pub fn functional_entr(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_entr(input)
+    }
+
+    /// Multivariate log-gamma (alias). Alias for tensor_multigammaln.
+    pub fn functional_multigammaln(
+        &mut self,
+        input: TensorNodeId,
+        p: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_multigammaln(input, p)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
