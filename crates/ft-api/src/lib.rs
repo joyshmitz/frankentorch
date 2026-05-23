@@ -1896,6 +1896,43 @@ impl FrankenTorchSession {
             .leaf(vec![fill_value; numel], shape, requires_grad)
     }
 
+    /// Create a tensor filled with zeros. Alias for `zeros`.
+    pub fn tensor_zeros(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.zeros(shape, requires_grad)
+    }
+
+    /// Create a tensor filled with ones. Alias for `ones`.
+    pub fn tensor_ones(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.ones(shape, requires_grad)
+    }
+
+    /// Create a tensor filled with a constant value. Alias for `full`.
+    pub fn tensor_full(
+        &mut self,
+        shape: Vec<usize>,
+        fill_value: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.full(shape, fill_value, requires_grad)
+    }
+
+    /// Create an uninitialized tensor. Alias for `empty`.
+    pub fn tensor_empty(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.empty(shape, requires_grad)
+    }
+
     /// Create a tensor of zeros with the same shape as `input`.
     ///
     /// Equivalent to `torch.zeros_like(input)`.
@@ -19172,6 +19209,43 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_eye(n, m, requires_grad)
+    }
+
+    /// Create a tensor of zeros. Alias for tensor_zeros.
+    pub fn functional_zeros(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_zeros(shape, requires_grad)
+    }
+
+    /// Create a tensor of ones. Alias for tensor_ones.
+    pub fn functional_ones(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ones(shape, requires_grad)
+    }
+
+    /// Create a tensor filled with a value. Alias for tensor_full.
+    pub fn functional_full(
+        &mut self,
+        shape: Vec<usize>,
+        fill_value: f64,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_full(shape, fill_value, requires_grad)
+    }
+
+    /// Create an uninitialized tensor. Alias for tensor_empty.
+    pub fn functional_empty(
+        &mut self,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_empty(shape, requires_grad)
     }
 
     pub fn tensor_argmax(
