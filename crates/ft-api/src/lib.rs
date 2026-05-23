@@ -13173,6 +13173,25 @@ impl FrankenTorchSession {
         self.tensor_cdist(x1, x2, p)
     }
 
+    /// Einstein summation. Alias for tensor_einsum.
+    pub fn functional_einsum(
+        &mut self,
+        equation: &str,
+        tensors: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_einsum(equation, tensors)
+    }
+
+    /// Tensor dot product. Alias for tensor_tensordot.
+    pub fn functional_tensordot(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        dims: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_tensordot(a, b, dims)
+    }
+
     pub fn tensor_argmax(
         &mut self,
         input: TensorNodeId,
