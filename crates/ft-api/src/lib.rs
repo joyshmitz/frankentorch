@@ -14195,6 +14195,22 @@ impl FrankenTorchSession {
         self.tensor_reciprocal(input)
     }
 
+    /// Element-wise negation. Alias for tensor_negative.
+    pub fn functional_negative(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_negative(input)
+    }
+
+    /// Identity for numeric tensors. Alias for tensor_positive.
+    pub fn functional_positive(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_positive(input)
+    }
+
     /// Copy sign from sign tensor. Alias for tensor_copysign.
     pub fn functional_copysign(
         &mut self,
@@ -14679,6 +14695,40 @@ impl FrankenTorchSession {
         inputs: &[TensorNodeId],
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_dstack(inputs)
+    }
+
+    /// Concatenate tensors. Alias for tensor_concat.
+    pub fn functional_concat(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_concat(inputs, dim)
+    }
+
+    /// Concatenate tensors. Alias for tensor_concatenate.
+    pub fn functional_concatenate(
+        &mut self,
+        inputs: &[TensorNodeId],
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_concatenate(inputs, dim)
+    }
+
+    /// Row stack (vstack alias). Alias for tensor_row_stack.
+    pub fn functional_row_stack(
+        &mut self,
+        inputs: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_row_stack(inputs)
+    }
+
+    /// Column stack. Alias for tensor_column_stack.
+    pub fn functional_column_stack(
+        &mut self,
+        inputs: &[TensorNodeId],
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_column_stack(inputs)
     }
 
     /// Horizontal split. Alias for tensor_hsplit.
