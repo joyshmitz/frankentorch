@@ -13589,6 +13589,16 @@ impl FrankenTorchSession {
         self.tensor_index_select(input, dim, indices)
     }
 
+    /// Sparse index selection. Alias for tensor_index_select_sparse.
+    pub fn functional_index_select_sparse(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        indices: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_select_sparse(input, dim, indices)
+    }
+
     /// Gather elements along dimension. Alias for tensor_gather.
     pub fn functional_gather(
         &mut self,
@@ -15609,6 +15619,16 @@ impl FrankenTorchSession {
         index: usize,
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_select(input, dim, index)
+    }
+
+    /// Select with copy. Alias for tensor_select_copy.
+    pub fn functional_select_copy(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        index: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_select_copy(input, dim, index)
     }
 
     /// Swap two axes (numpy-style). Alias for tensor_swapaxes.
