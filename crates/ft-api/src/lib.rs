@@ -53352,6 +53352,179 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_margin_ranking_loss(input1, input2, target, margin, reduction)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Additional loss function utilities (batch 2)
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Triplet margin loss for metric learning.
+    pub fn triplet_margin_loss_tensor(
+        &mut self,
+        anchor: TensorNodeId,
+        positive: TensorNodeId,
+        negative: TensorNodeId,
+        margin: f64,
+        p: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triplet_margin_loss(anchor, positive, negative, margin, p, reduction)
+    }
+
+    /// CTC loss for sequence-to-sequence problems.
+    pub fn ctc_loss_tensor(
+        &mut self,
+        log_probs: TensorNodeId,
+        targets: TensorNodeId,
+        input_lengths: TensorNodeId,
+        target_lengths: TensorNodeId,
+        blank: usize,
+        reduction: &str,
+        zero_infinity: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, reduction, zero_infinity)
+    }
+
+    /// Cosine embedding loss for similarity learning.
+    pub fn cosine_embedding_loss_tensor(
+        &mut self,
+        input1: TensorNodeId,
+        input2: TensorNodeId,
+        target: TensorNodeId,
+        margin: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cosine_embedding_loss(input1, input2, target, margin, reduction)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Basic tensor operation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Dot product of two 1D tensors.
+    pub fn dot_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_dot(lhs, rhs)
+    }
+
+    /// Batch matrix multiplication.
+    pub fn bmm_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bmm(lhs, rhs)
+    }
+
+    /// Cross product of two 3-element vectors.
+    pub fn cross_tensor(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cross(a, b)
+    }
+
+    /// Cumulative sum along a dimension.
+    pub fn cumsum_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cumsum(input, dim)
+    }
+
+    /// Index of maximum value along a dimension.
+    pub fn argmax_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_argmax(input, dim)
+    }
+
+    /// Index of minimum value along a dimension.
+    pub fn argmin_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_argmin(input, dim)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Pooling operation utilities
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// 1D average pooling.
+    pub fn avg_pool1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: usize,
+        stride: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_avg_pool1d(input, kernel_size, stride)
+    }
+
+    /// 3D average pooling.
+    pub fn avg_pool3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        kernel_size: (usize, usize, usize),
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        ceil_mode: bool,
+        count_include_pad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_avg_pool3d(input, kernel_size, stride, padding, ceil_mode, count_include_pad)
+    }
+
+    /// Adaptive average pooling for 1D input.
+    pub fn adaptive_avg_pool1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        output_size: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_adaptive_avg_pool1d(input, output_size)
+    }
+
+    /// Adaptive average pooling for 3D input.
+    pub fn adaptive_avg_pool3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize, usize),
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_adaptive_avg_pool3d(input, output_size)
+    }
+
+    /// Adaptive max pooling for 1D input.
+    pub fn adaptive_max_pool1d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        output_size: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_adaptive_max_pool1d(input, output_size)
+    }
+
+    /// Adaptive max pooling for 2D input.
+    pub fn adaptive_max_pool2d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize),
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_adaptive_max_pool2d(input, output_size)
+    }
+
+    /// Adaptive max pooling for 3D input.
+    pub fn adaptive_max_pool3d_tensor(
+        &mut self,
+        input: TensorNodeId,
+        output_size: (usize, usize, usize),
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_adaptive_max_pool3d(input, output_size)
+    }
 }
 
 pub use ft_autograd::{
