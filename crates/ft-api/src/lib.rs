@@ -12435,6 +12435,32 @@ impl FrankenTorchSession {
 
     /// Apply dropout (random zeroing) to a tensor.
     ///
+    /// Equivalent to `torch.nn.functional.dropout(input, p, training)`.
+    /// During training, randomly zeroes elements with probability `p` and scales
+    /// remaining elements by `1/(1-p)`. During eval (training=false), returns input unchanged.
+    pub fn tensor_dropout(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_dropout(input, p, training)
+    }
+
+    /// Alpha dropout for self-normalizing neural networks (SELU).
+    ///
+    /// Equivalent to `torch.nn.functional.alpha_dropout(input, p, training)`.
+    pub fn tensor_alpha_dropout(
+        &mut self,
+        input: TensorNodeId,
+        p: f64,
+        training: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.functional_alpha_dropout(input, p, training)
+    }
+
+    /// Apply dropout (random zeroing) to a tensor.
+    ///
     /// Equivalent to `torch.nn.functional.dropout(input, p=0.5, training=True)`.
     /// During training, randomly zeroes elements with probability `p` and scales
     /// remaining elements by `1/(1-p)`. During eval (training=false), returns input unchanged.
