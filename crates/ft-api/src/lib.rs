@@ -97,6 +97,36 @@ impl Xoshiro256PlusPlus {
             }
         }
     }
+
+    /// Gamma(shape) using Marsaglia-Tsang method.
+    fn next_gamma(&mut self, shape: f64) -> f64 {
+        if shape < 1.0 {
+            let u = self.next_f64();
+            return self.next_gamma(shape + 1.0) * u.powf(1.0 / shape);
+        }
+        let d = shape - 1.0 / 3.0;
+        let c = 1.0 / (9.0 * d).sqrt();
+        loop {
+            let x = self.next_normal();
+            let v = 1.0 + c * x;
+            if v > 0.0 {
+                let v = v * v * v;
+                let u = self.next_f64();
+                if u < 1.0 - 0.0331 * (x * x) * (x * x)
+                    || u.ln() < 0.5 * x * x + d * (1.0 - v + v.ln())
+                {
+                    return d * v;
+                }
+            }
+        }
+    }
+
+    /// Beta(alpha, beta) via ratio of Gamma variates.
+    fn next_beta(&mut self, alpha: f64, beta: f64) -> f64 {
+        let x = self.next_gamma(alpha);
+        let y = self.next_gamma(beta);
+        x / (x + y)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -30267,6 +30297,84 @@ impl FrankenTorchSession {
         let cosh_diff = self.tensor_cosh(diff)?;
         let log_cosh = self.tensor_log(cosh_diff)?;
         self.tensor_mean(log_cosh)
+    }
+
+    /// Mixup data augmentation.
+    ///
+    /// Performs mixup: `mixed_x = lambda * x1 + (1 - lambda) * x2`
+    /// where lambda is sampled from Beta(alpha, alpha).
+    /// Returns (mixed_x, lambda) for use with mixed labels.
+    pub fn mixup_data(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+        alpha: f64,
+    ) -> Result<(TensorNodeId, f64), AutogradError> {
+        let lambda = if alpha > 0.0 {
+            let gamma1 = self.rng.next_gamma(alpha);
+            let gamma2 = self.rng.next_gamma(alpha);
+            gamma1 / (gamma1 + gamma2)
+        } else {
+            1.0
+        };
+        let x1_shape = self.tensor_shape(x1)?;
+        let lambda_tensor = self.full(x1_shape.clone(), lambda, false)?;
+        let one_minus_lambda = self.full(x1_shape, 1.0 - lambda, false)?;
+        let term1 = self.tensor_mul(lambda_tensor, x1)?;
+        let term2 = self.tensor_mul(one_minus_lambda, x2)?;
+        let mixed = self.tensor_add(term1, term2)?;
+        Ok((mixed, lambda))
+    }
+
+    /// Cutmix data augmentation.
+    ///
+    /// Performs cutmix: replaces a random rectangular region of x1 with x2.
+    /// Returns (mixed_x, lambda) where lambda is the area ratio (portion from x1).
+    /// Input must be 4D [N, C, H, W].
+    pub fn cutmix_data(
+        &mut self,
+        x1: TensorNodeId,
+        x2: TensorNodeId,
+        alpha: f64,
+    ) -> Result<(TensorNodeId, f64), AutogradError> {
+        let shape = self.tensor_shape(x1)?;
+        if shape.len() != 4 {
+            return Err(Self::incompatible_tensor_args(
+                "cutmix_data: input must be 4D [N, C, H, W]",
+            ));
+        }
+        let h = shape[2];
+        let w = shape[3];
+        let lambda = if alpha > 0.0 {
+            let gamma1 = self.rng.next_gamma(alpha);
+            let gamma2 = self.rng.next_gamma(alpha);
+            gamma1 / (gamma1 + gamma2)
+        } else {
+            1.0
+        };
+        let cut_ratio = (1.0_f64 - lambda).sqrt();
+        let cut_h = (h as f64 * cut_ratio) as usize;
+        let cut_w = (w as f64 * cut_ratio) as usize;
+        let cy = (self.rng.next_f64() * h as f64) as usize;
+        let cx = (self.rng.next_f64() * w as f64) as usize;
+        let y1 = cy.saturating_sub(cut_h / 2);
+        let y2 = (cy + cut_h / 2).min(h);
+        let x1_coord = cx.saturating_sub(cut_w / 2);
+        let x2_coord = (cx + cut_w / 2).min(w);
+        let actual_lambda = 1.0 - ((y2 - y1) * (x2_coord - x1_coord)) as f64 / (h * w) as f64;
+        let mut mask_data = vec![1.0_f64; h * w];
+        for row in y1..y2 {
+            for col in x1_coord..x2_coord {
+                mask_data[row * w + col] = 0.0;
+            }
+        }
+        let mask = self.tensor_variable(mask_data, vec![1, 1, h, w], false)?;
+        let ones = self.full(vec![1, 1, h, w], 1.0, false)?;
+        let inv_mask = self.tensor_sub(ones, mask)?;
+        let term1 = self.tensor_mul(x1, mask)?;
+        let term2 = self.tensor_mul(x2, inv_mask)?;
+        let mixed = self.tensor_add(term1, term2)?;
+        Ok((mixed, actual_lambda))
     }
 
     /// Poisson negative log likelihood loss.
