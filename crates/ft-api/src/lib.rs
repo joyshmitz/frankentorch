@@ -55906,6 +55906,59 @@ impl FrankenTorchSession {
     pub fn zero_grads_tensor(&mut self, nodes: &[TensorNodeId]) -> Result<(), AutogradError> {
         self.tensor_zero_grads(nodes)
     }
+
+    // ── View/reshape wrappers ────────────────────────────────────────────────
+
+    /// Create a view with a new shape.
+    pub fn view_tensor(
+        &mut self,
+        input: TensorNodeId,
+        new_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_view(input, new_shape)
+    }
+
+    /// Create a view with the same shape as another tensor.
+    pub fn view_as_tensor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_view_as(input, other)
+    }
+
+    /// Reshape to match another tensor's shape.
+    pub fn reshape_as_tensor(
+        &mut self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_reshape_as(input, other)
+    }
+
+    /// Squeeze all dimensions of size 1.
+    pub fn squeeze_all_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_squeeze_all(input)
+    }
+
+    /// View complex tensor as real (adds last dimension of size 2).
+    pub fn view_as_real_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_view_as_real(input)
+    }
+
+    /// View real tensor as complex (removes last dimension of size 2).
+    pub fn view_as_complex_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_view_as_complex(input)
+    }
 }
 
 pub use ft_autograd::{
