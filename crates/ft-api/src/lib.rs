@@ -56119,6 +56119,45 @@ impl FrankenTorchSession {
     ) -> Result<Vec<TensorNodeId>, AutogradError> {
         self.tensor_nonzero_as_tuple(input)
     }
+
+    // ── FFT wrappers ─────────────────────────────────────────────────────────
+
+    /// N-dimensional real FFT.
+    pub fn rfftn_tensor(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<&[usize]>,
+        dims: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_rfftn(input, s, dims)
+    }
+
+    /// N-dimensional inverse real FFT.
+    pub fn irfftn_tensor(
+        &mut self,
+        input: TensorNodeId,
+        s: Option<&[usize]>,
+        dims: Option<&[usize]>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_irfftn(input, s, dims)
+    }
+
+    /// Hermitian FFT.
+    pub fn hfft_tensor(
+        &mut self,
+        input: TensorNodeId,
+        n: Option<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_hfft(input, n)
+    }
+
+    /// Inverse Hermitian FFT.
+    pub fn ihfft_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_ihfft(input)
+    }
 }
 
 pub use ft_autograd::{
