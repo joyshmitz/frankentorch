@@ -29506,6 +29506,429 @@ impl FrankenTorchSession {
         Ok((output, h_n))
     }
 
+    /// Save a tensor to a file.
+    ///
+    /// Equivalent to `torch.save(tensor, path)` for single tensors.
+    /// Uses a simple binary format: magic + shape + dtype + requires_grad + values.
+    ///
+    /// # Arguments
+    /// * `tensor` - Tensor to save
+    /// * `path` - File path to save to
+    pub fn tensor_save(
+        &self,
+        tensor: TensorNodeId,
+        path: &std::path::Path,
+    ) -> Result<(), AutogradError> {
+        use std::io::Write;
+
+        let values = self.tensor_values(tensor)?;
+        let shape = self.tensor_shape(tensor)?;
+        let dtype = self.tensor_dtype(tensor)?;
+        let requires_grad = self.tensor_requires_grad(tensor)?;
+
+        let mut file = std::fs::File::create(path).map_err(|e| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: Box::leak(format!("tensor_save: {}", e).into_boxed_str()),
+                },
+            ))
+        })?;
+
+        // Magic bytes
+        file.write_all(b"FTENSOR\0").map_err(|e| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: Box::leak(format!("tensor_save: write error: {}", e).into_boxed_str()),
+                },
+            ))
+        })?;
+
+        // Number of dimensions
+        let ndim = shape.len() as u32;
+        file.write_all(&ndim.to_le_bytes()).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_save: write error",
+                },
+            ))
+        })?;
+
+        // Shape
+        for &dim in &shape {
+            file.write_all(&(dim as u64).to_le_bytes()).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_save: write error",
+                    },
+                ))
+            })?;
+        }
+
+        // DType (as u8)
+        let dtype_byte: u8 = match dtype {
+            DType::F32 => 0,
+            DType::F64 => 1,
+            DType::I32 => 2,
+            DType::I64 => 3,
+            DType::Bool => 4,
+            DType::Complex64 => 5,
+            DType::Complex128 => 6,
+            _ => 1, // default to F64
+        };
+        file.write_all(&[dtype_byte]).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_save: write error",
+                },
+            ))
+        })?;
+
+        // requires_grad flag
+        file.write_all(&[if requires_grad { 1 } else { 0 }]).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_save: write error",
+                },
+            ))
+        })?;
+
+        // Values as f64 bytes
+        for &val in &values {
+            file.write_all(&val.to_le_bytes()).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_save: write error",
+                    },
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Load a tensor from a file.
+    ///
+    /// Equivalent to `torch.load(path)` for single tensors.
+    /// Reads the binary format written by `tensor_save`.
+    ///
+    /// # Arguments
+    /// * `path` - File path to load from
+    ///
+    /// # Returns
+    /// The loaded tensor
+    pub fn tensor_load(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<TensorNodeId, AutogradError> {
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(path).map_err(|e| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: Box::leak(format!("tensor_load: {}", e).into_boxed_str()),
+                },
+            ))
+        })?;
+
+        // Read magic bytes
+        let mut magic = [0u8; 8];
+        file.read_exact(&mut magic).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_load: invalid file format",
+                },
+            ))
+        })?;
+        if &magic != b"FTENSOR\0" {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_load: invalid magic bytes",
+                },
+            )));
+        }
+
+        // Read ndim
+        let mut ndim_buf = [0u8; 4];
+        file.read_exact(&mut ndim_buf).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_load: read error",
+                },
+            ))
+        })?;
+        let ndim = u32::from_le_bytes(ndim_buf) as usize;
+
+        // Read shape
+        let mut shape = Vec::with_capacity(ndim);
+        for _ in 0..ndim {
+            let mut dim_buf = [0u8; 8];
+            file.read_exact(&mut dim_buf).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_load: read error",
+                    },
+                ))
+            })?;
+            shape.push(u64::from_le_bytes(dim_buf) as usize);
+        }
+
+        // Read dtype
+        let mut dtype_buf = [0u8; 1];
+        file.read_exact(&mut dtype_buf).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_load: read error",
+                },
+            ))
+        })?;
+
+        // Read requires_grad
+        let mut rg_buf = [0u8; 1];
+        file.read_exact(&mut rg_buf).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_load: read error",
+                },
+            ))
+        })?;
+        let requires_grad = rg_buf[0] != 0;
+
+        // Compute numel
+        let numel: usize = shape.iter().product();
+
+        // Read values
+        let mut values = Vec::with_capacity(numel);
+        for _ in 0..numel {
+            let mut val_buf = [0u8; 8];
+            file.read_exact(&mut val_buf).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_load: read error",
+                    },
+                ))
+            })?;
+            values.push(f64::from_le_bytes(val_buf));
+        }
+
+        self.tensor_variable(values, shape, requires_grad)
+    }
+
+    /// Save multiple tensors to a file as a state dict.
+    ///
+    /// Equivalent to `torch.save(state_dict, path)`.
+    /// Uses a simple format with named tensors.
+    ///
+    /// # Arguments
+    /// * `tensors` - List of (name, tensor) pairs
+    /// * `path` - File path to save to
+    pub fn tensor_save_state_dict(
+        &self,
+        tensors: &[(&str, TensorNodeId)],
+        path: &std::path::Path,
+    ) -> Result<(), AutogradError> {
+        use std::io::Write;
+
+        let mut file = std::fs::File::create(path).map_err(|e| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: Box::leak(format!("tensor_save_state_dict: {}", e).into_boxed_str()),
+                },
+            ))
+        })?;
+
+        // Magic for state dict
+        file.write_all(b"FTSTDICT").map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_save_state_dict: write error",
+                },
+            ))
+        })?;
+
+        // Number of tensors
+        let count = tensors.len() as u32;
+        file.write_all(&count.to_le_bytes()).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_save_state_dict: write error",
+                },
+            ))
+        })?;
+
+        for &(name, tensor) in tensors {
+            // Name length and bytes
+            let name_bytes = name.as_bytes();
+            file.write_all(&(name_bytes.len() as u32).to_le_bytes()).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_save_state_dict: write error",
+                    },
+                ))
+            })?;
+            file.write_all(name_bytes).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_save_state_dict: write error",
+                    },
+                ))
+            })?;
+
+            // Tensor data (inline, same as tensor_save)
+            let values = self.tensor_values(tensor)?;
+            let shape = self.tensor_shape(tensor)?;
+
+            let ndim = shape.len() as u32;
+            file.write_all(&ndim.to_le_bytes()).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_save_state_dict: write error",
+                    },
+                ))
+            })?;
+
+            for &dim in &shape {
+                file.write_all(&(dim as u64).to_le_bytes()).map_err(|_| {
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "tensor_save_state_dict: write error",
+                        },
+                    ))
+                })?;
+            }
+
+            for &val in &values {
+                file.write_all(&val.to_le_bytes()).map_err(|_| {
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "tensor_save_state_dict: write error",
+                        },
+                    ))
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Load a state dict from a file.
+    ///
+    /// Equivalent to `torch.load(path)` for state dicts.
+    /// Returns a list of (name, tensor) pairs.
+    pub fn tensor_load_state_dict(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<Vec<(String, TensorNodeId)>, AutogradError> {
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(path).map_err(|e| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: Box::leak(format!("tensor_load_state_dict: {}", e).into_boxed_str()),
+                },
+            ))
+        })?;
+
+        let mut magic = [0u8; 8];
+        file.read_exact(&mut magic).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_load_state_dict: invalid format",
+                },
+            ))
+        })?;
+        if &magic != b"FTSTDICT" {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_load_state_dict: invalid magic",
+                },
+            )));
+        }
+
+        let mut count_buf = [0u8; 4];
+        file.read_exact(&mut count_buf).map_err(|_| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "tensor_load_state_dict: read error",
+                },
+            ))
+        })?;
+        let count = u32::from_le_bytes(count_buf) as usize;
+
+        let mut result = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            // Read name
+            let mut name_len_buf = [0u8; 4];
+            file.read_exact(&mut name_len_buf).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_load_state_dict: read error",
+                    },
+                ))
+            })?;
+            let name_len = u32::from_le_bytes(name_len_buf) as usize;
+
+            let mut name_bytes = vec![0u8; name_len];
+            file.read_exact(&mut name_bytes).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_load_state_dict: read error",
+                    },
+                ))
+            })?;
+            let name = String::from_utf8(name_bytes).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_load_state_dict: invalid name",
+                    },
+                ))
+            })?;
+
+            // Read tensor
+            let mut ndim_buf = [0u8; 4];
+            file.read_exact(&mut ndim_buf).map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_load_state_dict: read error",
+                    },
+                ))
+            })?;
+            let ndim = u32::from_le_bytes(ndim_buf) as usize;
+
+            let mut shape = Vec::with_capacity(ndim);
+            for _ in 0..ndim {
+                let mut dim_buf = [0u8; 8];
+                file.read_exact(&mut dim_buf).map_err(|_| {
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "tensor_load_state_dict: read error",
+                        },
+                    ))
+                })?;
+                shape.push(u64::from_le_bytes(dim_buf) as usize);
+            }
+
+            let numel: usize = shape.iter().product();
+            let mut values = Vec::with_capacity(numel);
+            for _ in 0..numel {
+                let mut val_buf = [0u8; 8];
+                file.read_exact(&mut val_buf).map_err(|_| {
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "tensor_load_state_dict: read error",
+                        },
+                    ))
+                })?;
+                values.push(f64::from_le_bytes(val_buf));
+            }
+
+            let tensor = self.tensor_variable(values, shape, false)?;
+            result.push((name, tensor));
+        }
+
+        Ok(result)
+    }
+
     #[must_use]
     pub fn evidence(&self) -> &[EvidenceEntry] {
         self.runtime.ledger().entries()
