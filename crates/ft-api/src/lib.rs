@@ -56041,6 +56041,51 @@ impl FrankenTorchSession {
     ) -> Result<Option<Vec<f64>>, AutogradError> {
         self.tensor_accumulated_gradient(node)
     }
+
+    // ── Device/dtype conversion wrappers ─────────────────────────────────────
+
+    /// Return tensor on CPU (no-op for CPU tensors).
+    pub fn cpu_tensor(&self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cpu(node)
+    }
+
+    /// Move tensor to device.
+    pub fn to_tensor(&self, node: TensorNodeId, device: Device) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to(node, device)
+    }
+
+    /// Cast tensor to f32.
+    pub fn to_f32_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to_f32(input)
+    }
+
+    /// Cast tensor to f64.
+    pub fn to_f64_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_to_f64(input)
+    }
+
+    /// Convert tensor to nested list.
+    pub fn tolist_tensor(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
+        self.tensor_tolist(node)
+    }
+
+    // ── Split wrappers ───────────────────────────────────────────────────────
+
+    /// Split tensor into chunks of specified sizes.
+    pub fn split_with_sizes_tensor(
+        &mut self,
+        input: TensorNodeId,
+        split_sizes: &[usize],
+        dim: usize,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_split_with_sizes(input, split_sizes, dim)
+    }
 }
 
 pub use ft_autograd::{
