@@ -55959,6 +55959,88 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_view_as_complex(input)
     }
+
+    // ── Type conversion wrappers ─────────────────────────────────────────────
+
+    /// Cast tensor to float32.
+    pub fn float_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_float(input)
+    }
+
+    /// Cast tensor to float64.
+    pub fn double_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_double(input)
+    }
+
+    /// Cast tensor to float16.
+    pub fn half_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_half(input)
+    }
+
+    /// Cast tensor to bfloat16.
+    pub fn bfloat16_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bfloat16(input)
+    }
+
+    /// Cast tensor to int32.
+    pub fn int_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_int(input)
+    }
+
+    /// Cast tensor to bool.
+    pub fn bool_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_bool(input)
+    }
+
+    // ── Autograd wrappers ────────────────────────────────────────────────────
+
+    /// Run backward pass from a tensor.
+    pub fn backward_tensor(
+        &mut self,
+        root: TensorNodeId,
+    ) -> Result<TensorBackwardReport, AutogradError> {
+        self.tensor_backward(root)
+    }
+
+    /// Get accumulated gradient for a tensor.
+    pub fn grad_tensor(&self, node: TensorNodeId) -> Result<Option<Vec<f64>>, AutogradError> {
+        self.tensor_grad(node)
+    }
+
+    /// Get gradient from backward report.
+    pub fn gradient_tensor<'a>(
+        &self,
+        report: &'a TensorBackwardReport,
+        node: TensorNodeId,
+    ) -> Option<&'a [f64]> {
+        self.tensor_gradient(report, node)
+    }
+
+    /// Get accumulated gradient (alias for grad_tensor).
+    pub fn accumulated_gradient_tensor(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<Option<Vec<f64>>, AutogradError> {
+        self.tensor_accumulated_gradient(node)
+    }
 }
 
 pub use ft_autograd::{
