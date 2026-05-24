@@ -55836,6 +55836,47 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_lcm(input, other)
     }
+
+    // ── Shape/stride property wrappers ───────────────────────────────────────
+
+    /// Return the tensor shape.
+    pub fn shape_tensor(&self, node: TensorNodeId) -> Result<Vec<usize>, AutogradError> {
+        self.tensor_shape(node)
+    }
+
+    /// Alias for shape_tensor (PyTorch tensor.size() equivalent).
+    pub fn size_tensor(&self, node: TensorNodeId) -> Result<Vec<usize>, AutogradError> {
+        self.tensor_size(node)
+    }
+
+    /// Return size along a specific dimension.
+    pub fn size_dim_tensor(&self, node: TensorNodeId, dim: usize) -> Result<usize, AutogradError> {
+        self.tensor_size_dim(node, dim)
+    }
+
+    /// Return the tensor strides.
+    pub fn stride_tensor(&self, node: TensorNodeId) -> Result<Vec<usize>, AutogradError> {
+        self.tensor_stride(node)
+    }
+
+    /// Return stride along a specific dimension.
+    pub fn stride_dim_tensor(
+        &self,
+        node: TensorNodeId,
+        dim: usize,
+    ) -> Result<usize, AutogradError> {
+        self.tensor_stride_dim(node, dim)
+    }
+
+    /// Return number of dimensions (alias for dim_tensor).
+    pub fn ndimension_tensor(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_ndimension(node)
+    }
+
+    /// Check if tensor requires gradients.
+    pub fn requires_grad_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_requires_grad(node)
+    }
 }
 
 pub use ft_autograd::{
