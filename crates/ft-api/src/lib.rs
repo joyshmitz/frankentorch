@@ -29093,6 +29093,419 @@ impl FrankenTorchSession {
         self.tensor_variable(new_h, h_shape, false)
     }
 
+    /// Process a sequence through an LSTM layer.
+    ///
+    /// Equivalent to `torch.nn.LSTM` forward pass.
+    /// Input shape: (seq_len, batch, input_size) if batch_first=false, else (batch, seq_len, input_size)
+    /// Returns (output, (h_n, c_n)) where output has shape (seq_len, batch, hidden_size * num_directions)
+    ///
+    /// # Arguments
+    /// * `input` - Input sequence
+    /// * `hx` - Initial hidden state (h_0, c_0), each of shape (num_layers * num_directions, batch, hidden_size)
+    /// * `weights` - List of weight tensors [(w_ih_l0, w_hh_l0, b_ih_l0, b_hh_l0), ...]
+    /// * `batch_first` - If true, input is (batch, seq_len, input_size)
+    /// * `bidirectional` - If true, use bidirectional LSTM
+    pub fn tensor_lstm(
+        &mut self,
+        input: TensorNodeId,
+        hx: Option<(TensorNodeId, TensorNodeId)>,
+        weights: &[(TensorNodeId, TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>)],
+        batch_first: bool,
+        bidirectional: bool,
+    ) -> Result<(TensorNodeId, (TensorNodeId, TensorNodeId)), AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "lstm: input must be 3-D",
+                },
+            )));
+        }
+
+        let (seq_len, batch_size, _input_size) = if batch_first {
+            (input_shape[1], input_shape[0], input_shape[2])
+        } else {
+            (input_shape[0], input_shape[1], input_shape[2])
+        };
+
+        let num_layers = weights.len();
+        let num_directions = if bidirectional { 2 } else { 1 };
+
+        // Get hidden size from first weight
+        let w_hh_shape = self.tensor_shape(weights[0].1)?;
+        let hidden_size = w_hh_shape[1];
+
+        // Initialize hidden states if not provided
+        let (mut h_all, mut c_all) = if let Some((h0, c0)) = hx {
+            (self.tensor_values(h0)?, self.tensor_values(c0)?)
+        } else {
+            let total = num_layers * num_directions * batch_size * hidden_size;
+            (vec![0.0; total], vec![0.0; total])
+        };
+
+        // Convert input to seq-first if needed
+        let input_data = self.tensor_values(input)?;
+        let input_size = if batch_first { input_shape[2] } else { input_shape[2] };
+
+        let mut layer_input: Vec<Vec<f64>> = Vec::with_capacity(seq_len);
+
+        // Extract sequences
+        for t in 0..seq_len {
+            let mut seq_data = Vec::with_capacity(batch_size * input_size);
+            for b in 0..batch_size {
+                for i in 0..input_size {
+                    let idx = if batch_first {
+                        b * seq_len * input_size + t * input_size + i
+                    } else {
+                        t * batch_size * input_size + b * input_size + i
+                    };
+                    seq_data.push(input_data[idx]);
+                }
+            }
+            layer_input.push(seq_data);
+        }
+
+        let mut outputs: Vec<Vec<f64>> = vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
+
+        // Process each layer
+        for layer in 0..num_layers {
+            let (w_ih, w_hh, b_ih, b_hh) = &weights[layer];
+
+            // Forward direction
+            let layer_base = layer * num_directions * batch_size * hidden_size;
+            let mut h = h_all[layer_base..layer_base + batch_size * hidden_size].to_vec();
+            let mut c = c_all[layer_base..layer_base + batch_size * hidden_size].to_vec();
+
+            let w_ih_t = self.tensor_transpose(*w_ih, 0, 1)?;
+            let w_hh_t = self.tensor_transpose(*w_hh, 0, 1)?;
+
+            for t in 0..seq_len {
+                let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                let h_t = self.tensor_variable(h.clone(), vec![batch_size, hidden_size], false)?;
+                let c_t = self.tensor_variable(c.clone(), vec![batch_size, hidden_size], false)?;
+
+                let (new_h, new_c) = self.lstm_cell(x, (h_t, c_t), w_ih_t, w_hh_t, *b_ih, *b_hh)?;
+                h = self.tensor_values(new_h)?;
+                c = self.tensor_values(new_c)?;
+
+                for i in 0..batch_size * hidden_size {
+                    outputs[t][i] = h[i];
+                }
+            }
+
+            // Update final states
+            h_all[layer_base..layer_base + batch_size * hidden_size].copy_from_slice(&h);
+            c_all[layer_base..layer_base + batch_size * hidden_size].copy_from_slice(&c);
+
+            // Bidirectional: backward direction
+            if bidirectional {
+                let rev_base = layer_base + batch_size * hidden_size;
+                let mut h_rev = h_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
+                let mut c_rev = c_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
+
+                for t in (0..seq_len).rev() {
+                    let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                    let h_t = self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
+                    let c_t = self.tensor_variable(c_rev.clone(), vec![batch_size, hidden_size], false)?;
+
+                    let (new_h, new_c) = self.lstm_cell(x, (h_t, c_t), w_ih_t, w_hh_t, *b_ih, *b_hh)?;
+                    h_rev = self.tensor_values(new_h)?;
+                    c_rev = self.tensor_values(new_c)?;
+
+                    for i in 0..batch_size * hidden_size {
+                        outputs[t][batch_size * hidden_size + i] = h_rev[i];
+                    }
+                }
+
+                h_all[rev_base..rev_base + batch_size * hidden_size].copy_from_slice(&h_rev);
+                c_all[rev_base..rev_base + batch_size * hidden_size].copy_from_slice(&c_rev);
+            }
+
+            // Prepare input for next layer
+            if layer < num_layers - 1 {
+                layer_input = outputs.clone();
+            }
+        }
+
+        // Flatten outputs
+        let out_size = hidden_size * num_directions;
+        let mut flat_output = Vec::with_capacity(seq_len * batch_size * out_size);
+        for t in 0..seq_len {
+            flat_output.extend_from_slice(&outputs[t]);
+        }
+
+        let out_shape = if batch_first {
+            vec![batch_size, seq_len, out_size]
+        } else {
+            vec![seq_len, batch_size, out_size]
+        };
+        let output = self.tensor_variable(flat_output, out_shape, false)?;
+
+        let h_n = self.tensor_variable(h_all, vec![num_layers * num_directions, batch_size, hidden_size], false)?;
+        let c_n = self.tensor_variable(c_all, vec![num_layers * num_directions, batch_size, hidden_size], false)?;
+
+        Ok((output, (h_n, c_n)))
+    }
+
+    /// Process a sequence through a GRU layer.
+    ///
+    /// Equivalent to `torch.nn.GRU` forward pass.
+    /// Input shape: (seq_len, batch, input_size) if batch_first=false
+    /// Returns (output, h_n) where output has shape (seq_len, batch, hidden_size * num_directions)
+    pub fn tensor_gru(
+        &mut self,
+        input: TensorNodeId,
+        hx: Option<TensorNodeId>,
+        weights: &[(TensorNodeId, TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>)],
+        batch_first: bool,
+        bidirectional: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "gru: input must be 3-D",
+                },
+            )));
+        }
+
+        let (seq_len, batch_size, _input_size) = if batch_first {
+            (input_shape[1], input_shape[0], input_shape[2])
+        } else {
+            (input_shape[0], input_shape[1], input_shape[2])
+        };
+
+        let num_layers = weights.len();
+        let num_directions = if bidirectional { 2 } else { 1 };
+
+        let w_hh_shape = self.tensor_shape(weights[0].1)?;
+        let hidden_size = w_hh_shape[1];
+
+        let mut h_all = if let Some(h0) = hx {
+            self.tensor_values(h0)?
+        } else {
+            vec![0.0; num_layers * num_directions * batch_size * hidden_size]
+        };
+
+        let input_data = self.tensor_values(input)?;
+        let input_size = if batch_first { input_shape[2] } else { input_shape[2] };
+
+        let mut layer_input: Vec<Vec<f64>> = Vec::with_capacity(seq_len);
+        for t in 0..seq_len {
+            let mut seq_data = Vec::with_capacity(batch_size * input_size);
+            for b in 0..batch_size {
+                for i in 0..input_size {
+                    let idx = if batch_first {
+                        b * seq_len * input_size + t * input_size + i
+                    } else {
+                        t * batch_size * input_size + b * input_size + i
+                    };
+                    seq_data.push(input_data[idx]);
+                }
+            }
+            layer_input.push(seq_data);
+        }
+
+        let mut outputs: Vec<Vec<f64>> = vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
+
+        for layer in 0..num_layers {
+            let (w_ih, w_hh, b_ih, b_hh) = &weights[layer];
+            let layer_base = layer * num_directions * batch_size * hidden_size;
+            let mut h = h_all[layer_base..layer_base + batch_size * hidden_size].to_vec();
+
+            let w_ih_t = self.tensor_transpose(*w_ih, 0, 1)?;
+            let w_hh_t = self.tensor_transpose(*w_hh, 0, 1)?;
+
+            for t in 0..seq_len {
+                let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                let h_t = self.tensor_variable(h.clone(), vec![batch_size, hidden_size], false)?;
+
+                let new_h = self.gru_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?;
+                h = self.tensor_values(new_h)?;
+
+                for i in 0..batch_size * hidden_size {
+                    outputs[t][i] = h[i];
+                }
+            }
+
+            h_all[layer_base..layer_base + batch_size * hidden_size].copy_from_slice(&h);
+
+            if bidirectional {
+                let rev_base = layer_base + batch_size * hidden_size;
+                let mut h_rev = h_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
+
+                for t in (0..seq_len).rev() {
+                    let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                    let h_t = self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
+
+                    let new_h = self.gru_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?;
+                    h_rev = self.tensor_values(new_h)?;
+
+                    for i in 0..batch_size * hidden_size {
+                        outputs[t][batch_size * hidden_size + i] = h_rev[i];
+                    }
+                }
+
+                h_all[rev_base..rev_base + batch_size * hidden_size].copy_from_slice(&h_rev);
+            }
+
+            if layer < num_layers - 1 {
+                layer_input = outputs.clone();
+            }
+        }
+
+        let out_size = hidden_size * num_directions;
+        let mut flat_output = Vec::with_capacity(seq_len * batch_size * out_size);
+        for t in 0..seq_len {
+            flat_output.extend_from_slice(&outputs[t]);
+        }
+
+        let out_shape = if batch_first {
+            vec![batch_size, seq_len, out_size]
+        } else {
+            vec![seq_len, batch_size, out_size]
+        };
+        let output = self.tensor_variable(flat_output, out_shape, false)?;
+        let h_n = self.tensor_variable(h_all, vec![num_layers * num_directions, batch_size, hidden_size], false)?;
+
+        Ok((output, h_n))
+    }
+
+    /// Process a sequence through an RNN layer (Elman RNN).
+    ///
+    /// Equivalent to `torch.nn.RNN` forward pass with tanh nonlinearity.
+    /// Input shape: (seq_len, batch, input_size) if batch_first=false
+    /// Returns (output, h_n)
+    pub fn tensor_rnn(
+        &mut self,
+        input: TensorNodeId,
+        hx: Option<TensorNodeId>,
+        weights: &[(TensorNodeId, TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>)],
+        batch_first: bool,
+        bidirectional: bool,
+        nonlinearity: &str,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+        if input_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "rnn: input must be 3-D",
+                },
+            )));
+        }
+
+        let (seq_len, batch_size, _input_size) = if batch_first {
+            (input_shape[1], input_shape[0], input_shape[2])
+        } else {
+            (input_shape[0], input_shape[1], input_shape[2])
+        };
+
+        let num_layers = weights.len();
+        let num_directions = if bidirectional { 2 } else { 1 };
+
+        let w_hh_shape = self.tensor_shape(weights[0].1)?;
+        let hidden_size = w_hh_shape[1];
+
+        let mut h_all = if let Some(h0) = hx {
+            self.tensor_values(h0)?
+        } else {
+            vec![0.0; num_layers * num_directions * batch_size * hidden_size]
+        };
+
+        let input_data = self.tensor_values(input)?;
+        let input_size = if batch_first { input_shape[2] } else { input_shape[2] };
+
+        let mut layer_input: Vec<Vec<f64>> = Vec::with_capacity(seq_len);
+        for t in 0..seq_len {
+            let mut seq_data = Vec::with_capacity(batch_size * input_size);
+            for b in 0..batch_size {
+                for i in 0..input_size {
+                    let idx = if batch_first {
+                        b * seq_len * input_size + t * input_size + i
+                    } else {
+                        t * batch_size * input_size + b * input_size + i
+                    };
+                    seq_data.push(input_data[idx]);
+                }
+            }
+            layer_input.push(seq_data);
+        }
+
+        let mut outputs: Vec<Vec<f64>> = vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
+
+        let use_relu = nonlinearity == "relu";
+
+        for layer in 0..num_layers {
+            let (w_ih, w_hh, b_ih, b_hh) = &weights[layer];
+            let layer_base = layer * num_directions * batch_size * hidden_size;
+            let mut h = h_all[layer_base..layer_base + batch_size * hidden_size].to_vec();
+
+            let w_ih_t = self.tensor_transpose(*w_ih, 0, 1)?;
+            let w_hh_t = self.tensor_transpose(*w_hh, 0, 1)?;
+
+            for t in 0..seq_len {
+                let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                let h_t = self.tensor_variable(h.clone(), vec![batch_size, hidden_size], false)?;
+
+                let new_h = if use_relu {
+                    self.rnn_relu_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?
+                } else {
+                    self.rnn_tanh_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?
+                };
+                h = self.tensor_values(new_h)?;
+
+                for i in 0..batch_size * hidden_size {
+                    outputs[t][i] = h[i];
+                }
+            }
+
+            h_all[layer_base..layer_base + batch_size * hidden_size].copy_from_slice(&h);
+
+            if bidirectional {
+                let rev_base = layer_base + batch_size * hidden_size;
+                let mut h_rev = h_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
+
+                for t in (0..seq_len).rev() {
+                    let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                    let h_t = self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
+
+                    let new_h = if use_relu {
+                        self.rnn_relu_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?
+                    } else {
+                        self.rnn_tanh_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?
+                    };
+                    h_rev = self.tensor_values(new_h)?;
+
+                    for i in 0..batch_size * hidden_size {
+                        outputs[t][batch_size * hidden_size + i] = h_rev[i];
+                    }
+                }
+
+                h_all[rev_base..rev_base + batch_size * hidden_size].copy_from_slice(&h_rev);
+            }
+
+            if layer < num_layers - 1 {
+                layer_input = outputs.clone();
+            }
+        }
+
+        let out_size = hidden_size * num_directions;
+        let mut flat_output = Vec::with_capacity(seq_len * batch_size * out_size);
+        for t in 0..seq_len {
+            flat_output.extend_from_slice(&outputs[t]);
+        }
+
+        let out_shape = if batch_first {
+            vec![batch_size, seq_len, out_size]
+        } else {
+            vec![seq_len, batch_size, out_size]
+        };
+        let output = self.tensor_variable(flat_output, out_shape, false)?;
+        let h_n = self.tensor_variable(h_all, vec![num_layers * num_directions, batch_size, hidden_size], false)?;
+
+        Ok((output, h_n))
+    }
+
     #[must_use]
     pub fn evidence(&self) -> &[EvidenceEntry] {
         self.runtime.ledger().entries()
@@ -87554,5 +87967,85 @@ mod tests {
         let (std, mean) = s.tensor_std_mean(a, 1, 1).unwrap();
         assert_eq!(s.tensor_shape(std).unwrap(), vec![2]);
         assert_eq!(s.tensor_shape(mean).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn test_tensor_lstm_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // Input: seq_len=3, batch=2, input_size=4
+        let input = s.tensor_variable(vec![0.1; 24], vec![3, 2, 4], false).unwrap();
+
+        // Weights for 1-layer LSTM with hidden_size=5
+        // w_ih: (4*hidden_size, input_size) = (20, 4)
+        // w_hh: (4*hidden_size, hidden_size) = (20, 5)
+        let w_ih = s.tensor_variable(vec![0.1; 80], vec![20, 4], false).unwrap();
+        let w_hh = s.tensor_variable(vec![0.1; 100], vec![20, 5], false).unwrap();
+
+        let weights = vec![(w_ih, w_hh, None, None)];
+
+        let (output, (h_n, c_n)) = s.tensor_lstm(input, None, &weights, false, false).unwrap();
+
+        // Output shape: (seq_len, batch, hidden_size) = (3, 2, 5)
+        assert_eq!(s.tensor_shape(output).unwrap(), vec![3, 2, 5]);
+        // h_n shape: (num_layers * num_directions, batch, hidden_size) = (1, 2, 5)
+        assert_eq!(s.tensor_shape(h_n).unwrap(), vec![1, 2, 5]);
+        assert_eq!(s.tensor_shape(c_n).unwrap(), vec![1, 2, 5]);
+    }
+
+    #[test]
+    fn test_tensor_gru_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let input = s.tensor_variable(vec![0.1; 24], vec![3, 2, 4], false).unwrap();
+
+        // GRU weights: w_ih (3*hidden, input), w_hh (3*hidden, hidden)
+        let w_ih = s.tensor_variable(vec![0.1; 60], vec![15, 4], false).unwrap();
+        let w_hh = s.tensor_variable(vec![0.1; 75], vec![15, 5], false).unwrap();
+
+        let weights = vec![(w_ih, w_hh, None, None)];
+
+        let (output, h_n) = s.tensor_gru(input, None, &weights, false, false).unwrap();
+
+        assert_eq!(s.tensor_shape(output).unwrap(), vec![3, 2, 5]);
+        assert_eq!(s.tensor_shape(h_n).unwrap(), vec![1, 2, 5]);
+    }
+
+    #[test]
+    fn test_tensor_rnn_basic() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let input = s.tensor_variable(vec![0.1; 24], vec![3, 2, 4], false).unwrap();
+
+        // RNN weights: w_ih (hidden, input), w_hh (hidden, hidden)
+        let w_ih = s.tensor_variable(vec![0.1; 20], vec![5, 4], false).unwrap();
+        let w_hh = s.tensor_variable(vec![0.1; 25], vec![5, 5], false).unwrap();
+
+        let weights = vec![(w_ih, w_hh, None, None)];
+
+        let (output, h_n) = s.tensor_rnn(input, None, &weights, false, false, "tanh").unwrap();
+
+        assert_eq!(s.tensor_shape(output).unwrap(), vec![3, 2, 5]);
+        assert_eq!(s.tensor_shape(h_n).unwrap(), vec![1, 2, 5]);
+    }
+
+    #[test]
+    fn test_tensor_lstm_batch_first() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // batch_first: (batch, seq_len, input_size) = (2, 3, 4)
+        let input = s.tensor_variable(vec![0.1; 24], vec![2, 3, 4], false).unwrap();
+
+        let w_ih = s.tensor_variable(vec![0.1; 80], vec![20, 4], false).unwrap();
+        let w_hh = s.tensor_variable(vec![0.1; 100], vec![20, 5], false).unwrap();
+
+        let weights = vec![(w_ih, w_hh, None, None)];
+
+        let (output, (h_n, c_n)) = s.tensor_lstm(input, None, &weights, true, false).unwrap();
+
+        // Output: (batch, seq_len, hidden_size) = (2, 3, 5)
+        assert_eq!(s.tensor_shape(output).unwrap(), vec![2, 3, 5]);
+        assert_eq!(s.tensor_shape(h_n).unwrap(), vec![1, 2, 5]);
+        assert_eq!(s.tensor_shape(c_n).unwrap(), vec![1, 2, 5]);
     }
 }
