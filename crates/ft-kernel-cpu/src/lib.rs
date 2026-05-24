@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use rayon::prelude::*;
+
 use ft_core::{
     Complex128, ScalarTensor, SparseCOOTensor, SparseTensorError, TensorCompatError, TensorMeta,
     ensure_compatible,
@@ -629,7 +631,7 @@ fn elementwise_contiguous_f64<F>(
     op: F,
 ) -> Result<Vec<f64>, KernelError>
 where
-    F: Fn(f64, f64) -> f64,
+    F: Fn(f64, f64) -> f64 + Sync,
 {
     ensure_meta_compatible(lhs_meta, rhs_meta)?;
     ensure_storage_len(lhs, lhs_meta, "lhs")?;
@@ -645,11 +647,20 @@ where
     let lhs_window = &lhs[lhs_start..lhs_start + numel];
     let rhs_window = &rhs[rhs_start..rhs_start + numel];
 
-    Ok(lhs_window
-        .iter()
-        .zip(rhs_window.iter())
-        .map(|(left, right)| op(*left, *right))
-        .collect())
+    // Use parallel iteration for large tensors
+    if numel >= PARALLEL_THRESHOLD {
+        Ok(lhs_window
+            .par_iter()
+            .zip(rhs_window.par_iter())
+            .map(|(left, right)| op(*left, *right))
+            .collect())
+    } else {
+        Ok(lhs_window
+            .iter()
+            .zip(rhs_window.iter())
+            .map(|(left, right)| op(*left, *right))
+            .collect())
+    }
 }
 
 fn ensure_unary_layout_and_storage(buffer: &[f64], meta: &TensorMeta) -> Result<(), KernelError> {
@@ -700,9 +711,11 @@ fn checked_dim_loop_sizes(
     Ok((outer_size, inner_size, total_size))
 }
 
+const PARALLEL_THRESHOLD: usize = 8192;
+
 fn unary_contiguous_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, KernelError>
 where
-    F: Fn(f64) -> f64,
+    F: Fn(f64) -> f64 + Sync,
 {
     ensure_unary_layout_and_storage(input, meta)?;
 
@@ -714,7 +727,12 @@ where
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    Ok(window.iter().map(|value| op(*value)).collect())
+    // Use parallel iteration for large tensors
+    if numel >= PARALLEL_THRESHOLD {
+        Ok(window.par_iter().map(|value| op(*value)).collect())
+    } else {
+        Ok(window.iter().map(|value| op(*value)).collect())
+    }
 }
 
 fn broadcast_strides(
