@@ -55670,6 +55670,103 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_special_softplus(input)
     }
+
+    // ── Numerical classification wrappers ────────────────────────────────────
+
+    /// Element-wise NaN check.
+    pub fn isnan_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_isnan(input)
+    }
+
+    /// Element-wise infinity check.
+    pub fn isinf_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_isinf(input)
+    }
+
+    /// Element-wise positive infinity check.
+    pub fn isposinf_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_isposinf(input)
+    }
+
+    /// Element-wise negative infinity check.
+    pub fn isneginf_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_isneginf(input)
+    }
+
+    /// Element-wise finiteness check.
+    pub fn isfinite_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_isfinite(input)
+    }
+
+    /// Element-wise real check (non-zero imaginary part for complex).
+    pub fn isreal_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_isreal(input)
+    }
+
+    // ── Introspection wrappers ───────────────────────────────────────────────
+
+    /// Return the number of dimensions.
+    pub fn dim_tensor(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_dim(node)
+    }
+
+    /// Return the total number of elements (alias for numel_tensor).
+    pub fn nelement_tensor(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_nelement(node)
+    }
+
+    /// Return the size of each element in bytes.
+    pub fn element_size_tensor(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_element_size(node)
+    }
+
+    /// Return the total size in bytes.
+    pub fn nbytes_tensor(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_nbytes(node)
+    }
+
+    /// Return the dtype.
+    pub fn dtype_tensor(&self, node: TensorNodeId) -> Result<DType, AutogradError> {
+        self.tensor_dtype(node)
+    }
+
+    /// Return the device.
+    pub fn device_tensor(&self, node: TensorNodeId) -> Result<Device, AutogradError> {
+        self.tensor_device(node)
+    }
+
+    /// Return the device (alias for device_tensor).
+    pub fn get_device_tensor(&self, node: TensorNodeId) -> Result<Device, AutogradError> {
+        self.tensor_get_device(node)
+    }
+
+    /// Check if dtype is signed.
+    pub fn is_signed_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_signed(node)
+    }
+
+    /// Check if single-element tensor is nonzero.
+    pub fn is_nonzero_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_nonzero(node)
+    }
 }
 
 pub use ft_autograd::{
