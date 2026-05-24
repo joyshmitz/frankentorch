@@ -16,12 +16,16 @@ chmod +x .git/hooks/pre-commit
 
 ### Large File Handling
 
-`crates/ft-api/src/lib.rs` is ~86K lines and cannot complete a full UBS scan within
-the standard 120-second timeout. The pre-commit hook handles this by:
+`crates/ft-api/src/lib.rs` is ~86K lines and takes 4-5 minutes for a full UBS scan.
+The pre-commit hook handles this by:
 
 1. Detecting staged files >50K lines
 2. Extending timeout to 300 seconds for large files
-3. Providing `UBS_SKIP=1` escape hatch if needed
+3. Providing `UBS_SKIP=1` escape hatch when needed
+
+**For ft-api/lib.rs changes**: Use `UBS_SKIP=1` for local commits. The file is
+scanned in CI before merge. This is the recommended workflow for monolithic files
+that exceed reasonable pre-commit timeouts.
 
 ### Manual Scanning
 

@@ -55767,6 +55767,52 @@ impl FrankenTorchSession {
     pub fn is_nonzero_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_is_nonzero(node)
     }
+
+    // ── Device property wrappers ─────────────────────────────────────────────
+
+    /// Check if tensor is on CPU.
+    pub fn is_cpu_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_cpu(node)
+    }
+
+    /// Check if tensor is on CUDA.
+    pub fn is_cuda_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_cuda(node)
+    }
+
+    /// Check if tensor is pinned memory.
+    pub fn is_pinned_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_pinned(node)
+    }
+
+    /// Check if tensor is sparse.
+    pub fn is_sparse_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_sparse(node)
+    }
+
+    /// Check if tensor is quantized.
+    pub fn is_quantized_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_quantized(node)
+    }
+
+    /// Check if tensor is on meta device.
+    pub fn is_meta_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_meta(node)
+    }
+
+    /// Check if tensor is on MPS device.
+    pub fn is_mps_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
+        self.tensor_is_mps(node)
+    }
+
+    /// Check if two tensors have the same shape.
+    pub fn is_same_size_tensor(
+        &self,
+        input: TensorNodeId,
+        other: TensorNodeId,
+    ) -> Result<bool, AutogradError> {
+        self.tensor_is_same_size(input, other)
+    }
 }
 
 pub use ft_autograd::{
