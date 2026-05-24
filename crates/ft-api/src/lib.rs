@@ -56266,6 +56266,43 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_istft(input, n_fft, options)
     }
+
+    // ── Additional linear algebra wrappers ───────────────────────────────────
+
+    /// Transpose last two dimensions.
+    pub fn matrix_transpose_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_matrix_transpose(input)
+    }
+
+    /// Matrix norm with ord specification.
+    pub fn linalg_matrix_norm_tensor(
+        &mut self,
+        input: TensorNodeId,
+        ord: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_matrix_norm(input, ord)
+    }
+
+    /// LU factorization with extended output.
+    pub fn linalg_lu_factor_ex_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_lu_factor_ex(input)
+    }
+
+    /// Solve linear system using LU factorization.
+    pub fn linalg_lu_solve_tensor(
+        &mut self,
+        lu: TensorNodeId,
+        pivots: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linalg_lu_solve(lu, pivots, b)
+    }
 }
 
 pub use ft_autograd::{
