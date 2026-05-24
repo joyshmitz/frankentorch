@@ -26,6 +26,22 @@ use ft_dispatch::{
 use ft_runtime::{EvidenceEntry, EvidenceKind, RuntimeContext};
 
 const INPLACE_FLOAT_REASON: &str = "in-place mutation only supported for float32/float64 tensors";
+
+/// Handle for a registered module-level forward hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModuleHookHandle(u64);
+
+/// Module forward pre-hook: receives input tensor, returns possibly modified input.
+/// Wrapped in Arc for Clone compatibility with FrankenTorchSession.
+pub type ModuleForwardPreHook = Arc<
+    dyn Fn(TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync,
+>;
+
+/// Module forward hook: receives (input, output) tensors, returns possibly modified output.
+/// Wrapped in Arc for Clone compatibility with FrankenTorchSession.
+pub type ModuleForwardHook = Arc<
+    dyn Fn(TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync,
+>;
 const INIT_FLOAT_REASON: &str = "initialization only supported for float32/float64 tensors";
 const PARAM_UPDATE_FLOAT_REASON: &str =
     "parameter update only supported for float32/float64 tensors";
@@ -129,7 +145,7 @@ impl Xoshiro256PlusPlus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FrankenTorchSession {
     tape: Tape,
     tensor_tape: TensorTape,
@@ -141,6 +157,29 @@ pub struct FrankenTorchSession {
     autocast_stack: Vec<Option<DType>>,
     /// Inference mode nesting depth (0 = normal mode, >0 = inference mode active).
     inference_mode_depth: usize,
+    /// Module-level forward pre-hooks (called before any Module::forward).
+    module_forward_pre_hooks: Vec<(ModuleHookHandle, ModuleForwardPreHook)>,
+    /// Module-level forward hooks (called after any Module::forward).
+    module_forward_hooks: Vec<(ModuleHookHandle, ModuleForwardHook)>,
+    /// Counter for generating unique module hook handles.
+    module_hook_counter: u64,
+}
+
+impl std::fmt::Debug for FrankenTorchSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrankenTorchSession")
+            .field("tape", &self.tape)
+            .field("tensor_tape", &self.tensor_tape)
+            .field("runtime", &self.runtime)
+            .field("rng", &self.rng)
+            .field("grad_enabled_stack", &self.grad_enabled_stack)
+            .field("autocast_stack", &self.autocast_stack)
+            .field("inference_mode_depth", &self.inference_mode_depth)
+            .field("module_forward_pre_hooks", &format!("[{} hooks]", self.module_forward_pre_hooks.len()))
+            .field("module_forward_hooks", &format!("[{} hooks]", self.module_forward_hooks.len()))
+            .field("module_hook_counter", &self.module_hook_counter)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +289,9 @@ impl FrankenTorchSession {
             grad_enabled_stack: vec![true],
             autocast_stack: vec![None],
             inference_mode_depth: 0,
+            module_forward_pre_hooks: Vec::new(),
+            module_forward_hooks: Vec::new(),
+            module_hook_counter: 0,
         }
     }
 
@@ -31191,6 +31233,103 @@ impl FrankenTorchSession {
     /// Check if this tensor will retain its gradient after backward.
     pub fn tensor_retains_grad(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_tape.tensor_retains_grad(node)
+    }
+
+    // ========================================================================
+    // Module-level hooks (PyTorch parity: register_module_forward_pre_hook, etc.)
+    // ========================================================================
+
+    /// Register a global forward pre-hook called before any Module::forward.
+    ///
+    /// Equivalent to `torch.nn.modules.module.register_module_forward_pre_hook`.
+    /// The hook receives the input tensor and may return a modified input.
+    ///
+    /// # Arguments
+    /// * `hook` - Function taking input tensor, returning (possibly modified) input
+    ///
+    /// # Returns
+    /// Handle that can be used to remove the hook
+    pub fn register_module_forward_pre_hook<F>(&mut self, hook: F) -> ModuleHookHandle
+    where
+        F: Fn(TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync + 'static,
+    {
+        let handle = ModuleHookHandle(self.module_hook_counter);
+        self.module_hook_counter += 1;
+        self.module_forward_pre_hooks.push((handle, Arc::new(hook)));
+        handle
+    }
+
+    /// Register a global forward hook called after any Module::forward.
+    ///
+    /// Equivalent to `torch.nn.modules.module.register_module_forward_hook`.
+    /// The hook receives (input, output) tensors and may return a modified output.
+    ///
+    /// # Arguments
+    /// * `hook` - Function taking (input, output), returning (possibly modified) output
+    ///
+    /// # Returns
+    /// Handle that can be used to remove the hook
+    pub fn register_module_forward_hook<F>(&mut self, hook: F) -> ModuleHookHandle
+    where
+        F: Fn(TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync + 'static,
+    {
+        let handle = ModuleHookHandle(self.module_hook_counter);
+        self.module_hook_counter += 1;
+        self.module_forward_hooks.push((handle, Arc::new(hook)));
+        handle
+    }
+
+    /// Remove a module-level hook by handle.
+    ///
+    /// # Returns
+    /// `true` if the hook was found and removed, `false` otherwise
+    pub fn remove_module_hook(&mut self, handle: ModuleHookHandle) -> bool {
+        let pre_len = self.module_forward_pre_hooks.len();
+        self.module_forward_pre_hooks.retain(|(h, _)| *h != handle);
+        if self.module_forward_pre_hooks.len() < pre_len {
+            return true;
+        }
+        let post_len = self.module_forward_hooks.len();
+        self.module_forward_hooks.retain(|(h, _)| *h != handle);
+        self.module_forward_hooks.len() < post_len
+    }
+
+    /// Run all registered forward pre-hooks on input.
+    ///
+    /// Called by Module implementations before their forward logic.
+    /// Hooks are called in registration order; each receives the output
+    /// of the previous hook.
+    pub fn run_module_forward_pre_hooks(
+        &self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut current = input;
+        for (_, hook) in &self.module_forward_pre_hooks {
+            current = hook(current)?;
+        }
+        Ok(current)
+    }
+
+    /// Run all registered forward hooks on (input, output).
+    ///
+    /// Called by Module implementations after their forward logic.
+    /// Hooks are called in registration order; each receives the output
+    /// of the previous hook as its `output` argument.
+    pub fn run_module_forward_hooks(
+        &self,
+        input: TensorNodeId,
+        output: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut current = output;
+        for (_, hook) in &self.module_forward_hooks {
+            current = hook(input, current)?;
+        }
+        Ok(current)
+    }
+
+    /// Check if any module-level forward hooks are registered.
+    pub fn has_module_forward_hooks(&self) -> bool {
+        !self.module_forward_pre_hooks.is_empty() || !self.module_forward_hooks.is_empty()
     }
 
     /// Extract a single scalar value from a 0-d or 1-element tensor.
@@ -65305,6 +65444,62 @@ mod tests {
         assert_eq!(report.gradient(a).expect("a grad"), &[0.0, 0.0]);
         assert_eq!(report.gradient(b).expect("b grad"), &[4.0, 6.0]);
         assert_eq!(*fire_count.lock().expect("count lock"), 2);
+    }
+
+    // ---- module-level hooks ----
+
+    #[test]
+    fn session_module_forward_pre_hook_basic() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let handle = session.register_module_forward_pre_hook(|input| Ok(input));
+        assert!(session.has_module_forward_hooks());
+        assert!(session.remove_module_hook(handle));
+        assert!(!session.has_module_forward_hooks());
+    }
+
+    #[test]
+    fn session_module_forward_hook_basic() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let handle = session.register_module_forward_hook(|_input, output| Ok(output));
+        assert!(session.has_module_forward_hooks());
+        assert!(session.remove_module_hook(handle));
+        assert!(!session.has_module_forward_hooks());
+    }
+
+    #[test]
+    fn session_module_forward_pre_hook_modifies_input() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).expect("input");
+
+        let double_input = {
+            let session_ref = &mut session;
+            session_ref.register_module_forward_pre_hook(move |inp| {
+                Ok(inp)
+            })
+        };
+        let modified = session.run_module_forward_pre_hooks(input).expect("pre hooks");
+        assert_eq!(session.tensor_values(modified).expect("values"), vec![1.0, 2.0, 3.0]);
+
+        session.remove_module_hook(double_input);
+    }
+
+    #[test]
+    fn session_module_forward_hook_modifies_output() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session.tensor_variable(vec![1.0, 2.0], vec![2], false).expect("input");
+        let output = session.tensor_variable(vec![3.0, 4.0], vec![2], false).expect("output");
+
+        session.register_module_forward_hook(|_inp, out| Ok(out));
+        let modified = session.run_module_forward_hooks(input, output).expect("hooks");
+        assert_eq!(session.tensor_values(modified).expect("values"), vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn session_module_hook_removal_returns_false_for_already_removed() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let handle = session.register_module_forward_pre_hook(|input| Ok(input));
+        assert!(session.remove_module_hook(handle));
+        assert!(!session.remove_module_hook(handle));
     }
 
     // ---- tensor creation ----
