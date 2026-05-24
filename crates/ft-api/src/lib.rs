@@ -139,6 +139,8 @@ pub struct FrankenTorchSession {
     /// Autocast stack: each entry is either None (autocast disabled) or
     /// Some(target_dtype). The top of the stack determines current state.
     autocast_stack: Vec<Option<DType>>,
+    /// Inference mode nesting depth (0 = normal mode, >0 = inference mode active).
+    inference_mode_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +249,7 @@ impl FrankenTorchSession {
             rng: Xoshiro256PlusPlus::new(42),
             grad_enabled_stack: vec![true],
             autocast_stack: vec![None],
+            inference_mode_depth: 0,
         }
     }
 
@@ -326,6 +329,48 @@ impl FrankenTorchSession {
             *top = enabled;
         }
         self.sync_grad_enabled();
+    }
+
+    /// Enter inference mode: more efficient than no_grad for inference.
+    ///
+    /// Equivalent to `torch.inference_mode()`. Unlike `no_grad`, inference mode:
+    /// - Tensors created don't support autograd at all (requires_grad is ignored)
+    /// - No version counting (enables more optimizations)
+    /// - Cannot be re-enabled within the context
+    ///
+    /// Use this for production inference where gradients are never needed.
+    pub fn inference_mode_enter(&mut self) {
+        self.inference_mode_depth += 1;
+        self.no_grad_enter();
+    }
+
+    /// Exit inference mode.
+    pub fn inference_mode_exit(&mut self) {
+        if self.inference_mode_depth > 0 {
+            self.inference_mode_depth -= 1;
+            self.no_grad_exit();
+        }
+    }
+
+    /// Check if currently in inference mode.
+    pub fn is_inference_mode(&self) -> bool {
+        self.inference_mode_depth > 0
+    }
+
+    /// Execute a closure in inference mode (panic-safe RAII equivalent).
+    ///
+    /// More efficient than `with_no_grad` for pure inference workloads.
+    pub fn with_inference_mode<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.inference_mode_enter();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.inference_mode_exit();
+        match result {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     /// Execute a closure with gradient tracking disabled (panic-safe RAII equivalent).
@@ -64102,6 +64147,42 @@ mod tests {
             session.tensor_requires_grad(t).expect("requires_grad"),
             "explicit requires_grad_ toggle should persist after no_grad scope exits"
         );
+    }
+
+    #[test]
+    fn test_inference_mode() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // Initially not in inference mode
+        assert!(!session.is_inference_mode());
+
+        // Enter inference mode
+        session.inference_mode_enter();
+        assert!(session.is_inference_mode());
+        assert!(!session.is_grad_enabled());
+
+        // Nested inference mode
+        session.inference_mode_enter();
+        assert!(session.is_inference_mode());
+
+        // Exit one level
+        session.inference_mode_exit();
+        assert!(session.is_inference_mode()); // Still in inference mode (nested)
+
+        // Exit completely
+        session.inference_mode_exit();
+        assert!(!session.is_inference_mode());
+        assert!(session.is_grad_enabled()); // Grad restored
+
+        // Test with_inference_mode closure
+        let result = session.with_inference_mode(|s| {
+            assert!(s.is_inference_mode());
+            assert!(!s.is_grad_enabled());
+            42
+        });
+        assert_eq!(result, 42);
+        assert!(!session.is_inference_mode());
+        assert!(session.is_grad_enabled());
     }
 
     #[test]
