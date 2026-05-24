@@ -1,0 +1,67 @@
+#!/bin/sh
+# FrankenTorch pre-commit hook: UBS security scanner with large-file handling
+#
+# Uses --staged mode for efficiency. For files >50K lines (like ft-api/src/lib.rs),
+# runs with extended timeout or warns if timeout would occur.
+
+set -e
+
+# Skip if UBS not installed
+if ! command -v ubs >/dev/null 2>&1; then
+    echo "ubs: not found, skipping security scan"
+    exit 0
+fi
+
+# Check for staged Rust files
+STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+if [ -z "$STAGED_RS" ]; then
+    exit 0
+fi
+
+# Check if any large files are staged (>50K lines)
+LARGE_FILE_THRESHOLD=50000
+HAS_LARGE_FILE=0
+LARGE_FILES=""
+
+for f in $STAGED_RS; do
+    if [ -f "$f" ]; then
+        lines=$(wc -l < "$f")
+        if [ "$lines" -gt "$LARGE_FILE_THRESHOLD" ]; then
+            HAS_LARGE_FILE=1
+            LARGE_FILES="$LARGE_FILES $f"
+        fi
+    fi
+done
+
+if [ "$HAS_LARGE_FILE" -eq 1 ]; then
+    echo "ubs: large file(s) staged:$LARGE_FILES"
+    echo "ubs: running with extended timeout (300s) or use UBS_SKIP=1 to bypass"
+
+    if [ -n "$UBS_SKIP" ]; then
+        echo "ubs: UBS_SKIP set, skipping scan"
+        exit 0
+    fi
+
+    # Extended timeout for large files
+    timeout 300 ubs --staged --only=rust --quiet || {
+        code=$?
+        if [ "$code" -eq 124 ]; then
+            echo ""
+            echo "ubs: timeout on large file scan"
+            echo "ubs: run manually: ubs --only=rust crates/ft-api/src/lib.rs"
+            echo "ubs: or commit with: UBS_SKIP=1 git commit ..."
+            exit 1
+        fi
+        exit $code
+    }
+else
+    # Standard 120s timeout for normal files
+    timeout 120 ubs --staged --only=rust --quiet || {
+        code=$?
+        if [ "$code" -eq 124 ]; then
+            echo "ubs: timeout - unexpected for small files"
+            exit 1
+        fi
+        exit $code
+    }
+fi
