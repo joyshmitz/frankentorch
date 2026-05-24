@@ -55877,6 +55877,35 @@ impl FrankenTorchSession {
     pub fn requires_grad_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_requires_grad(node)
     }
+
+    // ── Data access wrappers ─────────────────────────────────────────────────
+
+    /// Get tensor values as f64 vector.
+    pub fn values_tensor(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
+        self.tensor_values(node)
+    }
+
+    /// Get single scalar value from tensor.
+    pub fn item_tensor(&self, node: TensorNodeId) -> Result<f64, AutogradError> {
+        self.tensor_item(node)
+    }
+
+    /// Get tensor data (detached view).
+    pub fn data_tensor(&mut self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_data(node)
+    }
+
+    // ── Gradient wrappers ────────────────────────────────────────────────────
+
+    /// Zero out gradient for a tensor.
+    pub fn zero_grad_tensor(&mut self, node: TensorNodeId) -> Result<(), AutogradError> {
+        self.tensor_zero_grad(node)
+    }
+
+    /// Zero out gradients for multiple tensors.
+    pub fn zero_grads_tensor(&mut self, nodes: &[TensorNodeId]) -> Result<(), AutogradError> {
+        self.tensor_zero_grads(nodes)
+    }
 }
 
 pub use ft_autograd::{
