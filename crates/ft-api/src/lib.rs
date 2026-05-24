@@ -56472,6 +56472,35 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_std_dim(input, dim, correction)
     }
+
+    // ── Basic math wrappers ──────────────────────────────────────────────────
+
+    /// Element-wise addition.
+    pub fn add_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_add(lhs, rhs)
+    }
+
+    /// Element-wise multiplication.
+    pub fn mul_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mul(lhs, rhs)
+    }
+
+    /// Matrix-matrix multiplication (alias for matmul_tensor).
+    pub fn mm_tensor(
+        &mut self,
+        lhs: TensorNodeId,
+        rhs: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mm(lhs, rhs)
+    }
 }
 
 pub use ft_autograd::{
