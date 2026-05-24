@@ -56425,6 +56425,53 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_std(input, correction)
     }
+
+    /// Sum along dimension.
+    pub fn sum_dim_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_sum_dim(input, dim)
+    }
+
+    /// Mean along dimension.
+    pub fn mean_dim_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_mean_dim(input, dim)
+    }
+
+    /// Variance of all elements.
+    pub fn var_tensor(
+        &mut self,
+        input: TensorNodeId,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_var(input, correction)
+    }
+
+    /// Variance along dimension.
+    pub fn var_dim_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_var_dim(input, dim, correction)
+    }
+
+    /// Standard deviation along dimension.
+    pub fn std_dim_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        correction: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_std_dim(input, dim, correction)
+    }
 }
 
 pub use ft_autograd::{
