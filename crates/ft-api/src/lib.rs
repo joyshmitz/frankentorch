@@ -55528,6 +55528,63 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_negative_binomial(r, p, shape, requires_grad)
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Activation and math utilities (additional)
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /// Softsign activation: x / (1 + |x|).
+    pub fn softsign_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_softsign(input)
+    }
+
+    /// Log sigmoid activation: log(sigmoid(x)).
+    pub fn logsigmoid_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logsigmoid(input)
+    }
+
+    /// Find k-th smallest value.
+    pub fn kthvalue_tensor(
+        &mut self,
+        input: TensorNodeId,
+        k: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_kthvalue(input, k)
+    }
+
+    /// Linear transformation: y = x @ weight^T + bias.
+    pub fn linear_tensor(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+        bias: Option<TensorNodeId>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_linear(input, weight, bias)
+    }
+
+    /// Numerically stable log(exp(a) + exp(b)).
+    pub fn logaddexp_tensor(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logaddexp(a, b)
+    }
+
+    /// Numerically stable log2(2^a + 2^b).
+    pub fn logaddexp2_tensor(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logaddexp2(a, b)
+    }
 }
 
 pub use ft_autograd::{
