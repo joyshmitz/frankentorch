@@ -56303,6 +56303,34 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_lu_solve(lu, pivots, b)
     }
+
+    // ── Complex type wrappers ────────────────────────────────────────────────
+
+    /// Cast tensor to complex64.
+    pub fn cfloat_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cfloat(input)
+    }
+
+    /// Cast tensor to complex128.
+    pub fn cdouble_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_cdouble(input)
+    }
+
+    // ── Sparse conversion wrappers ───────────────────────────────────────────
+
+    /// Convert tensor to sparse COO format.
+    pub fn to_sparse_coo_tensor(
+        &self,
+        input: TensorNodeId,
+    ) -> Result<SparseCOOTensor, AutogradError> {
+        self.tensor_to_sparse_coo(input)
+    }
 }
 
 pub use ft_autograd::{
