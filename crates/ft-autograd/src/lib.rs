@@ -4154,6 +4154,8 @@ pub struct TensorTape {
     custom_functions: BTreeMap<usize, CustomFunctionRecord>,
     next_custom_function_id: usize,
     retains_grad: BTreeSet<usize>,
+    /// Anomaly detection mode: when enabled, backward checks for NaN/Inf gradients.
+    detect_anomaly: bool,
 }
 
 impl Default for TensorTape {
@@ -4169,6 +4171,7 @@ impl Default for TensorTape {
             custom_functions: BTreeMap::new(),
             next_custom_function_id: 0,
             retains_grad: BTreeSet::new(),
+            detect_anomaly: false,
         }
     }
 }
@@ -4219,6 +4222,20 @@ impl TensorTape {
 
     pub fn set_grad_enabled(&mut self, enabled: bool) {
         self.grad_enabled = enabled;
+    }
+
+    /// Check if anomaly detection is enabled.
+    #[must_use]
+    pub fn is_detect_anomaly(&self) -> bool {
+        self.detect_anomaly
+    }
+
+    /// Enable or disable anomaly detection mode.
+    ///
+    /// When enabled, backward will check for NaN/Inf in gradients and report
+    /// which operation produced them.
+    pub fn set_detect_anomaly(&mut self, enabled: bool) {
+        self.detect_anomaly = enabled;
     }
 
     pub fn tensor_requires_grad(&self, id: TensorNodeId) -> Result<bool, AutogradError> {
@@ -12914,6 +12931,34 @@ impl TensorTape {
             })
             .collect();
 
+        // Check for gradient anomalies if detect_anomaly is enabled
+        if self.detect_anomaly {
+            for (idx, maybe_grad) in gradients.iter().enumerate() {
+                if let Some(grad) = maybe_grad {
+                    let op_name = match &self.nodes[idx].op {
+                        TensorNodeOp::Leaf => "leaf",
+                        TensorNodeOp::Add { .. } => "add",
+                        TensorNodeOp::Sub { .. } => "sub",
+                        TensorNodeOp::Mul { .. } => "mul",
+                        TensorNodeOp::Div { .. } => "div",
+                        TensorNodeOp::Neg { .. } => "neg",
+                        TensorNodeOp::Exp { .. } => "exp",
+                        TensorNodeOp::Log { .. } => "log",
+                        TensorNodeOp::Sqrt { .. } => "sqrt",
+                        TensorNodeOp::Pow { .. } => "pow",
+                        TensorNodeOp::MatMul { .. } => "matmul",
+                        _ => "op",
+                    };
+                    Self::check_gradient_anomaly(
+                        true,
+                        TensorNodeId(idx),
+                        grad,
+                        op_name,
+                    )?;
+                }
+            }
+        }
+
         let telemetry = TensorSchedulerTelemetry {
             execution_order,
             queue_pushes: queue.pushes,
@@ -14664,6 +14709,34 @@ impl TensorTape {
             }
         }
 
+        // Check for gradient anomalies if detect_anomaly is enabled
+        if self.detect_anomaly {
+            for (idx, maybe_grad) in gradients.iter().enumerate() {
+                if let Some(grad) = maybe_grad {
+                    let op_name = match &self.nodes[idx].op {
+                        TensorNodeOp::Leaf => "leaf",
+                        TensorNodeOp::Add { .. } => "add",
+                        TensorNodeOp::Sub { .. } => "sub",
+                        TensorNodeOp::Mul { .. } => "mul",
+                        TensorNodeOp::Div { .. } => "div",
+                        TensorNodeOp::Neg { .. } => "neg",
+                        TensorNodeOp::Exp { .. } => "exp",
+                        TensorNodeOp::Log { .. } => "log",
+                        TensorNodeOp::Sqrt { .. } => "sqrt",
+                        TensorNodeOp::Pow { .. } => "pow",
+                        TensorNodeOp::MatMul { .. } => "matmul",
+                        _ => "op",
+                    };
+                    Self::check_gradient_anomaly(
+                        true,
+                        TensorNodeId(idx),
+                        grad,
+                        op_name,
+                    )?;
+                }
+            }
+        }
+
         // Persist gradients for leaf tensors and those with retain_grad set.
         for (idx, grad_opt) in gradient_node_results.iter().enumerate() {
             let is_leaf = self.nodes[idx].op == TensorNodeOp::Leaf;
@@ -16333,6 +16406,46 @@ impl TensorTape {
         Self::ensure_tensor_len(node, target.len(), contribution.len())?;
         for (target_value, value) in target.iter_mut().zip(contribution.iter()) {
             *target_value += value;
+        }
+        Ok(())
+    }
+
+    fn check_gradient_anomaly(
+        detect_anomaly: bool,
+        node: TensorNodeId,
+        grad: &[f64],
+        op_name: &'static str,
+    ) -> Result<(), AutogradError> {
+        if !detect_anomaly {
+            return Ok(());
+        }
+        for (i, &val) in grad.iter().enumerate() {
+            if val.is_nan() {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: Box::leak(
+                            format!(
+                                "detect_anomaly: NaN detected in gradient at index {} for node {:?} (op: {})",
+                                i, node, op_name
+                            )
+                            .into_boxed_str(),
+                        ),
+                    },
+                )));
+            }
+            if val.is_infinite() {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: Box::leak(
+                            format!(
+                                "detect_anomaly: Inf detected in gradient at index {} for node {:?} (op: {})",
+                                i, node, op_name
+                            )
+                            .into_boxed_str(),
+                        ),
+                    },
+                )));
+            }
         }
         Ok(())
     }

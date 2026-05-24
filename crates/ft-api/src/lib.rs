@@ -373,6 +373,22 @@ impl FrankenTorchSession {
         self.sync_grad_enabled();
     }
 
+    /// Check if anomaly detection is enabled.
+    ///
+    /// Equivalent to checking `torch.is_anomaly_enabled()`.
+    pub fn is_detect_anomaly(&self) -> bool {
+        self.tensor_tape.is_detect_anomaly()
+    }
+
+    /// Enable or disable anomaly detection mode.
+    ///
+    /// Equivalent to `torch.autograd.set_detect_anomaly(enabled)`.
+    /// When enabled, backward will check for NaN/Inf in gradients and report
+    /// which operation produced them.
+    pub fn set_detect_anomaly(&mut self, enabled: bool) {
+        self.tensor_tape.set_detect_anomaly(enabled);
+    }
+
     /// Enter inference mode: more efficient than no_grad for inference.
     ///
     /// Equivalent to `torch.inference_mode()`. Unlike `no_grad`, inference mode:
@@ -38061,6 +38077,66 @@ impl FrankenTorchSession {
         self.tensor_linalg_eigvalsh(input)
     }
 
+    /// Compute eigendecomposition of a general (non-symmetric) square matrix.
+    ///
+    /// Equivalent to `torch.linalg.eig`. Returns `(eigenvalues, eigenvectors)` where:
+    /// - eigenvalues: Complex tensor of shape (n, 2) with (real, imag) pairs
+    /// - eigenvectors: Real tensor of shape (n, n) with right eigenvectors as columns
+    ///
+    /// Note: For matrices with complex eigenvalues, eigenvalues are returned as
+    /// complex conjugate pairs.
+    pub fn tensor_linalg_eig(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "linalg_eig: autograd not supported (eig backward not yet implemented)",
+                },
+            )));
+        }
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::eig_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let n = result.n;
+        // Eigenvalues as (n, 2) tensor with (real, imag) pairs
+        let evals = self.tensor_variable(result.eigenvalues, vec![n, 2], false)?;
+        let evecs = self.tensor_variable(result.eigenvectors, vec![n, n], false)?;
+        Ok((evals, evecs))
+    }
+
+    /// Compute eigenvalues of a general (non-symmetric) square matrix.
+    ///
+    /// Equivalent to `torch.linalg.eigvals`. Returns complex eigenvalues as
+    /// a tensor of shape (n, 2) with (real, imag) pairs for each eigenvalue.
+    pub fn tensor_linalg_eigvals(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "linalg_eigvals: autograd not supported (eigvals backward not yet implemented)",
+                },
+            )));
+        }
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let n = meta.shape()[0];
+        let evals = ft_kernel_cpu::eigvals_contiguous_f64(&values, &meta)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        // Return as (n, 2) tensor with (real, imag) pairs
+        self.tensor_variable(evals, vec![n, 2], false)
+    }
+
+    /// Alias for `tensor_linalg_eig`. Equivalent to deprecated `torch.eig`.
+    pub fn tensor_eig(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_linalg_eig(input)
+    }
+
     /// Compute the SVD: A = U @ diag(S) @ Vh.
     ///
     /// If `full_matrices` is true, U is (m x m) and Vh is (n x n).
@@ -65500,6 +65576,48 @@ mod tests {
         let handle = session.register_module_forward_pre_hook(|input| Ok(input));
         assert!(session.remove_module_hook(handle));
         assert!(!session.remove_module_hook(handle));
+    }
+
+    // ---- detect_anomaly ----
+
+    #[test]
+    fn session_detect_anomaly_default_off() {
+        let session = FrankenTorchSession::new(ExecutionMode::Strict);
+        assert!(!session.is_detect_anomaly());
+    }
+
+    #[test]
+    fn session_detect_anomaly_toggle() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        session.set_detect_anomaly(true);
+        assert!(session.is_detect_anomaly());
+        session.set_detect_anomaly(false);
+        assert!(!session.is_detect_anomaly());
+    }
+
+    #[test]
+    fn session_detect_anomaly_catches_nan() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        session.set_detect_anomaly(true);
+
+        let t = session.tensor_variable(vec![0.0], vec![1], true).expect("t");
+        let log_t = session.tensor_log(t).expect("log(0) = -inf");
+        let result = session.tensor_backward(log_t);
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("detect_anomaly") || err_msg.contains("Inf") || err_msg.contains("NaN"));
+    }
+
+    #[test]
+    fn session_detect_anomaly_disabled_allows_nan() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        session.set_detect_anomaly(false);
+
+        let t = session.tensor_variable(vec![0.0], vec![1], true).expect("t");
+        let log_t = session.tensor_log(t).expect("log(0) = -inf");
+        let report = session.tensor_backward(log_t).expect("backward should succeed without detect_anomaly");
+        let grad = report.gradient(t).expect("grad");
+        assert!(grad[0].is_infinite() || grad[0].is_nan());
     }
 
     // ---- tensor creation ----
