@@ -56086,6 +56086,39 @@ impl FrankenTorchSession {
     ) -> Result<Vec<TensorNodeId>, AutogradError> {
         self.tensor_split_with_sizes(input, split_sizes, dim)
     }
+
+    // ── Indexing wrappers ────────────────────────────────────────────────────
+
+    /// Index select with sparse indices.
+    pub fn index_select_sparse_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        indices: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_select_sparse(input, dim, indices)
+    }
+
+    /// Reduce into tensor at indices.
+    pub fn index_reduce_tensor(
+        &mut self,
+        input: TensorNodeId,
+        dim: i64,
+        index: TensorNodeId,
+        source: TensorNodeId,
+        reduce: &str,
+        include_self: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_index_reduce(input, dim, index, source, reduce, include_self)
+    }
+
+    /// Get indices of nonzero elements as tuple of tensors.
+    pub fn nonzero_as_tuple_tensor(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<Vec<TensorNodeId>, AutogradError> {
+        self.tensor_nonzero_as_tuple(input)
+    }
 }
 
 pub use ft_autograd::{
