@@ -1680,6 +1680,32 @@ pub fn mul_tensor_contiguous_f64(
     )
 }
 
+fn simd_dot_pairwise_f64(a: &[f64], b: &[f64], b_stride: usize) -> f64 {
+    let len = a.len();
+    let mut products = Vec::with_capacity(len);
+
+    let simd_len = len / SIMD_WIDTH * SIMD_WIDTH;
+    for i in (0..simd_len).step_by(SIMD_WIDTH) {
+        let va = f64x4::new([a[i], a[i + 1], a[i + 2], a[i + 3]]);
+        let vb = f64x4::new([
+            b[i * b_stride],
+            b[(i + 1) * b_stride],
+            b[(i + 2) * b_stride],
+            b[(i + 3) * b_stride],
+        ]);
+        let prod = va * vb;
+        products.extend_from_slice(prod.as_array_ref());
+    }
+
+    for i in simd_len..len {
+        products.push(a[i] * b[i * b_stride]);
+    }
+
+    pairwise_sum_f64(&products)
+}
+
+const MATMUL_TILE: usize = 64;
+
 pub fn matmul_tensor_contiguous_f64(
     lhs: &[f64],
     rhs: &[f64],
@@ -1697,32 +1723,48 @@ pub fn matmul_tensor_contiguous_f64(
 
     let lhs_start = lhs_meta.storage_offset();
     let rhs_start = rhs_meta.storage_offset();
-    // Push-based output skips the m*n zero-init memset that
-    // every cell would immediately overwrite (frankentorch-z588);
-    // also avoids pre-touching the output tensor before the
-    // real computation begins, easing cache pressure.
-    let mut out = Vec::with_capacity(out_numel);
 
-    // The naive triple-loop accumulates the dot product via
-    // `acc += lhs * rhs` sequentially across the K dimension. For
-    // K > 128 (typical d_model in transformers) that drifts at
-    // O(K · ε). PyTorch's CPU matmul ultimately calls BLAS which
-    // pairwise-sums the dot product, so we match that contract by
-    // staging the K products into a reusable scratch buffer and
-    // pairwise-summing it. For K <= 128 the pairwise helper falls
-    // through to sequential and produces a bit-identical result to
-    // the prior implementation; for K > 128 the cumulative error is
-    // tightened from O(K · ε) to O(log K · ε).
-    let mut scratch = vec![0.0_f64; k];
-    for row in 0..m {
-        let lhs_row_base = lhs_start + row * k;
-        for col in 0..n {
-            for (inner, slot) in scratch.iter_mut().enumerate() {
-                let lhs_idx = lhs_row_base + inner;
-                let rhs_idx = rhs_start + inner * n + col;
-                *slot = lhs[lhs_idx] * rhs[rhs_idx];
+    let mut out = vec![0.0_f64; out_numel];
+
+    if m * k * n >= PARALLEL_THRESHOLD {
+        out.par_chunks_mut(n)
+            .enumerate()
+            .for_each(|(row, out_row)| {
+                let lhs_row = &lhs[lhs_start + row * k..lhs_start + (row + 1) * k];
+                for col in 0..n {
+                    let rhs_col = &rhs[rhs_start + col..];
+                    out_row[col] = simd_dot_pairwise_f64(lhs_row, rhs_col, n);
+                }
+            });
+    } else if m >= MATMUL_TILE || n >= MATMUL_TILE || k >= MATMUL_TILE {
+        for i0 in (0..m).step_by(MATMUL_TILE) {
+            let i1 = (i0 + MATMUL_TILE).min(m);
+            for j0 in (0..n).step_by(MATMUL_TILE) {
+                let j1 = (j0 + MATMUL_TILE).min(n);
+                for k0 in (0..k).step_by(MATMUL_TILE) {
+                    let k1 = (k0 + MATMUL_TILE).min(k);
+                    for i in i0..i1 {
+                        let lhs_row = &lhs[lhs_start + i * k + k0..lhs_start + i * k + k1];
+                        for j in j0..j1 {
+                            let rhs_col = &rhs[rhs_start + k0 * n + j..];
+                            out[i * n + j] += simd_dot_pairwise_f64(lhs_row, rhs_col, n);
+                        }
+                    }
+                }
             }
-            out.push(pairwise_sum_f64(&scratch));
+        }
+    } else {
+        let mut scratch = vec![0.0_f64; k];
+        for row in 0..m {
+            let lhs_row_base = lhs_start + row * k;
+            for col in 0..n {
+                for (inner, slot) in scratch.iter_mut().enumerate() {
+                    let lhs_idx = lhs_row_base + inner;
+                    let rhs_idx = rhs_start + inner * n + col;
+                    *slot = lhs[lhs_idx] * rhs[rhs_idx];
+                }
+                out[row * n + col] = pairwise_sum_f64(&scratch);
+            }
         }
     }
 
