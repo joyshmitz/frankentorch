@@ -3,6 +3,7 @@
 use std::fmt;
 
 use rayon::prelude::*;
+use wide::f64x4;
 
 use ft_core::{
     Complex128, ScalarTensor, SparseCOOTensor, SparseTensorError, TensorCompatError, TensorMeta,
@@ -727,12 +728,56 @@ where
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    // Use parallel iteration for large tensors
     if numel >= PARALLEL_THRESHOLD {
         Ok(window.par_iter().map(|value| op(*value)).collect())
     } else {
         Ok(window.iter().map(|value| op(*value)).collect())
     }
+}
+
+fn simd_unary_f64<F, S>(window: &[f64], scalar_op: F, simd_op: S) -> Vec<f64>
+where
+    F: Fn(f64) -> f64,
+    S: Fn(f64x4) -> f64x4,
+{
+    let numel = window.len();
+    let simd_len = numel / SIMD_WIDTH * SIMD_WIDTH;
+    let mut output = Vec::with_capacity(numel);
+
+    for i in (0..simd_len).step_by(SIMD_WIDTH) {
+        let a = f64x4::new([window[i], window[i + 1], window[i + 2], window[i + 3]]);
+        let result = simd_op(a);
+        output.extend_from_slice(result.as_array_ref());
+    }
+
+    for i in simd_len..numel {
+        output.push(scalar_op(window[i]));
+    }
+
+    output
+}
+
+fn simd_unary_contiguous_f64<F, S>(
+    input: &[f64],
+    meta: &TensorMeta,
+    scalar_op: F,
+    simd_op: S,
+) -> Result<Vec<f64>, KernelError>
+where
+    F: Fn(f64) -> f64,
+    S: Fn(f64x4) -> f64x4,
+{
+    ensure_unary_layout_and_storage(input, meta)?;
+
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+
+    let start = meta.storage_offset();
+    let window = &input[start..start + numel];
+
+    Ok(simd_unary_f64(window, scalar_op, simd_op))
 }
 
 fn broadcast_strides(
@@ -824,14 +869,14 @@ pub fn neg_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| -value)
+    simd_unary_contiguous_f64(input, meta, |v| -v, |a| -a)
 }
 
 pub fn abs_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.abs())
+    simd_unary_contiguous_f64(input, meta, |v| v.abs(), |a| a.abs())
 }
 
 pub fn exp_tensor_contiguous_f64(
@@ -873,14 +918,15 @@ pub fn sqrt_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.sqrt())
+    simd_unary_contiguous_f64(input, meta, |v| v.sqrt(), |a| a.sqrt())
 }
 
 pub fn reciprocal_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| 1.0 / value)
+    let one = f64x4::splat(1.0);
+    simd_unary_contiguous_f64(input, meta, |v| 1.0 / v, move |a| one / a)
 }
 
 pub fn sin_tensor_contiguous_f64(
@@ -1501,13 +1547,89 @@ pub fn mean_dim_tensor_contiguous_f64(
     Ok(output)
 }
 
+const SIMD_WIDTH: usize = 4;
+
+fn simd_binary_f64<F, S>(
+    lhs_window: &[f64],
+    rhs_window: &[f64],
+    scalar_op: F,
+    simd_op: S,
+) -> Vec<f64>
+where
+    F: Fn(f64, f64) -> f64,
+    S: Fn(f64x4, f64x4) -> f64x4,
+{
+    let numel = lhs_window.len();
+    let simd_len = numel / SIMD_WIDTH * SIMD_WIDTH;
+    let mut output = Vec::with_capacity(numel);
+
+    for i in (0..simd_len).step_by(SIMD_WIDTH) {
+        let a = f64x4::new([
+            lhs_window[i],
+            lhs_window[i + 1],
+            lhs_window[i + 2],
+            lhs_window[i + 3],
+        ]);
+        let b = f64x4::new([
+            rhs_window[i],
+            rhs_window[i + 1],
+            rhs_window[i + 2],
+            rhs_window[i + 3],
+        ]);
+        let result = simd_op(a, b);
+        output.extend_from_slice(result.as_array_ref());
+    }
+
+    for i in simd_len..numel {
+        output.push(scalar_op(lhs_window[i], rhs_window[i]));
+    }
+
+    output
+}
+
+fn simd_elementwise_contiguous_f64<F, S>(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    scalar_op: F,
+    simd_op: S,
+) -> Result<Vec<f64>, KernelError>
+where
+    F: Fn(f64, f64) -> f64,
+    S: Fn(f64x4, f64x4) -> f64x4,
+{
+    ensure_meta_compatible(lhs_meta, rhs_meta)?;
+    ensure_storage_len(lhs, lhs_meta, "lhs")?;
+    ensure_storage_len(rhs, rhs_meta, "rhs")?;
+
+    let numel = lhs_meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+
+    let lhs_start = lhs_meta.storage_offset();
+    let rhs_start = rhs_meta.storage_offset();
+    let lhs_window = &lhs[lhs_start..lhs_start + numel];
+    let rhs_window = &rhs[rhs_start..rhs_start + numel];
+
+    Ok(simd_binary_f64(lhs_window, rhs_window, scalar_op, simd_op))
+}
+
 pub fn add_tensor_contiguous_f64(
     lhs: &[f64],
     rhs: &[f64],
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |left, right| left + right)
+    simd_elementwise_contiguous_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| l + r,
+        |a, b| a + b,
+    )
 }
 
 pub fn sub_tensor_contiguous_f64(
@@ -1516,7 +1638,14 @@ pub fn sub_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |left, right| left - right)
+    simd_elementwise_contiguous_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| l - r,
+        |a, b| a - b,
+    )
 }
 
 pub fn div_tensor_contiguous_f64(
@@ -1525,7 +1654,14 @@ pub fn div_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |left, right| left / right)
+    simd_elementwise_contiguous_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| l / r,
+        |a, b| a / b,
+    )
 }
 
 pub fn mul_tensor_contiguous_f64(
@@ -1534,7 +1670,14 @@ pub fn mul_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |left, right| left * right)
+    simd_elementwise_contiguous_f64(
+        lhs,
+        rhs,
+        lhs_meta,
+        rhs_meta,
+        |l, r| l * r,
+        |a, b| a * b,
+    )
 }
 
 pub fn matmul_tensor_contiguous_f64(
