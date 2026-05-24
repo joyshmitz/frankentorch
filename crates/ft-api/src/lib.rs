@@ -55462,6 +55462,72 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fishersnedecor(df1, df2, shape, requires_grad)
     }
+
+    /// Weibull distribution sampling.
+    pub fn weibull_tensor(
+        &mut self,
+        scale: f64,
+        concentration: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_weibull(scale, concentration, shape, requires_grad)
+    }
+
+    /// Logistic distribution sampling.
+    pub fn logistic_tensor(
+        &mut self,
+        loc: f64,
+        scale: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_logistic(loc, scale, shape, requires_grad)
+    }
+
+    /// Triangular distribution sampling.
+    pub fn triangular_tensor(
+        &mut self,
+        low: f64,
+        high: f64,
+        mode: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_triangular(low, high, mode, shape, requires_grad)
+    }
+
+    /// Pareto distribution sampling.
+    pub fn pareto_tensor(
+        &mut self,
+        scale: f64,
+        alpha: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_pareto(scale, alpha, shape, requires_grad)
+    }
+
+    /// Student's t distribution sampling.
+    pub fn studentt_tensor(
+        &mut self,
+        df: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_studentt(df, shape, requires_grad)
+    }
+
+    /// Negative binomial distribution sampling.
+    pub fn negative_binomial_tensor(
+        &mut self,
+        r: f64,
+        p: f64,
+        shape: Vec<usize>,
+        requires_grad: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        self.tensor_negative_binomial(r, p, shape, requires_grad)
+    }
 }
 
 pub use ft_autograd::{
