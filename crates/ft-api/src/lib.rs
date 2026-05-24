@@ -27879,6 +27879,123 @@ impl FrankenTorchSession {
         Ok(result)
     }
 
+    /// Compute the vector-Jacobian product (VJP).
+    ///
+    /// Equivalent to `torch.autograd.functional.vjp(func, inputs, v)`.
+    /// Given a function f: inputs -> outputs and a vector v with same shape as outputs,
+    /// computes v^T @ J where J is the Jacobian of f.
+    ///
+    /// # Arguments
+    /// * `output` - The output of the function (must be computed from inputs)
+    /// * `inputs` - The inputs to the function
+    /// * `v` - Vector to multiply with Jacobian (same shape as output)
+    ///
+    /// # Returns
+    /// A vector of VJPs, one for each input.
+    pub fn tensor_functional_vjp(
+        &mut self,
+        output: TensorNodeId,
+        inputs: &[TensorNodeId],
+        v: Vec<f64>,
+    ) -> Result<Vec<Option<Vec<f64>>>, AutogradError> {
+        // VJP is essentially backward with a custom grad_output
+        self.tensor_autograd_grad(&[output], inputs, Some(&[v]), true, false)
+    }
+
+    /// Compute the Jacobian-vector product (JVP) via forward-mode AD approximation.
+    ///
+    /// Equivalent to `torch.autograd.functional.jvp(func, inputs, v)`.
+    /// Given a function f and a vector v with same shape as inputs,
+    /// computes J @ v where J is the Jacobian of f.
+    ///
+    /// Note: This uses numerical differentiation since FrankenTorch doesn't have
+    /// forward-mode AD. For exact JVP, use finite differences with small epsilon.
+    ///
+    /// # Arguments
+    /// * `func` - A closure that computes the forward pass
+    /// * `inputs` - The input tensors
+    /// * `v` - Tangent vectors (perturbation directions), one per input
+    /// * `eps` - Epsilon for finite differences (default: 1e-6)
+    pub fn tensor_functional_jvp<F>(
+        &mut self,
+        func: F,
+        inputs: &[TensorNodeId],
+        v: &[Vec<f64>],
+        eps: Option<f64>,
+    ) -> Result<(TensorNodeId, Vec<f64>), AutogradError>
+    where
+        F: Fn(&mut Self, &[TensorNodeId]) -> Result<TensorNodeId, AutogradError>,
+    {
+        let eps = eps.unwrap_or(1e-6);
+
+        // Compute f(x)
+        let output = func(self, inputs)?;
+        let out_vals = self.tensor_values(output)?;
+
+        // Compute f(x + eps*v) using finite differences
+        let mut perturbed_inputs = Vec::with_capacity(inputs.len());
+        for (i, &inp) in inputs.iter().enumerate() {
+            let inp_vals = self.tensor_values(inp)?;
+            let shape = self.tensor_shape(inp)?;
+            let perturbed: Vec<f64> = inp_vals
+                .iter()
+                .zip(v.get(i).unwrap_or(&vec![0.0; inp_vals.len()]).iter())
+                .map(|(x, vi)| x + eps * vi)
+                .collect();
+            let p = self.tensor_variable(perturbed, shape, false)?;
+            perturbed_inputs.push(p);
+        }
+
+        let perturbed_output = func(self, &perturbed_inputs)?;
+        let perturbed_vals = self.tensor_values(perturbed_output)?;
+
+        // JVP = (f(x + eps*v) - f(x)) / eps
+        let jvp: Vec<f64> = perturbed_vals
+            .iter()
+            .zip(out_vals.iter())
+            .map(|(p, o)| (p - o) / eps)
+            .collect();
+
+        Ok((output, jvp))
+    }
+
+    /// Compute the Hessian-vector product (HVP).
+    ///
+    /// Equivalent to `torch.autograd.functional.hvp(func, inputs, v)`.
+    /// Given a scalar function f and vectors v, computes H @ v where H is the Hessian.
+    ///
+    /// # Arguments
+    /// * `output` - Scalar output of the function (must have shape [1] or [])
+    /// * `inputs` - Input tensors
+    /// * `v` - Vectors to multiply with Hessian, one per input
+    pub fn tensor_functional_hvp(
+        &mut self,
+        output: TensorNodeId,
+        inputs: &[TensorNodeId],
+        v: &[Vec<f64>],
+    ) -> Result<Vec<Option<Vec<f64>>>, AutogradError> {
+        // HVP = d/dx (v^T @ grad(f))
+        // First compute grad(f) with create_graph=true
+        let grads = self.tensor_autograd_grad(&[output], inputs, None, true, true)?;
+
+        // Compute v^T @ grad for each input
+        let mut vdotg_sum = 0.0;
+        for (i, grad_opt) in grads.iter().enumerate() {
+            if let Some(g) = grad_opt {
+                let vi = v.get(i).map(|x| x.as_slice()).unwrap_or(&[]);
+                for (gj, vj) in g.iter().zip(vi.iter()) {
+                    vdotg_sum += gj * vj;
+                }
+            }
+        }
+
+        // Create a scalar tensor for the dot product
+        let vdotg = self.tensor_variable(vec![vdotg_sum], vec![1], true)?;
+
+        // Differentiate again to get HVP
+        self.tensor_autograd_grad(&[vdotg], inputs, None, false, false)
+    }
+
     pub fn tensor_set_accumulated_gradient(
         &mut self,
         node: TensorNodeId,
