@@ -560,6 +560,22 @@ impl TensorPoolCaseReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorConvCaseReport {
+    pub name: String,
+    pub mode: ExecutionMode,
+    pub output_ok: bool,
+    pub shape_ok: bool,
+    pub forensic_log: StructuredCaseLog,
+}
+
+impl TensorConvCaseReport {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.output_ok && self.shape_ok
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessReport {
     pub suite: &'static str,
@@ -654,6 +670,32 @@ struct TensorPoolCase {
     padding: usize,
     #[serde(default)]
     output_size: Option<usize>,
+    expected_output: Vec<f64>,
+    expected_shape: Vec<usize>,
+    tolerance: Option<f64>,
+    #[serde(default)]
+    contract_ids: Vec<String>,
+    #[serde(default)]
+    e2e_scenarios: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorConvFixtureFile {
+    cases: Vec<TensorConvCase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorConvCase {
+    name: String,
+    op: String,
+    input: Vec<f64>,
+    input_shape: Vec<usize>,
+    weight: Vec<f64>,
+    weight_shape: Vec<usize>,
+    #[serde(default)]
+    bias: Option<Vec<f64>>,
+    stride: usize,
+    padding: usize,
     expected_output: Vec<f64>,
     expected_shape: Vec<usize>,
     tolerance: Option<f64>,
@@ -1286,6 +1328,7 @@ impl_fixture_metadata!(
     TensorJoinCase,
     TensorFftCase,
     TensorPoolCase,
+    TensorConvCase,
 );
 
 fn validate_fixture_metadata(
@@ -1876,6 +1919,34 @@ pub fn run_tensor_pool_conformance(
 
     let report = HarnessReport {
         suite: "tensor_pool",
+        oracle_present: config.oracle_root.exists(),
+        fixture_count: 1,
+        strict_mode: mode == ExecutionMode::Strict,
+        cases_total,
+        cases_passed,
+    };
+
+    Ok((report, case_reports))
+}
+
+pub fn run_tensor_conv_conformance(
+    config: &HarnessConfig,
+    mode: ExecutionMode,
+) -> Result<(HarnessReport, Vec<TensorConvCaseReport>), String> {
+    let fixture_path = config.fixture_root.join("tensor_conv_cases.json");
+    let fixture: TensorConvFixtureFile = load_fixture(&fixture_path)?;
+
+    let mut case_reports = Vec::with_capacity(fixture.cases.len());
+    for case in &fixture.cases {
+        validate_fixture_metadata(case.name.as_str(), case)?;
+        case_reports.push(run_tensor_conv_case(case, mode)?);
+    }
+
+    let (cases_total, cases_passed) =
+        summarize_passes(case_reports.iter().map(TensorConvCaseReport::passed));
+
+    let report = HarnessReport {
+        suite: "tensor_conv",
         oracle_present: config.oracle_root.exists(),
         fixture_count: 1,
         strict_mode: mode == ExecutionMode::Strict,
@@ -5417,6 +5488,98 @@ fn run_tensor_pool_case(
             ],
             format!(
                 "cargo test -p ft-conformance tensor_pool_conformance -- --nocapture # mode={}",
+                mode_label(mode)
+            ),
+            outcome,
+            reason_code,
+        )
+        .with_extra_fields(extra_fields),
+    })
+}
+
+fn run_tensor_conv_case(
+    case: &TensorConvCase,
+    mode: ExecutionMode,
+) -> Result<TensorConvCaseReport, String> {
+    let mut session = FrankenTorchSession::new(mode);
+    let input = session
+        .tensor_variable(case.input.clone(), case.input_shape.clone(), false)
+        .map_err(|error| format!("conv input build failed for '{}': {error}", case.name))?;
+    let weight = session
+        .tensor_variable(case.weight.clone(), case.weight_shape.clone(), false)
+        .map_err(|error| format!("conv weight build failed for '{}': {error}", case.name))?;
+    let bias = if let Some(ref b) = case.bias {
+        let out_channels = case.weight_shape[0];
+        Some(session
+            .tensor_variable(b.clone(), vec![out_channels], false)
+            .map_err(|error| format!("conv bias build failed for '{}': {error}", case.name))?)
+    } else {
+        None
+    };
+
+    let out = match case.op.as_str() {
+        "conv1d" => session
+            .tensor_conv1d(input, weight, bias, case.stride, case.padding)
+            .map_err(|error| format!("conv1d failed for '{}': {error}", case.name))?,
+        "conv2d" => {
+            let s = case.stride;
+            let p = case.padding;
+            session
+                .tensor_conv2d(input, weight, bias, (s, s), (p, p))
+                .map_err(|error| format!("conv2d failed for '{}': {error}", case.name))?
+        }
+        _ => {
+            return Err(format!(
+                "unsupported conv operation '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
+    };
+
+    let actual_values = session
+        .tensor_values(out)
+        .map_err(|error| format!("tensor value read failed for '{}': {error}", case.name))?;
+    let actual_shape = session.tensor_shape(out)
+        .map_err(|error| format!("tensor shape read failed for '{}': {error}", case.name))?;
+
+    let tolerance = case.tolerance.unwrap_or(1e-10);
+    let output_ok = vec_within(
+        actual_values.as_slice(),
+        case.expected_output.as_slice(),
+        tolerance,
+    );
+    let shape_ok = actual_shape == case.expected_shape;
+    let outcome = if output_ok && shape_ok { "pass" } else { "fail" };
+    let reason_code = if outcome == "pass" {
+        "tensor_conv_parity_ok"
+    } else {
+        "tensor_conv_mismatch"
+    };
+
+    let mut extra_fields = std::collections::BTreeMap::new();
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
+    extra_fields.insert(
+        "runtime_evidence".to_string(),
+        runtime_evidence_field(session.evidence()),
+    );
+
+    Ok(TensorConvCaseReport {
+        name: case.name.clone(),
+        mode,
+        output_ok,
+        shape_ok,
+        forensic_log: StructuredCaseLog::new(
+            "tensor_conv",
+            "tensor_conv_cases.json",
+            "FT-P2C-CONV",
+            case.name.as_str(),
+            mode,
+            vec![
+                "crates/ft-conformance/fixtures/tensor_conv_cases.json".to_string(),
+                "artifacts/phase2c/FT-P2C-CONV/parity_report.json".to_string(),
+            ],
+            format!(
+                "cargo test -p ft-conformance tensor_conv_conformance -- --nocapture # mode={}",
                 mode_label(mode)
             ),
             outcome,

@@ -8,7 +8,7 @@ use ft_conformance::{
     HarnessConfig, run_autograd_scheduler_conformance, run_dispatch_conformance,
     run_nn_state_conformance, run_op_schema_conformance, run_optimizer_conformance,
     run_scalar_conformance, run_serialization_conformance, run_smoke,
-    run_tensor_advanced_conformance, run_tensor_comparison_conformance,
+    run_tensor_advanced_conformance, run_tensor_comparison_conformance, run_tensor_conv_conformance,
     run_tensor_einsum_conformance, run_tensor_elementwise_cmp_conformance,
     run_tensor_factory_conformance, run_tensor_fft_conformance, run_tensor_indexing_conformance,
     run_tensor_init_conformance, run_tensor_inplace_conformance, run_tensor_join_conformance,
@@ -401,6 +401,23 @@ fn tensor_pool_fixture_executes_in_both_modes() {
     assert!(
         strict_report.cases_total >= 8,
         "expected at least 8 pool cases"
+    );
+    assert_eq!(strict_report.cases_total, strict_cases.len());
+    assert_eq!(strict_report.cases_total, strict_report.cases_passed);
+    assert_eq!(hardened_report.cases_total, hardened_report.cases_passed);
+}
+
+#[test]
+fn tensor_conv_fixture_executes_in_both_modes() {
+    let cfg = HarnessConfig::default_paths();
+    let (strict_report, strict_cases) = run_tensor_conv_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-conv should run");
+    let (hardened_report, _) = run_tensor_conv_conformance(&cfg, ExecutionMode::Hardened)
+        .expect("hardened tensor-conv should run");
+
+    assert!(
+        strict_report.cases_total >= 6,
+        "expected at least 6 conv cases"
     );
     assert_eq!(strict_report.cases_total, strict_cases.len());
     assert_eq!(strict_report.cases_total, strict_report.cases_passed);
