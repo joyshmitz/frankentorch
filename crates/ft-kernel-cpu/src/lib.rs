@@ -13175,5 +13175,75 @@ mod tests {
                 }
             }
         }
+
+        #[test]
+        fn prop_broadcast_add_scalar_matches_elementwise(
+            vals in proptest::collection::vec(-100.0f64..100.0, 1..20),
+            scalar in -100.0f64..100.0,
+        ) {
+            let n = vals.len();
+            let vec_meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            let scalar_meta = TensorMeta::from_shape(vec![1], DType::F64, Device::Cpu);
+
+            let (result, shape) = super::add_tensor_broadcast_f64(
+                &vals,
+                &[scalar],
+                &vec_meta,
+                &scalar_meta,
+            ).unwrap();
+
+            prop_assert_eq!(shape, vec![n]);
+            for (i, &v) in vals.iter().enumerate() {
+                prop_assert!(
+                    (result[i] - (v + scalar)).abs() < 1e-10,
+                    "broadcast[{}] = {}, expected {}",
+                    i, result[i], v + scalar
+                );
+            }
+        }
+
+        #[test]
+        fn prop_broadcast_mul_is_commutative(
+            a in proptest::collection::vec(-10.0f64..10.0, 1..8),
+            b in proptest::collection::vec(-10.0f64..10.0, 1..8),
+        ) {
+            let a_meta = TensorMeta::from_shape(vec![a.len(), 1], DType::F64, Device::Cpu);
+            let b_meta = TensorMeta::from_shape(vec![1, b.len()], DType::F64, Device::Cpu);
+
+            let (ab, ab_shape) = super::mul_tensor_broadcast_f64(&a, &b, &a_meta, &b_meta).unwrap();
+            let (ba, ba_shape) = super::mul_tensor_broadcast_f64(&b, &a, &b_meta, &a_meta).unwrap();
+
+            prop_assert_eq!(ab_shape, ba_shape);
+            prop_assert_eq!(ab.len(), ba.len());
+
+            for i in 0..ab.len() {
+                prop_assert!(
+                    (ab[i] - ba[i]).abs() < 1e-10,
+                    "a*b[{}] = {}, b*a[{}] = {}",
+                    i, ab[i], i, ba[i]
+                );
+            }
+        }
+
+        #[test]
+        fn prop_broadcast_shape_is_symmetric(
+            a_dims in proptest::collection::vec(1usize..5, 1..4),
+            b_dims in proptest::collection::vec(1usize..5, 1..4),
+        ) {
+            let ab = super::compute_broadcast_shape(&a_dims, &b_dims);
+            let ba = super::compute_broadcast_shape(&b_dims, &a_dims);
+
+            match (ab, ba) {
+                (Ok(ab_shape), Ok(ba_shape)) => {
+                    prop_assert_eq!(ab_shape, ba_shape, "broadcast shapes should be symmetric");
+                }
+                (Err(_), Err(_)) => {
+                    // Both failed, which is fine for incompatible shapes
+                }
+                (Ok(ab_shape), Err(_)) | (Err(_), Ok(ab_shape)) => {
+                    prop_assert!(false, "asymmetric broadcast result: {:?} vs error", ab_shape);
+                }
+            }
+        }
     }
 }
