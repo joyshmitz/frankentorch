@@ -13410,4 +13410,111 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn nan_propagation_in_min_max() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let with_nan = vec![1.0, f64::NAN, 3.0];
+        let normal = vec![2.0, 2.0, 2.0];
+
+        let min_result = min_tensor_contiguous_f64(&with_nan, &normal, &meta, &meta).unwrap();
+        let max_result = max_tensor_contiguous_f64(&with_nan, &normal, &meta, &meta).unwrap();
+
+        assert!(min_result[1].is_nan(), "min with NaN should propagate NaN");
+        assert!(max_result[1].is_nan(), "max with NaN should propagate NaN");
+    }
+
+    #[test]
+    fn softmax_handles_large_values_without_overflow() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let large_vals = vec![1000.0, 1001.0, 1002.0];
+
+        let result = softmax_dim_tensor_contiguous_f64(&large_vals, &meta, 0).unwrap();
+
+        assert!(!result.iter().any(|x| x.is_nan()), "softmax should not produce NaN for large values");
+        assert!(!result.iter().any(|x| x.is_infinite()), "softmax should not produce Inf for large values");
+        let sum: f64 = result.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10, "softmax should sum to 1, got {sum}");
+    }
+
+    #[test]
+    fn log_of_zero_is_negative_infinity() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let vals = vec![0.0, 1.0];
+
+        let result = log_tensor_contiguous_f64(&vals, &meta).unwrap();
+
+        assert!(result[0].is_infinite() && result[0] < 0.0, "log(0) should be -inf");
+        assert!((result[1] - 0.0).abs() < 1e-10, "log(1) should be 0");
+    }
+
+    #[test]
+    fn reciprocal_of_zero_is_infinity() {
+        let meta = TensorMeta::from_shape(vec![2], DType::F64, Device::Cpu);
+        let vals = vec![0.0, 2.0];
+
+        let result = reciprocal_tensor_contiguous_f64(&vals, &meta).unwrap();
+
+        assert!(result[0].is_infinite(), "1/0 should be inf");
+        assert!((result[1] - 0.5).abs() < 1e-10, "1/2 should be 0.5");
+    }
+
+    #[test]
+    fn empty_tensor_sum_is_zero() {
+        let meta = TensorMeta::from_shape(vec![0], DType::F64, Device::Cpu);
+        let vals: Vec<f64> = vec![];
+
+        let result = sum_tensor_contiguous_f64(&vals, &meta).unwrap();
+
+        assert_eq!(result, 0.0, "sum of empty tensor should be 0");
+    }
+
+    #[test]
+    fn empty_tensor_mean_is_nan() {
+        let meta = TensorMeta::from_shape(vec![0], DType::F64, Device::Cpu);
+        let vals: Vec<f64> = vec![];
+
+        let result = mean_tensor_contiguous_f64(&vals, &meta).unwrap();
+
+        assert!(result.is_nan(), "mean of empty tensor should be NaN (0/0)");
+    }
+
+    #[test]
+    fn inf_in_softmax_produces_nan_due_to_stability_trick() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let with_inf = vec![f64::NEG_INFINITY, 0.0, f64::INFINITY];
+
+        let result = softmax_dim_tensor_contiguous_f64(&with_inf, &meta, 0).unwrap();
+
+        assert!(result.iter().all(|x| x.is_nan()), "softmax with inf produces NaN due to max-subtraction (inf - inf = NaN)");
+    }
+
+    #[test]
+    fn softmax_with_finite_extremes_is_well_defined() {
+        let meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let vals = vec![-1000.0, 0.0, 1000.0];
+
+        let result = softmax_dim_tensor_contiguous_f64(&vals, &meta, 0).unwrap();
+
+        assert_eq!(result[0], 0.0, "exp(-2000) underflows to 0");
+        assert_eq!(result[2], 1.0, "largest finite value dominates");
+        let sum: f64 = result.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10, "softmax sums to 1");
+    }
+
+    #[test]
+    fn simd_and_scalar_paths_produce_same_results() {
+        let small_meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let large_meta = TensorMeta::from_shape(vec![16], DType::F64, Device::Cpu);
+
+        let small_vals = vec![1.0, 2.0, 3.0];
+        let large_vals: Vec<f64> = (1..=16).map(|x| x as f64).collect();
+
+        let small_neg = neg_tensor_contiguous_f64(&small_vals, &small_meta).unwrap();
+        let large_neg = neg_tensor_contiguous_f64(&large_vals, &large_meta).unwrap();
+
+        assert_eq!(small_neg, vec![-1.0, -2.0, -3.0]);
+        let expected: Vec<f64> = (1..=16).map(|x| -(x as f64)).collect();
+        assert_eq!(large_neg, expected);
+    }
 }
