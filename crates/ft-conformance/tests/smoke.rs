@@ -477,7 +477,7 @@ fn tensor_session_div_path_executes_in_strict_mode() {
 }
 
 #[test]
-fn tensor_session_fails_closed_on_non_contiguous_input() {
+fn tensor_session_supports_non_contiguous_input() {
     let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
     let lhs_meta =
         TensorMeta::from_shape_and_strides(vec![2, 2], vec![4, 1], 0, DType::F64, Device::Cpu)
@@ -489,13 +489,11 @@ fn tensor_session_fails_closed_on_non_contiguous_input() {
         .expect("rhs tensor variable should build");
     let lhs = session.tensor_variable_from_storage(lhs, true);
 
-    let err = session
+    let result = session
         .tensor_add(lhs, rhs)
-        .expect_err("non-contiguous tensor input must fail closed");
-    assert!(
-        err.to_string()
-            .contains("unsupported non-contiguous layout on lhs")
-    );
+        .expect("non-contiguous tensor input should work");
+    let vals = session.tensor_values(result).expect("values should work");
+    assert_eq!(vals.len(), 4, "result should have 4 elements");
 }
 
 #[test]

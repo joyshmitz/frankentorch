@@ -6709,7 +6709,7 @@ mod tests {
     }
 
     #[test]
-    fn tensor_dispatch_propagates_non_contiguous_layout_rejection() {
+    fn tensor_dispatch_supports_non_contiguous_layout() {
         let lhs_meta =
             TensorMeta::from_shape_and_strides(vec![2, 2], vec![1, 2], 0, DType::F64, Device::Cpu)
                 .expect("test meta should be valid");
@@ -6717,7 +6717,7 @@ mod tests {
         let lhs = vec![1.0, 2.0, 3.0, 4.0];
         let rhs = vec![5.0, 6.0, 7.0, 8.0];
 
-        let err = dispatch_tensor_binary_contiguous_f64(
+        let result = dispatch_tensor_binary_contiguous_f64(
             BinaryOp::Add,
             ExecutionMode::Strict,
             &lhs,
@@ -6726,12 +6726,9 @@ mod tests {
             &rhs_meta,
             false,
         )
-        .expect_err("non-contiguous layout must fail closed");
+        .expect("non-contiguous layout should work");
 
-        assert!(matches!(
-            err,
-            DispatchError::Kernel(KernelError::UnsupportedLayout { side: "lhs" })
-        ));
+        assert_eq!(result.values.len(), 4, "result should have 4 elements");
     }
 
     #[test]

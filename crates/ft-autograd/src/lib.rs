@@ -17185,7 +17185,7 @@ mod tests {
     }
 
     #[test]
-    fn tensor_dispatch_rejects_non_contiguous_layout_end_to_end() -> Result<(), String> {
+    fn tensor_dispatch_supports_non_contiguous_input() -> Result<(), String> {
         let mut tape = TensorTape::new();
         let lhs_meta =
             TensorMeta::from_shape_and_strides(vec![2, 2], vec![4, 1], 0, DType::F64, Device::Cpu)
@@ -17200,18 +17200,12 @@ mod tests {
 
         let lhs_node = tape.leaf_tensor(lhs, true);
         let rhs_node = tape.leaf_tensor(rhs, true);
-        let err = tape
+        let (sum_node, _event) = tape
             .add(lhs_node, rhs_node, ExecutionMode::Strict)
-            .expect_err("non-contiguous layout should fail closed");
-        let error = match err {
-            AutogradError::Dispatch(DispatchError::Kernel(error)) => error,
-            other => return Err(format!("expected kernel dispatch error, got {other:?}")),
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("unsupported non-contiguous layout on lhs")
-        );
+            .expect("non-contiguous layout should work");
+
+        let vals = tape.values(sum_node).expect("values should work");
+        assert_eq!(vals.len(), 4, "result should have 4 elements");
         Ok(())
     }
 
