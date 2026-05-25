@@ -918,6 +918,104 @@ fn broadcast_strides(
     Ok(strides)
 }
 
+pub fn compute_broadcast_shape(
+    lhs_shape: &[usize],
+    rhs_shape: &[usize],
+) -> Result<Vec<usize>, KernelError> {
+    let lhs_ndim = lhs_shape.len();
+    let rhs_ndim = rhs_shape.len();
+    let out_ndim = lhs_ndim.max(rhs_ndim);
+
+    let mut out_shape = vec![0usize; out_ndim];
+    for i in 0..out_ndim {
+        let lhs_dim = if i < out_ndim - lhs_ndim {
+            1
+        } else {
+            lhs_shape[i - (out_ndim - lhs_ndim)]
+        };
+        let rhs_dim = if i < out_ndim - rhs_ndim {
+            1
+        } else {
+            rhs_shape[i - (out_ndim - rhs_ndim)]
+        };
+
+        if lhs_dim == rhs_dim {
+            out_shape[i] = lhs_dim;
+        } else if lhs_dim == 1 {
+            out_shape[i] = rhs_dim;
+        } else if rhs_dim == 1 {
+            out_shape[i] = lhs_dim;
+        } else {
+            return Err(KernelError::ShapeMismatch {
+                lhs: lhs_shape.to_vec(),
+                rhs: rhs_shape.to_vec(),
+            });
+        }
+    }
+
+    Ok(out_shape)
+}
+
+fn broadcast_idx(
+    flat_idx: usize,
+    out_shape: &[usize],
+    in_shape: &[usize],
+    in_strides: &[usize],
+    in_offset: usize,
+) -> usize {
+    let out_ndim = out_shape.len();
+    let in_ndim = in_shape.len();
+
+    let mut idx = in_offset;
+    let mut remaining = flat_idx;
+
+    for i in (0..out_ndim).rev() {
+        let coord = remaining % out_shape[i];
+        remaining /= out_shape[i];
+
+        if i >= out_ndim - in_ndim {
+            let in_i = i - (out_ndim - in_ndim);
+            if in_shape[in_i] > 1 {
+                idx += coord * in_strides[in_i];
+            }
+        }
+    }
+
+    idx
+}
+
+fn elementwise_broadcast_f64<F>(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    op: F,
+) -> Result<(Vec<f64>, Vec<usize>), KernelError>
+where
+    F: Fn(f64, f64) -> f64,
+{
+    let out_shape = compute_broadcast_shape(lhs_meta.shape(), rhs_meta.shape())?;
+    let out_numel = checked_shape_numel(&out_shape, "broadcast output")?;
+
+    if out_numel == 0 {
+        return Ok((Vec::new(), out_shape));
+    }
+
+    let lhs_strides = lhs_meta.strides();
+    let rhs_strides = rhs_meta.strides();
+    let lhs_offset = lhs_meta.storage_offset();
+    let rhs_offset = rhs_meta.storage_offset();
+
+    let mut output = Vec::with_capacity(out_numel);
+    for i in 0..out_numel {
+        let lhs_idx = broadcast_idx(i, &out_shape, lhs_meta.shape(), lhs_strides, lhs_offset);
+        let rhs_idx = broadcast_idx(i, &out_shape, rhs_meta.shape(), rhs_strides, rhs_offset);
+        output.push(op(lhs[lhs_idx], rhs[rhs_idx]));
+    }
+
+    Ok((output, out_shape))
+}
+
 pub fn reduce_sum_for_broadcast(
     expanded_grad: &[f64],
     expanded_shape: &[usize],
@@ -1797,6 +1895,42 @@ pub fn mul_tensor_contiguous_f64(
         |l, r| l * r,
         |a, b| a * b,
     )
+}
+
+pub fn add_tensor_broadcast_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<(Vec<f64>, Vec<usize>), KernelError> {
+    elementwise_broadcast_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l + r)
+}
+
+pub fn sub_tensor_broadcast_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<(Vec<f64>, Vec<usize>), KernelError> {
+    elementwise_broadcast_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l - r)
+}
+
+pub fn mul_tensor_broadcast_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<(Vec<f64>, Vec<usize>), KernelError> {
+    elementwise_broadcast_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l * r)
+}
+
+pub fn div_tensor_broadcast_f64(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<(Vec<f64>, Vec<usize>), KernelError> {
+    elementwise_broadcast_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l / r)
 }
 
 fn simd_dot_pairwise_f64(a: &[f64], b: &[f64], b_stride: usize) -> f64 {
@@ -8281,7 +8415,7 @@ mod tests {
 
     use super::{
         KernelError, abs_scalar, abs_tensor_contiguous_f64, acos_scalar,
-        acos_tensor_contiguous_f64, add_scalar, add_tensor_contiguous_f64,
+        acos_tensor_contiguous_f64, add_scalar, add_tensor_broadcast_f64, add_tensor_contiguous_f64,
         argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64, asin_scalar,
         asin_tensor_contiguous_f64, atan_scalar, atan_tensor_contiguous_f64,
         bmm_tensor_contiguous_f64, cat_tensor_contiguous_f32, cat_tensor_contiguous_f64,
@@ -8300,7 +8434,7 @@ mod tests {
         lt_tensor_contiguous_f64, masked_fill_tensor_contiguous_f64, matmul_tensor_contiguous_f64,
         max_dim_tensor_contiguous_f64, max_scalar, max_tensor_contiguous_f64,
         mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_dim_tensor_contiguous_f64,
-        min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_contiguous_f64,
+        min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_broadcast_f64, mul_tensor_contiguous_f64,
         narrow_tensor_contiguous_f64, ne_scalar, ne_tensor_contiguous_f64, neg_scalar,
         neg_tensor_contiguous_f64, norm_tensor_contiguous_f64, outer_tensor_contiguous_f64,
         pow_scalar, pow_tensor_contiguous_f32, pow_tensor_contiguous_f64,
@@ -9261,6 +9395,51 @@ mod tests {
         let result = div_tensor_contiguous_f64(&lhs, &rhs, &lhs_meta, &rhs_meta)
             .expect("non-contiguous input should be supported");
         assert_eq!(result, vec![2.0, 3.0, 4.0 / 3.0, 2.0]);
+    }
+
+    #[test]
+    fn add_tensor_broadcast_scalar_to_vector() {
+        let lhs_meta = TensorMeta::from_shape(vec![3], DType::F64, Device::Cpu);
+        let rhs_meta = TensorMeta::from_shape(vec![1], DType::F64, Device::Cpu);
+        let lhs = vec![1.0, 2.0, 3.0];
+        let rhs = vec![10.0];
+
+        let (result, shape) = add_tensor_broadcast_f64(&lhs, &rhs, &lhs_meta, &rhs_meta)
+            .expect("broadcasting should work");
+        assert_eq!(shape, vec![3]);
+        assert_eq!(result, vec![11.0, 12.0, 13.0]);
+    }
+
+    #[test]
+    fn mul_tensor_broadcast_row_and_column() {
+        let lhs_meta = TensorMeta::from_shape(vec![3, 1], DType::F64, Device::Cpu);
+        let rhs_meta = TensorMeta::from_shape(vec![1, 4], DType::F64, Device::Cpu);
+        let lhs = vec![1.0, 2.0, 3.0];
+        let rhs = vec![10.0, 20.0, 30.0, 40.0];
+
+        let (result, shape) = mul_tensor_broadcast_f64(&lhs, &rhs, &lhs_meta, &rhs_meta)
+            .expect("broadcasting should work");
+        assert_eq!(shape, vec![3, 4]);
+        assert_eq!(
+            result,
+            vec![
+                10.0, 20.0, 30.0, 40.0,
+                20.0, 40.0, 60.0, 80.0,
+                30.0, 60.0, 90.0, 120.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn broadcast_incompatible_shapes_fails() {
+        let lhs_meta = TensorMeta::from_shape(vec![2, 3], DType::F64, Device::Cpu);
+        let rhs_meta = TensorMeta::from_shape(vec![2, 4], DType::F64, Device::Cpu);
+        let lhs = vec![1.0; 6];
+        let rhs = vec![1.0; 8];
+
+        let err = add_tensor_broadcast_f64(&lhs, &rhs, &lhs_meta, &rhs_meta)
+            .expect_err("incompatible shapes should fail");
+        assert!(matches!(err, KernelError::ShapeMismatch { .. }));
     }
 
     #[test]
