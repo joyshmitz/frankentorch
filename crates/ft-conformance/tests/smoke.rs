@@ -10,12 +10,12 @@ use ft_conformance::{
     run_scalar_conformance, run_serialization_conformance, run_smoke,
     run_tensor_advanced_conformance, run_tensor_comparison_conformance,
     run_tensor_einsum_conformance, run_tensor_elementwise_cmp_conformance,
-    run_tensor_factory_conformance, run_tensor_indexing_conformance, run_tensor_init_conformance,
-    run_tensor_inplace_conformance, run_tensor_join_conformance, run_tensor_linalg_conformance,
-    run_tensor_loss_conformance, run_tensor_meta_conformance, run_tensor_normalize_conformance,
-    run_tensor_random_conformance, run_tensor_reduction_conformance, run_tensor_scan_conformance,
-    run_tensor_searchsorted_conformance, run_tensor_shape_conformance, run_tensor_sort_conformance,
-    run_tensor_unary_conformance,
+    run_tensor_factory_conformance, run_tensor_fft_conformance, run_tensor_indexing_conformance,
+    run_tensor_init_conformance, run_tensor_inplace_conformance, run_tensor_join_conformance,
+    run_tensor_linalg_conformance, run_tensor_loss_conformance, run_tensor_meta_conformance,
+    run_tensor_normalize_conformance, run_tensor_random_conformance, run_tensor_reduction_conformance,
+    run_tensor_scan_conformance, run_tensor_searchsorted_conformance, run_tensor_shape_conformance,
+    run_tensor_sort_conformance, run_tensor_unary_conformance,
 };
 use ft_core::{DType, DenseTensor, Device, ExecutionMode, TensorMeta};
 use ft_runtime::{EvidenceKind, RuntimeContext};
@@ -367,6 +367,23 @@ fn tensor_unary_fixture_executes_in_both_modes() {
     assert!(
         strict_report.cases_total >= 29,
         "expected at least 29 unary cases"
+    );
+    assert_eq!(strict_report.cases_total, strict_cases.len());
+    assert_eq!(strict_report.cases_total, strict_report.cases_passed);
+    assert_eq!(hardened_report.cases_total, hardened_report.cases_passed);
+}
+
+#[test]
+fn tensor_fft_fixture_executes_in_both_modes() {
+    let cfg = HarnessConfig::default_paths();
+    let (strict_report, strict_cases) = run_tensor_fft_conformance(&cfg, ExecutionMode::Strict)
+        .expect("strict tensor-fft should run");
+    let (hardened_report, _) = run_tensor_fft_conformance(&cfg, ExecutionMode::Hardened)
+        .expect("hardened tensor-fft should run");
+
+    assert!(
+        strict_report.cases_total >= 10,
+        "expected at least 10 FFT cases"
     );
     assert_eq!(strict_report.cases_total, strict_cases.len());
     assert_eq!(strict_report.cases_total, strict_report.cases_passed);

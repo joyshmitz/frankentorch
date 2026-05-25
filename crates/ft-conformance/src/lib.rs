@@ -529,6 +529,21 @@ impl TensorMetaCaseReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorFftCaseReport {
+    pub name: String,
+    pub mode: ExecutionMode,
+    pub output_ok: bool,
+    pub forensic_log: StructuredCaseLog,
+}
+
+impl TensorFftCaseReport {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.output_ok
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessReport {
     pub suite: &'static str,
@@ -577,6 +592,31 @@ struct TensorBinaryFixtureFile {
 #[derive(Debug, Clone, Deserialize)]
 struct TensorUnaryFixtureFile {
     cases: Vec<TensorUnaryCase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorFftFixtureFile {
+    cases: Vec<TensorFftCase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorFftCase {
+    name: String,
+    op: String,
+    #[serde(default)]
+    input: Vec<f64>,
+    #[serde(default)]
+    shape: Vec<usize>,
+    #[serde(default)]
+    n: Option<usize>,
+    #[serde(default)]
+    d: Option<f64>,
+    expected_output: Vec<f64>,
+    tolerance: Option<f64>,
+    #[serde(default)]
+    contract_ids: Vec<String>,
+    #[serde(default)]
+    e2e_scenarios: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1200,6 +1240,7 @@ impl_fixture_metadata!(
     TensorIndexingCase,
     TensorScanCase,
     TensorJoinCase,
+    TensorFftCase,
 );
 
 fn validate_fixture_metadata(
@@ -1734,6 +1775,34 @@ pub fn run_tensor_unary_conformance(
 
     let report = HarnessReport {
         suite: "tensor_unary",
+        oracle_present: config.oracle_root.exists(),
+        fixture_count: 1,
+        strict_mode: mode == ExecutionMode::Strict,
+        cases_total,
+        cases_passed,
+    };
+
+    Ok((report, case_reports))
+}
+
+pub fn run_tensor_fft_conformance(
+    config: &HarnessConfig,
+    mode: ExecutionMode,
+) -> Result<(HarnessReport, Vec<TensorFftCaseReport>), String> {
+    let fixture_path = config.fixture_root.join("tensor_fft_cases.json");
+    let fixture: TensorFftFixtureFile = load_fixture(&fixture_path)?;
+
+    let mut case_reports = Vec::with_capacity(fixture.cases.len());
+    for case in &fixture.cases {
+        validate_fixture_metadata(case.name.as_str(), case)?;
+        case_reports.push(run_tensor_fft_case(case, mode)?);
+    }
+
+    let (cases_total, cases_passed) =
+        summarize_passes(case_reports.iter().map(TensorFftCaseReport::passed));
+
+    let report = HarnessReport {
+        suite: "tensor_fft",
         oracle_present: config.oracle_root.exists(),
         fixture_count: 1,
         strict_mode: mode == ExecutionMode::Strict,
@@ -5054,6 +5123,123 @@ fn run_tensor_unary_case(
             ],
             format!(
                 "cargo test -p ft-conformance tensor_unary_conformance -- --nocapture # mode={}",
+                mode_label(mode)
+            ),
+            outcome,
+            reason_code,
+        )
+        .with_extra_fields(extra_fields),
+    })
+}
+
+fn run_tensor_fft_case(
+    case: &TensorFftCase,
+    mode: ExecutionMode,
+) -> Result<TensorFftCaseReport, String> {
+    let mut session = FrankenTorchSession::new(mode);
+
+    let actual_output = match case.op.as_str() {
+        "fftfreq" => {
+            let n = case.n.ok_or_else(|| format!("fftfreq requires n for '{}'", case.name))?;
+            let d = case.d.unwrap_or(1.0);
+            session
+                .tensor_fft_fftfreq(n, d)
+                .map_err(|error| format!("fftfreq failed for '{}': {error}", case.name))?
+        }
+        "rfftfreq" => {
+            let n = case.n.ok_or_else(|| format!("rfftfreq requires n for '{}'", case.name))?;
+            let d = case.d.unwrap_or(1.0);
+            session
+                .tensor_fft_rfftfreq(n, d)
+                .map_err(|error| format!("rfftfreq failed for '{}': {error}", case.name))?
+        }
+        "fftshift" => {
+            let input = session
+                .tensor_variable(case.input.clone(), case.shape.clone(), false)
+                .map_err(|error| format!("fftshift input build failed for '{}': {error}", case.name))?;
+            session
+                .tensor_fftshift(input, None)
+                .map_err(|error| format!("fftshift failed for '{}': {error}", case.name))?
+        }
+        "ifftshift" => {
+            let input = session
+                .tensor_variable(case.input.clone(), case.shape.clone(), false)
+                .map_err(|error| format!("ifftshift input build failed for '{}': {error}", case.name))?;
+            session
+                .tensor_ifftshift(input, None)
+                .map_err(|error| format!("ifftshift failed for '{}': {error}", case.name))?
+        }
+        "fftshift_ifftshift_roundtrip" => {
+            let input = session
+                .tensor_variable(case.input.clone(), case.shape.clone(), false)
+                .map_err(|error| format!("roundtrip input build failed for '{}': {error}", case.name))?;
+            let shifted = session
+                .tensor_fftshift(input, None)
+                .map_err(|error| format!("fftshift in roundtrip failed for '{}': {error}", case.name))?;
+            session
+                .tensor_ifftshift(shifted, None)
+                .map_err(|error| format!("ifftshift in roundtrip failed for '{}': {error}", case.name))?
+        }
+        "rfft_irfft_roundtrip" => {
+            let input = session
+                .tensor_variable(case.input.clone(), case.shape.clone(), false)
+                .map_err(|error| format!("roundtrip input build failed for '{}': {error}", case.name))?;
+            let n = case.shape.first().copied();
+            let fft_result = session
+                .tensor_rfft(input, n)
+                .map_err(|error| format!("rfft in roundtrip failed for '{}': {error}", case.name))?;
+            session
+                .tensor_irfft(fft_result, n)
+                .map_err(|error| format!("irfft in roundtrip failed for '{}': {error}", case.name))?
+        }
+        _ => {
+            return Err(format!(
+                "unsupported FFT operation '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
+    };
+
+    let actual_values = session
+        .tensor_values(actual_output)
+        .map_err(|error| format!("tensor value read failed for '{}': {error}", case.name))?;
+
+    let tolerance = case.tolerance.unwrap_or(1e-12);
+    let output_ok = vec_within(
+        actual_values.as_slice(),
+        case.expected_output.as_slice(),
+        tolerance,
+    );
+    let outcome = if output_ok { "pass" } else { "fail" };
+    let reason_code = if outcome == "pass" {
+        "tensor_fft_parity_ok"
+    } else {
+        "tensor_fft_mismatch"
+    };
+
+    let mut extra_fields = std::collections::BTreeMap::new();
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
+    extra_fields.insert(
+        "runtime_evidence".to_string(),
+        runtime_evidence_field(session.evidence()),
+    );
+
+    Ok(TensorFftCaseReport {
+        name: case.name.clone(),
+        mode,
+        output_ok,
+        forensic_log: StructuredCaseLog::new(
+            "tensor_fft",
+            "tensor_fft_cases.json",
+            "FT-P2C-FFT",
+            case.name.as_str(),
+            mode,
+            vec![
+                "crates/ft-conformance/fixtures/tensor_fft_cases.json".to_string(),
+                "artifacts/phase2c/FT-P2C-FFT/parity_report.json".to_string(),
+            ],
+            format!(
+                "cargo test -p ft-conformance tensor_fft_conformance -- --nocapture # mode={}",
                 mode_label(mode)
             ),
             outcome,
