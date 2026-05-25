@@ -11061,6 +11061,102 @@ impl FrankenTorchSession {
         )
     }
 
+    /// Bessel function of the first kind, order 0.
+    ///
+    /// Equivalent to `torch.special.bessel_j0(input)`. No autograd support.
+    pub fn tensor_special_bessel_j0(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_j0_scalar(x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Bessel function of the first kind, order 1.
+    ///
+    /// Equivalent to `torch.special.bessel_j1(input)`. No autograd support.
+    pub fn tensor_special_bessel_j1(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_j1_scalar(x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Bessel function of the second kind, order 0.
+    ///
+    /// Equivalent to `torch.special.bessel_y0(input)`. No autograd support.
+    pub fn tensor_special_bessel_y0(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_y0_scalar(x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Bessel function of the second kind, order 1.
+    ///
+    /// Equivalent to `torch.special.bessel_y1(input)`. No autograd support.
+    pub fn tensor_special_bessel_y1(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_y1_scalar(x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Modified Bessel function of the second kind, order 0.
+    ///
+    /// Equivalent to `torch.special.modified_bessel_k0(input)`. No autograd support.
+    pub fn tensor_special_modified_bessel_k0(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_k0_scalar(x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Modified Bessel function of the second kind, order 1.
+    ///
+    /// Equivalent to `torch.special.modified_bessel_k1(input)`. No autograd support.
+    pub fn tensor_special_modified_bessel_k1(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_k1_scalar(x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Scaled modified Bessel K0: exp(x) * K0(x).
+    ///
+    /// Equivalent to `torch.special.scaled_modified_bessel_k0(input)`. No autograd support.
+    pub fn tensor_special_scaled_modified_bessel_k0(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_k0e_scalar(x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Scaled modified Bessel K1: exp(x) * K1(x).
+    ///
+    /// Equivalent to `torch.special.scaled_modified_bessel_k1(input)`. No autograd support.
+    pub fn tensor_special_scaled_modified_bessel_k1(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| bessel_k1e_scalar(x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
     /// Numerically stable log of the standard normal CDF.
     ///
     /// Equivalent to `torch.special.log_ndtr(input)`. Uses
@@ -58585,6 +58681,172 @@ fn bessel_i1e_derivative_scalar(x: f64) -> f64 {
     }
     let i1e = bessel_i1e_scalar(x);
     bessel_i0e_scalar(x) - i1e / x - x.signum() * i1e
+}
+
+/// Bessel function of the first kind J0 via polynomial approximation.
+/// Uses Abramowitz & Stegun 9.4.1 / 9.4.3 for small/large arguments.
+fn bessel_j0_scalar(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let ax = x.abs();
+    if ax < 8.0 {
+        let y = x * x;
+        let num = eval_poly_f64(y, &[
+            57568490574.0, -13362590354.0, 651619640.7, -11214424.18, 77392.33017, -184.9052456,
+        ]);
+        let den = eval_poly_f64(y, &[
+            57568490411.0, 1029532985.0, 9494680.718, 59272.64853, 267.8532712, 1.0,
+        ]);
+        num / den
+    } else {
+        let z = 8.0 / ax;
+        let y = z * z;
+        let xx = ax - 0.785398163397448;
+        let p = eval_poly_f64(y, &[1.0, -0.1098628627e-2, 0.2734510407e-4, -0.2073370639e-5, 0.2093887211e-6]);
+        let q = eval_poly_f64(y, &[-0.1562499995e-1, 0.1430488765e-3, -0.6911147651e-5, 0.7621095161e-6, -0.934945152e-7]);
+        (0.636619772 / ax).sqrt() * (xx.cos() * p - z * xx.sin() * q)
+    }
+}
+
+/// Bessel function of the first kind J1 via polynomial approximation.
+fn bessel_j1_scalar(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let ax = x.abs();
+    if ax < 8.0 {
+        let y = x * x;
+        let num = x * eval_poly_f64(y, &[
+            72362614232.0, -7895059235.0, 242396853.1, -2972611.439, 15704.48260, -30.16036606,
+        ]);
+        let den = eval_poly_f64(y, &[
+            144725228442.0, 2300535178.0, 18583304.74, 99447.43394, 376.9991397, 1.0,
+        ]);
+        num / den
+    } else {
+        let z = 8.0 / ax;
+        let y = z * z;
+        let xx = ax - 2.356194491;
+        let p = eval_poly_f64(y, &[1.0, 0.183105e-2, -0.3516396496e-4, 0.2457520174e-5, -0.240337019e-6]);
+        let q = eval_poly_f64(y, &[0.04687499995, -0.2002690873e-3, 0.8449199096e-5, -0.88228987e-6, 0.105787412e-6]);
+        let result = (0.636619772 / ax).sqrt() * (xx.cos() * p - z * xx.sin() * q);
+        if x < 0.0 { -result } else { result }
+    }
+}
+
+/// Bessel function of the second kind Y0 via polynomial approximation.
+fn bessel_y0_scalar(x: f64) -> f64 {
+    if x.is_nan() || x <= 0.0 {
+        return f64::NAN;
+    }
+    if x < 8.0 {
+        let y = x * x;
+        let num = eval_poly_f64(y, &[
+            -2957821389.0, 7062834065.0, -512359803.6, 10879881.29, -86327.92757, 228.4622733,
+        ]);
+        let den = eval_poly_f64(y, &[
+            40076544269.0, 745249964.8, 7189466.438, 47447.26470, 226.1030244, 1.0,
+        ]);
+        num / den + 0.636619772 * bessel_j0_scalar(x) * x.ln()
+    } else {
+        let z = 8.0 / x;
+        let y = z * z;
+        let xx = x - 0.785398163397448;
+        let p = eval_poly_f64(y, &[1.0, -0.1098628627e-2, 0.2734510407e-4, -0.2073370639e-5, 0.2093887211e-6]);
+        let q = eval_poly_f64(y, &[-0.1562499995e-1, 0.1430488765e-3, -0.6911147651e-5, 0.7621095161e-6, -0.934945152e-7]);
+        (0.636619772 / x).sqrt() * (xx.sin() * p + z * xx.cos() * q)
+    }
+}
+
+/// Bessel function of the second kind Y1 via polynomial approximation.
+fn bessel_y1_scalar(x: f64) -> f64 {
+    if x.is_nan() || x <= 0.0 {
+        return f64::NAN;
+    }
+    if x < 8.0 {
+        let y = x * x;
+        let num = x * eval_poly_f64(y, &[
+            -0.4900604943e13, 0.1275274390e13, -0.5153438139e11, 0.7349264551e9, -0.4237922726e7, 0.8511937935e4,
+        ]);
+        let den = eval_poly_f64(y, &[
+            0.2499580570e14, 0.4244419664e12, 0.3733650367e10, 0.2245904002e8, 0.1020426050e6, 0.3549632885e3, 1.0,
+        ]);
+        num / den + 0.636619772 * (bessel_j1_scalar(x) * x.ln() - 1.0 / x)
+    } else {
+        let z = 8.0 / x;
+        let y = z * z;
+        let xx = x - 2.356194491;
+        let p = eval_poly_f64(y, &[1.0, 0.183105e-2, -0.3516396496e-4, 0.2457520174e-5, -0.240337019e-6]);
+        let q = eval_poly_f64(y, &[0.04687499995, -0.2002690873e-3, 0.8449199096e-5, -0.88228987e-6, 0.105787412e-6]);
+        (0.636619772 / x).sqrt() * (xx.sin() * p + z * xx.cos() * q)
+    }
+}
+
+/// Modified Bessel function of the second kind K0.
+fn bessel_k0_scalar(x: f64) -> f64 {
+    if x.is_nan() || x <= 0.0 {
+        return f64::NAN;
+    }
+    if x <= 2.0 {
+        let y = x * x / 4.0;
+        -x.ln() * bessel_i0_scalar(x) + eval_poly_f64(y, &[
+            -0.57721566, 0.42278420, 0.23069756, 0.03488590, 0.00262698, 0.00010750, 0.00000740,
+        ])
+    } else {
+        let y = 2.0 / x;
+        (-x).exp() / x.sqrt() * eval_poly_f64(y, &[
+            1.25331414, -0.07832358, 0.02189568, -0.01062446, 0.00587872, -0.00251540, 0.00053208,
+        ])
+    }
+}
+
+/// Modified Bessel function of the second kind K1.
+fn bessel_k1_scalar(x: f64) -> f64 {
+    if x.is_nan() || x <= 0.0 {
+        return f64::NAN;
+    }
+    if x <= 2.0 {
+        let y = x * x / 4.0;
+        x.ln() * bessel_i1_scalar(x) + (1.0 / x) * eval_poly_f64(y, &[
+            1.0, 0.15443144, -0.67278579, -0.18156897, -0.01919402, -0.00110404, -0.00004686,
+        ])
+    } else {
+        let y = 2.0 / x;
+        (-x).exp() / x.sqrt() * eval_poly_f64(y, &[
+            1.25331414, 0.23498619, -0.03655620, 0.01504268, -0.00780353, 0.00325614, -0.00068245,
+        ])
+    }
+}
+
+/// Scaled modified Bessel K0: exp(x) * K0(x).
+fn bessel_k0e_scalar(x: f64) -> f64 {
+    if x.is_nan() || x <= 0.0 {
+        return f64::NAN;
+    }
+    if x <= 2.0 {
+        bessel_k0_scalar(x) * x.exp()
+    } else {
+        let y = 2.0 / x;
+        (1.0 / x.sqrt()) * eval_poly_f64(y, &[
+            1.25331414, -0.07832358, 0.02189568, -0.01062446, 0.00587872, -0.00251540, 0.00053208,
+        ])
+    }
+}
+
+/// Scaled modified Bessel K1: exp(x) * K1(x).
+fn bessel_k1e_scalar(x: f64) -> f64 {
+    if x.is_nan() || x <= 0.0 {
+        return f64::NAN;
+    }
+    if x <= 2.0 {
+        bessel_k1_scalar(x) * x.exp()
+    } else {
+        let y = 2.0 / x;
+        (1.0 / x.sqrt()) * eval_poly_f64(y, &[
+            1.25331414, 0.23498619, -0.03655620, 0.01504268, -0.00780353, 0.00325614, -0.00068245,
+        ])
+    }
 }
 
 /// Numerically stable scalar log_ndtr (frankentorch-2mb1).
