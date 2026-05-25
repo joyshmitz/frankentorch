@@ -11157,6 +11157,162 @@ impl FrankenTorchSession {
         self.tensor_variable(result, meta.shape().to_vec(), false)
     }
 
+    /// Chebyshev polynomial of the first kind T_n(x).
+    ///
+    /// Equivalent to `torch.special.chebyshev_polynomial_t(x, n)`.
+    pub fn tensor_special_chebyshev_polynomial_t(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| chebyshev_t_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Chebyshev polynomial of the second kind U_n(x).
+    ///
+    /// Equivalent to `torch.special.chebyshev_polynomial_u(x, n)`.
+    pub fn tensor_special_chebyshev_polynomial_u(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| chebyshev_u_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Chebyshev polynomial of the third kind V_n(x).
+    ///
+    /// Equivalent to `torch.special.chebyshev_polynomial_v(x, n)`.
+    pub fn tensor_special_chebyshev_polynomial_v(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| chebyshev_v_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Chebyshev polynomial of the fourth kind W_n(x).
+    ///
+    /// Equivalent to `torch.special.chebyshev_polynomial_w(x, n)`.
+    pub fn tensor_special_chebyshev_polynomial_w(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| chebyshev_w_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Shifted Chebyshev polynomial T*_n(x) = T_n(2x-1).
+    ///
+    /// Equivalent to `torch.special.shifted_chebyshev_polynomial_t(x, n)`.
+    pub fn tensor_special_shifted_chebyshev_polynomial_t(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| shifted_chebyshev_t_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Shifted Chebyshev polynomial U*_n(x) = U_n(2x-1).
+    ///
+    /// Equivalent to `torch.special.shifted_chebyshev_polynomial_u(x, n)`.
+    pub fn tensor_special_shifted_chebyshev_polynomial_u(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| shifted_chebyshev_u_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Shifted Chebyshev polynomial V*_n(x) = V_n(2x-1).
+    ///
+    /// Equivalent to `torch.special.shifted_chebyshev_polynomial_v(x, n)`.
+    pub fn tensor_special_shifted_chebyshev_polynomial_v(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| shifted_chebyshev_v_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Shifted Chebyshev polynomial W*_n(x) = W_n(2x-1).
+    ///
+    /// Equivalent to `torch.special.shifted_chebyshev_polynomial_w(x, n)`.
+    pub fn tensor_special_shifted_chebyshev_polynomial_w(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| shifted_chebyshev_w_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Physicist's Hermite polynomial H_n(x).
+    ///
+    /// Equivalent to `torch.special.hermite_polynomial_h(x, n)`.
+    pub fn tensor_special_hermite_polynomial_h(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| hermite_h_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Probabilist's Hermite polynomial He_n(x).
+    ///
+    /// Equivalent to `torch.special.hermite_polynomial_he(x, n)`.
+    pub fn tensor_special_hermite_polynomial_he(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| hermite_he_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Laguerre polynomial L_n(x).
+    ///
+    /// Equivalent to `torch.special.laguerre_polynomial_l(x, n)`.
+    pub fn tensor_special_laguerre_polynomial_l(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| laguerre_l_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
+    /// Legendre polynomial P_n(x).
+    ///
+    /// Equivalent to `torch.special.legendre_polynomial_p(x, n)`.
+    pub fn tensor_special_legendre_polynomial_p(
+        &mut self,
+        input: TensorNodeId,
+        n: i64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = vals.iter().map(|&x| legendre_p_scalar(n, x)).collect();
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
     /// Numerically stable log of the standard normal CDF.
     ///
     /// Equivalent to `torch.special.log_ndtr(input)`. Uses
@@ -58846,6 +59002,221 @@ fn bessel_k1e_scalar(x: f64) -> f64 {
         (1.0 / x.sqrt()) * eval_poly_f64(y, &[
             1.25331414, 0.23498619, -0.03655620, 0.01504268, -0.00780353, 0.00325614, -0.00068245,
         ])
+    }
+}
+
+/// Chebyshev polynomial of first kind T_n(x) via recurrence.
+/// T_0(x) = 1, T_1(x) = x, T_{n+1}(x) = 2x*T_n(x) - T_{n-1}(x).
+fn chebyshev_t_scalar(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    match n {
+        0 => 1.0,
+        1 => x,
+        _ => {
+            let mut t_prev = 1.0;
+            let mut t_curr = x;
+            for _ in 2..=n {
+                let t_next = 2.0 * x * t_curr - t_prev;
+                t_prev = t_curr;
+                t_curr = t_next;
+            }
+            t_curr
+        }
+    }
+}
+
+/// Chebyshev polynomial of second kind U_n(x) via recurrence.
+/// U_0(x) = 1, U_1(x) = 2x, U_{n+1}(x) = 2x*U_n(x) - U_{n-1}(x).
+fn chebyshev_u_scalar(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    match n {
+        0 => 1.0,
+        1 => 2.0 * x,
+        _ => {
+            let mut u_prev = 1.0;
+            let mut u_curr = 2.0 * x;
+            for _ in 2..=n {
+                let u_next = 2.0 * x * u_curr - u_prev;
+                u_prev = u_curr;
+                u_curr = u_next;
+            }
+            u_curr
+        }
+    }
+}
+
+/// Chebyshev polynomial of third kind V_n(x).
+/// V_n(x) = (T_n(x) + T_{n+1}(x)) / (1 + x) for x != -1.
+/// Actually uses definition V_n(x) = cos((n+0.5)θ)/cos(θ/2) where x=cos(θ).
+fn chebyshev_v_scalar(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x < -1.0 || x > 1.0 {
+        return f64::NAN;
+    }
+    let theta = x.acos();
+    let half_theta = theta / 2.0;
+    let cos_half = half_theta.cos();
+    if cos_half.abs() < 1e-15 {
+        return f64::NAN;
+    }
+    ((n as f64 + 0.5) * theta).cos() / cos_half
+}
+
+/// Chebyshev polynomial of fourth kind W_n(x).
+/// W_n(x) = sin((n+0.5)θ)/sin(θ/2) where x=cos(θ).
+fn chebyshev_w_scalar(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x < -1.0 || x > 1.0 {
+        return f64::NAN;
+    }
+    let theta = x.acos();
+    let half_theta = theta / 2.0;
+    let sin_half = half_theta.sin();
+    if sin_half.abs() < 1e-15 {
+        return f64::NAN;
+    }
+    ((n as f64 + 0.5) * theta).sin() / sin_half
+}
+
+/// Shifted Chebyshev polynomial T*_n(x) = T_n(2x-1) for x in [0,1].
+fn shifted_chebyshev_t_scalar(n: i64, x: f64) -> f64 {
+    chebyshev_t_scalar(n, 2.0 * x - 1.0)
+}
+
+/// Shifted Chebyshev polynomial U*_n(x) = U_n(2x-1) for x in [0,1].
+fn shifted_chebyshev_u_scalar(n: i64, x: f64) -> f64 {
+    chebyshev_u_scalar(n, 2.0 * x - 1.0)
+}
+
+/// Shifted Chebyshev polynomial V*_n(x) = V_n(2x-1) for x in [0,1].
+fn shifted_chebyshev_v_scalar(n: i64, x: f64) -> f64 {
+    chebyshev_v_scalar(n, 2.0 * x - 1.0)
+}
+
+/// Shifted Chebyshev polynomial W*_n(x) = W_n(2x-1) for x in [0,1].
+fn shifted_chebyshev_w_scalar(n: i64, x: f64) -> f64 {
+    chebyshev_w_scalar(n, 2.0 * x - 1.0)
+}
+
+/// Physicist's Hermite polynomial H_n(x) via recurrence.
+/// H_0(x) = 1, H_1(x) = 2x, H_{n+1}(x) = 2x*H_n(x) - 2n*H_{n-1}(x).
+fn hermite_h_scalar(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    match n {
+        0 => 1.0,
+        1 => 2.0 * x,
+        _ => {
+            let mut h_prev = 1.0;
+            let mut h_curr = 2.0 * x;
+            for k in 2..=n {
+                let h_next = 2.0 * x * h_curr - 2.0 * (k - 1) as f64 * h_prev;
+                h_prev = h_curr;
+                h_curr = h_next;
+            }
+            h_curr
+        }
+    }
+}
+
+/// Probabilist's Hermite polynomial He_n(x) via recurrence.
+/// He_0(x) = 1, He_1(x) = x, He_{n+1}(x) = x*He_n(x) - n*He_{n-1}(x).
+fn hermite_he_scalar(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    match n {
+        0 => 1.0,
+        1 => x,
+        _ => {
+            let mut he_prev = 1.0;
+            let mut he_curr = x;
+            for k in 2..=n {
+                let he_next = x * he_curr - (k - 1) as f64 * he_prev;
+                he_prev = he_curr;
+                he_curr = he_next;
+            }
+            he_curr
+        }
+    }
+}
+
+/// Laguerre polynomial L_n(x) via recurrence.
+/// L_0(x) = 1, L_1(x) = 1-x, L_{n+1}(x) = ((2n+1-x)*L_n(x) - n*L_{n-1}(x))/(n+1).
+fn laguerre_l_scalar(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    match n {
+        0 => 1.0,
+        1 => 1.0 - x,
+        _ => {
+            let mut l_prev = 1.0;
+            let mut l_curr = 1.0 - x;
+            for k in 2..=n {
+                let kf = k as f64;
+                let l_next = ((2.0 * kf - 1.0 - x) * l_curr - (kf - 1.0) * l_prev) / kf;
+                l_prev = l_curr;
+                l_curr = l_next;
+            }
+            l_curr
+        }
+    }
+}
+
+/// Legendre polynomial P_n(x) via recurrence.
+/// P_0(x) = 1, P_1(x) = x, P_{n+1}(x) = ((2n+1)*x*P_n(x) - n*P_{n-1}(x))/(n+1).
+fn legendre_p_scalar(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    match n {
+        0 => 1.0,
+        1 => x,
+        _ => {
+            let mut p_prev = 1.0;
+            let mut p_curr = x;
+            for k in 2..=n {
+                let kf = k as f64;
+                let p_next = ((2.0 * kf - 1.0) * x * p_curr - (kf - 1.0) * p_prev) / kf;
+                p_prev = p_curr;
+                p_curr = p_next;
+            }
+            p_curr
+        }
     }
 }
 
