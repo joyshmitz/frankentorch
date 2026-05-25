@@ -30891,6 +30891,47 @@ impl FrankenTorchSession {
         }
         Ok(())
     }
+}
+
+fn solve_triangular_1d(a: &[f64], b: &[f64], n: usize, upper: bool) -> Result<Vec<f64>, AutogradError> {
+    let mut x = vec![0.0; n];
+    if upper {
+        for i in (0..n).rev() {
+            let mut sum = b[i];
+            for j in (i + 1)..n {
+                sum -= a[i * n + j] * x[j];
+            }
+            let diag = a[i * n + i];
+            if diag.abs() < 1e-15 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "solve_triangular: singular matrix",
+                    },
+                )));
+            }
+            x[i] = sum / diag;
+        }
+    } else {
+        for i in 0..n {
+            let mut sum = b[i];
+            for j in 0..i {
+                sum -= a[i * n + j] * x[j];
+            }
+            let diag = a[i * n + i];
+            if diag.abs() < 1e-15 {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "solve_triangular: singular matrix",
+                    },
+                )));
+            }
+            x[i] = sum / diag;
+        }
+    }
+    Ok(x)
+}
+
+impl FrankenTorchSession {
 
     fn validate_poisson_rate(rate: f64) -> Result<(), AutogradError> {
         if !rate.is_finite() || rate < 0.0 {
@@ -37323,6 +37364,40 @@ impl FrankenTorchSession {
         self.tensor_variable(result.factor, vec![n, n], false)
     }
 
+    /// Cholesky decomposition with info output.
+    ///
+    /// Returns `(L, info)` where info is 0 if successful, or positive if not
+    /// positive-definite (info indicates which leading minor failed).
+    /// Equivalent to `torch.linalg.cholesky_ex`.
+    pub fn tensor_linalg_cholesky_ex(
+        &mut self,
+        input: TensorNodeId,
+        upper: bool,
+    ) -> Result<(TensorNodeId, i32), AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "linalg_cholesky_ex: autograd not supported",
+                },
+            )));
+        }
+        let (values, meta) = self.tensor_values_meta(input)?;
+        match ft_kernel_cpu::cholesky_contiguous_f64(&values, &meta, upper) {
+            Ok(result) => {
+                let n = result.n;
+                let out = self.tensor_variable(result.factor, vec![n, n], false)?;
+                Ok((out, 0))
+            }
+            Err(_) => {
+                let shape = meta.shape();
+                let n = if shape.len() >= 2 { shape[shape.len() - 1] } else { 1 };
+                let zeros = vec![0.0; n * n];
+                let out = self.tensor_variable(zeros, vec![n, n], false)?;
+                Ok((out, 1))
+            }
+        }
+    }
+
     /// Alias for tensor_linalg_cholesky.
     ///
     /// Provided for parity with older PyTorch code using `torch.cholesky`.
@@ -37466,6 +37541,145 @@ impl FrankenTorchSession {
             format!("linalg_inv input={} out={} (autograd)", input.0, out.0),
         );
         Ok(out)
+    }
+
+    /// Matrix inverse with info output.
+    ///
+    /// Returns `(inverse, info)` where info is 0 if successful, or positive
+    /// if the matrix is singular. Equivalent to `torch.linalg.inv_ex`.
+    pub fn tensor_linalg_inv_ex(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<(TensorNodeId, i32), AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "linalg_inv_ex: autograd not supported",
+                },
+            )));
+        }
+        let shape = self.tensor_shape(input)?;
+        if shape.len() != 2 || shape[0] != shape[1] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                ft_kernel_cpu::KernelError::ShapeMismatch {
+                    lhs: shape.clone(),
+                    rhs: vec![2],
+                },
+            )));
+        }
+        let n = shape[0];
+        let (values, meta) = self.tensor_values_meta(input)?;
+        match ft_kernel_cpu::inv_tensor_contiguous_f64(&values, &meta) {
+            Ok(result) => {
+                let out = self.tensor_variable(result, vec![n, n], false)?;
+                Ok((out, 0))
+            }
+            Err(_) => {
+                let zeros = vec![0.0; n * n];
+                let out = self.tensor_variable(zeros, vec![n, n], false)?;
+                Ok((out, 1))
+            }
+        }
+    }
+
+    /// Solve the linear system `A @ X = B` with info output.
+    ///
+    /// Returns `(X, info)` where info is 0 if successful, or positive
+    /// if A is singular. Equivalent to `torch.linalg.solve_ex`.
+    pub fn tensor_linalg_solve_ex(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<(TensorNodeId, i32), AutogradError> {
+        if self.tensor_requires_grad(a)? || self.tensor_requires_grad(b)? {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "linalg_solve_ex: autograd not supported",
+                },
+            )));
+        }
+        let (inv_a, info) = self.tensor_linalg_inv_ex(a)?;
+        if info != 0 {
+            let b_shape = self.tensor_shape(b)?;
+            let zeros = vec![0.0; b_shape.iter().product()];
+            let out = self.tensor_variable(zeros, b_shape.to_vec(), false)?;
+            return Ok((out, info));
+        }
+        let b_shape = self.tensor_shape(b)?;
+        let x = if b_shape.len() == 1 {
+            let n = b_shape[0];
+            let b_2d = self.tensor_reshape(b, vec![n, 1])?;
+            let x_2d = self.tensor_matmul(inv_a, b_2d)?;
+            self.tensor_reshape(x_2d, vec![n])?
+        } else {
+            self.tensor_matmul(inv_a, b)?
+        };
+        Ok((x, 0))
+    }
+
+    /// Solve the triangular linear system `A @ X = B`.
+    ///
+    /// A must be upper or lower triangular. Equivalent to `torch.linalg.solve_triangular`.
+    pub fn tensor_linalg_solve_triangular(
+        &mut self,
+        a: TensorNodeId,
+        b: TensorNodeId,
+        upper: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let a_shape = self.tensor_shape(a)?;
+        let b_shape = self.tensor_shape(b)?;
+        if a_shape.len() != 2 || a_shape[0] != a_shape[1] {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "solve_triangular: A must be square",
+                },
+            )));
+        }
+        let n = a_shape[0];
+
+        let (a_vals, _) = self.tensor_values_meta(a)?;
+        let (b_vals, _) = self.tensor_values_meta(b)?;
+
+        let x_vals = if b_shape.len() == 1 {
+            if b_shape[0] != n {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "solve_triangular: dimension mismatch",
+                    },
+                )));
+            }
+            solve_triangular_1d(&a_vals, &b_vals, n, upper)?
+        } else if b_shape.len() == 2 {
+            if b_shape[0] != n {
+                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "solve_triangular: dimension mismatch",
+                    },
+                )));
+            }
+            let m = b_shape[1];
+            let mut result = Vec::with_capacity(n * m);
+            for col in 0..m {
+                let b_col: Vec<f64> = (0..n).map(|i| b_vals[i * m + col]).collect();
+                let x_col = solve_triangular_1d(&a_vals, &b_col, n, upper)?;
+                for (i, &v) in x_col.iter().enumerate() {
+                    if col == 0 {
+                        result.push(v);
+                    } else {
+                        result[i * m + col] = v;
+                    }
+                }
+            }
+            result
+        } else {
+            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "solve_triangular: B must be 1D or 2D",
+                },
+            )));
+        };
+
+        self.tensor_variable(x_vals, b_shape.to_vec(), false)
     }
 
     /// Compute the matrix product of a sequence of matrices.
