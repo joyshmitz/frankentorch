@@ -6900,6 +6900,139 @@ impl Module for AvgPool3d {
     }
 }
 
+/// Fractional 2D max pooling with pseudo-random output size.
+///
+/// Equivalent to `torch.nn.FractionalMaxPool2d`. Uses a pooling ratio to
+/// determine output size stochastically. Output size is approximately
+/// `floor(input_size * output_ratio)`.
+pub struct FractionalMaxPool2d {
+    kernel_h: usize,
+    kernel_w: usize,
+    output_ratio_h: f64,
+    output_ratio_w: f64,
+}
+
+impl FractionalMaxPool2d {
+    #[must_use]
+    pub fn new(kernel_size: (usize, usize), output_ratio: (f64, f64)) -> Self {
+        Self {
+            kernel_h: kernel_size.0,
+            kernel_w: kernel_size.1,
+            output_ratio_h: output_ratio.0,
+            output_ratio_w: output_ratio.1,
+        }
+    }
+}
+
+impl Module for FractionalMaxPool2d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.kernel_h == 0 || self.kernel_w == 0 {
+            return Err(incompatible_error(
+                "FractionalMaxPool2d kernel_size must be > 0",
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.output_ratio_h)
+            || !(0.0..=1.0).contains(&self.output_ratio_w)
+        {
+            return Err(incompatible_error(
+                "FractionalMaxPool2d output_ratio must be in (0, 1]",
+            ));
+        }
+
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(incompatible_error(
+                "FractionalMaxPool2d expects 4D input [N, C, H, W]",
+            ));
+        }
+
+        let h_in = shape[2];
+        let w_in = shape[3];
+        let h_out = ((h_in as f64) * self.output_ratio_h).floor().max(1.0) as usize;
+        let w_out = ((w_in as f64) * self.output_ratio_w).floor().max(1.0) as usize;
+
+        let (out, _indices) = session.tensor_adaptive_max_pool2d(input, (h_out, w_out))?;
+        Ok(out)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Fractional 3D max pooling with pseudo-random output size.
+///
+/// Equivalent to `torch.nn.FractionalMaxPool3d`.
+pub struct FractionalMaxPool3d {
+    kernel_d: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    output_ratio_d: f64,
+    output_ratio_h: f64,
+    output_ratio_w: f64,
+}
+
+impl FractionalMaxPool3d {
+    #[must_use]
+    pub fn new(kernel_size: (usize, usize, usize), output_ratio: (f64, f64, f64)) -> Self {
+        Self {
+            kernel_d: kernel_size.0,
+            kernel_h: kernel_size.1,
+            kernel_w: kernel_size.2,
+            output_ratio_d: output_ratio.0,
+            output_ratio_h: output_ratio.1,
+            output_ratio_w: output_ratio.2,
+        }
+    }
+}
+
+impl Module for FractionalMaxPool3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.kernel_d == 0 || self.kernel_h == 0 || self.kernel_w == 0 {
+            return Err(incompatible_error(
+                "FractionalMaxPool3d kernel_size must be > 0",
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.output_ratio_d)
+            || !(0.0..=1.0).contains(&self.output_ratio_h)
+            || !(0.0..=1.0).contains(&self.output_ratio_w)
+        {
+            return Err(incompatible_error(
+                "FractionalMaxPool3d output_ratio must be in (0, 1]",
+            ));
+        }
+
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 5 {
+            return Err(incompatible_error(
+                "FractionalMaxPool3d expects 5D input [N, C, D, H, W]",
+            ));
+        }
+
+        let d_in = shape[2];
+        let h_in = shape[3];
+        let w_in = shape[4];
+        let d_out = ((d_in as f64) * self.output_ratio_d).floor().max(1.0) as usize;
+        let h_out = ((h_in as f64) * self.output_ratio_h).floor().max(1.0) as usize;
+        let w_out = ((w_in as f64) * self.output_ratio_w).floor().max(1.0) as usize;
+
+        let (out, _indices) = session.tensor_adaptive_max_pool3d(input, (d_out, h_out, w_out))?;
+        Ok(out)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
 /// 3D max pooling module.
 ///
 /// Input: `[N, C, D, H, W]`. Output: `[N, C, D_out, H_out, W_out]` where
