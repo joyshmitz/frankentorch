@@ -13499,6 +13499,77 @@ mod tests {
                 det_result.det, expected
             );
         }
+
+        #[test]
+        fn prop_cholesky_reconstruction_positive_definite(
+            size in 2usize..5,
+        ) {
+            let n = size;
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                data[i * n + i] = (n + 1) as f64;
+                for j in 0..i {
+                    data[i * n + j] = 0.1;
+                    data[j * n + i] = 0.1;
+                }
+            }
+
+            let result = super::cholesky_contiguous_f64(&data, &meta, false).unwrap();
+            let l = &result.factor;
+
+            let mut reconstructed = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for k in 0..n {
+                        sum += l[i * n + k] * l[j * n + k];
+                    }
+                    reconstructed[i * n + j] = sum;
+                }
+            }
+
+            for i in 0..n*n {
+                prop_assert!(
+                    (reconstructed[i] - data[i]).abs() < 1e-10,
+                    "Cholesky L@L^T mismatch at {}: got {} expected {}",
+                    i, reconstructed[i], data[i]
+                );
+            }
+        }
+
+        #[test]
+        fn prop_qr_reconstruction_square_matrix(
+            size in 2usize..5,
+        ) {
+            let n = size;
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let data: Vec<f64> = (0..n*n).map(|i| ((i as f64) * 0.3 + 0.1).sin()).collect();
+
+            let result = super::qr_contiguous_f64(&data, &meta, false).unwrap();
+            let q = &result.q;
+            let r = &result.r;
+            let m = result.m;
+
+            let mut reconstructed = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for l in 0..m {
+                        sum += q[i * m + l] * r[l * n + j];
+                    }
+                    reconstructed[i * n + j] = sum;
+                }
+            }
+
+            for i in 0..n*n {
+                prop_assert!(
+                    (reconstructed[i] - data[i]).abs() < 1e-10,
+                    "QR Q@R mismatch at {}: got {} expected {}",
+                    i, reconstructed[i], data[i]
+                );
+            }
+        }
     }
 
     #[test]
