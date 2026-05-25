@@ -3,7 +3,7 @@
 use std::fmt;
 
 use rayon::prelude::*;
-use wide::f64x4;
+use wide::{f32x8, f64x4};
 
 use ft_core::{
     Complex128, ScalarTensor, SparseCOOTensor, SparseTensorError, TensorCompatError, TensorMeta,
@@ -5711,6 +5711,67 @@ fn ensure_unary_layout_and_storage_f32(
     ensure_storage_len_f32(buffer, meta, "input")
 }
 
+const SIMD_WIDTH_F32: usize = 8;
+
+fn simd_unary_f32<F, S>(window: &[f32], scalar_op: F, simd_op: S) -> Vec<f32>
+where
+    F: Fn(f32) -> f32,
+    S: Fn(f32x8) -> f32x8,
+{
+    let numel = window.len();
+    let simd_len = numel / SIMD_WIDTH_F32 * SIMD_WIDTH_F32;
+    let mut output = Vec::with_capacity(numel);
+
+    for i in (0..simd_len).step_by(SIMD_WIDTH_F32) {
+        let a = f32x8::new([
+            window[i], window[i + 1], window[i + 2], window[i + 3],
+            window[i + 4], window[i + 5], window[i + 6], window[i + 7],
+        ]);
+        let result = simd_op(a);
+        output.extend_from_slice(result.as_array_ref());
+    }
+
+    for i in simd_len..numel {
+        output.push(scalar_op(window[i]));
+    }
+
+    output
+}
+
+fn simd_binary_f32<F, S>(
+    lhs_window: &[f32],
+    rhs_window: &[f32],
+    scalar_op: F,
+    simd_op: S,
+) -> Vec<f32>
+where
+    F: Fn(f32, f32) -> f32,
+    S: Fn(f32x8, f32x8) -> f32x8,
+{
+    let numel = lhs_window.len();
+    let simd_len = numel / SIMD_WIDTH_F32 * SIMD_WIDTH_F32;
+    let mut output = Vec::with_capacity(numel);
+
+    for i in (0..simd_len).step_by(SIMD_WIDTH_F32) {
+        let a = f32x8::new([
+            lhs_window[i], lhs_window[i + 1], lhs_window[i + 2], lhs_window[i + 3],
+            lhs_window[i + 4], lhs_window[i + 5], lhs_window[i + 6], lhs_window[i + 7],
+        ]);
+        let b = f32x8::new([
+            rhs_window[i], rhs_window[i + 1], rhs_window[i + 2], rhs_window[i + 3],
+            rhs_window[i + 4], rhs_window[i + 5], rhs_window[i + 6], rhs_window[i + 7],
+        ]);
+        let result = simd_op(a, b);
+        output.extend_from_slice(result.as_array_ref());
+    }
+
+    for i in simd_len..numel {
+        output.push(scalar_op(lhs_window[i], rhs_window[i]));
+    }
+
+    output
+}
+
 fn unary_contiguous_f32<F>(input: &[f32], meta: &TensorMeta, op: F) -> Result<Vec<f32>, KernelError>
 where
     F: Fn(f32) -> f32,
@@ -5723,6 +5784,26 @@ where
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
     Ok(window.iter().map(|value| op(*value)).collect())
+}
+
+fn simd_unary_f32_kernel<F, S>(
+    input: &[f32],
+    meta: &TensorMeta,
+    scalar_op: F,
+    simd_op: S,
+) -> Result<Vec<f32>, KernelError>
+where
+    F: Fn(f32) -> f32,
+    S: Fn(f32x8) -> f32x8,
+{
+    ensure_unary_layout_and_storage_f32(input, meta)?;
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+    let start = meta.storage_offset();
+    let window = &input[start..start + numel];
+    Ok(simd_unary_f32(window, scalar_op, simd_op))
 }
 
 fn elementwise_contiguous_f32<F>(
@@ -5751,6 +5832,97 @@ where
         .zip(rhs_window.iter())
         .map(|(left, right)| op(*left, *right))
         .collect())
+}
+
+fn simd_elementwise_f32<F, S>(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    scalar_op: F,
+    simd_op: S,
+) -> Result<Vec<f32>, KernelError>
+where
+    F: Fn(f32, f32) -> f32,
+    S: Fn(f32x8, f32x8) -> f32x8,
+{
+    ensure_meta_shape_and_dtype(lhs_meta, rhs_meta)?;
+    ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
+    ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
+    let numel = lhs_meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+    let lhs_start = lhs_meta.storage_offset();
+    let rhs_start = rhs_meta.storage_offset();
+    let lhs_window = &lhs[lhs_start..lhs_start + numel];
+    let rhs_window = &rhs[rhs_start..rhs_start + numel];
+    Ok(simd_binary_f32(lhs_window, rhs_window, scalar_op, simd_op))
+}
+
+pub fn add_tensor_contiguous_f32(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    simd_elementwise_f32(lhs, rhs, lhs_meta, rhs_meta, |l, r| l + r, |a, b| a + b)
+}
+
+pub fn sub_tensor_contiguous_f32(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    simd_elementwise_f32(lhs, rhs, lhs_meta, rhs_meta, |l, r| l - r, |a, b| a - b)
+}
+
+pub fn mul_tensor_contiguous_f32(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    simd_elementwise_f32(lhs, rhs, lhs_meta, rhs_meta, |l, r| l * r, |a, b| a * b)
+}
+
+pub fn div_tensor_contiguous_f32(
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    simd_elementwise_f32(lhs, rhs, lhs_meta, rhs_meta, |l, r| l / r, |a, b| a / b)
+}
+
+pub fn neg_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    simd_unary_f32_kernel(input, meta, |v| -v, |a| -a)
+}
+
+pub fn abs_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    simd_unary_f32_kernel(input, meta, |v| v.abs(), |a| a.abs())
+}
+
+pub fn sqrt_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    simd_unary_f32_kernel(input, meta, |v| v.sqrt(), |a| a.sqrt())
+}
+
+pub fn reciprocal_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    let one = f32x8::splat(1.0);
+    simd_unary_f32_kernel(input, meta, |v| 1.0 / v, move |a| one / a)
 }
 
 fn ensure_dtype_device_and_layout_f32(
@@ -5872,8 +6044,6 @@ macro_rules! define_unary_f32 {
     };
 }
 
-define_unary_f32!(neg_tensor_contiguous_f32, |v: f32| -v);
-define_unary_f32!(abs_tensor_contiguous_f32, f32::abs);
 define_unary_f32!(exp_tensor_contiguous_f32, f32::exp);
 define_unary_f32!(log_tensor_contiguous_f32, f32::ln);
 define_unary_f32!(relu_tensor_contiguous_f32, |v: f32| if v > 0.0f32 {
@@ -5884,8 +6054,6 @@ define_unary_f32!(relu_tensor_contiguous_f32, |v: f32| if v > 0.0f32 {
 define_unary_f32!(sigmoid_tensor_contiguous_f32, |v: f32| 1.0f32
     / (1.0f32 + (-v).exp()));
 define_unary_f32!(tanh_tensor_contiguous_f32, f32::tanh);
-define_unary_f32!(sqrt_tensor_contiguous_f32, f32::sqrt);
-define_unary_f32!(reciprocal_tensor_contiguous_f32, |v: f32| 1.0f32 / v);
 define_unary_f32!(sin_tensor_contiguous_f32, f32::sin);
 define_unary_f32!(cos_tensor_contiguous_f32, f32::cos);
 define_unary_f32!(tan_tensor_contiguous_f32, f32::tan);
@@ -5948,10 +6116,6 @@ macro_rules! define_binary_f32 {
     };
 }
 
-define_binary_f32!(add_tensor_contiguous_f32, |l: f32, r: f32| l + r);
-define_binary_f32!(sub_tensor_contiguous_f32, |l: f32, r: f32| l - r);
-define_binary_f32!(mul_tensor_contiguous_f32, |l: f32, r: f32| l * r);
-define_binary_f32!(div_tensor_contiguous_f32, |l: f32, r: f32| l / r);
 define_binary_f32!(min_tensor_contiguous_f32, |l: f32, r: f32| {
     if l.is_nan() || r.is_nan() {
         f32::NAN
