@@ -59414,25 +59414,25 @@ mod tests {
     }
 
     #[test]
-    fn session_tensor_add_fails_closed_on_non_contiguous_input() {
+    fn session_tensor_add_supports_non_contiguous_input() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let lhs_meta =
             TensorMeta::from_shape_and_strides(vec![2, 2], vec![4, 1], 0, DType::F64, Device::Cpu)
                 .expect("non-contiguous meta should validate");
-        let lhs = DenseTensor::from_storage(lhs_meta, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        let lhs = DenseTensor::from_storage(lhs_meta, vec![1.0, 2.0, 0.0, 0.0, 5.0, 6.0])
             .expect("lhs tensor should build");
         let rhs = session
-            .tensor_variable(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], true)
+            .tensor_variable(vec![10.0, 20.0, 30.0, 40.0], vec![2, 2], true)
             .expect("rhs tensor variable should build");
         let lhs = session.tensor_variable_from_storage(lhs, true);
 
-        let err = session
+        let result = session
             .tensor_add(lhs, rhs)
-            .expect_err("non-contiguous tensor input must fail closed");
-        assert!(
-            err.to_string()
-                .contains("unsupported non-contiguous layout on lhs")
-        );
+            .expect("non-contiguous tensor input should be supported");
+        let values = session
+            .tensor_values(result)
+            .expect("should get result values");
+        assert_eq!(values, vec![11.0, 22.0, 35.0, 46.0]);
     }
 
     #[test]

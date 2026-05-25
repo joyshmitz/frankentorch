@@ -555,8 +555,24 @@ fn ensure_dtype_device_and_layout(lhs: &TensorMeta, rhs: &TensorMeta) -> Result<
     Ok(())
 }
 
-fn ensure_meta_compatible(lhs: &TensorMeta, rhs: &TensorMeta) -> Result<(), KernelError> {
-    ensure_dtype_device_and_layout(lhs, rhs)?;
+fn ensure_meta_shape_and_dtype(lhs: &TensorMeta, rhs: &TensorMeta) -> Result<(), KernelError> {
+    if lhs.dtype() != rhs.dtype() {
+        return Err(KernelError::Incompatible(
+            TensorCompatError::DTypeMismatch {
+                lhs: lhs.dtype(),
+                rhs: rhs.dtype(),
+            },
+        ));
+    }
+
+    if lhs.device() != rhs.device() {
+        return Err(KernelError::Incompatible(
+            TensorCompatError::DeviceMismatch {
+                lhs: lhs.device(),
+                rhs: rhs.device(),
+            },
+        ));
+    }
 
     if lhs.shape() != rhs.shape() {
         return Err(KernelError::ShapeMismatch {
@@ -624,7 +640,7 @@ fn ensure_storage_len(
     Ok(())
 }
 
-fn elementwise_contiguous_f64<F>(
+fn elementwise_f64<F>(
     lhs: &[f64],
     rhs: &[f64],
     lhs_meta: &TensorMeta,
@@ -634,7 +650,12 @@ fn elementwise_contiguous_f64<F>(
 where
     F: Fn(f64, f64) -> f64 + Sync,
 {
-    ensure_meta_compatible(lhs_meta, rhs_meta)?;
+    ensure_meta_shape_and_dtype(lhs_meta, rhs_meta)?;
+
+    if !lhs_meta.is_contiguous() || !rhs_meta.is_contiguous() {
+        return elementwise_strided_f64(lhs, rhs, lhs_meta, rhs_meta, op);
+    }
+
     ensure_storage_len(lhs, lhs_meta, "lhs")?;
     ensure_storage_len(rhs, rhs_meta, "rhs")?;
 
@@ -648,7 +669,6 @@ where
     let lhs_window = &lhs[lhs_start..lhs_start + numel];
     let rhs_window = &rhs[rhs_start..rhs_start + numel];
 
-    // Use parallel iteration for large tensors
     if numel >= PARALLEL_THRESHOLD {
         Ok(lhs_window
             .par_iter()
@@ -669,6 +689,92 @@ fn ensure_unary_layout_and_storage(buffer: &[f64], meta: &TensorMeta) -> Result<
         return Err(KernelError::UnsupportedLayout { side: "input" });
     }
     ensure_storage_len(buffer, meta, "input")
+}
+
+fn strided_index(coords: &[usize], strides: &[usize], offset: usize) -> usize {
+    let mut idx = offset;
+    for (c, s) in coords.iter().zip(strides.iter()) {
+        idx += c * s;
+    }
+    idx
+}
+
+fn increment_coords(coords: &mut [usize], shape: &[usize]) -> bool {
+    for d in (0..coords.len()).rev() {
+        coords[d] += 1;
+        if coords[d] < shape[d] {
+            return true;
+        }
+        coords[d] = 0;
+    }
+    false
+}
+
+fn elementwise_strided_f64<F>(
+    lhs: &[f64],
+    rhs: &[f64],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+    op: F,
+) -> Result<Vec<f64>, KernelError>
+where
+    F: Fn(f64, f64) -> f64,
+{
+    let shape = lhs_meta.shape();
+    let numel = lhs_meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+
+    let lhs_strides = lhs_meta.strides();
+    let rhs_strides = rhs_meta.strides();
+    let lhs_offset = lhs_meta.storage_offset();
+    let rhs_offset = rhs_meta.storage_offset();
+
+    let mut output = Vec::with_capacity(numel);
+    let mut coords = vec![0usize; shape.len()];
+
+    loop {
+        let lhs_idx = strided_index(&coords, lhs_strides, lhs_offset);
+        let rhs_idx = strided_index(&coords, rhs_strides, rhs_offset);
+        output.push(op(lhs[lhs_idx], rhs[rhs_idx]));
+        if !increment_coords(&mut coords, shape) {
+            break;
+        }
+    }
+
+    Ok(output)
+}
+
+fn unary_strided_f64<F>(
+    input: &[f64],
+    meta: &TensorMeta,
+    op: F,
+) -> Result<Vec<f64>, KernelError>
+where
+    F: Fn(f64) -> f64,
+{
+    let shape = meta.shape();
+    let numel = meta.numel();
+    if numel == 0 {
+        return Ok(Vec::new());
+    }
+
+    let strides = meta.strides();
+    let offset = meta.storage_offset();
+
+    let mut output = Vec::with_capacity(numel);
+    let mut coords = vec![0usize; shape.len()];
+
+    loop {
+        let idx = strided_index(&coords, strides, offset);
+        output.push(op(input[idx]));
+        if !increment_coords(&mut coords, shape) {
+            break;
+        }
+    }
+
+    Ok(output)
 }
 
 fn checked_shape_numel(shape: &[usize], context: &'static str) -> Result<usize, KernelError> {
@@ -714,11 +820,15 @@ fn checked_dim_loop_sizes(
 
 const PARALLEL_THRESHOLD: usize = 8192;
 
-fn unary_contiguous_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, KernelError>
+fn unary_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, KernelError>
 where
     F: Fn(f64) -> f64 + Sync,
 {
-    ensure_unary_layout_and_storage(input, meta)?;
+    if !meta.is_contiguous() {
+        return unary_strided_f64(input, meta, op);
+    }
+
+    ensure_storage_len(input, meta, "input")?;
 
     let numel = meta.numel();
     if numel == 0 {
@@ -757,17 +867,21 @@ where
     output
 }
 
-fn simd_unary_contiguous_f64<F, S>(
+fn simd_unary_f64_kernel<F, S>(
     input: &[f64],
     meta: &TensorMeta,
     scalar_op: F,
-    simd_op: S,
+    _simd_op: S,
 ) -> Result<Vec<f64>, KernelError>
 where
     F: Fn(f64) -> f64,
     S: Fn(f64x4) -> f64x4,
 {
-    ensure_unary_layout_and_storage(input, meta)?;
+    if !meta.is_contiguous() {
+        return unary_strided_f64(input, meta, scalar_op);
+    }
+
+    ensure_storage_len(input, meta, "input")?;
 
     let numel = meta.numel();
     if numel == 0 {
@@ -777,7 +891,7 @@ where
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    Ok(simd_unary_f64(window, scalar_op, simd_op))
+    Ok(simd_unary_f64(window, scalar_op, _simd_op))
 }
 
 fn broadcast_strides(
@@ -869,56 +983,56 @@ pub fn neg_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_unary_contiguous_f64(input, meta, |v| -v, |a| -a)
+    simd_unary_f64_kernel(input, meta, |v| -v, |a| -a)
 }
 
 pub fn abs_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_unary_contiguous_f64(input, meta, |v| v.abs(), |a| a.abs())
+    simd_unary_f64_kernel(input, meta, |v| v.abs(), |a| a.abs())
 }
 
 pub fn exp_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.exp())
+    unary_f64(input, meta, |value| value.exp())
 }
 
 pub fn log_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.ln())
+    unary_f64(input, meta, |value| value.ln())
 }
 
 pub fn relu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| if value > 0.0 { value } else { 0.0 })
+    unary_f64(input, meta, |value| if value > 0.0 { value } else { 0.0 })
 }
 
 pub fn sigmoid_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| 1.0 / (1.0 + (-value).exp()))
+    unary_f64(input, meta, |value| 1.0 / (1.0 + (-value).exp()))
 }
 
 pub fn tanh_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.tanh())
+    unary_f64(input, meta, |value| value.tanh())
 }
 
 pub fn sqrt_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_unary_contiguous_f64(input, meta, |v| v.sqrt(), |a| a.sqrt())
+    simd_unary_f64_kernel(input, meta, |v| v.sqrt(), |a| a.sqrt())
 }
 
 pub fn reciprocal_tensor_contiguous_f64(
@@ -926,175 +1040,175 @@ pub fn reciprocal_tensor_contiguous_f64(
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
     let one = f64x4::splat(1.0);
-    simd_unary_contiguous_f64(input, meta, |v| 1.0 / v, move |a| one / a)
+    simd_unary_f64_kernel(input, meta, |v| 1.0 / v, move |a| one / a)
 }
 
 pub fn sin_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.sin())
+    unary_f64(input, meta, |value| value.sin())
 }
 
 pub fn cos_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.cos())
+    unary_f64(input, meta, |value| value.cos())
 }
 
 pub fn tan_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.tan())
+    unary_f64(input, meta, |value| value.tan())
 }
 
 pub fn floor_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.floor())
+    unary_f64(input, meta, |value| value.floor())
 }
 
 pub fn ceil_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.ceil())
+    unary_f64(input, meta, |value| value.ceil())
 }
 
 pub fn round_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, round_ties_even_f64)
+    unary_f64(input, meta, round_ties_even_f64)
 }
 
 pub fn log2_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.log2())
+    unary_f64(input, meta, |value| value.log2())
 }
 
 pub fn log10_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.log10())
+    unary_f64(input, meta, |value| value.log10())
 }
 
 pub fn log1p_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.ln_1p())
+    unary_f64(input, meta, |value| value.ln_1p())
 }
 
 pub fn expm1_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.exp_m1())
+    unary_f64(input, meta, |value| value.exp_m1())
 }
 
 pub fn sign_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, torch_sign_f64)
+    unary_f64(input, meta, torch_sign_f64)
 }
 
 pub fn trunc_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.trunc())
+    unary_f64(input, meta, |value| value.trunc())
 }
 
 pub fn frac_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.fract())
+    unary_f64(input, meta, |value| value.fract())
 }
 
 pub fn asin_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.asin())
+    unary_f64(input, meta, |value| value.asin())
 }
 
 pub fn acos_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.acos())
+    unary_f64(input, meta, |value| value.acos())
 }
 
 pub fn atan_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.atan())
+    unary_f64(input, meta, |value| value.atan())
 }
 
 pub fn sinh_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.sinh())
+    unary_f64(input, meta, |value| value.sinh())
 }
 
 pub fn cosh_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |value| value.cosh())
+    unary_f64(input, meta, |value| value.cosh())
 }
 
 pub fn gelu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, gelu_value)
+    unary_f64(input, meta, gelu_value)
 }
 
 pub fn silu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, silu_value)
+    unary_f64(input, meta, silu_value)
 }
 
 pub fn leaky_relu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, leaky_relu_value)
+    unary_f64(input, meta, leaky_relu_value)
 }
 
 pub fn elu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, elu_value)
+    unary_f64(input, meta, elu_value)
 }
 
 pub fn rsqrt_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |v| 1.0 / v.sqrt())
+    unary_f64(input, meta, |v| 1.0 / v.sqrt())
 }
 
 pub fn erf_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, erf_value)
+    unary_f64(input, meta, erf_value)
 }
 
 pub fn erfc_tensor_contiguous_f64(
@@ -1104,70 +1218,70 @@ pub fn erfc_tensor_contiguous_f64(
     // Use libm::erfc directly rather than `1.0 - erf(x)` — the latter
     // cancels down to 0.0 for |x| > ~5.95 even though `erfc(x)` is
     // still a tiny but non-zero positive number.
-    unary_contiguous_f64(input, meta, erfc_value)
+    unary_f64(input, meta, erfc_value)
 }
 
 pub fn hardswish_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, hardswish_value)
+    unary_f64(input, meta, hardswish_value)
 }
 
 pub fn hardsigmoid_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, hardsigmoid_value)
+    unary_f64(input, meta, hardsigmoid_value)
 }
 
 pub fn hardtanh_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, hardtanh_value)
+    unary_f64(input, meta, hardtanh_value)
 }
 
 pub fn softplus_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, softplus_value)
+    unary_f64(input, meta, softplus_value)
 }
 
 pub fn mish_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, mish_value)
+    unary_f64(input, meta, mish_value)
 }
 
 pub fn square_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |v| v * v)
+    unary_f64(input, meta, |v| v * v)
 }
 
 pub fn isnan_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |v| if v.is_nan() { 1.0 } else { 0.0 })
+    unary_f64(input, meta, |v| if v.is_nan() { 1.0 } else { 0.0 })
 }
 
 pub fn isinf_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |v| if v.is_infinite() { 1.0 } else { 0.0 })
+    unary_f64(input, meta, |v| if v.is_infinite() { 1.0 } else { 0.0 })
 }
 
 pub fn isfinite_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_contiguous_f64(input, meta, |v| if v.is_finite() { 1.0 } else { 0.0 })
+    unary_f64(input, meta, |v| if v.is_finite() { 1.0 } else { 0.0 })
 }
 
 pub fn pow_tensor_contiguous_f64(
@@ -1236,7 +1350,7 @@ pub fn min_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
+    elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
         if l.is_nan() || r.is_nan() {
             f64::NAN
         } else {
@@ -1251,7 +1365,7 @@ pub fn max_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
+    elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| {
         if l.is_nan() || r.is_nan() {
             f64::NAN
         } else {
@@ -1266,7 +1380,7 @@ pub fn atan2_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |y, x| y.atan2(x))
+    elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |y, x| y.atan2(x))
 }
 
 pub fn fmod_tensor_contiguous_f64(
@@ -1275,7 +1389,7 @@ pub fn fmod_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |a, b| a % b)
+    elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |a, b| a % b)
 }
 
 pub fn remainder_tensor_contiguous_f64(
@@ -1284,7 +1398,7 @@ pub fn remainder_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(lhs, rhs, lhs_meta, rhs_meta, |a, b| a - (a / b).floor() * b)
+    elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |a, b| a - (a / b).floor() * b)
 }
 
 pub fn eq_tensor_contiguous_f64(
@@ -1293,7 +1407,7 @@ pub fn eq_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(
+    elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1310,7 +1424,7 @@ pub fn ne_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(
+    elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1327,7 +1441,7 @@ pub fn lt_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(
+    elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1344,7 +1458,7 @@ pub fn gt_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(
+    elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1361,7 +1475,7 @@ pub fn le_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(
+    elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1378,7 +1492,7 @@ pub fn ge_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    elementwise_contiguous_f64(
+    elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1587,19 +1701,24 @@ where
     output
 }
 
-fn simd_elementwise_contiguous_f64<F, S>(
+fn simd_elementwise_f64<F, S>(
     lhs: &[f64],
     rhs: &[f64],
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
     scalar_op: F,
-    simd_op: S,
+    _simd_op: S,
 ) -> Result<Vec<f64>, KernelError>
 where
     F: Fn(f64, f64) -> f64,
     S: Fn(f64x4, f64x4) -> f64x4,
 {
-    ensure_meta_compatible(lhs_meta, rhs_meta)?;
+    ensure_meta_shape_and_dtype(lhs_meta, rhs_meta)?;
+
+    if !lhs_meta.is_contiguous() || !rhs_meta.is_contiguous() {
+        return elementwise_strided_f64(lhs, rhs, lhs_meta, rhs_meta, scalar_op);
+    }
+
     ensure_storage_len(lhs, lhs_meta, "lhs")?;
     ensure_storage_len(rhs, rhs_meta, "rhs")?;
 
@@ -1613,7 +1732,7 @@ where
     let lhs_window = &lhs[lhs_start..lhs_start + numel];
     let rhs_window = &rhs[rhs_start..rhs_start + numel];
 
-    Ok(simd_binary_f64(lhs_window, rhs_window, scalar_op, simd_op))
+    Ok(simd_binary_f64(lhs_window, rhs_window, scalar_op, _simd_op))
 }
 
 pub fn add_tensor_contiguous_f64(
@@ -1622,7 +1741,7 @@ pub fn add_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_elementwise_contiguous_f64(
+    simd_elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1638,7 +1757,7 @@ pub fn sub_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_elementwise_contiguous_f64(
+    simd_elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1654,7 +1773,7 @@ pub fn div_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_elementwise_contiguous_f64(
+    simd_elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -1670,7 +1789,7 @@ pub fn mul_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_elementwise_contiguous_f64(
+    simd_elementwise_f64(
         lhs,
         rhs,
         lhs_meta,
@@ -5482,7 +5601,7 @@ fn elementwise_contiguous_f32<F>(
 where
     F: Fn(f32, f32) -> f32,
 {
-    ensure_meta_compatible(lhs_meta, rhs_meta)?;
+    ensure_meta_shape_and_dtype(lhs_meta, rhs_meta)?;
     ensure_storage_len_f32(lhs, lhs_meta, "lhs")?;
     ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
     let numel = lhs_meta.numel();
@@ -8317,18 +8436,15 @@ mod tests {
     }
 
     #[test]
-    fn neg_tensor_contiguous_rejects_non_contiguous_layout() {
+    fn neg_tensor_supports_non_contiguous_layout() {
         let meta =
             TensorMeta::from_shape_and_strides(vec![2, 2], vec![1, 2], 0, DType::F64, Device::Cpu)
                 .expect("test meta should be valid");
         let input = vec![1.0, 2.0, 3.0, 4.0];
 
-        let err = neg_tensor_contiguous_f64(&input, &meta)
-            .expect_err("non-contiguous input must be rejected");
-        assert!(matches!(
-            err,
-            KernelError::UnsupportedLayout { side: "input" }
-        ));
+        let result = neg_tensor_contiguous_f64(&input, &meta)
+            .expect("non-contiguous input should be supported");
+        assert_eq!(result, vec![-1.0, -3.0, -2.0, -4.0]);
     }
 
     #[test]
@@ -9134,7 +9250,7 @@ mod tests {
     }
 
     #[test]
-    fn div_tensor_contiguous_rejects_non_contiguous_layout() {
+    fn div_tensor_supports_non_contiguous_layout() {
         let lhs_meta =
             TensorMeta::from_shape_and_strides(vec![2, 2], vec![1, 2], 0, DType::F64, Device::Cpu)
                 .expect("test meta should be valid");
@@ -9142,12 +9258,9 @@ mod tests {
         let lhs = vec![2.0, 4.0, 6.0, 8.0];
         let rhs = vec![1.0, 2.0, 3.0, 4.0];
 
-        let err = div_tensor_contiguous_f64(&lhs, &rhs, &lhs_meta, &rhs_meta)
-            .expect_err("non-contiguous input must be rejected");
-        assert!(matches!(
-            err,
-            KernelError::UnsupportedLayout { side: "lhs" }
-        ));
+        let result = div_tensor_contiguous_f64(&lhs, &rhs, &lhs_meta, &rhs_meta)
+            .expect("non-contiguous input should be supported");
+        assert_eq!(result, vec![2.0, 3.0, 4.0 / 3.0, 2.0]);
     }
 
     #[test]
