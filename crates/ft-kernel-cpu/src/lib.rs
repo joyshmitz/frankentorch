@@ -13409,6 +13409,96 @@ mod tests {
                 }
             }
         }
+
+        #[test]
+        fn prop_svd_singular_values_are_nonnegative(
+            size in 2usize..6,
+        ) {
+            let n = size;
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let data: Vec<f64> = (0..n*n).map(|i| (i as f64) * 0.1 + 0.1).collect();
+
+            let svd_result = super::svd_contiguous_f64(&data, &meta, false).unwrap();
+
+            for (i, &s) in svd_result.s.iter().enumerate() {
+                prop_assert!(s >= 0.0, "singular value {} is negative: {}", i, s);
+            }
+        }
+
+        #[test]
+        fn prop_svd_reconstruction_within_tolerance(
+            size in 2usize..5,
+        ) {
+            let n = size;
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let data: Vec<f64> = (0..n*n).map(|i| ((i as f64) * 0.3 + 0.1).sin()).collect();
+
+            let svd_result = super::svd_contiguous_f64(&data, &meta, false).unwrap();
+            let u = &svd_result.u;
+            let s = &svd_result.s;
+            let vh = &svd_result.vh;
+            let k = svd_result.k;
+
+            let mut reconstructed = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for l in 0..k {
+                        sum += u[i * k + l] * s[l] * vh[l * n + j];
+                    }
+                    reconstructed[i * n + j] = sum;
+                }
+            }
+
+            for i in 0..n*n {
+                prop_assert!(
+                    (reconstructed[i] - data[i]).abs() < 1e-10,
+                    "SVD reconstruction mismatch at {}: got {} expected {}",
+                    i, reconstructed[i], data[i]
+                );
+            }
+        }
+
+        #[test]
+        fn prop_det_of_identity_is_one(
+            size in 2usize..6,
+        ) {
+            let n = size;
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                data[i * n + i] = 1.0;
+            }
+
+            let det_result = super::det_contiguous_f64(&data, &meta).unwrap();
+
+            prop_assert!(
+                (det_result.det - 1.0).abs() < 1e-10,
+                "det(I) should be 1, got {}",
+                det_result.det
+            );
+        }
+
+        #[test]
+        fn prop_det_of_diagonal_is_product_of_diag(
+            diag in proptest::collection::vec(-10.0f64..10.0, 2..5),
+        ) {
+            let n = diag.len();
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let mut data = vec![0.0; n * n];
+            for (i, &d) in diag.iter().enumerate() {
+                data[i * n + i] = d;
+            }
+            let expected: f64 = diag.iter().product();
+
+            let det_result = super::det_contiguous_f64(&data, &meta).unwrap();
+
+            prop_assert!(
+                (det_result.det - expected).abs() < 1e-8,
+                "det(diag) should be product of diagonal, got {} expected {}",
+                det_result.det, expected
+            );
+        }
     }
 
     #[test]
