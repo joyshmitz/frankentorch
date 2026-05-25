@@ -544,6 +544,22 @@ impl TensorFftCaseReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorPoolCaseReport {
+    pub name: String,
+    pub mode: ExecutionMode,
+    pub output_ok: bool,
+    pub shape_ok: bool,
+    pub forensic_log: StructuredCaseLog,
+}
+
+impl TensorPoolCaseReport {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.output_ok && self.shape_ok
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessReport {
     pub suite: &'static str,
@@ -612,6 +628,34 @@ struct TensorFftCase {
     #[serde(default)]
     d: Option<f64>,
     expected_output: Vec<f64>,
+    tolerance: Option<f64>,
+    #[serde(default)]
+    contract_ids: Vec<String>,
+    #[serde(default)]
+    e2e_scenarios: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorPoolFixtureFile {
+    cases: Vec<TensorPoolCase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TensorPoolCase {
+    name: String,
+    op: String,
+    input: Vec<f64>,
+    shape: Vec<usize>,
+    #[serde(default)]
+    kernel_size: usize,
+    #[serde(default)]
+    stride: usize,
+    #[serde(default)]
+    padding: usize,
+    #[serde(default)]
+    output_size: Option<usize>,
+    expected_output: Vec<f64>,
+    expected_shape: Vec<usize>,
     tolerance: Option<f64>,
     #[serde(default)]
     contract_ids: Vec<String>,
@@ -1241,6 +1285,7 @@ impl_fixture_metadata!(
     TensorScanCase,
     TensorJoinCase,
     TensorFftCase,
+    TensorPoolCase,
 );
 
 fn validate_fixture_metadata(
@@ -1803,6 +1848,34 @@ pub fn run_tensor_fft_conformance(
 
     let report = HarnessReport {
         suite: "tensor_fft",
+        oracle_present: config.oracle_root.exists(),
+        fixture_count: 1,
+        strict_mode: mode == ExecutionMode::Strict,
+        cases_total,
+        cases_passed,
+    };
+
+    Ok((report, case_reports))
+}
+
+pub fn run_tensor_pool_conformance(
+    config: &HarnessConfig,
+    mode: ExecutionMode,
+) -> Result<(HarnessReport, Vec<TensorPoolCaseReport>), String> {
+    let fixture_path = config.fixture_root.join("tensor_pool_cases.json");
+    let fixture: TensorPoolFixtureFile = load_fixture(&fixture_path)?;
+
+    let mut case_reports = Vec::with_capacity(fixture.cases.len());
+    for case in &fixture.cases {
+        validate_fixture_metadata(case.name.as_str(), case)?;
+        case_reports.push(run_tensor_pool_case(case, mode)?);
+    }
+
+    let (cases_total, cases_passed) =
+        summarize_passes(case_reports.iter().map(TensorPoolCaseReport::passed));
+
+    let report = HarnessReport {
+        suite: "tensor_pool",
         oracle_present: config.oracle_root.exists(),
         fixture_count: 1,
         strict_mode: mode == ExecutionMode::Strict,
@@ -5240,6 +5313,110 @@ fn run_tensor_fft_case(
             ],
             format!(
                 "cargo test -p ft-conformance tensor_fft_conformance -- --nocapture # mode={}",
+                mode_label(mode)
+            ),
+            outcome,
+            reason_code,
+        )
+        .with_extra_fields(extra_fields),
+    })
+}
+
+fn run_tensor_pool_case(
+    case: &TensorPoolCase,
+    mode: ExecutionMode,
+) -> Result<TensorPoolCaseReport, String> {
+    let mut session = FrankenTorchSession::new(mode);
+    let input = session
+        .tensor_variable(case.input.clone(), case.shape.clone(), false)
+        .map_err(|error| format!("pool input build failed for '{}': {error}", case.name))?;
+
+    let out = match case.op.as_str() {
+        "avg_pool1d" => session
+            .tensor_avg_pool1d(input, case.kernel_size, case.stride)
+            .map_err(|error| format!("avg_pool1d failed for '{}': {error}", case.name))?,
+        "max_pool1d" => session
+            .tensor_max_pool1d(input, case.kernel_size, case.stride)
+            .map_err(|error| format!("max_pool1d failed for '{}': {error}", case.name))?,
+        "avg_pool2d" => {
+            let k = case.kernel_size;
+            let s = case.stride;
+            session
+                .tensor_avg_pool2d(input, (k, k), (s, s), (0, 0), false, true)
+                .map_err(|error| format!("avg_pool2d failed for '{}': {error}", case.name))?
+        }
+        "max_pool2d" => {
+            let k = case.kernel_size;
+            let s = case.stride;
+            session
+                .tensor_max_pool2d(input, (k, k), (s, s))
+                .map_err(|error| format!("max_pool2d failed for '{}': {error}", case.name))?
+        }
+        "adaptive_avg_pool1d" => {
+            let output_size = case.output_size.ok_or_else(|| format!("adaptive_avg_pool1d requires output_size for '{}'", case.name))?;
+            session
+                .tensor_adaptive_avg_pool1d(input, output_size)
+                .map_err(|error| format!("adaptive_avg_pool1d failed for '{}': {error}", case.name))?
+        }
+        "adaptive_max_pool1d" => {
+            let output_size = case.output_size.ok_or_else(|| format!("adaptive_max_pool1d requires output_size for '{}'", case.name))?;
+            let (output, _indices) = session
+                .tensor_adaptive_max_pool1d(input, output_size)
+                .map_err(|error| format!("adaptive_max_pool1d failed for '{}': {error}", case.name))?;
+            output
+        }
+        _ => {
+            return Err(format!(
+                "unsupported pool operation '{}'",
+                bounded_parse_token(&case.op)
+            ));
+        }
+    };
+
+    let actual_values = session
+        .tensor_values(out)
+        .map_err(|error| format!("tensor value read failed for '{}': {error}", case.name))?;
+    let actual_shape = session.tensor_shape(out)
+        .map_err(|error| format!("tensor shape read failed for '{}': {error}", case.name))?;
+
+    let tolerance = case.tolerance.unwrap_or(1e-12);
+    let output_ok = vec_within(
+        actual_values.as_slice(),
+        case.expected_output.as_slice(),
+        tolerance,
+    );
+    let shape_ok = actual_shape == case.expected_shape;
+    let outcome = if output_ok && shape_ok { "pass" } else { "fail" };
+    let reason_code = if outcome == "pass" {
+        "tensor_pool_parity_ok"
+    } else {
+        "tensor_pool_mismatch"
+    };
+
+    let mut extra_fields = std::collections::BTreeMap::new();
+    extra_fields.insert("op".to_string(), serde_json::Value::String(case.op.clone()));
+    extra_fields.insert(
+        "runtime_evidence".to_string(),
+        runtime_evidence_field(session.evidence()),
+    );
+
+    Ok(TensorPoolCaseReport {
+        name: case.name.clone(),
+        mode,
+        output_ok,
+        shape_ok,
+        forensic_log: StructuredCaseLog::new(
+            "tensor_pool",
+            "tensor_pool_cases.json",
+            "FT-P2C-POOL",
+            case.name.as_str(),
+            mode,
+            vec![
+                "crates/ft-conformance/fixtures/tensor_pool_cases.json".to_string(),
+                "artifacts/phase2c/FT-P2C-POOL/parity_report.json".to_string(),
+            ],
+            format!(
+                "cargo test -p ft-conformance tensor_pool_conformance -- --nocapture # mode={}",
                 mode_label(mode)
             ),
             outcome,
