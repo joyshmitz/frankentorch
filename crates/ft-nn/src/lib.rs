@@ -12661,6 +12661,89 @@ impl TripletMarginLoss {
     }
 }
 
+/// Triplet margin loss with custom distance function.
+///
+/// Equivalent to `torch.nn.TripletMarginWithDistanceLoss`. Unlike `TripletMarginLoss`
+/// which uses p-norm distance, this allows any distance function provided at
+/// construction time.
+pub struct TripletMarginWithDistanceLoss {
+    margin: f64,
+    distance_fn: DistanceKind,
+}
+
+/// Distance function kind for TripletMarginWithDistanceLoss.
+#[derive(Clone, Copy, Debug)]
+pub enum DistanceKind {
+    /// L2 (Euclidean) distance: sqrt(sum((a - b)^2))
+    L2,
+    /// L1 (Manhattan) distance: sum(|a - b|)
+    L1,
+    /// Cosine distance: 1 - cos_sim(a, b)
+    Cosine,
+}
+
+impl TripletMarginWithDistanceLoss {
+    #[must_use]
+    pub fn new(margin: f64, distance_fn: DistanceKind) -> Self {
+        Self { margin, distance_fn }
+    }
+
+    /// Compute the loss.
+    ///
+    /// * `anchor`, `positive`, `negative` - embeddings (same shape)
+    pub fn forward_triplet(
+        &self,
+        session: &mut FrankenTorchSession,
+        anchor: TensorNodeId,
+        positive: TensorNodeId,
+        negative: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let dist_pos = self.compute_distance(session, anchor, positive)?;
+        let dist_neg = self.compute_distance(session, anchor, negative)?;
+        let diff = session.tensor_sub(dist_pos, dist_neg)?;
+        let shape = session.tensor_shape(diff)?;
+        let margin_t = session.full(shape, self.margin, false)?;
+        let raw = session.tensor_add(diff, margin_t)?;
+        session.tensor_relu(raw)
+    }
+
+    fn compute_distance(
+        &self,
+        session: &mut FrankenTorchSession,
+        a: TensorNodeId,
+        b: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        match self.distance_fn {
+            DistanceKind::L2 => {
+                let diff = session.tensor_sub(a, b)?;
+                let sq = session.tensor_mul(diff, diff)?;
+                let sum = session.tensor_sum(sq)?;
+                session.tensor_sqrt(sum)
+            }
+            DistanceKind::L1 => {
+                let diff = session.tensor_sub(a, b)?;
+                let abs_diff = session.tensor_abs(diff)?;
+                session.tensor_sum(abs_diff)
+            }
+            DistanceKind::Cosine => {
+                // 1 - cos_sim(a, b) where cos_sim = dot(a,b) / (||a|| * ||b||)
+                let dot_ab = session.tensor_vdot(a, b)?;
+                let sq_a = session.tensor_mul(a, a)?;
+                let sq_b = session.tensor_mul(b, b)?;
+                let norm_sq_a = session.tensor_sum(sq_a)?;
+                let norm_sq_b = session.tensor_sum(sq_b)?;
+                let norm_a = session.tensor_sqrt(norm_sq_a)?;
+                let norm_b = session.tensor_sqrt(norm_sq_b)?;
+                let norm_prod = session.tensor_mul(norm_a, norm_b)?;
+                let cos_sim = session.tensor_div(dot_ab, norm_prod)?;
+                let shape = session.tensor_shape(cos_sim)?;
+                let one = session.full(shape, 1.0, false)?;
+                session.tensor_sub(one, cos_sim)
+            }
+        }
+    }
+}
+
 /// Hinge embedding loss: `x` if `y=1`, `max(0, margin - x)` if `y=-1`.
 ///
 /// Used for semi-supervised learning and embedding learning.
@@ -13929,6 +14012,93 @@ impl Module for LPPool2d {
         let sum_kw = session.tensor_sum_dim(pow_u, 5)?; // → [N, C, oh, ow, kh]
         let sum_khkw = session.tensor_sum_dim(sum_kw, 4)?; // → [N, C, oh, ow]
         session.tensor_pow(sum_khkw, 1.0 / self.norm_type)
+    }
+
+    fn parameters(&self) -> Vec<TensorNodeId> {
+        Vec::new()
+    }
+}
+
+/// Power-average pooling over 3D signals.
+///
+/// Equivalent to `torch.nn.LPPool3d`.
+/// Computes `f(X) = (sum(|X|^p))^(1/p)` over each 3D kernel window.
+pub struct LPPool3d {
+    norm_type: f64,
+    kernel_size: (usize, usize, usize),
+    stride: (usize, usize, usize),
+}
+
+impl LPPool3d {
+    #[must_use]
+    pub fn new(norm_type: f64, kernel_size: (usize, usize, usize)) -> Self {
+        Self {
+            norm_type,
+            kernel_size,
+            stride: kernel_size,
+        }
+    }
+
+    #[must_use]
+    pub fn stride(mut self, stride: (usize, usize, usize)) -> Self {
+        self.stride = stride;
+        self
+    }
+}
+
+impl Module for LPPool3d {
+    fn forward(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        validate_positive_finite(
+            self.norm_type,
+            "LPPool3d norm_type must be finite and greater than zero",
+        )?;
+
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 5 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "LPPool3d expects 5D input [N, C, D, H, W]",
+                },
+            )));
+        }
+        let d = shape[2];
+        let h = shape[3];
+        let w = shape[4];
+        let (kd, kh, kw) = self.kernel_size;
+        let (sd, sh, sw) = self.stride;
+        if kd == 0 || kh == 0 || kw == 0 || sd == 0 || sh == 0 || sw == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "LPPool3d kernel_size and stride must be > 0",
+                },
+            )));
+        }
+        if d < kd || h < kh || w < kw {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "LPPool3d input smaller than kernel_size",
+                },
+            )));
+        }
+
+        // Compose through autograd-aware primitives. Strategy: nested unfold over D, H, W:
+        //   unf_d = unfold(input, 2, kd, sd)     → [N, C, od, H, W, kd]
+        //   unf_dh = unfold(unf_d, 3, kh, sh)    → [N, C, od, oh, W, kd, kh]
+        //   unf_dhw = unfold(unf_dh, 4, kw, sw)  → [N, C, od, oh, ow, kd, kh, kw]
+        //   abs + pow + sum_dim(over kw=7) + sum_dim(over kh=6) + sum_dim(over kd=5) + pow.
+        let unf_d = session.tensor_unfold(input, 2, kd, sd)?;
+        let unf_dh = session.tensor_unfold(unf_d, 3, kh, sh)?;
+        let unf_dhw = session.tensor_unfold(unf_dh, 4, kw, sw)?;
+        let abs_u = session.tensor_abs(unf_dhw)?;
+        let pow_u = session.tensor_pow(abs_u, self.norm_type)?;
+        let sum_kw = session.tensor_sum_dim(pow_u, 7)?; // → [N, C, od, oh, ow, kd, kh]
+        let sum_khkw = session.tensor_sum_dim(sum_kw, 6)?; // → [N, C, od, oh, ow, kd]
+        let sum_kdkhkw = session.tensor_sum_dim(sum_khkw, 5)?; // → [N, C, od, oh, ow]
+        session.tensor_pow(sum_kdkhkw, 1.0 / self.norm_type)
     }
 
     fn parameters(&self) -> Vec<TensorNodeId> {
