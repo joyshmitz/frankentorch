@@ -12,5 +12,13 @@ ft-kernel-cpu = { workspace = true }
 ft-runtime = { workspace = true }
 libm = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+ft-core = { workspace = true }
+
+[[bench]]
+name = "ops_bench"
+harness = false
+
 [lints]
 workspace = true

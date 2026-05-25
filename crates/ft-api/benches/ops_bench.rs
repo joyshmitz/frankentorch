@@ -1,0 +1,207 @@
+use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use ft_api::FrankenTorchSession;
+use ft_core::ExecutionMode;
+
+fn bench_matmul(c: &mut Criterion) {
+    let mut group = c.benchmark_group("matmul");
+
+    for size in [64, 128, 256, 512, 1024].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements((n * n * n) as u64));
+        group.bench_with_input(BenchmarkId::new("square", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = session.tensor_randn(vec![n, n], false).unwrap();
+            let bt = session.tensor_randn(vec![n, n], false).unwrap();
+            b.iter(|| {
+                black_box(session.tensor_matmul(a, bt).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_bmm(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bmm");
+
+    for batch in [8, 16, 32].iter() {
+        let b = *batch;
+        let n = 128;
+        group.throughput(Throughput::Elements((b * n * n * n) as u64));
+        group.bench_with_input(BenchmarkId::new("batch", b), &b, |bencher, &b| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = session.tensor_randn(vec![b, n, n], false).unwrap();
+            let bt = session.tensor_randn(vec![b, n, n], false).unwrap();
+            bencher.iter(|| {
+                black_box(session.tensor_bmm(a, bt).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_conv2d(c: &mut Criterion) {
+    let mut group = c.benchmark_group("conv2d");
+
+    for hw in [32, 64, 128].iter() {
+        let h = *hw;
+        let batch = 4;
+        let in_ch = 64;
+        let out_ch = 64;
+        let kh = 3;
+        let kw = 3;
+
+        group.throughput(Throughput::Elements((batch * out_ch * h * h) as u64));
+        group.bench_with_input(BenchmarkId::new("hw", h), &h, |b, &h| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = session.tensor_randn(vec![batch, in_ch, h, h], false).unwrap();
+            let weight = session.tensor_randn(vec![out_ch, in_ch, kh, kw], false).unwrap();
+            b.iter(|| {
+                black_box(session.tensor_conv2d(input, weight, None, (1, 1), (1, 1)).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_sum(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sum");
+
+    for size in [1000, 10000, 100000, 1000000].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("elements", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n], false).unwrap();
+            b.iter(|| {
+                black_box(session.tensor_sum(x).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_softmax(c: &mut Criterion) {
+    let mut group = c.benchmark_group("softmax");
+
+    for size in [128, 512, 2048, 8192].iter() {
+        let n = *size;
+        let batch = 32;
+        group.throughput(Throughput::Elements((batch * n) as u64));
+        group.bench_with_input(BenchmarkId::new("vocab", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![batch, n], false).unwrap();
+            b.iter(|| {
+                black_box(session.tensor_softmax(x, 1).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_relu(c: &mut Criterion) {
+    let mut group = c.benchmark_group("relu");
+
+    for size in [10000, 100000, 1000000].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("elements", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n], false).unwrap();
+            b.iter(|| {
+                black_box(session.tensor_relu(x).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_exp(c: &mut Criterion) {
+    let mut group = c.benchmark_group("exp");
+
+    for size in [10000, 100000, 1000000].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("elements", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n], false).unwrap();
+            b.iter(|| {
+                black_box(session.tensor_exp(x).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_add(c: &mut Criterion) {
+    let mut group = c.benchmark_group("add");
+
+    for size in [10000, 100000, 1000000].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("elements", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n], false).unwrap();
+            let y = session.tensor_randn(vec![n], false).unwrap();
+            b.iter(|| {
+                black_box(session.tensor_add(x, y).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_backward_matmul(c: &mut Criterion) {
+    let mut group = c.benchmark_group("backward_matmul");
+
+    for size in [64, 128, 256].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements((n * n) as u64));
+        group.bench_with_input(BenchmarkId::new("size", n), &n, |b, &n| {
+            b.iter(|| {
+                let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+                let a = session.tensor_randn(vec![n, n], true).unwrap();
+                let bt = session.tensor_randn(vec![n, n], true).unwrap();
+                let c = session.tensor_matmul(a, bt).unwrap();
+                let loss = session.tensor_sum(c).unwrap();
+                black_box(session.tensor_backward(loss).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_linear_forward(c: &mut Criterion) {
+    let mut group = c.benchmark_group("linear_forward");
+
+    for hidden in [256, 512, 1024, 2048].iter() {
+        let h = *hidden;
+        let batch = 32;
+        let in_features = 512;
+        group.throughput(Throughput::Elements((batch * h) as u64));
+        group.bench_with_input(BenchmarkId::new("hidden", h), &h, |b, &h| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![batch, in_features], false).unwrap();
+            let w = session.tensor_randn(vec![h, in_features], false).unwrap();
+            let bias = session.tensor_randn(vec![h], false).unwrap();
+            b.iter(|| {
+                black_box(session.tensor_linear(x, w, Some(bias)).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_matmul,
+    bench_bmm,
+    bench_conv2d,
+    bench_sum,
+    bench_softmax,
+    bench_relu,
+    bench_exp,
+    bench_add,
+    bench_backward_matmul,
+    bench_linear_forward,
+);
+criterion_main!(benches);

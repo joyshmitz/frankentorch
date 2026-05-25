@@ -42,6 +42,17 @@ libm = "0.2.15"
 
 asupersync = { version = "0.3.1", default-features = false, features = ["test-internals"] }
 ftui = { version = "0.2.0", default-features = false }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[profile.release-perf]
+inherits = "release"
+debug = "line-tables-only"
+strip = false
+lto = "thin"
+
+[profile.bench]
+inherits = "release"
+debug = "line-tables-only"
