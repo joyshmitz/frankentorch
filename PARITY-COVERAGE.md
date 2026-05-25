@@ -7,13 +7,13 @@ Rigorous upstream coverage audit against PyTorch 2.x stable API.
 | Category | PyTorch | FrankenTorch | Coverage | Gap Bead |
 |----------|---------|--------------|----------|----------|
 | torch.* functions | ~80 | 970+ | 100%+ | - |
-| torch.nn modules | ~80 | 149 | 100%+ | t9pi, ox6b, nnr1 |
+| torch.nn modules | ~80 | 151 | 100%+ | t9pi, ox6b, nnr1 (closed) |
 | torch.nn.functional | ~60 | integrated | 100% | - |
 | torch.optim optimizers | 14 | 13 | 93% | ulg7 (Muon) |
 | torch.optim schedulers | 15 | 15 | 100% | - |
-| torch.linalg | 24 | 27 | 88% | 7jhv |
+| torch.linalg | 24 | 31 | 100% | 7jhv (closed) |
 | torch.fft | 22 | 22 | 100% | - |
-| torch.special | 40 | 31 | 78% | ln6y, p9bm |
+| torch.special | 40 | 39 | 98% | ln6y (closed), p9bm |
 | Tensor methods | ~50 | integrated | 100% | - |
 
 **Overall CPU eager-mode coverage: ~95%**
