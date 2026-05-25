@@ -1037,6 +1037,68 @@ impl Module for Linear {
     }
 }
 
+/// Lazy linear layer that defers weight initialization until first forward.
+///
+/// Equivalent to `torch.nn.LazyLinear(out_features)`. Infers `in_features`
+/// from the input tensor shape on the first `forward` call.
+pub struct LazyLinear {
+    out_features: usize,
+    use_bias: bool,
+    materialized: Option<Linear>,
+}
+
+impl LazyLinear {
+    #[must_use]
+    pub fn new(out_features: usize, use_bias: bool) -> Self {
+        Self {
+            out_features,
+            use_bias,
+            materialized: None,
+        }
+    }
+
+    pub fn is_materialized(&self) -> bool {
+        self.materialized.is_some()
+    }
+
+    pub fn materialize(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        in_features: usize,
+    ) -> Result<(), AutogradError> {
+        if self.materialized.is_none() {
+            self.materialized = Some(Linear::new(
+                session,
+                in_features,
+                self.out_features,
+                self.use_bias,
+            )?);
+        }
+        Ok(())
+    }
+
+    pub fn forward_lazy(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = session.tensor_shape(input)?;
+        if shape.is_empty() {
+            return Err(incompatible_error("LazyLinear: empty input shape"));
+        }
+        let in_features = *shape.last().unwrap();
+        self.materialize(session, in_features)?;
+        self.materialized.as_ref().unwrap().forward(session, input)
+    }
+
+    pub fn parameters(&self) -> Vec<TensorNodeId> {
+        self.materialized
+            .as_ref()
+            .map(|m| m.parameters())
+            .unwrap_or_default()
+    }
+}
+
 /// Bilinear transformation module: `y_k = x1^T W_k x2 + b_k`.
 ///
 /// Equivalent to `torch.nn.Bilinear(in1_features, in2_features, out_features)`.
@@ -3959,6 +4021,208 @@ impl Module for Conv1d {
             params.push(("bias", bias));
         }
         params
+    }
+}
+
+/// Lazy 1D convolution that defers weight initialization until first forward.
+///
+/// Equivalent to `torch.nn.LazyConv1d(out_channels, kernel_size, ...)`.
+/// Infers `in_channels` from the input tensor shape on first forward call.
+pub struct LazyConv1d {
+    out_channels: usize,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    use_bias: bool,
+    materialized: Option<Conv1d>,
+}
+
+impl LazyConv1d {
+    #[must_use]
+    pub fn new(
+        out_channels: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+        use_bias: bool,
+    ) -> Self {
+        Self {
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            use_bias,
+            materialized: None,
+        }
+    }
+
+    pub fn is_materialized(&self) -> bool {
+        self.materialized.is_some()
+    }
+
+    pub fn forward_lazy(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 3 {
+            return Err(incompatible_error("LazyConv1d expects 3D input [N, C, L]"));
+        }
+        let in_channels = shape[1];
+        if self.materialized.is_none() {
+            self.materialized = Some(Conv1d::new(
+                session,
+                in_channels,
+                self.out_channels,
+                self.kernel_size,
+                self.stride,
+                self.padding,
+                self.use_bias,
+            )?);
+        }
+        self.materialized.as_ref().unwrap().forward(session, input)
+    }
+
+    pub fn parameters(&self) -> Vec<TensorNodeId> {
+        self.materialized
+            .as_ref()
+            .map(|m| m.parameters())
+            .unwrap_or_default()
+    }
+}
+
+/// Lazy 2D convolution that defers weight initialization until first forward.
+///
+/// Equivalent to `torch.nn.LazyConv2d(out_channels, kernel_size, ...)`.
+pub struct LazyConv2d {
+    out_channels: usize,
+    kernel_size: (usize, usize),
+    stride: (usize, usize),
+    padding: (usize, usize),
+    use_bias: bool,
+    materialized: Option<Conv2d>,
+}
+
+impl LazyConv2d {
+    #[must_use]
+    pub fn new(
+        out_channels: usize,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+        use_bias: bool,
+    ) -> Self {
+        Self {
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            use_bias,
+            materialized: None,
+        }
+    }
+
+    pub fn is_materialized(&self) -> bool {
+        self.materialized.is_some()
+    }
+
+    pub fn forward_lazy(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 4 {
+            return Err(incompatible_error("LazyConv2d expects 4D input [N, C, H, W]"));
+        }
+        let in_channels = shape[1];
+        if self.materialized.is_none() {
+            self.materialized = Some(Conv2d::new(
+                session,
+                in_channels,
+                self.out_channels,
+                self.kernel_size,
+                self.stride,
+                self.padding,
+                self.use_bias,
+            )?);
+        }
+        self.materialized.as_ref().unwrap().forward(session, input)
+    }
+
+    pub fn parameters(&self) -> Vec<TensorNodeId> {
+        self.materialized
+            .as_ref()
+            .map(|m| m.parameters())
+            .unwrap_or_default()
+    }
+}
+
+/// Lazy 3D convolution that defers weight initialization until first forward.
+///
+/// Equivalent to `torch.nn.LazyConv3d(out_channels, kernel_size, ...)`.
+pub struct LazyConv3d {
+    out_channels: usize,
+    kernel_size: (usize, usize, usize),
+    stride: (usize, usize, usize),
+    padding: (usize, usize, usize),
+    use_bias: bool,
+    materialized: Option<Conv3d>,
+}
+
+impl LazyConv3d {
+    #[must_use]
+    pub fn new(
+        out_channels: usize,
+        kernel_size: (usize, usize, usize),
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        use_bias: bool,
+    ) -> Self {
+        Self {
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            use_bias,
+            materialized: None,
+        }
+    }
+
+    pub fn is_materialized(&self) -> bool {
+        self.materialized.is_some()
+    }
+
+    pub fn forward_lazy(
+        &mut self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let shape = session.tensor_shape(input)?;
+        if shape.len() != 5 {
+            return Err(incompatible_error("LazyConv3d expects 5D input [N, C, D, H, W]"));
+        }
+        let in_channels = shape[1];
+        if self.materialized.is_none() {
+            self.materialized = Some(Conv3d::new(
+                session,
+                in_channels,
+                self.out_channels,
+                self.kernel_size,
+                self.stride,
+                self.padding,
+                self.use_bias,
+            )?);
+        }
+        self.materialized.as_ref().unwrap().forward(session, input)
+    }
+
+    pub fn parameters(&self) -> Vec<TensorNodeId> {
+        self.materialized
+            .as_ref()
+            .map(|m| m.parameters())
+            .unwrap_or_default()
     }
 }
 
