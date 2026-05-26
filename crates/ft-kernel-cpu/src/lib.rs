@@ -1144,7 +1144,8 @@ pub fn relu_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    unary_f64(input, meta, |value| if value > 0.0 { value } else { 0.0 })
+    let zero = f64x4::splat(0.0);
+    simd_unary_f64_kernel(input, meta, |v| v.max(0.0), move |a| a.max(zero))
 }
 
 pub fn sigmoid_tensor_contiguous_f64(
@@ -6014,11 +6015,13 @@ macro_rules! define_unary_f32 {
 
 define_unary_f32!(exp_tensor_contiguous_f32, f32::exp);
 define_unary_f32!(log_tensor_contiguous_f32, f32::ln);
-define_unary_f32!(relu_tensor_contiguous_f32, |v: f32| if v > 0.0f32 {
-    v
-} else {
-    0.0f32
-});
+pub fn relu_tensor_contiguous_f32(
+    input: &[f32],
+    meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    let zero = f32x8::splat(0.0f32);
+    simd_unary_f32_kernel(input, meta, |v| v.max(0.0f32), move |a| a.max(zero))
+}
 define_unary_f32!(sigmoid_tensor_contiguous_f32, |v: f32| 1.0f32
     / (1.0f32 + (-v).exp()));
 define_unary_f32!(tanh_tensor_contiguous_f32, f32::tanh);
