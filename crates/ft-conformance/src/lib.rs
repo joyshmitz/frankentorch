@@ -24172,6 +24172,315 @@ mod tests {
                 "dot(a, e_{}) = {} but a[{}] = {}", idx_raw, v[0], idx_raw, a[idx_raw]
             );
         }
+
+        // Reshape round-trip: reshape(reshape(x, new), original) == x bit-exactly.
+        // Reshape only changes metadata, not data, so round-tripping is identity.
+        #[test]
+        fn fuzz_metamorphic_reshape_round_trip(
+            (rows, cols, raw) in (1usize..8, 1usize..8)
+                .prop_flat_map(|(rows, cols)| (
+                    Just(rows),
+                    Just(cols),
+                    prop::collection::vec(-512i16..512i16, rows * cols),
+                ))
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 19.0).collect();
+            let numel = rows * cols;
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s
+                .tensor_variable(input.clone(), vec![rows, cols], false)
+                .expect("variable");
+            // Reshape to flat, then back to original
+            let flat = s.tensor_reshape(x, vec![numel]).expect("reshape to flat");
+            let restored = s.tensor_reshape(flat, vec![rows, cols]).expect("reshape back");
+            let v = s.tensor_values(restored).expect("values");
+
+            prop_assert_eq!(v.len(), input.len());
+            for (a, b) in v.iter().zip(input.iter()) {
+                prop_assert_eq!(a.to_bits(), b.to_bits(), "reshape round-trip should be bit-exact");
+            }
+        }
+
+        // Permutation-invariant reduction: sum(shuffle(x)) == sum(x).
+        // Sum is commutative+associative so order shouldn't matter (within ULP).
+        #[test]
+        fn fuzz_metamorphic_sum_permutation_invariant(
+            (raw, perm_seed) in (
+                prop::collection::vec(-1000i16..1000i16, 2..16),
+                prop::num::u64::ANY,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 31.0).collect();
+            let n = input.len();
+
+            // Create a deterministic permutation from the seed
+            let mut indices: Vec<usize> = (0..n).collect();
+            let mut seed = perm_seed;
+            for i in (1..n).rev() {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let j = (seed as usize) % (i + 1);
+                indices.swap(i, j);
+            }
+            let shuffled: Vec<f64> = indices.iter().map(|&i| input[i]).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+            let x_shuf = s.tensor_variable(shuffled, vec![n], false).expect("shuffled");
+
+            let sum_x = s.tensor_sum(x).expect("sum(x)");
+            let sum_shuf = s.tensor_sum(x_shuf).expect("sum(shuffled)");
+
+            let v1 = s.tensor_values(sum_x).expect("v1");
+            let v2 = s.tensor_values(sum_shuf).expect("v2");
+
+            prop_assert_eq!(v1.len(), 1);
+            prop_assert_eq!(v2.len(), 1);
+            // Allow small ULP difference due to different addition order
+            let diff = (v1[0] - v2[0]).abs();
+            let tol = v1[0].abs() * 1e-14 + 1e-14;
+            prop_assert!(diff <= tol, "sum permutation invariance: {} vs {}, diff={}", v1[0], v2[0], diff);
+        }
+
+        // Detach stops gradient: gradient through detached path should be zero,
+        // while gradient through direct path should be non-zero.
+        #[test]
+        fn fuzz_metamorphic_detach_stops_gradient(
+            samples in prop::collection::vec(1i16..512i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            // Use positive values so relu(x) = x with gradient 1
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v) / 17.0).collect();
+            let n = input.len();
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            // x requires grad
+            let x = s.tensor_variable(input.clone(), vec![n], true).expect("x");
+            // y = relu(x) - has gradient
+            let y_direct = s.tensor_relu(x).expect("relu_direct");
+            // detach and apply relu again - this path has no gradient
+            let y_det = s.tensor_detach(y_direct).expect("detach");
+            let y_after_det = s.tensor_relu(y_det).expect("relu_after_detach");
+            // add to create a path with grad
+            let z = s.tensor_add(y_direct, y_after_det).expect("add");
+            // sum to scalar for backward
+            let loss = s.tensor_sum(z).expect("sum");
+
+            // Backward from loss
+            s.tensor_backward(loss).expect("backward");
+
+            // Gradient of x should be 1.0 for each element (only from the direct path,
+            // not from the detached path)
+            let grad_x = s.tensor_grad(x).expect("grad lookup").expect("grad should exist");
+            // Since we add direct + detached, gradient should only come from direct path
+            // relu'(x) = 1 for positive x, so gradient should be 1.0 for all elements
+            for (i, &g) in grad_x.iter().enumerate() {
+                prop_assert!((g - 1.0).abs() < 1e-10, "grad[{}] = {} but expected 1.0 (detach should stop gradient)", i, g);
+            }
+        }
+
+        // Numerical gradient check: analytical grad ≈ (f(x+h) - f(x-h)) / 2h.
+        // Tests that autograd produces correct gradients for a simple function.
+        #[test]
+        fn fuzz_metamorphic_gradcheck_sin(
+            raw in prop::collection::vec(-100i16..100i16, 1..8)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 13.0).collect();
+            let n = input.len();
+            let h = 1e-5;
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            // Analytical gradient via autograd
+            let x = s.tensor_variable(input.clone(), vec![n], true).expect("x");
+            let y = s.tensor_sin(x).expect("sin");
+            let loss = s.tensor_sum(y).expect("sum");
+            s.tensor_backward(loss).expect("backward");
+            let analytical = s.tensor_grad(x).expect("grad lookup").expect("grad should exist");
+
+            // Numerical gradient via finite differences
+            for i in 0..n {
+                let mut x_plus = input.clone();
+                let mut x_minus = input.clone();
+                x_plus[i] += h;
+                x_minus[i] -= h;
+
+                let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xp = s2.tensor_variable(x_plus, vec![n], false).expect("xp");
+                let yp = s2.tensor_sin(xp).expect("sin+");
+                let lp = s2.tensor_sum(yp).expect("sum+");
+                let vp = s2.tensor_values(lp).expect("vp");
+
+                let mut s3 = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xm = s3.tensor_variable(x_minus, vec![n], false).expect("xm");
+                let ym = s3.tensor_sin(xm).expect("sin-");
+                let lm = s3.tensor_sum(ym).expect("sum-");
+                let vm = s3.tensor_values(lm).expect("vm");
+
+                let numerical = (vp[0] - vm[0]) / (2.0 * h);
+                let diff = (analytical[i] - numerical).abs();
+                let tol = 1e-4 * analytical[i].abs().max(1.0);
+                prop_assert!(diff <= tol, "gradcheck failed at [{}]: analytical={}, numerical={}, diff={}", i, analytical[i], numerical, diff);
+            }
+        }
+
+        // Conv linearity: conv(a*x, w) == a * conv(x, w) for scalar a.
+        // Convolution is a linear operation.
+        #[test]
+        fn fuzz_metamorphic_conv_homogeneity(
+            (scale_raw, hw) in (1i16..50i16, 4usize..8)
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let scale = f64::from(scale_raw) / 10.0;
+            let batch = 1;
+            let in_ch = 2;
+            let out_ch = 2;
+            let kh = 3;
+            let kw = 3;
+
+            // Create deterministic input and weight
+            let input_numel = batch * in_ch * hw * hw;
+            let weight_numel = out_ch * in_ch * kh * kw;
+            let input_data: Vec<f64> = (0..input_numel).map(|i| ((i % 17) as f64 - 8.0) / 8.0).collect();
+            let weight_data: Vec<f64> = (0..weight_numel).map(|i| ((i % 13) as f64 - 6.0) / 6.0).collect();
+            // Scale the input data directly to avoid broadcast issues
+            let scaled_input: Vec<f64> = input_data.iter().map(|&v| v * scale).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+            // conv(scale * x, w)
+            let sx = s.tensor_variable(scaled_input, vec![batch, in_ch, hw, hw], false).expect("sx");
+            let w = s.tensor_variable(weight_data.clone(), vec![out_ch, in_ch, kh, kw], false).expect("w");
+            let conv_sx = s.tensor_conv2d(sx, w, None, (1, 1), (1, 1)).expect("conv(sx)");
+
+            // scale * conv(x, w)
+            let x2 = s.tensor_variable(input_data, vec![batch, in_ch, hw, hw], false).expect("x2");
+            let w2 = s.tensor_variable(weight_data, vec![out_ch, in_ch, kh, kw], false).expect("w2");
+            let conv_x = s.tensor_conv2d(x2, w2, None, (1, 1), (1, 1)).expect("conv(x)");
+            let conv_vals = s.tensor_values(conv_x).expect("conv vals");
+            // Scale the output directly
+            let scaled_conv: Vec<f64> = conv_vals.iter().map(|&v| v * scale).collect();
+
+            let v1 = s.tensor_values(conv_sx).expect("v1");
+
+            prop_assert_eq!(v1.len(), scaled_conv.len());
+            for (i, (a, b)) in v1.iter().zip(scaled_conv.iter()).enumerate() {
+                let diff = (a - b).abs();
+                let tol = 1e-10 * a.abs().max(b.abs()).max(1.0);
+                prop_assert!(diff <= tol, "conv homogeneity failed at [{}]: {} vs {}, diff={}", i, a, b, diff);
+            }
+        }
+
+        // dtype cast round-trip: cast(cast(x, f32), f64) ≈ x (within f32 precision).
+        #[test]
+        fn fuzz_metamorphic_dtype_cast_round_trip(
+            samples in prop::collection::vec(-1000i16..1000i16, 1..16)
+        ) {
+            use ft_api::FrankenTorchSession;
+            use ft_core::DType;
+
+            // Use values that fit exactly in f32
+            let input: Vec<f64> = samples.iter().map(|v| f64::from(*v)).collect();
+            let n = input.len();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input.clone(), vec![n], false).expect("x");
+
+            // Cast to f32, then back to f64
+            let x_f32 = s.tensor_to_dtype(x, DType::F32).expect("to f32");
+            let x_back = s.tensor_to_dtype(x_f32, DType::F64).expect("back to f64");
+
+            let v = s.tensor_values(x_back).expect("values");
+            prop_assert_eq!(v.len(), input.len());
+            for (a, b) in v.iter().zip(input.iter()) {
+                // Should be exact for integer values
+                prop_assert_eq!(a.to_bits(), b.to_bits(), "dtype round-trip should preserve integer values");
+            }
+        }
+
+        // Mean is permutation invariant (like sum).
+        #[test]
+        fn fuzz_metamorphic_mean_permutation_invariant(
+            (raw, perm_seed) in (
+                prop::collection::vec(-1000i16..1000i16, 2..16),
+                prop::num::u64::ANY,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 31.0).collect();
+            let n = input.len();
+
+            // Create a deterministic permutation from the seed
+            let mut indices: Vec<usize> = (0..n).collect();
+            let mut seed = perm_seed;
+            for i in (1..n).rev() {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let j = (seed as usize) % (i + 1);
+                indices.swap(i, j);
+            }
+            let shuffled: Vec<f64> = indices.iter().map(|&i| input[i]).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let x_shuf = s.tensor_variable(shuffled, vec![n], false).expect("shuffled");
+
+            let mean_x = s.tensor_mean(x).expect("mean(x)");
+            let mean_shuf = s.tensor_mean(x_shuf).expect("mean(shuffled)");
+
+            let v1 = s.tensor_values(mean_x).expect("v1");
+            let v2 = s.tensor_values(mean_shuf).expect("v2");
+
+            prop_assert_eq!(v1.len(), 1);
+            prop_assert_eq!(v2.len(), 1);
+            let diff = (v1[0] - v2[0]).abs();
+            let tol = v1[0].abs() * 1e-14 + 1e-14;
+            prop_assert!(diff <= tol, "mean permutation invariance: {} vs {}, diff={}", v1[0], v2[0], diff);
+        }
+
+        // Max/min are permutation invariant.
+        #[test]
+        fn fuzz_metamorphic_max_permutation_invariant(
+            (raw, perm_seed) in (
+                prop::collection::vec(-1000i16..1000i16, 1..16),
+                prop::num::u64::ANY,
+            )
+        ) {
+            use ft_api::FrankenTorchSession;
+
+            let input: Vec<f64> = raw.iter().map(|v| f64::from(*v) / 31.0).collect();
+            let n = input.len();
+
+            let mut indices: Vec<usize> = (0..n).collect();
+            let mut seed = perm_seed;
+            for i in (1..n).rev() {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let j = (seed as usize) % (i + 1);
+                indices.swap(i, j);
+            }
+            let shuffled: Vec<f64> = indices.iter().map(|&i| input[i]).collect();
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(input, vec![n], false).expect("x");
+            let x_shuf = s.tensor_variable(shuffled, vec![n], false).expect("shuffled");
+
+            let max_x = s.tensor_amax(x, 0).expect("max(x)");
+            let max_shuf = s.tensor_amax(x_shuf, 0).expect("max(shuffled)");
+
+            let v1 = s.tensor_values(max_x).expect("v1");
+            let v2 = s.tensor_values(max_shuf).expect("v2");
+
+            prop_assert_eq!(v1.len(), 1);
+            prop_assert_eq!(v2.len(), 1);
+            prop_assert_eq!(v1[0].to_bits(), v2[0].to_bits(), "max permutation invariance");
+        }
     }
 
     #[cfg(feature = "fuzz")]
