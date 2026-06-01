@@ -637,60 +637,74 @@ impl Optimizer for AdamW {
                 Some(g) => g,
                 None => continue,
             };
-            let t =
-                advance_param_step_count(&mut self.step_counts, i, "adamw step counter overflow")?;
+            let current_step = *self
+                .step_counts
+                .get(i)
+                .ok_or_else(|| optimizer_state_error("optimizer step state length mismatch"))?;
+            let t = checked_next_step_count(current_step, "adamw step counter overflow")?;
 
             let param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
             let _param_shape = session.tensor_values_meta(param)?.1.shape().to_vec();
 
-            // Decoupled weight decay: apply directly to parameters BEFORE Adam update
-            if self.weight_decay != 0.0 {
-                let delta: Vec<f64> = param_values
-                    .iter()
-                    .map(|p| p * self.lr * self.weight_decay)
-                    .collect();
-                apply_param_update(session, param, &delta)?;
-            }
+            let next_m: Vec<f64> = match &self.m[i] {
+                Some(m) => {
+                    ensure_state_len(
+                        grad.len(),
+                        m.len(),
+                        "adamw first-moment state length mismatch with gradient length",
+                    )?;
+                    m.iter()
+                        .zip(grad.iter())
+                        .map(|(m_val, g)| self.beta1 * m_val + (1.0 - self.beta1) * g)
+                        .collect()
+                }
+                None => grad.iter().map(|g| (1.0 - self.beta1) * g).collect(),
+            };
 
-            // Update biased first moment estimate: m = beta1 * m + (1 - beta1) * grad
-            let m = self.m[i].get_or_insert_with(|| vec![0.0; grad.len()]);
-            ensure_state_len(
-                grad.len(),
-                m.len(),
-                "adamw first-moment state length mismatch with gradient length",
-            )?;
-            for (m_val, g) in m.iter_mut().zip(grad.iter()) {
-                *m_val = self.beta1 * *m_val + (1.0 - self.beta1) * g;
-            }
-
-            // Update biased second raw moment estimate: v = beta2 * v + (1 - beta2) * grad^2
-            let v = self.v[i].get_or_insert_with(|| vec![0.0; grad.len()]);
-            ensure_state_len(
-                grad.len(),
-                v.len(),
-                "adamw second-moment state length mismatch with gradient length",
-            )?;
-            for (v_val, g) in v.iter_mut().zip(grad.iter()) {
-                *v_val = self.beta2 * *v_val + (1.0 - self.beta2) * g * g;
-            }
+            let next_v: Vec<f64> = match &self.v[i] {
+                Some(v) => {
+                    ensure_state_len(
+                        grad.len(),
+                        v.len(),
+                        "adamw second-moment state length mismatch with gradient length",
+                    )?;
+                    v.iter()
+                        .zip(grad.iter())
+                        .map(|(v_val, g)| self.beta2 * v_val + (1.0 - self.beta2) * g * g)
+                        .collect()
+                }
+                None => grad.iter().map(|g| (1.0 - self.beta2) * g * g).collect(),
+            };
 
             // Bias-corrected estimates
             let bias_correction1 = adam_bias_correction(self.beta1, t);
             let bias_correction2 = adam_bias_correction(self.beta2, t);
 
-            // Compute Adam update: lr * m_hat / (sqrt(v_hat) + eps)
-            let update: Vec<f64> = m
+            // Decoupled weight decay is equivalent to subtracting
+            // `lr * weight_decay * param` before the Adam update; combine both
+            // deltas so failed state validation cannot partially mutate weights.
+            let update: Vec<f64> = next_m
                 .iter()
-                .zip(v.iter())
-                .map(|(m_val, v_val)| {
+                .zip(next_v.iter())
+                .zip(param_values.iter())
+                .map(|((m_val, v_val), p)| {
                     let m_hat = m_val / bias_correction1;
                     let v_hat = v_val / bias_correction2;
-                    self.lr * m_hat / (v_hat.sqrt() + self.eps)
+                    let adam_delta = self.lr * m_hat / (v_hat.sqrt() + self.eps);
+                    let decay_delta = if self.weight_decay == 0.0 {
+                        0.0
+                    } else {
+                        p * self.lr * self.weight_decay
+                    };
+                    decay_delta + adam_delta
                 })
                 .collect();
 
             apply_param_update(session, param, &update)?;
+            self.step_counts[i] = t;
+            self.m[i] = Some(next_m);
+            self.v[i] = Some(next_v);
         }
         Ok(())
     }
@@ -6878,6 +6892,38 @@ mod tests {
     }
 
     #[test]
+    fn adamw_state_mismatch_does_not_apply_weight_decay() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![4.0, -2.0], vec![2], true)
+            .expect("var");
+        let mut optimizer = AdamW::new(vec![x], 0.1).weight_decay(0.1);
+        optimizer.m[0] = Some(vec![0.0]);
+
+        let loss = session.tensor_mul(x, x).expect("mul");
+        let loss_sum = session.tensor_sum(loss).expect("sum");
+        let report = session.tensor_backward(loss_sum).expect("backward");
+        let before = session.tensor_values(x).expect("values");
+
+        let err = optimizer
+            .step(&mut session, &report)
+            .expect_err("mismatched state must fail closed");
+
+        assert!(matches!(
+            err,
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "adamw first-moment state length mismatch with gradient length"
+                }
+            ))
+        ));
+        assert_eq!(session.tensor_values(x).expect("values"), before);
+        assert_eq!(optimizer.step_counts[0], 0);
+        assert_eq!(optimizer.m[0], Some(vec![0.0]));
+        assert!(optimizer.v[0].is_none());
+    }
+
+    #[test]
     fn adamw_decoupled_weight_decay_differs_from_adam_l2() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
 
@@ -10580,5 +10626,204 @@ mod tests {
             "scale should double after growth interval"
         );
         assert_eq!(scaler.steps_since_growth, 0, "growth counter should reset");
+    }
+
+    // ── Muon optimizer + Newton-Schulz helpers (frankentorch-ulg7) ──────────
+
+    fn frob_norm(v: &[f64]) -> f64 {
+        v.iter().map(|&x| x * x).sum::<f64>().sqrt()
+    }
+
+    #[test]
+    fn factorize_approx_square_returns_balanced_divisor_pair() {
+        // Exact (rows, cols) with rows*cols == numel, cols the largest divisor <= sqrt(numel).
+        assert_eq!(super::factorize_approx_square(16), (4, 4));
+        assert_eq!(super::factorize_approx_square(12), (4, 3));
+        assert_eq!(super::factorize_approx_square(20), (5, 4));
+        assert_eq!(super::factorize_approx_square(7), (7, 1)); // prime -> column vector
+        assert_eq!(super::factorize_approx_square(1), (1, 1));
+        assert_eq!(super::factorize_approx_square(8192), (128, 64));
+    }
+
+    #[test]
+    fn factorize_approx_square_invariants_hold() {
+        for numel in [1usize, 2, 3, 9, 15, 16, 17, 100, 256, 999, 1024] {
+            let (rows, cols) = super::factorize_approx_square(numel);
+            assert_eq!(rows * cols, numel, "product must reconstruct numel={numel}");
+            assert!(cols <= rows, "cols<=rows expected for numel={numel}");
+            assert!(cols >= 1 && rows >= 1, "dims must be positive for numel={numel}");
+        }
+    }
+
+    #[test]
+    fn newton_schulz_ortho_empty_and_zero_inputs() {
+        assert!(super::newton_schulz_ortho(&[], 5).is_empty());
+        // All-zero input is below the degeneracy threshold -> all-zero output.
+        let zeros = super::newton_schulz_ortho(&vec![0.0; 20], 5);
+        assert_eq!(zeros.len(), 20);
+        assert!(zeros.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn newton_schulz_ortho_small_input_normalizes_to_unit_norm() {
+        // numel < 16 falls back to plain normalization (direction preserved, unit norm).
+        let out = super::newton_schulz_ortho(&[3.0, 4.0, 0.0, 0.0], 5);
+        assert!((frob_norm(&out) - 1.0).abs() < 1e-12, "expected unit norm");
+        assert!((out[0] - 0.6).abs() < 1e-12 && (out[1] - 0.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn newton_schulz_ortho_preserves_frobenius_norm_for_matrices() {
+        // For numel >= 16 the result is scaled back to the input Frobenius norm.
+        let m: Vec<f64> = (1..=16).map(|x| x as f64).collect();
+        let input_norm = frob_norm(&m);
+        let out = super::newton_schulz_ortho(&m, 5);
+        assert_eq!(out.len(), 16);
+        assert!(out.iter().all(|v| v.is_finite()), "output must be finite");
+        let rel = (frob_norm(&out) - input_norm).abs() / input_norm;
+        assert!(rel < 1e-9, "Frobenius norm not preserved: rel error {rel}");
+    }
+
+    #[test]
+    fn newton_schulz_ortho_is_deterministic() {
+        let m: Vec<f64> = (1..=24).map(|x| (x as f64) * 0.5 - 3.0).collect();
+        let a = super::newton_schulz_ortho(&m, 5);
+        let b = super::newton_schulz_ortho(&m, 5);
+        assert_eq!(a, b, "Newton-Schulz must be a pure deterministic function");
+    }
+
+    fn muon_matrix_session() -> (FrankenTorchSession, TensorNodeId) {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // 4x4 (numel=16) so the real Newton-Schulz matrix path is exercised.
+        let vals: Vec<f64> = (1..=16).map(|x| x as f64 * 0.25).collect();
+        let x = session
+            .tensor_variable(vals, vec![4, 4], true)
+            .expect("variable should succeed");
+        (session, x)
+    }
+
+    fn backward_sum_sq(session: &mut FrankenTorchSession, x: TensorNodeId) -> TensorBackwardReport {
+        let sq = session.tensor_mul(x, x).expect("mul should succeed");
+        let loss = session.tensor_sum(sq).expect("sum should succeed");
+        session.tensor_backward(loss).expect("backward should succeed")
+    }
+
+    #[test]
+    fn muon_first_step_delta_norm_equals_lr_times_grad_norm() {
+        // On the first step the momentum buffer equals the gradient, and the
+        // orthogonalized update preserves the gradient's Frobenius norm, so
+        // ||x_after - x_before||_F == lr * ||grad||_F exactly (grad = 2x).
+        let (mut session, x) = muon_matrix_session();
+        let lr = 0.01;
+        let before = session.tensor_values(x).expect("values");
+        let grad_norm = 2.0 * frob_norm(&before); // d/dx sum(x^2) = 2x
+        let report = backward_sum_sq(&mut session, x);
+        let mut opt = Muon::new(vec![x], lr);
+        opt.step(&mut session, &report).expect("step should succeed");
+        let after = session.tensor_values(x).expect("values");
+        let delta: Vec<f64> = before.iter().zip(&after).map(|(b, a)| a - b).collect();
+        assert!(after.iter().all(|v| v.is_finite()));
+        let expected = lr * grad_norm;
+        assert!(
+            (frob_norm(&delta) - expected).abs() < 1e-9,
+            "delta norm {} != lr*||grad|| {}",
+            frob_norm(&delta),
+            expected
+        );
+    }
+
+    #[test]
+    fn muon_step_is_deterministic_across_identical_runs() {
+        let run = || {
+            let (mut session, x) = muon_matrix_session();
+            let report = backward_sum_sq(&mut session, x);
+            let mut opt = Muon::new(vec![x], 0.05).momentum(0.9).ns_steps(5);
+            opt.step(&mut session, &report).expect("step");
+            session.tensor_values(x).expect("values")
+        };
+        assert_eq!(run(), run(), "Muon has no RNG; identical inputs -> identical output");
+    }
+
+    #[test]
+    fn muon_skips_param_with_no_gradient() {
+        // A parameter that never participates in the loss has no accumulated
+        // gradient and must be left unchanged (the `None => continue` path).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let used = session
+            .tensor_variable((1..=16).map(|x| x as f64).collect(), vec![4, 4], true)
+            .expect("variable");
+        let unused = session
+            .tensor_variable(vec![7.0; 16], vec![4, 4], true)
+            .expect("variable");
+        let report = backward_sum_sq(&mut session, used);
+        let before = session.tensor_values(unused).expect("values");
+        let mut opt = Muon::new(vec![used, unused], 0.1);
+        opt.step(&mut session, &report).expect("step");
+        let after = session.tensor_values(unused).expect("values");
+        assert_eq!(before, after, "param without a gradient must be untouched");
+    }
+
+    #[test]
+    fn muon_weight_decay_changes_the_update() {
+        let step_with_wd = |wd: f64| {
+            let (mut session, x) = muon_matrix_session();
+            let report = backward_sum_sq(&mut session, x);
+            let mut opt = Muon::new(vec![x], 0.05).weight_decay(wd);
+            opt.step(&mut session, &report).expect("step");
+            session.tensor_values(x).expect("values")
+        };
+        let no_wd = step_with_wd(0.0);
+        let with_wd = step_with_wd(0.1);
+        assert!(
+            no_wd.iter().zip(&with_wd).any(|(a, b)| (a - b).abs() > 1e-9),
+            "weight decay must alter the resulting parameters"
+        );
+    }
+
+    #[test]
+    fn muon_rejects_invalid_hyperparameters() {
+        let make = || {
+            let (session, x) = muon_matrix_session();
+            (session, x)
+        };
+        // lr < 0
+        {
+            let (mut session, x) = make();
+            let report = backward_sum_sq(&mut session, x);
+            assert!(Muon::new(vec![x], -1.0).step(&mut session, &report).is_err());
+        }
+        // momentum >= 1
+        {
+            let (mut session, x) = make();
+            let report = backward_sum_sq(&mut session, x);
+            assert!(
+                Muon::new(vec![x], 0.1)
+                    .momentum(1.0)
+                    .step(&mut session, &report)
+                    .is_err()
+            );
+        }
+        // ns_steps == 0
+        {
+            let (mut session, x) = make();
+            let report = backward_sum_sq(&mut session, x);
+            assert!(
+                Muon::new(vec![x], 0.1)
+                    .ns_steps(0)
+                    .step(&mut session, &report)
+                    .is_err()
+            );
+        }
+        // weight_decay < 0
+        {
+            let (mut session, x) = make();
+            let report = backward_sum_sq(&mut session, x);
+            assert!(
+                Muon::new(vec![x], 0.1)
+                    .weight_decay(-0.5)
+                    .step(&mut session, &report)
+                    .is_err()
+            );
+        }
     }
 }
