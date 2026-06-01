@@ -895,8 +895,8 @@ where
         output.extend_from_slice(result.as_array_ref());
     }
 
-    for i in simd_len..numel {
-        output.push(scalar_op(window[i]));
+    for &value in &window[simd_len..numel] {
+        output.push(scalar_op(value));
     }
 
     output
@@ -5716,8 +5716,8 @@ where
         output.extend_from_slice(result.as_array_ref());
     }
 
-    for i in simd_len..numel {
-        output.push(scalar_op(window[i]));
+    for &value in &window[simd_len..numel] {
+        output.push(scalar_op(value));
     }
 
     output
@@ -12495,8 +12495,8 @@ mod tests {
         let a = vec![3.0, 1.0, 0.0, 2.0];
         let full = super::eig_contiguous_f64(&a, &meta).unwrap();
         let vals_only = super::eigvals_contiguous_f64(&a, &meta).unwrap();
-        for i in 0..4 {
-            assert!((full.eigenvalues[i] - vals_only[i]).abs() < 1e-12);
+        for (full_val, vals_val) in full.eigenvalues.iter().zip(&vals_only).take(4) {
+            assert!((full_val - vals_val).abs() < 1e-12);
         }
     }
 
