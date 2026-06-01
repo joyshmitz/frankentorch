@@ -2060,6 +2060,22 @@ pub fn addmm_tensor_contiguous_f64(
     }
     ensure_storage_len(input, input_meta, "input")?;
 
+    // Fail closed on non-contiguous operands. The GEMM call below reads
+    // mat1/mat2 as row-major contiguous buffers through raw pointers, and the
+    // accumulation step reads `input` with a flat offset — a strided view would
+    // be silently mis-read as if contiguous, producing wrong results. The
+    // `matmul`/`bmm` kernels already reject this via
+    // `ensure_dtype_device_and_layout`; addmm must guard the same unsafe path.
+    if !mat1_meta.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "mat1" });
+    }
+    if !mat2_meta.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "mat2" });
+    }
+    if !input_meta.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "input" });
+    }
+
     // Use optimized GEMM for mat1 @ mat2
     let mut gemm_out = vec![0.0_f64; out_numel];
     gemm::dgemm(
@@ -7986,6 +8002,22 @@ pub fn addmm_tensor_contiguous_f32(
     }
     ensure_storage_len_f32(input, input_meta, "input")?;
 
+    // Fail closed on non-contiguous operands. The GEMM call below reads
+    // mat1/mat2 as row-major contiguous buffers through raw pointers, and the
+    // accumulation step reads `input` with a flat offset — a strided view would
+    // be silently mis-read as if contiguous, producing wrong results. The
+    // `matmul`/`bmm` kernels already reject this via
+    // `ensure_dtype_device_and_layout`; addmm must guard the same unsafe path.
+    if !mat1_meta.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "mat1" });
+    }
+    if !mat2_meta.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "mat2" });
+    }
+    if !input_meta.is_contiguous() {
+        return Err(KernelError::UnsupportedLayout { side: "input" });
+    }
+
     // Use optimized GEMM for mat1 @ mat2
     let mut gemm_out = vec![0.0f32; out_numel];
     gemm::sgemm(
@@ -9717,6 +9749,55 @@ mod tests {
                 available: 2
             }
         ));
+    }
+
+    #[test]
+    fn addmm_tensor_contiguous_rejects_non_contiguous_mat2() {
+        // A transposed (column-major) stride layout on mat2 would be silently
+        // mis-read by the row-major GEMM, producing wrong results. addmm must
+        // fail closed the same way matmul/bmm already do.
+        let input_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let mat1_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let mat2_meta = TensorMeta::from_shape_and_strides(
+            vec![2, 2],
+            vec![1, 2],
+            0,
+            DType::F64,
+            Device::Cpu,
+        )
+        .expect("strided meta is valid");
+        assert!(!mat2_meta.is_contiguous());
+        let input = vec![0.0; 4];
+        let mat1 = vec![1.0, 2.0, 3.0, 4.0];
+        let mat2 = vec![1.0, 2.0, 3.0, 4.0];
+
+        let err = super::addmm_tensor_contiguous_f64(
+            &input, &mat1, &mat2, &input_meta, &mat1_meta, &mat2_meta, 1.0, 1.0,
+        )
+        .expect_err("non-contiguous mat2 must fail closed");
+        assert!(matches!(
+            err,
+            KernelError::UnsupportedLayout { side: "mat2" }
+        ));
+    }
+
+    #[test]
+    fn addmm_tensor_contiguous_accepts_contiguous_operands() {
+        // Sanity: the contiguity guard is a no-op for ordinary contiguous
+        // operands and addmm still computes beta*input + alpha*(mat1 @ mat2).
+        let input_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let mat1_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let mat2_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let input = vec![1.0, 1.0, 1.0, 1.0];
+        let mat1 = vec![1.0, 2.0, 3.0, 4.0];
+        let mat2 = vec![5.0, 6.0, 7.0, 8.0];
+
+        let out = super::addmm_tensor_contiguous_f64(
+            &input, &mat1, &mat2, &input_meta, &mat1_meta, &mat2_meta, 1.0, 1.0,
+        )
+        .expect("contiguous addmm should succeed");
+        // mat1 @ mat2 = [[19, 22], [43, 50]]; + input(1) = [[20, 23], [44, 51]].
+        assert_eq!(out, vec![20.0, 23.0, 44.0, 51.0]);
     }
 
     #[test]
