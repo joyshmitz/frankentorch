@@ -304,4 +304,45 @@ mod tests {
         assert!(msg.contains("Cuda"));
         assert!(msg.contains("mismatch"));
     }
+
+    #[test]
+    fn device_guard_golden_summary_matches_fixture() {
+        let cpu_guard = DeviceGuard::new(Device::Cpu);
+        let cuda_guard = DeviceGuard::new(Device::Cuda);
+        let cpu_tensor = ScalarTensor::new(1.0, DType::F64, Device::Cpu);
+        let cuda_tensor = ScalarTensor::new(2.0, DType::F64, Device::Cuda);
+
+        let accept_cpu = cpu_guard
+            .ensure_tensor_device(&cpu_tensor)
+            .map(|()| "ok".to_string())
+            .unwrap_or_else(|err| err.to_string());
+        let reject_cuda = cpu_guard
+            .ensure_tensor_device(&cuda_tensor)
+            .map(|()| "ok".to_string())
+            .unwrap_or_else(|err| err.to_string());
+        let same_cpu = ensure_same_device(&cpu_tensor, &cpu_tensor)
+            .map(|device| format!("{device:?}"))
+            .unwrap_or_else(|err| err.to_string());
+        let same_cross = ensure_same_device(&cpu_tensor, &cuda_tensor)
+            .map(|device| format!("{device:?}"))
+            .unwrap_or_else(|err| err.to_string());
+
+        let summary = format!(
+            "ft_device_guard_pass23\n\
+             cpu_guard_device={:?}\n\
+             cuda_guard_device={:?}\n\
+             cpu_guard_accept_cpu={accept_cpu}\n\
+             cpu_guard_reject_cuda={reject_cuda}\n\
+             same_cpu_pair={same_cpu}\n\
+             same_cross_pair={same_cross}\n",
+            cpu_guard.device(),
+            cuda_guard.device()
+        );
+        assert_eq!(
+            summary,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_device_guard_pass23.txt"
+            )
+        );
+    }
 }

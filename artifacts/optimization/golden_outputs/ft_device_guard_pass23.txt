@@ -1,0 +1,7 @@
+ft_device_guard_pass23
+cpu_guard_device=Cpu
+cuda_guard_device=Cuda
+cpu_guard_accept_cpu=ok
+cpu_guard_reject_cuda=device mismatch: expected Cpu, got Cuda
+same_cpu_pair=Cpu
+same_cross_pair=device mismatch: expected Cpu, got Cuda
