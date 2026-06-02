@@ -14250,38 +14250,41 @@ impl TensorTape {
                     ref input_shape,
                     ..
                 } => {
-                    // Backward: scatter_add the gradient back to original positions.
+                    // Backward index-adds the incoming gradient back to the selected
+                    // positions. Express it as a differentiable ScatterAdd (src = incoming) on
+                    // a zero base by broadcasting the 1-D selection index across the non-dim
+                    // axes to the full output shape, so a second backward routes through the
+                    // select instead of dead-ending at a detached leaf.
                     let (outer_size, inner_size, input_numel) = Self::checked_dim_loop_sizes(
                         input_shape,
                         dim,
                         "index_select cg backward shape volume overflow",
                     )?;
-                    let dim_size = input_shape[dim];
                     let num_indices = indices.len();
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
-                    let mut contrib = vec![0.0; input_numel];
+                    let mut output_shape = input_shape.clone();
+                    output_shape[dim] = num_indices;
+                    let output_numel = outer_size * num_indices * inner_size;
+                    let mut index_full = vec![0.0; output_numel];
                     for outer in 0..outer_size {
                         for (r, &idx_f) in indices.iter().enumerate() {
-                            let idx = idx_f as usize;
-                            if idx >= dim_size {
-                                return Err(AutogradError::Dispatch(
-                                    DispatchKeyError::IncompatibleSet {
-                                        reason: "index_select cg backward: out-of-bounds index",
-                                    }
-                                    .into(),
-                                ));
-                            }
                             for inner in 0..inner_size {
-                                let grad_pos =
-                                    outer * num_indices * inner_size + r * inner_size + inner;
-                                let orig_pos =
-                                    outer * dim_size * inner_size + idx * inner_size + inner;
-                                contrib[orig_pos] += incoming_vals[grad_pos];
+                                index_full
+                                    [outer * num_indices * inner_size + r * inner_size + inner] =
+                                    idx_f;
                             }
                         }
                     }
-                    let grad_in = self.leaf(contrib, input_shape.clone(), true)?;
+                    let incoming_vals =
+                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let zeros = self.leaf(vec![0.0; input_numel], input_shape.clone(), false)?;
+                    let grad_in = self.scatter_add(
+                        zeros,
+                        incoming_id,
+                        dim,
+                        &index_full,
+                        output_shape,
+                        &incoming_vals,
+                    )?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -24332,6 +24335,39 @@ mod tests {
         let (p, _) = tape.sum(dgx, ExecutionMode::Strict).expect("sum(gx)");
         let rep2 = tape.backward(p).expect("second backward");
         assert_eq!(rep2.gradient(x).expect("d(sum gx)/dx"), &[4.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn create_graph_index_select_second_derivative() {
+        // L = sum(index_select(x, 0, [0,0,2])^2) on a [3,2] input. The 1-D selection index
+        // is broadcast across columns; the second backward must route through the select.
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], true)
+            .expect("x");
+        let sel = tape.index_select(x, 0, &[0.0, 0.0, 2.0]).expect("index_select");
+        let (sq, _) = tape.square(sel, ExecutionMode::Strict).expect("square");
+        let (s, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
+        let rep1 = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        // rows selected [0,0,2]; d/dout = 2*out; index-add back:
+        // row0 = 2*[1,2]+2*[1,2] = [4,8], row1 = [0,0], row2 = 2*[5,6] = [10,12].
+        assert_eq!(rep1.gradient(x).expect("gx"), &[4.0, 8.0, 0.0, 0.0, 10.0, 12.0]);
+        // Second-order: sum(gx) = 4x00+4x01+2x20+2x21 => d/dx = [4,4,0,0,2,2].
+        let dgx = rep1.gradient_node(x).expect("gradient node for x");
+        let (p, _) = tape.sum(dgx, ExecutionMode::Strict).expect("sum(gx)");
+        let rep2 = tape.backward(p).expect("second backward");
+        assert_eq!(
+            rep2.gradient(x).expect("d(sum gx)/dx"),
+            &[4.0, 4.0, 0.0, 0.0, 2.0, 2.0]
+        );
     }
 
     #[test]
