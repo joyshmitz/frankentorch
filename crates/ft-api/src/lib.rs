@@ -43440,7 +43440,8 @@ impl FrankenTorchSession {
             } else {
                 (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
             };
-            let src_y = src_y.max(0.0).min((ih - 1) as f64);
+            // Cubic keeps the unclamped source coordinate (PyTorch semantics); only the
+            // tap indices below are clamped, matching the forward path.
             let iy = src_y.floor() as i64;
             let ty = src_y - iy as f64;
             for ox in 0..ow {
@@ -43449,7 +43450,7 @@ impl FrankenTorchSession {
                 } else {
                     (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
                 };
-                let src_x = src_x.max(0.0).min((iw - 1) as f64);
+                // Cubic keeps the unclamped source coordinate (see src_y above).
                 let ix = src_x.floor() as i64;
                 let tx = src_x - ix as f64;
                 let mut ci = 0usize;
@@ -43671,7 +43672,10 @@ impl FrankenTorchSession {
                     } else {
                         (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
                     };
-                    let src_y = src_y.max(0.0).min((ih - 1) as f64);
+                    // Cubic keeps the unclamped source coordinate (PyTorch
+                    // area_pixel_compute_source_index with cubic=true); only the tap
+                    // indices below are clamped, so the fractional offset stays correct
+                    // at the borders.
                     let iy = src_y.floor() as i64;
                     let ty = src_y - iy as f64;
 
@@ -43681,7 +43685,7 @@ impl FrankenTorchSession {
                         } else {
                             (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
                         };
-                        let src_x = src_x.max(0.0).min((iw - 1) as f64);
+                        // Cubic keeps the unclamped source coordinate (see src_y above).
                         let ix = src_x.floor() as i64;
                         let tx = src_x - ix as f64;
 
@@ -74534,6 +74538,84 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         for (i, &v) in vals.iter().enumerate() {
             assert!((v - 1.0).abs() < 0.1, "bicubic constant at {i}: {v}");
+        }
+    }
+
+    #[test]
+    fn interpolate_bicubic_unclamped_source_matches_reference() {
+        // Regression for the border bug: bicubic must NOT clamp the source coordinate
+        // (PyTorch's area_pixel_compute_source_index keeps it unclamped for cubic and only
+        // clamps the tap indices). With input height 1 the vertical pass is the identity,
+        // isolating the 1-D width interpolation so we can check against a direct reference.
+        let input_vals = vec![1.0_f64, 2.0, 4.0, 8.0];
+        let iw = 4usize;
+        let ow = 8usize;
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(input_vals.clone(), vec![1, 1, 1, iw], false)
+            .unwrap();
+        let out = s
+            .tensor_interpolate(input, Some(vec![1, ow]), None, "bicubic", Some(false))
+            .unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(vals.len(), ow);
+
+        // Independent Keys (a = -0.75) cubic reference using the UNCLAMPED source coordinate.
+        let kw = |x: f64| -> f64 {
+            let a = -0.75;
+            let ax = x.abs();
+            if ax <= 1.0 {
+                (a + 2.0) * ax * ax * ax - (a + 3.0) * ax * ax + 1.0
+            } else if ax <= 2.0 {
+                a * ax * ax * ax - 5.0 * a * ax * ax + 8.0 * a * ax - 4.0 * a
+            } else {
+                0.0
+            }
+        };
+        let reference = |ox: usize| -> f64 {
+            let src = (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5; // unclamped, may be < 0
+            let ix = src.floor() as i64;
+            let tx = src - ix as f64;
+            let mut acc = 0.0;
+            for dx in -1..=2_i64 {
+                let w = kw(tx - dx as f64);
+                let idx = (ix + dx).clamp(0, iw as i64 - 1) as usize;
+                acc += w * input_vals[idx];
+            }
+            acc
+        };
+        for ox in 0..ow {
+            let expected = reference(ox);
+            assert!(
+                (vals[ox] - expected).abs() < 1e-9,
+                "bicubic[{ox}] = {} expected {}",
+                vals[ox],
+                expected
+            );
+        }
+        // The leftmost output sample maps to src = -0.25; a clamped implementation would
+        // collapse it to input[0] = 1.0. The (correct) unclamped result must differ.
+        assert!(
+            (vals[0] - 1.0).abs() > 1e-6,
+            "bicubic[0] = {} should not equal the clamped input[0]=1.0",
+            vals[0]
+        );
+
+        // The autograd path must produce identical forward values (its clamp was removed too).
+        let input_g = s
+            .tensor_variable(input_vals.clone(), vec![1, 1, 1, iw], true)
+            .unwrap();
+        let out_g = s
+            .tensor_interpolate(input_g, Some(vec![1, ow]), None, "bicubic", Some(false))
+            .unwrap();
+        let vals_g = s.tensor_values(out_g).unwrap();
+        for ox in 0..ow {
+            assert!(
+                (vals_g[ox] - vals[ox]).abs() < 1e-12,
+                "bicubic autograd path differs at {ox}: {} vs {}",
+                vals_g[ox],
+                vals[ox]
+            );
         }
     }
 
