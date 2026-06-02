@@ -28406,6 +28406,49 @@ impl FrankenTorchSession {
         Ok(jac)
     }
 
+    /// Compute the Hessian of a scalar `output` with respect to `input`.
+    ///
+    /// Equivalent to `torch.autograd.functional.hessian` for a single input
+    /// tensor. `output` must be a scalar (one element). Returns the Hessian
+    /// flattened in row-major order with logical shape `[n, n]` where `n` is
+    /// the input's element count; row `k` is `∂²output/∂x_k∂x`.
+    ///
+    /// Implemented as the Jacobian of the gradient: a `create_graph` backward
+    /// exposes `g = ∇f` as differentiable nodes, then each row `k` is obtained
+    /// by a VJP of `g` seeded with the unit vector `e_k`.
+    pub fn tensor_functional_hessian(
+        &mut self,
+        output: TensorNodeId,
+        input: TensorNodeId,
+    ) -> Result<Vec<f64>, AutogradError> {
+        let out_numel: usize = self.tensor_shape(output)?.iter().product();
+        if out_numel != 1 {
+            return Err(Self::incompatible_tensor_args(
+                "hessian: output must be a scalar (one element)",
+            ));
+        }
+        let first = BackwardOptions::for_mode(self.mode())
+            .with_create_graph(true)
+            .with_retain_graph(true);
+        let report1 = self.tensor_backward_with_options(output, first)?;
+        let grad_node = report1.gradient_node(input).ok_or_else(|| {
+            Self::incompatible_tensor_args("hessian: output does not depend on input")
+        })?;
+
+        let n: usize = self.tensor_shape(input)?.iter().product();
+        let mut hess = vec![0.0; n * n];
+        for k in 0..n {
+            let mut seed = vec![0.0; n];
+            seed[k] = 1.0;
+            // VJP of g seeded with e_k gives ∂g_k/∂x = row k of the Hessian.
+            let row = self.tensor_autograd_grad(&[grad_node], &[input], Some(&[seed]), true, false)?;
+            if let Some(g) = &row[0] {
+                hess[k * n..k * n + n].copy_from_slice(g);
+            }
+        }
+        Ok(hess)
+    }
+
     pub fn tensor_set_accumulated_gradient(
         &mut self,
         node: TensorNodeId,
@@ -89164,6 +89207,40 @@ mod tests {
         let y = s.tensor_mul(x, x).unwrap(); // J = diag(2x) = diag([4,6])
         let jac = s.tensor_functional_jacobian(y, &[x]).unwrap();
         assert_eq!(jac[0], vec![4.0, 0.0, 0.0, 6.0]);
+    }
+
+    #[test]
+    fn functional_hessian_quadratic_form_is_a_plus_a_transpose() {
+        // f(x) = xᵀ A x ⇒ H = A + Aᵀ (off-diagonal, exercises cross terms).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let x = s.tensor_variable(vec![5.0, 7.0], vec![2, 1], true).unwrap();
+        let ax = s.tensor_matmul(a, x).unwrap();
+        let prod = s.tensor_mul(x, ax).unwrap();
+        let f = s.tensor_sum(prod).unwrap();
+        let h = s.tensor_functional_hessian(f, x).unwrap();
+        // A + Aᵀ = [[2,5],[5,8]].
+        assert_eq!(h, vec![2.0, 5.0, 5.0, 8.0]);
+    }
+
+    #[test]
+    fn functional_hessian_sum_of_squares_is_twice_identity() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![3.0, -1.0], vec![2], true).unwrap();
+        let x2 = s.tensor_mul(x, x).unwrap();
+        let f = s.tensor_sum(x2).unwrap(); // f = Σ x², H = 2I
+        let h = s.tensor_functional_hessian(f, x).unwrap();
+        assert_eq!(h, vec![2.0, 0.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn functional_hessian_rejects_non_scalar_output() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 3.0], vec![2], true).unwrap();
+        let y = s.tensor_mul(x, x).unwrap(); // non-scalar
+        assert!(s.tensor_functional_hessian(y, x).is_err());
     }
 
     #[test]
