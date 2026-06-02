@@ -1,0 +1,10 @@
+ft_core_numel_pass22
+scalar=1
+normal_shape=[2, 3, 5, 7, 11, 13, 17, 19]
+normal_numel=9699690
+normal_strides=[4849845, 1616615, 323323, 46189, 4199, 323, 19, 1]
+normal_fingerprint=ab5dd36ab04087d9
+zero_shape=[8, 0, 18446744073709551615]
+zero_numel=0
+overflow_shape=[18446744073709551615, 2]
+overflow_numel=18446744073709551615

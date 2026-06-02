@@ -564,11 +564,11 @@ impl TensorMeta {
         if self.shape.is_empty() {
             return 1;
         }
-        if self.shape.iter().copied().any(|dim| dim == 0) {
-            return 0;
-        }
         let mut product = 1usize;
         for dim in self.shape.iter().copied() {
+            if dim == 0 {
+                return 0;
+            }
             let Some(next) = product.checked_mul(dim) else {
                 return usize::MAX;
             };
@@ -2999,6 +2999,40 @@ mod tests {
     fn numel_zero_dimension_short_circuits_before_overflow() {
         let meta = TensorMeta::from_shape(vec![usize::MAX, 2, 0], DType::F64, Device::Cpu);
         assert_eq!(meta.numel(), 0);
+    }
+
+    #[test]
+    fn tensor_meta_numel_golden_summary_matches_fixture() {
+        use std::fmt::Write as _;
+
+        let scalar = TensorMeta::scalar(DType::F64, Device::Cpu);
+        let normal_shape = vec![2, 3, 5, 7, 11, 13, 17, 19];
+        let normal = TensorMeta::from_shape(normal_shape.clone(), DType::F64, Device::Cpu);
+        let zero_shape = vec![8, 0, usize::MAX];
+        let zero = TensorMeta::from_shape(zero_shape.clone(), DType::F64, Device::Cpu);
+        let overflow_shape = vec![usize::MAX, 2];
+        let overflow = TensorMeta::from_shape(overflow_shape.clone(), DType::F64, Device::Cpu);
+
+        let mut summary = String::new();
+        summary.push_str("ft_core_numel_pass22\n");
+        let _ = writeln!(&mut summary, "scalar={}", scalar.numel());
+        let _ = writeln!(&mut summary, "normal_shape={normal_shape:?}");
+        let _ = writeln!(&mut summary, "normal_numel={}", normal.numel());
+        let _ = writeln!(&mut summary, "normal_strides={:?}", normal.strides());
+        let _ = writeln!(
+            &mut summary,
+            "normal_fingerprint={:016x}",
+            normal.fingerprint64()
+        );
+        let _ = writeln!(&mut summary, "zero_shape={zero_shape:?}");
+        let _ = writeln!(&mut summary, "zero_numel={}", zero.numel());
+        let _ = writeln!(&mut summary, "overflow_shape={overflow_shape:?}");
+        let _ = writeln!(&mut summary, "overflow_numel={}", overflow.numel());
+
+        assert_eq!(
+            summary,
+            include_str!("../../../artifacts/optimization/golden_outputs/ft_core_numel_pass22.txt")
+        );
     }
 
     #[test]
