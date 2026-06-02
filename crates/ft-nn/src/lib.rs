@@ -6456,10 +6456,6 @@ impl Module for MaxPool2d {
     }
 }
 
-/// Identity module that passes input through unchanged.
-///
-/// Useful as a placeholder in `Sequential` containers or for skip connections
-/// where a no-op branch is needed.
 /// Adaptive average pooling for 2D spatial inputs.
 ///
 /// Input: `[N, C, H_in, W_in]`. Output: `[N, C, H_out, W_out]` where `(H_out, W_out)`
@@ -8548,6 +8544,10 @@ impl Module for BatchNorm2d {
     }
 }
 
+/// Identity module that passes input through unchanged.
+///
+/// Useful as a placeholder in `Sequential` containers or for skip connections
+/// where a no-op branch is needed.
 pub struct Identity;
 
 impl Module for Identity {
