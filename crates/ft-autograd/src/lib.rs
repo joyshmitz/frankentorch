@@ -14088,37 +14088,14 @@ impl TensorTape {
                     dim,
                     ref input_dim_sizes,
                 } => {
-                    // Split the incoming gradient along dim and route to each input.
-                    let incoming_vals = self.nodes[incoming_id.0]
-                        .tensor
-                        .contiguous_values_as_f64()?;
-                    let out_shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
-                    let total_dim_size: usize = input_dim_sizes.iter().sum();
-                    let (outer_size, inner_size, _) = Self::checked_dim_loop_sizes(
-                        &out_shape,
-                        dim,
-                        "cat cg backward shape volume overflow",
-                    )?;
+                    // Route the incoming gradient to each input by slicing it along `dim`.
+                    // Using a differentiable Narrow node (instead of a detached leaf) keeps the
+                    // gradient dependent on the incoming gradient, so a second backward routes a
+                    // downstream loss back through the concat correctly.
                     let mut offset = 0usize;
                     for (idx, &inp) in inputs.iter().enumerate() {
                         let inp_dim_size = input_dim_sizes[idx];
-                        let inp_shape = self.nodes[inp.0].tensor.meta().shape().to_vec();
-                        let inp_numel =
-                            Self::checked_shape_numel(&inp_shape, "cat backward input overflow")?;
-                        let mut contrib = vec![0.0; inp_numel];
-                        for outer in 0..outer_size {
-                            for r in 0..inp_dim_size {
-                                for inner in 0..inner_size {
-                                    let out_idx = outer * total_dim_size * inner_size
-                                        + (offset + r) * inner_size
-                                        + inner;
-                                    let inp_idx =
-                                        outer * inp_dim_size * inner_size + r * inner_size + inner;
-                                    contrib[inp_idx] = incoming_vals[out_idx];
-                                }
-                            }
-                        }
-                        let grad_slice = self.leaf(contrib, inp_shape, true)?;
+                        let grad_slice = self.narrow(incoming_id, dim, offset, inp_dim_size)?;
                         self.cg_accumulate(inp, &mut grad_nodes, grad_slice)?;
                         Self::complete_dependency(&mut pending, inp, &mut queue)?;
                         offset += inp_dim_size;
@@ -14126,42 +14103,25 @@ impl TensorTape {
                     steps.push(TensorBackwardStep {
                         node: node_id,
                         incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
-                        rule: "d(cat(xs))/dx_i=split(grad)[i] (cg)",
+                        rule: "d(cat(xs))/dx_i=narrow(grad) (cg)",
                     });
                 }
                 TensorNodeOp::Stack { ref inputs, dim } => {
-                    // Stack adds a new dimension; split incoming grad and squeeze.
-                    let incoming_vals = self.nodes[incoming_id.0]
-                        .tensor
-                        .contiguous_values_as_f64()?;
-                    let out_shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
-                    let num_inputs = inputs.len();
-                    let (outer_size, inner_size, _) = Self::checked_dim_loop_sizes(
-                        &out_shape,
-                        dim,
-                        "stack cg backward shape volume overflow",
-                    )?;
+                    // Each input's gradient is the incoming gradient sliced at its position
+                    // along the stacked dim, with that singleton dim squeezed away. Compose via
+                    // a differentiable Narrow + Reshape so double-backward routes through stack
+                    // instead of dead-ending at a detached leaf.
                     for (idx, &inp) in inputs.iter().enumerate() {
                         let inp_shape = self.nodes[inp.0].tensor.meta().shape().to_vec();
-                        let inp_numel =
-                            Self::checked_shape_numel(&inp_shape, "stack backward input overflow")?;
-                        let mut contrib = vec![0.0; inp_numel];
-                        for outer in 0..outer_size {
-                            for inner in 0..inner_size {
-                                let out_idx =
-                                    outer * num_inputs * inner_size + idx * inner_size + inner;
-                                let inp_idx = outer * inner_size + inner;
-                                contrib[inp_idx] = incoming_vals[out_idx];
-                            }
-                        }
-                        let grad_slice = self.leaf(contrib, inp_shape, true)?;
+                        let slice = self.narrow(incoming_id, dim, idx, 1)?;
+                        let grad_slice = self.cg_reshape(slice, inp_shape)?;
                         self.cg_accumulate(inp, &mut grad_nodes, grad_slice)?;
                         Self::complete_dependency(&mut pending, inp, &mut queue)?;
                     }
                     steps.push(TensorBackwardStep {
                         node: node_id,
                         incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
-                        rule: "d(stack(xs))/dx_i=squeeze(split(grad))[i] (cg)",
+                        rule: "d(stack(xs))/dx_i=reshape(narrow(grad))[i] (cg)",
                     });
                 }
                 TensorNodeOp::Min { lhs, rhs } | TensorNodeOp::Max { lhs, rhs } => {
@@ -24260,6 +24220,36 @@ mod tests {
     }
 
     #[test]
+    fn create_graph_cat_second_derivative() {
+        // L = sum(cat([a,b])^2). The gradient flows through the concat, so a second
+        // backward must route back through it. With the old detached-leaf gradient the
+        // path to `a`/`b` was severed and the second derivative was silently zero.
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("a");
+        let b = tape.leaf(vec![3.0, 4.0, 5.0], vec![3], true).expect("b");
+        let (c, _) = tape.cat(&[a, b], 0, ExecutionMode::Strict).expect("cat");
+        let (sq, _) = tape.square(c, ExecutionMode::Strict).expect("square");
+        let (s, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
+        let rep1 = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        // First-order: d/da = 2a, d/db = 2b (regression guard for the narrow rewrite).
+        assert_eq!(rep1.gradient(a).expect("ga"), &[2.0, 4.0]);
+        assert_eq!(rep1.gradient(b).expect("gb"), &[6.0, 8.0, 10.0]);
+        // Second-order: d(sum(ga))/da = 2 everywhere (ga = 2a). Zero under a detached leaf.
+        let dga = rep1.gradient_node(a).expect("gradient node for a");
+        let (p, _) = tape.sum(dga, ExecutionMode::Strict).expect("sum(ga)");
+        let rep2 = tape.backward(p).expect("second backward");
+        assert_eq!(rep2.gradient(a).expect("d(sum ga)/da"), &[2.0, 2.0]);
+    }
+
+    #[test]
     fn create_graph_stack_gradients() {
         // stack adds a dimension; gradient unstacks
         let mut tape = TensorTape::new();
@@ -24280,6 +24270,35 @@ mod tests {
             .expect("backward");
         assert_eq!(report.gradient(a).expect("ga"), &[1.0, 1.0]);
         assert_eq!(report.gradient(b).expect("gb"), &[1.0, 1.0]);
+    }
+
+    #[test]
+    fn create_graph_stack_second_derivative() {
+        // L = sum(stack([a,b])^2): the gradient routes through stack, so a second
+        // backward must too. Detached-leaf gradients made this silently zero.
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("a");
+        let b = tape.leaf(vec![3.0, 4.0], vec![2], true).expect("b");
+        let (c, _) = tape
+            .stack(&[a, b], 0, ExecutionMode::Strict)
+            .expect("stack");
+        let (sq, _) = tape.square(c, ExecutionMode::Strict).expect("square");
+        let (s, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
+        let rep1 = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        assert_eq!(rep1.gradient(a).expect("ga"), &[2.0, 4.0]); // 2a
+        assert_eq!(rep1.gradient(b).expect("gb"), &[6.0, 8.0]); // 2b
+        let dga = rep1.gradient_node(a).expect("gradient node for a");
+        let (p, _) = tape.sum(dga, ExecutionMode::Strict).expect("sum(ga)");
+        let rep2 = tape.backward(p).expect("second backward");
+        assert_eq!(rep2.gradient(a).expect("d(sum ga)/da"), &[2.0, 2.0]);
     }
 
     #[test]
