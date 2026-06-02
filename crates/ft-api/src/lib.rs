@@ -45313,11 +45313,6 @@ impl FrankenTorchSession {
         let mut gather: Vec<usize> = Vec::with_capacity(out_numel);
         let mut coords = vec![0usize; out_ndim];
         for flat_out in 0..out_numel {
-            let mut remaining = flat_out;
-            for d in 0..out_ndim {
-                coords[d] = remaining / out_strides[d];
-                remaining %= out_strides[d];
-            }
             let mut in_flat = 0;
             for d in 0..ndim {
                 let c = if d == dimension {
@@ -45328,6 +45323,15 @@ impl FrankenTorchSession {
                 in_flat += c * strides[d];
             }
             gather.push(in_flat);
+            if flat_out + 1 < out_numel {
+                for d in (0..out_ndim).rev() {
+                    coords[d] += 1;
+                    if coords[d] < out_shape[d] {
+                        break;
+                    }
+                    coords[d] = 0;
+                }
+            }
         }
         let gather: Arc<[usize]> = gather.into();
         let gather_for_fwd = Arc::clone(&gather);

@@ -1,0 +1,18 @@
+Command:
+rch exec -- cargo bench -p ft-api --bench ops_bench -- conv2d/hw/32 --warm-up-time 1 --measurement-time 5 --sample-size 20
+
+Observed baseline:
+worker ts2
+conv2d/hw/32 time: [205.52 ms 206.53 ms 207.44 ms]
+throughput: [1.2637 Melem/s 1.2693 Melem/s 1.2755 Melem/s]
+
+Comparison anchor:
+benchmarks/pytorch_baseline.json conv2d_32x32 p50_us=3582.44
+
+Profile-backed target:
+The 20260601 perf scenario ranks conv2d as a >3x row. After frankentorch-11mn,
+conv2d/hw/32 still measured around 206 ms p50 on worker ts2. tensor_unfold still
+decoded every output coordinate from `flat_out` with division and modulo across
+all output dimensions while building the gather table. functional_conv2d calls
+tensor_unfold twice before bmm, so this integer decode sits directly on the
+profile-backed patch-extraction path.
