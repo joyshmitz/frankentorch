@@ -14512,15 +14512,7 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let weight_t = self.tensor_transpose(weight, 0, 1)?;
         match bias {
-            Some(b) => {
-                let input_shape = self.tensor_shape(input)?;
-                let weight_shape = self.tensor_shape(weight)?;
-                let out_features = weight_shape[0];
-                let mut out_shape = input_shape.clone();
-                *out_shape.last_mut().unwrap() = out_features;
-                let bias_expanded = self.tensor_expand(b, out_shape)?;
-                self.tensor_addmm(bias_expanded, input, weight_t, 1.0, 1.0)
-            }
+            Some(b) => self.tensor_addmm(b, input, weight_t, 1.0, 1.0),
             None => self.tensor_matmul(input, weight_t),
         }
     }
@@ -77639,6 +77631,26 @@ mod tests {
         // [1,1] @ I + [10,20] = [11, 21]
         assert!((vals[0] - 11.0).abs() < 1e-10);
         assert!((vals[1] - 21.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn functional_linear_one_dim_bias_broadcasts_and_sums_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
+            .unwrap();
+        let weight = s
+            .tensor_variable(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], true)
+            .unwrap();
+        let bias = s.tensor_variable(vec![10.0, 20.0], vec![2], true).unwrap();
+        let out = s.functional_linear(input, weight, Some(bias)).unwrap();
+        let vals = s.tensor_values(out).unwrap();
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![2, 2]);
+        assert_eq!(vals, vec![11.0, 22.0, 13.0, 24.0]);
+
+        let report = s.tensor_backward(out).unwrap();
+        let bias_grad = s.tensor_gradient(&report, bias).unwrap();
+        assert_eq!(bias_grad, vec![2.0, 2.0]);
     }
 
     #[test]

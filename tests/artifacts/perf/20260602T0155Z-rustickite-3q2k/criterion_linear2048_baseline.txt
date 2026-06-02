@@ -1,0 +1,13 @@
+Command:
+rch exec -- cargo bench -p ft-api --bench ops_bench -- linear_forward/hidden/2048 --warm-up-time 1 --measurement-time 5 --sample-size 20
+
+Worker:
+ts2
+
+Result:
+linear_forward/hidden/2048
+                        time:   [21.402 ms 21.520 ms 21.653 ms]
+                        thrpt:  [3.0266 Melem/s 3.0453 Melem/s 3.0621 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe

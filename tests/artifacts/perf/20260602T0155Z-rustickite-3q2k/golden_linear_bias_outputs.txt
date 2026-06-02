@@ -1,0 +1,12 @@
+functional_linear 1-D bias broadcast golden
+
+input shape: [2, 2]
+input values: [1.0, 2.0, 3.0, 4.0]
+weight shape: [2, 2]
+weight values: [1.0, 0.0, 0.0, 1.0]
+bias shape: [2]
+bias values: [10.0, 20.0]
+
+output shape: [2, 2]
+output values: [11.0, 22.0, 13.0, 24.0]
+bias gradient after backward(output): [2.0, 2.0]
