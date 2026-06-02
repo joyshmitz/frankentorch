@@ -14979,6 +14979,84 @@ impl TensorTape {
                         rule: "d(cumsum(x))/dx=reverse_cumsum(grad) (cg)",
                     });
                 }
+                TensorNodeOp::Norm {
+                    input,
+                    p,
+                    input_numel,
+                } => {
+                    // Second-order norm backward, p in {1, 2}. Other p (inf,
+                    // general, 0) fall through to a fail-loud error rather than a
+                    // silently-zero detached leaf.
+                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let incoming_val = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()
+                        .map_err(AutogradError::DenseTensor)?[0];
+                    if p == 2.0 {
+                        // d/dx_i = grad * x_i / ||x||. Reuse the Norm output node
+                        // (node_id) as the divisor so the second backward routes
+                        // d||x||/dx through Norm's own backward, yielding the exact
+                        // Hessian (I - x x^T / ||x||^2) / ||x||.
+                        let norm_val = self.nodes[node_id.0]
+                            .tensor
+                            .contiguous_values_as_f64()
+                            .map_err(AutogradError::DenseTensor)?[0];
+                        let grad_in = if norm_val == 0.0 {
+                            // ||x|| = 0: gradient is zero (non-differentiable at origin).
+                            self.leaf(vec![0.0; input_numel], input_shape, false)?
+                        } else {
+                            let inc_exp = self.cg_expand(
+                                incoming_id,
+                                vec![incoming_val; input_numel],
+                                input_shape.clone(),
+                            )?;
+                            let numerator = self.cg_mul(inc_exp, input)?;
+                            let norm_exp = self.cg_expand(
+                                node_id,
+                                vec![norm_val; input_numel],
+                                input_shape,
+                            )?;
+                            self.cg_div(numerator, norm_exp)?
+                        };
+                        self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                        Self::complete_dependency(&mut pending, input, &mut queue)?;
+                        steps.push(TensorBackwardStep {
+                            node: node_id,
+                            incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                            rule: "d(norm2(x))/dx=grad*x/||x|| (cg)",
+                        });
+                    } else if p == 1.0 {
+                        // d/dx_i = grad * sign(x_i); sign is piecewise-constant so
+                        // the second derivative is zero a.e. Gate the incoming
+                        // gradient by a constant sign leaf.
+                        let input_values = self.nodes[input.0]
+                            .tensor
+                            .contiguous_values_as_f64()
+                            .map_err(AutogradError::DenseTensor)?;
+                        let signs: Vec<f64> =
+                            input_values.iter().map(|v| v.signum()).collect();
+                        let inc_exp = self.cg_expand(
+                            incoming_id,
+                            vec![incoming_val; input_numel],
+                            input_shape.clone(),
+                        )?;
+                        let sign_leaf = self.leaf(signs, input_shape, false)?;
+                        let grad_in = self.cg_mul(inc_exp, sign_leaf)?;
+                        self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                        Self::complete_dependency(&mut pending, input, &mut queue)?;
+                        steps.push(TensorBackwardStep {
+                            node: node_id,
+                            incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                            rule: "d(norm1(x))/dx=grad*sign(x) (cg)",
+                        });
+                    } else {
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "create_graph for norm supports only p=1 and p=2",
+                            },
+                        )));
+                    }
+                }
                 // For unsupported ops, fall back to non-differentiable gradient
                 _ => {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -25269,6 +25347,57 @@ mod tests {
         assert!((g2[0] - 12.0).abs() < 1e-9, "d2[0] expected 12.0, got {}", g2[0]);
         assert!((g2[1] - 10.0).abs() < 1e-9, "d2[1] expected 10.0, got {}", g2[1]);
         assert!((g2[2] - 6.0).abs() < 1e-9, "d2[2] expected 6.0, got {}", g2[2]);
+    }
+
+    #[test]
+    fn create_graph_norm2_second_derivative_matches_hessian() {
+        // L = ||x||_2, x = [3,4], ||x||=5. First-order grad = x/||x|| = [0.6,0.8].
+        // Hessian H = (I - x x^T/||x||^2)/||x||; the ones-seeded second backward
+        // gives row sums of H = [0.032, -0.024]. Proves the norm gradient routes
+        // d||x||/dx through the Norm node (was fail-loud) and yields the true
+        // curvature, not a silently-zero detached leaf.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![3.0, 4.0], vec![2], true).expect("x");
+        let (n, _) = tape.norm(x, 2.0, ExecutionMode::Strict).expect("norm");
+        let report1 = tape
+            .backward_with_options(
+                n,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let gx = report1.gradient(x).expect("gx");
+        assert!((gx[0] - 0.6).abs() < 1e-9, "gx[0] expected 0.6, got {}", gx[0]);
+        assert!((gx[1] - 0.8).abs() < 1e-9, "gx[1] expected 0.8, got {}", gx[1]);
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2 = report2.gradient(x).expect("second gradient");
+        assert!((g2[0] - 0.032).abs() < 1e-9, "d2[0] expected 0.032, got {}", g2[0]);
+        assert!(
+            (g2[1] - (-0.024)).abs() < 1e-9,
+            "d2[1] expected -0.024, got {}",
+            g2[1]
+        );
+    }
+
+    #[test]
+    fn create_graph_norm1_gradients() {
+        // L = ||x||_1, d/dx = sign(x). create_graph must not fail-loud.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![3.0, -4.0], vec![2], true).expect("x");
+        let (n, _) = tape.norm(x, 1.0, ExecutionMode::Strict).expect("norm");
+        let report = tape
+            .backward_with_options(
+                n,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        assert_eq!(report.gradient(x).expect("gx"), &[1.0, -1.0]);
     }
 
     #[test]
