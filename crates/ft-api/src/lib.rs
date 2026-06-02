@@ -14856,10 +14856,15 @@ impl FrankenTorchSession {
         let unfolded = self.tensor_reshape(permuted, vec![batch_size, patch_count, patch_width])?;
         let weight_flat = self.tensor_reshape(weight, vec![out_channels, patch_width])?;
         let weight_t = self.tensor_transpose(weight_flat, 0, 1)?;
-        let weight_us = self.tensor_unsqueeze(weight_t, 0)?;
-        let weight_expanded =
-            self.tensor_expand(weight_us, vec![batch_size, patch_width, out_channels])?;
-        let output = self.tensor_bmm(unfolded, weight_expanded)?;
+        let flat_patch_count = Self::checked_mul(
+            batch_size,
+            patch_count,
+            "conv2d flattened patch count overflow",
+        )?;
+        let unfolded_flat = self.tensor_reshape(unfolded, vec![flat_patch_count, patch_width])?;
+        let output_flat = self.tensor_matmul(unfolded_flat, weight_t)?;
+        let output =
+            self.tensor_reshape(output_flat, vec![batch_size, patch_count, out_channels])?;
         let output = self.tensor_transpose(output, 1, 2)?;
         let output =
             self.tensor_reshape(output, vec![batch_size, out_channels, output_h, output_w])?;
