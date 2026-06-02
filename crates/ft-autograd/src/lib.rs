@@ -14714,6 +14714,86 @@ impl TensorTape {
                         rule: "d(where(c,x,y))/dx=grad*c, d/dy=grad*(1-c) (cg)",
                     });
                 }
+                TensorNodeOp::Floor { input }
+                | TensorNodeOp::Ceil { input }
+                | TensorNodeOp::Round { input }
+                | TensorNodeOp::Sign { input }
+                | TensorNodeOp::Trunc { input } => {
+                    // Step/rounding functions: the gradient is zero almost
+                    // everywhere and so is every higher derivative. A constant
+                    // zero leaf (no parents) is the correct gradient node — a
+                    // second backward through it stays zero, matching the true
+                    // f'' = 0. Without this arm create_graph would fail-loud on
+                    // any graph that merely contains a floor/ceil/round/sign/trunc.
+                    let numel = self.nodes[input.0].tensor.meta().numel();
+                    let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let grad_in = self.leaf(vec![0.0; numel], shape, false)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(floor|ceil|round|sign|trunc)/dx=0 (cg)",
+                    });
+                }
+                TensorNodeOp::Frac { input } => {
+                    // frac(x) = x - floor(x), d/dx = 1: the gradient passes
+                    // straight through. Routing `incoming_id` itself (rather than
+                    // a fresh leaf) keeps the gradient node dependent on the
+                    // incoming gradient, so double-backward routes correctly
+                    // (frac'' = 0 a.e., recovered as the second backward of a
+                    // pure passthrough).
+                    self.cg_accumulate(input, &mut grad_nodes, incoming_id)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(frac(x))/dx=1 (cg)",
+                    });
+                }
+                TensorNodeOp::Trace {
+                    input,
+                    ref input_shape,
+                } => {
+                    // trace(X) = sum of the diagonal; d(trace)/dX = grad_out * I.
+                    // The incoming gradient is a scalar, so the input gradient is
+                    // that scalar broadcast onto the diagonal of a [rows, cols]
+                    // matrix. Building it as cg_mul(incoming, diag_mask) (mask is a
+                    // constant non-grad leaf) keeps the gradient dependent on the
+                    // incoming gradient, so a second backward routes the diagonal
+                    // contribution upstream instead of collapsing to zero.
+                    let rows = input_shape[0];
+                    let cols = input_shape[1];
+                    let numel = Self::checked_mul_usize(
+                        rows,
+                        cols,
+                        "trace backward shape multiplication overflow",
+                    )?;
+                    let diag_len = rows.min(cols);
+                    let mut diag_mask = vec![0.0; numel];
+                    for i in 0..diag_len {
+                        diag_mask[i * cols + i] = 1.0;
+                    }
+                    // Expand the scalar incoming gradient to [rows, cols] first
+                    // (Expand's backward sums back to the scalar) so the
+                    // subsequent multiply is shape-matched — a scalar*matrix
+                    // broadcast Mul cannot be reduced by the plain second backward.
+                    let incoming_val = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()
+                        .map_err(AutogradError::DenseTensor)?[0];
+                    let expanded =
+                        self.cg_expand(incoming_id, vec![incoming_val; numel], vec![rows, cols])?;
+                    let diag_leaf = self.leaf(diag_mask, vec![rows, cols], false)?;
+                    let grad_in = self.cg_mul(expanded, diag_leaf)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(trace(X))/dX=grad_out*I (cg)",
+                    });
+                }
                 // For unsupported ops, fall back to non-differentiable gradient
                 _ => {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -24626,6 +24706,94 @@ mod tests {
         let g2x = report2.gradient(x).expect("second gradient");
         assert!((g2x[0] - 2.0).abs() < 1e-9, "d2/dx2[0] expected 2.0, got {}", g2x[0]);
         assert!((g2x[1] - 0.0).abs() < 1e-9, "d2/dx2[1] expected 0.0, got {}", g2x[1]);
+    }
+
+    #[test]
+    fn create_graph_rounding_ops_zero_gradient() {
+        // floor/ceil/round/sign/trunc have zero gradient a.e.; under create_graph
+        // they must return a (constant) zero gradient instead of fail-loud erroring.
+        for op in 0..5 {
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(vec![1.5, -2.7, 3.2], vec![3], true).expect("x");
+            let (r, _) = match op {
+                0 => tape.floor(x, ExecutionMode::Strict).expect("floor"),
+                1 => tape.ceil(x, ExecutionMode::Strict).expect("ceil"),
+                2 => tape.round(x, ExecutionMode::Strict).expect("round"),
+                3 => tape.sign(x, ExecutionMode::Strict).expect("sign"),
+                _ => tape.trunc(x, ExecutionMode::Strict).expect("trunc"),
+            };
+            let (s, _) = tape.sum(r, ExecutionMode::Strict).expect("sum");
+            let report = tape
+                .backward_with_options(
+                    s,
+                    BackwardOptions {
+                        create_graph: true,
+                        ..BackwardOptions::strict_default()
+                    },
+                )
+                .expect("backward");
+            assert_eq!(
+                report.gradient(x).expect("gx"),
+                &[0.0, 0.0, 0.0],
+                "op {op} should have zero gradient"
+            );
+        }
+    }
+
+    #[test]
+    fn create_graph_frac_passthrough_gradient() {
+        // frac(x) = x - floor(x), d/dx = 1: gradient passes straight through.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.5, -2.7, 3.2], vec![3], true).expect("x");
+        let (f, _) = tape.frac(x, ExecutionMode::Strict).expect("frac");
+        let (s, _) = tape.sum(f, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        assert_eq!(report.gradient(x).expect("gx"), &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn create_graph_trace_second_derivative_routes_through_diagonal() {
+        // L = trace(X .* X) = sum_i X_ii^2. d L/dX = 2*X on the diagonal, 0 off it.
+        // Second backward (ones-seeded) must recover 2 on the diagonal — proof that
+        // the trace gradient stays dependent on the incoming gradient (grad_out * I)
+        // rather than collapsing to a detached leaf with silently-zero curvature.
+        let mut tape = TensorTape::new();
+        // X = [[3,1],[2,5]]
+        let x = tape.leaf(vec![3.0, 1.0, 2.0, 5.0], vec![2, 2], true).expect("x");
+        let (xs, _) = tape.mul(x, x, ExecutionMode::Strict).expect("xs");
+        let (t, _) = tape.trace(xs, ExecutionMode::Strict).expect("trace");
+        let report1 = tape
+            .backward_with_options(
+                t,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        // First-order: d/dX = 2*X gated to the diagonal = [6, 0, 0, 10].
+        let gx = report1.gradient(x).expect("gx");
+        assert!((gx[0] - 6.0).abs() < 1e-9, "gx[0] expected 6.0, got {}", gx[0]);
+        assert!((gx[1] - 0.0).abs() < 1e-9, "gx[1] expected 0.0, got {}", gx[1]);
+        assert!((gx[2] - 0.0).abs() < 1e-9, "gx[2] expected 0.0, got {}", gx[2]);
+        assert!((gx[3] - 10.0).abs() < 1e-9, "gx[3] expected 10.0, got {}", gx[3]);
+
+        // Second derivative: d(2*X_diag)/dX = 2 on the diagonal = [2, 0, 0, 2].
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2 = report2.gradient(x).expect("second gradient");
+        assert!((g2[0] - 2.0).abs() < 1e-9, "d2[0] expected 2.0, got {}", g2[0]);
+        assert!((g2[1] - 0.0).abs() < 1e-9, "d2[1] expected 0.0, got {}", g2[1]);
+        assert!((g2[2] - 0.0).abs() < 1e-9, "d2[2] expected 0.0, got {}", g2[2]);
+        assert!((g2[3] - 2.0).abs() < 1e-9, "d2[3] expected 2.0, got {}", g2[3]);
     }
 
     #[test]
