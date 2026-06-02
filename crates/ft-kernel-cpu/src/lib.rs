@@ -16,12 +16,20 @@ mod gemm {
         // Row-major layout: row stride = inner dimension, column stride = 1
         unsafe {
             matrixmultiply::dgemm(
-                m, k, n,
+                m,
+                k,
+                n,
                 1.0,
-                a.as_ptr(), k as isize, 1,
-                b.as_ptr(), n as isize, 1,
+                a.as_ptr(),
+                k as isize,
+                1,
+                b.as_ptr(),
+                n as isize,
+                1,
                 0.0,
-                c.as_mut_ptr(), n as isize, 1,
+                c.as_mut_ptr(),
+                n as isize,
+                1,
             );
         }
     }
@@ -29,12 +37,20 @@ mod gemm {
     pub fn sgemm(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
         unsafe {
             matrixmultiply::sgemm(
-                m, k, n,
+                m,
+                k,
+                n,
                 1.0,
-                a.as_ptr(), k as isize, 1,
-                b.as_ptr(), n as isize, 1,
+                a.as_ptr(),
+                k as isize,
+                1,
+                b.as_ptr(),
+                n as isize,
+                1,
                 0.0,
-                c.as_mut_ptr(), n as isize, 1,
+                c.as_mut_ptr(),
+                n as isize,
+                1,
             );
         }
     }
@@ -781,11 +797,7 @@ where
     Ok(output)
 }
 
-fn unary_strided_f64<F>(
-    input: &[f64],
-    meta: &TensorMeta,
-    op: F,
-) -> Result<Vec<f64>, KernelError>
+fn unary_strided_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, KernelError>
 where
     F: Fn(f64) -> f64,
 {
@@ -1876,14 +1888,7 @@ pub fn add_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_elementwise_f64(
-        lhs,
-        rhs,
-        lhs_meta,
-        rhs_meta,
-        |l, r| l + r,
-        |a, b| a + b,
-    )
+    simd_elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l + r, |a, b| a + b)
 }
 
 pub fn sub_tensor_contiguous_f64(
@@ -1892,14 +1897,7 @@ pub fn sub_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_elementwise_f64(
-        lhs,
-        rhs,
-        lhs_meta,
-        rhs_meta,
-        |l, r| l - r,
-        |a, b| a - b,
-    )
+    simd_elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l - r, |a, b| a - b)
 }
 
 pub fn div_tensor_contiguous_f64(
@@ -1908,14 +1906,7 @@ pub fn div_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_elementwise_f64(
-        lhs,
-        rhs,
-        lhs_meta,
-        rhs_meta,
-        |l, r| l / r,
-        |a, b| a / b,
-    )
+    simd_elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l / r, |a, b| a / b)
 }
 
 pub fn mul_tensor_contiguous_f64(
@@ -1924,14 +1915,7 @@ pub fn mul_tensor_contiguous_f64(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
-    simd_elementwise_f64(
-        lhs,
-        rhs,
-        lhs_meta,
-        rhs_meta,
-        |l, r| l * r,
-        |a, b| a * b,
-    )
+    simd_elementwise_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l * r, |a, b| a * b)
 }
 
 pub fn add_tensor_broadcast_f64(
@@ -1991,12 +1975,7 @@ pub fn matmul_tensor_contiguous_f64(
     let mut out = vec![0.0_f64; out_numel];
 
     // Use optimized GEMM via matrixmultiply crate
-    gemm::dgemm(
-        m, k, n,
-        &lhs[lhs_start..],
-        &rhs[rhs_start..],
-        &mut out,
-    );
+    gemm::dgemm(m, k, n, &lhs[lhs_start..], &rhs[rhs_start..], &mut out);
 
     Ok(out)
 }
@@ -2080,7 +2059,9 @@ pub fn addmm_tensor_contiguous_f64(
     // Use optimized GEMM for mat1 @ mat2
     let mut gemm_out = vec![0.0_f64; out_numel];
     gemm::dgemm(
-        m, k, n,
+        m,
+        k,
+        n,
         &mat1[mat1_start..],
         &mat2[mat2_start..],
         &mut gemm_out,
@@ -2573,8 +2554,7 @@ pub fn norm_dim_tensor_contiguous_f64(
             for inner in 0..inner_size {
                 let mut max_abs = 0.0_f64;
                 for r in 0..reduce_size {
-                    let a =
-                        data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
+                    let a = data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
                     max_abs = if max_abs.is_nan() || a.is_nan() {
                         f64::NAN
                     } else {
@@ -2589,8 +2569,7 @@ pub fn norm_dim_tensor_contiguous_f64(
             for inner in 0..inner_size {
                 let mut min_abs = f64::INFINITY;
                 for r in 0..reduce_size {
-                    let a =
-                        data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
+                    let a = data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
                     min_abs = if min_abs.is_nan() || a.is_nan() {
                         f64::NAN
                     } else {
@@ -5132,7 +5111,9 @@ pub fn eig_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EigResult, 
     while p > 1 && iter < max_iter {
         // Check for convergence of subdiagonal elements
         for i in (1..p).rev() {
-            if h[i * n + (i - 1)].abs() <= tol * (h[(i - 1) * n + (i - 1)].abs() + h[i * n + i].abs()) {
+            if h[i * n + (i - 1)].abs()
+                <= tol * (h[(i - 1) * n + (i - 1)].abs() + h[i * n + i].abs())
+            {
                 h[i * n + (i - 1)] = 0.0;
                 if i == p - 1 {
                     p -= 1;
@@ -5155,7 +5136,11 @@ pub fn eig_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EigResult, 
             let sqrt_disc = disc.sqrt();
             let e1 = (trace + sqrt_disc) / 2.0;
             let e2 = (trace - sqrt_disc) / 2.0;
-            if (e1 - a22).abs() < (e2 - a22).abs() { e1 } else { e2 }
+            if (e1 - a22).abs() < (e2 - a22).abs() {
+                e1
+            } else {
+                e2
+            }
         } else {
             trace / 2.0
         };
@@ -5228,7 +5213,11 @@ pub fn eig_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EigResult, 
             let det = a11 * a22 - a12 * a21;
             let disc = trace * trace - 4.0 * det;
             let re = trace / 2.0;
-            let im = if disc < 0.0 { (-disc).sqrt() / 2.0 } else { 0.0 };
+            let im = if disc < 0.0 {
+                (-disc).sqrt() / 2.0
+            } else {
+                0.0
+            };
             eigenvalues[2 * i] = re;
             eigenvalues[2 * i + 1] = im;
             eigenvalues[2 * (i + 1)] = re;
@@ -5733,8 +5722,14 @@ where
 
     for i in (0..simd_len).step_by(SIMD_WIDTH_F32) {
         let a = f32x8::new([
-            window[i], window[i + 1], window[i + 2], window[i + 3],
-            window[i + 4], window[i + 5], window[i + 6], window[i + 7],
+            window[i],
+            window[i + 1],
+            window[i + 2],
+            window[i + 3],
+            window[i + 4],
+            window[i + 5],
+            window[i + 6],
+            window[i + 7],
         ]);
         let result = simd_op(a);
         output.extend_from_slice(result.as_array_ref());
@@ -5763,12 +5758,24 @@ where
 
     for i in (0..simd_len).step_by(SIMD_WIDTH_F32) {
         let a = f32x8::new([
-            lhs_window[i], lhs_window[i + 1], lhs_window[i + 2], lhs_window[i + 3],
-            lhs_window[i + 4], lhs_window[i + 5], lhs_window[i + 6], lhs_window[i + 7],
+            lhs_window[i],
+            lhs_window[i + 1],
+            lhs_window[i + 2],
+            lhs_window[i + 3],
+            lhs_window[i + 4],
+            lhs_window[i + 5],
+            lhs_window[i + 6],
+            lhs_window[i + 7],
         ]);
         let b = f32x8::new([
-            rhs_window[i], rhs_window[i + 1], rhs_window[i + 2], rhs_window[i + 3],
-            rhs_window[i + 4], rhs_window[i + 5], rhs_window[i + 6], rhs_window[i + 7],
+            rhs_window[i],
+            rhs_window[i + 1],
+            rhs_window[i + 2],
+            rhs_window[i + 3],
+            rhs_window[i + 4],
+            rhs_window[i + 5],
+            rhs_window[i + 6],
+            rhs_window[i + 7],
         ]);
         let result = simd_op(a, b);
         output.extend_from_slice(result.as_array_ref());
@@ -6383,12 +6390,7 @@ pub fn matmul_tensor_contiguous_f32(
     let mut out = vec![0.0f32; out_numel];
 
     // Use optimized GEMM via matrixmultiply crate
-    gemm::sgemm(
-        m, k, n,
-        &lhs[lhs_start..],
-        &rhs[rhs_start..],
-        &mut out,
-    );
+    gemm::sgemm(m, k, n, &lhs[lhs_start..], &rhs[rhs_start..], &mut out);
 
     Ok(out)
 }
@@ -6504,7 +6506,9 @@ pub fn bmm_tensor_contiguous_f32(
         let rhs_base = rhs_start + b * rhs_batch_stride;
         let out_base = b * out_batch_stride;
         gemm::sgemm(
-            m, k, n,
+            m,
+            k,
+            n,
             &lhs[lhs_base..],
             &rhs[rhs_base..],
             &mut out[out_base..out_base + out_batch_stride],
@@ -6713,8 +6717,7 @@ pub fn norm_dim_tensor_contiguous_f32(
             for inner in 0..inner_size {
                 let mut max_abs = 0.0f32;
                 for r in 0..reduce_size {
-                    let a =
-                        data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
+                    let a = data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
                     max_abs = if max_abs.is_nan() || a.is_nan() {
                         f32::NAN
                     } else {
@@ -6729,8 +6732,7 @@ pub fn norm_dim_tensor_contiguous_f32(
             for inner in 0..inner_size {
                 let mut min_abs = f32::INFINITY;
                 for r in 0..reduce_size {
-                    let a =
-                        data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
+                    let a = data[outer * reduce_size * inner_size + r * inner_size + inner].abs();
                     min_abs = if min_abs.is_nan() || a.is_nan() {
                         f32::NAN
                     } else {
@@ -8045,7 +8047,9 @@ pub fn addmm_tensor_contiguous_f32(
     // Use optimized GEMM for mat1 @ mat2
     let mut gemm_out = vec![0.0f32; out_numel];
     gemm::sgemm(
-        m, k, n,
+        m,
+        k,
+        n,
         &mat1[mat1_start..],
         &mat2[mat2_start..],
         &mut gemm_out,
@@ -8598,42 +8602,46 @@ pub fn sparse_coo_add(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use ft_core::{
         Complex128, DType, Device, ScalarTensor, SparseCOOTensor, TensorCompatError, TensorMeta,
     };
 
     use super::{
         KernelError, abs_scalar, abs_tensor_contiguous_f64, acos_scalar,
-        acos_tensor_contiguous_f64, add_scalar, add_tensor_broadcast_f64, add_tensor_contiguous_f64,
-        argmax_dim_tensor_contiguous_f64, argmin_dim_tensor_contiguous_f64, asin_scalar,
-        asin_tensor_contiguous_f64, atan_scalar, atan_tensor_contiguous_f64,
-        bmm_tensor_contiguous_f64, cat_tensor_contiguous_f32, cat_tensor_contiguous_f64,
-        ceil_scalar, ceil_tensor_contiguous_f64, clamp_scalar, clamp_tensor_contiguous_f64,
-        cos_scalar, cos_tensor_contiguous_f64, cosh_scalar, cosh_tensor_contiguous_f64, div_scalar,
-        div_tensor_contiguous_f64, dot_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64,
-        exp_scalar, exp_tensor_contiguous_f64, expand_tensor_contiguous_f64, expm1_scalar,
+        acos_tensor_contiguous_f64, add_scalar, add_tensor_broadcast_f64,
+        add_tensor_contiguous_f64, argmax_dim_tensor_contiguous_f64,
+        argmin_dim_tensor_contiguous_f64, asin_scalar, asin_tensor_contiguous_f64, atan_scalar,
+        atan_tensor_contiguous_f64, bmm_tensor_contiguous_f64, cat_tensor_contiguous_f32,
+        cat_tensor_contiguous_f64, ceil_scalar, ceil_tensor_contiguous_f64, clamp_scalar,
+        clamp_tensor_contiguous_f64, cos_scalar, cos_tensor_contiguous_f64, cosh_scalar,
+        cosh_tensor_contiguous_f64, div_scalar, div_tensor_contiguous_f64,
+        dot_tensor_contiguous_f64, eq_scalar, eq_tensor_contiguous_f64, exp_scalar,
+        exp_tensor_contiguous_f64, expand_tensor_contiguous_f64, expm1_scalar,
         expm1_tensor_contiguous_f64, floor_scalar, floor_tensor_contiguous_f64,
         gather_tensor_contiguous_f64, ge_scalar, ge_tensor_contiguous_f64, gelu_scalar,
         gelu_tensor_contiguous_f64, gt_scalar, gt_tensor_contiguous_f64,
         index_select_tensor_contiguous_f32, index_select_tensor_contiguous_f64, le_scalar,
-        le_tensor_contiguous_f64, leaky_relu_scalar,
-        leaky_relu_tensor_contiguous_f64, log_scalar, log_softmax_dim_tensor_contiguous_f64,
-        log_tensor_contiguous_f64, log1p_scalar, log1p_tensor_contiguous_f64, log2_scalar,
-        log2_tensor_contiguous_f64, log10_scalar, log10_tensor_contiguous_f64, lt_scalar,
-        lt_tensor_contiguous_f64, masked_fill_tensor_contiguous_f64, matmul_tensor_contiguous_f64,
+        le_tensor_contiguous_f64, leaky_relu_scalar, leaky_relu_tensor_contiguous_f64, log_scalar,
+        log_softmax_dim_tensor_contiguous_f64, log_tensor_contiguous_f64, log1p_scalar,
+        log1p_tensor_contiguous_f64, log2_scalar, log2_tensor_contiguous_f64, log10_scalar,
+        log10_tensor_contiguous_f64, lt_scalar, lt_tensor_contiguous_f64,
+        masked_fill_tensor_contiguous_f64, matmul_tensor_contiguous_f64,
         max_dim_tensor_contiguous_f64, max_scalar, max_tensor_contiguous_f64,
         mean_dim_tensor_contiguous_f64, mean_tensor_contiguous_f64, min_dim_tensor_contiguous_f64,
-        min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_broadcast_f64, mul_tensor_contiguous_f64,
-        narrow_tensor_contiguous_f64, ne_scalar, ne_tensor_contiguous_f64, neg_scalar,
-        neg_tensor_contiguous_f64, norm_tensor_contiguous_f64, outer_tensor_contiguous_f64,
-        pow_scalar, pow_tensor_contiguous_f32, pow_tensor_contiguous_f64,
-        prod_dim_tensor_contiguous_f64, reciprocal_scalar, reciprocal_tensor_contiguous_f64,
-        relu_scalar, relu_tensor_contiguous_f64, scatter_add_tensor_contiguous_f64,
+        min_scalar, min_tensor_contiguous_f64, mul_scalar, mul_tensor_broadcast_f64,
+        mul_tensor_contiguous_f64, narrow_tensor_contiguous_f64, ne_scalar,
+        ne_tensor_contiguous_f64, neg_scalar, neg_tensor_contiguous_f64,
+        norm_tensor_contiguous_f64, outer_tensor_contiguous_f64, pow_scalar,
+        pow_tensor_contiguous_f32, pow_tensor_contiguous_f64, prod_dim_tensor_contiguous_f64,
+        reciprocal_scalar, reciprocal_tensor_contiguous_f64, relu_scalar,
+        relu_tensor_contiguous_f64, scatter_add_tensor_contiguous_f64,
         scatter_tensor_contiguous_f32, scatter_tensor_contiguous_f64, sigmoid_scalar,
-        sigmoid_tensor_contiguous_f64, sign_scalar,
-        sign_tensor_contiguous_f64, silu_scalar, silu_tensor_contiguous_f64, sinh_scalar,
-        sinh_tensor_contiguous_f64, softmax_dim_tensor_contiguous_f64, sparse_coo_add,
-        sparse_coo_coalesce, sparse_coo_matmul_dense_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
+        sigmoid_tensor_contiguous_f64, sign_scalar, sign_tensor_contiguous_f64, silu_scalar,
+        silu_tensor_contiguous_f64, sinh_scalar, sinh_tensor_contiguous_f64,
+        softmax_dim_tensor_contiguous_f64, sparse_coo_add, sparse_coo_coalesce,
+        sparse_coo_matmul_dense_f64, sqrt_scalar, sqrt_tensor_contiguous_f64,
         stack_tensor_contiguous_f32, stack_tensor_contiguous_f64, std_dim_tensor_contiguous_f64,
         sub_scalar, sub_tensor_contiguous_f64, sum_dim_tensor_contiguous_f32,
         sum_dim_tensor_contiguous_f64, sum_tensor_contiguous_f64, tanh_scalar,
@@ -9111,6 +9119,56 @@ mod tests {
                 "sum of 0..{n} = {got}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn sum_tensor_contiguous_golden_output_is_stable() {
+        fn push_sum_bits(summary: &mut String, name: &str, input: &[f64], meta: &TensorMeta) {
+            let sum = sum_tensor_contiguous_f64(input, meta).expect("golden sum should succeed");
+            let _ = writeln!(summary, "{name}_bits={:016x}", sum.to_bits());
+        }
+
+        let mut summary = String::new();
+        summary.push_str("sum_reduction_frankentorch-uxhh\n");
+
+        let empty: Vec<f64> = Vec::new();
+        let empty_meta = TensorMeta::from_shape(vec![0], DType::F64, Device::Cpu);
+        push_sum_bits(&mut summary, "empty", &empty, &empty_meta);
+
+        let small = vec![1.0, 2.0, 3.0, 4.0];
+        let small_meta = TensorMeta::from_shape(vec![small.len()], DType::F64, Device::Cpu);
+        push_sum_bits(&mut summary, "small_4", &small, &small_meta);
+
+        let offset = vec![100.0, 200.0, 3.0, 7.0];
+        let offset_meta =
+            TensorMeta::from_shape_and_strides(vec![2], vec![1], 2, DType::F64, Device::Cpu)
+                .expect("offset meta should validate");
+        push_sum_bits(&mut summary, "offset_2_of_4", &offset, &offset_meta);
+
+        for (name, n) in [
+            ("range_127", 127usize),
+            ("range_128", 128),
+            ("range_129", 129),
+            ("range_257", 257),
+            ("range_1000", 1000),
+        ] {
+            let input: Vec<f64> = (0..n)
+                .map(|i| f64::from(u32::try_from(i).expect("golden index fits in u32")))
+                .collect();
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            push_sum_bits(&mut summary, name, &input, &meta);
+        }
+
+        let uniform = vec![0.1; 1 << 20];
+        let uniform_meta = TensorMeta::from_shape(vec![uniform.len()], DType::F64, Device::Cpu);
+        push_sum_bits(&mut summary, "uniform_0_1_1048576", &uniform, &uniform_meta);
+
+        assert_eq!(
+            summary,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/sum_reduction_frankentorch-uxhh.txt"
+            )
+        );
     }
 
     #[test]
@@ -9651,9 +9709,7 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                10.0, 20.0, 30.0, 40.0,
-                20.0, 40.0, 60.0, 80.0,
-                30.0, 60.0, 90.0, 120.0,
+                10.0, 20.0, 30.0, 40.0, 20.0, 40.0, 60.0, 80.0, 30.0, 60.0, 90.0, 120.0,
             ]
         );
     }
@@ -9821,21 +9877,23 @@ mod tests {
         // fail closed the same way matmul/bmm already do.
         let input_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
         let mat1_meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
-        let mat2_meta = TensorMeta::from_shape_and_strides(
-            vec![2, 2],
-            vec![1, 2],
-            0,
-            DType::F64,
-            Device::Cpu,
-        )
-        .expect("strided meta is valid");
+        let mat2_meta =
+            TensorMeta::from_shape_and_strides(vec![2, 2], vec![1, 2], 0, DType::F64, Device::Cpu)
+                .expect("strided meta is valid");
         assert!(!mat2_meta.is_contiguous());
         let input = vec![0.0; 4];
         let mat1 = vec![1.0, 2.0, 3.0, 4.0];
         let mat2 = vec![1.0, 2.0, 3.0, 4.0];
 
         let err = super::addmm_tensor_contiguous_f64(
-            &input, &mat1, &mat2, &input_meta, &mat1_meta, &mat2_meta, 1.0, 1.0,
+            &input,
+            &mat1,
+            &mat2,
+            &input_meta,
+            &mat1_meta,
+            &mat2_meta,
+            1.0,
+            1.0,
         )
         .expect_err("non-contiguous mat2 must fail closed");
         assert!(matches!(
@@ -9856,7 +9914,14 @@ mod tests {
         let mat2 = vec![5.0, 6.0, 7.0, 8.0];
 
         let out = super::addmm_tensor_contiguous_f64(
-            &input, &mat1, &mat2, &input_meta, &mat1_meta, &mat2_meta, 1.0, 1.0,
+            &input,
+            &mat1,
+            &mat2,
+            &input_meta,
+            &mat1_meta,
+            &mat2_meta,
+            1.0,
+            1.0,
         )
         .expect("contiguous addmm should succeed");
         // mat1 @ mat2 = [[19, 22], [43, 50]]; + input(1) = [[20, 23], [44, 51]].
@@ -10348,7 +10413,10 @@ mod tests {
         assert!(inf.is_nan(), "norm(inf) with a NaN element must be NaN");
         let neg_inf = norm_tensor_contiguous_f64(&[1.0, f64::NAN, 2.0], &meta, f64::NEG_INFINITY)
             .expect("norm should succeed");
-        assert!(neg_inf.is_nan(), "norm(-inf) with a NaN element must be NaN");
+        assert!(
+            neg_inf.is_nan(),
+            "norm(-inf) with a NaN element must be NaN"
+        );
         // Without a NaN the result is still the ordinary extremum.
         let clean = norm_tensor_contiguous_f64(&[1.0, -3.0, 2.0], &meta, f64::INFINITY)
             .expect("norm should succeed");
@@ -10380,7 +10448,10 @@ mod tests {
         let (values, indices) =
             super::topk_tensor_contiguous_f64(&[1.0, f64::NAN, 3.0], &meta, 1, 0, true, true)
                 .expect("topk should succeed");
-        assert!(values[0].is_nan(), "topk largest must pick NaN, got {values:?}");
+        assert!(
+            values[0].is_nan(),
+            "topk largest must pick NaN, got {values:?}"
+        );
         assert_eq!(indices[0], 1);
     }
 
@@ -11185,9 +11256,7 @@ mod tests {
         let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
         let idx_meta = TensorMeta::from_shape(vec![2, 1], DType::F64, Device::Cpu);
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        assert!(
-            gather_tensor_contiguous_f64(&input, &meta, 1, &[-1.0, -1.0], &idx_meta).is_err()
-        );
+        assert!(gather_tensor_contiguous_f64(&input, &meta, 1, &[-1.0, -1.0], &idx_meta).is_err());
     }
 
     #[test]
@@ -13705,10 +13774,19 @@ mod tests {
 
         let result = softmax_dim_tensor_contiguous_f64(&large_vals, &meta, 0).unwrap();
 
-        assert!(!result.iter().any(|x| x.is_nan()), "softmax should not produce NaN for large values");
-        assert!(!result.iter().any(|x| x.is_infinite()), "softmax should not produce Inf for large values");
+        assert!(
+            !result.iter().any(|x| x.is_nan()),
+            "softmax should not produce NaN for large values"
+        );
+        assert!(
+            !result.iter().any(|x| x.is_infinite()),
+            "softmax should not produce Inf for large values"
+        );
         let sum: f64 = result.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-10, "softmax should sum to 1, got {sum}");
+        assert!(
+            (sum - 1.0).abs() < 1e-10,
+            "softmax should sum to 1, got {sum}"
+        );
     }
 
     #[test]
@@ -13718,7 +13796,10 @@ mod tests {
 
         let result = log_tensor_contiguous_f64(&vals, &meta).unwrap();
 
-        assert!(result[0].is_infinite() && result[0] < 0.0, "log(0) should be -inf");
+        assert!(
+            result[0].is_infinite() && result[0] < 0.0,
+            "log(0) should be -inf"
+        );
         assert!((result[1] - 0.0).abs() < 1e-10, "log(1) should be 0");
     }
 
@@ -13760,7 +13841,10 @@ mod tests {
 
         let result = softmax_dim_tensor_contiguous_f64(&with_inf, &meta, 0).unwrap();
 
-        assert!(result.iter().all(|x| x.is_nan()), "softmax with inf produces NaN due to max-subtraction (inf - inf = NaN)");
+        assert!(
+            result.iter().all(|x| x.is_nan()),
+            "softmax with inf produces NaN due to max-subtraction (inf - inf = NaN)"
+        );
     }
 
     #[test]
