@@ -14573,18 +14573,26 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Elu { input } => {
-                    // d(elu(x))/dx = 1 if x > 0, else exp(x)
-                    // For x <= 0, second derivative is exp(x); for x > 0, it's 0.
-                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    // d(elu(x))/dx = 1 if x > 0, else exp(x)  (alpha = 1).
+                    // Compose from cg primitives so the gradient node keeps its dependence on
+                    // `input`: for x <= 0 the second derivative is exp(x) (nonzero); the x > 0
+                    // branch is linear (curvature 0). A detached leaf dropped the exp(x) term.
+                    let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
-                    let grad_vals: Vec<f64> = incoming_vals
+                    let pos_mask: Vec<f64> = input_vals
                         .iter()
-                        .zip(input_vals.iter())
-                        .map(|(g, x)| g * if *x > 0.0 { 1.0 } else { x.exp() })
+                        .map(|x| if *x > 0.0 { 1.0 } else { 0.0 })
                         .collect();
-                    let grad_in = self.leaf(grad_vals, input_shape, true)?;
+                    let neg_mask: Vec<f64> = input_vals
+                        .iter()
+                        .map(|x| if *x > 0.0 { 0.0 } else { 1.0 })
+                        .collect();
+                    let pos_node = self.leaf(pos_mask, shape.clone(), false)?;
+                    let neg_node = self.leaf(neg_mask, shape, false)?;
+                    let exp_in = self.cg_exp(input)?;
+                    let neg_term = self.cg_mul(neg_node, exp_in)?;
+                    let deriv = self.cg_add(pos_node, neg_term)?;
+                    let grad_in = self.cg_mul(incoming_id, deriv)?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -14615,25 +14623,33 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Hardswish { input } => {
-                    // d(hardswish(x))/dx = 0 if x <= -3, 1 if x >= 3, else (2x+3)/6
-                    let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    // d(hardswish(x))/dx = 0 if x <= -3, 1 if x >= 3, else (2x+3)/6.
+                    // Compose from cg primitives so the inside branch keeps its dependence on
+                    // `input`: there hardswish''(x) = 1/3 (nonzero); the saturated branches are
+                    // constant (curvature 0). A detached leaf dropped the 1/3 term.
+                    let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let numel =
+                        Self::checked_shape_numel(&shape, "hardswish backward shape overflow")?;
                     let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
-                    let grad_vals: Vec<f64> = incoming_vals
+                    let inside_mask: Vec<f64> = input_vals
                         .iter()
-                        .zip(input_vals.iter())
-                        .map(|(g, x)| {
-                            g * if *x <= -3.0 {
-                                0.0
-                            } else if *x >= 3.0 {
-                                1.0
-                            } else {
-                                (2.0 * x + 3.0) / 6.0
-                            }
-                        })
+                        .map(|x| if *x > -3.0 && *x < 3.0 { 1.0 } else { 0.0 })
                         .collect();
-                    let grad_in = self.leaf(grad_vals, input_shape, true)?;
+                    let high_mask: Vec<f64> = input_vals
+                        .iter()
+                        .map(|x| if *x >= 3.0 { 1.0 } else { 0.0 })
+                        .collect();
+                    let inside_node = self.leaf(inside_mask, shape.clone(), false)?;
+                    let high_node = self.leaf(high_mask, shape.clone(), false)?;
+                    let two = self.leaf(vec![2.0; numel], shape.clone(), false)?;
+                    let three = self.leaf(vec![3.0; numel], shape.clone(), false)?;
+                    let six = self.leaf(vec![6.0; numel], shape, false)?;
+                    let two_x = self.cg_mul(two, input)?;
+                    let num = self.cg_add(two_x, three)?;
+                    let lin = self.cg_div(num, six)?;
+                    let inside_term = self.cg_mul(inside_node, lin)?;
+                    let deriv = self.cg_add(inside_term, high_node)?;
+                    let grad_in = self.cg_mul(incoming_id, deriv)?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -24185,6 +24201,72 @@ mod tests {
         assert!((gx[0] - 0.0).abs() < 1e-9); // x=-4 <= -3 -> 0
         assert!((gx[1] - 0.5).abs() < 1e-9); // x=0 -> (0+3)/6 = 0.5
         assert!((gx[2] - 1.0).abs() < 1e-9); // x=4 >= 3 -> 1
+    }
+
+    #[test]
+    fn create_graph_elu_second_derivative() {
+        // elu'(x) = 1 (x>0) | exp(x) (x<=0); elu''(x) = 0 (x>0) | exp(x) (x<=0).
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![-1.0, 2.0], vec![2], true).expect("x");
+        let (e, _) = tape.elu(x, ExecutionMode::Strict).expect("elu");
+        let (s, _) = tape.sum(e, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let gx = report1.gradient(x).expect("gx");
+        assert!((gx[0] - (-1.0_f64).exp()).abs() < 1e-9); // exp(-1)
+        assert!((gx[1] - 1.0).abs() < 1e-9);
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2 = report2.gradient(x).expect("second gradient");
+        assert!(
+            (g2[0] - (-1.0_f64).exp()).abs() < 1e-9,
+            "elu''(-1) should be exp(-1), got {}",
+            g2[0]
+        );
+        assert!(
+            g2[1].abs() < 1e-9,
+            "elu''(2) should be 0, got {}",
+            g2[1]
+        );
+    }
+
+    #[test]
+    fn create_graph_hardswish_second_derivative() {
+        // hardswish''(x) = 1/3 for -3<x<3, else 0 (saturated/flat branches).
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![0.0, 4.0, -4.0], vec![3], true).expect("x");
+        let (h, _) = tape.hardswish(x, ExecutionMode::Strict).expect("hardswish");
+        let (s, _) = tape.sum(h, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let gx = report1.gradient(x).expect("gx");
+        assert!((gx[0] - 0.5).abs() < 1e-9);
+        assert!((gx[1] - 1.0).abs() < 1e-9);
+        assert!(gx[2].abs() < 1e-9);
+        let dx_node = report1.gradient_node(x).expect("gradient node");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2 = report2.gradient(x).expect("second gradient");
+        assert!(
+            (g2[0] - 1.0 / 3.0).abs() < 1e-9,
+            "hardswish''(0) should be 1/3, got {}",
+            g2[0]
+        );
+        assert!(g2[1].abs() < 1e-9, "hardswish''(4) should be 0, got {}", g2[1]);
+        assert!(g2[2].abs() < 1e-9, "hardswish''(-4) should be 0, got {}", g2[2]);
     }
 
     #[test]
