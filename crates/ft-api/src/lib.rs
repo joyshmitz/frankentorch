@@ -45311,9 +45311,9 @@ impl FrankenTorchSession {
 
         // Build the gather table once.
         let mut gather: Vec<usize> = Vec::with_capacity(out_numel);
+        let mut coords = vec![0usize; out_ndim];
         for flat_out in 0..out_numel {
             let mut remaining = flat_out;
-            let mut coords = vec![0usize; out_ndim];
             for d in 0..out_ndim {
                 coords[d] = remaining / out_strides[d];
                 remaining %= out_strides[d];

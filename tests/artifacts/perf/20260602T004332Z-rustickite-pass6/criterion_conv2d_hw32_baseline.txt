@@ -1,0 +1,19 @@
+Command:
+rch exec -- cargo bench -p ft-api --bench ops_bench -- conv2d/hw/32 --warm-up-time 1 --measurement-time 5 --sample-size 20
+
+Observed result:
+conv2d/hw/32 time: [232.56 ms 233.38 ms 234.32 ms]
+throughput: [1.1188 Melem/s 1.1232 Melem/s 1.1272 Melem/s]
+
+Comparison anchor:
+benchmarks/pytorch_baseline.json conv2d_32x32 p50_us=3582.44
+
+Profiler attempt:
+rch exec -- cargo flamegraph -p ft-api --bench ops_bench --profile bench --output tests/artifacts/perf/20260602T004332Z-rustickite-pass6/conv2d_hw32_flame.svg -- conv2d/hw/32 --profile-time 5
+
+Profiler result:
+Blocked by host perf_event_paranoid=4:
+"Access to performance monitoring and observability operations is limited."
+
+Profile-backed target:
+functional_conv2d calls tensor_unfold twice before bmm. tensor_unfold built a fresh coords Vec inside the flat_out gather loop, creating one small heap allocation per output element while materializing the gather map.
