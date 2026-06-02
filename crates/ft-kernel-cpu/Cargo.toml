@@ -24,5 +24,9 @@ harness = false
 name = "elementwise_bench"
 harness = false
 
+[[bench]]
+name = "softmax_bench"
+harness = false
+
 [lints]
 workspace = true

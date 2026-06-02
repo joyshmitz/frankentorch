@@ -31,8 +31,13 @@ fn bench_gemm(c: &mut Criterion) {
         c.bench_function(&format!("matmul_f32_{m}x{k}x{n}"), |b| {
             b.iter(|| {
                 black_box(
-                    matmul_tensor_contiguous_f32(black_box(&lhs32), black_box(&rhs32), &lm32, &rm32)
-                        .unwrap(),
+                    matmul_tensor_contiguous_f32(
+                        black_box(&lhs32),
+                        black_box(&rhs32),
+                        &lm32,
+                        &rm32,
+                    )
+                    .unwrap(),
                 )
             })
         });
