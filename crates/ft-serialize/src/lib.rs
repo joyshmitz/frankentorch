@@ -565,6 +565,7 @@ fn bounded(input: &str, max_len: usize) -> String {
 // ── Tensor State Dict Save/Load ─────────────────────────────────────────
 
 use std::collections::BTreeMap;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use ft_core::{
@@ -580,6 +581,7 @@ const FT_DTYPE_TAG_F32: u8 = 1;
 const FT_DTYPE_TAG_F16: u8 = 2;
 const FT_DTYPE_TAG_BF16: u8 = 3;
 const FT_MIN_NATIVE_TENSOR_HEADER_BYTES: usize = 8 + 8 + 1; // key_len + ndim + dtype tag
+const FT_NATIVE_SAVE_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// Errors from tensor state dict save/load operations.
 #[derive(Debug, Clone, PartialEq)]
@@ -695,23 +697,84 @@ pub fn save_state_dict<P: AsRef<Path>>(
     path: P,
 ) -> Result<(), TensorIOError> {
     let path_str = path.as_ref().to_string_lossy().to_string();
-    let encoded = encode_state_dict_to_bytes(state_dict)?;
-    std::fs::write(&path, encoded).map_err(|e| io_err(&path_str, e))?;
+    validate_state_dict_native_save(state_dict)?;
+    let file = std::fs::File::create(&path).map_err(|e| io_err(&path_str, e))?;
+    let mut writer = BufWriter::with_capacity(FT_NATIVE_SAVE_BUFFER_BYTES, file);
+    write_state_dict_to_writer(state_dict, &mut writer, &path_str)?;
+    writer.flush().map_err(|e| io_err(&path_str, e))?;
     Ok(())
 }
 
+#[cfg(test)]
 fn encode_state_dict_to_bytes(
     state_dict: &BTreeMap<String, DenseTensor>,
 ) -> Result<Vec<u8>, TensorIOError> {
     let mut encoded =
         Vec::with_capacity(native_state_dict_encoded_capacity(state_dict).unwrap_or(0));
+    write_state_dict_to_writer(state_dict, &mut encoded, "native state dict buffer")?;
+    Ok(encoded)
+}
+
+fn validate_state_dict_native_save(
+    state_dict: &BTreeMap<String, DenseTensor>,
+) -> Result<(), TensorIOError> {
+    for (key, tensor) in state_dict {
+        let meta = tensor.meta();
+        let dtype = meta.dtype();
+        dtype_to_tag(dtype).ok_or_else(|| TensorIOError::Corrupt {
+            reason: format!("unsupported dtype for save: {dtype:?}"),
+        })?;
+        match dtype {
+            DType::F64 => {
+                tensor
+                    .contiguous_values()
+                    .map_err(TensorIOError::TensorError)?;
+            }
+            DType::F32 => {
+                tensor
+                    .contiguous_values_f32()
+                    .map_err(TensorIOError::TensorError)?;
+            }
+            DType::F16 => {
+                let (start, end) = contiguous_native_storage_bounds(tensor, key)?;
+                let TensorStorage::F16(values) = tensor.typed_storage() else {
+                    return Err(TensorIOError::Corrupt {
+                        reason: format!("tensor storage does not match dtype for '{key}'"),
+                    });
+                };
+                let _ = &values[start..end];
+            }
+            DType::BF16 => {
+                let (start, end) = contiguous_native_storage_bounds(tensor, key)?;
+                let TensorStorage::BF16(values) = tensor.typed_storage() else {
+                    return Err(TensorIOError::Corrupt {
+                        reason: format!("tensor storage does not match dtype for '{key}'"),
+                    });
+                };
+                let _ = &values[start..end];
+            }
+            other => {
+                return Err(TensorIOError::Corrupt {
+                    reason: format!("unsupported dtype for save: {other:?}"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_state_dict_to_writer<W: Write>(
+    state_dict: &BTreeMap<String, DenseTensor>,
+    writer: &mut W,
+    io_path: &str,
+) -> Result<(), TensorIOError> {
     // Magic
-    encoded.extend_from_slice(FT_MAGIC);
+    write_native_bytes(writer, FT_MAGIC, io_path)?;
     // Version
-    encoded.extend_from_slice(&FT_STATE_FORMAT_VERSION.to_le_bytes());
+    write_native_bytes(writer, &FT_STATE_FORMAT_VERSION.to_le_bytes(), io_path)?;
     // Number of tensors
     let num_tensors = state_dict.len() as u64;
-    encoded.extend_from_slice(&num_tensors.to_le_bytes());
+    write_native_bytes(writer, &num_tensors.to_le_bytes(), io_path)?;
 
     for (key, tensor) in state_dict {
         let meta = tensor.meta();
@@ -721,18 +784,18 @@ fn encode_state_dict_to_bytes(
 
         // Key
         let key_bytes = key.as_bytes();
-        encoded.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
-        encoded.extend_from_slice(key_bytes);
+        write_native_bytes(writer, &(key_bytes.len() as u64).to_le_bytes(), io_path)?;
+        write_native_bytes(writer, key_bytes, io_path)?;
 
         // Shape
         let shape = meta.shape();
-        encoded.extend_from_slice(&(shape.len() as u64).to_le_bytes());
+        write_native_bytes(writer, &(shape.len() as u64).to_le_bytes(), io_path)?;
         for &dim in shape {
-            encoded.extend_from_slice(&(dim as u64).to_le_bytes());
+            write_native_bytes(writer, &(dim as u64).to_le_bytes(), io_path)?;
         }
 
         // DType
-        encoded.push(dtype_tag);
+        write_native_bytes(writer, &[dtype_tag], io_path)?;
 
         // Values
         match meta.dtype() {
@@ -741,7 +804,7 @@ fn encode_state_dict_to_bytes(
                     .contiguous_values()
                     .map_err(TensorIOError::TensorError)?;
                 for &v in values {
-                    encoded.extend_from_slice(&v.to_le_bytes());
+                    write_native_bytes(writer, &v.to_le_bytes(), io_path)?;
                 }
             }
             DType::F32 => {
@@ -749,7 +812,7 @@ fn encode_state_dict_to_bytes(
                     .contiguous_values_f32()
                     .map_err(TensorIOError::TensorError)?;
                 for &v in values {
-                    encoded.extend_from_slice(&v.to_le_bytes());
+                    write_native_bytes(writer, &v.to_le_bytes(), io_path)?;
                 }
             }
             DType::F16 => {
@@ -760,7 +823,7 @@ fn encode_state_dict_to_bytes(
                     });
                 };
                 for value in &values[start..end] {
-                    encoded.extend_from_slice(&value.to_le_bytes());
+                    write_native_bytes(writer, &value.to_le_bytes(), io_path)?;
                 }
             }
             DType::BF16 => {
@@ -771,7 +834,7 @@ fn encode_state_dict_to_bytes(
                     });
                 };
                 for value in &values[start..end] {
-                    encoded.extend_from_slice(&value.to_le_bytes());
+                    write_native_bytes(writer, &value.to_le_bytes(), io_path)?;
                 }
             }
             other => {
@@ -782,9 +845,18 @@ fn encode_state_dict_to_bytes(
         }
     }
 
-    Ok(encoded)
+    Ok(())
 }
 
+fn write_native_bytes<W: Write>(
+    writer: &mut W,
+    bytes: &[u8],
+    io_path: &str,
+) -> Result<(), TensorIOError> {
+    writer.write_all(bytes).map_err(|e| io_err(io_path, e))
+}
+
+#[cfg(test)]
 fn native_state_dict_encoded_capacity(state_dict: &BTreeMap<String, DenseTensor>) -> Option<usize> {
     let mut capacity = FT_MAGIC.len().checked_add(4)?.checked_add(8)?;
     for (key, tensor) in state_dict {
@@ -3470,6 +3542,26 @@ mod tests {
 
         let roundtrip = super::encode_state_dict_to_bytes(&loaded).unwrap();
         assert_eq!(roundtrip, expected);
+    }
+
+    #[test]
+    fn streaming_native_save_matches_encoder_bytes() {
+        let mut sd = BTreeMap::new();
+        let z =
+            DenseTensor::from_contiguous_values_f32(vec![1.0, -2.5], vec![2], Device::Cpu).unwrap();
+        let a =
+            DenseTensor::from_contiguous_values(vec![3.0, 4.0, 5.0], vec![3], Device::Cpu).unwrap();
+        sd.insert("z".to_string(), z);
+        sd.insert("a".to_string(), a);
+
+        let expected = super::encode_state_dict_to_bytes(&sd).unwrap();
+        let path = test_temp_path("ft_test_streaming_native_save_matches_encoder_bytes");
+        let _ = std::fs::remove_file(&path);
+        save_state_dict(&sd, &path).unwrap();
+        let persisted = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(persisted, expected);
     }
 
     #[test]
