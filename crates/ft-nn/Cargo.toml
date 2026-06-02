@@ -12,7 +12,12 @@ ft-dispatch = { workspace = true }
 ft-kernel-cpu = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 insta = "1.47.2"
+
+[[bench]]
+name = "nn_bench"
+harness = false
 
 [lints]
 workspace = true

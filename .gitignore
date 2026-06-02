@@ -117,3 +117,5 @@ storage.sqlite3-wal.corrupt-*
 
 # Beads recovery scratch databases and probe directories
 artifacts/beads_recovery/
+.env
+.claude/settings.local.json

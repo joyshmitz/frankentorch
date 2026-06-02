@@ -4134,7 +4134,9 @@ impl LazyConv2d {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = session.tensor_shape(input)?;
         if shape.len() != 4 {
-            return Err(incompatible_error("LazyConv2d expects 4D input [N, C, H, W]"));
+            return Err(incompatible_error(
+                "LazyConv2d expects 4D input [N, C, H, W]",
+            ));
         }
         let in_channels = shape[1];
         if self.materialized.is_none() {
@@ -4201,7 +4203,9 @@ impl LazyConv3d {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = session.tensor_shape(input)?;
         if shape.len() != 5 {
-            return Err(incompatible_error("LazyConv3d expects 5D input [N, C, D, H, W]"));
+            return Err(incompatible_error(
+                "LazyConv3d expects 5D input [N, C, D, H, W]",
+            ));
         }
         let in_channels = shape[1];
         if self.materialized.is_none() {
@@ -4425,6 +4429,12 @@ impl MultiheadAttention {
         let v_proj = self.v_proj.forward(session, v_flat)?;
         let v = session.tensor_reshape(v_proj, vec![batch_size, seq_len_k, embed_dim])?;
 
+        let scale_t = session.full(
+            vec![batch_size, seq_len_q, self.head_dim],
+            self.scale,
+            false,
+        )?;
+
         // Process each head separately, then concatenate
         let mut head_outputs = Vec::with_capacity(self.num_heads);
         for h in 0..self.num_heads {
@@ -4438,11 +4448,6 @@ impl MultiheadAttention {
             let v_h = session.tensor_narrow(v, 2, offset, self.head_dim)?;
 
             // Scale Q: Q_h * scale
-            let scale_t = session.full(
-                vec![batch_size, seq_len_q, self.head_dim],
-                self.scale,
-                false,
-            )?;
             let q_scaled = session.tensor_mul(q_h, scale_t)?;
 
             // Attention scores: Q_h @ K_h^T -> [N, S_q, S_k]
@@ -13082,7 +13087,10 @@ pub enum DistanceKind {
 impl TripletMarginWithDistanceLoss {
     #[must_use]
     pub fn new(margin: f64, distance_fn: DistanceKind) -> Self {
-        Self { margin, distance_fn }
+        Self {
+            margin,
+            distance_fn,
+        }
     }
 
     /// Compute the loss.
@@ -20938,6 +20946,26 @@ mod tests {
         let y = mha.forward(&mut session, x).expect("forward");
         let (_, meta) = session.tensor_values_meta(y).expect("values");
         assert_eq!(meta.shape(), &[2, 4, 6]);
+    }
+
+    #[test]
+    fn mha_scale_reuse_golden_output_matches_fixture() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let x = session
+            .tensor_variable(
+                vec![0.25, -0.5, 0.75, 1.0, -1.25, 1.5, -1.75, 2.0],
+                vec![1, 2, 4],
+                false,
+            )
+            .expect("variable");
+        let y = mha.forward(&mut session, x).expect("forward");
+        let (vals, meta) = session.tensor_values_meta(y).expect("values");
+        let output = format!("shape={:?}\nvalues={vals:.17?}\n", meta.shape());
+        assert_eq!(
+            output,
+            include_str!("../../../artifacts/optimization/golden_outputs/ft_nn_mha_pass18.txt")
+        );
     }
 
     #[test]
