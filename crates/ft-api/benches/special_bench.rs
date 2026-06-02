@@ -23,6 +23,15 @@ fn bench_special(c: &mut Criterion) {
         b.iter(|| black_box(s.digamma_tensor(black_box(x)).unwrap()));
     });
 
+    // polygamma(2, x): Hurwitz-zeta series per element — the heaviest scalar
+    // special function (routed through par_map_f64). 1M elements.
+    c.bench_function("polygamma2_1m", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // polygamma is evaluated for x > 0.
+        let x = s.tensor_rand(vec![n], false).unwrap();
+        b.iter(|| black_box(s.tensor_polygamma(2, black_box(x)).unwrap()));
+    });
+
     // Modified Bessel i0: polynomial + exp per element (autograd-aware forward,
     // routed through par_map_f64). 1M elements.
     c.bench_function("i0_1m", |b| {

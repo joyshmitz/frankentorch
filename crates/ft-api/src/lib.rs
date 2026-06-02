@@ -41535,7 +41535,7 @@ impl FrankenTorchSession {
             &[input],
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
-                let values: Vec<f64> = vals.iter().map(|&x| erfinv_approx(x)).collect();
+                let values: Vec<f64> = par_map_f64(vals, erfinv_approx);
                 // Save y (= erfinv(x)) for the backward; the
                 // analytical derivative is expressed in terms of y.
                 ctx.save_for_backward(values.clone(), shape.to_vec());
@@ -41553,11 +41553,8 @@ impl FrankenTorchSession {
                     )));
                 }
                 let half_sqrt_pi = std::f64::consts::PI.sqrt() * 0.5;
-                let grad_in: Vec<f64> = y_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&y, &go)| go * half_sqrt_pi * (y * y).exp())
-                    .collect();
+                let grad_in: Vec<f64> =
+                    par_zip_map_f64(y_vals, grad_out, |y, go| go * half_sqrt_pi * (y * y).exp());
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -41758,7 +41755,7 @@ impl FrankenTorchSession {
             move |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| polygamma_approx(n, x)).collect();
+                let values: Vec<f64> = par_map_f64(vals, |x| polygamma_approx(n, x));
                 Ok((values, shape.to_vec()))
             },
             move |ctx, grad_outputs| {
@@ -41773,11 +41770,8 @@ impl FrankenTorchSession {
                     )));
                 }
                 let next_order = n + 1;
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| go * polygamma_approx(next_order, x))
-                    .collect();
+                let grad_in: Vec<f64> =
+                    par_zip_map_f64(x_vals, grad_out, |x, go| go * polygamma_approx(next_order, x));
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -42397,7 +42391,7 @@ impl FrankenTorchSession {
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| erfcx_approx(x)).collect();
+                let values: Vec<f64> = par_map_f64(vals, erfcx_approx);
                 Ok((values, shape.to_vec()))
             },
             |ctx, grad_outputs| {
@@ -42413,11 +42407,9 @@ impl FrankenTorchSession {
                 }
                 // d erfcx(x)/dx = 2x * erfcx(x) - 2/sqrt(π)
                 let two_over_sqrt_pi = 2.0 * 0.564_189_583_547_756_3_f64;
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| go * (2.0 * x * erfcx_approx(x) - two_over_sqrt_pi))
-                    .collect();
+                let grad_in: Vec<f64> = par_zip_map_f64(x_vals, grad_out, |x, go| {
+                    go * (2.0 * x * erfcx_approx(x) - two_over_sqrt_pi)
+                });
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -80155,6 +80147,56 @@ mod tests {
         for (idx, (g, &x)) in grad.iter().zip(data.iter()).enumerate() {
             let want = 1.0_f64 * super::i1_approx(x);
             assert_eq!(g.to_bits(), want.to_bits(), "i0 bwd diverged at {idx}");
+        }
+    }
+
+    #[test]
+    fn polygamma_erfinv_erfcx_parallel_match_serial_bit_exact() {
+        // Isomorphism proof for routing polygamma/erfinv/erfcx through
+        // par_map_f64 (forward) + par_zip_map_f64 (backward): with > 8192
+        // elements the rayon paths run and must equal the serial maps BIT-FOR-BIT.
+        let n_elems = 1usize << 14;
+
+        // polygamma(2, x): x > 0.
+        let pdata: Vec<f64> = (0..n_elems).map(|i| 0.05 + (i % 991) as f64 * 0.02).collect();
+        // erfinv(x): x in (-1, 1).
+        let edata: Vec<f64> = (0..n_elems)
+            .map(|i| ((i % 1999) as f64 / 1000.0) - 0.999)
+            .collect();
+        // erfcx(x): full real line (well-behaved both signs).
+        let cdata: Vec<f64> = (0..n_elems).map(|i| ((i % 801) as f64) * 0.01 - 4.0).collect();
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pin = s.tensor_variable(pdata.clone(), vec![n_elems], false).unwrap();
+        let ein = s.tensor_variable(edata.clone(), vec![n_elems], false).unwrap();
+        let cin = s.tensor_variable(cdata.clone(), vec![n_elems], false).unwrap();
+        let pg = s.tensor_polygamma(2, pin).unwrap();
+        let ei = s.tensor_erfinv(ein).unwrap();
+        let ec = s.tensor_erfcx(cin).unwrap();
+
+        let pg_got = s.tensor_values(pg).unwrap();
+        for (idx, (g, &x)) in pg_got.iter().zip(pdata.iter()).enumerate() {
+            assert_eq!(g.to_bits(), super::polygamma_approx(2, x).to_bits(), "polygamma fwd @{idx}");
+        }
+        let ei_got = s.tensor_values(ei).unwrap();
+        for (idx, (g, &x)) in ei_got.iter().zip(edata.iter()).enumerate() {
+            assert_eq!(g.to_bits(), super::erfinv_approx(x).to_bits(), "erfinv fwd @{idx}");
+        }
+        let ec_got = s.tensor_values(ec).unwrap();
+        for (idx, (g, &x)) in ec_got.iter().zip(cdata.iter()).enumerate() {
+            assert_eq!(g.to_bits(), super::erfcx_approx(x).to_bits(), "erfcx fwd @{idx}");
+        }
+
+        // Backward (exercises par_zip_map_f64): grad of polygamma(2,x) with the
+        // default ones-seed is `1.0 * polygamma_approx(3, x)` per element.
+        let mut sb = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xg = sb.tensor_variable(pdata.clone(), vec![n_elems], true).unwrap();
+        let y = sb.tensor_polygamma(2, xg).unwrap();
+        let report = sb.tensor_backward(y).unwrap();
+        let grad = sb.tensor_gradient(&report, xg).expect("polygamma grad present");
+        for (idx, (g, &x)) in grad.iter().zip(pdata.iter()).enumerate() {
+            let want = 1.0_f64 * super::polygamma_approx(3, x);
+            assert_eq!(g.to_bits(), want.to_bits(), "polygamma bwd @{idx}");
         }
     }
 
