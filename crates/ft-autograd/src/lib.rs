@@ -14234,8 +14234,10 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Softmax { input, dim } => {
-                    // grad_input_i = output_i * (grad_i - sum_j(grad_j * output_j))
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
+                    // grad_input_i = s_i * (grad_i - sum_dim_j(grad_j * s_j)), s = softmax output.
+                    // Compose from cg primitives so the gradient node depends on the output
+                    // `node_id` (hence the input); double-backward through softmax is then
+                    // correct instead of silently zero. (A detached leaf dropped the curvature.)
                     let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let reduce_size = shape[dim];
                     let (outer_size, inner_size, input_numel) = Self::checked_dim_loop_sizes(
@@ -14243,24 +14245,26 @@ impl TensorTape {
                         dim,
                         "softmax cg backward shape volume overflow",
                     )?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
-                    let mut softmax_contrib = vec![0.0; input_numel];
+                    let mut reduced_shape = shape.clone();
+                    reduced_shape[dim] = 1;
+                    // dot = sum over `dim` of (grad ⊙ s), kept-dim, then broadcast back so the
+                    // elementwise cg_sub / cg_mul stay shape-aligned.
+                    let sg = self.cg_mul(node_id, incoming_id)?;
+                    let dot = self.cg_sum_to_shape(sg, &reduced_shape)?;
+                    let dot_vals = self.nodes[dot.0].tensor.contiguous_values_as_f64()?;
+                    let mut dot_full = vec![0.0; input_numel];
                     for outer in 0..outer_size {
                         for inner in 0..inner_size {
-                            let mut dot = 0.0;
+                            let d = dot_vals[outer * inner_size + inner];
                             for r in 0..reduce_size {
-                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                                dot += incoming_vals[idx] * output_values[idx];
-                            }
-                            for r in 0..reduce_size {
-                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                                softmax_contrib[idx] =
-                                    output_values[idx] * (incoming_vals[idx] - dot);
+                                dot_full
+                                    [outer * reduce_size * inner_size + r * inner_size + inner] = d;
                             }
                         }
                     }
-                    let grad_in = self.leaf(softmax_contrib, shape, true)?;
+                    let dot_node = self.cg_expand(dot, dot_full, shape.clone())?;
+                    let diff = self.cg_sub(incoming_id, dot_node)?;
+                    let grad_in = self.cg_mul(node_id, diff)?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -14270,8 +14274,9 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::LogSoftmax { input, dim } => {
-                    // grad_input_i = grad_i - exp(output_i) * sum_j(grad_j)
-                    let output_values = self.nodes[node_id.0].tensor.contiguous_values_as_f64()?;
+                    // grad_input_i = grad_i - exp(out_i) * sum_dim_j(grad_j).
+                    // Compose from cg primitives: exp(out) = softmax depends on the input, so
+                    // double-backward is correct rather than silently zero.
                     let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let reduce_size = shape[dim];
                     let (outer_size, inner_size, input_numel) = Self::checked_dim_loop_sizes(
@@ -14279,24 +14284,24 @@ impl TensorTape {
                         dim,
                         "log_softmax cg backward shape volume overflow",
                     )?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
-                    let mut logsoftmax_contrib = vec![0.0; input_numel];
+                    let mut reduced_shape = shape.clone();
+                    reduced_shape[dim] = 1;
+                    let gsum = self.cg_sum_to_shape(incoming_id, &reduced_shape)?;
+                    let gsum_vals = self.nodes[gsum.0].tensor.contiguous_values_as_f64()?;
+                    let mut gsum_full = vec![0.0; input_numel];
                     for outer in 0..outer_size {
                         for inner in 0..inner_size {
-                            let mut grad_sum = 0.0;
+                            let v = gsum_vals[outer * inner_size + inner];
                             for r in 0..reduce_size {
-                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                                grad_sum += incoming_vals[idx];
-                            }
-                            for r in 0..reduce_size {
-                                let idx = outer * reduce_size * inner_size + r * inner_size + inner;
-                                let softmax_i = output_values[idx].exp();
-                                logsoftmax_contrib[idx] = incoming_vals[idx] - softmax_i * grad_sum;
+                                gsum_full
+                                    [outer * reduce_size * inner_size + r * inner_size + inner] = v;
                             }
                         }
                     }
-                    let grad_in = self.leaf(logsoftmax_contrib, shape, true)?;
+                    let gsum_node = self.cg_expand(gsum, gsum_full, shape.clone())?;
+                    let exp_out = self.cg_exp(node_id)?;
+                    let term = self.cg_mul(exp_out, gsum_node)?;
+                    let grad_in = self.cg_sub(incoming_id, term)?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
@@ -23912,6 +23917,119 @@ mod tests {
         assert!(gx[0] > 0.5 && gx[0] < 1.0);
         assert!(gx[1] > 0.0 && gx[1] < 0.5);
         assert!(gx[2] < 0.0);
+    }
+
+    // Hessian-vector cross-check for create_graph second-order through a reduction op.
+    // Probes (H·w)_i = d/dx_i (w · ∇L) against a central finite difference. A non-uniform
+    // `w` is required for softmax/log_softmax: both are shift-invariant, so the all-ones
+    // direction lies in the Hessian's null space (H·1 = 0) and would hide the curvature.
+    // `weighted_grad` returns w · ∇L computed by an independent first backward.
+    fn assert_softmax_like_second_derivative(
+        x0: &[f64],
+        w: &[f64],
+        weighted_grad: impl Fn(&[f64]) -> f64,
+        build: impl Fn(&mut TensorTape, TensorNodeId) -> TensorNodeId,
+    ) {
+        let n = x0.len();
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(x0.to_vec(), vec![n], true).expect("x");
+        let l = build(&mut tape, x);
+        let rep1 = tape
+            .backward_with_options(
+                l,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        // Under the old detached-leaf path this gradient node was disconnected from x and
+        // the second backward below would not reach x.
+        let dx = rep1.gradient_node(x).expect("gradient node");
+        let w_node = tape.leaf(w.to_vec(), vec![n], false).expect("w");
+        let (wg, _) = tape.mul(dx, w_node, ExecutionMode::Strict).expect("w*g");
+        let (p, _) = tape.sum(wg, ExecutionMode::Strict).expect("sum");
+        let rep2 = tape.backward(p).expect("second backward");
+        let hw = rep2.gradient(x).expect("second gradient");
+
+        let eps = 1e-5;
+        for i in 0..n {
+            let mut xp = x0.to_vec();
+            xp[i] += eps;
+            let mut xm = x0.to_vec();
+            xm[i] -= eps;
+            let fd = (weighted_grad(&xp) - weighted_grad(&xm)) / (2.0 * eps);
+            assert!(
+                (hw[i] - fd).abs() < 1e-4,
+                "(H·w)[{i}] mismatch: analytic {} vs fd {}",
+                hw[i],
+                fd
+            );
+        }
+        assert!(
+            hw.iter().any(|v| v.abs() > 1e-6),
+            "second derivative should be nonzero (proves the gradient is not detached)"
+        );
+    }
+
+    #[test]
+    fn create_graph_softmax_second_derivative_matches_fd() {
+        // L(x) = sum_i softmax(x)_i^2, probed with a non-uniform Hessian-vector direction.
+        let x0 = vec![0.5, -0.3, 1.2];
+        let w = vec![1.0, -2.0, 0.5];
+        let w_for_fd = w.clone();
+        let weighted_grad = move |xv: &[f64]| -> f64 {
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(xv.to_vec(), vec![xv.len()], true).expect("x");
+            let (s, _) = tape.softmax(x, 0, ExecutionMode::Strict).expect("softmax");
+            let (sq, _) = tape.square(s, ExecutionMode::Strict).expect("square");
+            let (l, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
+            let rep = tape.backward(l).expect("backward");
+            rep.gradient(x)
+                .expect("g")
+                .iter()
+                .zip(w_for_fd.iter())
+                .map(|(g, wi)| g * wi)
+                .sum()
+        };
+        assert_softmax_like_second_derivative(&x0, &w, weighted_grad, |tape, x| {
+            let (s, _) = tape.softmax(x, 0, ExecutionMode::Strict).expect("softmax");
+            let (sq, _) = tape.square(s, ExecutionMode::Strict).expect("square");
+            let (l, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
+            l
+        });
+    }
+
+    #[test]
+    fn create_graph_log_softmax_second_derivative_matches_fd() {
+        // L(x) = sum_i log_softmax(x)_i^2, probed with a non-uniform direction.
+        let x0 = vec![0.4, 1.1, -0.7];
+        let w = vec![0.5, 1.0, -1.5];
+        let w_for_fd = w.clone();
+        let weighted_grad = move |xv: &[f64]| -> f64 {
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(xv.to_vec(), vec![xv.len()], true).expect("x");
+            let (ls, _) = tape
+                .log_softmax(x, 0, ExecutionMode::Strict)
+                .expect("log_softmax");
+            let (sq, _) = tape.square(ls, ExecutionMode::Strict).expect("square");
+            let (l, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
+            let rep = tape.backward(l).expect("backward");
+            rep.gradient(x)
+                .expect("g")
+                .iter()
+                .zip(w_for_fd.iter())
+                .map(|(g, wi)| g * wi)
+                .sum()
+        };
+        assert_softmax_like_second_derivative(&x0, &w, weighted_grad, |tape, x| {
+            let (ls, _) = tape
+                .log_softmax(x, 0, ExecutionMode::Strict)
+                .expect("log_softmax");
+            let (sq, _) = tape.square(ls, ExecutionMode::Strict).expect("square");
+            let (l, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
+            l
+        });
     }
 
     #[test]
