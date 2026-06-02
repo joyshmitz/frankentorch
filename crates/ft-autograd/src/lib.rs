@@ -9889,27 +9889,58 @@ impl TensorTape {
                     let mut lhs_contrib = vec![0.0; lhs_numel];
                     let mut rhs_contrib = vec![0.0; rhs_numel];
 
-                    for row in 0..m {
+                    let one_bits = 1.0_f64.to_bits();
+                    let incoming_all_ones = incoming
+                        .iter()
+                        .all(|value| value.to_bits().cmp(&one_bits).is_eq());
+
+                    if incoming_all_ones {
                         for inner in 0..k {
                             let mut acc = 0.0;
                             for col in 0..n {
-                                let grad_out = incoming[row * n + col];
+                                let grad_out = 1.0;
                                 let rhs_value = rhs_values[inner * n + col];
                                 acc += grad_out * rhs_value;
                             }
-                            lhs_contrib[row * k + inner] = acc;
+                            for row in 0..m {
+                                lhs_contrib[row * k + inner] = acc;
+                            }
                         }
-                    }
 
-                    for inner in 0..k {
-                        for col in 0..n {
+                        for inner in 0..k {
                             let mut acc = 0.0;
                             for row in 0..m {
                                 let lhs_value = lhs_values[row * k + inner];
-                                let grad_out = incoming[row * n + col];
+                                let grad_out = 1.0;
                                 acc += lhs_value * grad_out;
                             }
-                            rhs_contrib[inner * n + col] = acc;
+                            for col in 0..n {
+                                rhs_contrib[inner * n + col] = acc;
+                            }
+                        }
+                    } else {
+                        for row in 0..m {
+                            for inner in 0..k {
+                                let mut acc = 0.0;
+                                for col in 0..n {
+                                    let grad_out = incoming[row * n + col];
+                                    let rhs_value = rhs_values[inner * n + col];
+                                    acc += grad_out * rhs_value;
+                                }
+                                lhs_contrib[row * k + inner] = acc;
+                            }
+                        }
+
+                        for inner in 0..k {
+                            for col in 0..n {
+                                let mut acc = 0.0;
+                                for row in 0..m {
+                                    let lhs_value = lhs_values[row * k + inner];
+                                    let grad_out = incoming[row * n + col];
+                                    acc += lhs_value * grad_out;
+                                }
+                                rhs_contrib[inner * n + col] = acc;
+                            }
                         }
                     }
 
@@ -17586,6 +17617,67 @@ mod tests {
         assert_eq!(
             report.gradient(y).expect("y grad should exist"),
             &[4.0, 4.0, 6.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn tensor_matmul_backward_all_ones_golden_output_is_stable() {
+        use std::fmt::Write as _;
+
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], true)
+            .expect("lhs leaf should succeed");
+        let y = tape
+            .leaf(vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0], vec![3, 2], true)
+            .expect("rhs leaf should succeed");
+        let (z, _) = tape
+            .matmul(x, y, ExecutionMode::Strict)
+            .expect("tensor matmul should succeed");
+        let (loss, _) = tape
+            .sum(z, ExecutionMode::Strict)
+            .expect("sum should succeed");
+        let report = tape.backward(loss).expect("tensor backward should succeed");
+
+        let mut summary = String::new();
+        summary.push_str("ft_autograd_matmul_backward_ones_frankentorch-789f\n");
+        let _ = writeln!(
+            &mut summary,
+            "z_values={:?}",
+            tape.values(z).expect("z values should resolve")
+        );
+        let _ = writeln!(
+            &mut summary,
+            "loss_values={:?}",
+            tape.values(loss).expect("loss values should resolve")
+        );
+        let _ = writeln!(
+            &mut summary,
+            "x_grad={:?}",
+            report.gradient(x).expect("x grad should exist")
+        );
+        let _ = writeln!(
+            &mut summary,
+            "y_grad={:?}",
+            report.gradient(y).expect("y grad should exist")
+        );
+        let _ = writeln!(&mut summary, "steps={}", report.steps.len());
+        let _ = writeln!(
+            &mut summary,
+            "execution_order={:?}",
+            report
+                .telemetry
+                .execution_order
+                .iter()
+                .map(|node| node.0)
+                .collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            summary,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_autograd_matmul_backward_ones_frankentorch-789f.txt"
+            )
         );
     }
 

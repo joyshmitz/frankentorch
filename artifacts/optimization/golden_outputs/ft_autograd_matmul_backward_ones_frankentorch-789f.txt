@@ -1,0 +1,7 @@
+ft_autograd_matmul_backward_ones_frankentorch-789f
+z_values=[58.0, 64.0, 139.0, 154.0]
+loss_values=[415.0]
+x_grad=[15.0, 19.0, 23.0, 15.0, 19.0, 23.0]
+y_grad=[5.0, 5.0, 7.0, 7.0, 9.0, 9.0]
+steps=4
+execution_order=[3, 2, 1, 0]
