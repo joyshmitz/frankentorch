@@ -2654,19 +2654,19 @@ pub fn softmax_dim_tensor_contiguous_f64(
     // so we can exp(x - max) directly into `output` and pairwise-sum
     // from there with zero scratch allocation.
     if inner_size == 1 {
-        for outer in 0..outer_size {
-            let start = outer * reduce_size;
-            let end = start + reduce_size;
-            let in_slice = &data[start..end];
-            let max_val = in_slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            for (out, &x) in output[start..end].iter_mut().zip(in_slice.iter()) {
-                *out = (x - max_val).exp();
-            }
-            let sum = pairwise_sum_f64(&output[start..end]);
-            for v in &mut output[start..end] {
-                *v /= sum;
-            }
-        }
+        output
+            .par_chunks_mut(reduce_size)
+            .zip(data[..numel].par_chunks(reduce_size))
+            .for_each(|(out_slice, in_slice)| {
+                let max_val = in_slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                for (out, &x) in out_slice.iter_mut().zip(in_slice.iter()) {
+                    *out = (x - max_val).exp();
+                }
+                let sum = pairwise_sum_f64(out_slice);
+                for v in out_slice {
+                    *v /= sum;
+                }
+            });
         return Ok(output);
     }
 
