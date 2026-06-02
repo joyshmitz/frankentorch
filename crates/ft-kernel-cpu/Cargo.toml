@@ -36,5 +36,9 @@ harness = false
 name = "sort_bench"
 harness = false
 
+[[bench]]
+name = "topk_bench"
+harness = false
+
 [lints]
 workspace = true

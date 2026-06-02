@@ -4189,38 +4189,42 @@ pub fn topk_tensor_contiguous_f64(
     let mut out_values = vec![0.0; out_numel];
     let mut out_indices = vec![0usize; out_numel];
 
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut lane: Vec<(usize, f64)> = (0..dim_size)
-                .map(|d| {
-                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
-                    (d, data[idx])
-                })
-                .collect();
+    // Each `outer` owns a contiguous input block (dim_size*inner_size) and a
+    // contiguous output block (k*inner_size); both yield outer_size chunks, so
+    // the par_chunks zip aligns by outer. Every lane selects independently with
+    // the same stable sort + fixed comparator, so values AND indices are
+    // bit-for-bit identical to the serial version (sorting is compute-bound).
+    let in_block = dim_size * inner_size;
+    let out_block = k * inner_size;
+    let in_total = outer_size * in_block;
+    out_values
+        .par_chunks_mut(out_block)
+        .zip(out_indices.par_chunks_mut(out_block))
+        .zip(data[..in_total].par_chunks(in_block))
+        .for_each(|((ov_block, oi_block), in_block_data)| {
+            for inner in 0..inner_size {
+                let mut lane: Vec<(usize, f64)> = (0..dim_size)
+                    .map(|d| (d, in_block_data[d * inner_size + inner]))
+                    .collect();
 
-            if largest {
-                lane.sort_by(|a, b| nan_greatest_cmp_f64(b.1, a.1));
-            } else {
-                lane.sort_by(|a, b| nan_greatest_cmp_f64(a.1, b.1));
+                if largest {
+                    lane.sort_by(|a, b| nan_greatest_cmp_f64(b.1, a.1));
+                } else {
+                    lane.sort_by(|a, b| nan_greatest_cmp_f64(a.1, b.1));
+                }
+
+                let mut selected: Vec<(usize, f64)> = lane[..k].to_vec();
+                if !sorted {
+                    // Return in original index order (stable).
+                    selected.sort_by_key(|(orig_idx, _)| *orig_idx);
+                }
+
+                for (out_d, (orig_d, val)) in selected.into_iter().enumerate() {
+                    ov_block[out_d * inner_size + inner] = val;
+                    oi_block[out_d * inner_size + inner] = orig_d;
+                }
             }
-
-            let top = &lane[..k];
-
-            let mut selected: Vec<(usize, f64)> = top.to_vec();
-            if sorted {
-                // Already sorted by value from the full sort above
-            } else {
-                // Return in original index order
-                selected.sort_by_key(|(orig_idx, _)| *orig_idx);
-            }
-
-            for (out_d, (orig_d, val)) in selected.into_iter().enumerate() {
-                let out_idx = outer * k * inner_size + out_d * inner_size + inner;
-                out_values[out_idx] = val;
-                out_indices[out_idx] = orig_d;
-            }
-        }
-    }
+        });
 
     Ok((out_values, out_indices))
 }
@@ -8067,31 +8071,35 @@ pub fn topk_tensor_contiguous_f32(
     let data = &input[offset..];
     let mut out_values = vec![0.0f32; out_numel];
     let mut out_indices = vec![0usize; out_numel];
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut lane: Vec<(usize, f32)> = (0..dim_size)
-                .map(|d| {
-                    let idx = outer * dim_size * inner_size + d * inner_size + inner;
-                    (d, data[idx])
-                })
-                .collect();
-            if largest {
-                lane.sort_by(|a, b| nan_greatest_cmp_f32(b.1, a.1));
-            } else {
-                lane.sort_by(|a, b| nan_greatest_cmp_f32(a.1, b.1));
+    // F32 mirror: parallelize over independent per-outer blocks; bit-identical
+    // to the serial version (stable sort, fixed comparator). See the f64 path.
+    let in_block = dim_size * inner_size;
+    let out_block = k * inner_size;
+    let in_total = outer_size * in_block;
+    out_values
+        .par_chunks_mut(out_block)
+        .zip(out_indices.par_chunks_mut(out_block))
+        .zip(data[..in_total].par_chunks(in_block))
+        .for_each(|((ov_block, oi_block), in_block_data)| {
+            for inner in 0..inner_size {
+                let mut lane: Vec<(usize, f32)> = (0..dim_size)
+                    .map(|d| (d, in_block_data[d * inner_size + inner]))
+                    .collect();
+                if largest {
+                    lane.sort_by(|a, b| nan_greatest_cmp_f32(b.1, a.1));
+                } else {
+                    lane.sort_by(|a, b| nan_greatest_cmp_f32(a.1, b.1));
+                }
+                let mut selected: Vec<(usize, f32)> = lane[..k].to_vec();
+                if !sorted {
+                    selected.sort_by_key(|(orig_idx, _)| *orig_idx);
+                }
+                for (out_d, (orig_d, val)) in selected.into_iter().enumerate() {
+                    ov_block[out_d * inner_size + inner] = val;
+                    oi_block[out_d * inner_size + inner] = orig_d;
+                }
             }
-            let top = &lane[..k];
-            let mut selected: Vec<(usize, f32)> = top.to_vec();
-            if !sorted {
-                selected.sort_by_key(|(orig_idx, _)| *orig_idx);
-            }
-            for (out_d, (orig_d, val)) in selected.into_iter().enumerate() {
-                let out_idx = outer * k * inner_size + out_d * inner_size + inner;
-                out_values[out_idx] = val;
-                out_indices[out_idx] = orig_d;
-            }
-        }
-    }
+        });
     Ok((out_values, out_indices))
 }
 
@@ -12497,6 +12505,61 @@ mod tests {
     }
 
     // ---- topk ----
+
+    #[test]
+    fn topk_parallel_matches_serial_bit_exact() {
+        // Isomorphism proof for parallelizing topk-along-dim over lanes: the
+        // parallel kernel must reproduce the serial per-lane select BIT-FOR-BIT —
+        // identical values AND original indices, in both sorted modes. Strided +
+        // last-dim shapes; duplicates exercise the stable tie-break.
+        for (shape, dim, k, largest, srt) in [
+            (vec![11usize, 24usize, 3usize], 1usize, 5usize, true, true),
+            (vec![11usize, 24usize, 3usize], 1usize, 5usize, true, false),
+            (vec![73usize, 40usize], 1usize, 7usize, false, false),
+        ] {
+            let reduce = shape[dim];
+            let inner: usize = shape[dim + 1..].iter().product();
+            let outer: usize = shape[..dim].iter().product();
+            let numel: usize = shape.iter().product();
+            let data: Vec<f64> = (0..numel).map(|i| ((i * 53 + 7) % 17) as f64 * 0.25).collect();
+
+            let mut v_ref = vec![0.0_f64; outer * k * inner];
+            let mut i_ref = vec![0usize; outer * k * inner];
+            for o in 0..outer {
+                for inr in 0..inner {
+                    let mut lane: Vec<(usize, f64)> = (0..reduce)
+                        .map(|d| (d, data[o * reduce * inner + d * inner + inr]))
+                        .collect();
+                    if largest {
+                        lane.sort_by(|a, b| super::nan_greatest_cmp_f64(b.1, a.1));
+                    } else {
+                        lane.sort_by(|a, b| super::nan_greatest_cmp_f64(a.1, b.1));
+                    }
+                    let mut sel: Vec<(usize, f64)> = lane[..k].to_vec();
+                    if !srt {
+                        sel.sort_by_key(|(o2, _)| *o2);
+                    }
+                    for (od, (orig, val)) in sel.into_iter().enumerate() {
+                        let idx = o * k * inner + od * inner + inr;
+                        v_ref[idx] = val;
+                        i_ref[idx] = orig;
+                    }
+                }
+            }
+
+            let meta = TensorMeta::from_shape(shape.clone(), DType::F64, Device::Cpu);
+            let (v, i) = super::topk_tensor_contiguous_f64(&data, &meta, k, dim, largest, srt)
+                .expect("topk");
+            assert_eq!(i, i_ref, "topk indices diverged {shape:?} k={k} sorted={srt}");
+            for t in 0..v.len() {
+                assert_eq!(
+                    v[t].to_bits(),
+                    v_ref[t].to_bits(),
+                    "topk values diverged at {t} {shape:?} k={k} sorted={srt}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn topk_largest_sorted() {
