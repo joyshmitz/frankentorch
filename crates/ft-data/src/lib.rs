@@ -201,6 +201,12 @@ impl SimpleRng {
     }
 }
 
+fn refill_sequential_indices(indices: &mut [usize]) {
+    for (index, value) in indices.iter_mut().enumerate() {
+        *value = index;
+    }
+}
+
 /// Yields sample indices sequentially: 0, 1, 2, ..., n-1.
 pub struct SequentialSampler {
     size: usize,
@@ -279,16 +285,22 @@ impl RandomSampler {
                 .collect()
         } else {
             let mut result = Vec::with_capacity(self.num_samples);
-            for _ in 0..(self.num_samples / self.size) {
-                let mut idx: Vec<usize> = (0..self.size).collect();
+            let mut idx: Vec<usize> = (0..self.size).collect();
+            let full_passes = self.num_samples / self.size;
+            for pass in 0..full_passes {
+                if pass > 0 {
+                    refill_sequential_indices(&mut idx);
+                }
                 rng.shuffle(&mut idx);
-                result.extend(idx);
+                result.extend_from_slice(&idx);
             }
             let remainder = self.num_samples % self.size;
             if remainder > 0 {
-                let mut idx: Vec<usize> = (0..self.size).collect();
+                if full_passes > 0 {
+                    refill_sequential_indices(&mut idx);
+                }
                 rng.shuffle(&mut idx);
-                result.extend(idx.into_iter().take(remainder));
+                result.extend_from_slice(&idx[..remainder]);
             }
             result
         }
@@ -1807,6 +1819,7 @@ mod tests {
         let indices = s.indices();
         assert_eq!(indices.len(), 5);
         assert_eq!(s.len(), 5);
+        assert_eq!(indices, vec![2, 0, 1, 1, 2]);
         assert!(indices.iter().all(|&i| i < 3));
 
         let mut first_pass = indices[..3].to_vec();
@@ -1818,6 +1831,15 @@ mod tests {
 
         let unique: std::collections::HashSet<usize> = indices.iter().copied().collect();
         assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn random_sampler_repeated_passes_preserve_exact_order() {
+        let s = RandomSampler::new(7).with_num_samples(19).with_seed(123);
+        assert_eq!(
+            s.indices(),
+            vec![6, 3, 0, 4, 5, 2, 1, 2, 4, 5, 3, 6, 0, 1, 2, 4, 6, 5, 3]
+        );
     }
 
     #[test]

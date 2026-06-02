@@ -17,5 +17,9 @@ criterion = { workspace = true }
 name = "dataloader_bench"
 harness = false
 
+[[bench]]
+name = "sampler_bench"
+harness = false
+
 [lints]
 workspace = true

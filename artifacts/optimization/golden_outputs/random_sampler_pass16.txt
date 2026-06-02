@@ -1,0 +1,1 @@
+random_sampler_without_replacement_size7_samples19_seed123=[6, 3, 0, 4, 5, 2, 1, 2, 4, 5, 3, 6, 0, 1, 2, 4, 6, 5, 3]
