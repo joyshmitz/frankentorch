@@ -41629,13 +41629,22 @@ impl FrankenTorchSession {
     }
 
     pub fn tensor_gammaln(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        use rayon::prelude::*;
+        // lgamma/digamma are compute-bound per element (libm::lgamma; digamma
+        // recurrence + asymptotic series), so evaluate large tensors across the
+        // rayon pool. Pure per-element maps -> bit-for-bit identical to serial
+        // (PARALLEL_ELEMENTWISE_MIN gate avoids thread overhead on small tensors).
         let out = self.tensor_apply_function(
             &[input],
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 // Save x for the digamma backward.
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| lgamma_approx(x)).collect();
+                let values: Vec<f64> = if vals.len() >= PARALLEL_ELEMENTWISE_MIN {
+                    vals.par_iter().map(|&x| lgamma_approx(x)).collect()
+                } else {
+                    vals.iter().map(|&x| lgamma_approx(x)).collect()
+                };
                 Ok((values, shape.to_vec()))
             },
             |ctx, grad_outputs| {
@@ -41649,11 +41658,19 @@ impl FrankenTorchSession {
                         },
                     )));
                 }
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| go * digamma_approx(x))
-                    .collect();
+                let grad_in: Vec<f64> = if x_vals.len() >= PARALLEL_ELEMENTWISE_MIN {
+                    x_vals
+                        .par_iter()
+                        .zip(grad_out.par_iter())
+                        .map(|(&x, &go)| go * digamma_approx(x))
+                        .collect()
+                } else {
+                    x_vals
+                        .iter()
+                        .zip(grad_out.iter())
+                        .map(|(&x, &go)| go * digamma_approx(x))
+                        .collect()
+                };
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -41668,10 +41685,12 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.special.digamma(input)`.
     pub fn tensor_digamma(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        use rayon::prelude::*;
         // Wrap digamma_approx in a tensor_apply_function with a
         // trigamma backward (= polygamma(1, x)). Tracked under
         // frankentorch-1tax. Same pattern as the gammaln autograd
-        // wiring just above.
+        // wiring just above. digamma/trigamma are compute-bound per element, so
+        // large tensors are evaluated on the rayon pool (pure map -> bit-exact).
         //
         //     forward : y = digamma(x)
         //     backward: dy/dx = trigamma(x) = polygamma(1, x)
@@ -41680,7 +41699,11 @@ impl FrankenTorchSession {
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| digamma_approx(x)).collect();
+                let values: Vec<f64> = if vals.len() >= PARALLEL_ELEMENTWISE_MIN {
+                    vals.par_iter().map(|&x| digamma_approx(x)).collect()
+                } else {
+                    vals.iter().map(|&x| digamma_approx(x)).collect()
+                };
                 Ok((values, shape.to_vec()))
             },
             |ctx, grad_outputs| {
@@ -41694,11 +41717,19 @@ impl FrankenTorchSession {
                         },
                     )));
                 }
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| go * polygamma_approx(1, x))
-                    .collect();
+                let grad_in: Vec<f64> = if x_vals.len() >= PARALLEL_ELEMENTWISE_MIN {
+                    x_vals
+                        .par_iter()
+                        .zip(grad_out.par_iter())
+                        .map(|(&x, &go)| go * polygamma_approx(1, x))
+                        .collect()
+                } else {
+                    x_vals
+                        .iter()
+                        .zip(grad_out.iter())
+                        .map(|(&x, &go)| go * polygamma_approx(1, x))
+                        .collect()
+                };
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -59493,6 +59524,10 @@ fn erfinv_positive_approx(p: f64, q: f64) -> f64 {
 /// libm gives upstream parity. See the matching erf fix for the same
 /// pattern; conformance is locked by
 /// `torch_lgamma_libm_subprocess_conformance` in ft-conformance.
+/// Element count above which compute-bound elementwise special functions are
+/// evaluated across the rayon pool (below it, thread overhead is not worth it).
+const PARALLEL_ELEMENTWISE_MIN: usize = 8192;
+
 fn lgamma_approx(x: f64) -> f64 {
     libm::lgamma(x)
 }
@@ -79995,6 +80030,31 @@ mod tests {
             v[0],
             expected
         );
+    }
+
+    #[test]
+    fn lgamma_digamma_parallel_match_serial_bit_exact() {
+        // Isomorphism proof for parallelizing lgamma/digamma: with > 8192 elements
+        // the rayon path runs; a pure per-element map must equal the serial
+        // per-element approx BIT-FOR-BIT.
+        let n = 1usize << 14; // > PARALLEL_ELEMENTWISE_MIN
+        let data: Vec<f64> = (0..n).map(|i| (i % 991) as f64 * 0.013 + 0.5).collect();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(data.clone(), vec![n], false).unwrap();
+
+        let lg = s.lgamma_tensor(input).unwrap();
+        let lg_vals = s.tensor_values(lg).unwrap();
+        for (idx, (&x, o)) in data.iter().zip(lg_vals.iter()).enumerate() {
+            let r = super::lgamma_approx(x);
+            assert_eq!(r.to_bits(), o.to_bits(), "lgamma diverged at {idx}");
+        }
+
+        let dg = s.digamma_tensor(input).unwrap();
+        let dg_vals = s.tensor_values(dg).unwrap();
+        for (idx, (&x, o)) in data.iter().zip(dg_vals.iter()).enumerate() {
+            let r = super::digamma_approx(x);
+            assert_eq!(r.to_bits(), o.to_bits(), "digamma diverged at {idx}");
+        }
     }
 
     #[test]
