@@ -23,6 +23,14 @@ fn bench_special(c: &mut Criterion) {
         b.iter(|| black_box(s.digamma_tensor(black_box(x)).unwrap()));
     });
 
+    // Modified Bessel i0: polynomial + exp per element (autograd-aware forward,
+    // routed through par_map_f64). 1M elements.
+    c.bench_function("i0_1m", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_randn(vec![n], false).unwrap();
+        b.iter(|| black_box(s.tensor_i0(black_box(x)).unwrap()));
+    });
+
     // Bessel j0: A&S polynomial / asymptotic approximation per element
     // (no-autograd forward map, routed through par_map_f64). 1M elements.
     c.bench_function("bessel_j0_1m", |b| {

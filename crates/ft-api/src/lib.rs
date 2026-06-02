@@ -41930,7 +41930,7 @@ impl FrankenTorchSession {
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| i0_approx(x)).collect();
+                let values: Vec<f64> = par_map_f64(vals, i0_approx);
                 Ok((values, shape.to_vec()))
             },
             |ctx, grad_outputs| {
@@ -41944,11 +41944,8 @@ impl FrankenTorchSession {
                         },
                     )));
                 }
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| go * i1_approx(x))
-                    .collect();
+                let grad_in: Vec<f64> =
+                    par_zip_map_f64(x_vals, grad_out, |x, go| go * i1_approx(x));
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -41970,7 +41967,7 @@ impl FrankenTorchSession {
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| i0e_approx(x)).collect();
+                let values: Vec<f64> = par_map_f64(vals, i0e_approx);
                 Ok((values, shape.to_vec()))
             },
             |ctx, grad_outputs| {
@@ -41984,14 +41981,10 @@ impl FrankenTorchSession {
                         },
                     )));
                 }
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| {
-                        let sign_x = if x >= 0.0 { 1.0 } else { -1.0 };
-                        go * (i1e_approx(x) - sign_x * i0e_approx(x))
-                    })
-                    .collect();
+                let grad_in: Vec<f64> = par_zip_map_f64(x_vals, grad_out, |x, go| {
+                    let sign_x = if x >= 0.0 { 1.0 } else { -1.0 };
+                    go * (i1e_approx(x) - sign_x * i0e_approx(x))
+                });
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -42012,7 +42005,7 @@ impl FrankenTorchSession {
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| i1_approx(x)).collect();
+                let values: Vec<f64> = par_map_f64(vals, i1_approx);
                 Ok((values, shape.to_vec()))
             },
             |ctx, grad_outputs| {
@@ -42026,17 +42019,13 @@ impl FrankenTorchSession {
                         },
                     )));
                 }
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| {
-                        if x.abs() < 1e-10 {
-                            go * 0.5
-                        } else {
-                            go * (i0_approx(x) - i1_approx(x) / x)
-                        }
-                    })
-                    .collect();
+                let grad_in: Vec<f64> = par_zip_map_f64(x_vals, grad_out, |x, go| {
+                    if x.abs() < 1e-10 {
+                        go * 0.5
+                    } else {
+                        go * (i0_approx(x) - i1_approx(x) / x)
+                    }
+                });
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -42058,7 +42047,7 @@ impl FrankenTorchSession {
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals.iter().map(|&x| i1e_approx(x)).collect();
+                let values: Vec<f64> = par_map_f64(vals, i1e_approx);
                 Ok((values, shape.to_vec()))
             },
             |ctx, grad_outputs| {
@@ -42072,18 +42061,14 @@ impl FrankenTorchSession {
                         },
                     )));
                 }
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| {
-                        let sign_x = if x >= 0.0 { 1.0 } else { -1.0 };
-                        if x.abs() < 1e-10 {
-                            go * 0.5
-                        } else {
-                            go * (i0e_approx(x) - i1e_approx(x) / x - sign_x * i1e_approx(x))
-                        }
-                    })
-                    .collect();
+                let grad_in: Vec<f64> = par_zip_map_f64(x_vals, grad_out, |x, go| {
+                    let sign_x = if x >= 0.0 { 1.0 } else { -1.0 };
+                    if x.abs() < 1e-10 {
+                        go * 0.5
+                    } else {
+                        go * (i0e_approx(x) - i1e_approx(x) / x - sign_x * i1e_approx(x))
+                    }
+                });
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -59526,6 +59511,24 @@ fn par_map_f64<F: Fn(f64) -> f64 + Sync>(vals: &[f64], f: F) -> Vec<f64> {
         vals.par_iter().map(|&x| f(x)).collect()
     } else {
         vals.iter().map(|&x| f(x)).collect()
+    }
+}
+
+/// Apply a pure per-element BINARY function across the paired `xs`/`ys`, on the
+/// rayon pool for large inputs. Like `par_map_f64`, the zip carries no
+/// accumulation order, so `rayon`'s indexed `zip` yields a result bit-for-bit
+/// identical to the serial `xs.iter().zip(ys).map(f).collect()` regardless of
+/// thread count — used for the compute-bound special-function BACKWARD maps
+/// (`grad_in[i] = f(x[i], grad_out[i])`). Caller guarantees `xs.len() == ys.len()`.
+fn par_zip_map_f64<F: Fn(f64, f64) -> f64 + Sync>(xs: &[f64], ys: &[f64], f: F) -> Vec<f64> {
+    use rayon::prelude::*;
+    if xs.len() >= PARALLEL_ELEMENTWISE_MIN {
+        xs.par_iter()
+            .zip(ys.par_iter())
+            .map(|(&x, &y)| f(x, y))
+            .collect()
+    } else {
+        xs.iter().zip(ys.iter()).map(|(&x, &y)| f(x, y)).collect()
     }
 }
 
@@ -80115,6 +80118,43 @@ mod tests {
             for (idx, (g, &x)) in got.iter().zip(data.iter()).enumerate() {
                 assert_eq!(g.to_bits(), scalar(x).to_bits(), "{name} diverged at {idx}");
             }
+        }
+    }
+
+    #[test]
+    fn i_family_parallel_match_serial_bit_exact() {
+        // Isomorphism proof for routing the modified-Bessel i-family through
+        // par_map_f64 (forward) and par_zip_map_f64 (backward): with > 8192
+        // elements the rayon paths run and must equal the serial maps BIT-FOR-BIT.
+        let n_elems = 1usize << 14;
+        let data: Vec<f64> = (0..n_elems).map(|i| ((i % 801) as f64) * 0.01 - 4.0).collect();
+
+        // Forward: each i-family output must equal the serial per-element approx.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(data.clone(), vec![n_elems], false).unwrap();
+        let fwd: &[(&str, TensorNodeId, fn(f64) -> f64)] = &[
+            ("i0", s.tensor_i0(input).unwrap(), super::i0_approx),
+            ("i0e", s.tensor_i0e(input).unwrap(), super::i0e_approx),
+            ("i1", s.tensor_i1(input).unwrap(), super::i1_approx),
+            ("i1e", s.tensor_i1e(input).unwrap(), super::i1e_approx),
+        ];
+        for (name, node, scalar) in fwd.iter() {
+            let got = s.tensor_values(*node).unwrap();
+            for (idx, (g, &x)) in got.iter().zip(data.iter()).enumerate() {
+                assert_eq!(g.to_bits(), scalar(x).to_bits(), "{name} fwd diverged at {idx}");
+            }
+        }
+
+        // Backward: grad of i0 with the default ones-seed is `1.0 * i1_approx(x)`
+        // per element (exercises par_zip_map_f64). Compare bits to the serial form.
+        let mut sb = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xg = sb.tensor_variable(data.clone(), vec![n_elems], true).unwrap();
+        let y = sb.tensor_i0(xg).unwrap();
+        let report = sb.tensor_backward(y).unwrap();
+        let grad = sb.tensor_gradient(&report, xg).expect("i0 grad present");
+        for (idx, (g, &x)) in grad.iter().zip(data.iter()).enumerate() {
+            let want = 1.0_f64 * super::i1_approx(x);
+            assert_eq!(g.to_bits(), want.to_bits(), "i0 bwd diverged at {idx}");
         }
     }
 
