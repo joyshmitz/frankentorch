@@ -33,15 +33,13 @@ pub struct ModuleHookHandle(u64);
 
 /// Module forward pre-hook: receives input tensor, returns possibly modified input.
 /// Wrapped in Arc for Clone compatibility with FrankenTorchSession.
-pub type ModuleForwardPreHook = Arc<
-    dyn Fn(TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync,
->;
+pub type ModuleForwardPreHook =
+    Arc<dyn Fn(TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync>;
 
 /// Module forward hook: receives (input, output) tensors, returns possibly modified output.
 /// Wrapped in Arc for Clone compatibility with FrankenTorchSession.
-pub type ModuleForwardHook = Arc<
-    dyn Fn(TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync,
->;
+pub type ModuleForwardHook =
+    Arc<dyn Fn(TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync>;
 const INIT_FLOAT_REASON: &str = "initialization only supported for float32/float64 tensors";
 const PARAM_UPDATE_FLOAT_REASON: &str =
     "parameter update only supported for float32/float64 tensors";
@@ -138,6 +136,7 @@ impl Xoshiro256PlusPlus {
     }
 
     /// Beta(alpha, beta) via ratio of Gamma variates.
+    #[allow(dead_code)]
     fn next_beta(&mut self, alpha: f64, beta: f64) -> f64 {
         let x = self.next_gamma(alpha);
         let y = self.next_gamma(beta);
@@ -175,8 +174,14 @@ impl std::fmt::Debug for FrankenTorchSession {
             .field("grad_enabled_stack", &self.grad_enabled_stack)
             .field("autocast_stack", &self.autocast_stack)
             .field("inference_mode_depth", &self.inference_mode_depth)
-            .field("module_forward_pre_hooks", &format!("[{} hooks]", self.module_forward_pre_hooks.len()))
-            .field("module_forward_hooks", &format!("[{} hooks]", self.module_forward_hooks.len()))
+            .field(
+                "module_forward_pre_hooks",
+                &format!("[{} hooks]", self.module_forward_pre_hooks.len()),
+            )
+            .field(
+                "module_forward_hooks",
+                &format!("[{} hooks]", self.module_forward_hooks.len()),
+            )
             .field("module_hook_counter", &self.module_hook_counter)
             .finish()
     }
@@ -2003,7 +2008,8 @@ impl FrankenTorchSession {
                 if freq >= f_left && freq <= f_center {
                     filterbank[m * n_freqs + k] = (freq - f_left) / (f_center - f_left).max(1e-10);
                 } else if freq > f_center && freq <= f_right {
-                    filterbank[m * n_freqs + k] = (f_right - freq) / (f_right - f_center).max(1e-10);
+                    filterbank[m * n_freqs + k] =
+                        (f_right - freq) / (f_right - f_center).max(1e-10);
                 }
             }
         }
@@ -2087,9 +2093,11 @@ impl FrankenTorchSession {
             return Err(Self::incompatible_tensor_args("mfcc: mel_spec must be 2D"));
         }
         let n_mels = shape[0];
-        let frames = shape[1];
+        let _frames = shape[1];
         if n_mfcc > n_mels {
-            return Err(Self::incompatible_tensor_args("mfcc: n_mfcc must be <= n_mels"));
+            return Err(Self::incompatible_tensor_args(
+                "mfcc: n_mfcc must be <= n_mels",
+            ));
         }
         let mut dct_matrix = vec![0.0; n_mfcc * n_mels];
         for k in 0..n_mfcc {
@@ -4593,7 +4601,13 @@ impl FrankenTorchSession {
 
         // Apply scaled_dot_product_attention
         let attn_output = self.scaled_dot_product_attention(
-            q_heads, k_heads, v_heads, effective_mask, dropout_p, is_causal)?;
+            q_heads,
+            k_heads,
+            v_heads,
+            effective_mask,
+            dropout_p,
+            is_causal,
+        )?;
 
         // Compute attention weights if needed
         let attn_weights_out = if need_weights {
@@ -4652,7 +4666,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(images)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("patch_embed: images must be [B, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "patch_embed: images must be [B, C, H, W]",
+            ));
         }
         let (b, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         if h % patch_size != 0 || w % patch_size != 0 {
@@ -4705,7 +4721,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("window_partition: x must be [B, H, W, C]"));
+            return Err(Self::incompatible_tensor_args(
+                "window_partition: x must be [B, H, W, C]",
+            ));
         }
         let (b, h, w, c) = (shape[0], shape[1], shape[2], shape[3]);
         if h % window_size != 0 || w % window_size != 0 {
@@ -4739,7 +4757,11 @@ impl FrankenTorchSession {
                 }
             }
         }
-        self.tensor_variable(windows, vec![b * num_windows, window_size, window_size, c], false)
+        self.tensor_variable(
+            windows,
+            vec![b * num_windows, window_size, window_size, c],
+            false,
+        )
     }
 
     /// Reverse window_partition operation (Swin Transformer).
@@ -4814,8 +4836,21 @@ impl FrankenTorchSession {
         batch_first: bool,
     ) -> Result<(TensorNodeId, Option<TensorNodeId>), AutogradError> {
         self.multi_head_attention_forward(
-            query, key, value, in_proj_weight, in_proj_bias, out_proj_weight, out_proj_bias,
-            num_heads, dropout_p, attn_mask, key_padding_mask, need_weights, is_causal, batch_first)
+            query,
+            key,
+            value,
+            in_proj_weight,
+            in_proj_bias,
+            out_proj_weight,
+            out_proj_bias,
+            num_heads,
+            dropout_p,
+            attn_mask,
+            key_padding_mask,
+            need_weights,
+            is_causal,
+            batch_first,
+        )
     }
 
     /// Generate sinusoidal positional encodings for transformer models.
@@ -4874,11 +4909,14 @@ impl FrankenTorchSession {
         position_ids: Option<TensorNodeId>,
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
         let q_shape = self.tensor_shape(q)?;
-        let head_dim = *q_shape.last().ok_or(AutogradError::Dispatch(
-            ft_dispatch::DispatchError::Key(ft_dispatch::DispatchKeyError::IncompatibleSet {
-                reason: "apply_rotary_pos_emb: q must have at least 1 dimension",
-            }),
-        ))?;
+        let head_dim =
+            *q_shape
+                .last()
+                .ok_or(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "apply_rotary_pos_emb: q must have at least 1 dimension",
+                    },
+                )))?;
         if head_dim % 2 != 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -4896,15 +4934,16 @@ impl FrankenTorchSession {
         } else {
             sin_cached
         };
-        let rotate_half = |sess: &mut Self, x: TensorNodeId| -> Result<TensorNodeId, AutogradError> {
-            let shape = sess.tensor_shape(x)?;
-            let ndim = shape.len();
-            let half = head_dim / 2;
-            let x1 = sess.tensor_narrow(x, ndim - 1, 0, half)?;
-            let x2 = sess.tensor_narrow(x, ndim - 1, half, half)?;
-            let x2_neg = sess.tensor_neg(x2)?;
-            sess.tensor_cat(&[x2_neg, x1], ndim - 1)
-        };
+        let rotate_half =
+            |sess: &mut Self, x: TensorNodeId| -> Result<TensorNodeId, AutogradError> {
+                let shape = sess.tensor_shape(x)?;
+                let ndim = shape.len();
+                let half = head_dim / 2;
+                let x1 = sess.tensor_narrow(x, ndim - 1, 0, half)?;
+                let x2 = sess.tensor_narrow(x, ndim - 1, half, half)?;
+                let x2_neg = sess.tensor_neg(x2)?;
+                sess.tensor_cat(&[x2_neg, x1], ndim - 1)
+            };
         let q_embed = {
             let q_cos = self.tensor_mul(q, cos)?;
             let q_rot = rotate_half(self, q)?;
@@ -5009,10 +5048,7 @@ impl FrankenTorchSession {
     ///
     /// Returns slope values `[num_heads]` where slope[h] = 2^(-8*h/num_heads).
     /// Useful when you want to compute ALiBi bias manually or with different patterns.
-    pub fn alibi_slopes(
-        &mut self,
-        num_heads: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn alibi_slopes(&mut self, num_heads: usize) -> Result<TensorNodeId, AutogradError> {
         if num_heads == 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -5021,7 +5057,9 @@ impl FrankenTorchSession {
             )));
         }
         let ratio = 8.0 / num_heads as f64;
-        let slopes: Vec<f64> = (0..num_heads).map(|h| 2.0_f64.powf(-ratio * (h + 1) as f64)).collect();
+        let slopes: Vec<f64> = (0..num_heads)
+            .map(|h| 2.0_f64.powf(-ratio * (h + 1) as f64))
+            .collect();
         self.tensor_variable(slopes, vec![num_heads], false)
     }
 
@@ -6357,7 +6395,8 @@ impl FrankenTorchSession {
         let mut unique_indices: Vec<usize> = Vec::new();
         let mut seen: std::collections::HashMap<Vec<i64>, usize> = std::collections::HashMap::new();
         let mut inverse: Vec<f64> = Vec::with_capacity(slices.len());
-        let mut counts_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut counts_map: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
         for (idx, slice) in slices.iter() {
             // Convert to bits for comparison (handles NaN)
             let key: Vec<i64> = slice.iter().map(|&v| v.to_bits() as i64).collect();
@@ -8579,13 +8618,8 @@ impl FrankenTorchSession {
             if state_len > 1 {
                 alpha[0][1] = 0.0; // Or first label
             }
-            let get_label = |s: usize| -> usize {
-                if s % 2 == 0 {
-                    blank
-                } else {
-                    target_seq[s / 2]
-                }
-            };
+            let get_label =
+                |s: usize| -> usize { if s % 2 == 0 { blank } else { target_seq[s / 2] } };
             for t in 0..in_len {
                 let lp_offset = (t * batch_size + b) * num_classes;
                 for s in 0..state_len {
@@ -11218,7 +11252,10 @@ impl FrankenTorchSession {
         n: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = vals.iter().map(|&x| shifted_chebyshev_t_scalar(n, x)).collect();
+        let result: Vec<f64> = vals
+            .iter()
+            .map(|&x| shifted_chebyshev_t_scalar(n, x))
+            .collect();
         self.tensor_variable(result, meta.shape().to_vec(), false)
     }
 
@@ -11231,7 +11268,10 @@ impl FrankenTorchSession {
         n: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = vals.iter().map(|&x| shifted_chebyshev_u_scalar(n, x)).collect();
+        let result: Vec<f64> = vals
+            .iter()
+            .map(|&x| shifted_chebyshev_u_scalar(n, x))
+            .collect();
         self.tensor_variable(result, meta.shape().to_vec(), false)
     }
 
@@ -11244,7 +11284,10 @@ impl FrankenTorchSession {
         n: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = vals.iter().map(|&x| shifted_chebyshev_v_scalar(n, x)).collect();
+        let result: Vec<f64> = vals
+            .iter()
+            .map(|&x| shifted_chebyshev_v_scalar(n, x))
+            .collect();
         self.tensor_variable(result, meta.shape().to_vec(), false)
     }
 
@@ -11257,7 +11300,10 @@ impl FrankenTorchSession {
         n: i64,
     ) -> Result<TensorNodeId, AutogradError> {
         let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = vals.iter().map(|&x| shifted_chebyshev_w_scalar(n, x)).collect();
+        let result: Vec<f64> = vals
+            .iter()
+            .map(|&x| shifted_chebyshev_w_scalar(n, x))
+            .collect();
         self.tensor_variable(result, meta.shape().to_vec(), false)
     }
 
@@ -14269,7 +14315,9 @@ impl FrankenTorchSession {
         }
         let shape = self.tensor_shape(input)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("dropblock2d: input must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "dropblock2d: input must be [N, C, H, W]",
+            ));
         }
         let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let block_size = block_size.min(h).min(w);
@@ -14287,7 +14335,8 @@ impl FrankenTorchSession {
                         if self.rng.next_f64() < gamma {
                             for by in 0..block_size {
                                 for bx in 0..block_size {
-                                    let idx = bi * c * h * w + ci * h * w + (yi + by) * w + (xi + bx);
+                                    let idx =
+                                        bi * c * h * w + ci * h * w + (yi + by) * w + (xi + bx);
                                     mask[idx] = 0.0;
                                 }
                             }
@@ -14330,7 +14379,11 @@ impl FrankenTorchSession {
         let mut keep_mask = Vec::with_capacity(batch_size);
         let keep_prob = 1.0 - drop_prob;
         for _ in 0..batch_size {
-            let keep = if self.rng.next_f64() < keep_prob { 1.0 / keep_prob } else { 0.0 };
+            let keep = if self.rng.next_f64() < keep_prob {
+                1.0 / keep_prob
+            } else {
+                0.0
+            };
             keep_mask.push(keep);
         }
         let broadcast_shape: Vec<usize> = std::iter::once(batch_size)
@@ -14403,7 +14456,8 @@ impl FrankenTorchSession {
                 .collect();
             let alpha_t = self.tensor_variable(alphas.clone(), broadcast_shape.clone(), false)?;
             let one_minus_alpha: Vec<f64> = alphas.into_iter().map(|a| 1.0 - a).collect();
-            let one_minus_alpha_t = self.tensor_variable(one_minus_alpha, broadcast_shape, false)?;
+            let one_minus_alpha_t =
+                self.tensor_variable(one_minus_alpha, broadcast_shape, false)?;
             let scaled1 = self.tensor_mul(branch1, alpha_t)?;
             let scaled2 = self.tensor_mul(branch2, one_minus_alpha_t)?;
             self.tensor_add(scaled1, scaled2)
@@ -14606,7 +14660,8 @@ impl FrankenTorchSession {
         for k in 0..out_features {
             let w_k = self.tensor_select(weight, 0, k)?;
             let temp = self.tensor_matmul(input1, w_k)?;
-            let input2_t = self.tensor_transpose(input2, input1_shape.len() - 1, input1_shape.len() - 1)?;
+            let input2_t =
+                self.tensor_transpose(input2, input1_shape.len() - 1, input1_shape.len() - 1)?;
             let out_k = self.tensor_matmul(temp, input2_t)?;
             output_parts.push(out_k);
         }
@@ -15383,7 +15438,14 @@ impl FrankenTorchSession {
         ceil_mode: bool,
         count_include_pad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        self.functional_avg_pool2d(input, kernel_size, stride, padding, ceil_mode, count_include_pad)
+        self.functional_avg_pool2d(
+            input,
+            kernel_size,
+            stride,
+            padding,
+            ceil_mode,
+            count_include_pad,
+        )
     }
 
     /// Apply 1D average pooling over `[N, C, L]`.
@@ -15665,7 +15727,13 @@ impl FrankenTorchSession {
         let stride_d = if stride.0 == 0 { kernel_d } else { stride.0 };
         let stride_h = if stride.1 == 0 { kernel_h } else { stride.1 };
         let stride_w = if stride.2 == 0 { kernel_w } else { stride.2 };
-        if kernel_d == 0 || kernel_h == 0 || kernel_w == 0 || stride_d == 0 || stride_h == 0 || stride_w == 0 {
+        if kernel_d == 0
+            || kernel_h == 0
+            || kernel_w == 0
+            || stride_d == 0
+            || stride_h == 0
+            || stride_w == 0
+        {
             return Err(Self::incompatible_tensor_args(
                 "max_pool3d: kernel_size and stride dimensions must be greater than zero",
             ));
@@ -15710,13 +15778,16 @@ impl FrankenTorchSession {
         )?;
         let mut patches = Vec::with_capacity(patch_count);
         for out_d in 0..output_d {
-            let depth_start = Self::checked_mul(out_d, stride_d, "max_pool3d depth start overflow")?;
+            let depth_start =
+                Self::checked_mul(out_d, stride_d, "max_pool3d depth start overflow")?;
             let depth_slice = self.tensor_narrow(input, 2, depth_start, kernel_d)?;
             for out_h in 0..output_h {
-                let row_start = Self::checked_mul(out_h, stride_h, "max_pool3d row start overflow")?;
+                let row_start =
+                    Self::checked_mul(out_h, stride_h, "max_pool3d row start overflow")?;
                 let row_slice = self.tensor_narrow(depth_slice, 3, row_start, kernel_h)?;
                 for out_w in 0..output_w {
-                    let col_start = Self::checked_mul(out_w, stride_w, "max_pool3d col start overflow")?;
+                    let col_start =
+                        Self::checked_mul(out_w, stride_w, "max_pool3d col start overflow")?;
                     let patch = self.tensor_narrow(row_slice, 4, col_start, kernel_w)?;
                     let flat = self.tensor_reshape(patch, vec![flattened_channels, flat_width])?;
                     let (max_vals, _) = self.tensor_max_dim(flat, 1)?;
@@ -15727,7 +15798,10 @@ impl FrankenTorchSession {
         }
 
         let pooled = self.tensor_cat(&patches, 2)?;
-        self.tensor_reshape(pooled, vec![batch_size, channels, output_d, output_h, output_w])
+        self.tensor_reshape(
+            pooled,
+            vec![batch_size, channels, output_d, output_h, output_w],
+        )
     }
 
     /// Apply 3D max pooling. Alias for `functional_max_pool3d`.
@@ -15756,7 +15830,13 @@ impl FrankenTorchSession {
         let stride_h = if stride.1 == 0 { kernel_h } else { stride.1 };
         let stride_w = if stride.2 == 0 { kernel_w } else { stride.2 };
         let (padding_d, padding_h, padding_w) = padding;
-        if kernel_d == 0 || kernel_h == 0 || kernel_w == 0 || stride_d == 0 || stride_h == 0 || stride_w == 0 {
+        if kernel_d == 0
+            || kernel_h == 0
+            || kernel_w == 0
+            || stride_d == 0
+            || stride_h == 0
+            || stride_w == 0
+        {
             return Err(Self::incompatible_tensor_args(
                 "avg_pool3d: kernel_size and stride dimensions must be greater than zero",
             ));
@@ -15778,7 +15858,9 @@ impl FrankenTorchSession {
         let padded = if padding_d > 0 || padding_h > 0 || padding_w > 0 {
             self.tensor_pad(
                 input,
-                &[padding_w, padding_w, padding_h, padding_h, padding_d, padding_d],
+                &[
+                    padding_w, padding_w, padding_h, padding_h, padding_d, padding_d,
+                ],
                 0.0,
             )?
         } else {
@@ -15803,8 +15885,10 @@ impl FrankenTorchSession {
         };
         let mut output_d = Self::checked_add(output_d, 1, "avg_pool3d output depth overflow")?;
         if ceil_mode && output_d > 0 {
-            let last_start = Self::checked_mul(output_d - 1, stride_d, "avg_pool3d output depth overflow")?;
-            let input_pad_boundary = Self::checked_add(input_d, padding_d, "avg_pool3d output depth overflow")?;
+            let last_start =
+                Self::checked_mul(output_d - 1, stride_d, "avg_pool3d output depth overflow")?;
+            let input_pad_boundary =
+                Self::checked_add(input_d, padding_d, "avg_pool3d output depth overflow")?;
             if last_start >= input_pad_boundary {
                 output_d -= 1;
             }
@@ -15816,8 +15900,10 @@ impl FrankenTorchSession {
         };
         let mut output_h = Self::checked_add(output_h, 1, "avg_pool3d output height overflow")?;
         if ceil_mode && output_h > 0 {
-            let last_start = Self::checked_mul(output_h - 1, stride_h, "avg_pool3d output height overflow")?;
-            let input_pad_boundary = Self::checked_add(input_h, padding_h, "avg_pool3d output height overflow")?;
+            let last_start =
+                Self::checked_mul(output_h - 1, stride_h, "avg_pool3d output height overflow")?;
+            let input_pad_boundary =
+                Self::checked_add(input_h, padding_h, "avg_pool3d output height overflow")?;
             if last_start >= input_pad_boundary {
                 output_h -= 1;
             }
@@ -15829,8 +15915,10 @@ impl FrankenTorchSession {
         };
         let mut output_w = Self::checked_add(output_w, 1, "avg_pool3d output width overflow")?;
         if ceil_mode && output_w > 0 {
-            let last_start = Self::checked_mul(output_w - 1, stride_w, "avg_pool3d output width overflow")?;
-            let input_pad_boundary = Self::checked_add(input_w, padding_w, "avg_pool3d output width overflow")?;
+            let last_start =
+                Self::checked_mul(output_w - 1, stride_w, "avg_pool3d output width overflow")?;
+            let input_pad_boundary =
+                Self::checked_add(input_w, padding_w, "avg_pool3d output width overflow")?;
             if last_start >= input_pad_boundary {
                 output_w -= 1;
             }
@@ -15847,22 +15935,31 @@ impl FrankenTorchSession {
         )?;
         let mut patches = Vec::with_capacity(patch_count);
         for out_d in 0..output_d {
-            let depth_start = Self::checked_mul(out_d, stride_d, "avg_pool3d depth start overflow")?;
-            let depth_end = Self::checked_add(depth_start, kernel_d, "avg_pool3d depth end overflow")?.min(padded_d);
+            let depth_start =
+                Self::checked_mul(out_d, stride_d, "avg_pool3d depth start overflow")?;
+            let depth_end =
+                Self::checked_add(depth_start, kernel_d, "avg_pool3d depth end overflow")?
+                    .min(padded_d);
             let depth_len = depth_end - depth_start;
             let valid_depth_start = depth_start.saturating_sub(padding_d).min(input_d);
             let valid_depth_end = depth_end.saturating_sub(padding_d).min(input_d);
             let valid_depth_len = valid_depth_end.saturating_sub(valid_depth_start);
             for out_h in 0..output_h {
-                let row_start = Self::checked_mul(out_h, stride_h, "avg_pool3d row start overflow")?;
-                let row_end = Self::checked_add(row_start, kernel_h, "avg_pool3d row end overflow")?.min(padded_h);
+                let row_start =
+                    Self::checked_mul(out_h, stride_h, "avg_pool3d row start overflow")?;
+                let row_end =
+                    Self::checked_add(row_start, kernel_h, "avg_pool3d row end overflow")?
+                        .min(padded_h);
                 let row_len = row_end - row_start;
                 let valid_row_start = row_start.saturating_sub(padding_h).min(input_h);
                 let valid_row_end = row_end.saturating_sub(padding_h).min(input_h);
                 let valid_row_len = valid_row_end.saturating_sub(valid_row_start);
                 for out_w in 0..output_w {
-                    let col_start = Self::checked_mul(out_w, stride_w, "avg_pool3d col start overflow")?;
-                    let col_end = Self::checked_add(col_start, kernel_w, "avg_pool3d col end overflow")?.min(padded_w);
+                    let col_start =
+                        Self::checked_mul(out_w, stride_w, "avg_pool3d col start overflow")?;
+                    let col_end =
+                        Self::checked_add(col_start, kernel_w, "avg_pool3d col end overflow")?
+                            .min(padded_w);
                     let col_len = col_end - col_start;
                     let valid_col_start = col_start.saturating_sub(padding_w).min(input_w);
                     let valid_col_end = col_end.saturating_sub(padding_w).min(input_w);
@@ -15882,9 +15979,12 @@ impl FrankenTorchSession {
                                 "avg_pool3d: pooling window contains no input elements",
                             ));
                         }
-                        let depth_slice = self.tensor_narrow(input, 2, valid_depth_start, valid_depth_len)?;
-                        let row_slice = self.tensor_narrow(depth_slice, 3, valid_row_start, valid_row_len)?;
-                        let patch = self.tensor_narrow(row_slice, 4, valid_col_start, valid_col_len)?;
+                        let depth_slice =
+                            self.tensor_narrow(input, 2, valid_depth_start, valid_depth_len)?;
+                        let row_slice =
+                            self.tensor_narrow(depth_slice, 3, valid_row_start, valid_row_len)?;
+                        let patch =
+                            self.tensor_narrow(row_slice, 4, valid_col_start, valid_col_len)?;
                         let flat_len = Self::checked_shape_numel(
                             &[valid_depth_len, valid_row_len, valid_col_len],
                             "avg_pool3d valid patch size overflow",
@@ -15902,7 +16002,10 @@ impl FrankenTorchSession {
         }
 
         let pooled = self.tensor_cat(&patches, 2)?;
-        self.tensor_reshape(pooled, vec![batch_size, channels, output_d, output_h, output_w])
+        self.tensor_reshape(
+            pooled,
+            vec![batch_size, channels, output_d, output_h, output_w],
+        )
     }
 
     /// Apply 3D average pooling. Alias for `functional_avg_pool3d`.
@@ -15916,7 +16019,14 @@ impl FrankenTorchSession {
         ceil_mode: bool,
         count_include_pad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        self.functional_avg_pool3d(input, kernel_size, stride, padding, ceil_mode, count_include_pad)
+        self.functional_avg_pool3d(
+            input,
+            kernel_size,
+            stride,
+            padding,
+            ceil_mode,
+            count_include_pad,
+        )
     }
 
     /// Adaptive average pooling for 1-D input. Alias for `functional_adaptive_avg_pool1d`.
@@ -16221,14 +16331,18 @@ impl FrankenTorchSession {
                         let mut max_idx = h_start * w_in + w_start;
                         for ih in h_start..h_end {
                             for iw in w_start..w_end {
-                                let in_idx = batch * c * h_in * w_in + channel * h_in * w_in + ih * w_in + iw;
+                                let in_idx = batch * c * h_in * w_in
+                                    + channel * h_in * w_in
+                                    + ih * w_in
+                                    + iw;
                                 if input_data[in_idx] > max_val {
                                     max_val = input_data[in_idx];
                                     max_idx = ih * w_in + iw;
                                 }
                             }
                         }
-                        let out_idx = batch * c * h_out * w_out + channel * h_out * w_out + oh * w_out + ow;
+                        let out_idx =
+                            batch * c * h_out * w_out + channel * h_out * w_out + oh * w_out + ow;
                         out_data[out_idx] = max_val;
                         idx_data[out_idx] = max_idx as f64;
                     }
@@ -16464,11 +16578,15 @@ impl FrankenTorchSession {
                         let mut sum_pow = 0.0;
                         for ih in h_start..h_end {
                             for iw in w_start..w_end {
-                                let in_idx = batch * c * h_in * w_in + channel * h_in * w_in + ih * w_in + iw;
+                                let in_idx = batch * c * h_in * w_in
+                                    + channel * h_in * w_in
+                                    + ih * w_in
+                                    + iw;
                                 sum_pow += input_data[in_idx].abs().powf(norm_type);
                             }
                         }
-                        let out_idx = batch * c * h_out * w_out + channel * h_out * w_out + oh * w_out + ow;
+                        let out_idx =
+                            batch * c * h_out * w_out + channel * h_out * w_out + oh * w_out + ow;
                         out_data[out_idx] = sum_pow.powf(1.0 / norm_type);
                     }
                 }
@@ -16684,12 +16802,16 @@ impl FrankenTorchSession {
             for channel in 0..c {
                 for ih in 0..h_in {
                     for iw in 0..w_in {
-                        let in_idx = batch * c * h_in * w_in + channel * h_in * w_in + ih * w_in + iw;
+                        let in_idx =
+                            batch * c * h_in * w_in + channel * h_in * w_in + ih * w_in + iw;
                         let flat_idx = indices_data[in_idx] as usize;
                         let target_h = flat_idx / w_out;
                         let target_w = flat_idx % w_out;
                         if target_h < h_out && target_w < w_out {
-                            let out_idx = batch * c * h_out * w_out + channel * h_out * w_out + target_h * w_out + target_w;
+                            let out_idx = batch * c * h_out * w_out
+                                + channel * h_out * w_out
+                                + target_h * w_out
+                                + target_w;
                             out_data[out_idx] = input_data[in_idx];
                         }
                     }
@@ -17675,18 +17797,12 @@ impl FrankenTorchSession {
     }
 
     /// ReLU activation. Alias for tensor_relu.
-    pub fn functional_relu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_relu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_relu(input)
     }
 
     /// ReLU6 activation. Alias for tensor_relu6.
-    pub fn functional_relu6(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_relu6(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_relu6(input)
     }
 
@@ -17699,26 +17815,17 @@ impl FrankenTorchSession {
     }
 
     /// ELU activation. Alias for tensor_elu.
-    pub fn functional_elu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_elu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_elu(input)
     }
 
     /// SELU activation. Alias for tensor_selu.
-    pub fn functional_selu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_selu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_selu(input)
     }
 
     /// GELU activation. Alias for tensor_gelu.
-    pub fn functional_gelu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_gelu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_gelu(input)
     }
 
@@ -17731,34 +17838,22 @@ impl FrankenTorchSession {
     }
 
     /// Tanh activation. Alias for tensor_tanh.
-    pub fn functional_tanh(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_tanh(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_tanh(input)
     }
 
     /// SiLU (Swish) activation. Alias for tensor_silu.
-    pub fn functional_silu(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_silu(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_silu(input)
     }
 
     /// Swish activation. Alias for tensor_swish.
-    pub fn functional_swish(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_swish(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_swish(input)
     }
 
     /// Mish activation. Alias for tensor_mish.
-    pub fn functional_mish(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_mish(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_mish(input)
     }
 
@@ -18219,7 +18314,13 @@ impl FrankenTorchSession {
         let (padding_h, padding_w) = padding;
         let (stride_h, stride_w) = stride;
 
-        if kernel_h == 0 || kernel_w == 0 || stride_h == 0 || stride_w == 0 || dilation_h == 0 || dilation_w == 0 {
+        if kernel_h == 0
+            || kernel_w == 0
+            || stride_h == 0
+            || stride_w == 0
+            || dilation_h == 0
+            || dilation_w == 0
+        {
             return Err(Self::incompatible_tensor_args(
                 "fold: kernel_size, stride, and dilation must be greater than zero",
             ));
@@ -18526,18 +18627,12 @@ impl FrankenTorchSession {
     }
 
     /// Matrix trace. Alias for tensor_trace.
-    pub fn functional_trace(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_trace(input)
     }
 
     /// Matrix determinant. Alias for tensor_det.
-    pub fn functional_det(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_det(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_det(input)
     }
 
@@ -18697,10 +18792,7 @@ impl FrankenTorchSession {
     }
 
     /// Matrix inverse. Alias for tensor_linalg_inv.
-    pub fn functional_inv(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_inv(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_inv(input)
     }
 
@@ -18723,10 +18815,7 @@ impl FrankenTorchSession {
     }
 
     /// Moore-Penrose pseudo-inverse. Alias for tensor_linalg_pinv.
-    pub fn functional_pinv(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_pinv(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_pinv(input)
     }
 
@@ -19162,7 +19251,10 @@ impl FrankenTorchSession {
     }
 
     /// Return contiguous tensor (no-op in FrankenTorch). Alias for tensor_contiguous.
-    pub fn functional_contiguous(&self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_contiguous(
+        &self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_contiguous(input)
     }
 
@@ -19237,7 +19329,10 @@ impl FrankenTorchSession {
     }
 
     /// Sign bit test. Alias for tensor_signbit.
-    pub fn functional_signbit(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_signbit(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_signbit(input)
     }
 
@@ -19693,7 +19788,10 @@ impl FrankenTorchSession {
     }
 
     /// Check for real numbers. Alias for tensor_isreal.
-    pub fn functional_isreal(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_isreal(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isreal(input)
     }
 
@@ -19766,7 +19864,10 @@ impl FrankenTorchSession {
     }
 
     /// Log-gamma function. Alias for tensor_lgamma.
-    pub fn functional_lgamma(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_lgamma(
+        &mut self,
+        input: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_lgamma(input)
     }
 
@@ -19805,10 +19906,7 @@ impl FrankenTorchSession {
     }
 
     /// Psi function (digamma alias). Alias for tensor_psi.
-    pub fn functional_psi(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_psi(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_psi(input)
     }
 
@@ -20217,18 +20315,12 @@ impl FrankenTorchSession {
     }
 
     /// Round toward zero. Alias for tensor_fix.
-    pub fn functional_fix(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_fix(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fix(input)
     }
 
     /// Base-10 exponential. Alias for tensor_exp10.
-    pub fn functional_exp10(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_exp10(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_exp10(input)
     }
 
@@ -20845,10 +20937,7 @@ impl FrankenTorchSession {
     }
 
     /// Inverse Hermitian FFT. Alias for tensor_ihfft.
-    pub fn functional_ihfft(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_ihfft(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ihfft(input)
     }
 
@@ -21196,10 +21285,7 @@ impl FrankenTorchSession {
     }
 
     /// Standard Gaussian CDF. Alias for tensor_ndtr.
-    pub fn functional_ndtr(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_ndtr(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ndtr(input)
     }
 
@@ -21212,10 +21298,7 @@ impl FrankenTorchSession {
     }
 
     /// Inverse of standard Gaussian CDF. Alias for tensor_ndtri.
-    pub fn functional_ndtri(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_ndtri(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ndtri(input)
     }
 
@@ -21790,10 +21873,7 @@ impl FrankenTorchSession {
     }
 
     /// Covariance matrix. Alias for tensor_cov.
-    pub fn functional_cov(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_cov(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cov(input)
     }
 
@@ -21916,18 +21996,12 @@ impl FrankenTorchSession {
     }
 
     /// Bessel I0. Alias for tensor_i0.
-    pub fn functional_i0(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_i0(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_i0(input)
     }
 
     /// Bessel I1. Alias for tensor_i1.
-    pub fn functional_i1(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_i1(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_i1(input)
     }
 
@@ -21949,10 +22023,7 @@ impl FrankenTorchSession {
     }
 
     /// Expit (sigmoid). Alias for tensor_expit.
-    pub fn functional_expit(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_expit(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_expit(input)
     }
 
@@ -21966,34 +22037,22 @@ impl FrankenTorchSession {
     }
 
     /// Scaled Bessel I0. Alias for tensor_i0e.
-    pub fn functional_i0e(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_i0e(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_i0e(input)
     }
 
     /// Scaled Bessel I1. Alias for tensor_i1e.
-    pub fn functional_i1e(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_i1e(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_i1e(input)
     }
 
     /// Scaled complementary error function. Alias for tensor_erfcx.
-    pub fn functional_erfcx(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_erfcx(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erfcx(input)
     }
 
     /// Entropy. Alias for tensor_entr.
-    pub fn functional_entr(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_entr(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_entr(input)
     }
 
@@ -22059,10 +22118,7 @@ impl FrankenTorchSession {
     }
 
     /// 2-D transpose. Alias for tensor_t.
-    pub fn functional_t(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_t(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_t(input)
     }
 
@@ -22262,10 +22318,7 @@ impl FrankenTorchSession {
     }
 
     /// 2-D real FFT. Alias for tensor_rfft2.
-    pub fn functional_rfft2(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_rfft2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rfft2(input)
     }
 
@@ -22337,18 +22390,12 @@ impl FrankenTorchSession {
     }
 
     /// 2-D FFT. Alias for tensor_fft2.
-    pub fn functional_fft2(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_fft2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fft2(input)
     }
 
     /// 2-D inverse FFT. Alias for tensor_ifft2.
-    pub fn functional_ifft2(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_ifft2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ifft2(input)
     }
 
@@ -22970,18 +23017,12 @@ impl FrankenTorchSession {
     }
 
     /// Element-wise cube. Alias for tensor_cube.
-    pub fn functional_cube(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_cube(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cube(input)
     }
 
     /// Element-wise cube root. Alias for tensor_cbrt.
-    pub fn functional_cbrt(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn functional_cbrt(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cbrt(input)
     }
 
@@ -26290,10 +26331,7 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.bernoulli(prob)`. Each output element is 1 with
     /// probability prob[i], 0 otherwise. Returns a new tensor with same shape.
-    pub fn tensor_bernoulli(
-        &mut self,
-        prob: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_bernoulli(&mut self, prob: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(prob)?;
         let prob_vals = self.tensor_values(prob)?;
         let values: Vec<f64> = prob_vals
@@ -28441,7 +28479,8 @@ impl FrankenTorchSession {
             let mut seed = vec![0.0; n];
             seed[k] = 1.0;
             // VJP of g seeded with e_k gives ∂g_k/∂x = row k of the Hessian.
-            let row = self.tensor_autograd_grad(&[grad_node], &[input], Some(&[seed]), true, false)?;
+            let row =
+                self.tensor_autograd_grad(&[grad_node], &[input], Some(&[seed]), true, false)?;
             if let Some(g) = &row[0] {
                 hess[k * n..k * n + n].copy_from_slice(g);
             }
@@ -28574,7 +28613,13 @@ impl FrankenTorchSession {
     /// - step: current step/epoch
     /// - t_max: maximum number of steps in a cycle
     /// - eta_min: minimum learning rate (default 0.0)
-    pub fn cosine_annealing_lr(&self, base_lr: f64, step: usize, t_max: usize, eta_min: f64) -> f64 {
+    pub fn cosine_annealing_lr(
+        &self,
+        base_lr: f64,
+        step: usize,
+        t_max: usize,
+        eta_min: f64,
+    ) -> f64 {
         if t_max == 0 {
             return base_lr;
         }
@@ -29014,10 +29059,13 @@ impl FrankenTorchSession {
             )));
         }
         let shape = self.tensor_shape(tensor)?;
-        let numel: usize = shape.iter().product();
+        let _numel: usize = shape.iter().product();
         let rand_tensor = self.tensor_rand(shape.clone(), false)?;
         let rand_vals = self.tensor_values(rand_tensor)?;
-        let mask: Vec<f64> = rand_vals.iter().map(|&v| if v >= amount { 1.0 } else { 0.0 }).collect();
+        let mask: Vec<f64> = rand_vals
+            .iter()
+            .map(|&v| if v >= amount { 1.0 } else { 0.0 })
+            .collect();
         self.tensor_variable(mask, shape, false)
     }
 
@@ -29033,10 +29081,7 @@ impl FrankenTorchSession {
     }
 
     /// Compute sparsity of a tensor (fraction of zeros).
-    pub fn compute_sparsity(
-        &mut self,
-        tensor: TensorNodeId,
-    ) -> Result<f64, AutogradError> {
+    pub fn compute_sparsity(&mut self, tensor: TensorNodeId) -> Result<f64, AutogradError> {
         let vals = self.tensor_values(tensor)?;
         if vals.is_empty() {
             return Ok(0.0);
@@ -29236,7 +29281,11 @@ impl FrankenTorchSession {
             )));
         }
 
-        let trailing_shape: Vec<usize> = if shape.len() > 2 { shape[2..].to_vec() } else { vec![] };
+        let trailing_shape: Vec<usize> = if shape.len() > 2 {
+            shape[2..].to_vec()
+        } else {
+            vec![]
+        };
         let trailing_numel: usize = trailing_shape.iter().product::<usize>().max(1);
 
         let sorted_indices: Vec<usize> = if enforce_sorted {
@@ -29562,7 +29611,12 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
         hx: Option<(TensorNodeId, TensorNodeId)>,
-        weights: &[(TensorNodeId, TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>)],
+        weights: &[(
+            TensorNodeId,
+            TensorNodeId,
+            Option<TensorNodeId>,
+            Option<TensorNodeId>,
+        )],
         batch_first: bool,
         bidirectional: bool,
     ) -> Result<(TensorNodeId, (TensorNodeId, TensorNodeId)), AutogradError> {
@@ -29598,7 +29652,11 @@ impl FrankenTorchSession {
 
         // Convert input to seq-first if needed
         let input_data = self.tensor_values(input)?;
-        let input_size = if batch_first { input_shape[2] } else { input_shape[2] };
+        let input_size = if batch_first {
+            input_shape[2]
+        } else {
+            input_shape[2]
+        };
 
         let mut layer_input: Vec<Vec<f64>> = Vec::with_capacity(seq_len);
 
@@ -29618,7 +29676,8 @@ impl FrankenTorchSession {
             layer_input.push(seq_data);
         }
 
-        let mut outputs: Vec<Vec<f64>> = vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
+        let mut outputs: Vec<Vec<f64>> =
+            vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
 
         // Process each layer
         for layer in 0..num_layers {
@@ -29633,7 +29692,18 @@ impl FrankenTorchSession {
             let w_hh_t = self.tensor_transpose(*w_hh, 0, 1)?;
 
             for t in 0..seq_len {
-                let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                let x = self.tensor_variable(
+                    layer_input[t].clone(),
+                    vec![
+                        batch_size,
+                        if layer == 0 {
+                            input_size
+                        } else {
+                            hidden_size * num_directions
+                        },
+                    ],
+                    false,
+                )?;
                 let h_t = self.tensor_variable(h.clone(), vec![batch_size, hidden_size], false)?;
                 let c_t = self.tensor_variable(c.clone(), vec![batch_size, hidden_size], false)?;
 
@@ -29657,11 +29727,25 @@ impl FrankenTorchSession {
                 let mut c_rev = c_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
 
                 for t in (0..seq_len).rev() {
-                    let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
-                    let h_t = self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
-                    let c_t = self.tensor_variable(c_rev.clone(), vec![batch_size, hidden_size], false)?;
+                    let x = self.tensor_variable(
+                        layer_input[t].clone(),
+                        vec![
+                            batch_size,
+                            if layer == 0 {
+                                input_size
+                            } else {
+                                hidden_size * num_directions
+                            },
+                        ],
+                        false,
+                    )?;
+                    let h_t =
+                        self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
+                    let c_t =
+                        self.tensor_variable(c_rev.clone(), vec![batch_size, hidden_size], false)?;
 
-                    let (new_h, new_c) = self.lstm_cell(x, (h_t, c_t), w_ih_t, w_hh_t, *b_ih, *b_hh)?;
+                    let (new_h, new_c) =
+                        self.lstm_cell(x, (h_t, c_t), w_ih_t, w_hh_t, *b_ih, *b_hh)?;
                     h_rev = self.tensor_values(new_h)?;
                     c_rev = self.tensor_values(new_c)?;
 
@@ -29694,8 +29778,16 @@ impl FrankenTorchSession {
         };
         let output = self.tensor_variable(flat_output, out_shape, false)?;
 
-        let h_n = self.tensor_variable(h_all, vec![num_layers * num_directions, batch_size, hidden_size], false)?;
-        let c_n = self.tensor_variable(c_all, vec![num_layers * num_directions, batch_size, hidden_size], false)?;
+        let h_n = self.tensor_variable(
+            h_all,
+            vec![num_layers * num_directions, batch_size, hidden_size],
+            false,
+        )?;
+        let c_n = self.tensor_variable(
+            c_all,
+            vec![num_layers * num_directions, batch_size, hidden_size],
+            false,
+        )?;
 
         Ok((output, (h_n, c_n)))
     }
@@ -29709,7 +29801,12 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
         hx: Option<TensorNodeId>,
-        weights: &[(TensorNodeId, TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>)],
+        weights: &[(
+            TensorNodeId,
+            TensorNodeId,
+            Option<TensorNodeId>,
+            Option<TensorNodeId>,
+        )],
         batch_first: bool,
         bidirectional: bool,
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
@@ -29741,7 +29838,11 @@ impl FrankenTorchSession {
         };
 
         let input_data = self.tensor_values(input)?;
-        let input_size = if batch_first { input_shape[2] } else { input_shape[2] };
+        let input_size = if batch_first {
+            input_shape[2]
+        } else {
+            input_shape[2]
+        };
 
         let mut layer_input: Vec<Vec<f64>> = Vec::with_capacity(seq_len);
         for t in 0..seq_len {
@@ -29759,7 +29860,8 @@ impl FrankenTorchSession {
             layer_input.push(seq_data);
         }
 
-        let mut outputs: Vec<Vec<f64>> = vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
+        let mut outputs: Vec<Vec<f64>> =
+            vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
 
         for layer in 0..num_layers {
             let (w_ih, w_hh, b_ih, b_hh) = &weights[layer];
@@ -29770,7 +29872,18 @@ impl FrankenTorchSession {
             let w_hh_t = self.tensor_transpose(*w_hh, 0, 1)?;
 
             for t in 0..seq_len {
-                let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                let x = self.tensor_variable(
+                    layer_input[t].clone(),
+                    vec![
+                        batch_size,
+                        if layer == 0 {
+                            input_size
+                        } else {
+                            hidden_size * num_directions
+                        },
+                    ],
+                    false,
+                )?;
                 let h_t = self.tensor_variable(h.clone(), vec![batch_size, hidden_size], false)?;
 
                 let new_h = self.gru_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?;
@@ -29788,8 +29901,20 @@ impl FrankenTorchSession {
                 let mut h_rev = h_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
 
                 for t in (0..seq_len).rev() {
-                    let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
-                    let h_t = self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
+                    let x = self.tensor_variable(
+                        layer_input[t].clone(),
+                        vec![
+                            batch_size,
+                            if layer == 0 {
+                                input_size
+                            } else {
+                                hidden_size * num_directions
+                            },
+                        ],
+                        false,
+                    )?;
+                    let h_t =
+                        self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
 
                     let new_h = self.gru_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?;
                     h_rev = self.tensor_values(new_h)?;
@@ -29819,7 +29944,11 @@ impl FrankenTorchSession {
             vec![seq_len, batch_size, out_size]
         };
         let output = self.tensor_variable(flat_output, out_shape, false)?;
-        let h_n = self.tensor_variable(h_all, vec![num_layers * num_directions, batch_size, hidden_size], false)?;
+        let h_n = self.tensor_variable(
+            h_all,
+            vec![num_layers * num_directions, batch_size, hidden_size],
+            false,
+        )?;
 
         Ok((output, h_n))
     }
@@ -29833,7 +29962,12 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
         hx: Option<TensorNodeId>,
-        weights: &[(TensorNodeId, TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>)],
+        weights: &[(
+            TensorNodeId,
+            TensorNodeId,
+            Option<TensorNodeId>,
+            Option<TensorNodeId>,
+        )],
         batch_first: bool,
         bidirectional: bool,
         nonlinearity: &str,
@@ -29866,7 +30000,11 @@ impl FrankenTorchSession {
         };
 
         let input_data = self.tensor_values(input)?;
-        let input_size = if batch_first { input_shape[2] } else { input_shape[2] };
+        let input_size = if batch_first {
+            input_shape[2]
+        } else {
+            input_shape[2]
+        };
 
         let mut layer_input: Vec<Vec<f64>> = Vec::with_capacity(seq_len);
         for t in 0..seq_len {
@@ -29884,7 +30022,8 @@ impl FrankenTorchSession {
             layer_input.push(seq_data);
         }
 
-        let mut outputs: Vec<Vec<f64>> = vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
+        let mut outputs: Vec<Vec<f64>> =
+            vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
 
         let use_relu = nonlinearity == "relu";
 
@@ -29897,7 +30036,18 @@ impl FrankenTorchSession {
             let w_hh_t = self.tensor_transpose(*w_hh, 0, 1)?;
 
             for t in 0..seq_len {
-                let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
+                let x = self.tensor_variable(
+                    layer_input[t].clone(),
+                    vec![
+                        batch_size,
+                        if layer == 0 {
+                            input_size
+                        } else {
+                            hidden_size * num_directions
+                        },
+                    ],
+                    false,
+                )?;
                 let h_t = self.tensor_variable(h.clone(), vec![batch_size, hidden_size], false)?;
 
                 let new_h = if use_relu {
@@ -29919,8 +30069,20 @@ impl FrankenTorchSession {
                 let mut h_rev = h_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
 
                 for t in (0..seq_len).rev() {
-                    let x = self.tensor_variable(layer_input[t].clone(), vec![batch_size, if layer == 0 { input_size } else { hidden_size * num_directions }], false)?;
-                    let h_t = self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
+                    let x = self.tensor_variable(
+                        layer_input[t].clone(),
+                        vec![
+                            batch_size,
+                            if layer == 0 {
+                                input_size
+                            } else {
+                                hidden_size * num_directions
+                            },
+                        ],
+                        false,
+                    )?;
+                    let h_t =
+                        self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
 
                     let new_h = if use_relu {
                         self.rnn_relu_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?
@@ -29954,7 +30116,11 @@ impl FrankenTorchSession {
             vec![seq_len, batch_size, out_size]
         };
         let output = self.tensor_variable(flat_output, out_shape, false)?;
-        let h_n = self.tensor_variable(h_all, vec![num_layers * num_directions, batch_size, hidden_size], false)?;
+        let h_n = self.tensor_variable(
+            h_all,
+            vec![num_layers * num_directions, batch_size, hidden_size],
+            false,
+        )?;
 
         Ok((output, h_n))
     }
@@ -30037,13 +30203,14 @@ impl FrankenTorchSession {
         })?;
 
         // requires_grad flag
-        file.write_all(&[if requires_grad { 1 } else { 0 }]).map_err(|_| {
-            AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "tensor_save: write error",
-                },
-            ))
-        })?;
+        file.write_all(&[if requires_grad { 1 } else { 0 }])
+            .map_err(|_| {
+                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                    ft_dispatch::DispatchKeyError::IncompatibleSet {
+                        reason: "tensor_save: write error",
+                    },
+                ))
+            })?;
 
         // Values as f64 bytes
         for &val in &values {
@@ -30069,10 +30236,7 @@ impl FrankenTorchSession {
     ///
     /// # Returns
     /// The loaded tensor
-    pub fn tensor_load(
-        &mut self,
-        path: &std::path::Path,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_load(&mut self, path: &std::path::Path) -> Result<TensorNodeId, AutogradError> {
         use std::io::Read;
 
         let mut file = std::fs::File::open(path).map_err(|e| {
@@ -30211,13 +30375,14 @@ impl FrankenTorchSession {
         for &(name, tensor) in tensors {
             // Name length and bytes
             let name_bytes = name.as_bytes();
-            file.write_all(&(name_bytes.len() as u32).to_le_bytes()).map_err(|_| {
-                AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                    ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "tensor_save_state_dict: write error",
-                    },
-                ))
-            })?;
+            file.write_all(&(name_bytes.len() as u32).to_le_bytes())
+                .map_err(|_| {
+                    AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                        ft_dispatch::DispatchKeyError::IncompatibleSet {
+                            reason: "tensor_save_state_dict: write error",
+                        },
+                    ))
+                })?;
             file.write_all(name_bytes).map_err(|_| {
                 AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -31288,7 +31453,12 @@ impl FrankenTorchSession {
     }
 }
 
-fn solve_triangular_1d(a: &[f64], b: &[f64], n: usize, upper: bool) -> Result<Vec<f64>, AutogradError> {
+fn solve_triangular_1d(
+    a: &[f64],
+    b: &[f64],
+    n: usize,
+    upper: bool,
+) -> Result<Vec<f64>, AutogradError> {
     let mut x = vec![0.0; n];
     if upper {
         for i in (0..n).rev() {
@@ -31327,7 +31497,6 @@ fn solve_triangular_1d(a: &[f64], b: &[f64], n: usize, upper: bool) -> Result<Ve
 }
 
 impl FrankenTorchSession {
-
     fn validate_poisson_rate(rate: f64) -> Result<(), AutogradError> {
         if !rate.is_finite() || rate < 0.0 {
             return Err(Self::incompatible_tensor_args(
@@ -31590,7 +31759,10 @@ impl FrankenTorchSession {
         let shape = self.tensor_shape(node)?;
         if dim >= shape.len() {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
-                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim: shape.len() },
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim,
+                    ndim: shape.len(),
+                },
             )));
         }
         Ok(shape[dim])
@@ -31607,11 +31779,18 @@ impl FrankenTorchSession {
     /// Return the stride of a specific dimension.
     ///
     /// Equivalent to `tensor.stride(dim)` in PyTorch.
-    pub fn tensor_stride_dim(&self, node: TensorNodeId, dim: usize) -> Result<usize, AutogradError> {
+    pub fn tensor_stride_dim(
+        &self,
+        node: TensorNodeId,
+        dim: usize,
+    ) -> Result<usize, AutogradError> {
         let strides = self.tensor_stride(node)?;
         if dim >= strides.len() {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
-                ft_kernel_cpu::KernelError::InvalidDimension { dim, ndim: strides.len() },
+                ft_kernel_cpu::KernelError::InvalidDimension {
+                    dim,
+                    ndim: strides.len(),
+                },
             )));
         }
         Ok(strides[dim])
@@ -31723,7 +31902,10 @@ impl FrankenTorchSession {
     /// Handle that can be used to remove the hook
     pub fn register_module_forward_hook<F>(&mut self, hook: F) -> ModuleHookHandle
     where
-        F: Fn(TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError> + Send + Sync + 'static,
+        F: Fn(TensorNodeId, TensorNodeId) -> Result<TensorNodeId, AutogradError>
+            + Send
+            + Sync
+            + 'static,
     {
         let handle = ModuleHookHandle(self.module_hook_counter);
         self.module_hook_counter += 1;
@@ -32697,7 +32879,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(embeddings)?;
         if shape.len() != 2 {
-            return Err(Self::incompatible_tensor_args("supcon_loss: embeddings must be [N, D]"));
+            return Err(Self::incompatible_tensor_args(
+                "supcon_loss: embeddings must be [N, D]",
+            ));
         }
         let n = shape[0];
         let label_data = self.tensor_values(labels)?;
@@ -32707,7 +32891,12 @@ impl FrankenTorchSession {
             .flat_map(|i| {
                 let start = i * d;
                 let end = start + d;
-                let norm: f64 = emb_data[start..end].iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-12);
+                let norm: f64 = emb_data[start..end]
+                    .iter()
+                    .map(|x| x * x)
+                    .sum::<f64>()
+                    .sqrt()
+                    .max(1e-12);
                 emb_data[start..end].iter().map(move |&x| x / norm)
             })
             .collect();
@@ -32747,7 +32936,11 @@ impl FrankenTorchSession {
             total_loss -= pos_loss / positives.len() as f64;
             count += 1;
         }
-        let mean_loss = if count > 0 { total_loss / count as f64 } else { 0.0 };
+        let mean_loss = if count > 0 {
+            total_loss / count as f64
+        } else {
+            0.0
+        };
         self.tensor_variable(vec![mean_loss], vec![1], false)
     }
 
@@ -32827,7 +33020,9 @@ impl FrankenTorchSession {
         let shape1 = self.tensor_shape(z1)?;
         let shape2 = self.tensor_shape(z2)?;
         if shape1 != shape2 || shape1.len() != 2 {
-            return Err(Self::incompatible_tensor_args("vicreg_loss: z1 and z2 must have same shape [N, D]"));
+            return Err(Self::incompatible_tensor_args(
+                "vicreg_loss: z1 and z2 must have same shape [N, D]",
+            ));
         }
         let (n, d) = (shape1[0], shape1[1]);
         let diff = self.tensor_sub(z1, z2)?;
@@ -32841,9 +33036,12 @@ impl FrankenTorchSession {
         let std2 = self.tensor_std_dim(z2_c, 0, 1)?;
         let std_data1 = self.tensor_values(std1)?;
         let std_data2 = self.tensor_values(std2)?;
-        let var_loss: f64 = std_data1.iter().chain(std_data2.iter())
+        let var_loss: f64 = std_data1
+            .iter()
+            .chain(std_data2.iter())
             .map(|&s| (1.0 - s).max(0.0).powi(2))
-            .sum::<f64>() / (2.0 * d as f64);
+            .sum::<f64>()
+            / (2.0 * d as f64);
         let z1_t = self.tensor_transpose(z1_c, 0, 1)?;
         let z2_t = self.tensor_transpose(z2_c, 0, 1)?;
         let cov1 = self.tensor_matmul(z1_t, z1_c)?;
@@ -32888,9 +33086,11 @@ impl FrankenTorchSession {
         let (batch_size, n_points, coords) = match shape.len() {
             2 => (1, shape[0], shape[1]),
             3 => (shape[0], shape[1], shape[2]),
-            _ => return Err(Self::incompatible_tensor_args(
-                "farthest_point_sampling: points must be [N, 3] or [B, N, 3]",
-            )),
+            _ => {
+                return Err(Self::incompatible_tensor_args(
+                    "farthest_point_sampling: points must be [N, 3] or [B, N, 3]",
+                ));
+            }
         };
         if coords != 3 {
             return Err(Self::incompatible_tensor_args(
@@ -32968,9 +33168,11 @@ impl FrankenTorchSession {
         let (batch_size, n_points, n_queries) = match (p_shape.len(), q_shape.len()) {
             (2, 2) => (1, p_shape[0], q_shape[0]),
             (3, 3) if p_shape[0] == q_shape[0] => (p_shape[0], p_shape[1], q_shape[1]),
-            _ => return Err(Self::incompatible_tensor_args(
-                "ball_query: points and queries must have compatible shapes",
-            )),
+            _ => {
+                return Err(Self::incompatible_tensor_args(
+                    "ball_query: points and queries must have compatible shapes",
+                ));
+            }
         };
         let p_data = self.tensor_values(points)?;
         let q_data = self.tensor_values(queries)?;
@@ -33033,12 +33235,16 @@ impl FrankenTorchSession {
         let (batch_size, n_points, n_queries) = match (p_shape.len(), q_shape.len()) {
             (2, 2) => (1, p_shape[0], q_shape[0]),
             (3, 3) if p_shape[0] == q_shape[0] => (p_shape[0], p_shape[1], q_shape[1]),
-            _ => return Err(Self::incompatible_tensor_args(
-                "knn_search: points and queries must have compatible shapes",
-            )),
+            _ => {
+                return Err(Self::incompatible_tensor_args(
+                    "knn_search: points and queries must have compatible shapes",
+                ));
+            }
         };
         if k > n_points {
-            return Err(Self::incompatible_tensor_args("knn_search: k > number of points"));
+            return Err(Self::incompatible_tensor_args(
+                "knn_search: k > number of points",
+            ));
         }
         let p_data = self.tensor_values(points)?;
         let q_data = self.tensor_values(queries)?;
@@ -33103,9 +33309,11 @@ impl FrankenTorchSession {
             (3, 3) if p_shape[0] == i_shape[0] => {
                 (p_shape[0], p_shape[1], p_shape[2], i_shape[1], i_shape[2])
             }
-            _ => return Err(Self::incompatible_tensor_args(
-                "group_points: shapes must be compatible",
-            )),
+            _ => {
+                return Err(Self::incompatible_tensor_args(
+                    "group_points: shapes must be compatible",
+                ));
+            }
         };
         let p_data = self.tensor_values(points)?;
         let i_data = self.tensor_values(indices)?;
@@ -33153,7 +33361,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(images)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("cutout: images must be [B, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "cutout: images must be [B, C, H, W]",
+            ));
         }
         let (b, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let mut data = self.tensor_values(images)?;
@@ -33217,7 +33427,8 @@ impl FrankenTorchSession {
                     for ci in 0..c {
                         for yi in y..y + rh {
                             for xi in x..x + rw {
-                                data[bi * c * h * w + ci * h * w + yi * w + xi] = self.rng.next_f64();
+                                data[bi * c * h * w + ci * h * w + yi * w + xi] =
+                                    self.rng.next_f64();
                             }
                         }
                     }
@@ -33261,7 +33472,8 @@ impl FrankenTorchSession {
                 let mut found = None;
                 for _ in 0..10 {
                     let target_area = area * (scale.0 + self.rng.next_f64() * (scale.1 - scale.0));
-                    let aspect = (ratio.0.ln() + self.rng.next_f64() * (ratio.1.ln() - ratio.0.ln())).exp();
+                    let aspect =
+                        (ratio.0.ln() + self.rng.next_f64() * (ratio.1.ln() - ratio.0.ln())).exp();
                     let ch = (target_area / aspect).sqrt() as usize;
                     let cw = (target_area * aspect).sqrt() as usize;
                     if ch > 0 && cw > 0 && ch <= h && cw <= w {
@@ -33397,11 +33609,15 @@ impl FrankenTorchSession {
         window_size: usize,
     ) -> Result<TensorNodeId, AutogradError> {
         if window_size == 0 {
-            return Err(Self::incompatible_tensor_args("moving_average: window_size must be > 0"));
+            return Err(Self::incompatible_tensor_args(
+                "moving_average: window_size must be > 0",
+            ));
         }
         let shape = self.tensor_shape(input)?;
         if shape.is_empty() {
-            return Err(Self::incompatible_tensor_args("moving_average: input must be non-empty"));
+            return Err(Self::incompatible_tensor_args(
+                "moving_average: input must be non-empty",
+            ));
         }
         let seq_len = *shape.last().unwrap();
         let batch_size: usize = shape[..shape.len() - 1].iter().product();
@@ -33429,17 +33645,17 @@ impl FrankenTorchSession {
     /// Args:
     /// - input: [..., seq_len] input tensor
     /// - alpha: smoothing factor in (0, 1]. Higher = more weight on recent values.
-    pub fn ewma(
-        &mut self,
-        input: TensorNodeId,
-        alpha: f64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ewma(&mut self, input: TensorNodeId, alpha: f64) -> Result<TensorNodeId, AutogradError> {
         if alpha <= 0.0 || alpha > 1.0 {
-            return Err(Self::incompatible_tensor_args("ewma: alpha must be in (0, 1]"));
+            return Err(Self::incompatible_tensor_args(
+                "ewma: alpha must be in (0, 1]",
+            ));
         }
         let shape = self.tensor_shape(input)?;
         if shape.is_empty() {
-            return Err(Self::incompatible_tensor_args("ewma: input must be non-empty"));
+            return Err(Self::incompatible_tensor_args(
+                "ewma: input must be non-empty",
+            ));
         }
         let seq_len = *shape.last().unwrap();
         let batch_size: usize = shape[..shape.len() - 1].iter().product();
@@ -33472,7 +33688,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.is_empty() || lags.is_empty() {
-            return Err(Self::incompatible_tensor_args("lag_features: invalid input"));
+            return Err(Self::incompatible_tensor_args(
+                "lag_features: invalid input",
+            ));
         }
         let seq_len = *shape.last().unwrap();
         let batch_size: usize = shape[..shape.len() - 1].iter().product();
@@ -33507,11 +33725,15 @@ impl FrankenTorchSession {
         window_size: usize,
     ) -> Result<TensorNodeId, AutogradError> {
         if window_size == 0 {
-            return Err(Self::incompatible_tensor_args("rolling_stats: window_size must be > 0"));
+            return Err(Self::incompatible_tensor_args(
+                "rolling_stats: window_size must be > 0",
+            ));
         }
         let shape = self.tensor_shape(input)?;
         if shape.is_empty() {
-            return Err(Self::incompatible_tensor_args("rolling_stats: input must be non-empty"));
+            return Err(Self::incompatible_tensor_args(
+                "rolling_stats: input must be non-empty",
+            ));
         }
         let seq_len = *shape.last().unwrap();
         let batch_size: usize = shape[..shape.len() - 1].iter().product();
@@ -33520,9 +33742,7 @@ impl FrankenTorchSession {
         for bi in 0..batch_size {
             for i in 0..seq_len {
                 let start = i.saturating_sub(window_size - 1);
-                let window: Vec<f64> = (start..=i)
-                    .map(|j| data[bi * seq_len + j])
-                    .collect();
+                let window: Vec<f64> = (start..=i).map(|j| data[bi * seq_len + j]).collect();
                 let n = window.len() as f64;
                 let min_v = window.iter().cloned().fold(f64::INFINITY, f64::min);
                 let max_v = window.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -33572,9 +33792,7 @@ impl FrankenTorchSession {
         let mut trend = vec![0.0; seq_len];
         let half = period / 2;
         for i in half..(seq_len - half) {
-            let window: f64 = (i - half..i + half + period % 2)
-                .map(|j| data[j])
-                .sum();
+            let window: f64 = (i - half..i + half + period % 2).map(|j| data[j]).sum();
             trend[i] = window / period as f64;
         }
         for i in 0..half {
@@ -33807,7 +34025,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(edge_index)?;
         if shape.len() != 2 || shape[0] != 2 {
-            return Err(Self::incompatible_tensor_args("degree: edge_index must be [2, E]"));
+            return Err(Self::incompatible_tensor_args(
+                "degree: edge_index must be [2, E]",
+            ));
         }
         let e = shape[1];
         let data = self.tensor_values(edge_index)?;
@@ -33872,7 +34092,9 @@ impl FrankenTorchSession {
         let data = self.tensor_values(input)?;
         let shape = self.tensor_shape(input)?;
         if idx >= data.len() {
-            return Err(Self::incompatible_tensor_args("numerical_gradient: idx out of bounds"));
+            return Err(Self::incompatible_tensor_args(
+                "numerical_gradient: idx out of bounds",
+            ));
         }
         let mut data_plus = data.clone();
         data_plus[idx] += eps;
@@ -33888,10 +34110,7 @@ impl FrankenTorchSession {
     /// Check if two gradient vectors are approximately equal.
     ///
     /// Returns maximum absolute and relative errors between gradients.
-    pub fn gradient_check_stats(
-        analytical: &[f64],
-        numerical: &[f64],
-    ) -> (f64, f64) {
+    pub fn gradient_check_stats(analytical: &[f64], numerical: &[f64]) -> (f64, f64) {
         let mut max_abs_err = 0.0_f64;
         let mut max_rel_err = 0.0_f64;
         for (&a, &n) in analytical.iter().zip(numerical.iter()) {
@@ -33906,7 +34125,10 @@ impl FrankenTorchSession {
     /// Print tensor statistics for debugging.
     ///
     /// Returns: (min, max, mean, std, num_nan, num_inf)
-    pub fn tensor_stats(&self, node: TensorNodeId) -> Result<(f64, f64, f64, f64, usize, usize), AutogradError> {
+    pub fn tensor_stats(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<(f64, f64, f64, f64, usize, usize), AutogradError> {
         let data = self.tensor_values(node)?;
         if data.is_empty() {
             return Ok((f64::NAN, f64::NAN, f64::NAN, f64::NAN, 0, 0));
@@ -33928,11 +34150,17 @@ impl FrankenTorchSession {
             }
         }
         let n_valid = data.len() - num_nan - num_inf;
-        let mean = if n_valid > 0 { sum / n_valid as f64 } else { f64::NAN };
-        let var: f64 = data.iter()
+        let mean = if n_valid > 0 {
+            sum / n_valid as f64
+        } else {
+            f64::NAN
+        };
+        let var: f64 = data
+            .iter()
             .filter(|v| !v.is_nan() && !v.is_infinite())
             .map(|&v| (v - mean).powi(2))
-            .sum::<f64>() / n_valid.max(1) as f64;
+            .sum::<f64>()
+            / n_valid.max(1) as f64;
         let std = var.sqrt();
         Ok((min, max, mean, std, num_nan, num_inf))
     }
@@ -33940,7 +34168,11 @@ impl FrankenTorchSession {
     /// Detect gradient anomalies (NaN, Inf, extreme values).
     ///
     /// Useful for debugging training instabilities.
-    pub fn detect_gradient_anomaly(&self, params: &[TensorNodeId], threshold: f64) -> Result<Vec<(TensorNodeId, String)>, AutogradError> {
+    pub fn detect_gradient_anomaly(
+        &self,
+        params: &[TensorNodeId],
+        threshold: f64,
+    ) -> Result<Vec<(TensorNodeId, String)>, AutogradError> {
         let mut anomalies = Vec::new();
         for &p in params {
             if let Some(grad) = self.tensor_accumulated_gradient(p)? {
@@ -33991,7 +34223,9 @@ impl FrankenTorchSession {
         let pred_shape = self.tensor_shape(pred)?;
         let target_shape = self.tensor_shape(target)?;
         if pred_shape != target_shape {
-            return Err(Self::incompatible_tensor_args("wing_loss: shapes must match"));
+            return Err(Self::incompatible_tensor_args(
+                "wing_loss: shapes must match",
+            ));
         }
         let pred_data = self.tensor_values(pred)?;
         let target_data = self.tensor_values(target)?;
@@ -34132,7 +34366,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 2 {
-            return Err(Self::incompatible_tensor_args("polynomial_features: x must be [N, D]"));
+            return Err(Self::incompatible_tensor_args(
+                "polynomial_features: x must be [N, D]",
+            ));
         }
         let (n, d) = (shape[0], shape[1]);
         let data = self.tensor_values(x)?;
@@ -34200,7 +34436,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 2 {
-            return Err(Self::incompatible_tensor_args("interaction_features: x must be [N, D]"));
+            return Err(Self::incompatible_tensor_args(
+                "interaction_features: x must be [N, D]",
+            ));
         }
         let (n, d) = (shape[0], shape[1]);
         let data = self.tensor_values(x)?;
@@ -34236,15 +34474,15 @@ impl FrankenTorchSession {
         let x_shape = self.tensor_shape(x)?;
         let b_shape = self.tensor_shape(boundaries)?;
         if b_shape.len() != 1 {
-            return Err(Self::incompatible_tensor_args("bucketize: boundaries must be 1D"));
+            return Err(Self::incompatible_tensor_args(
+                "bucketize: boundaries must be 1D",
+            ));
         }
         let data = self.tensor_values(x)?;
         let bounds = self.tensor_values(boundaries)?;
         let output: Vec<f64> = data
             .iter()
-            .map(|&v| {
-                bounds.iter().filter(|&&b| v >= b).count() as f64
-            })
+            .map(|&v| bounds.iter().filter(|&&b| v >= b).count() as f64)
             .collect();
         self.tensor_variable(output, x_shape, false)
     }
@@ -34269,7 +34507,9 @@ impl FrankenTorchSession {
         let cat_shape = self.tensor_shape(categories)?;
         let tgt_shape = self.tensor_shape(targets)?;
         if cat_shape != tgt_shape || cat_shape.len() != 1 {
-            return Err(Self::incompatible_tensor_args("target_encode: mismatched shapes"));
+            return Err(Self::incompatible_tensor_args(
+                "target_encode: mismatched shapes",
+            ));
         }
         let n = cat_shape[0];
         let cat_data = self.tensor_values(categories)?;
@@ -34292,7 +34532,11 @@ impl FrankenTorchSession {
                     return global_mean;
                 }
                 let nc = cat_counts[ci] as f64;
-                let mean_c = if nc > 0.0 { cat_sums[ci] / nc } else { global_mean };
+                let mean_c = if nc > 0.0 {
+                    cat_sums[ci] / nc
+                } else {
+                    global_mean
+                };
                 (nc * mean_c + smoothing * global_mean) / (nc + smoothing)
             })
             .collect();
@@ -34322,9 +34566,11 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("squeeze_excitation: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "squeeze_excitation: x must be [N, C, H, W]",
+            ));
         }
-        let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+        let (n, c, _h, _w) = (shape[0], shape[1], shape[2], shape[3]);
         let gap = self.tensor_adaptive_avg_pool2d(x, (1, 1))?;
         let gap_flat = self.tensor_reshape(gap, vec![n, c])?;
         let fc1_out = self.tensor_linear(gap_flat, fc1_weight, fc1_bias)?;
@@ -34348,7 +34594,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("channel_attention: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "channel_attention: x must be [N, C, H, W]",
+            ));
         }
         let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
         let avg_pool = self.tensor_adaptive_avg_pool2d(x, (1, 1))?;
@@ -34378,7 +34626,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("spatial_attention: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "spatial_attention: x must be [N, C, H, W]",
+            ));
         }
         let (n, _, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let avg_map = self.tensor_mean_dim(x, 1)?;
@@ -34402,7 +34652,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("efficient_channel_attention: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "efficient_channel_attention: x must be [N, C, H, W]",
+            ));
         }
         let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
         let gap = self.tensor_adaptive_avg_pool2d(x, (1, 1))?;
@@ -34536,7 +34788,7 @@ impl FrankenTorchSession {
                 "center_loss: features and centers must be 2D",
             ));
         }
-        let n = feat_shape[0];
+        let _n = feat_shape[0];
         let d = feat_shape[1];
         if centers_shape[1] != d {
             return Err(Self::incompatible_tensor_args(
@@ -34692,9 +34944,7 @@ impl FrankenTorchSession {
         let boxes_shape = self.tensor_shape(boxes)?;
         let scores_shape = self.tensor_shape(scores)?;
         if boxes_shape.len() != 2 || boxes_shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args(
-                "nms: boxes must be [N, 4]",
-            ));
+            return Err(Self::incompatible_tensor_args("nms: boxes must be [N, 4]"));
         }
         if scores_shape.len() != 1 || scores_shape[0] != boxes_shape[0] {
             return Err(Self::incompatible_tensor_args(
@@ -34819,10 +35069,14 @@ impl FrankenTorchSession {
         let boxes_shape = self.tensor_shape(boxes)?;
         let scores_shape = self.tensor_shape(scores)?;
         if boxes_shape.len() != 2 || boxes_shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("soft_nms: boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "soft_nms: boxes must be [N, 4]",
+            ));
         }
         if scores_shape.len() != 1 || scores_shape[0] != boxes_shape[0] {
-            return Err(Self::incompatible_tensor_args("soft_nms: scores must be [N]"));
+            return Err(Self::incompatible_tensor_args(
+                "soft_nms: scores must be [N]",
+            ));
         }
         let n = boxes_shape[0];
         if n == 0 {
@@ -34865,7 +35119,11 @@ impl FrankenTorchSession {
                 let inter_y2 = y2_i.min(y2_j);
                 let inter_area = (inter_x2 - inter_x1).max(0.0) * (inter_y2 - inter_y1).max(0.0);
                 let union_area = area_i + area_j - inter_area;
-                let iou = if union_area > 0.0 { inter_area / union_area } else { 0.0 };
+                let iou = if union_area > 0.0 {
+                    inter_area / union_area
+                } else {
+                    0.0
+                };
                 if iou > iou_threshold {
                     if use_gaussian {
                         scores_vec[j] *= (-iou * iou / sigma).exp();
@@ -35000,7 +35258,7 @@ impl FrankenTorchSession {
         let num_anchors = ratios.len() * scales.len();
         let total_anchors = h * w * num_anchors;
         let mut anchors = Vec::with_capacity(total_anchors * 4);
-        let half_base = base_size / 2.0;
+        let _half_base = base_size / 2.0;
         for y in 0..h {
             let center_y = (y * stride) as f64 + stride as f64 / 2.0;
             for x in 0..w {
@@ -35042,10 +35300,14 @@ impl FrankenTorchSession {
         let anchor_shape = self.tensor_shape(anchors)?;
         let target_shape = self.tensor_shape(targets)?;
         if anchor_shape.len() != 2 || anchor_shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("encode_boxes: anchors must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "encode_boxes: anchors must be [N, 4]",
+            ));
         }
         if target_shape != anchor_shape {
-            return Err(Self::incompatible_tensor_args("encode_boxes: shapes must match"));
+            return Err(Self::incompatible_tensor_args(
+                "encode_boxes: shapes must match",
+            ));
         }
         let n = anchor_shape[0];
         let a_x1 = self.tensor_narrow(anchors, 1, 0, 1)?;
@@ -35097,10 +35359,14 @@ impl FrankenTorchSession {
         let anchor_shape = self.tensor_shape(anchors)?;
         let delta_shape = self.tensor_shape(deltas)?;
         if anchor_shape.len() != 2 || anchor_shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("decode_boxes: anchors must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "decode_boxes: anchors must be [N, 4]",
+            ));
         }
         if delta_shape != anchor_shape {
-            return Err(Self::incompatible_tensor_args("decode_boxes: shapes must match"));
+            return Err(Self::incompatible_tensor_args(
+                "decode_boxes: shapes must match",
+            ));
         }
         let n = anchor_shape[0];
         let a_x1 = self.tensor_narrow(anchors, 1, 0, 1)?;
@@ -35151,10 +35417,12 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(boxes)?;
         if shape.len() != 2 || shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("clip_boxes: boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "clip_boxes: boxes must be [N, 4]",
+            ));
         }
         let (h, w) = image_size;
-        let n = shape[0];
+        let _n = shape[0];
         let x1 = self.tensor_narrow(boxes, 1, 0, 1)?;
         let y1 = self.tensor_narrow(boxes, 1, 1, 1)?;
         let x2 = self.tensor_narrow(boxes, 1, 2, 1)?;
@@ -35182,7 +35450,9 @@ impl FrankenTorchSession {
     ) -> Result<Vec<usize>, AutogradError> {
         let shape = self.tensor_shape(boxes)?;
         if shape.len() != 2 || shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("remove_small_boxes: boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "remove_small_boxes: boxes must be [N, 4]",
+            ));
         }
         let n = shape[0];
         let boxes_data = self.tensor_values(boxes)?;
@@ -35219,13 +35489,19 @@ impl FrankenTorchSession {
         let shape1 = self.tensor_shape(masks1)?;
         let shape2 = self.tensor_shape(masks2)?;
         if shape1.len() != 3 {
-            return Err(Self::incompatible_tensor_args("mask_iou: masks1 must be [N, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "mask_iou: masks1 must be [N, H, W]",
+            ));
         }
         if shape2.len() != 3 {
-            return Err(Self::incompatible_tensor_args("mask_iou: masks2 must be [M, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "mask_iou: masks2 must be [M, H, W]",
+            ));
         }
         if shape1[1] != shape2[1] || shape1[2] != shape2[2] {
-            return Err(Self::incompatible_tensor_args("mask_iou: mask dimensions must match"));
+            return Err(Self::incompatible_tensor_args(
+                "mask_iou: mask dimensions must match",
+            ));
         }
         let n = shape1[0];
         let m = shape2[0];
@@ -35255,7 +35531,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(boxes)?;
         if shape.len() != 2 || shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("box_xyxy_to_cxcywh: boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "box_xyxy_to_cxcywh: boxes must be [N, 4]",
+            ));
         }
         let n = shape[0];
         let x1 = self.tensor_narrow(boxes, 1, 0, 1)?;
@@ -35279,7 +35557,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(boxes)?;
         if shape.len() != 2 || shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("box_cxcywh_to_xyxy: boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "box_cxcywh_to_xyxy: boxes must be [N, 4]",
+            ));
         }
         let n = shape[0];
         let cx = self.tensor_narrow(boxes, 1, 0, 1)?;
@@ -35302,13 +35582,12 @@ impl FrankenTorchSession {
     /// - boxes: [N, 4] in format (x1, y1, x2, y2)
     ///
     /// Returns: [N] areas
-    pub fn box_area(
-        &mut self,
-        boxes: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn box_area(&mut self, boxes: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(boxes)?;
         if shape.len() != 2 || shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("box_area: boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "box_area: boxes must be [N, 4]",
+            ));
         }
         let x1 = self.tensor_narrow(boxes, 1, 0, 1)?;
         let y1 = self.tensor_narrow(boxes, 1, 1, 1)?;
@@ -35335,10 +35614,14 @@ impl FrankenTorchSession {
         let shape1 = self.tensor_shape(boxes1)?;
         let shape2 = self.tensor_shape(boxes2)?;
         if shape1.len() != 2 || shape1[1] != 4 {
-            return Err(Self::incompatible_tensor_args("box_iou: boxes1 must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "box_iou: boxes1 must be [N, 4]",
+            ));
         }
         if shape2.len() != 2 || shape2[1] != 4 {
-            return Err(Self::incompatible_tensor_args("box_iou: boxes2 must be [M, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "box_iou: boxes2 must be [M, 4]",
+            ));
         }
         let n = shape1[0];
         let m = shape2[0];
@@ -35406,7 +35689,9 @@ impl FrankenTorchSession {
         let pred_shape = self.tensor_shape(pred_boxes)?;
         let target_shape = self.tensor_shape(target_boxes)?;
         if pred_shape.len() != 2 || pred_shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("giou_loss: pred_boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "giou_loss: pred_boxes must be [N, 4]",
+            ));
         }
         if target_shape != pred_shape {
             return Err(Self::incompatible_tensor_args(
@@ -35477,7 +35762,9 @@ impl FrankenTorchSession {
         let pred_shape = self.tensor_shape(pred_boxes)?;
         let target_shape = self.tensor_shape(target_boxes)?;
         if pred_shape.len() != 2 || pred_shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("diou_loss: pred_boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "diou_loss: pred_boxes must be [N, 4]",
+            ));
         }
         if target_shape != pred_shape {
             return Err(Self::incompatible_tensor_args(
@@ -35563,7 +35850,9 @@ impl FrankenTorchSession {
         let pred_shape = self.tensor_shape(pred_boxes)?;
         let target_shape = self.tensor_shape(target_boxes)?;
         if pred_shape.len() != 2 || pred_shape[1] != 4 {
-            return Err(Self::incompatible_tensor_args("ciou_loss: pred_boxes must be [N, 4]"));
+            return Err(Self::incompatible_tensor_args(
+                "ciou_loss: pred_boxes must be [N, 4]",
+            ));
         }
         if target_shape != pred_shape {
             return Err(Self::incompatible_tensor_args(
@@ -35592,7 +35881,11 @@ impl FrankenTorchSession {
         let t_atan = self.tensor_atan(t_ratio)?;
         let atan_diff = self.tensor_sub(t_atan, p_atan)?;
         let atan_diff_sq = self.tensor_mul(atan_diff, atan_diff)?;
-        let four_over_pi_sq = self.full(vec![n, 1], 4.0 / (std::f64::consts::PI * std::f64::consts::PI), false)?;
+        let four_over_pi_sq = self.full(
+            vec![n, 1],
+            4.0 / (std::f64::consts::PI * std::f64::consts::PI),
+            false,
+        )?;
         let v = self.tensor_mul(four_over_pi_sq, atan_diff_sq)?;
         let pred_area = self.tensor_mul(p_w, p_h)?;
         let target_area = self.tensor_mul(t_w, t_h)?;
@@ -35671,7 +35964,9 @@ impl FrankenTorchSession {
         let feat_shape = self.tensor_shape(features)?;
         let box_shape = self.tensor_shape(boxes)?;
         if feat_shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("roi_align: features must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "roi_align: features must be [N, C, H, W]",
+            ));
         }
         if box_shape.len() != 2 || box_shape[1] != 5 {
             return Err(Self::incompatible_tensor_args(
@@ -35686,7 +35981,11 @@ impl FrankenTorchSession {
         let feat_data = self.tensor_values(features)?;
         let box_data = self.tensor_values(boxes)?;
         let mut output = vec![0.0; k * c * out_h * out_w];
-        let sample_pts = if sampling_ratio == 0 { 2 } else { sampling_ratio };
+        let sample_pts = if sampling_ratio == 0 {
+            2
+        } else {
+            sampling_ratio
+        };
         for roi_idx in 0..k {
             let batch_idx = box_data[roi_idx * 5] as usize;
             let x1 = box_data[roi_idx * 5 + 1] * spatial_scale;
@@ -35704,8 +36003,10 @@ impl FrankenTorchSession {
                         let mut count = 0;
                         for iy in 0..sample_pts {
                             for ix in 0..sample_pts {
-                                let y = y1 + bin_h * (ph as f64 + (iy as f64 + 0.5) / sample_pts as f64);
-                                let x = x1 + bin_w * (pw as f64 + (ix as f64 + 0.5) / sample_pts as f64);
+                                let y = y1
+                                    + bin_h * (ph as f64 + (iy as f64 + 0.5) / sample_pts as f64);
+                                let x = x1
+                                    + bin_w * (pw as f64 + (ix as f64 + 0.5) / sample_pts as f64);
                                 if y >= 0.0 && y < h as f64 && x >= 0.0 && x < w as f64 {
                                     let y_low = y.floor() as usize;
                                     let x_low = x.floor() as usize;
@@ -35720,12 +36021,14 @@ impl FrankenTorchSession {
                                     let v2 = feat_data[base + y_low * w + x_high];
                                     let v3 = feat_data[base + y_high * w + x_low];
                                     let v4 = feat_data[base + y_high * w + x_high];
-                                    sum += hy * hx * v1 + hy * lx * v2 + ly * hx * v3 + ly * lx * v4;
+                                    sum +=
+                                        hy * hx * v1 + hy * lx * v2 + ly * hx * v3 + ly * lx * v4;
                                     count += 1;
                                 }
                             }
                         }
-                        let out_idx = roi_idx * c * out_h * out_w + ch * out_h * out_w + ph * out_w + pw;
+                        let out_idx =
+                            roi_idx * c * out_h * out_w + ch * out_h * out_w + ph * out_w + pw;
                         output[out_idx] = if count > 0 { sum / count as f64 } else { 0.0 };
                     }
                 }
@@ -35756,7 +36059,9 @@ impl FrankenTorchSession {
         let feat_shape = self.tensor_shape(features)?;
         let box_shape = self.tensor_shape(boxes)?;
         if feat_shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("roi_pool: features must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "roi_pool: features must be [N, C, H, W]",
+            ));
         }
         if box_shape.len() != 2 || box_shape[1] != 5 {
             return Err(Self::incompatible_tensor_args(
@@ -35789,11 +36094,15 @@ impl FrankenTorchSession {
                         let mut max_val = f64::NEG_INFINITY;
                         for iy in h_start.max(0)..h_end.min(h as i64) {
                             for ix in w_start.max(0)..w_end.min(w as i64) {
-                                let idx = batch_idx * c * h * w + ch * h * w + iy as usize * w + ix as usize;
+                                let idx = batch_idx * c * h * w
+                                    + ch * h * w
+                                    + iy as usize * w
+                                    + ix as usize;
                                 max_val = max_val.max(feat_data[idx]);
                             }
                         }
-                        let out_idx = roi_idx * c * out_h * out_w + ch * out_h * out_w + ph * out_w + pw;
+                        let out_idx =
+                            roi_idx * c * out_h * out_w + ch * out_h * out_w + ph * out_w + pw;
                         output[out_idx] = if max_val.is_finite() { max_val } else { 0.0 };
                     }
                 }
@@ -35824,10 +36133,14 @@ impl FrankenTorchSession {
         let feat_shape = self.tensor_shape(features)?;
         let box_shape = self.tensor_shape(boxes)?;
         if feat_shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("ps_roi_pool: features must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "ps_roi_pool: features must be [N, C, H, W]",
+            ));
         }
         if box_shape.len() != 2 || box_shape[1] != 5 {
-            return Err(Self::incompatible_tensor_args("ps_roi_pool: boxes must be [K, 5]"));
+            return Err(Self::incompatible_tensor_args(
+                "ps_roi_pool: boxes must be [K, 5]",
+            ));
         }
         let c = feat_shape[1];
         let h = feat_shape[2];
@@ -35865,7 +36178,10 @@ impl FrankenTorchSession {
                         let mut count = 0;
                         for iy in h_start.max(0)..h_end.min(h as i64) {
                             for ix in w_start.max(0)..w_end.min(w as i64) {
-                                let idx = batch_idx * c * h * w + ch * h * w + iy as usize * w + ix as usize;
+                                let idx = batch_idx * c * h * w
+                                    + ch * h * w
+                                    + iy as usize * w
+                                    + ix as usize;
                                 sum += feat_data[idx];
                                 count += 1;
                             }
@@ -35879,7 +36195,11 @@ impl FrankenTorchSession {
                 }
             }
         }
-        self.tensor_variable(output, vec![k, num_classes, output_size, output_size], false)
+        self.tensor_variable(
+            output,
+            vec![k, num_classes, output_size, output_size],
+            false,
+        )
     }
 
     /// Quantile (pinball) loss for quantile regression.
@@ -37474,7 +37794,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_pad_mode(
             input,
-            &[padding.0, padding.1, padding.2, padding.3, padding.4, padding.5],
+            &[
+                padding.0, padding.1, padding.2, padding.3, padding.4, padding.5,
+            ],
             "reflect",
             0.0,
         )
@@ -37490,7 +37812,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_pad_mode(
             input,
-            &[padding.0, padding.1, padding.2, padding.3, padding.4, padding.5],
+            &[
+                padding.0, padding.1, padding.2, padding.3, padding.4, padding.5,
+            ],
             "replicate",
             0.0,
         )
@@ -37551,7 +37875,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_pad_mode(
             input,
-            &[padding.0, padding.1, padding.2, padding.3, padding.4, padding.5],
+            &[
+                padding.0, padding.1, padding.2, padding.3, padding.4, padding.5,
+            ],
             "circular",
             0.0,
         )
@@ -37785,7 +38111,11 @@ impl FrankenTorchSession {
             }
             Err(_) => {
                 let shape = meta.shape();
-                let n = if shape.len() >= 2 { shape[shape.len() - 1] } else { 1 };
+                let n = if shape.len() >= 2 {
+                    shape[shape.len() - 1]
+                } else {
+                    1
+                };
                 let zeros = vec![0.0; n * n];
                 let out = self.tensor_variable(zeros, vec![n, n], false)?;
                 Ok((out, 1))
@@ -39725,11 +40055,7 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.fft.fftfreq(n, d)`.
     /// Returns frequencies in cycles per unit spacing: `[0, 1, ..., n/2-1, -n/2, ..., -1] / (n*d)`.
-    pub fn tensor_fft_fftfreq(
-        &mut self,
-        n: usize,
-        d: f64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_fft_fftfreq(&mut self, n: usize, d: f64) -> Result<TensorNodeId, AutogradError> {
         if n == 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -39753,11 +40079,7 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.fft.rfftfreq(n, d)`.
     /// Returns frequencies: `[0, 1, ..., n//2] / (n*d)` (length n//2 + 1).
-    pub fn tensor_fft_rfftfreq(
-        &mut self,
-        n: usize,
-        d: f64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_fft_rfftfreq(&mut self, n: usize, d: f64) -> Result<TensorNodeId, AutogradError> {
         if n == 0 {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -39930,7 +40252,9 @@ impl FrankenTorchSession {
         if ax < 3.75 {
             let y = (x / 3.75).powi(2);
             1.0 + y
-                * (3.5156229 + y * (3.0899424 + y * (1.2067492 + y * (0.2659732 + y * (0.0360768 + y * 0.0045813)))))
+                * (3.5156229
+                    + y * (3.0899424
+                        + y * (1.2067492 + y * (0.2659732 + y * (0.0360768 + y * 0.0045813)))))
         } else {
             let y = 3.75 / ax;
             (ax.exp() / ax.sqrt())
@@ -39939,7 +40263,9 @@ impl FrankenTorchSession {
                         + y * (0.00225319
                             + y * (-0.00157565
                                 + y * (0.00916281
-                                    + y * (-0.02057706 + y * (0.02635537 + y * (-0.01647633 + y * 0.00392377))))))))
+                                    + y * (-0.02057706
+                                        + y * (0.02635537
+                                            + y * (-0.01647633 + y * 0.00392377))))))))
         }
     }
 
@@ -40218,10 +40544,7 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.poisson(rate)`. Each output element is sampled
     /// from Poisson(rate[i]). Returns a new tensor with same shape as rate.
-    pub fn tensor_poisson(
-        &mut self,
-        rate: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_poisson(&mut self, rate: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(rate)?;
         let rate_vals = self.tensor_values(rate)?;
         let values: Vec<f64> = rate_vals
@@ -40487,10 +40810,7 @@ impl FrankenTorchSession {
     ///
     /// Fills with U(-bound, bound) where bound = sqrt(3 / fan_in).
     /// Recommended for SELU activation networks.
-    pub fn init_lecun_uniform_(
-        &mut self,
-        tensor: TensorNodeId,
-    ) -> Result<(), AutogradError> {
+    pub fn init_lecun_uniform_(&mut self, tensor: TensorNodeId) -> Result<(), AutogradError> {
         let (fan_in, _) = self.calculate_fan_in_and_fan_out(tensor)?;
         let bound = (3.0 / fan_in as f64).sqrt();
         self.init_uniform_(tensor, -bound, bound)
@@ -40499,10 +40819,7 @@ impl FrankenTorchSession {
     /// LeCun normal initialization (for SELU activations).
     ///
     /// Fills with N(0, 1/fan_in). Recommended for SELU activation networks.
-    pub fn init_lecun_normal_(
-        &mut self,
-        tensor: TensorNodeId,
-    ) -> Result<(), AutogradError> {
+    pub fn init_lecun_normal_(&mut self, tensor: TensorNodeId) -> Result<(), AutogradError> {
         let (fan_in, _) = self.calculate_fan_in_and_fan_out(tensor)?;
         let std = (1.0 / fan_in as f64).sqrt();
         self.init_normal_(tensor, 0.0, std)
@@ -41466,18 +41783,12 @@ impl FrankenTorchSession {
     /// Equivalent to `torch.special.polygamma(1, input)`. The trigamma
     /// function psi'(x) is the derivative of digamma, commonly used in
     /// gradient computations involving gamma functions.
-    pub fn tensor_trigamma(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tensor_trigamma(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_polygamma(1, input)
     }
 
     /// In-place trigamma: target = polygamma(1, target).
-    pub fn tensor_trigamma_(
-        &mut self,
-        target: TensorNodeId,
-    ) -> Result<(), AutogradError> {
+    pub fn tensor_trigamma_(&mut self, target: TensorNodeId) -> Result<(), AutogradError> {
         self.validate_tensor_in_place_target(target)?;
         let result = self.tensor_trigamma(target)?;
         let result_vals = self.tensor_values(result)?;
@@ -43989,9 +44300,27 @@ impl FrankenTorchSession {
                 );
             }
         }
-        let src_stride: usize = if current_shape.is_empty() { 1 } else { current_shape.iter().product() };
-        let dst_stride: usize = if target_shape.is_empty() { 1 } else { target_shape.iter().product() };
-        copy_recursive(&vals, &mut result, &current_shape, target_shape, 0, 0, 0, src_stride, dst_stride);
+        let src_stride: usize = if current_shape.is_empty() {
+            1
+        } else {
+            current_shape.iter().product()
+        };
+        let dst_stride: usize = if target_shape.is_empty() {
+            1
+        } else {
+            target_shape.iter().product()
+        };
+        copy_recursive(
+            &vals,
+            &mut result,
+            &current_shape,
+            target_shape,
+            0,
+            0,
+            0,
+            src_stride,
+            dst_stride,
+        );
         self.tensor_variable(result, target_shape.to_vec(), false)
     }
 
@@ -44028,15 +44357,18 @@ impl FrankenTorchSession {
             for inner in 0..stride_inner {
                 for k in 0..half_len {
                     let src_idx = outer * half_len * stride_inner + k * stride_inner + inner;
-                    let dst_idx = outer * full_len * out_stride_inner + k * out_stride_inner + inner;
+                    let dst_idx =
+                        outer * full_len * out_stride_inner + k * out_stride_inner + inner;
                     re_out[dst_idx] = re_data[src_idx];
                     im_out[dst_idx] = im_data[src_idx];
                 }
                 for k in half_len..full_len {
                     let conj_k = full_len - k;
                     if conj_k < half_len {
-                        let src_idx = outer * half_len * stride_inner + conj_k * stride_inner + inner;
-                        let dst_idx = outer * full_len * out_stride_inner + k * out_stride_inner + inner;
+                        let src_idx =
+                            outer * half_len * stride_inner + conj_k * stride_inner + inner;
+                        let dst_idx =
+                            outer * full_len * out_stride_inner + k * out_stride_inner + inner;
                         re_out[dst_idx] = re_data[src_idx];
                         im_out[dst_idx] = -im_data[src_idx];
                     }
@@ -47356,7 +47688,9 @@ impl FrankenTorchSession {
     ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
         let shape = self.tensor_shape(weight)?;
         if shape.len() != 2 {
-            return Err(Self::incompatible_tensor_args("spectral_norm: weight must be 2D"));
+            return Err(Self::incompatible_tensor_args(
+                "spectral_norm: weight must be 2D",
+            ));
         }
         let mut u_current = u;
         let mut v_current: TensorNodeId = u;
@@ -47383,7 +47717,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(weight)?;
         if shape.is_empty() {
-            return Err(Self::incompatible_tensor_args("weight_standardization: weight cannot be scalar"));
+            return Err(Self::incompatible_tensor_args(
+                "weight_standardization: weight cannot be scalar",
+            ));
         }
         let c_out = shape[0];
         let fan_in: usize = shape[1..].iter().product();
@@ -47407,13 +47743,12 @@ impl FrankenTorchSession {
     /// Implements Liu et al. "An Intriguing Failing of Convolutional Neural
     /// Networks and the CoordConv Solution". Adds normalized x, y coordinate
     /// channels to input [N, C, H, W] -> [N, C+2, H, W].
-    pub fn coord_conv(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn coord_conv(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("coord_conv: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "coord_conv: x must be [N, C, H, W]",
+            ));
         }
         let (n, _c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let mut y_coords = Vec::with_capacity(n * h * w);
@@ -47434,13 +47769,12 @@ impl FrankenTorchSession {
     /// Radius coordinate channel for radially symmetric patterns.
     ///
     /// Adds a channel with distance from center (normalized to [-1, 1]).
-    pub fn coord_conv_radius(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn coord_conv_radius(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("coord_conv_radius: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "coord_conv_radius: x must be [N, C, H, W]",
+            ));
         }
         let (n, _c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let cy = (h - 1) as f64 / 2.0;
@@ -47475,7 +47809,13 @@ impl FrankenTorchSession {
         target_w: usize,
     ) -> Result<TensorNodeId, AutogradError> {
         let reduced = self.tensor_conv2d(high_level, conv_weight, None, (1, 1), (0, 0))?;
-        self.tensor_interpolate(reduced, Some(vec![target_h, target_w]), None, "nearest", None)
+        self.tensor_interpolate(
+            reduced,
+            Some(vec![target_h, target_w]),
+            None,
+            "nearest",
+            None,
+        )
     }
 
     /// FPN merge: add upsampled high-level features to lateral features.
@@ -47488,10 +47828,13 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let lateral_shape = self.tensor_shape(lateral)?;
         if lateral_shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("fpn_merge: tensors must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "fpn_merge: tensors must be [N, C, H, W]",
+            ));
         }
         let (h, w) = (lateral_shape[2], lateral_shape[3]);
-        let upsampled = self.tensor_interpolate(top_down, Some(vec![h, w]), None, "nearest", None)?;
+        let upsampled =
+            self.tensor_interpolate(top_down, Some(vec![h, w]), None, "nearest", None)?;
         self.tensor_add(lateral, upsampled)
     }
 
@@ -47499,14 +47842,11 @@ impl FrankenTorchSession {
 
     /// Mark a tensor for gradient checkpointing.
     ///
-    /// Returns the tensor unchanged but marks it so that during backward,
-    /// the forward computation can be recomputed instead of stored.
-    /// This is a placeholder - actual checkpointing requires graph-level support.
-    pub fn checkpoint_marker(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
-        Ok(x)
+    /// Wraps the tensor in a checkpoint node with identity recomputation so
+    /// backward can flow through the same graph-level checkpoint machinery used
+    /// by [`Self::checkpoint`].
+    pub fn checkpoint_marker(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.checkpoint(&[x], |_session, inputs| Ok(inputs[0]))
     }
 
     // ── Label Smoothing ───────────────────────────────────────────────────
@@ -47542,7 +47882,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(logits)?;
         if shape.len() != 2 {
-            return Err(Self::incompatible_tensor_args("cross_entropy_label_smoothing: logits must be [N, C]"));
+            return Err(Self::incompatible_tensor_args(
+                "cross_entropy_label_smoothing: logits must be [N, C]",
+            ));
         }
         let num_classes = shape[1];
         let smooth_labels = self.smooth_labels(labels, num_classes, smoothing)?;
@@ -47598,7 +47940,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 3 {
-            return Err(Self::incompatible_tensor_args("token_mixing: x must be [N, T, C]"));
+            return Err(Self::incompatible_tensor_args(
+                "token_mixing: x must be [N, T, C]",
+            ));
         }
         let x_t = self.tensor_transpose(x, 1, 2)?;
         let mixed_t = self.tensor_matmul(x_t, weight)?;
@@ -47617,7 +47961,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 3 {
-            return Err(Self::incompatible_tensor_args("channel_mixing: x must be [N, T, C]"));
+            return Err(Self::incompatible_tensor_args(
+                "channel_mixing: x must be [N, T, C]",
+            ));
         }
         self.tensor_linear(x, weight, bias)
     }
@@ -47642,11 +47988,7 @@ impl FrankenTorchSession {
     ///
     /// Splits input in half along dim, applies sigmoid to second half,
     /// multiplies with first half: x1 * sigmoid(x2).
-    pub fn glu(
-        &mut self,
-        x: TensorNodeId,
-        dim: i64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn glu(&mut self, x: TensorNodeId, dim: i64) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         let ndim = shape.len() as i64;
         let d = if dim < 0 { ndim + dim } else { dim } as usize;
@@ -47660,11 +48002,7 @@ impl FrankenTorchSession {
     /// Gated GELU (GeGLU variant).
     ///
     /// x1 * gelu(x2) instead of sigmoid gate.
-    pub fn geglu(
-        &mut self,
-        x: TensorNodeId,
-        dim: i64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn geglu(&mut self, x: TensorNodeId, dim: i64) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         let ndim = shape.len() as i64;
         let d = if dim < 0 { ndim + dim } else { dim } as usize;
@@ -47678,11 +48016,7 @@ impl FrankenTorchSession {
     /// SwiGLU activation.
     ///
     /// x1 * swish(x2) = x1 * silu(x2).
-    pub fn swiglu(
-        &mut self,
-        x: TensorNodeId,
-        dim: i64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn swiglu(&mut self, x: TensorNodeId, dim: i64) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         let ndim = shape.len() as i64;
         let d = if dim < 0 { ndim + dim } else { dim } as usize;
@@ -47721,7 +48055,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("filter_response_norm: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "filter_response_norm: x must be [N, C, H, W]",
+            ));
         }
         let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         let x_flat = self.tensor_reshape(x, vec![n, c, h * w])?;
@@ -47748,7 +48084,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("center_crop: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "center_crop: x must be [N, C, H, W]",
+            ));
         }
         let (h, w) = (shape[2], shape[3]);
         let y_start = (h - crop_h) / 2;
@@ -47767,7 +48105,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("resize_scale: x must be [N, C, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "resize_scale: x must be [N, C, H, W]",
+            ));
         }
         let (h, w) = (shape[2], shape[3]);
         let new_h = ((h as f64) * scale).round() as usize;
@@ -47776,43 +48116,28 @@ impl FrankenTorchSession {
     }
 
     /// Horizontal flip (left-right).
-    pub fn hflip(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn hflip(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_flip(x, &[3])
     }
 
     /// Vertical flip (up-down).
-    pub fn vflip(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn vflip(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_flip(x, &[2])
     }
 
     /// Rotate 90 degrees clockwise.
-    pub fn rotate90(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rotate90(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let transposed = self.tensor_transpose(x, 2, 3)?;
         self.tensor_flip(transposed, &[3])
     }
 
     /// Rotate 180 degrees.
-    pub fn rotate180(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rotate180(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_flip(x, &[2, 3])
     }
 
     /// Rotate 270 degrees (90 degrees counter-clockwise).
-    pub fn rotate270(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rotate270(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let transposed = self.tensor_transpose(x, 2, 3)?;
         self.tensor_flip(transposed, &[2])
     }
@@ -47820,16 +48145,16 @@ impl FrankenTorchSession {
     /// Grayscale conversion using standard luminosity weights.
     ///
     /// Input: [N, 3, H, W] RGB, output: [N, 1, H, W].
-    pub fn rgb_to_grayscale(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rgb_to_grayscale(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         if shape.len() != 4 || shape[1] != 3 {
-            return Err(Self::incompatible_tensor_args("rgb_to_grayscale: x must be [N, 3, H, W]"));
+            return Err(Self::incompatible_tensor_args(
+                "rgb_to_grayscale: x must be [N, 3, H, W]",
+            ));
         }
-        let (n, _, h, w) = (shape[0], shape[1], shape[2], shape[3]);
-        let weights = self.tensor_variable(vec![0.2989, 0.5870, 0.1140], vec![1, 3, 1, 1], false)?;
+        let (_n, _, _h, _w) = (shape[0], shape[1], shape[2], shape[3]);
+        let weights =
+            self.tensor_variable(vec![0.2989, 0.5870, 0.1140], vec![1, 3, 1, 1], false)?;
         let weighted = self.tensor_mul(x, weights)?;
         self.tensor_sum_dim(weighted, 1)
     }
@@ -47924,7 +48249,9 @@ impl FrankenTorchSession {
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
         if shape.len() < 2 {
-            return Err(Self::incompatible_tensor_args("init_orthogonal: need at least 2D"));
+            return Err(Self::incompatible_tensor_args(
+                "init_orthogonal: need at least 2D",
+            ));
         }
         let rows = shape[0];
         let cols: usize = shape[1..].iter().product();
@@ -48071,7 +48398,11 @@ impl FrankenTorchSession {
         let pred_sum = self.tensor_sum(pred_float)?;
         let tp_val = self.tensor_values(tp_sum)?[0];
         let pred_val = self.tensor_values(pred_sum)?[0];
-        Ok(if pred_val > 0.0 { tp_val / pred_val } else { 0.0 })
+        Ok(if pred_val > 0.0 {
+            tp_val / pred_val
+        } else {
+            0.0
+        })
     }
 
     /// Recall for binary classification.
@@ -48087,7 +48418,11 @@ impl FrankenTorchSession {
         let target_sum = self.tensor_sum(target_float)?;
         let tp_val = self.tensor_values(tp_sum)?[0];
         let target_val = self.tensor_values(target_sum)?[0];
-        Ok(if target_val > 0.0 { tp_val / target_val } else { 0.0 })
+        Ok(if target_val > 0.0 {
+            tp_val / target_val
+        } else {
+            0.0
+        })
     }
 
     /// F1 score for binary classification.
@@ -48098,7 +48433,11 @@ impl FrankenTorchSession {
     ) -> Result<f64, AutogradError> {
         let p = self.precision(predictions, targets)?;
         let r = self.recall(predictions, targets)?;
-        Ok(if p + r > 0.0 { 2.0 * p * r / (p + r) } else { 0.0 })
+        Ok(if p + r > 0.0 {
+            2.0 * p * r / (p + r)
+        } else {
+            0.0
+        })
     }
 
     // ── Distance Functions ────────────────────────────────────────────────
@@ -48208,7 +48547,11 @@ impl FrankenTorchSession {
         let size = n + offset.unsigned_abs() as usize;
         let mut data = vec![0.0_f64; size * size];
         for (i, &v) in vals.iter().enumerate() {
-            let row = if offset >= 0 { i } else { i + offset.unsigned_abs() as usize };
+            let row = if offset >= 0 {
+                i
+            } else {
+                i + offset.unsigned_abs() as usize
+            };
             let col = if offset >= 0 { i + offset as usize } else { i };
             if row < size && col < size {
                 data[row * size + col] = v;
@@ -48370,7 +48713,9 @@ impl FrankenTorchSession {
             return Ok(x);
         }
         if shape.len() != target_shape.len() {
-            return Err(Self::incompatible_tensor_args("pad_to_shape: dimension mismatch"));
+            return Err(Self::incompatible_tensor_args(
+                "pad_to_shape: dimension mismatch",
+            ));
         }
         let mut result = x;
         for (i, (&current, &target)) in shape.iter().zip(target_shape.iter()).enumerate() {
@@ -48379,7 +48724,15 @@ impl FrankenTorchSession {
                 let pad_shape: Vec<usize> = shape
                     .iter()
                     .enumerate()
-                    .map(|(j, &s)| if j == i { pad_size } else if j > i { target_shape[j] } else { s })
+                    .map(|(j, &s)| {
+                        if j == i {
+                            pad_size
+                        } else if j > i {
+                            target_shape[j]
+                        } else {
+                            s
+                        }
+                    })
                     .collect();
                 let zeros = self.zeros(pad_shape, false)?;
                 result = self.tensor_cat(&[result, zeros], i)?;
@@ -48399,7 +48752,9 @@ impl FrankenTorchSession {
             return Ok(x);
         }
         if shape.len() != target_shape.len() {
-            return Err(Self::incompatible_tensor_args("truncate_to_shape: dimension mismatch"));
+            return Err(Self::incompatible_tensor_args(
+                "truncate_to_shape: dimension mismatch",
+            ));
         }
         let mut result = x;
         for (i, (&current, &target)) in shape.iter().zip(target_shape.iter()).enumerate() {
@@ -48550,7 +48905,9 @@ impl FrankenTorchSession {
         tensors: &[TensorNodeId],
     ) -> Result<TensorNodeId, AutogradError> {
         if tensors.is_empty() {
-            return Err(Self::incompatible_tensor_args("batch_gather: empty tensor list"));
+            return Err(Self::incompatible_tensor_args(
+                "batch_gather: empty tensor list",
+            ));
         }
         self.tensor_cat(tensors, 0)
     }
@@ -48567,7 +48924,9 @@ impl FrankenTorchSession {
             "sub" => self.tensor_sub(batch, single),
             "mul" => self.tensor_mul(batch, single),
             "div" => self.tensor_div(batch, single),
-            _ => Err(Self::incompatible_tensor_args("batch_apply_single: unknown op")),
+            _ => Err(Self::incompatible_tensor_args(
+                "batch_apply_single: unknown op",
+            )),
         }
     }
 
@@ -48601,7 +48960,9 @@ impl FrankenTorchSession {
             "sum" => self.tensor_sum_dim(x, 0),
             "max" => Ok(self.tensor_max_dim(x, 0)?.0),
             "min" => Ok(self.tensor_min_dim(x, 0)?.0),
-            _ => Err(Self::incompatible_tensor_args("reduce_batch: unknown reduction")),
+            _ => Err(Self::incompatible_tensor_args(
+                "reduce_batch: unknown reduction",
+            )),
         }
     }
 
@@ -48630,10 +48991,7 @@ impl FrankenTorchSession {
     /// Global average pooling for any dimension.
     ///
     /// Averages over all spatial dimensions.
-    pub fn global_avg_pool(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn global_avg_pool(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         match shape.len() {
             3 => {
@@ -48641,22 +48999,21 @@ impl FrankenTorchSession {
                 Ok(pooled)
             }
             4 => {
-                let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
+                let (_n, _c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
                 self.tensor_adaptive_avg_pool2d(x, (1, 1))
             }
             5 => {
-                let (n, c, _, _, _) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+                let (_n, _c, _, _, _) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
                 self.tensor_adaptive_avg_pool3d(x, (1, 1, 1))
             }
-            _ => Err(Self::incompatible_tensor_args("global_avg_pool: unsupported dim")),
+            _ => Err(Self::incompatible_tensor_args(
+                "global_avg_pool: unsupported dim",
+            )),
         }
     }
 
     /// Global max pooling for any dimension.
-    pub fn global_max_pool(
-        &mut self,
-        x: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn global_max_pool(&mut self, x: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(x)?;
         match shape.len() {
             3 => {
@@ -48671,7 +49028,9 @@ impl FrankenTorchSession {
                 let (pooled, _) = self.tensor_adaptive_max_pool3d(x, (1, 1, 1))?;
                 Ok(pooled)
             }
-            _ => Err(Self::incompatible_tensor_args("global_max_pool: unsupported dim")),
+            _ => Err(Self::incompatible_tensor_args(
+                "global_max_pool: unsupported dim",
+            )),
         }
     }
 
@@ -48763,7 +49122,9 @@ impl FrankenTorchSession {
         let a_shape = self.tensor_shape(a)?;
         let b_shape = self.tensor_shape(b)?;
         if a_shape.len() != 1 || b_shape.len() != 1 {
-            return Err(Self::incompatible_tensor_args("outer_product: inputs must be 1D"));
+            return Err(Self::incompatible_tensor_args(
+                "outer_product: inputs must be 1D",
+            ));
         }
         let a_col = self.tensor_unsqueeze(a, 1)?;
         let b_row = self.tensor_unsqueeze(b, 0)?;
@@ -48803,12 +49164,11 @@ impl FrankenTorchSession {
     }
 
     /// Block diagonal matrix from a list of 2D tensors.
-    pub fn block_diag(
-        &mut self,
-        tensors: &[TensorNodeId],
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn block_diag(&mut self, tensors: &[TensorNodeId]) -> Result<TensorNodeId, AutogradError> {
         if tensors.is_empty() {
-            return Err(Self::incompatible_tensor_args("block_diag: empty tensor list"));
+            return Err(Self::incompatible_tensor_args(
+                "block_diag: empty tensor list",
+            ));
         }
         let mut total_rows = 0;
         let mut total_cols = 0;
@@ -48816,7 +49176,9 @@ impl FrankenTorchSession {
         for &t in tensors {
             let shape = self.tensor_shape(t)?;
             if shape.len() != 2 {
-                return Err(Self::incompatible_tensor_args("block_diag: tensors must be 2D"));
+                return Err(Self::incompatible_tensor_args(
+                    "block_diag: tensors must be 2D",
+                ));
             }
             shapes.push((shape[0], shape[1]));
             total_rows += shape[0];
@@ -48886,11 +49248,7 @@ impl FrankenTorchSession {
     // ── Learning Rate Utilities ───────────────────────────────────────────
 
     /// Compute learning rate with linear warmup.
-    pub fn lr_linear_warmup(
-        current_step: usize,
-        warmup_steps: usize,
-        base_lr: f64,
-    ) -> f64 {
+    pub fn lr_linear_warmup(current_step: usize, warmup_steps: usize, base_lr: f64) -> f64 {
         if current_step < warmup_steps {
             base_lr * current_step as f64 / warmup_steps as f64
         } else {
@@ -48942,7 +49300,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.is_empty() {
-            return Err(Self::incompatible_tensor_args("add_bos_token: input cannot be scalar"));
+            return Err(Self::incompatible_tensor_args(
+                "add_bos_token: input cannot be scalar",
+            ));
         }
         let mut bos_shape = shape.clone();
         bos_shape[shape.len() - 1] = 1;
@@ -48958,7 +49318,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.is_empty() {
-            return Err(Self::incompatible_tensor_args("add_eos_token: input cannot be scalar"));
+            return Err(Self::incompatible_tensor_args(
+                "add_eos_token: input cannot be scalar",
+            ));
         }
         let mut eos_shape = shape.clone();
         eos_shape[shape.len() - 1] = 1;
@@ -49019,10 +49381,7 @@ impl FrankenTorchSession {
     }
 
     /// Numerically stable sigmoid using tanh: sigmoid(x) = 0.5 * (tanh(x/2) + 1).
-    pub fn stable_sigmoid(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn stable_sigmoid(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let half = self.full(vec![1], 0.5, false)?;
         let half_x = self.tensor_mul(input, half)?;
         let tanh_half = self.tensor_tanh(half_x)?;
@@ -49032,10 +49391,7 @@ impl FrankenTorchSession {
     }
 
     /// Softsign activation: x / (1 + |x|).
-    pub fn softsign(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn softsign(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let abs_x = self.tensor_abs(input)?;
         let one = self.full(vec![1], 1.0, false)?;
         let denom = self.tensor_add(abs_x, one)?;
@@ -49052,7 +49408,10 @@ impl FrankenTorchSession {
         let shape = self.tensor_shape(input)?;
         let data = self.tensor_values(input)?;
         let requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
-        let result: Vec<f64> = data.iter().map(|&x| if x > thresh { x } else { value }).collect();
+        let result: Vec<f64> = data
+            .iter()
+            .map(|&x| if x > thresh { x } else { value })
+            .collect();
         self.tensor_variable(result, shape, requires_grad)
     }
 
@@ -49062,7 +49421,9 @@ impl FrankenTorchSession {
     pub fn batch_size(&self, input: TensorNodeId) -> Result<usize, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.is_empty() {
-            return Err(Self::incompatible_tensor_args("batch_size: scalar has no batch dimension"));
+            return Err(Self::incompatible_tensor_args(
+                "batch_size: scalar has no batch dimension",
+            ));
         }
         Ok(shape[0])
     }
@@ -49088,7 +49449,9 @@ impl FrankenTorchSession {
         let shape_a = self.tensor_shape(a)?;
         let shape_b = self.tensor_shape(b)?;
         if shape_a != shape_b {
-            return Err(Self::incompatible_tensor_args("interleave_batch: shapes must match"));
+            return Err(Self::incompatible_tensor_args(
+                "interleave_batch: shapes must match",
+            ));
         }
         let stacked = self.tensor_stack(&[a, b], 1)?;
         let mut new_shape = shape_a.clone();
@@ -49099,13 +49462,12 @@ impl FrankenTorchSession {
     // ── Sequence Utilities ───────────────────────────────────────────────
 
     /// Get the last token from each sequence in a batch: [B, T, D] -> [B, D].
-    pub fn get_last_token(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn get_last_token(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() < 2 {
-            return Err(Self::incompatible_tensor_args("get_last_token: requires at least 2D tensor"));
+            return Err(Self::incompatible_tensor_args(
+                "get_last_token: requires at least 2D tensor",
+            ));
         }
         let t = shape[1];
         let sliced = self.tensor_narrow(input, 1, t - 1, 1)?;
@@ -49113,10 +49475,7 @@ impl FrankenTorchSession {
     }
 
     /// Get the first token from each sequence in a batch: [B, T, D] -> [B, D].
-    pub fn get_first_token(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn get_first_token(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let sliced = self.tensor_narrow(input, 1, 0, 1)?;
         self.tensor_squeeze(sliced, 1)
     }
@@ -49129,7 +49488,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() < 2 {
-            return Err(Self::incompatible_tensor_args("shift_left: requires at least 2D tensor"));
+            return Err(Self::incompatible_tensor_args(
+                "shift_left: requires at least 2D tensor",
+            ));
         }
         let t = shape[1];
         let shifted = self.tensor_narrow(input, 1, 1, t - 1)?;
@@ -49147,7 +49508,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() < 2 {
-            return Err(Self::incompatible_tensor_args("shift_right: requires at least 2D tensor"));
+            return Err(Self::incompatible_tensor_args(
+                "shift_right: requires at least 2D tensor",
+            ));
         }
         let t = shape[1];
         let shifted = self.tensor_narrow(input, 1, 0, t - 1)?;
@@ -49160,29 +49523,20 @@ impl FrankenTorchSession {
     // ── Tensor Norm Utilities ────────────────────────────────────────────
 
     /// Compute Frobenius norm: sqrt(sum(x^2)).
-    pub fn frobenius_norm(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn frobenius_norm(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let sq = self.tensor_mul(input, input)?;
         let sum = self.tensor_sum(sq)?;
         self.tensor_sqrt(sum)
     }
 
     /// Compute L1 norm: sum(|x|).
-    pub fn l1_norm(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn l1_norm(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let abs = self.tensor_abs(input)?;
         self.tensor_sum(abs)
     }
 
     /// Compute max norm: max(|x|).
-    pub fn max_norm(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn max_norm(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let abs = self.tensor_abs(input)?;
         let shape = self.tensor_shape(abs)?;
         let ndim = shape.len();
@@ -49209,40 +49563,28 @@ impl FrankenTorchSession {
     // ── Reduction Utilities ──────────────────────────────────────────────
 
     /// Compute mean along last dimension.
-    pub fn mean_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn mean_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let last_dim = shape.len() - 1;
         self.tensor_mean_dim(input, last_dim)
     }
 
     /// Compute sum along last dimension.
-    pub fn sum_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn sum_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let last_dim = shape.len() - 1;
         self.tensor_sum_dim(input, last_dim)
     }
 
     /// Compute max along last dimension (values only).
-    pub fn max_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn max_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let last_dim = shape.len() - 1;
         self.tensor_amax(input, last_dim)
     }
 
     /// Compute min along last dimension (values only).
-    pub fn min_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn min_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let last_dim = shape.len() - 1;
         self.tensor_amin(input, last_dim)
@@ -49251,19 +49593,13 @@ impl FrankenTorchSession {
     // ── Shape Manipulation Utilities ─────────────────────────────────────
 
     /// Add a dimension at the end of the tensor.
-    pub fn unsqueeze_last(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn unsqueeze_last(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         self.tensor_unsqueeze(input, shape.len())
     }
 
     /// Add a dimension at the beginning of the tensor.
-    pub fn unsqueeze_first(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn unsqueeze_first(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_unsqueeze(input, 0)
     }
 
@@ -49277,10 +49613,7 @@ impl FrankenTorchSession {
     }
 
     /// Flatten all dimensions.
-    pub fn flatten_all(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn flatten_all(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let numel: usize = shape.iter().product();
         self.tensor_reshape(input, vec![numel])
@@ -49394,19 +49727,13 @@ impl FrankenTorchSession {
     // ── Comparison Utilities ─────────────────────────────────────────────
 
     /// Check if all elements are True (> 0).
-    pub fn all_true(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn all_true(&mut self, input: TensorNodeId) -> Result<bool, AutogradError> {
         let data = self.tensor_values(input)?;
         Ok(data.iter().all(|&x| x > 0.0))
     }
 
     /// Check if any element is True (> 0).
-    pub fn any_true(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn any_true(&mut self, input: TensorNodeId) -> Result<bool, AutogradError> {
         let data = self.tensor_values(input)?;
         Ok(data.iter().any(|&x| x > 0.0))
     }
@@ -49414,10 +49741,7 @@ impl FrankenTorchSession {
     // ── Gradient Control ─────────────────────────────────────────────────
 
     /// Detach tensor from computation graph (creates a leaf copy).
-    pub fn detach_copy(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn detach_copy(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let data = self.tensor_values(input)?;
         let shape = self.tensor_shape(input)?;
         self.tensor_variable(data, shape, false)
@@ -49446,10 +49770,7 @@ impl FrankenTorchSession {
     }
 
     /// Compute cube of each element.
-    pub fn cube(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cube(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let sq = self.tensor_mul(input, input)?;
         self.tensor_mul(sq, input)
     }
@@ -49497,28 +49818,19 @@ impl FrankenTorchSession {
     // ── Statistics Utilities ─────────────────────────────────────────────
 
     /// Compute variance of all elements.
-    pub fn global_var(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn global_var(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let flat = self.flatten_all(input)?;
         self.tensor_var(flat, 1)
     }
 
     /// Compute standard deviation of all elements.
-    pub fn global_std(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn global_std(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let var = self.global_var(input)?;
         self.tensor_sqrt(var)
     }
 
     /// Compute median of all elements.
-    pub fn global_median(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn global_median(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let flat = self.flatten_all(input)?;
         self.tensor_median(flat)
     }
@@ -49526,10 +49838,7 @@ impl FrankenTorchSession {
     // ── Concatenation Utilities ──────────────────────────────────────────
 
     /// Concatenate tensors along the first dimension.
-    pub fn cat_dim0(
-        &mut self,
-        tensors: &[TensorNodeId],
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cat_dim0(&mut self, tensors: &[TensorNodeId]) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cat(tensors, 0)
     }
 
@@ -49539,7 +49848,9 @@ impl FrankenTorchSession {
         tensors: &[TensorNodeId],
     ) -> Result<TensorNodeId, AutogradError> {
         if tensors.is_empty() {
-            return Err(Self::incompatible_tensor_args("cat_last_dim: empty tensor list"));
+            return Err(Self::incompatible_tensor_args(
+                "cat_last_dim: empty tensor list",
+            ));
         }
         let shape = self.tensor_shape(tensors[0])?;
         let last_dim = shape.len() - 1;
@@ -49547,10 +49858,7 @@ impl FrankenTorchSession {
     }
 
     /// Stack tensors along a new first dimension.
-    pub fn stack_dim0(
-        &mut self,
-        tensors: &[TensorNodeId],
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn stack_dim0(&mut self, tensors: &[TensorNodeId]) -> Result<TensorNodeId, AutogradError> {
         self.tensor_stack(tensors, 0)
     }
 
@@ -49595,52 +49903,34 @@ impl FrankenTorchSession {
     }
 
     /// Clip to positive values only (equivalent to ReLU but more readable).
-    pub fn clip_positive(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn clip_positive(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_clamp_min(input, 0.0)
     }
 
     /// Clip to [0, 1] range (useful for probabilities).
-    pub fn clip_probability(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn clip_probability(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_clamp(input, 0.0, 1.0)
     }
 
     // ── Linear Algebra Shortcuts ─────────────────────────────────────────
 
     /// Compute trace of a square matrix.
-    pub fn trace_matrix(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn trace_matrix(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_trace(input)
     }
 
     /// Compute matrix determinant.
-    pub fn det_matrix(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn det_matrix(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_det(input)
     }
 
     /// Compute matrix inverse.
-    pub fn inv_matrix(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn inv_matrix(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_inv(input)
     }
 
     /// Transpose 2D matrix.
-    pub fn transpose_2d(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn transpose_2d(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_transpose(input, 0, 1)
     }
 
@@ -49669,7 +49959,7 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         eps: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let shape = self.tensor_shape(input)?;
+        let _shape = self.tensor_shape(input)?;
         let flat = self.flatten_all(input)?;
         let min_val = self.tensor_amin(flat, 0)?;
         let max_val = self.tensor_amax(flat, 0)?;
@@ -49683,10 +49973,7 @@ impl FrankenTorchSession {
     // ── Index Utilities ──────────────────────────────────────────────────
 
     /// Create indices [0, 1, 2, ..., n-1].
-    pub fn arange_int(
-        &mut self,
-        n: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn arange_int(&mut self, n: usize) -> Result<TensorNodeId, AutogradError> {
         let data: Vec<f64> = (0..n).map(|i| i as f64).collect();
         self.tensor_variable(data, vec![n], false)
     }
@@ -49715,10 +50002,7 @@ impl FrankenTorchSession {
     // ── Attention Helpers ────────────────────────────────────────────────
 
     /// Create causal attention mask for sequence length.
-    pub fn create_causal_mask(
-        &mut self,
-        seq_len: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn create_causal_mask(&mut self, seq_len: usize) -> Result<TensorNodeId, AutogradError> {
         self.causal_mask(seq_len)
     }
 
@@ -49785,26 +50069,17 @@ impl FrankenTorchSession {
     }
 
     /// Create diagonal matrix from 1D tensor.
-    pub fn diagonal_matrix(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn diagonal_matrix(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_diag(input, 0)
     }
 
     /// Create triangular matrix (lower).
-    pub fn lower_triangular(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn lower_triangular(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_tril(input, 0)
     }
 
     /// Create triangular matrix (upper).
-    pub fn upper_triangular(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn upper_triangular(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_triu(input, 0)
     }
 
@@ -49851,10 +50126,7 @@ impl FrankenTorchSession {
     // ── Activation Convenience ───────────────────────────────────────────
 
     /// Apply softmax along last dimension.
-    pub fn softmax_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn softmax_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let last_dim = shape.len() - 1;
         self.tensor_softmax(input, last_dim)
@@ -49871,20 +50143,14 @@ impl FrankenTorchSession {
     }
 
     /// Apply argmax along last dimension.
-    pub fn argmax_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn argmax_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let last_dim = shape.len() - 1;
         self.tensor_argmax(input, last_dim)
     }
 
     /// Apply argmin along last dimension.
-    pub fn argmin_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn argmin_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let last_dim = shape.len() - 1;
         self.tensor_argmin(input, last_dim)
@@ -49899,7 +50165,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("global_avg_pool2d: requires 4D input"));
+            return Err(Self::incompatible_tensor_args(
+                "global_avg_pool2d: requires 4D input",
+            ));
         }
         let (h, w) = (shape[2], shape[3]);
         let pooled = self.tensor_avg_pool2d(input, (h, w), (1, 1), (0, 0), false, true)?;
@@ -49914,7 +50182,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != 4 {
-            return Err(Self::incompatible_tensor_args("global_max_pool2d: requires 4D input"));
+            return Err(Self::incompatible_tensor_args(
+                "global_max_pool2d: requires 4D input",
+            ));
         }
         let (h, w) = (shape[2], shape[3]);
         let pooled = self.tensor_max_pool2d(input, (h, w), (1, 1))?;
@@ -49945,7 +50215,9 @@ impl FrankenTorchSession {
         for (i, &dim) in shape.iter().enumerate() {
             if dim == -1 {
                 if infer_idx.is_some() {
-                    return Err(Self::incompatible_tensor_args("view_infer: only one -1 dimension allowed"));
+                    return Err(Self::incompatible_tensor_args(
+                        "view_infer: only one -1 dimension allowed",
+                    ));
                 }
                 infer_idx = Some(i);
             } else {
@@ -49955,8 +50227,16 @@ impl FrankenTorchSession {
         let final_shape: Vec<usize> = match infer_idx {
             Some(idx) => {
                 let inferred = (numel as i64) / known_product;
-                shape.iter().enumerate()
-                    .map(|(i, &d)| if i == idx { inferred as usize } else { d as usize })
+                shape
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &d)| {
+                        if i == idx {
+                            inferred as usize
+                        } else {
+                            d as usize
+                        }
+                    })
                     .collect()
             }
             None => shape.iter().map(|&d| d as usize).collect(),
@@ -49990,7 +50270,9 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape[0] % num_groups != 0 {
-            return Err(Self::incompatible_tensor_args("batch_to_groups: batch size must be divisible by num_groups"));
+            return Err(Self::incompatible_tensor_args(
+                "batch_to_groups: batch size must be divisible by num_groups",
+            ));
         }
         let group_size = shape[0] / num_groups;
         let mut new_shape = vec![num_groups, group_size];
@@ -50100,54 +50382,36 @@ impl FrankenTorchSession {
     // ── Rounding Utilities ───────────────────────────────────────────────
 
     /// Round to nearest integer.
-    pub fn round_nearest(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn round_nearest(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_round(input)
     }
 
     /// Truncate to integer part.
-    pub fn truncate(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn truncate(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_trunc(input)
     }
 
     /// Fractional part.
-    pub fn fractional(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn fractional(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_frac(input)
     }
 
     // ── Exponential/Log Variants ─────────────────────────────────────────
 
     /// Compute 2^x.
-    pub fn exp2_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn exp2_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_exp2(input)
     }
 
     // ── Trigonometric Shortcuts ──────────────────────────────────────────
 
     /// Convert degrees to radians.
-    pub fn deg_to_rad(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn deg_to_rad(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_deg2rad(input)
     }
 
     /// Convert radians to degrees.
-    pub fn rad_to_deg(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rad_to_deg(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rad2deg(input)
     }
 
@@ -50163,34 +50427,22 @@ impl FrankenTorchSession {
     // ── Special Function Shortcuts ───────────────────────────────────────
 
     /// Error function.
-    pub fn erf_fn(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn erf_fn(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erf(input)
     }
 
     /// Complementary error function.
-    pub fn erfc_fn(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn erfc_fn(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erfc(input)
     }
 
     /// Log-gamma function.
-    pub fn lgamma_fn(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn lgamma_fn(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_lgamma(input)
     }
 
     /// Digamma function (psi).
-    pub fn digamma_fn(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn digamma_fn(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_digamma(input)
     }
 
@@ -50234,45 +50486,30 @@ impl FrankenTorchSession {
     // ── Checking Operations ──────────────────────────────────────────────
 
     /// Check if values are NaN.
-    pub fn is_nan(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn is_nan(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isnan(input)
     }
 
     /// Check if values are infinite.
-    pub fn is_inf(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn is_inf(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isinf(input)
     }
 
     /// Check if values are finite.
-    pub fn is_finite(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn is_finite(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isfinite(input)
     }
 
     // ── Clone/Copy Operations ────────────────────────────────────────────
 
     /// Create a deep copy of the tensor (preserving grad tracking).
-    pub fn clone_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn clone_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
         self.tensor_clone(input, requires_grad)
     }
 
     /// Create a contiguous copy.
-    pub fn contiguous_copy(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn contiguous_copy(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_contiguous(input)
     }
 
@@ -50365,10 +50602,7 @@ impl FrankenTorchSession {
     // ── Gradient Utilities ────────────────────────────────────────────────
 
     /// Detach tensor from computation graph.
-    pub fn detach_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn detach_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_detach(input)
     }
 
@@ -50443,10 +50677,7 @@ impl FrankenTorchSession {
     }
 
     /// Clamp to range [0, 1].
-    pub fn clamp_unit(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn clamp_unit(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_clamp(input, 0.0, 1.0)
     }
 
@@ -50472,10 +50703,7 @@ impl FrankenTorchSession {
     }
 
     /// Matrix trace (sum of diagonal elements).
-    pub fn matrix_trace(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn matrix_trace(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let diag = self.tensor_diagonal(input, 0)?;
         self.tensor_sum(diag)
     }
@@ -50524,18 +50752,12 @@ impl FrankenTorchSession {
     // ── Pooling Shortcuts ─────────────────────────────────────────────────
 
     /// 2D max pooling with default settings (kernel=2, stride=2).
-    pub fn maxpool2d_2x2(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn maxpool2d_2x2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_max_pool2d(input, (2, 2), (2, 2))
     }
 
     /// 2D average pooling with default settings (kernel=2, stride=2).
-    pub fn avgpool2d_2x2(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn avgpool2d_2x2(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_avg_pool2d(input, (2, 2), (2, 2), (0, 0), false, true)
     }
 
@@ -50601,26 +50823,17 @@ impl FrankenTorchSession {
     }
 
     /// ELU activation.
-    pub fn elu_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn elu_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_elu(input)
     }
 
     /// CELU activation.
-    pub fn celu_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn celu_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_celu(input, 1.0)
     }
 
     /// SELU (scaled ELU).
-    pub fn selu_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn selu_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_selu(input)
     }
 
@@ -50634,18 +50847,12 @@ impl FrankenTorchSession {
     }
 
     /// RReLU with default range.
-    pub fn rrelu_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rrelu_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rrelu(input, 0.125, 1.0 / 3.0)
     }
 
     /// ReLU6 (clamps to [0, 6]).
-    pub fn relu6_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn relu6_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_relu6(input)
     }
 
@@ -50669,10 +50876,7 @@ impl FrankenTorchSession {
     }
 
     /// Dropout in eval mode (identity).
-    pub fn dropout_eval(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn dropout_eval(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_clone(input, self.tensor_tape.tensor_requires_grad(input)?)
     }
 
@@ -50703,7 +50907,8 @@ impl FrankenTorchSession {
         data: &[f64],
         requires_grad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        self.tensor_tape.leaf(data.to_vec(), vec![data.len()], requires_grad)
+        self.tensor_tape
+            .leaf(data.to_vec(), vec![data.len()], requires_grad)
     }
 
     /// Create 2D tensor from flat data with shape.
@@ -50748,10 +50953,7 @@ impl FrankenTorchSession {
     // ── Advanced Reduction ────────────────────────────────────────────────
 
     /// Product of all elements.
-    pub fn prod_all(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn prod_all(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_prod(input)
     }
 
@@ -50775,10 +50977,7 @@ impl FrankenTorchSession {
     }
 
     /// Max norm (infinity norm) - max of absolute values.
-    pub fn inf_norm(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn inf_norm(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let abs = self.tensor_abs(input)?;
         let shape = self.tensor_shape(abs)?;
         let flat = self.tensor_flatten(abs, 0, shape.len() - 1)?;
@@ -50809,36 +51008,24 @@ impl FrankenTorchSession {
     // ── FFT Operations ────────────────────────────────────────────────────
 
     /// 1D FFT (full length).
-    pub fn fft_full(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn fft_full(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fft(input, None)
     }
 
     /// 1D inverse FFT (full length).
-    pub fn ifft_full(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ifft_full(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ifft(input, None)
     }
 
     /// Real-valued FFT (full length).
-    pub fn rfft_full(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rfft_full(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rfft(input, None)
     }
 
     // ── Squeeze/Unsqueeze Shortcuts ───────────────────────────────────────
 
     /// Remove all dimensions of size 1.
-    pub fn squeeze_all(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn squeeze_all(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let mut result = input;
         for (dim, &size) in shape.iter().enumerate().rev() {
@@ -50850,18 +51037,12 @@ impl FrankenTorchSession {
     }
 
     /// Add dimension at the front (batch dimension).
-    pub fn add_batch_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn add_batch_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_unsqueeze(input, 0)
     }
 
     /// Remove batch dimension (first dimension).
-    pub fn remove_batch_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn remove_batch_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_squeeze(input, 0)
     }
 
@@ -50880,7 +51061,11 @@ impl FrankenTorchSession {
     }
 
     /// Check if tensor has given shape.
-    pub fn has_shape(&self, input: TensorNodeId, expected: &[usize]) -> Result<bool, AutogradError> {
+    pub fn has_shape(
+        &self,
+        input: TensorNodeId,
+        expected: &[usize],
+    ) -> Result<bool, AutogradError> {
         let shape = self.tensor_shape(input)?;
         Ok(shape == expected)
     }
@@ -50888,10 +51073,7 @@ impl FrankenTorchSession {
     // ── Diagonal Operations ───────────────────────────────────────────────
 
     /// Extract main diagonal.
-    pub fn diag_main(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn diag_main(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_diagonal(input, 0)
     }
 
@@ -50905,38 +51087,26 @@ impl FrankenTorchSession {
     }
 
     /// Create diagonal matrix from 1D tensor.
-    pub fn diag_embed_main(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn diag_embed_main(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_diag_embed(input, 0)
     }
 
     // ── Triangular Operations ─────────────────────────────────────────────
 
     /// Get lower triangular part.
-    pub fn tril_main(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tril_main(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_tril(input, 0)
     }
 
     /// Get upper triangular part.
-    pub fn triu_main(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn triu_main(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_triu(input, 0)
     }
 
     // ── Matrix Utilities ──────────────────────────────────────────────────
 
     /// Transpose last two dimensions (batch matrix transpose).
-    pub fn transpose_batch(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn transpose_batch(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let ndim = shape.len();
         if ndim < 2 {
@@ -50997,42 +51167,29 @@ impl FrankenTorchSession {
         self.tensor_unsqueeze(result, dim)
     }
 
-
     // ── Softmax Variants ──────────────────────────────────────────────────
 
     /// Softmax along last dimension.
-    pub fn softmax_last(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn softmax_last(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         self.tensor_softmax(input, shape.len() - 1)
     }
 
     /// Log-softmax along last dimension.
-    pub fn log_softmax_last(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn log_softmax_last(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         self.tensor_log_softmax(input, shape.len() - 1)
     }
 
     /// Softmax along first dimension (batch softmax).
-    pub fn softmax_first(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn softmax_first(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_softmax(input, 0)
     }
 
     // ── Normalization Utilities ───────────────────────────────────────────
 
     /// Center data (subtract mean).
-    pub fn center(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn center(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let mean = self.tensor_mean(input)?;
         self.tensor_sub(input, mean)
     }
@@ -51190,10 +51347,7 @@ impl FrankenTorchSession {
     // ── Concatenation Variants ────────────────────────────────────────────
 
     /// Concatenate tensors along batch dimension.
-    pub fn cat_batch(
-        &mut self,
-        tensors: &[TensorNodeId],
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cat_batch(&mut self, tensors: &[TensorNodeId]) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cat(tensors, 0)
     }
 
@@ -51208,10 +51362,7 @@ impl FrankenTorchSession {
     }
 
     /// Stack tensors along new dimension 0.
-    pub fn stack_batch(
-        &mut self,
-        tensors: &[TensorNodeId],
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn stack_batch(&mut self, tensors: &[TensorNodeId]) -> Result<TensorNodeId, AutogradError> {
         self.tensor_stack(tensors, 0)
     }
 
@@ -51239,19 +51390,13 @@ impl FrankenTorchSession {
     // ── Unique Operations ─────────────────────────────────────────────────
 
     /// Get unique elements (sorted).
-    pub fn unique_sorted(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn unique_sorted(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (unique, _, _) = self.tensor_unique(input, true, false, false)?;
         Ok(unique)
     }
 
     /// Count occurrences of each value.
-    pub fn value_counts(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn value_counts(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_bincount(input, None, 0)
     }
 
@@ -51293,7 +51438,8 @@ impl FrankenTorchSession {
                 }
             }
         }
-        self.tensor_tape.leaf(encoding, vec![seq_len, d_model], false)
+        self.tensor_tape
+            .leaf(encoding, vec![seq_len, d_model], false)
     }
 
     // ── Relative Position Bias ────────────────────────────────────────────
@@ -51309,25 +51455,20 @@ impl FrankenTorchSession {
                 indices.push((j as i64 - i as i64 + seq_len as i64 - 1) as f64);
             }
         }
-        self.tensor_tape.leaf(indices, vec![seq_len, seq_len], false)
+        self.tensor_tape
+            .leaf(indices, vec![seq_len, seq_len], false)
     }
 
     // ── Tensor Statistics ─────────────────────────────────────────────────
 
     /// Compute variance along last dimension.
-    pub fn var_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn var_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         self.tensor_var_dim(input, shape.len() - 1, 1)
     }
 
     /// Compute standard deviation along last dimension.
-    pub fn std_last_dim(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn std_last_dim(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         self.tensor_std_dim(input, shape.len() - 1, 1)
     }
@@ -51335,28 +51476,19 @@ impl FrankenTorchSession {
     // ── Batch Statistics ──────────────────────────────────────────────────
 
     /// Compute batch mean (mean along dim 0).
-    pub fn batch_mean(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn batch_mean(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_mean_dim(input, 0)
     }
 
     /// Compute batch variance (variance along dim 0).
-    pub fn batch_var(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn batch_var(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_var_dim(input, 0, 1)
     }
 
     // ── Activation In-Place Wrappers ──────────────────────────────────────
 
     /// ReLU activation (returns new tensor).
-    pub fn relu_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn relu_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_relu(input)
     }
 
@@ -51369,34 +51501,22 @@ impl FrankenTorchSession {
     }
 
     /// Tanh activation (returns new tensor).
-    pub fn tanh_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tanh_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_tanh(input)
     }
 
     /// GELU activation (returns new tensor).
-    pub fn gelu_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn gelu_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_gelu(input)
     }
 
     /// SiLU/Swish activation (returns new tensor).
-    pub fn silu_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn silu_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_silu(input)
     }
 
     /// Mish activation (returns new tensor).
-    pub fn mish_activation(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn mish_activation(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_mish(input)
     }
 
@@ -51454,10 +51574,7 @@ impl FrankenTorchSession {
     // ── Comparison Operations ─────────────────────────────────────────────
 
     /// Count non-zero elements.
-    pub fn nonzero_count(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<usize, AutogradError> {
+    pub fn nonzero_count(&mut self, input: TensorNodeId) -> Result<usize, AutogradError> {
         let count = self.tensor_count_nonzero(input)?;
         let values = self.tensor_values(count)?;
         Ok(values[0] as usize)
@@ -51483,9 +51600,11 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         index: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let shape = self.tensor_shape(input)?;
+        let _shape = self.tensor_shape(input)?;
         let requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
-        let indices = self.tensor_tape.leaf(vec![index as f64], vec![1], requires_grad)?;
+        let indices = self
+            .tensor_tape
+            .leaf(vec![index as f64], vec![1], requires_grad)?;
         let selected = self.tensor_index_select(input, 0, indices)?;
         self.tensor_squeeze(selected, 0)
     }
@@ -51539,8 +51658,12 @@ impl FrankenTorchSession {
             return Err(Self::incompatible_tensor_args("expected NCHW"));
         }
         let c = shape[1];
-        let mean_t = self.tensor_tape.leaf(mean.to_vec(), vec![1, c, 1, 1], false)?;
-        let std_t = self.tensor_tape.leaf(std.to_vec(), vec![1, c, 1, 1], false)?;
+        let mean_t = self
+            .tensor_tape
+            .leaf(mean.to_vec(), vec![1, c, 1, 1], false)?;
+        let std_t = self
+            .tensor_tape
+            .leaf(std.to_vec(), vec![1, c, 1, 1], false)?;
         let centered = self.tensor_sub(input, mean_t)?;
         self.tensor_div(centered, std_t)
     }
@@ -51557,8 +51680,12 @@ impl FrankenTorchSession {
             return Err(Self::incompatible_tensor_args("expected NCHW"));
         }
         let c = shape[1];
-        let mean_t = self.tensor_tape.leaf(mean.to_vec(), vec![1, c, 1, 1], false)?;
-        let std_t = self.tensor_tape.leaf(std.to_vec(), vec![1, c, 1, 1], false)?;
+        let mean_t = self
+            .tensor_tape
+            .leaf(mean.to_vec(), vec![1, c, 1, 1], false)?;
+        let std_t = self
+            .tensor_tape
+            .leaf(std.to_vec(), vec![1, c, 1, 1], false)?;
         let scaled = self.tensor_mul(input, std_t)?;
         self.tensor_add(scaled, mean_t)
     }
@@ -51566,19 +51693,13 @@ impl FrankenTorchSession {
     // ── Boolean Tensor Operations ─────────────────────────────────────────
 
     /// Convert tensor to boolean mask (nonzero = true).
-    pub fn to_bool_mask(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn to_bool_mask(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let zero = self.full(vec![1], 0.0, false)?;
         self.tensor_ne(input, zero)
     }
 
     /// Invert boolean mask.
-    pub fn invert_mask(
-        &mut self,
-        mask: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn invert_mask(&mut self, mask: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_logical_not(mask)
     }
 
@@ -51608,10 +51729,7 @@ impl FrankenTorchSession {
     // ── Gradient Utilities ────────────────────────────────────────────────
 
     /// Zero out gradients (returns zeros with same shape).
-    pub fn zero_grad_like(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn zero_grad_like(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         self.full(shape, 0.0, false)
     }
@@ -51628,18 +51746,12 @@ impl FrankenTorchSession {
     }
 
     /// Compute Cholesky decomposition (lower triangular).
-    pub fn cholesky_lower(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cholesky_lower(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cholesky(input, false)
     }
 
     /// Compute Cholesky decomposition (upper triangular).
-    pub fn cholesky_upper(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cholesky_upper(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cholesky(input, true)
     }
 
@@ -51670,26 +51782,17 @@ impl FrankenTorchSession {
     // ── Window Functions ──────────────────────────────────────────────────
 
     /// Create Hann window.
-    pub fn hann_window_simple(
-        &mut self,
-        size: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn hann_window_simple(&mut self, size: usize) -> Result<TensorNodeId, AutogradError> {
         self.tensor_hann_window(size, false)
     }
 
     /// Create Hamming window with default alpha/beta.
-    pub fn hamming_window_default(
-        &mut self,
-        size: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn hamming_window_default(&mut self, size: usize) -> Result<TensorNodeId, AutogradError> {
         self.tensor_hamming_window(size, false, 0.54, 0.46)
     }
 
     /// Create Blackman window.
-    pub fn blackman_window_simple(
-        &mut self,
-        size: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn blackman_window_simple(&mut self, size: usize) -> Result<TensorNodeId, AutogradError> {
         self.tensor_blackman_window(size, false)
     }
 
@@ -51875,10 +51978,7 @@ impl FrankenTorchSession {
     // ── Reshape Utilities ─────────────────────────────────────────────────
 
     /// Reshape to 1D (flatten all dimensions).
-    pub fn reshape_flat(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn reshape_flat(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let numel = self.tensor_numel(input)?;
         self.tensor_reshape(input, vec![numel])
     }
@@ -52127,11 +52227,7 @@ impl FrankenTorchSession {
     }
 
     /// Assert tensor has expected number of dimensions.
-    pub fn assert_ndim(
-        &self,
-        input: TensorNodeId,
-        expected: usize,
-    ) -> Result<(), AutogradError> {
+    pub fn assert_ndim(&self, input: TensorNodeId, expected: usize) -> Result<(), AutogradError> {
         let shape = self.tensor_shape(input)?;
         if shape.len() != expected {
             return Err(Self::incompatible_tensor_args("ndim mismatch"));
@@ -52155,11 +52251,7 @@ impl FrankenTorchSession {
     // ── Tensor Comparison Utilities ───────────────────────────────────────
 
     /// Check if two tensors have same shape.
-    pub fn same_shape(
-        &self,
-        a: TensorNodeId,
-        b: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn same_shape(&self, a: TensorNodeId, b: TensorNodeId) -> Result<bool, AutogradError> {
         let shape_a = self.tensor_shape(a)?;
         let shape_b = self.tensor_shape(b)?;
         Ok(shape_a == shape_b)
@@ -52187,10 +52279,7 @@ impl FrankenTorchSession {
     // ── Index Manipulation ────────────────────────────────────────────────
 
     /// Create range tensor [0, n).
-    pub fn arange_simple(
-        &mut self,
-        n: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn arange_simple(&mut self, n: usize) -> Result<TensorNodeId, AutogradError> {
         self.tensor_arange(0.0, n as f64, 1.0, false)
     }
 
@@ -52228,19 +52317,12 @@ impl FrankenTorchSession {
     // ── Eye/Identity Utilities ────────────────────────────────────────────
 
     /// Create square identity matrix of size n.
-    pub fn eye_square(
-        &mut self,
-        n: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn eye_square(&mut self, n: usize) -> Result<TensorNodeId, AutogradError> {
         self.tensor_eye(n, None, false)
     }
 
     /// Create rectangular identity matrix m x n.
-    pub fn eye_rect(
-        &mut self,
-        m: usize,
-        n: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn eye_rect(&mut self, m: usize, n: usize) -> Result<TensorNodeId, AutogradError> {
         self.tensor_eye(m, Some(n), false)
     }
 
@@ -52257,34 +52339,22 @@ impl FrankenTorchSession {
     // ── Variance/Std Utilities ────────────────────────────────────────────
 
     /// Compute variance with Bessel correction.
-    pub fn var_bessel(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn var_bessel(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_var(input, 1)
     }
 
     /// Compute variance without Bessel correction.
-    pub fn var_population(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn var_population(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_var(input, 0)
     }
 
     /// Compute standard deviation with Bessel correction.
-    pub fn std_bessel(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn std_bessel(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_std(input, 1)
     }
 
     /// Compute standard deviation without Bessel correction.
-    pub fn std_population(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn std_population(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_std(input, 0)
     }
 
@@ -52512,10 +52582,7 @@ impl FrankenTorchSession {
     // ── Tensor Copying ────────────────────────────────────────────────────
 
     /// Create a copy of tensor (alias for clone_tensor).
-    pub fn copy_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn copy_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.clone_tensor(input)
     }
 
@@ -52534,180 +52601,115 @@ impl FrankenTorchSession {
     // ── Sign Utilities ────────────────────────────────────────────────────
 
     /// Get sign of tensor elements (-1, 0, or 1).
-    pub fn sign_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn sign_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_sign(input)
     }
 
     /// Get absolute value of tensor.
-    pub fn abs_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn abs_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_abs(input)
     }
 
     /// Negate tensor.
-    pub fn neg_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn neg_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_neg(input)
     }
 
     // ── Rounding Utilities ────────────────────────────────────────────────
 
     /// Floor tensor elements.
-    pub fn floor_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn floor_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_floor(input)
     }
 
     /// Ceil tensor elements.
-    pub fn ceil_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ceil_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ceil(input)
     }
 
     /// Round tensor elements to nearest integer.
-    pub fn round_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn round_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_round(input)
     }
 
     /// Truncate tensor elements toward zero.
-    pub fn trunc_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn trunc_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_trunc(input)
     }
 
     // ── Trigonometric Utilities ───────────────────────────────────────────
 
     /// Sine of tensor elements.
-    pub fn sin_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn sin_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_sin(input)
     }
 
     /// Cosine of tensor elements.
-    pub fn cos_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cos_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cos(input)
     }
 
     /// Tangent of tensor elements.
-    pub fn tan_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tan_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_tan(input)
     }
 
     /// Hyperbolic sine of tensor elements.
-    pub fn sinh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn sinh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_sinh(input)
     }
 
     /// Hyperbolic cosine of tensor elements.
-    pub fn cosh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cosh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cosh(input)
     }
 
     /// Hyperbolic tangent of tensor elements.
-    pub fn tanh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn tanh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_tanh(input)
     }
 
     // ── Exponential/Log Utilities ─────────────────────────────────────────
 
     /// Exponential of tensor elements.
-    pub fn exp_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn exp_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_exp(input)
     }
 
     /// Natural logarithm of tensor elements.
-    pub fn log_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn log_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_log(input)
     }
 
     /// Base-2 logarithm of tensor elements.
-    pub fn log2_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn log2_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_log2(input)
     }
 
     /// Base-10 logarithm of tensor elements.
-    pub fn log10_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn log10_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_log10(input)
     }
 
     /// Square root of tensor elements.
-    pub fn sqrt_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn sqrt_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_sqrt(input)
     }
 
     /// Reciprocal square root of tensor elements.
-    pub fn rsqrt_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rsqrt_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rsqrt(input)
     }
 
     // ── Matrix Multiplication Utilities ───────────────────────────────────
 
     /// Matrix multiplication of two 2D tensors.
-    pub fn mm(
-        &mut self,
-        a: TensorNodeId,
-        b: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn mm(&mut self, a: TensorNodeId, b: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_mm(a, b)
     }
 
     /// Batched matrix multiplication.
-    pub fn bmm(
-        &mut self,
-        a: TensorNodeId,
-        b: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn bmm(&mut self, a: TensorNodeId, b: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_bmm(a, b)
     }
 
@@ -52754,26 +52756,17 @@ impl FrankenTorchSession {
     // ── Inverse Trigonometric Utilities ───────────────────────────────────
 
     /// Arcsine of tensor elements.
-    pub fn asin_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn asin_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_asin(input)
     }
 
     /// Arccosine of tensor elements.
-    pub fn acos_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn acos_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_acos(input)
     }
 
     /// Arctangent of tensor elements.
-    pub fn atan_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn atan_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_atan(input)
     }
 
@@ -52797,84 +52790,54 @@ impl FrankenTorchSession {
     }
 
     /// Square of tensor elements.
-    pub fn square_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn square_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_square(input)
     }
 
     /// Cube of tensor elements.
-    pub fn cube_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cube_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_pow(input, 3.0)
     }
 
     /// exp(x) - 1 with better precision for small x.
-    pub fn expm1_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn expm1_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_expm1(input)
     }
 
     /// log(1 + x) with better precision for small x.
-    pub fn log1p_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn log1p_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_log1p(input)
     }
 
     // ── Special Functions Utilities ────────────────────────────────────────
 
     /// Error function.
-    pub fn erf_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn erf_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erf(input)
     }
 
     /// Complementary error function.
-    pub fn erfc_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn erfc_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erfc(input)
     }
 
     /// Inverse error function.
-    pub fn erfinv_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn erfinv_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erfinv(input)
     }
 
     /// Scaled complementary error function: exp(x^2) * erfc(x).
-    pub fn erfcx_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn erfcx_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erfcx(input)
     }
 
     /// Log-gamma function.
-    pub fn lgamma_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn lgamma_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_lgamma(input)
     }
 
     /// Digamma (psi) function.
-    pub fn digamma_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn digamma_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_digamma(input)
     }
 
@@ -52906,110 +52869,71 @@ impl FrankenTorchSession {
     }
 
     /// Modified Bessel function I0.
-    pub fn i0_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn i0_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_special_i0(input)
     }
 
     /// Exponentially scaled modified Bessel function I0.
-    pub fn i0e_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn i0e_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_special_i0e(input)
     }
 
     /// Modified Bessel function I1.
-    pub fn i1_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn i1_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_special_i1(input)
     }
 
     /// Exponentially scaled modified Bessel function I1.
-    pub fn i1e_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn i1e_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_special_i1e(input)
     }
 
     /// Standard normal CDF.
-    pub fn ndtr_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ndtr_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_special_ndtr(input)
     }
 
     /// Inverse standard normal CDF.
-    pub fn ndtri_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ndtri_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_special_ndtri(input)
     }
 
     /// Log of the normal CDF.
-    pub fn log_ndtr_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn log_ndtr_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_special_log_ndtr(input)
     }
 
     // ── Additional Trigonometric Utilities ─────────────────────────────────
 
     /// Hyperbolic arcsine.
-    pub fn asinh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn asinh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_asinh(input)
     }
 
     /// Hyperbolic arccosine.
-    pub fn acosh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn acosh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_acosh(input)
     }
 
     /// Hyperbolic arctangent.
-    pub fn atanh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn atanh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_atanh(input)
     }
 
     /// Sinc function: sin(pi*x) / (pi*x).
-    pub fn sinc_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn sinc_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_sinc(input)
     }
 
     // ── Linear Algebra Utilities ───────────────────────────────────────────
 
     /// Matrix determinant.
-    pub fn det_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn det_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_det(input)
     }
 
     /// Matrix log-determinant.
-    pub fn logdet_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn logdet_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_logdet(input)
     }
 
@@ -53022,26 +52946,17 @@ impl FrankenTorchSession {
     }
 
     /// Matrix inverse.
-    pub fn inv_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn inv_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_inv(input)
     }
 
     /// Pseudo-inverse (Moore-Penrose).
-    pub fn pinv_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn pinv_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_pinverse(input)
     }
 
     /// Matrix trace.
-    pub fn trace_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn trace_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_trace(input)
     }
 
@@ -53071,18 +52986,12 @@ impl FrankenTorchSession {
     }
 
     /// Nuclear norm of matrix.
-    pub fn nuclear_norm(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn nuclear_norm(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_matrix_norm(input, "nuc")
     }
 
     /// Eigenvalues of symmetric/Hermitian matrix.
-    pub fn eigvalsh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn eigvalsh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_eigvalsh(input)
     }
 
@@ -53206,10 +53115,7 @@ impl FrankenTorchSession {
     }
 
     /// Median value of tensor.
-    pub fn median_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn median_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_median(input)
     }
 
@@ -53223,10 +53129,7 @@ impl FrankenTorchSession {
     }
 
     /// Mode (most frequent value).
-    pub fn mode_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn mode_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (values, _indices) = self.tensor_mode(input)?;
         Ok(values)
     }
@@ -53234,10 +53137,7 @@ impl FrankenTorchSession {
     // ── Tensor Manipulation Utilities ──────────────────────────────────────
 
     /// Fractional part of tensor elements.
-    pub fn frac_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn frac_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_frac(input)
     }
 
@@ -53348,27 +53248,17 @@ impl FrankenTorchSession {
     }
 
     /// Norm with custom p value.
-    pub fn norm_p(
-        &mut self,
-        input: TensorNodeId,
-        p: f64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn norm_p(&mut self, input: TensorNodeId, p: f64) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_norm(input, p)
     }
 
     /// Euclidean (L2) norm.
-    pub fn euclidean_norm(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn euclidean_norm(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_norm(input, 2.0)
     }
 
     /// Infinity norm (max absolute value).
-    pub fn infinity_norm(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn infinity_norm(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_linalg_norm(input, f64::INFINITY)
     }
 
@@ -53381,36 +53271,24 @@ impl FrankenTorchSession {
     }
 
     /// Compute nansum (sum treating NaN as 0).
-    pub fn nansum_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn nansum_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_nansum(input)
     }
 
     /// Compute nanmean (mean treating NaN as missing).
-    pub fn nanmean_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn nanmean_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_nanmean(input)
     }
 
     // ── Boolean Reduction Utilities ────────────────────────────────────────
 
     /// Check if any element is True (nonzero).
-    pub fn any_tensor(
-        &self,
-        input: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn any_tensor(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_any(input)
     }
 
     /// Check if all elements are True (nonzero).
-    pub fn all_tensor(
-        &self,
-        input: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn all_tensor(&self, input: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_all(input)
     }
 
@@ -53472,26 +53350,17 @@ impl FrankenTorchSession {
     // ── Sign/Step Utilities ────────────────────────────────────────────────
 
     /// Positive part of tensor (max(x, 0)).
-    pub fn positive_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn positive_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_positive(input)
     }
 
     /// Negative of tensor.
-    pub fn negative_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn negative_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_negative(input)
     }
 
     /// Sign bit of tensor elements.
-    pub fn signbit_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn signbit_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_signbit(input)
     }
 
@@ -53572,34 +53441,22 @@ impl FrankenTorchSession {
     // ── FFT Utilities ──────────────────────────────────────────────────────
 
     /// 1D FFT.
-    pub fn fft_1d(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn fft_1d(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fft(input, None)
     }
 
     /// 1D inverse FFT.
-    pub fn ifft_1d(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ifft_1d(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ifft(input, None)
     }
 
     /// Real-valued FFT.
-    pub fn rfft_1d(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rfft_1d(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rfft(input, None)
     }
 
     /// Real-valued inverse FFT.
-    pub fn irfft_1d(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn irfft_1d(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_irfft(input, None)
     }
 
@@ -53697,27 +53554,17 @@ impl FrankenTorchSession {
     // ── Tensor Info Utilities ──────────────────────────────────────────────
 
     /// Get number of dimensions.
-    pub fn ndim_tensor(
-        &self,
-        input: TensorNodeId,
-    ) -> Result<usize, AutogradError> {
+    pub fn ndim_tensor(&self, input: TensorNodeId) -> Result<usize, AutogradError> {
         Ok(self.tensor_shape(input)?.len())
     }
 
     /// Get total number of elements.
-    pub fn numel_tensor(
-        &self,
-        input: TensorNodeId,
-    ) -> Result<usize, AutogradError> {
+    pub fn numel_tensor(&self, input: TensorNodeId) -> Result<usize, AutogradError> {
         self.tensor_numel(input)
     }
 
     /// Get size along dimension.
-    pub fn size_dim(
-        &self,
-        input: TensorNodeId,
-        dim: usize,
-    ) -> Result<usize, AutogradError> {
+    pub fn size_dim(&self, input: TensorNodeId, dim: usize) -> Result<usize, AutogradError> {
         let shape = self.tensor_shape(input)?;
         Ok(shape.get(dim).copied().unwrap_or(1))
     }
@@ -53734,10 +53581,7 @@ impl FrankenTorchSession {
     }
 
     /// Flatten tensor to 1D.
-    pub fn flatten_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn flatten_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let shape = self.tensor_shape(input)?;
         let ndim = shape.len();
         if ndim == 0 {
@@ -53757,10 +53601,7 @@ impl FrankenTorchSession {
     }
 
     /// Squeeze all dimensions of size 1.
-    pub fn squeeze_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn squeeze_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_squeeze_all(input)
     }
 
@@ -54113,10 +53954,7 @@ impl FrankenTorchSession {
     }
 
     /// Nonzero indices.
-    pub fn nonzero_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn nonzero_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_nonzero(input)
     }
 
@@ -54146,10 +53984,7 @@ impl FrankenTorchSession {
     // ── Unique Utilities ───────────────────────────────────────────────────
 
     /// Find unique values.
-    pub fn unique_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn unique_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         let (unique, _inverse, _counts) = self.tensor_unique(input, true, false, false)?;
         Ok(unique)
     }
@@ -54291,18 +54126,12 @@ impl FrankenTorchSession {
     }
 
     /// Flip left-right (last dim).
-    pub fn fliplr_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn fliplr_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fliplr(input)
     }
 
     /// Flip up-down (second to last dim).
-    pub fn flipud_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn flipud_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_flipud(input)
     }
 
@@ -54351,18 +54180,12 @@ impl FrankenTorchSession {
     // ── Tensor Creation Aliases ────────────────────────────────────────────
 
     /// Create zeros tensor.
-    pub fn zeros_tensor(
-        &mut self,
-        shape: Vec<usize>,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn zeros_tensor(&mut self, shape: Vec<usize>) -> Result<TensorNodeId, AutogradError> {
         self.zeros(shape, false)
     }
 
     /// Create ones tensor.
-    pub fn ones_tensor(
-        &mut self,
-        shape: Vec<usize>,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ones_tensor(&mut self, shape: Vec<usize>) -> Result<TensorNodeId, AutogradError> {
         self.ones(shape, false)
     }
 
@@ -54376,36 +54199,24 @@ impl FrankenTorchSession {
     }
 
     /// Create empty tensor (uninitialized).
-    pub fn empty_tensor(
-        &mut self,
-        shape: Vec<usize>,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn empty_tensor(&mut self, shape: Vec<usize>) -> Result<TensorNodeId, AutogradError> {
         self.empty(shape, false)
     }
 
     /// Create eye (identity) tensor.
-    pub fn eye_tensor(
-        &mut self,
-        n: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn eye_tensor(&mut self, n: usize) -> Result<TensorNodeId, AutogradError> {
         self.tensor_eye(n, None, false)
     }
 
     // ── Random Creation Aliases ────────────────────────────────────────────
 
     /// Create random tensor (uniform [0, 1)).
-    pub fn rand_tensor(
-        &mut self,
-        shape: Vec<usize>,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rand_tensor(&mut self, shape: Vec<usize>) -> Result<TensorNodeId, AutogradError> {
         self.rand(shape, false)
     }
 
     /// Create random tensor (standard normal).
-    pub fn randn_tensor(
-        &mut self,
-        shape: Vec<usize>,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn randn_tensor(&mut self, shape: Vec<usize>) -> Result<TensorNodeId, AutogradError> {
         self.randn(shape, false)
     }
 
@@ -54420,10 +54231,7 @@ impl FrankenTorchSession {
     }
 
     /// Random permutation of 0..n.
-    pub fn randperm_simple(
-        &mut self,
-        n: usize,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn randperm_simple(&mut self, n: usize) -> Result<TensorNodeId, AutogradError> {
         self.tensor_randperm(n)
     }
 
@@ -54447,10 +54255,7 @@ impl FrankenTorchSession {
     }
 
     /// Create rand with same shape/dtype.
-    pub fn rand_like_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rand_like_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rand_like(input, false)
     }
 
@@ -54515,18 +54320,12 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Bernoulli sampling with element-wise probabilities.
-    pub fn bernoulli_tensor(
-        &mut self,
-        prob: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn bernoulli_tensor(&mut self, prob: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_bernoulli(prob)
     }
 
     /// Poisson sampling with element-wise rates.
-    pub fn poisson_tensor(
-        &mut self,
-        rate: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn poisson_tensor(&mut self, rate: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_poisson(rate)
     }
 
@@ -54740,10 +54539,7 @@ impl FrankenTorchSession {
     }
 
     /// Product of all elements.
-    pub fn prod_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn prod_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_prod(input)
     }
 
@@ -54977,34 +54773,22 @@ impl FrankenTorchSession {
     }
 
     /// Softplus activation.
-    pub fn softplus_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn softplus_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_softplus(input)
     }
 
     /// Mish activation.
-    pub fn mish_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn mish_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_mish(input)
     }
 
     /// Hard swish activation.
-    pub fn hardswish_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn hardswish_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_hardswish(input)
     }
 
     /// Hard tanh activation.
-    pub fn hardtanh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn hardtanh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_hardtanh(input)
     }
 
@@ -55469,10 +55253,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// SELU activation.
-    pub fn selu_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn selu_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_selu(input)
     }
 
@@ -55603,7 +55384,15 @@ impl FrankenTorchSession {
         reduction: &str,
         zero_infinity: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        self.tensor_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, reduction, zero_infinity)
+        self.tensor_ctc_loss(
+            log_probs,
+            targets,
+            input_lengths,
+            target_lengths,
+            blank,
+            reduction,
+            zero_infinity,
+        )
     }
 
     /// Cosine embedding loss for similarity learning.
@@ -55700,7 +55489,14 @@ impl FrankenTorchSession {
         ceil_mode: bool,
         count_include_pad: bool,
     ) -> Result<TensorNodeId, AutogradError> {
-        self.tensor_avg_pool3d(input, kernel_size, stride, padding, ceil_mode, count_include_pad)
+        self.tensor_avg_pool3d(
+            input,
+            kernel_size,
+            stride,
+            padding,
+            ceil_mode,
+            count_include_pad,
+        )
     }
 
     /// Adaptive average pooling for 1D input.
@@ -55753,10 +55549,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// GELU activation function.
-    pub fn gelu_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn gelu_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_gelu(input)
     }
 
@@ -55930,26 +55723,17 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Arc sine (inverse sine).
-    pub fn arcsin_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn arcsin_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_arcsin(input)
     }
 
     /// Arc cosine (inverse cosine).
-    pub fn arccos_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn arccos_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_arccos(input)
     }
 
     /// Arc tangent (inverse tangent).
-    pub fn arctan_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn arctan_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_arctan(input)
     }
 
@@ -55963,10 +55747,7 @@ impl FrankenTorchSession {
     }
 
     /// Phase angle of complex number (or arctangent of real).
-    pub fn angle_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn angle_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_angle(input)
     }
 
@@ -55975,10 +55756,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Cube root.
-    pub fn cbrt_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cbrt_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cbrt(input)
     }
 
@@ -55996,26 +55774,17 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Inverse hyperbolic sine.
-    pub fn arcsinh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn arcsinh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_arcsinh(input)
     }
 
     /// Inverse hyperbolic cosine.
-    pub fn arccosh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn arccosh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_arccosh(input)
     }
 
     /// Inverse hyperbolic tangent.
-    pub fn arctanh_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn arctanh_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_arctanh(input)
     }
 
@@ -56036,18 +55805,12 @@ impl FrankenTorchSession {
     }
 
     /// Covariance matrix of observations.
-    pub fn cov_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cov_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cov(input)
     }
 
     /// Correlation coefficient matrix.
-    pub fn corrcoef_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn corrcoef_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_corrcoef(input)
     }
 
@@ -56056,18 +55819,12 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Absolute value (alias for abs).
-    pub fn absolute_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn absolute_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_absolute(input)
     }
 
     /// Conjugate transpose (Hermitian transpose).
-    pub fn adjoint_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn adjoint_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_adjoint(input)
     }
 
@@ -56080,10 +55837,7 @@ impl FrankenTorchSession {
     }
 
     /// Degrees to radians conversion.
-    pub fn deg2rad_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn deg2rad_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_deg2rad(input)
     }
 
@@ -56218,26 +55972,17 @@ impl FrankenTorchSession {
     }
 
     /// 2D discrete Fourier transform.
-    pub fn fft2_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn fft2_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fft2(input)
     }
 
     /// 2D inverse discrete Fourier transform.
-    pub fn ifft2_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ifft2_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ifft2(input)
     }
 
     /// 2D real FFT.
-    pub fn rfft2_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn rfft2_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_rfft2(input)
     }
 
@@ -56273,10 +56018,7 @@ impl FrankenTorchSession {
     }
 
     /// Base-10 exponential.
-    pub fn exp10_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn exp10_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_exp10(input)
     }
 
@@ -56353,10 +56095,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Extract imaginary part of complex tensor.
-    pub fn imag_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn imag_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_imag(input)
     }
 
@@ -56396,10 +56135,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// ELU activation function.
-    pub fn elu_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn elu_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_elu(input)
     }
 
@@ -56459,10 +56195,7 @@ impl FrankenTorchSession {
     }
 
     /// Matrix inverse.
-    pub fn inverse_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn inverse_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_inverse(input)
     }
 
@@ -56516,18 +56249,12 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Compute complex conjugate.
-    pub fn conj_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn conj_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_conj(input)
     }
 
     /// Make tensor contiguous in memory.
-    pub fn contiguous_tensor(
-        &self,
-        node: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn contiguous_tensor(&self, node: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_contiguous(node)
     }
 
@@ -56582,10 +56309,7 @@ impl FrankenTorchSession {
     }
 
     /// Indices where tensor is non-zero.
-    pub fn argwhere_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn argwhere_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_argwhere(input)
     }
 
@@ -56594,26 +56318,17 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Element-wise sigmoid (expit): 1 / (1 + exp(-x)).
-    pub fn expit_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn expit_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_expit(input)
     }
 
     /// Round towards zero (truncate fractional part).
-    pub fn fix_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn fix_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fix(input)
     }
 
     /// Natural log of gamma function.
-    pub fn gammaln_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn gammaln_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_gammaln(input)
     }
 
@@ -56630,10 +56345,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Check if tensor has complex dtype.
-    pub fn is_complex_tensor(
-        &self,
-        node: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn is_complex_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_is_complex(node)
     }
 
@@ -56642,34 +56354,22 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Check if tensor is a leaf (created by user, not an op result).
-    pub fn is_leaf_tensor(
-        &self,
-        node: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn is_leaf_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_is_leaf(node)
     }
 
     /// Check if tensor is contiguous in memory.
-    pub fn is_contiguous_tensor(
-        &self,
-        node: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn is_contiguous_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_is_contiguous(node)
     }
 
     /// Check if tensor has a conjugate view flag.
-    pub fn is_conj_tensor(
-        &self,
-        node: TensorNodeId,
-    ) -> Result<bool, AutogradError> {
+    pub fn is_conj_tensor(&self, node: TensorNodeId) -> Result<bool, AutogradError> {
         self.tensor_is_conj(node)
     }
 
     /// Get gradient function name for non-leaf tensors.
-    pub fn grad_fn_tensor(
-        &self,
-        node: TensorNodeId,
-    ) -> Result<Option<String>, AutogradError> {
+    pub fn grad_fn_tensor(&self, node: TensorNodeId) -> Result<Option<String>, AutogradError> {
         self.tensor_grad_fn(node)
     }
 
@@ -56777,18 +56477,12 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Entropy of the input: -x * log(x).
-    pub fn entr_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn entr_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_entr(input)
     }
 
     /// Inverse complementary error function.
-    pub fn erfcinv_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn erfcinv_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_erfcinv(input)
     }
 
@@ -56888,7 +56582,16 @@ impl FrankenTorchSession {
         momentum: f64,
         eps: f64,
     ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
-        self.tensor_batch_norm1d(input, running_mean, running_var, weight, bias, training, momentum, eps)
+        self.tensor_batch_norm1d(
+            input,
+            running_mean,
+            running_var,
+            weight,
+            bias,
+            training,
+            momentum,
+            eps,
+        )
     }
 
     /// Batch normalization for 2D inputs [N, C, H, W].
@@ -56904,7 +56607,16 @@ impl FrankenTorchSession {
         momentum: f64,
         eps: f64,
     ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
-        self.tensor_batch_norm2d(input, running_mean, running_var, weight, bias, training, momentum, eps)
+        self.tensor_batch_norm2d(
+            input,
+            running_mean,
+            running_var,
+            weight,
+            bias,
+            training,
+            momentum,
+            eps,
+        )
     }
 
     /// Batch normalization for 3D inputs [N, C, D, H, W].
@@ -56920,7 +56632,16 @@ impl FrankenTorchSession {
         momentum: f64,
         eps: f64,
     ) -> Result<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>), AutogradError> {
-        self.tensor_batch_norm3d(input, running_mean, running_var, weight, bias, training, momentum, eps)
+        self.tensor_batch_norm3d(
+            input,
+            running_mean,
+            running_var,
+            weight,
+            bias,
+            training,
+            momentum,
+            eps,
+        )
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
@@ -57181,10 +56902,7 @@ impl FrankenTorchSession {
     }
 
     /// Pseudoinverse of a matrix.
-    pub fn pinverse_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn pinverse_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_pinverse(input)
     }
 
@@ -57473,20 +57191,12 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Discrete Fourier Transform sample frequencies.
-    pub fn fft_fftfreq_tensor(
-        &mut self,
-        n: usize,
-        d: f64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn fft_fftfreq_tensor(&mut self, n: usize, d: f64) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fft_fftfreq(n, d)
     }
 
     /// Discrete Fourier Transform sample frequencies for real input.
-    pub fn fft_rfftfreq_tensor(
-        &mut self,
-        n: usize,
-        d: f64,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn fft_rfftfreq_tensor(&mut self, n: usize, d: f64) -> Result<TensorNodeId, AutogradError> {
         self.tensor_fft_rfftfreq(n, d)
     }
 
@@ -57559,10 +57269,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Median ignoring NaN values.
-    pub fn nanmedian_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn nanmedian_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_nanmedian(input)
     }
 
@@ -57756,10 +57463,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// Softsign activation: x / (1 + |x|).
-    pub fn softsign_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn softsign_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_softsign(input)
     }
 
@@ -57860,10 +57564,7 @@ impl FrankenTorchSession {
     // ══════════════════════════════════════════════════════════════════════════════
 
     /// SiLU (Swish) activation: x * sigmoid(x).
-    pub fn silu_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn silu_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_silu(input)
     }
 
@@ -57896,50 +57597,32 @@ impl FrankenTorchSession {
     // ── Numerical classification wrappers ────────────────────────────────────
 
     /// Element-wise NaN check.
-    pub fn isnan_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn isnan_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isnan(input)
     }
 
     /// Element-wise infinity check.
-    pub fn isinf_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn isinf_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isinf(input)
     }
 
     /// Element-wise positive infinity check.
-    pub fn isposinf_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn isposinf_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isposinf(input)
     }
 
     /// Element-wise negative infinity check.
-    pub fn isneginf_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn isneginf_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isneginf(input)
     }
 
     /// Element-wise finiteness check.
-    pub fn isfinite_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn isfinite_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isfinite(input)
     }
 
     /// Element-wise real check (non-zero imaginary part for complex).
-    pub fn isreal_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn isreal_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_isreal(input)
     }
 
@@ -58185,50 +57868,32 @@ impl FrankenTorchSession {
     // ── Type conversion wrappers ─────────────────────────────────────────────
 
     /// Cast tensor to float32.
-    pub fn float_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn float_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_float(input)
     }
 
     /// Cast tensor to float64.
-    pub fn double_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn double_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_double(input)
     }
 
     /// Cast tensor to float16.
-    pub fn half_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn half_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_half(input)
     }
 
     /// Cast tensor to bfloat16.
-    pub fn bfloat16_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn bfloat16_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_bfloat16(input)
     }
 
     /// Cast tensor to int32.
-    pub fn int_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn int_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_int(input)
     }
 
     /// Cast tensor to bool.
-    pub fn bool_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn bool_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_bool(input)
     }
 
@@ -58272,23 +57937,21 @@ impl FrankenTorchSession {
     }
 
     /// Move tensor to device.
-    pub fn to_tensor(&self, node: TensorNodeId, device: Device) -> Result<TensorNodeId, AutogradError> {
+    pub fn to_tensor(
+        &self,
+        node: TensorNodeId,
+        device: Device,
+    ) -> Result<TensorNodeId, AutogradError> {
         self.tensor_to(node, device)
     }
 
     /// Cast tensor to f32.
-    pub fn to_f32_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn to_f32_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_to_f32(input)
     }
 
     /// Cast tensor to f64.
-    pub fn to_f64_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn to_f64_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_to_f64(input)
     }
 
@@ -58374,10 +58037,7 @@ impl FrankenTorchSession {
     }
 
     /// Inverse Hermitian FFT.
-    pub fn ihfft_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn ihfft_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_ihfft(input)
     }
 
@@ -58529,18 +58189,12 @@ impl FrankenTorchSession {
     // ── Complex type wrappers ────────────────────────────────────────────────
 
     /// Cast tensor to complex64.
-    pub fn cfloat_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cfloat_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cfloat(input)
     }
 
     /// Cast tensor to complex128.
-    pub fn cdouble_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn cdouble_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_cdouble(input)
     }
 
@@ -58557,10 +58211,7 @@ impl FrankenTorchSession {
     // ── Additional type/comparison/math wrappers ─────────────────────────────
 
     /// Cast tensor to int64.
-    pub fn long_tensor(
-        &mut self,
-        input: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
+    pub fn long_tensor(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_long(input)
     }
 
@@ -59000,19 +58651,53 @@ fn bessel_j0_scalar(x: f64) -> f64 {
     let ax = x.abs();
     if ax < 8.0 {
         let y = x * x;
-        let num = eval_poly_f64(y, &[
-            57568490574.0, -13362590354.0, 651619640.7, -11214424.18, 77392.33017, -184.9052456,
-        ]);
-        let den = eval_poly_f64(y, &[
-            57568490411.0, 1029532985.0, 9494680.718, 59272.64853, 267.8532712, 1.0,
-        ]);
+        let num = eval_poly_f64(
+            y,
+            &[
+                57568490574.0,
+                -13362590354.0,
+                651619640.7,
+                -11214424.18,
+                77392.33017,
+                -184.9052456,
+            ],
+        );
+        let den = eval_poly_f64(
+            y,
+            &[
+                57568490411.0,
+                1029532985.0,
+                9494680.718,
+                59272.64853,
+                267.8532712,
+                1.0,
+            ],
+        );
         num / den
     } else {
         let z = 8.0 / ax;
         let y = z * z;
         let xx = ax - std::f64::consts::FRAC_PI_4;
-        let p = eval_poly_f64(y, &[1.0, -0.1098628627e-2, 0.2734510407e-4, -0.2073370639e-5, 0.2093887211e-6]);
-        let q = eval_poly_f64(y, &[-0.1562499995e-1, 0.1430488765e-3, -0.6911147651e-5, 0.7621095161e-6, -0.934945152e-7]);
+        let p = eval_poly_f64(
+            y,
+            &[
+                1.0,
+                -0.1098628627e-2,
+                0.2734510407e-4,
+                -0.2073370639e-5,
+                0.2093887211e-6,
+            ],
+        );
+        let q = eval_poly_f64(
+            y,
+            &[
+                -0.1562499995e-1,
+                0.1430488765e-3,
+                -0.6911147651e-5,
+                0.7621095161e-6,
+                -0.934945152e-7,
+            ],
+        );
         (std::f64::consts::FRAC_2_PI / ax).sqrt() * (xx.cos() * p - z * xx.sin() * q)
     }
 }
@@ -59025,19 +58710,53 @@ fn bessel_j1_scalar(x: f64) -> f64 {
     let ax = x.abs();
     if ax < 8.0 {
         let y = x * x;
-        let num = x * eval_poly_f64(y, &[
-            72362614232.0, -7895059235.0, 242396853.1, -2972611.439, 15704.48260, -30.16036606,
-        ]);
-        let den = eval_poly_f64(y, &[
-            144725228442.0, 2300535178.0, 18583304.74, 99447.43394, 376.9991397, 1.0,
-        ]);
+        let num = x * eval_poly_f64(
+            y,
+            &[
+                72362614232.0,
+                -7895059235.0,
+                242396853.1,
+                -2972611.439,
+                15704.48260,
+                -30.16036606,
+            ],
+        );
+        let den = eval_poly_f64(
+            y,
+            &[
+                144725228442.0,
+                2300535178.0,
+                18583304.74,
+                99447.43394,
+                376.9991397,
+                1.0,
+            ],
+        );
         num / den
     } else {
         let z = 8.0 / ax;
         let y = z * z;
         let xx = ax - 2.356194491;
-        let p = eval_poly_f64(y, &[1.0, 0.183105e-2, -0.3516396496e-4, 0.2457520174e-5, -0.240337019e-6]);
-        let q = eval_poly_f64(y, &[0.04687499995, -0.2002690873e-3, 0.8449199096e-5, -0.88228987e-6, 0.105787412e-6]);
+        let p = eval_poly_f64(
+            y,
+            &[
+                1.0,
+                0.183105e-2,
+                -0.3516396496e-4,
+                0.2457520174e-5,
+                -0.240337019e-6,
+            ],
+        );
+        let q = eval_poly_f64(
+            y,
+            &[
+                0.04687499995,
+                -0.2002690873e-3,
+                0.8449199096e-5,
+                -0.88228987e-6,
+                0.105787412e-6,
+            ],
+        );
         let result = (std::f64::consts::FRAC_2_PI / ax).sqrt() * (xx.cos() * p - z * xx.sin() * q);
         if x < 0.0 { -result } else { result }
     }
@@ -59050,19 +58769,53 @@ fn bessel_y0_scalar(x: f64) -> f64 {
     }
     if x < 8.0 {
         let y = x * x;
-        let num = eval_poly_f64(y, &[
-            -2957821389.0, 7062834065.0, -512359803.6, 10879881.29, -86327.92757, 228.4622733,
-        ]);
-        let den = eval_poly_f64(y, &[
-            40076544269.0, 745249964.8, 7189466.438, 47447.26470, 226.1030244, 1.0,
-        ]);
+        let num = eval_poly_f64(
+            y,
+            &[
+                -2957821389.0,
+                7062834065.0,
+                -512359803.6,
+                10879881.29,
+                -86327.92757,
+                228.4622733,
+            ],
+        );
+        let den = eval_poly_f64(
+            y,
+            &[
+                40076544269.0,
+                745249964.8,
+                7189466.438,
+                47447.26470,
+                226.1030244,
+                1.0,
+            ],
+        );
         num / den + std::f64::consts::FRAC_2_PI * bessel_j0_scalar(x) * x.ln()
     } else {
         let z = 8.0 / x;
         let y = z * z;
         let xx = x - std::f64::consts::FRAC_PI_4;
-        let p = eval_poly_f64(y, &[1.0, -0.1098628627e-2, 0.2734510407e-4, -0.2073370639e-5, 0.2093887211e-6]);
-        let q = eval_poly_f64(y, &[-0.1562499995e-1, 0.1430488765e-3, -0.6911147651e-5, 0.7621095161e-6, -0.934945152e-7]);
+        let p = eval_poly_f64(
+            y,
+            &[
+                1.0,
+                -0.1098628627e-2,
+                0.2734510407e-4,
+                -0.2073370639e-5,
+                0.2093887211e-6,
+            ],
+        );
+        let q = eval_poly_f64(
+            y,
+            &[
+                -0.1562499995e-1,
+                0.1430488765e-3,
+                -0.6911147651e-5,
+                0.7621095161e-6,
+                -0.934945152e-7,
+            ],
+        );
         (std::f64::consts::FRAC_2_PI / x).sqrt() * (xx.sin() * p + z * xx.cos() * q)
     }
 }
@@ -59074,19 +58827,54 @@ fn bessel_y1_scalar(x: f64) -> f64 {
     }
     if x < 8.0 {
         let y = x * x;
-        let num = x * eval_poly_f64(y, &[
-            -0.4900604943e13, 0.1275274390e13, -0.5153438139e11, 0.7349264551e9, -0.4237922726e7, 0.8511937935e4,
-        ]);
-        let den = eval_poly_f64(y, &[
-            0.2499580570e14, 0.4244419664e12, 0.3733650367e10, 0.2245904002e8, 0.1020426050e6, 0.3549632885e3, 1.0,
-        ]);
+        let num = x * eval_poly_f64(
+            y,
+            &[
+                -0.4900604943e13,
+                0.1275274390e13,
+                -0.5153438139e11,
+                0.7349264551e9,
+                -0.4237922726e7,
+                0.8511937935e4,
+            ],
+        );
+        let den = eval_poly_f64(
+            y,
+            &[
+                0.2499580570e14,
+                0.4244419664e12,
+                0.3733650367e10,
+                0.2245904002e8,
+                0.1020426050e6,
+                0.3549632885e3,
+                1.0,
+            ],
+        );
         num / den + std::f64::consts::FRAC_2_PI * (bessel_j1_scalar(x) * x.ln() - 1.0 / x)
     } else {
         let z = 8.0 / x;
         let y = z * z;
         let xx = x - 2.356194491;
-        let p = eval_poly_f64(y, &[1.0, 0.183105e-2, -0.3516396496e-4, 0.2457520174e-5, -0.240337019e-6]);
-        let q = eval_poly_f64(y, &[0.04687499995, -0.2002690873e-3, 0.8449199096e-5, -0.88228987e-6, 0.105787412e-6]);
+        let p = eval_poly_f64(
+            y,
+            &[
+                1.0,
+                0.183105e-2,
+                -0.3516396496e-4,
+                0.2457520174e-5,
+                -0.240337019e-6,
+            ],
+        );
+        let q = eval_poly_f64(
+            y,
+            &[
+                0.04687499995,
+                -0.2002690873e-3,
+                0.8449199096e-5,
+                -0.88228987e-6,
+                0.105787412e-6,
+            ],
+        );
         (std::f64::consts::FRAC_2_PI / x).sqrt() * (xx.sin() * p + z * xx.cos() * q)
     }
 }
@@ -59098,14 +58886,34 @@ fn bessel_k0_scalar(x: f64) -> f64 {
     }
     if x <= 2.0 {
         let y = x * x / 4.0;
-        -x.ln() * bessel_i0_scalar(x) + eval_poly_f64(y, &[
-            -0.57721566, 0.42278420, 0.23069756, 0.03488590, 0.00262698, 0.00010750, 0.00000740,
-        ])
+        -x.ln() * bessel_i0_scalar(x)
+            + eval_poly_f64(
+                y,
+                &[
+                    -0.57721566,
+                    0.42278420,
+                    0.23069756,
+                    0.03488590,
+                    0.00262698,
+                    0.00010750,
+                    0.00000740,
+                ],
+            )
     } else {
         let y = 2.0 / x;
-        (-x).exp() / x.sqrt() * eval_poly_f64(y, &[
-            1.25331414, -0.07832358, 0.02189568, -0.01062446, 0.00587872, -0.00251540, 0.00053208,
-        ])
+        (-x).exp() / x.sqrt()
+            * eval_poly_f64(
+                y,
+                &[
+                    1.25331414,
+                    -0.07832358,
+                    0.02189568,
+                    -0.01062446,
+                    0.00587872,
+                    -0.00251540,
+                    0.00053208,
+                ],
+            )
     }
 }
 
@@ -59116,14 +58924,35 @@ fn bessel_k1_scalar(x: f64) -> f64 {
     }
     if x <= 2.0 {
         let y = x * x / 4.0;
-        x.ln() * bessel_i1_scalar(x) + (1.0 / x) * eval_poly_f64(y, &[
-            1.0, 0.15443144, -0.67278579, -0.18156897, -0.01919402, -0.00110404, -0.00004686,
-        ])
+        x.ln() * bessel_i1_scalar(x)
+            + (1.0 / x)
+                * eval_poly_f64(
+                    y,
+                    &[
+                        1.0,
+                        0.15443144,
+                        -0.67278579,
+                        -0.18156897,
+                        -0.01919402,
+                        -0.00110404,
+                        -0.00004686,
+                    ],
+                )
     } else {
         let y = 2.0 / x;
-        (-x).exp() / x.sqrt() * eval_poly_f64(y, &[
-            1.25331414, 0.23498619, -0.03655620, 0.01504268, -0.00780353, 0.00325614, -0.00068245,
-        ])
+        (-x).exp() / x.sqrt()
+            * eval_poly_f64(
+                y,
+                &[
+                    1.25331414,
+                    0.23498619,
+                    -0.03655620,
+                    0.01504268,
+                    -0.00780353,
+                    0.00325614,
+                    -0.00068245,
+                ],
+            )
     }
 }
 
@@ -59136,9 +58965,19 @@ fn bessel_k0e_scalar(x: f64) -> f64 {
         bessel_k0_scalar(x) * x.exp()
     } else {
         let y = 2.0 / x;
-        (1.0 / x.sqrt()) * eval_poly_f64(y, &[
-            1.25331414, -0.07832358, 0.02189568, -0.01062446, 0.00587872, -0.00251540, 0.00053208,
-        ])
+        (1.0 / x.sqrt())
+            * eval_poly_f64(
+                y,
+                &[
+                    1.25331414,
+                    -0.07832358,
+                    0.02189568,
+                    -0.01062446,
+                    0.00587872,
+                    -0.00251540,
+                    0.00053208,
+                ],
+            )
     }
 }
 
@@ -59151,9 +58990,19 @@ fn bessel_k1e_scalar(x: f64) -> f64 {
         bessel_k1_scalar(x) * x.exp()
     } else {
         let y = 2.0 / x;
-        (1.0 / x.sqrt()) * eval_poly_f64(y, &[
-            1.25331414, 0.23498619, -0.03655620, 0.01504268, -0.00780353, 0.00325614, -0.00068245,
-        ])
+        (1.0 / x.sqrt())
+            * eval_poly_f64(
+                y,
+                &[
+                    1.25331414,
+                    0.23498619,
+                    -0.03655620,
+                    0.01504268,
+                    -0.00780353,
+                    0.00325614,
+                    -0.00068245,
+                ],
+            )
     }
 }
 
@@ -66544,16 +66393,21 @@ mod tests {
     #[test]
     fn session_module_forward_pre_hook_modifies_input() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).expect("input");
+        let input = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("input");
 
         let double_input = {
             let session_ref = &mut session;
-            session_ref.register_module_forward_pre_hook(move |inp| {
-                Ok(inp)
-            })
+            session_ref.register_module_forward_pre_hook(move |inp| Ok(inp))
         };
-        let modified = session.run_module_forward_pre_hooks(input).expect("pre hooks");
-        assert_eq!(session.tensor_values(modified).expect("values"), vec![1.0, 2.0, 3.0]);
+        let modified = session
+            .run_module_forward_pre_hooks(input)
+            .expect("pre hooks");
+        assert_eq!(
+            session.tensor_values(modified).expect("values"),
+            vec![1.0, 2.0, 3.0]
+        );
 
         session.remove_module_hook(double_input);
     }
@@ -66561,12 +66415,21 @@ mod tests {
     #[test]
     fn session_module_forward_hook_modifies_output() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let input = session.tensor_variable(vec![1.0, 2.0], vec![2], false).expect("input");
-        let output = session.tensor_variable(vec![3.0, 4.0], vec![2], false).expect("output");
+        let input = session
+            .tensor_variable(vec![1.0, 2.0], vec![2], false)
+            .expect("input");
+        let output = session
+            .tensor_variable(vec![3.0, 4.0], vec![2], false)
+            .expect("output");
 
         session.register_module_forward_hook(|_inp, out| Ok(out));
-        let modified = session.run_module_forward_hooks(input, output).expect("hooks");
-        assert_eq!(session.tensor_values(modified).expect("values"), vec![3.0, 4.0]);
+        let modified = session
+            .run_module_forward_hooks(input, output)
+            .expect("hooks");
+        assert_eq!(
+            session.tensor_values(modified).expect("values"),
+            vec![3.0, 4.0]
+        );
     }
 
     #[test]
@@ -66599,12 +66462,18 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         session.set_detect_anomaly(true);
 
-        let t = session.tensor_variable(vec![0.0], vec![1], true).expect("t");
+        let t = session
+            .tensor_variable(vec![0.0], vec![1], true)
+            .expect("t");
         let log_t = session.tensor_log(t).expect("log(0) = -inf");
         let result = session.tensor_backward(log_t);
         assert!(result.is_err());
         let err_msg = format!("{:?}", result.unwrap_err());
-        assert!(err_msg.contains("detect_anomaly") || err_msg.contains("Inf") || err_msg.contains("NaN"));
+        assert!(
+            err_msg.contains("detect_anomaly")
+                || err_msg.contains("Inf")
+                || err_msg.contains("NaN")
+        );
     }
 
     #[test]
@@ -66612,9 +66481,13 @@ mod tests {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         session.set_detect_anomaly(false);
 
-        let t = session.tensor_variable(vec![0.0], vec![1], true).expect("t");
+        let t = session
+            .tensor_variable(vec![0.0], vec![1], true)
+            .expect("t");
         let log_t = session.tensor_log(t).expect("log(0) = -inf");
-        let report = session.tensor_backward(log_t).expect("backward should succeed without detect_anomaly");
+        let report = session
+            .tensor_backward(log_t)
+            .expect("backward should succeed without detect_anomaly");
         let grad = report.gradient(t).expect("grad");
         assert!(grad[0].is_infinite() || grad[0].is_nan());
     }
@@ -66652,13 +66525,18 @@ mod tests {
         let (evals, _) = session.tensor_linalg_eig(mat).expect("eig");
         let vals = session.tensor_values(evals).expect("vals");
         let sum_real: f64 = (0..3).map(|i| vals[2 * i]).sum();
-        assert!((sum_real - trace).abs() < 1e-8, "sum of eigenvalues should equal trace");
+        assert!(
+            (sum_real - trace).abs() < 1e-8,
+            "sum of eigenvalues should equal trace"
+        );
     }
 
     #[test]
     fn property_gradient_sum_of_squares_is_2x() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .expect("x");
         let x_sq = session.tensor_mul(x, x).expect("x^2");
         let loss = session.tensor_sum(x_sq).expect("sum");
         let report = session.tensor_backward(loss).expect("backward");
@@ -66670,9 +66548,15 @@ mod tests {
     #[test]
     fn property_matmul_is_linear() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false).expect("a");
-        let x = session.tensor_variable(vec![1.0, 1.0], vec![2, 1], false).expect("x");
-        let y = session.tensor_variable(vec![2.0, 2.0], vec![2, 1], false).expect("y");
+        let a = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .expect("a");
+        let x = session
+            .tensor_variable(vec![1.0, 1.0], vec![2, 1], false)
+            .expect("x");
+        let y = session
+            .tensor_variable(vec![2.0, 2.0], vec![2, 1], false)
+            .expect("y");
 
         // A(x + y) should equal Ax + Ay
         let x_plus_y = session.tensor_add(x, y).expect("x+y");
@@ -66691,7 +66575,9 @@ mod tests {
     #[test]
     fn property_softmax_sums_to_one() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let logits = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false).expect("logits");
+        let logits = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .expect("logits");
         let probs = session.tensor_softmax(logits, 0).expect("softmax");
         let sum = session.tensor_sum(probs).expect("sum");
         let sum_val = session.tensor_values(sum).expect("sum_val")[0];
@@ -66701,7 +66587,9 @@ mod tests {
     #[test]
     fn property_transpose_is_involutive() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let mat = session.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).expect("mat");
+        let mat = session
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .expect("mat");
         let t = session.tensor_transpose(mat, 0, 1).expect("transpose");
         let tt = session.tensor_transpose(t, 0, 1).expect("transpose again");
         let original = session.tensor_values(mat).expect("original");
@@ -66712,7 +66600,9 @@ mod tests {
     #[test]
     fn property_exp_log_inverse() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).expect("x");
+        let x = session
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("x");
         let exp_x = session.tensor_exp(x).expect("exp");
         let log_exp_x = session.tensor_log(exp_x).expect("log(exp(x))");
         let original = session.tensor_values(x).expect("original");
@@ -66725,7 +66615,9 @@ mod tests {
     #[test]
     fn differential_relu_grad_is_step() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![5], true).expect("x");
+        let x = session
+            .tensor_variable(vec![-2.0, -1.0, 0.0, 1.0, 2.0], vec![5], true)
+            .expect("x");
         let relu_x = session.tensor_relu(x).expect("relu");
         let loss = session.tensor_sum(relu_x).expect("sum");
         let report = session.tensor_backward(loss).expect("backward");
@@ -66737,7 +66629,9 @@ mod tests {
     #[test]
     fn differential_sigmoid_bounded_gradient() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_variable(vec![-10.0, 0.0, 10.0], vec![3], true).expect("x");
+        let x = session
+            .tensor_variable(vec![-10.0, 0.0, 10.0], vec![3], true)
+            .expect("x");
         let sig_x = session.tensor_sigmoid(x).expect("sigmoid");
         let loss = session.tensor_sum(sig_x).expect("sum");
         let report = session.tensor_backward(loss).expect("backward");
@@ -66746,7 +66640,10 @@ mod tests {
         for &g in grad {
             assert!(g >= 0.0 && g <= 0.25 + 1e-10, "sigmoid grad in [0, 0.25]");
         }
-        assert!((grad[1] - 0.25).abs() < 1e-10, "gradient at x=0 should be 0.25");
+        assert!(
+            (grad[1] - 0.25).abs() < 1e-10,
+            "gradient at x=0 should be 0.25"
+        );
     }
 
     // ---- tensor creation ----
@@ -87343,6 +87240,23 @@ mod tests {
         assert_eq!(gb, &[1.0, 1.0]);
     }
 
+    #[test]
+    fn checkpoint_marker_preserves_values_and_identity_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, -2.0, 4.0], vec![3], true)
+            .unwrap();
+
+        let marked = s.checkpoint_marker(x).unwrap();
+        assert_ne!(marked, x, "marker should register a checkpoint node");
+        assert_eq!(s.tensor_values(marked).unwrap(), vec![1.0, -2.0, 4.0]);
+
+        let loss = s.tensor_sum(marked).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = report.gradient(x).expect("gradient through marker");
+        assert_eq!(grad, &[1.0, 1.0, 1.0]);
+    }
+
     // ── frankentorch-iha: Mixed precision / autocast tests ────────────
 
     #[test]
@@ -89214,14 +89128,21 @@ mod tests {
         let x = s.tensor_variable(vec![2.0, 3.0], vec![2], true).unwrap();
         let y = s.tensor_mul(x, x).unwrap();
         // Two grad_outputs entries for a single output must be rejected.
-        let err =
-            s.tensor_autograd_grad(&[y], &[x], Some(&[vec![1.0, 2.0], vec![3.0, 4.0]]), false, false);
+        let err = s.tensor_autograd_grad(
+            &[y],
+            &[x],
+            Some(&[vec![1.0, 2.0], vec![3.0, 4.0]]),
+            false,
+            false,
+        );
         assert!(err.is_err());
     }
 
     // f(x,y) = x²y + y³ ; ∇f = [2xy, x²+3y²] ; H = [[2y, 2x], [2x, 6y]].
     // At (1,2): H = [[4, 2], [2, 12]].
-    fn build_xy2_plus_y3(s: &mut FrankenTorchSession) -> (TensorNodeId, TensorNodeId, TensorNodeId) {
+    fn build_xy2_plus_y3(
+        s: &mut FrankenTorchSession,
+    ) -> (TensorNodeId, TensorNodeId, TensorNodeId) {
         let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
         let y = s.tensor_variable(vec![2.0], vec![1], true).unwrap();
         let x2 = s.tensor_mul(x, x).unwrap();
@@ -90049,8 +89970,12 @@ mod tests {
     #[test]
     fn test_tensor_scalbn() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
-        let n = s.tensor_variable(vec![2.0, 1.0, 0.0], vec![3], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false)
+            .unwrap();
+        let n = s
+            .tensor_variable(vec![2.0, 1.0, 0.0], vec![3], false)
+            .unwrap();
         let out = s.tensor_scalbn(a, n).unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![4.0, 4.0, 3.0]); // 1*4, 2*2, 3*1
@@ -90059,7 +89984,9 @@ mod tests {
     #[test]
     fn test_tensor_modf() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![3.5, -2.7, 1.0], vec![3], false).unwrap();
+        let a = s
+            .tensor_variable(vec![3.5, -2.7, 1.0], vec![3], false)
+            .unwrap();
         let (int_part, frac_part) = s.tensor_modf(a).unwrap();
         let int_vals = s.tensor_values(int_part).unwrap();
         let frac_vals = s.tensor_values(frac_part).unwrap();
@@ -90084,7 +90011,9 @@ mod tests {
     #[test]
     fn test_tensor_array_split() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![5], false)
+            .unwrap();
         // Split into 3 sections: sizes [2, 2, 1] for dim_size=5
         let splits = s.tensor_array_split(a, 3, 0).unwrap();
         assert_eq!(splits.len(), 3);
@@ -90096,8 +90025,12 @@ mod tests {
     #[test]
     fn test_tensor_broadcast_shapes() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false).unwrap();
-        let b = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false)
+            .unwrap();
+        let b = s
+            .tensor_variable(vec![1.0, 2.0, 3.0], vec![3, 1], false)
+            .unwrap();
         let shape = s.tensor_broadcast_shapes(&[a, b]).unwrap();
         assert_eq!(shape, vec![3, 3]);
     }
@@ -90105,7 +90038,9 @@ mod tests {
     #[test]
     fn test_tensor_var_mean() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
         let (var, mean) = s.tensor_var_mean(a, 1, 1).unwrap();
         assert_eq!(s.tensor_shape(var).unwrap(), vec![2]);
         assert_eq!(s.tensor_shape(mean).unwrap(), vec![2]);
@@ -90114,7 +90049,9 @@ mod tests {
     #[test]
     fn test_tensor_std_mean() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let a = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false).unwrap();
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3], false)
+            .unwrap();
         let (std, mean) = s.tensor_std_mean(a, 1, 1).unwrap();
         assert_eq!(s.tensor_shape(std).unwrap(), vec![2]);
         assert_eq!(s.tensor_shape(mean).unwrap(), vec![2]);
@@ -90125,13 +90062,19 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
 
         // Input: seq_len=3, batch=2, input_size=4
-        let input = s.tensor_variable(vec![0.1; 24], vec![3, 2, 4], false).unwrap();
+        let input = s
+            .tensor_variable(vec![0.1; 24], vec![3, 2, 4], false)
+            .unwrap();
 
         // Weights for 1-layer LSTM with hidden_size=5
         // w_ih: (4*hidden_size, input_size) = (20, 4)
         // w_hh: (4*hidden_size, hidden_size) = (20, 5)
-        let w_ih = s.tensor_variable(vec![0.1; 80], vec![20, 4], false).unwrap();
-        let w_hh = s.tensor_variable(vec![0.1; 100], vec![20, 5], false).unwrap();
+        let w_ih = s
+            .tensor_variable(vec![0.1; 80], vec![20, 4], false)
+            .unwrap();
+        let w_hh = s
+            .tensor_variable(vec![0.1; 100], vec![20, 5], false)
+            .unwrap();
 
         let weights = vec![(w_ih, w_hh, None, None)];
 
@@ -90148,11 +90091,17 @@ mod tests {
     fn test_tensor_gru_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
 
-        let input = s.tensor_variable(vec![0.1; 24], vec![3, 2, 4], false).unwrap();
+        let input = s
+            .tensor_variable(vec![0.1; 24], vec![3, 2, 4], false)
+            .unwrap();
 
         // GRU weights: w_ih (3*hidden, input), w_hh (3*hidden, hidden)
-        let w_ih = s.tensor_variable(vec![0.1; 60], vec![15, 4], false).unwrap();
-        let w_hh = s.tensor_variable(vec![0.1; 75], vec![15, 5], false).unwrap();
+        let w_ih = s
+            .tensor_variable(vec![0.1; 60], vec![15, 4], false)
+            .unwrap();
+        let w_hh = s
+            .tensor_variable(vec![0.1; 75], vec![15, 5], false)
+            .unwrap();
 
         let weights = vec![(w_ih, w_hh, None, None)];
 
@@ -90166,7 +90115,9 @@ mod tests {
     fn test_tensor_rnn_basic() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
 
-        let input = s.tensor_variable(vec![0.1; 24], vec![3, 2, 4], false).unwrap();
+        let input = s
+            .tensor_variable(vec![0.1; 24], vec![3, 2, 4], false)
+            .unwrap();
 
         // RNN weights: w_ih (hidden, input), w_hh (hidden, hidden)
         let w_ih = s.tensor_variable(vec![0.1; 20], vec![5, 4], false).unwrap();
@@ -90174,7 +90125,9 @@ mod tests {
 
         let weights = vec![(w_ih, w_hh, None, None)];
 
-        let (output, h_n) = s.tensor_rnn(input, None, &weights, false, false, "tanh").unwrap();
+        let (output, h_n) = s
+            .tensor_rnn(input, None, &weights, false, false, "tanh")
+            .unwrap();
 
         assert_eq!(s.tensor_shape(output).unwrap(), vec![3, 2, 5]);
         assert_eq!(s.tensor_shape(h_n).unwrap(), vec![1, 2, 5]);
@@ -90185,10 +90138,16 @@ mod tests {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
 
         // batch_first: (batch, seq_len, input_size) = (2, 3, 4)
-        let input = s.tensor_variable(vec![0.1; 24], vec![2, 3, 4], false).unwrap();
+        let input = s
+            .tensor_variable(vec![0.1; 24], vec![2, 3, 4], false)
+            .unwrap();
 
-        let w_ih = s.tensor_variable(vec![0.1; 80], vec![20, 4], false).unwrap();
-        let w_hh = s.tensor_variable(vec![0.1; 100], vec![20, 5], false).unwrap();
+        let w_ih = s
+            .tensor_variable(vec![0.1; 80], vec![20, 4], false)
+            .unwrap();
+        let w_hh = s
+            .tensor_variable(vec![0.1; 100], vec![20, 5], false)
+            .unwrap();
 
         let weights = vec![(w_ih, w_hh, None, None)];
 
