@@ -564,7 +564,7 @@ fn bounded(input: &str, max_len: usize) -> String {
 
 // ── Tensor State Dict Save/Load ─────────────────────────────────────────
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
@@ -943,11 +943,18 @@ pub fn load_state_dict_from_bytes(
                 reason: "invalid UTF-8 in key".to_string(),
             })?;
         pos = key_end;
-        if result.contains_key(&key) {
-            return Err(TensorIOError::Corrupt {
-                reason: format!("duplicate tensor key in native state dict: '{key}'"),
-            });
-        }
+        let entry = match result.entry(key) {
+            Entry::Vacant(entry) => entry,
+            Entry::Occupied(entry) => {
+                return Err(TensorIOError::Corrupt {
+                    reason: format!(
+                        "duplicate tensor key in native state dict: '{}'",
+                        entry.key()
+                    ),
+                });
+            }
+        };
+        let key = entry.key();
 
         // Shape
         let ndim = read_usize(data, &mut pos, "ndim")?;
@@ -986,19 +993,19 @@ pub fn load_state_dict_from_bytes(
 
         let tensor = match dtype {
             DType::F64 => {
-                let values = read_f64_payload(data, &mut pos, numel, &key)?;
+                let values = read_f64_payload(data, &mut pos, numel, key)?;
                 DenseTensor::from_storage(meta, values)?
             }
             DType::F32 => {
-                let values = read_f32_payload(data, &mut pos, numel, &key)?;
+                let values = read_f32_payload(data, &mut pos, numel, key)?;
                 DenseTensor::from_storage_f32(meta, values)?
             }
             DType::F16 => {
-                let values = read_f16_payload(data, &mut pos, numel, &key)?;
+                let values = read_f16_payload(data, &mut pos, numel, key)?;
                 DenseTensor::from_storage_f16(meta, values)?
             }
             DType::BF16 => {
-                let values = read_bf16_payload(data, &mut pos, numel, &key)?;
+                let values = read_bf16_payload(data, &mut pos, numel, key)?;
                 DenseTensor::from_storage_bf16(meta, values)?
             }
             _ => {
@@ -1008,7 +1015,7 @@ pub fn load_state_dict_from_bytes(
             }
         };
 
-        result.insert(key, tensor);
+        entry.insert(tensor);
     }
 
     if pos != data.len() {
@@ -3321,6 +3328,50 @@ mod tests {
         DenseTensor::from_contiguous_values(values, shape, Device::Cpu).unwrap()
     }
 
+    fn native_many_small_f64_payload(tensors: usize, width: usize) -> Vec<u8> {
+        let key_bytes = "layer.0000.weight".len();
+        let per_tensor_bytes = 8 + key_bytes + 8 + 8 + 1 + width * 8;
+        let mut data = Vec::with_capacity(4 + 4 + 8 + tensors * per_tensor_bytes);
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1_u32.to_le_bytes());
+        data.extend_from_slice(&(tensors as u64).to_le_bytes());
+
+        for tensor_idx in 0..tensors {
+            let key = format!("layer.{tensor_idx:04}.weight");
+            data.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            data.extend_from_slice(key.as_bytes());
+            data.extend_from_slice(&1_u64.to_le_bytes());
+            data.extend_from_slice(&(width as u64).to_le_bytes());
+            data.push(super::FT_DTYPE_TAG_F64);
+
+            for value_idx in 0..width {
+                let value = (tensor_idx * width + value_idx) as f64;
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        data
+    }
+
+    fn native_decode_summary(state_dict: &BTreeMap<String, DenseTensor>) -> String {
+        use std::fmt::Write as _;
+
+        let mut summary = String::new();
+        writeln!(&mut summary, "native_state_dict=ft_serialize_decode_pass19").unwrap();
+        writeln!(&mut summary, "tensor_count={}", state_dict.len()).unwrap();
+        for (key, tensor) in state_dict {
+            let values = tensor.contiguous_values().unwrap();
+            writeln!(
+                &mut summary,
+                "key={key} dtype={:?} shape={:?} values={values:?}",
+                tensor.meta().dtype(),
+                tensor.meta().shape()
+            )
+            .unwrap();
+        }
+        summary
+    }
+
     fn test_temp_path(basename: &str) -> std::path::PathBuf {
         let thread_id = format!("{:?}", std::thread::current().id());
         let thread_id_sanitized: String = thread_id
@@ -3494,6 +3545,19 @@ mod tests {
         assert_eq!(loaded[""].meta().dtype(), DType::F16);
         assert!(loaded[""].meta().shape().is_empty());
         assert_eq!(loaded[""].typed_storage().as_f16().unwrap(), &[value]);
+    }
+
+    #[test]
+    fn native_decode_many_small_f64_golden_summary_matches_fixture() {
+        let payload = native_many_small_f64_payload(4, 4);
+        let loaded = load_state_dict_from_bytes(&payload).unwrap();
+        let summary = native_decode_summary(&loaded);
+        assert_eq!(
+            summary,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_serialize_decode_pass19.txt"
+            )
+        );
     }
 
     #[test]
