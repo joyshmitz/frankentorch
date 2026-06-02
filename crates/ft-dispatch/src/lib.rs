@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    fmt,
+    sync::Arc,
+};
 
 use ft_core::{
     BFloat16, DType, Device, ExecutionMode, Float16, ScalarTensor, TensorCompatError, TensorMeta,
@@ -944,11 +948,14 @@ impl SchemaRegistry {
             }
         };
         let normalized_name = name.unambiguous_name();
-        if self.entries.contains_key(normalized_name.as_str()) {
-            return Err(SchemaRegistryError::DuplicateSchema {
-                name: normalized_name,
-            });
-        }
+        let vacant_entry = match self.entries.entry(normalized_name) {
+            Entry::Vacant(entry) => entry,
+            Entry::Occupied(entry) => {
+                return Err(SchemaRegistryError::DuplicateSchema {
+                    name: entry.key().clone(),
+                });
+            }
+        };
 
         let op = BinaryOp::from_schema_base(name.base.as_str()).ok_or_else(|| {
             SchemaRegistryError::UnsupportedOperator {
@@ -956,16 +963,14 @@ impl SchemaRegistry {
             }
         })?;
 
-        self.entries.insert(
-            normalized_name.clone(),
-            SchemaDispatchEntry {
-                normalized_name: normalized_name.clone(),
-                op,
-                keyset,
-                is_out_variant,
-                schema_digest,
-            },
-        );
+        let normalized_name = vacant_entry.key().clone();
+        vacant_entry.insert(SchemaDispatchEntry {
+            normalized_name: normalized_name.clone(),
+            op,
+            keyset,
+            is_out_variant,
+            schema_digest,
+        });
         Ok(normalized_name)
     }
 
@@ -6894,6 +6899,64 @@ mod tests {
             .register(&parsed, keyset)
             .expect_err("duplicate registration must fail");
         assert!(matches!(err, SchemaRegistryError::DuplicateSchema { .. }));
+    }
+
+    #[test]
+    fn schema_registry_golden_summary_matches_fixture() {
+        use std::fmt::Write as _;
+
+        let keyset =
+            schema_dispatch_keyset_from_tags(&["CPU", "AutogradCPU"]).expect("keyset should parse");
+        let parsed = [
+            parse_schema_or_name("add.alpha").expect("add schema should parse"),
+            parse_schema_or_name("matmul.gamma").expect("matmul schema should parse"),
+            parse_schema_or_name("sub.beta").expect("sub schema should parse"),
+        ];
+        let mut registry = SchemaRegistry::new();
+        for schema in &parsed {
+            registry
+                .register(schema, keyset)
+                .expect("unique schema should register");
+        }
+
+        let duplicate = match registry
+            .register(&parsed[0], keyset)
+            .expect_err("duplicate registration must fail")
+        {
+            SchemaRegistryError::DuplicateSchema { name } => format!("DuplicateSchema:{name}"),
+            other => format!("unexpected:{other:?}"),
+        };
+        let missing = match registry
+            .lookup("missing_schema")
+            .expect_err("missing lookup must fail")
+        {
+            SchemaRegistryError::MissingSchema { name } => format!("MissingSchema:{name}"),
+            other => format!("unexpected:{other:?}"),
+        };
+
+        let mut summary = String::new();
+        summary.push_str("dispatch_schema=ft_dispatch_schema_pass21\n");
+        let _ = writeln!(&mut summary, "registered={}", registry.len());
+        for (idx, entry) in registry.iter().enumerate() {
+            let _ = writeln!(
+                &mut summary,
+                "{idx}:{}:{:?}:{:016x}:{}:{}",
+                entry.normalized_name,
+                entry.op,
+                entry.schema_digest,
+                entry.keyset.bits(),
+                entry.is_out_variant
+            );
+        }
+        let _ = writeln!(&mut summary, "duplicate={duplicate}");
+        let _ = writeln!(&mut summary, "missing={missing}");
+
+        assert_eq!(
+            summary,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_dispatch_schema_pass21.txt"
+            )
+        );
     }
 
     #[test]

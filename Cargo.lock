@@ -571,6 +571,7 @@ dependencies = [
 name = "ft-dispatch"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "ft-core",
  "ft-kernel-cpu",
  "insta",
