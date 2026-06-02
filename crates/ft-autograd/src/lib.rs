@@ -14297,51 +14297,33 @@ impl TensorTape {
                     ref index_shape,
                     ref input_shape,
                 } => {
-                    // Backward: scatter the gradient back to original positions.
+                    // Backward scatter-adds the incoming gradient back to the gathered
+                    // positions. Compose it as a differentiable ScatterAdd node (src = the
+                    // incoming gradient) on a zero base, so a second backward routes through
+                    // the gather instead of dead-ending at a detached leaf.
                     let input_numel = Self::checked_shape_numel(
                         input_shape,
                         "gather cg backward input shape overflow",
                     )?;
-                    let index_numel = Self::checked_shape_numel(
-                        index_shape,
-                        "gather cg backward index shape overflow",
-                    )?;
                     let incoming_vals =
                         self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
-                    let mut contrib = vec![0.0; input_numel];
-                    let ndims = input_shape.len();
-                    let mut coord = vec![0usize; ndims];
-                    for flat_idx in 0..index_numel {
-                        let mut tmp = flat_idx;
-                        for d in (0..ndims).rev() {
-                            coord[d] = tmp % index_shape[d];
-                            tmp /= index_shape[d];
-                        }
-                        let idx = index[flat_idx] as usize;
-                        if idx >= input_shape[dim] {
-                            return Err(AutogradError::Dispatch(
-                                DispatchKeyError::IncompatibleSet {
-                                    reason: "gather cg backward: out-of-bounds index",
-                                }
-                                .into(),
-                            ));
-                        }
-                        let mut input_flat = 0usize;
-                        let mut stride = 1usize;
-                        for d in (0..ndims).rev() {
-                            let c = if d == dim { idx } else { coord[d] };
-                            input_flat += c * stride;
-                            stride *= input_shape[d];
-                        }
-                        contrib[input_flat] += incoming_vals[flat_idx];
-                    }
-                    let grad_in = self.leaf(contrib, input_shape.clone(), true)?;
+                    let index_values = index.clone();
+                    let index_shape = index_shape.clone();
+                    let zeros = self.leaf(vec![0.0; input_numel], input_shape.clone(), false)?;
+                    let grad_in = self.scatter_add(
+                        zeros,
+                        incoming_id,
+                        dim,
+                        &index_values,
+                        index_shape,
+                        &incoming_vals,
+                    )?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
                         node: node_id,
                         incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
-                        rule: "d(gather(x))/dx=scatter(grad) (cg)",
+                        rule: "d(gather(x))/dx=scatter_add(grad) (cg)",
                     });
                 }
                 TensorNodeOp::Scatter {
@@ -24321,6 +24303,35 @@ mod tests {
         // min([1,5,3], [2,3,3]) = [1,3,3] -> x wins at [0], y wins at [1], tie at [2] -> x gets it
         assert_eq!(report.gradient(x).expect("gx"), &[1.0, 0.0, 1.0]);
         assert_eq!(report.gradient(y).expect("gy"), &[0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn create_graph_gather_second_derivative() {
+        // L = sum(gather(x, 0, [0,0,2])^2). The gradient scatter-adds back through the
+        // gather, so a second backward must route through it too (silently zero under the
+        // old detached-leaf gradient).
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let g = tape.gather(x, 0, &[0.0, 0.0, 2.0], vec![3]).expect("gather");
+        let (sq, _) = tape.square(g, ExecutionMode::Strict).expect("square");
+        let (s, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
+        let rep1 = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        // gather = [x0, x0, x2] = [1,1,3]; dL/dout = 2*out = [2,2,6];
+        // scatter-add into x: [2+2, 0, 6] = [4, 0, 6] (regression guard).
+        assert_eq!(rep1.gradient(x).expect("gx"), &[4.0, 0.0, 6.0]);
+        // Second-order: sum(gx) = 4*x0 + 2*x2  =>  d/dx = [4, 0, 2].
+        let dgx = rep1.gradient_node(x).expect("gradient node for x");
+        let (p, _) = tape.sum(dgx, ExecutionMode::Strict).expect("sum(gx)");
+        let rep2 = tape.backward(p).expect("second backward");
+        assert_eq!(rep2.gradient(x).expect("d(sum gx)/dx"), &[4.0, 0.0, 2.0]);
     }
 
     #[test]
