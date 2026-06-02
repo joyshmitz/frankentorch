@@ -15154,6 +15154,102 @@ impl TensorTape {
                         )));
                     }
                 }
+                TensorNodeOp::VarDim {
+                    input,
+                    dim,
+                    ref input_shape,
+                } => {
+                    // var along dim: grad = grad_slice * 2*(x - mean)/correction
+                    // (correction = n-1, unbiased). Build `centered = x -
+                    // broadcast(mean_dim(x))` from a differentiable MeanDim node so
+                    // the second backward routes d(mean)/dx, recovering the exact
+                    // per-slice Hessian (2/c)(I - 1/n). var is linear in x.
+                    let reduce_size = input_shape[dim];
+                    let input_numel = Self::checked_shape_numel(
+                        input_shape,
+                        "var_dim cg backward shape overflow",
+                    )?;
+                    let correction = if reduce_size > 1 {
+                        (reduce_size - 1) as f64
+                    } else {
+                        1.0
+                    };
+                    let centered = self.cg_centered_along_dim(input, dim, input_shape)?;
+                    let inc_full = self.cg_broadcast_along_dim(incoming_id, dim, input_shape)?;
+                    let tmp = self.cg_mul(inc_full, centered)?;
+                    let factor_leaf = self.leaf(
+                        vec![2.0 / correction; input_numel],
+                        input_shape.clone(),
+                        false,
+                    )?;
+                    let grad_in = self.cg_mul(tmp, factor_leaf)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(var_dim(x))/dx=2*(x-mean)/(n-1) (cg)",
+                    });
+                }
+                TensorNodeOp::StdDim {
+                    input,
+                    dim,
+                    ref input_shape,
+                } => {
+                    // std along dim: grad = grad_slice * (x - mean)/((n-1)*std).
+                    // Reuse the StdDim output node as the per-slice divisor (times
+                    // the constant correction) so the second backward routes
+                    // d(std)/dx through StdDim's own backward.
+                    let reduce_size = input_shape[dim];
+                    let (outer_size, inner_size, input_numel) = Self::checked_dim_loop_sizes(
+                        input_shape,
+                        dim,
+                        "std_dim cg backward shape volume overflow",
+                    )?;
+                    let correction = if reduce_size > 1 {
+                        (reduce_size - 1) as f64
+                    } else {
+                        1.0
+                    };
+                    let centered = self.cg_centered_along_dim(input, dim, input_shape)?;
+                    let inc_full = self.cg_broadcast_along_dim(incoming_id, dim, input_shape)?;
+                    // Broadcast the per-slice std (node_id) along dim, substituting
+                    // 1.0 for zero-std slices (centered is 0 there, so grad = 0,
+                    // matching the first-order backward).
+                    let std_vals = self.nodes[node_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()
+                        .map_err(AutogradError::DenseTensor)?;
+                    let mut bshape = input_shape.clone();
+                    bshape[dim] = 1;
+                    let reshaped_std = self.reshape(node_id, bshape)?;
+                    let mut std_expanded = vec![1.0; input_numel];
+                    for outer in 0..outer_size {
+                        for inner in 0..inner_size {
+                            let sv = std_vals[outer * inner_size + inner];
+                            let safe = if sv == 0.0 { 1.0 } else { sv };
+                            for r in 0..reduce_size {
+                                std_expanded[outer * reduce_size * inner_size
+                                    + r * inner_size
+                                    + inner] = safe;
+                            }
+                        }
+                    }
+                    let std_full =
+                        self.cg_expand(reshaped_std, std_expanded, input_shape.clone())?;
+                    let corr_leaf =
+                        self.leaf(vec![correction; input_numel], input_shape.clone(), false)?;
+                    let denom = self.cg_mul(std_full, corr_leaf)?;
+                    let numerator = self.cg_mul(inc_full, centered)?;
+                    let grad_in = self.cg_div(numerator, denom)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(std_dim(x))/dx=(x-mean)/((n-1)*std) (cg)",
+                    });
+                }
                 // For unsupported ops, fall back to non-differentiable gradient
                 _ => {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -15365,6 +15461,56 @@ impl TensorTape {
             op: TensorNodeOp::Sub { lhs, rhs },
         });
         Ok(out)
+    }
+
+    /// Helper: broadcast a reduced (dim-removed) gradient/value node back along
+    /// `dim` to the full `input_shape`, for create_graph backward of dim
+    /// reductions. Reshapes to a size-1 `dim` then Expands (whose backward
+    /// re-sums the broadcast dim on a further pass), replicating the per-slice
+    /// values across the reduced dim.
+    fn cg_broadcast_along_dim(
+        &mut self,
+        node: TensorNodeId,
+        dim: usize,
+        input_shape: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (outer_size, inner_size, input_numel) = Self::checked_dim_loop_sizes(
+            input_shape,
+            dim,
+            "cg broadcast along dim shape volume overflow",
+        )?;
+        let reduce_size = input_shape[dim];
+        let vals = self.nodes[node.0]
+            .tensor
+            .contiguous_values_as_f64()
+            .map_err(AutogradError::DenseTensor)?;
+        let mut bshape = input_shape.to_vec();
+        bshape[dim] = 1;
+        let reshaped = self.reshape(node, bshape)?;
+        let mut expanded = vec![0.0; input_numel];
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let v = vals[outer * inner_size + inner];
+                for r in 0..reduce_size {
+                    expanded[outer * reduce_size * inner_size + r * inner_size + inner] = v;
+                }
+            }
+        }
+        self.cg_expand(reshaped, expanded, input_shape.to_vec())
+    }
+
+    /// Helper: `x - broadcast(mean_dim(x))` along `dim` for create_graph
+    /// backward. The MeanDim node keeps the gradient dependent on x so a second
+    /// backward routes d(mean)/dx (= 1/n per slice).
+    fn cg_centered_along_dim(
+        &mut self,
+        input: TensorNodeId,
+        dim: usize,
+        input_shape: &[usize],
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (mean_reduced, _) = self.mean_dim(input, dim, ExecutionMode::Strict)?;
+        let mean_full = self.cg_broadcast_along_dim(mean_reduced, dim, input_shape)?;
+        self.cg_sub(input, mean_full)
     }
 
     /// Helper: elementwise mul for create_graph backward.
@@ -25550,6 +25696,57 @@ mod tests {
             )
             .expect("backward");
         assert_eq!(report.gradient(x).expect("gx"), &[1.0, -1.0, -1.0, 1.0]);
+    }
+
+    #[test]
+    fn create_graph_var_dim_second_derivative_matches_fd() {
+        // var is shift-invariant (var(x+c)=var(x)) so H·1 = 0; probe H·w with a
+        // non-uniform direction and FD-check against w·∇var. Confirms the var_dim
+        // gradient routes d(mean)/dx (was fail-loud), giving the true Hessian.
+        let x0 = vec![1.0, 2.0, 4.0, 7.0];
+        let w = vec![1.0, -2.0, 0.5, 0.3];
+        let w_for_fd = w.clone();
+        let weighted_grad = move |xv: &[f64]| -> f64 {
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(xv.to_vec(), vec![xv.len()], true).expect("x");
+            let (v, _) = tape.var_dim(x, 0, ExecutionMode::Strict).expect("var_dim");
+            let rep = tape.backward(v).expect("backward");
+            rep.gradient(x)
+                .expect("g")
+                .iter()
+                .zip(w_for_fd.iter())
+                .map(|(g, wi)| g * wi)
+                .sum()
+        };
+        assert_softmax_like_second_derivative(&x0, &w, weighted_grad, |tape, x| {
+            let (v, _) = tape.var_dim(x, 0, ExecutionMode::Strict).expect("var_dim");
+            v
+        });
+    }
+
+    #[test]
+    fn create_graph_std_dim_second_derivative_matches_fd() {
+        // std is also shift-invariant; probe H·w and FD-check. Confirms the
+        // std_dim gradient routes d(std)/dx through the StdDim node.
+        let x0 = vec![1.5, 2.0, 4.0, 7.0];
+        let w = vec![0.7, -1.0, 0.4, 1.2];
+        let w_for_fd = w.clone();
+        let weighted_grad = move |xv: &[f64]| -> f64 {
+            let mut tape = TensorTape::new();
+            let x = tape.leaf(xv.to_vec(), vec![xv.len()], true).expect("x");
+            let (s, _) = tape.std_dim(x, 0, ExecutionMode::Strict).expect("std_dim");
+            let rep = tape.backward(s).expect("backward");
+            rep.gradient(x)
+                .expect("g")
+                .iter()
+                .zip(w_for_fd.iter())
+                .map(|(g, wi)| g * wi)
+                .sum()
+        };
+        assert_softmax_like_second_derivative(&x0, &w, weighted_grad, |tape, x| {
+            let (s, _) = tape.std_dim(x, 0, ExecutionMode::Strict).expect("std_dim");
+            s
+        });
     }
 
     #[test]
