@@ -14959,6 +14959,26 @@ impl TensorTape {
                         rule: "d(remainder(a,b))/da=1; db=-floor(a/b) (cg)",
                     });
                 }
+                TensorNodeOp::CumSum { input, dim } => {
+                    // Backward of cumsum is the reverse cumsum of the incoming
+                    // gradient, which equals flip(cumsum(flip(grad, dim), dim), dim).
+                    // Composing it from the differentiable flip/cumsum ops (whose
+                    // regular backward is handled) keeps the gradient dependent on
+                    // the incoming gradient, so a second backward routes through
+                    // the scan instead of dead-ending at a detached leaf. cumsum
+                    // is linear (f'' w.r.t input is zero) but the routing must
+                    // still carry a second loss back through it.
+                    let flipped = self.flip(incoming_id, vec![dim])?;
+                    let (scanned, _) = self.cumsum(flipped, dim, ExecutionMode::Strict)?;
+                    let grad_in = self.flip(scanned, vec![dim])?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(cumsum(x))/dx=reverse_cumsum(grad) (cg)",
+                    });
+                }
                 // For unsupported ops, fall back to non-differentiable gradient
                 _ => {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -25215,6 +25235,40 @@ mod tests {
         assert_eq!(report.gradient(a).expect("ga"), &[1.0, 1.0]);
         // -floor(5.5/3)=-1, -floor(-7/2)=-floor(-3.5)=-(-4)=4.
         assert_eq!(report.gradient(b).expect("gb"), &[-1.0, 4.0]);
+    }
+
+    #[test]
+    fn create_graph_cumsum_second_derivative_routes_through_scan() {
+        // L = sum(cumsum(x)^2), x = [1,2,3]. cumsum is linear, but the square
+        // gives a non-trivial Hessian H_mn = 2*(N - max(m,n)). First-order
+        // grad_x = reverse_cumsum(2*cumsum(x)) = [20,18,12]; the second backward
+        // (ones-seeded) recovers the Hessian column sums [12,10,6]. Proves the
+        // cumsum gradient stays dependent on the incoming gradient (was fail-loud).
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let (y, _) = tape.cumsum(x, 0, ExecutionMode::Strict).expect("cumsum");
+        let (ys, _) = tape.mul(y, y, ExecutionMode::Strict).expect("ys");
+        let (s, _) = tape.sum(ys, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        let gx = report1.gradient(x).expect("gx");
+        assert!((gx[0] - 20.0).abs() < 1e-9, "gx[0] expected 20.0, got {}", gx[0]);
+        assert!((gx[1] - 18.0).abs() < 1e-9, "gx[1] expected 18.0, got {}", gx[1]);
+        assert!((gx[2] - 12.0).abs() < 1e-9, "gx[2] expected 12.0, got {}", gx[2]);
+        // Second derivative: column sums of H = [12, 10, 6].
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2 = report2.gradient(x).expect("second gradient");
+        assert!((g2[0] - 12.0).abs() < 1e-9, "d2[0] expected 12.0, got {}", g2[0]);
+        assert!((g2[1] - 10.0).abs() < 1e-9, "d2[1] expected 10.0, got {}", g2[1]);
+        assert!((g2[2] - 6.0).abs() < 1e-9, "d2[2] expected 6.0, got {}", g2[2]);
     }
 
     #[test]
