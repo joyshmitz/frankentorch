@@ -13053,12 +13053,7 @@ impl TensorTape {
                         TensorNodeOp::MatMul { .. } => "matmul",
                         _ => "op",
                     };
-                    Self::check_gradient_anomaly(
-                        true,
-                        TensorNodeId(idx),
-                        grad,
-                        op_name,
-                    )?;
+                    Self::check_gradient_anomaly(true, TensorNodeId(idx), grad, op_name)?;
                 }
             }
         }
@@ -14305,8 +14300,9 @@ impl TensorTape {
                             }
                         }
                     }
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()?;
                     let zeros = self.leaf(vec![0.0; input_numel], input_shape.clone(), false)?;
                     let grad_in = self.scatter_add(
                         zeros,
@@ -14339,8 +14335,9 @@ impl TensorTape {
                         input_shape,
                         "gather cg backward input shape overflow",
                     )?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()?;
                     let index_values = index.clone();
                     let index_shape = index_shape.clone();
                     let zeros = self.leaf(vec![0.0; input_numel], input_shape.clone(), false)?;
@@ -14375,8 +14372,9 @@ impl TensorTape {
                         Self::checked_shape_numel(input_shape, "scatter cg backward overflow")?;
                     let index_numel =
                         Self::checked_shape_numel(index_shape, "scatter cg backward idx overflow")?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()?;
 
                     let dim_size = input_shape[dim];
                     let idx_dim_size = index_shape[dim];
@@ -14471,8 +14469,9 @@ impl TensorTape {
                         index_shape,
                         "scatter_add cg backward idx overflow",
                     )?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()?;
 
                     // grad_input: passthrough
                     let grad_input = self.leaf(incoming_vals.clone(), input_shape.clone(), true)?;
@@ -14510,8 +14509,9 @@ impl TensorTape {
                     // At x == 0 (or -0.0) and NaN, use the slope branch.
                     let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()?;
                     let grad_vals: Vec<f64> = incoming_vals
                         .iter()
                         .zip(input_vals.iter())
@@ -14616,8 +14616,9 @@ impl TensorTape {
                     // d(hardsigmoid(x))/dx = 0 if x <= -3 or x >= 3, else 1/6
                     let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()?;
                     let grad_vals: Vec<f64> = incoming_vals
                         .iter()
                         .zip(input_vals.iter())
@@ -14642,8 +14643,9 @@ impl TensorTape {
                     // d(hardtanh(x))/dx = 0 if x <= -1 or x >= 1, else 1
                     let input_shape = self.nodes[input.0].tensor.meta().shape().to_vec();
                     let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
-                    let incoming_vals =
-                        self.nodes[incoming_id.0].tensor.contiguous_values_as_f64()?;
+                    let incoming_vals = self.nodes[incoming_id.0]
+                        .tensor
+                        .contiguous_values_as_f64()?;
                     let grad_vals: Vec<f64> = incoming_vals
                         .iter()
                         .zip(input_vals.iter())
@@ -15309,12 +15311,7 @@ impl TensorTape {
                         TensorNodeOp::MatMul { .. } => "matmul",
                         _ => "op",
                     };
-                    Self::check_gradient_anomaly(
-                        true,
-                        TensorNodeId(idx),
-                        grad,
-                        op_name,
-                    )?;
+                    Self::check_gradient_anomaly(true, TensorNodeId(idx), grad, op_name)?;
                 }
             }
         }
@@ -15663,8 +15660,7 @@ impl TensorTape {
                 for j in 0..n {
                     let mut acc = 0.0;
                     for p in 0..k {
-                        acc +=
-                            lhs_data[b * m * k + i * k + p] * rhs_data[b * k * n + p * n + j];
+                        acc += lhs_data[b * m * k + i * k + p] * rhs_data[b * k * n + p * n + j];
                     }
                     result[b * m * n + i * n + j] = acc;
                 }
@@ -24363,7 +24359,9 @@ mod tests {
     #[test]
     fn to_dtype_f32_to_f16() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf_f32(vec![1.5f32, 2.0, -3.0], vec![3], false).unwrap();
+        let a = tape
+            .leaf_f32(vec![1.5f32, 2.0, -3.0], vec![3], false)
+            .unwrap();
         let b = tape.to_dtype(a, DType::F16).unwrap();
         assert_eq!(tape.dtype(b).unwrap(), DType::F16);
         let storage = tape.node(b).unwrap().tensor.typed_storage();
@@ -24432,7 +24430,9 @@ mod tests {
     #[test]
     fn to_f16_backward_is_identity() {
         let mut tape = TensorTape::new();
-        let a = tape.leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], true).unwrap();
+        let a = tape
+            .leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], true)
+            .unwrap();
         let b = tape.to_dtype(a, DType::F16).unwrap();
         let (root, _) = tape.sum(b, ExecutionMode::Strict).unwrap();
         let report = tape.backward(root).unwrap();
@@ -24678,7 +24678,10 @@ mod tests {
         let gx = report.gradient(x).expect("gx");
         // d(sum(softmax(x)))/dx = 0 for all elements (softmax sums to 1)
         for g in gx {
-            assert!(g.abs() < 1e-10, "softmax gradient of sum should be 0, got {g}");
+            assert!(
+                g.abs() < 1e-10,
+                "softmax gradient of sum should be 0, got {g}"
+            );
         }
     }
 
@@ -24996,7 +24999,9 @@ mod tests {
         // old detached-leaf gradient).
         let mut tape = TensorTape::new();
         let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
-        let g = tape.gather(x, 0, &[0.0, 0.0, 2.0], vec![3]).expect("gather");
+        let g = tape
+            .gather(x, 0, &[0.0, 0.0, 2.0], vec![3])
+            .expect("gather");
         let (sq, _) = tape.square(g, ExecutionMode::Strict).expect("square");
         let (s, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
         let rep1 = tape
@@ -25026,7 +25031,9 @@ mod tests {
         let x = tape
             .leaf(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![3, 2], true)
             .expect("x");
-        let sel = tape.index_select(x, 0, &[0.0, 0.0, 2.0]).expect("index_select");
+        let sel = tape
+            .index_select(x, 0, &[0.0, 0.0, 2.0])
+            .expect("index_select");
         let (sq, _) = tape.square(sel, ExecutionMode::Strict).expect("square");
         let (s, _) = tape.sum(sq, ExecutionMode::Strict).expect("sum");
         let rep1 = tape
@@ -25040,7 +25047,10 @@ mod tests {
             .expect("first backward");
         // rows selected [0,0,2]; d/dout = 2*out; index-add back:
         // row0 = 2*[1,2]+2*[1,2] = [4,8], row1 = [0,0], row2 = 2*[5,6] = [10,12].
-        assert_eq!(rep1.gradient(x).expect("gx"), &[4.0, 8.0, 0.0, 0.0, 10.0, 12.0]);
+        assert_eq!(
+            rep1.gradient(x).expect("gx"),
+            &[4.0, 8.0, 0.0, 0.0, 10.0, 12.0]
+        );
         // Second-order: sum(gx) = 4x00+4x01+2x20+2x21 => d/dx = [4,4,0,0,2,2].
         let dgx = rep1.gradient_node(x).expect("gradient node for x");
         let (p, _) = tape.sum(dgx, ExecutionMode::Strict).expect("sum(gx)");
@@ -25057,7 +25067,9 @@ mod tests {
         // grad_src gets gather(incoming, dim, index) for last writers only.
         let mut tape = TensorTape::new();
         // input: [1,2,3,4], src: [10,20], indices: [1,3] -> output: [1,10,3,20]
-        let input = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("input");
+        let input = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .expect("input");
         let src = tape.leaf(vec![10.0, 20.0], vec![2], true).expect("src");
         let s = tape
             .scatter(input, src, 0, &[1.0, 3.0], vec![2], &[10.0, 20.0])
@@ -25084,7 +25096,9 @@ mod tests {
         // grad_src gets gather(incoming, dim, index).
         let mut tape = TensorTape::new();
         // input: [1,2,3,4], src: [10,20], indices: [1,1] -> output: [1,32,3,4]
-        let input = tape.leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).expect("input");
+        let input = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .expect("input");
         let src = tape.leaf(vec![10.0, 20.0], vec![2], true).expect("src");
         let s = tape
             .scatter_add(input, src, 0, &[1.0, 1.0], vec![2], &[10.0, 20.0])
@@ -25110,7 +25124,9 @@ mod tests {
         // leaky_relu gradient: 1 for x > 0, 0.01 for x <= 0
         let mut tape = TensorTape::new();
         let x = tape.leaf(vec![-2.0, 0.0, 3.0], vec![3], true).expect("x");
-        let (lr, _) = tape.leaky_relu(x, ExecutionMode::Strict).expect("leaky_relu");
+        let (lr, _) = tape
+            .leaky_relu(x, ExecutionMode::Strict)
+            .expect("leaky_relu");
         let (s, _) = tape.sum(lr, ExecutionMode::Strict).expect("sum");
         let report = tape
             .backward_with_options(
@@ -25261,18 +25277,42 @@ mod tests {
             .expect("first backward");
         // First-order: grad_x = mask*2x = [6,0], grad_y = (1-mask)*2y = [0,8].
         let gx = report1.gradient(x).expect("gx");
-        assert!((gx[0] - 6.0).abs() < 1e-9, "grad_x[0] expected 6.0, got {}", gx[0]);
-        assert!((gx[1] - 0.0).abs() < 1e-9, "grad_x[1] expected 0.0, got {}", gx[1]);
+        assert!(
+            (gx[0] - 6.0).abs() < 1e-9,
+            "grad_x[0] expected 6.0, got {}",
+            gx[0]
+        );
+        assert!(
+            (gx[1] - 0.0).abs() < 1e-9,
+            "grad_x[1] expected 0.0, got {}",
+            gx[1]
+        );
         let gy = report1.gradient(y).expect("gy");
-        assert!((gy[0] - 0.0).abs() < 1e-9, "grad_y[0] expected 0.0, got {}", gy[0]);
-        assert!((gy[1] - 8.0).abs() < 1e-9, "grad_y[1] expected 8.0, got {}", gy[1]);
+        assert!(
+            (gy[0] - 0.0).abs() < 1e-9,
+            "grad_y[0] expected 0.0, got {}",
+            gy[0]
+        );
+        assert!(
+            (gy[1] - 8.0).abs() < 1e-9,
+            "grad_y[1] expected 8.0, got {}",
+            gy[1]
+        );
 
         // Second derivative wrt x: d(2x*mask)/dx = 2*mask = [2, 0].
         let dx_node = report1.gradient_node(x).expect("gradient node for x");
         let report2 = tape.backward(dx_node).expect("second backward");
         let g2x = report2.gradient(x).expect("second gradient");
-        assert!((g2x[0] - 2.0).abs() < 1e-9, "d2/dx2[0] expected 2.0, got {}", g2x[0]);
-        assert!((g2x[1] - 0.0).abs() < 1e-9, "d2/dx2[1] expected 0.0, got {}", g2x[1]);
+        assert!(
+            (g2x[0] - 2.0).abs() < 1e-9,
+            "d2/dx2[0] expected 2.0, got {}",
+            g2x[0]
+        );
+        assert!(
+            (g2x[1] - 0.0).abs() < 1e-9,
+            "d2/dx2[1] expected 0.0, got {}",
+            g2x[1]
+        );
     }
 
     #[test]
@@ -25334,7 +25374,9 @@ mod tests {
         // rather than collapsing to a detached leaf with silently-zero curvature.
         let mut tape = TensorTape::new();
         // X = [[3,1],[2,5]]
-        let x = tape.leaf(vec![3.0, 1.0, 2.0, 5.0], vec![2, 2], true).expect("x");
+        let x = tape
+            .leaf(vec![3.0, 1.0, 2.0, 5.0], vec![2, 2], true)
+            .expect("x");
         let (xs, _) = tape.mul(x, x, ExecutionMode::Strict).expect("xs");
         let (t, _) = tape.trace(xs, ExecutionMode::Strict).expect("trace");
         let report1 = tape
@@ -25798,11 +25840,7 @@ mod tests {
             "elu''(-1) should be exp(-1), got {}",
             g2[0]
         );
-        assert!(
-            g2[1].abs() < 1e-9,
-            "elu''(2) should be 0, got {}",
-            g2[1]
-        );
+        assert!(g2[1].abs() < 1e-9, "elu''(2) should be 0, got {}", g2[1]);
     }
 
     #[test]
@@ -25833,8 +25871,16 @@ mod tests {
             "hardswish''(0) should be 1/3, got {}",
             g2[0]
         );
-        assert!(g2[1].abs() < 1e-9, "hardswish''(4) should be 0, got {}", g2[1]);
-        assert!(g2[2].abs() < 1e-9, "hardswish''(-4) should be 0, got {}", g2[2]);
+        assert!(
+            g2[1].abs() < 1e-9,
+            "hardswish''(4) should be 0, got {}",
+            g2[1]
+        );
+        assert!(
+            g2[2].abs() < 1e-9,
+            "hardswish''(-4) should be 0, got {}",
+            g2[2]
+        );
     }
 
     #[test]
@@ -25842,7 +25888,9 @@ mod tests {
         // hardsigmoid gradient: 0 if |x| >= 3, else 1/6
         let mut tape = TensorTape::new();
         let x = tape.leaf(vec![-4.0, 0.0, 4.0], vec![3], true).expect("x");
-        let (h, _) = tape.hardsigmoid(x, ExecutionMode::Strict).expect("hardsigmoid");
+        let (h, _) = tape
+            .hardsigmoid(x, ExecutionMode::Strict)
+            .expect("hardsigmoid");
         let (s, _) = tape.sum(h, ExecutionMode::Strict).expect("sum");
         let report = tape
             .backward_with_options(

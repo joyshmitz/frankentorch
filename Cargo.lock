@@ -584,6 +584,7 @@ dependencies = [
 name = "ft-kernel-cpu"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "ft-core",
  "insta",
  "libm",
