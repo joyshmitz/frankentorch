@@ -28138,50 +28138,56 @@ impl FrankenTorchSession {
             return Ok(vec![]);
         }
 
-        let mut result = Vec::with_capacity(inputs.len());
-
-        // Process each output
-        for (i, &output) in outputs.iter().enumerate() {
-            let options = BackwardOptions::for_mode(self.mode())
-                .with_retain_graph(retain_graph || i + 1 < outputs.len())
-                .with_create_graph(create_graph);
-
-            // If grad_outputs provided, scale by it (simplified - full impl would multiply)
-            let report = self.tensor_tape.backward_with_options(output, options)?;
-
-            // Collect gradients for inputs from this output
-            if i == 0 {
-                for &inp in inputs {
-                    let grad = report.gradient(inp).map(|g| g.to_vec());
-                    result.push(grad);
-                }
-            } else {
-                // Accumulate gradients from multiple outputs
-                for (j, &inp) in inputs.iter().enumerate() {
-                    if let Some(g) = report.gradient(inp) {
-                        if let Some(ref mut existing) = result[j] {
-                            for (e, g_val) in existing.iter_mut().zip(g.iter()) {
-                                *e += g_val;
-                            }
-                        } else {
-                            result[j] = Some(g.to_vec());
-                        }
-                    }
-                }
+        // The vector-Jacobian product torch.autograd.grad returns is
+        //   grad[inp] = Σ_k J_kᵀ v_k
+        // where J_k is the Jacobian of output_k w.r.t. the inputs and v_k is
+        // grad_outputs[k] (defaulting to ones). Because
+        //   d/dx Σ_k Σ_j output_k[j] · v_k[j]  =  Σ_k J_kᵀ v_k,
+        // we build a single scalar surrogate s = Σ_k <output_k, v_k> (with v_k
+        // a non-grad constant) and run one ordinary backward over it. This is
+        // mathematically exact for arbitrary (non-diagonal) Jacobians, unlike a
+        // post-hoc elementwise scaling of the per-input gradient.
+        if let Some(go) = grad_outputs {
+            if go.len() != outputs.len() {
+                return Err(Self::incompatible_tensor_args(
+                    "autograd_grad: grad_outputs length must match outputs length",
+                ));
             }
         }
 
-        // Scale by grad_outputs if provided
-        if let Some(go) = grad_outputs {
-            for (i, go_vals) in go.iter().enumerate() {
-                if i < result.len() {
-                    if let Some(ref mut grad) = result[i] {
-                        for (g, scale) in grad.iter_mut().zip(go_vals.iter()) {
-                            *g *= scale;
-                        }
+        let mut surrogate: Option<TensorNodeId> = None;
+        for (k, &output) in outputs.iter().enumerate() {
+            let weighted = match grad_outputs {
+                Some(go) => {
+                    let v = &go[k];
+                    let out_shape = self.tensor_shape(output)?;
+                    let out_numel: usize = out_shape.iter().product();
+                    if v.len() != out_numel {
+                        return Err(Self::incompatible_tensor_args(
+                            "autograd_grad: each grad_outputs entry must match its output's element count",
+                        ));
                     }
+                    let v_tensor = self.tensor_variable(v.clone(), out_shape, false)?;
+                    let prod = self.tensor_mul(output, v_tensor)?;
+                    self.tensor_sum(prod)?
                 }
-            }
+                None => self.tensor_sum(output)?,
+            };
+            surrogate = Some(match surrogate {
+                Some(acc) => self.tensor_add(acc, weighted)?,
+                None => weighted,
+            });
+        }
+
+        let surrogate = surrogate.expect("outputs is non-empty");
+        let options = BackwardOptions::for_mode(self.mode())
+            .with_retain_graph(retain_graph)
+            .with_create_graph(create_graph);
+        let report = self.tensor_tape.backward_with_options(surrogate, options)?;
+
+        let mut result = Vec::with_capacity(inputs.len());
+        for &inp in inputs {
+            result.push(report.gradient(inp).map(<[f64]>::to_vec));
         }
 
         Ok(result)
@@ -88936,6 +88942,60 @@ mod tests {
         // The accumulated gradient should NOT be set (autograd_grad doesn't accumulate)
         // But after calling autograd_grad, the backward was run so gradients ARE accumulated
         // This is a simplification - full PyTorch autograd.grad has separate code paths
+    }
+
+    #[test]
+    fn autograd_grad_grad_outputs_computes_vector_jacobian_product() {
+        // y = W @ x with constant W, so the Jacobian J = W is non-diagonal and
+        // Jᵀv = Wᵀv. A correct VJP contracts v over the output dimension; the
+        // old buggy path (ones-seed backward then elementwise scale by v) would
+        // give Wᵀ·ones ⊙ v = [4,6] ⊙ [1,2] = [4,12] instead of [7,10].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let x = s.tensor_variable(vec![5.0, 7.0], vec![2, 1], true).unwrap();
+        let y = s.tensor_matmul(w, x).unwrap();
+        let grads = s
+            .tensor_autograd_grad(&[y], &[x], Some(&[vec![1.0, 2.0]]), false, false)
+            .unwrap();
+        assert_eq!(grads.len(), 1);
+        assert_eq!(grads[0].as_ref().unwrap(), &[7.0, 10.0]);
+    }
+
+    #[test]
+    fn autograd_grad_grad_outputs_scales_diagonal_jacobian() {
+        // y = x*x, J = diag(2x) = diag([4,6]); Jᵀv = [4*1, 6*2] = [4,12].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 3.0], vec![2], true).unwrap();
+        let y = s.tensor_mul(x, x).unwrap();
+        let grads = s
+            .tensor_autograd_grad(&[y], &[x], Some(&[vec![1.0, 2.0]]), false, false)
+            .unwrap();
+        assert_eq!(grads[0].as_ref().unwrap(), &[4.0, 12.0]);
+    }
+
+    #[test]
+    fn functional_vjp_contracts_over_outputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let x = s.tensor_variable(vec![5.0, 7.0], vec![2, 1], true).unwrap();
+        let y = s.tensor_matmul(w, x).unwrap();
+        let vjp = s.tensor_functional_vjp(y, &[x], vec![1.0, 2.0]).unwrap();
+        assert_eq!(vjp[0].as_ref().unwrap(), &[7.0, 10.0]);
+    }
+
+    #[test]
+    fn autograd_grad_rejects_grad_outputs_length_mismatch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![2.0, 3.0], vec![2], true).unwrap();
+        let y = s.tensor_mul(x, x).unwrap();
+        // Two grad_outputs entries for a single output must be rejected.
+        let err =
+            s.tensor_autograd_grad(&[y], &[x], Some(&[vec![1.0, 2.0], vec![3.0, 4.0]]), false, false);
+        assert!(err.is_err());
     }
 
     #[test]
