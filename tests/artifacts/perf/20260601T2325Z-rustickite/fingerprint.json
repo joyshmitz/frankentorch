@@ -1,0 +1,31 @@
+{
+  "run_id": "20260601T2325Z-rustickite",
+  "git_sha": "c46665a385174f74686ee13f276dab01c7085c03",
+  "timestamp_utc": "2026-06-01T23:30:43Z",
+  "cpu_model": "AMD Ryzen Threadripper PRO 5975WX 32-Cores",
+  "cpu_cores_logical": 64,
+  "cpu_sockets": "1",
+  "smt": "2",
+  "governor": "powersave",
+  "no_turbo": "n/a",
+  "ram_total": "215Gi",
+  "swap_total": "71Gi",
+  "kernel": "6.17.0-29-generic",
+  "os": null,
+  "filesystem_cwd": "ext4",
+  "rustc": "rustc 1.98.0-nightly (14210df0e 2026-05-31)",
+  "cargo": "cargo 1.98.0-nightly (fbb61be30 2026-05-26)",
+  "build_profile": "bench (inherits release) + RUSTFLAGS=-C force-frame-pointers=yes",
+  "execution": "compile offloaded via rch to remote worker; benchmarks RUN LOCALLY on this host for host-consistent timing",
+  "isolation": "single-threaded library paths; shared host with peer agents (note: not isolated)",
+  "perf_event_paranoid": "1",
+  "execution_host": "thinkstation1 (LOCAL host == rch worker \u2014 same physical machine; rch 'offload' runs on the same box)",
+  "host_load_at_capture": {
+    "local_loadavg": "45.53 44.36 36.47",
+    "worker_loadavg": "43.79 43.96 36.04",
+    "note": "64 logical cores; ~45 load => heavily shared multi-agent box (~6000 procs). Single-thread benches get a core but suffer P-state jitter (powersave) + cache/sched interference."
+  },
+  "measurement_validity": "p50 (criterion median) is the PRIMARY trustworthy signal; p95/p99 are CONTENTION-INFLATED on this shared host and used only directionally. Ranking is by p50 ratio vs single-thread PyTorch + flamegraph attribution, NOT absolute p95.",
+  "governor_note": "powersave + shared host \u2014 not tuned (skill rule: ASK before kernel/governor tuning). Documented, not corrected.",
+  "pinning": "benchmarks run under taskset -c 62 to cut thread migration; other processes are NOT pinned away, so the core is still shared."
+}

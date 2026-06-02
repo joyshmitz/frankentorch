@@ -1,0 +1,2237 @@
+  [2m2026-06-01T23:37:23.406923Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mexec called with non-compilation command: taskset -c 62 env 'RUSTFLAGS=-C force-frame-pointers=yes' cargo bench -p ft-api[0m
+    [2;3mat[0m rch/src/hook.rs:402 [2;3mon[0m ThreadId(1)
+
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling syn v2.0.117
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling num-traits v0.2.19
+   Compiling zerocopy-derive v0.8.48
+   Compiling crossbeam-utils v0.8.21
+   Compiling cfg-if v1.0.4
+   Compiling half v2.7.1
+   Compiling crossbeam-epoch v0.9.18
+   Compiling rayon-core v1.13.0
+   Compiling either v1.15.0
+   Compiling crossbeam-deque v0.8.6
+   Compiling serde_core v1.0.228
+   Compiling num-complex v0.4.6
+   Compiling matrixmultiply v0.3.10
+   Compiling libm v0.2.16
+   Compiling bytemuck v1.25.0
+   Compiling safe_arch v0.7.4
+   Compiling ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+   Compiling rayon v1.12.0
+   Compiling rawpointer v0.2.1
+   Compiling serde v1.0.228
+   Compiling zmij v1.0.21
+   Compiling wide v0.7.33
+   Compiling serde_derive v1.0.228
+   Compiling libc v0.2.185
+   Compiling serde_json v1.0.149
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+   Compiling memchr v2.8.0
+   Compiling anstyle v1.0.14
+   Compiling regex-syntax v0.8.10
+   Compiling plotters-backend v0.3.7
+   Compiling itoa v1.0.18
+   Compiling ciborium-io v0.2.2
+   Compiling clap_lex v1.1.0
+   Compiling clap_builder v4.6.0
+   Compiling ciborium-ll v0.2.2
+   Compiling plotters-svg v0.3.7
+   Compiling regex-automata v0.4.14
+   Compiling ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+   Compiling itertools v0.10.5
+   Compiling same-file v1.0.6
+   Compiling cast v0.3.0
+   Compiling criterion-plot v0.5.0
+   Compiling walkdir v2.5.0
+   Compiling is-terminal v0.4.17
+   Compiling ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+   Compiling regex v1.12.3
+   Compiling plotters v0.3.7
+   Compiling tinytemplate v1.2.1
+   Compiling ciborium v0.2.2
+   Compiling clap v4.6.1
+   Compiling ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+   Compiling oorandom v11.1.5
+   Compiling anes v0.1.6
+   Compiling once_cell v1.21.4
+   Compiling criterion v0.5.1
+   Compiling ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+warning: unused variable: `frames`
+    --> crates/ft-api/src/lib.rs:2090:13
+     |
+2090 |         let frames = shape[1];
+     |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_frames`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `numel`
+     --> crates/ft-api/src/lib.rs:28875:13
+      |
+28875 |         let numel: usize = shape.iter().product();
+      |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_numel`
+
+warning: unused variable: `h`
+     --> crates/ft-api/src/lib.rs:34185:20
+      |
+34185 |         let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+      |                    ^ help: if this is intentional, prefix it with an underscore: `_h`
+
+warning: unused variable: `w`
+     --> crates/ft-api/src/lib.rs:34185:23
+      |
+34185 |         let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+      |                       ^ help: if this is intentional, prefix it with an underscore: `_w`
+
+warning: unused variable: `n`
+     --> crates/ft-api/src/lib.rs:34397:13
+      |
+34397 |         let n = feat_shape[0];
+      |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `half_base`
+     --> crates/ft-api/src/lib.rs:34861:13
+      |
+34861 |         let half_base = base_size / 2.0;
+      |             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_half_base`
+
+warning: unused variable: `n`
+     --> crates/ft-api/src/lib.rs:35015:13
+      |
+35015 |         let n = shape[0];
+      |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `n`
+     --> crates/ft-api/src/lib.rs:47680:14
+      |
+47680 |         let (n, _, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+      |              ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `h`
+     --> crates/ft-api/src/lib.rs:47680:20
+      |
+47680 |         let (n, _, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+      |                    ^ help: if this is intentional, prefix it with an underscore: `_h`
+
+warning: unused variable: `w`
+     --> crates/ft-api/src/lib.rs:47680:23
+      |
+47680 |         let (n, _, h, w) = (shape[0], shape[1], shape[2], shape[3]);
+      |                       ^ help: if this is intentional, prefix it with an underscore: `_w`
+
+warning: unused variable: `n`
+     --> crates/ft-api/src/lib.rs:48493:22
+      |
+48493 |                 let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
+      |                      ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `c`
+     --> crates/ft-api/src/lib.rs:48493:25
+      |
+48493 |                 let (n, c, _, _) = (shape[0], shape[1], shape[2], shape[3]);
+      |                         ^ help: if this is intentional, prefix it with an underscore: `_c`
+
+warning: unused variable: `n`
+     --> crates/ft-api/src/lib.rs:48497:22
+      |
+48497 |                 let (n, c, _, _, _) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+      |                      ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `c`
+     --> crates/ft-api/src/lib.rs:48497:25
+      |
+48497 |                 let (n, c, _, _, _) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+      |                         ^ help: if this is intentional, prefix it with an underscore: `_c`
+
+warning: unused variable: `shape`
+     --> crates/ft-api/src/lib.rs:49521:13
+      |
+49521 |         let shape = self.tensor_shape(input)?;
+      |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_shape`
+
+warning: unused variable: `shape`
+     --> crates/ft-api/src/lib.rs:51335:13
+      |
+51335 |         let shape = self.tensor_shape(input)?;
+      |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_shape`
+
+warning: method `next_beta` is never used
+   --> crates/ft-api/src/lib.rs:141:8
+    |
+ 72 | impl Xoshiro256PlusPlus {
+    | ----------------------- method in this implementation
+...
+141 |     fn next_beta(&mut self, alpha: f64, beta: f64) -> f64 {
+    |        ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ft-api` (lib) generated 17 warnings (run `cargo fix --lib -p ft-api` to apply 16 suggestions)
+warning: `ft-api` (lib test) generated 17 warnings (17 duplicates)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 2m 49s
+     Running unittests src/lib.rs (/data/tmp/cargo-target/release/deps/ft_api-c7036a391038f6ce)
+
+running 1722 tests
+test tests::absolute_alias_matches_abs_with_gradient ... ignored
+test tests::acosh_known_values ... ignored
+test tests::adaptive_avg_pool1d_backward_preserves_overlap_gradient ... ignored
+test tests::adaptive_avg_pool1d_basic ... ignored
+test tests::adaptive_avg_pool1d_identity ... ignored
+test tests::adaptive_avg_pool1d_non_divisible_uses_ceil_end_windows ... ignored
+test tests::adaptive_avg_pool1d_rejects_non_f64_storage ... ignored
+test tests::adaptive_avg_pool2d_global ... ignored
+test tests::adaptive_avg_pool2d_global_backward_distributes_gradient ... ignored
+test tests::adaptive_avg_pool2d_upsample_shape ... ignored
+test tests::adaptive_avg_pool3d_basic ... ignored
+test tests::adaptive_avg_pool3d_global_backward_distributes_gradient ... ignored
+test tests::addbmm_basic ... ignored
+test tests::addr_basic ... ignored
+test tests::addr_propagates_gradient_through_input_and_vecs ... ignored
+test tests::addr_with_beta ... ignored
+test tests::aliases_match_underlying_ops ... ignored
+test tests::amax_amin_return_values_only ... ignored
+test tests::amax_propagates_gradient_to_argmax_position ... ignored
+test tests::aminmax_1d ... ignored
+test tests::aminmax_2d ... ignored
+test tests::aminmax_dim_out_of_range_errors ... ignored
+test tests::aminmax_propagates_gradient_via_argmin_argmax_routing ... ignored
+test tests::angle_propagates_nan ... ignored
+test tests::angle_returns_pi_for_negative_inputs ... ignored
+test tests::angle_returns_zero_for_positive_inputs ... ignored
+test tests::angle_returns_zero_for_zero_input ... ignored
+test tests::argwhere_returns_same_indices_as_nonzero ... ignored
+test tests::asinh_known_values ... ignored
+test tests::asinh_propagates_gradient_one_over_sqrt_one_plus_x_squared ... ignored
+test tests::atanh_known_values ... ignored
+test tests::atanh_propagates_gradient_one_over_one_minus_x_squared ... ignored
+test tests::atleast_1d_promotes_scalar_keeps_higher_rank ... ignored
+test tests::atleast_2d_promotes_scalar_and_1d_keeps_higher_rank ... ignored
+test tests::atleast_2d_propagates_gradient_unchanged ... ignored
+test tests::atleast_3d_promotes_with_pytorch_padding ... ignored
+test tests::autocast_disabled_by_default ... ignored
+test tests::autocast_enter_exit_basic ... ignored
+test tests::autocast_nesting_restores_outer_state ... ignored
+test tests::backward_after_no_grad_only_tracks_pre_nograd_ops ... ignored
+test tests::backward_with_options_supports_hardened_reentrant_fallback ... ignored
+test tests::baddbmm_basic ... ignored
+test tests::baddbmm_with_beta_alpha ... ignored
+test tests::bartlett_window_length_one_returns_constant ... ignored
+test tests::bartlett_window_non_periodic_matches_expected_values ... ignored
+test tests::bartlett_window_periodic_uses_n_denominator ... ignored
+test tests::bartlett_window_rejects_zero_length ... ignored
+test tests::bce_loss_backward_produces_gradients ... ignored
+test tests::bce_loss_extreme_pred_does_not_produce_nan ... ignored
+test tests::bce_loss_known_value ... ignored
+test tests::bce_loss_perfect_prediction ... ignored
+test tests::bce_with_logits_loss_backward_produces_gradients ... ignored
+test tests::bce_with_logits_loss_extreme_logits_finite ... ignored
+test tests::bce_with_logits_loss_known_value ... ignored
+test tests::bce_with_logits_loss_negative_logit ... ignored
+test tests::bce_with_logits_loss_positive_logit ... ignored
+test tests::bce_with_logits_matches_sigmoid_then_bce ... ignored
+test tests::bernoulli_all_zeros ... ignored
+test tests::bernoulli_basic ... ignored
+test tests::bernoulli_p_rejects_invalid_probability ... ignored
+test tests::bernoulli_p_uniform ... ignored
+test tests::bernoulli_rejects_invalid_probabilities ... ignored
+test tests::bernoulli_shape_preserved ... ignored
+test tests::bincount_basic ... ignored
+test tests::bincount_empty ... ignored
+test tests::bincount_propagates_weight_gradient ... ignored
+test tests::bincount_rejects_2d ... ignored
+test tests::bincount_rejects_fractional ... ignored
+test tests::bincount_rejects_infinite ... ignored
+test tests::bincount_rejects_negative ... ignored
+test tests::bincount_rejects_too_large ... ignored
+test tests::bincount_with_minlength ... ignored
+test tests::bincount_with_weights ... ignored
+test tests::blackman_window_length_one_returns_constant ... ignored
+test tests::blackman_window_non_periodic_matches_expected_values ... ignored
+test tests::blackman_window_periodic_uses_n_denominator ... ignored
+test tests::blackman_window_rejects_zero_length ... ignored
+test tests::block_diag_empty ... ignored
+test tests::block_diag_propagates_gradient_through_each_block ... ignored
+test tests::block_diag_two_matrices ... ignored
+test tests::block_diag_with_1d ... ignored
+test tests::broadcast_tensors_empty_input_returns_empty ... ignored
+test tests::broadcast_tensors_promotes_all_inputs_to_joint_shape ... ignored
+test tests::broadcast_tensors_rejects_incompatible_shapes ... ignored
+test tests::broadcast_to_expands_size_one_dims ... ignored
+test tests::broadcast_to_prepends_dims_and_expands ... ignored
+test tests::broadcast_to_propagates_gradient_summed_across_broadcasts ... ignored
+test tests::broadcast_to_rejects_incompatible_shape ... ignored
+test tests::broadcast_to_returns_same_id_when_shapes_match ... ignored
+test tests::bucketize_basic ... ignored
+test tests::bucketize_empty_boundaries ... ignored
+test tests::bucketize_right ... ignored
+test tests::calculate_fan_1d_errors ... ignored
+test tests::calculate_fan_2d ... ignored
+test tests::calculate_fan_4d_conv ... ignored
+test tests::calculate_gain_values ... ignored
+test tests::cartesian_prod_basic ... ignored
+test tests::cartesian_prod_propagates_gradient_to_each_input ... ignored
+test tests::cartesian_prod_single ... ignored
+test tests::causal_mask_3x3_has_neginf_above_diagonal_zero_on_below ... ignored
+test tests::causal_mask_softmax_after_addition_zeros_future_positions ... ignored
+test tests::causal_mask_zero_size_returns_empty_2d ... ignored
+test tests::cdist_l2_2d ... ignored
+test tests::cdist_l2_propagates_gradient_through_both_inputs ... ignored
+test tests::cdist_linf ... ignored
+test tests::cdist_linf_propagates_gradient_to_max_coordinate ... ignored
+test tests::cdist_rejects_invalid_p ... ignored
+test tests::checkpoint_gradients_match_non_checkpointed ... ignored
+test tests::checkpoint_produces_correct_forward_output ... ignored
+test tests::checkpoint_with_multiple_inputs ... ignored
+test tests::cholesky_1x1 ... ignored
+test tests::cholesky_1x1_propagates_gradient ... ignored
+test tests::cholesky_diagonal_spd ... ignored
+test tests::cholesky_identity ... ignored
+test tests::cholesky_inverse_identity ... ignored
+test tests::cholesky_inverse_propagates_gradient_via_cholesky_solve ... ignored
+test tests::cholesky_known_spd ... ignored
+test tests::cholesky_not_positive_definite_errors ... ignored
+test tests::cholesky_reconstruction ... ignored
+test tests::cholesky_solve_identity_factor ... ignored
+test tests::cholesky_solve_matches_direct ... ignored
+test tests::cholesky_solve_multiple_rhs ... ignored
+test tests::cholesky_solve_propagates_gradient_through_b ... ignored
+test tests::cholesky_solve_upper_flag ... ignored
+test tests::cholesky_upper ... ignored
+test tests::clamp_max_basic ... ignored
+test tests::clamp_min_basic ... ignored
+test tests::clamp_tensor_clips_above_and_below_tensor_bounds ... ignored
+test tests::clamp_tensor_propagates_gradient_to_in_bounds_input ... ignored
+test tests::clamp_tensor_propagates_nan_from_any_operand ... ignored
+test tests::clamp_tensor_rejects_shape_mismatch ... ignored
+test tests::clip_grad_norm_inf_norm ... ignored
+test tests::clip_grad_norm_no_clip_when_below ... ignored
+test tests::clip_grad_norm_scales_when_exceeding ... ignored
+test tests::clip_grad_value_clamps ... ignored
+test tests::clip_grad_value_no_change_within_range ... ignored
+test tests::column_stack_1d ... ignored
+test tests::combinations_basic ... ignored
+test tests::combinations_empty ... ignored
+test tests::combinations_propagates_gradient_via_scatter ... ignored
+test tests::combinations_with_replacement ... ignored
+test tests::complex128_real_imag_and_conj_session_ops ... ignored
+test tests::complex64_real_imag_and_conj_session_ops ... ignored
+test tests::complex_session_ops_fail_closed_for_grad_tracked_complex_inputs ... ignored
+test tests::complex_session_ops_reject_non_complex_inputs ... ignored
+test tests::cond_identity_is_one ... ignored
+test tests::cond_ill_conditioned ... ignored
+test tests::cond_p2_fails_loud_with_requires_grad ... ignored
+test tests::cond_p2_no_grad_input_still_works ... ignored
+test tests::cond_p_inf_propagates_input_gradient ... ignored
+test tests::conv3d_identity_kernel ... ignored
+test tests::conv3d_propagates_gradient_through_input_and_weight ... ignored
+test tests::conv3d_with_padding ... ignored
+test tests::conv_transpose1d_allows_padding_preserved_singleton_output ... ignored
+test tests::conv_transpose1d_basic ... ignored
+test tests::conv_transpose1d_preserves_f32_dtype_with_padding ... ignored
+test tests::conv_transpose1d_propagates_gradient_through_input_and_weight ... ignored
+test tests::conv_transpose1d_rejects_output_padding_ge_stride ... ignored
+test tests::conv_transpose1d_rejects_padding_erased_output ... ignored
+test tests::conv_transpose2d_allows_padding_preserved_singleton_output ... ignored
+test tests::conv_transpose2d_basic ... ignored
+test tests::conv_transpose2d_preserves_f32_dtype_with_padding ... ignored
+test tests::conv_transpose2d_propagates_gradient_through_input_and_weight ... ignored
+test tests::conv_transpose2d_rejects_output_padding_ge_stride ... ignored
+test tests::conv_transpose2d_rejects_padding_erased_output ... ignored
+test tests::conv_transpose2d_stride2 ... ignored
+test tests::copysign_fails_loud_on_requires_grad ... ignored
+test tests::copysign_known_values ... ignored
+test tests::copysign_preserves_ieee754_sign_of_zero ... ignored
+test tests::copysign_rejects_shape_mismatch ... ignored
+test tests::corrcoef_negative_correlation ... ignored
+test tests::corrcoef_perfect_correlation ... ignored
+test tests::corrcoef_propagates_gradients_through_input ... ignored
+test tests::cosine_embedding_loss_backward_produces_gradients ... ignored
+test tests::cosine_embedding_loss_dissimilar_pair ... ignored
+test tests::cosine_embedding_loss_margin ... ignored
+test tests::cosine_embedding_loss_mixed_targets ... ignored
+test tests::cosine_embedding_loss_rejects_invalid_target ... ignored
+test tests::cosine_embedding_loss_similar_pair ... ignored
+test tests::cosine_similarity_backward_produces_gradients ... ignored
+test tests::cosine_similarity_batch_dim ... ignored
+test tests::cosine_similarity_clamps_norms_independently ... ignored
+test tests::cosine_similarity_identical_vectors ... ignored
+test tests::cosine_similarity_opposite_vectors ... ignored
+test tests::cosine_similarity_orthogonal_vectors ... ignored
+test tests::cosine_similarity_scale_and_sign_metamorphic ... ignored
+test tests::cosine_similarity_zero_vector_with_eps ... ignored
+test tests::count_nonzero_all_zero ... ignored
+test tests::count_nonzero_basic ... ignored
+test tests::count_nonzero_f32 ... ignored
+test tests::cov_1d_errors ... ignored
+test tests::cov_identity_correlation ... ignored
+test tests::cov_propagates_gradients_through_input ... ignored
+test tests::cov_uncorrelated ... ignored
+test tests::create_graph_gradient_penalty_wgan_gp_style ... ignored
+test tests::create_graph_hessian_vector_product ... ignored
+test tests::create_graph_physics_informed_double_backward ... ignored
+test tests::create_graph_second_derivative_x_cubed_via_session ... ignored
+test tests::cross_anti_commutativity ... ignored
+test tests::cross_entropy_label_smoothing_full_uniform ... ignored
+test tests::cross_entropy_label_smoothing_increases_loss ... ignored
+test tests::cross_entropy_label_smoothing_zero_matches_unsmoothed ... ignored
+test tests::cross_entropy_with_smoothing_propagates_gradient_through_logits ... ignored
+test tests::cross_known_values ... ignored
+test tests::cross_propagates_gradient_through_a_and_b ... ignored
+test tests::cross_standard_basis ... ignored
+test tests::cross_wrong_size_errors ... ignored
+test tests::cummax_basic ... ignored
+test tests::cummax_propagates_gradient_via_argmax_routing ... ignored
+test tests::cummin_basic ... ignored
+test tests::cummin_propagates_gradient_via_argmin_routing ... ignored
+test tests::cumulative_trapezoid_basic ... ignored
+test tests::cumulative_trapezoid_propagates_gradient_through_y ... ignored
+test tests::custom_function_composed_with_standard_ops_api ... ignored
+test tests::custom_function_identity_api ... ignored
+test tests::custom_function_inside_no_grad_does_not_record_on_tape ... ignored
+test tests::custom_function_multi_input_mul_api ... ignored
+test tests::custom_function_none_gradient_api ... ignored
+test tests::custom_function_relu_api ... ignored
+test tests::custom_function_straight_through_estimator_api ... ignored
+test tests::deep_nested_grad_context_100_levels ... ignored
+test tests::default_grad_enabled_is_true ... ignored
+test tests::deg2rad_known_values ... ignored
+test tests::deg2rad_propagates_gradient_pi_over_180 ... ignored
+test tests::deg2rad_rad2deg_round_trip_is_identity ... ignored
+test tests::det_1x1_scalar ... ignored
+test tests::det_identity ... ignored
+test tests::det_known_3x3_value ... ignored
+test tests::det_propagates_gradient_via_jacobi ... ignored
+test tests::det_scaled_identity_2n ... ignored
+test tests::det_singular_zero ... ignored
+test tests::diag_1d_input_embeds_as_main_diagonal ... ignored
+test tests::diag_1d_input_embeds_with_offset ... ignored
+test tests::diag_2d_input_extracts_main_diagonal ... ignored
+test tests::diag_2d_input_extracts_super_diagonal ... ignored
+test tests::diag_embed_main_diagonal ... ignored
+test tests::diag_embed_propagates_gradient_via_diagonal_extraction ... ignored
+test tests::diag_embed_sub_diagonal ... ignored
+test tests::diag_embed_super_diagonal ... ignored
+test tests::diag_propagates_gradient_through_2d_extraction ... ignored
+test tests::diag_rejects_higher_rank_input ... ignored
+test tests::diagflat_basic ... ignored
+test tests::diagflat_negative_offset ... ignored
+test tests::diagflat_positive_offset ... ignored
+test tests::diagflat_rejects_size_overflow ... ignored
+test tests::diagonal_propagates_gradient_for_f32_offset ... ignored
+test tests::diagonal_propagates_gradient_via_scatter_to_diag_positions ... ignored
+test tests::diff_basic ... ignored
+test tests::diff_basic_f32 ... ignored
+test tests::diff_n0_is_identity ... ignored
+test tests::diff_n1_propagates_gradients_f32_and_preserves_dtype ... ignored
+test tests::diff_n1_propagates_gradients_f64 ... ignored
+test tests::diff_n2 ... ignored
+test tests::diff_n2_propagates_gradients_f64 ... ignored
+test tests::diff_preserves_leading_dims_when_last_dim_lt_2 ... ignored
+test tests::diff_preserves_leading_dims_when_last_dim_lt_2_f32 ... ignored
+test tests::diff_propagates_gradients_along_last_dim_2d ... ignored
+test tests::diff_rejects_rank_zero_input ... ignored
+test tests::diff_rejects_rank_zero_input_f32 ... ignored
+test tests::differential_relu_grad_is_step ... ignored
+test tests::differential_sigmoid_bounded_gradient ... ignored
+test tests::digamma_known_values ... ignored
+test tests::digamma_negative_integer_poles_return_nan ... ignored
+test tests::digamma_propagates_gradient_via_trigamma ... ignored
+test tests::digamma_signed_zero_returns_signed_infinity ... ignored
+test tests::discrete_ops_fail_loud_on_requires_grad ... ignored
+test tests::dist_l1 ... ignored
+test tests::dist_l2 ... ignored
+test tests::dstack_1d ... ignored
+test tests::eigh_1x1 ... ignored
+test tests::eigh_diagonal ... ignored
+test tests::eigh_eigenvectors_orthonormal ... ignored
+test tests::eigh_identity ... ignored
+test tests::eigh_negative_eigenvalues ... ignored
+test tests::eigh_reconstruction ... ignored
+test tests::eigh_sorted_ascending ... ignored
+test tests::eigvalsh_matches_eigh ... ignored
+test tests::einsum_batch_matmul ... ignored
+test tests::einsum_diagonal_extraction ... ignored
+test tests::einsum_dot_product ... ignored
+test tests::einsum_implicit_output ... ignored
+test tests::einsum_invalid_equation_errors ... ignored
+test tests::einsum_matmul ... ignored
+test tests::einsum_outer_product ... ignored
+test tests::einsum_repeated_index_f32_scatters_gradient_to_higher_rank_diagonal ... ignored
+test tests::einsum_repeated_index_keeps_higher_rank_diagonal_dimension ... ignored
+test tests::einsum_repeated_index_scatters_gradient_to_higher_rank_diagonal ... ignored
+test tests::einsum_repeated_index_sums_higher_rank_diagonal ... ignored
+test tests::einsum_trace ... ignored
+test tests::einsum_transpose ... ignored
+test tests::einsum_vector_matrix_mul ... ignored
+test tests::empty_correct_shape_and_zeros ... ignored
+test tests::empty_like_matches_shape ... ignored
+test tests::empty_no_grad_block_is_noop ... ignored
+test tests::empty_zero_shape ... ignored
+test tests::enable_grad_inside_no_grad_reenables_tracking ... ignored
+test tests::entr_basic ... ignored
+test tests::entr_propagates_gradients_on_positive_branch ... ignored
+test tests::entr_zero_and_negative_branches_block_gradient ... ignored
+test tests::erfinv_basic_values ... ignored
+test tests::erfinv_boundary_values ... ignored
+test tests::erfinv_propagates_gradient_via_exp_y_squared ... ignored
+test tests::erfinv_tail_values_match_boost_reference ... ignored
+test tests::existing_f64_tests_still_pass_after_promotion_changes ... ignored
+test tests::exp10_known_values ... ignored
+test tests::exp10_propagates_gradient_via_chain_rule ... ignored
+test tests::exp2_known_values ... ignored
+test tests::exp2_overflows_at_f64_power_of_two_boundary ... ignored
+test tests::exp2_propagates_gradient_2x_ln2 ... ignored
+test tests::expand_as_uses_target_shape ... ignored
+test tests::expit_matches_sigmoid ... ignored
+test tests::f32_arithmetic_preserves_dtype ... ignored
+test tests::f32_backward_produces_f64_gradients ... ignored
+test tests::f32_cast_roundtrip ... ignored
+test tests::f32_f64_matmul_promotes_to_f64 ... ignored
+test tests::f32_float_and_double_aliases_work ... ignored
+test tests::f32_matmul_preserves_dtype_and_values ... ignored
+test tests::f32_mixed_promotes_to_f64 ... ignored
+test tests::f32_randn_factory ... ignored
+test tests::f32_session_backward_through_typed_reduction ... ignored
+test tests::f32_session_sum_mean_pow_preserve_dtype ... ignored
+test tests::f32_session_training_loop_sgd ... ignored
+test tests::f32_tensor_variable_and_values ... ignored
+test tests::f32_unary_ops_preserve_dtype ... ignored
+test tests::f32_zeros_ones_factory ... ignored
+test tests::factory_arange_creates_sequence ... ignored
+test tests::factory_arange_empty_range ... ignored
+test tests::factory_arange_negative_step ... ignored
+test tests::factory_arange_rejects_non_advancing_step_at_precision_limit ... ignored
+test tests::factory_arange_rejects_non_finite_inputs ... ignored
+test tests::factory_arange_with_step ... ignored
+test tests::factory_eye_rejects_shape_volume_overflow ... ignored
+test tests::factory_full_creates_custom_filled_tensor ... ignored
+test tests::factory_ones_creates_one_filled_tensor ... ignored
+test tests::factory_ones_supports_grad ... ignored
+test tests::factory_zeros_2d_shape ... ignored
+test tests::factory_zeros_creates_zero_filled_tensor ... ignored
+test tests::factory_zeros_rejects_shape_volume_overflow ... ignored
+test tests::fft_ifft_roundtrip_recovers_real_input_via_real_part ... ignored
+test tests::fft_irfft_roundtrip_at_n_1024_completes_quickly ... ignored
+test tests::fft_irfft_roundtrip_recovers_real_input ... ignored
+test tests::fft_ops_fail_loud_on_requires_grad ... ignored
+test tests::fix_alias_matches_trunc_on_signed_fractions ... ignored
+test tests::fliplr_1d_errors ... ignored
+test tests::fliplr_2d ... ignored
+test tests::flipud_1d ... ignored
+test tests::flipud_2d ... ignored
+test tests::float_power_known_values ... ignored
+test tests::float_power_matches_pow_for_finite_exponents ... ignored
+test tests::floor_divide_fails_loud_on_requires_grad ... ignored
+test tests::floor_divide_matches_floor_of_quotient ... ignored
+test tests::fmax_broadcasts_scalar_against_vector ... ignored
+test tests::fmax_no_nans_matches_maximum ... ignored
+test tests::fmax_propagates_gradient_through_winning_operand_when_no_nans ... ignored
+test tests::fmax_returns_non_nan_when_one_operand_is_nan ... ignored
+test tests::fmin_returns_non_nan_when_one_operand_is_nan ... ignored
+test tests::focal_loss_basic ... ignored
+test tests::focal_loss_gamma_reduces_easy_examples ... ignored
+test tests::focal_loss_propagates_gradient_through_input ... ignored
+test tests::functional_avg_pool1d_basic ... ignored
+test tests::functional_avg_pool2d_basic ... ignored
+test tests::functional_batch_norm1d_eval_uses_running_stats ... ignored
+test tests::functional_batch_norm1d_training_updates_running_stats ... ignored
+test tests::functional_batch_norm2d_training_updates_running_stats ... ignored
+test tests::functional_conv1d_basic ... ignored
+test tests::functional_conv2d_with_bias ... ignored
+test tests::functional_dropout_p1_preserves_zero_gradient_edge ... ignored
+test tests::functional_dropout_p1_zeros_all ... ignored
+test tests::functional_dropout_preserves_mean_approximately ... ignored
+test tests::functional_dropout_propagates_gradient_through_input ... ignored
+test tests::functional_dropout_rejects_probability_above_one ... ignored
+test tests::functional_dropout_rejects_probability_below_zero ... ignored
+test tests::functional_dropout_training_false_is_identity ... ignored
+test tests::functional_embedding_2d_indices ... ignored
+test tests::functional_embedding_lookup ... ignored
+test tests::functional_embedding_out_of_range ... ignored
+test tests::functional_embedding_propagates_weight_gradient ... ignored
+test tests::functional_embedding_rejects_fractional_index ... ignored
+test tests::functional_embedding_rejects_negative_index ... ignored
+test tests::functional_group_norm_applies_affine ... ignored
+test tests::functional_instance_norm2d_matches_group_norm ... ignored
+test tests::functional_layer_norm_applies_affine ... ignored
+test tests::functional_layer_norm_rejects_mismatched_affine_shape ... ignored
+test tests::functional_linear_no_bias ... ignored
+test tests::functional_linear_with_bias ... ignored
+test tests::functional_max_pool2d_basic ... ignored
+test tests::functional_normalize_inf_uses_max_abs_norm ... ignored
+test tests::functional_normalize_l0_uses_nonzero_count_norm ... ignored
+test tests::functional_normalize_l1 ... ignored
+test tests::functional_normalize_l2 ... ignored
+test tests::functional_normalize_neg_inf_uses_min_abs_norm ... ignored
+test tests::functional_normalize_positive_scale_invariant ... ignored
+test tests::functional_normalize_propagates_gradient_through_input ... ignored
+test tests::gammaln_known_values ... ignored
+test tests::gammaln_propagates_gradient_via_digamma ... ignored
+test tests::gaussian_nll_loss_basic ... ignored
+test tests::gaussian_nll_loss_propagates_gradient_through_input_and_var ... ignored
+test tests::glu_2d_input_default_dim_minus_one_equivalent_to_last ... ignored
+test tests::glu_known_values ... ignored
+test tests::glu_propagates_gradient_to_both_halves ... ignored
+test tests::glu_rejects_dim_out_of_range ... ignored
+test tests::glu_rejects_odd_dim_size ... ignored
+test tests::hamming_window_length_one_returns_constant ... ignored
+test tests::hamming_window_non_periodic_matches_expected_values ... ignored
+test tests::hamming_window_periodic_uses_n_denominator ... ignored
+test tests::hamming_window_rejects_zero_length ... ignored
+test tests::hann_window_non_periodic_matches_expected_values ... ignored
+test tests::hardshrink_known_values ... ignored
+test tests::hardshrink_propagates_gradient_one_outside_zero_inside ... ignored
+test tests::heaviside_fails_loud_on_requires_grad ... ignored
+test tests::heaviside_known_values ... ignored
+test tests::heaviside_propagates_nan_input ... ignored
+test tests::heaviside_rejects_shape_mismatch ... ignored
+test tests::heaviside_uses_per_element_values_at_zero ... ignored
+test tests::histc_auto_range ... ignored
+test tests::histc_basic ... ignored
+test tests::histc_ignores_out_of_range ... ignored
+test tests::histc_includes_upper_boundary_in_last_bin ... ignored
+test tests::histc_rejects_min_greater_than_max ... ignored
+test tests::histc_rejects_non_finite_bounds ... ignored
+test tests::histc_rejects_non_finite_input ... ignored
+test tests::histc_single_value ... ignored
+test tests::histogram_applies_weights ... ignored
+test tests::histogram_density_normalizes_bin_integral ... ignored
+test tests::histogram_drops_values_outside_range ... ignored
+test tests::histogram_returns_counts_and_uniform_edges ... ignored
+test tests::hsplit_basic ... ignored
+test tests::hstack_1d ... ignored
+test tests::hstack_2d ... ignored
+test tests::hstack_empty_errors ... ignored
+test tests::huber_loss_backward_produces_gradients ... ignored
+test tests::huber_loss_custom_delta ... ignored
+test tests::huber_loss_identical_tensors_returns_zero ... ignored
+test tests::huber_loss_linear_region ... ignored
+test tests::huber_loss_mixed_regions ... ignored
+test tests::huber_loss_quadratic_region ... ignored
+test tests::huber_loss_rejects_non_positive_delta ... ignored
+test tests::hypot_known_values ... ignored
+test tests::hypot_matches_pytorch_edge_goldens ... ignored
+test tests::hypot_preserves_f32_dtype ... ignored
+test tests::hypot_propagates_gradient_x_over_hypot_and_y_over_hypot ... ignored
+test tests::hypot_rejects_shape_mismatch ... ignored
+test tests::i0_at_one_matches_known_value ... ignored
+test tests::i0_at_zero_is_one ... ignored
+test tests::i0_is_even ... ignored
+test tests::i0_propagates_gradient_via_i1 ... ignored
+test tests::i0_propagates_nan ... ignored
+test tests::i0e_at_zero_is_one ... ignored
+test tests::i0e_propagates_gradient_via_product_rule ... ignored
+test tests::i0e_stays_bounded_for_large_input ... ignored
+test tests::i1_at_one_matches_known_value ... ignored
+test tests::i1_at_zero_is_zero ... ignored
+test tests::i1_is_odd ... ignored
+test tests::i1_propagates_gradient ... ignored
+test tests::i1_propagates_nan ... ignored
+test tests::i1e_at_zero_is_zero ... ignored
+test tests::i1e_propagates_gradient ... ignored
+test tests::i1e_stays_bounded_for_large_input ... ignored
+test tests::index_add_1d ... ignored
+test tests::index_add_1d_f32 ... ignored
+test tests::index_add_accumulates ... ignored
+test tests::index_add_duplicate_indices_double_count_src_gradient ... ignored
+test tests::index_add_propagates_gradients_to_input_and_src ... ignored
+test tests::index_add_rejects_dtype_mismatch ... ignored
+test tests::index_add_rejects_infinite_index ... ignored
+test tests::index_add_rejects_negative_index ... ignored
+test tests::index_add_rejects_non_1d_index ... ignored
+test tests::index_add_rejects_out_of_range_index ... ignored
+test tests::index_add_rejects_out_of_range_negative_index ... ignored
+test tests::index_add_rejects_src_shape_mismatch ... ignored
+test tests::index_copy_1d ... ignored
+test tests::index_copy_1d_f32 ... ignored
+test tests::index_copy_duplicate_indices_use_last_writer_for_src_gradient ... ignored
+test tests::index_copy_propagates_gradients_to_input_and_src ... ignored
+test tests::index_copy_rejects_dtype_mismatch ... ignored
+test tests::index_copy_rejects_fractional_index ... ignored
+test tests::index_copy_rejects_infinite_index ... ignored
+test tests::index_copy_rejects_negative_index ... ignored
+test tests::index_copy_rejects_non_1d_index ... ignored
+test tests::index_copy_rejects_out_of_range_index ... ignored
+test tests::index_copy_rejects_out_of_range_negative_index ... ignored
+test tests::index_copy_rejects_src_shape_mismatch ... ignored
+test tests::index_fill_1d ... ignored
+test tests::index_fill_1d_f32 ... ignored
+test tests::index_fill_2d_propagates_gradients_along_dim ... ignored
+test tests::index_fill_allows_negative_index ... ignored
+test tests::index_fill_propagates_gradients_to_input ... ignored
+test tests::index_fill_rejects_infinite_index ... ignored
+test tests::index_fill_rejects_non_1d_index ... ignored
+test tests::index_fill_rejects_out_of_range_index ... ignored
+test tests::index_fill_rejects_out_of_range_negative_index ... ignored
+test tests::index_put_2d_element_indexing ... ignored
+test tests::index_put_2d_row_indexing ... ignored
+test tests::index_put_accumulate ... ignored
+test tests::index_put_accumulate_backward_passes_through_to_both ... ignored
+test tests::index_put_backward_propagates_to_input_and_values ... ignored
+test tests::index_put_backward_propagates_to_values ... ignored
+test tests::index_put_basic_overwrite ... ignored
+test tests::index_put_basic_overwrite_f32 ... ignored
+test tests::index_put_empty_preserves_input ... ignored
+test tests::index_put_scalar_broadcast ... ignored
+test tests::index_put_scalar_broadcast_backward_sums_value_gradient ... ignored
+test tests::init_constant_fills_exact ... ignored
+test tests::init_constant_fills_exact_f32 ... ignored
+test tests::init_dirac_3d ... ignored
+test tests::init_dirac_rejects_non_divisible_groups ... ignored
+test tests::init_eye_fills_identity ... ignored
+test tests::init_eye_rectangular ... ignored
+test tests::init_eye_rejects_non_2d ... ignored
+test tests::init_gain_zero_produces_zeros ... ignored
+test tests::init_kaiming_invalid_mode ... ignored
+test tests::init_kaiming_normal_fan_out ... ignored
+test tests::init_kaiming_uniform_relu ... ignored
+test tests::init_normal_approximate_statistics ... ignored
+test tests::init_ones_fills_ones ... ignored
+test tests::init_orthogonal_produces_orthogonal_matrix ... ignored
+test tests::init_orthogonal_rectangular ... ignored
+test tests::init_orthogonal_with_gain ... ignored
+test tests::init_sparse_rejects_invalid_sparsity ... ignored
+test tests::init_sparse_rejects_non_2d ... ignored
+test tests::init_sparse_respects_sparsity ... ignored
+test tests::init_uniform_fills_in_range ... ignored
+test tests::init_works_on_requires_grad_leaf ... ignored
+test tests::init_xavier_normal_std ... ignored
+test tests::init_xavier_uniform_bounds ... ignored
+test tests::init_zeros_fills_zeros ... ignored
+test tests::inner_1d_dot ... ignored
+test tests::inner_1d_propagates_gradient_via_dot ... ignored
+test tests::inner_2d ... ignored
+test tests::inner_length_mismatch_errors ... ignored
+test tests::inner_scalar_errors ... ignored
+test tests::interpolate_batch_channels ... ignored
+test tests::interpolate_bicubic_propagates_input_gradient ... ignored
+test tests::interpolate_bicubic_shape ... ignored
+test tests::interpolate_bilinear_identity ... ignored
+test tests::interpolate_bilinear_propagates_input_gradient ... ignored
+test tests::interpolate_bilinear_upsample ... ignored
+test tests::interpolate_linear_1d ... ignored
+test tests::interpolate_linear_1d_propagates_input_gradient ... ignored
+test tests::interpolate_nearest_2d_upsample ... ignored
+test tests::interpolate_nearest_2x_1d ... ignored
+test tests::interpolate_nearest_propagates_input_gradient ... ignored
+test tests::interpolate_rejects_both_size_and_scale ... ignored
+test tests::interpolate_rejects_invalid_mode ... ignored
+test tests::interpolate_rejects_invalid_scale_factor ... ignored
+test tests::interpolate_rejects_zero_input_spatial_dim ... ignored
+test tests::interpolate_rejects_zero_output_size ... ignored
+test tests::interpolate_trilinear_propagates_input_gradient ... ignored
+test tests::interpolate_trilinear_shape ... ignored
+test tests::inverse_matches_linalg_inv ... ignored
+test tests::isclose_close_pairs_are_one_far_pairs_are_zero ... ignored
+test tests::isclose_fails_loud_on_requires_grad ... ignored
+test tests::isclose_handles_nan_via_equal_nan_flag ... ignored
+test tests::isclose_inf_only_matches_same_signed_inf ... ignored
+test tests::isclose_rejects_negative_tolerance ... ignored
+test tests::isin_basic ... ignored
+test tests::isin_preserves_input_shape ... ignored
+test tests::isposinf_disjoint_from_isneginf ... ignored
+test tests::isposinf_isneginf_accept_f32_inputs ... ignored
+test tests::isposinf_isneginf_accept_requires_grad_inputs ... ignored
+test tests::isposinf_isneginf_known_values ... ignored
+test tests::kaiser_window_beta_zero_is_rectangular ... ignored
+test tests::kaiser_window_endpoints_smaller_than_peak_for_positive_beta ... ignored
+test tests::kaiser_window_length_one_returns_one ... ignored
+test tests::kaiser_window_rejects_invalid_beta ... ignored
+test tests::kaiser_window_rejects_zero_length ... ignored
+test tests::kl_div_loss_batchmean_divides_by_leading_dim ... ignored
+test tests::kl_div_loss_log_target_uses_exp_target_formula ... ignored
+test tests::kl_div_loss_positive_when_distributions_differ ... ignored
+test tests::kl_div_loss_propagates_gradient_to_input ... ignored
+test tests::kl_div_loss_rejects_unknown_reduction ... ignored
+test tests::kl_div_loss_zero_when_input_matches_target_distribution ... ignored
+test tests::kron_1d ... ignored
+test tests::kron_2d ... ignored
+test tests::kron_2d_preserves_autograd_gradients ... ignored
+test tests::kron_3d_uses_aligned_coordinate_formula ... ignored
+test tests::kron_4d_matches_explicit_index_decomposition ... ignored
+test tests::kron_identity_2x2 ... ignored
+test tests::kron_left_pads_lower_rank_input ... ignored
+test tests::kthvalue_basic ... ignored
+test tests::kthvalue_first_and_last ... ignored
+test tests::kthvalue_propagates_gradient_to_routed_index ... ignored
+test tests::kthvalue_rejects_invalid_k ... ignored
+test tests::l1_loss_backward_produces_gradients ... ignored
+test tests::l1_loss_identical_tensors_returns_zero ... ignored
+test tests::l1_loss_known_value ... ignored
+test tests::ldexp_identity_when_other_is_zero ... ignored
+test tests::ldexp_positive_and_negative_powers ... ignored
+test tests::ldexp_propagates_gradient_to_input_as_two_pow_n ... ignored
+test tests::ldexp_propagates_gradient_to_other_as_input_times_two_pow_n_times_ln2 ... ignored
+test tests::ldexp_rejects_shape_mismatch ... ignored
+test tests::lgamma_alias_matches_gammaln ... ignored
+test tests::lgamma_at_half_matches_known_value ... ignored
+test tests::linalg_inv_2x2 ... ignored
+test tests::linalg_inv_propagates_gradient_via_inv_transpose_outer ... ignored
+test tests::linalg_svd_class_ops_fail_loud_on_requires_grad ... ignored
+test tests::log_ndtr_at_zero_matches_log_half ... ignored
+test tests::log_ndtr_far_negative_gradient_stays_finite ... ignored
+test tests::log_ndtr_far_negative_stays_finite ... ignored
+test tests::log_ndtr_propagates_gradient_via_inverse_mills_ratio ... ignored
+test tests::log_ndtr_propagates_nan ... ignored
+test tests::log_ndtr_smooth_interior_matches_log_of_ndtr ... ignored
+test tests::logaddexp2_asymmetric ... ignored
+test tests::logaddexp2_basic ... ignored
+test tests::logaddexp2_preserves_autograd_edge ... ignored
+test tests::logaddexp_asymmetric ... ignored
+test tests::logaddexp_basic ... ignored
+test tests::logaddexp_large_values_stability ... ignored
+test tests::logaddexp_nonfinite_preserves_autograd_edge ... ignored
+test tests::logcumsumexp_1d ... ignored
+test tests::logcumsumexp_dim1_2d ... ignored
+test tests::logcumsumexp_dim_out_of_range ... ignored
+test tests::logcumsumexp_gradient_stable_for_large_values ... ignored
+test tests::logcumsumexp_large_values_stability ... ignored
+test tests::logcumsumexp_propagates_gradient_via_reverse_cumsum ... ignored
+test tests::logcumsumexp_single_element ... ignored
+test tests::logical_not_fails_loud_on_requires_grad ... ignored
+test tests::logical_not_zero_becomes_one_nonzero_becomes_zero ... ignored
+test tests::logit_inverse_of_sigmoid ... ignored
+test tests::logit_propagates_gradients_through_input ... ignored
+test tests::logit_with_eps_clamping ... ignored
+test tests::logsigmoid_matches_log_of_sigmoid_in_normal_range ... ignored
+test tests::logsigmoid_stable_for_extreme_negative_input ... ignored
+test tests::logspace_base10 ... ignored
+test tests::logspace_base2 ... ignored
+test tests::logspace_single_step ... ignored
+test tests::logspace_zero_steps ... ignored
+test tests::logsumexp_basic ... ignored
+test tests::logsumexp_dim_out_of_range_errors ... ignored
+test tests::logsumexp_large_stable ... ignored
+test tests::logsumexp_propagates_gradient_via_softmax_weights ... ignored
+test tests::lstsq_exact_solution ... ignored
+test tests::lstsq_multiple_rhs ... ignored
+test tests::lstsq_overdetermined ... ignored
+test tests::lstsq_propagates_gradient_through_full_rank_input ... ignored
+test tests::lu_primitives_fail_loud_on_requires_grad ... ignored
+test tests::masked_scatter_all_false_mask_passes_input_through_with_grad ... ignored
+test tests::masked_scatter_all_false_mask_still_validates_source_dtype ... ignored
+test tests::masked_scatter_all_false_mask_with_empty_source_returns_input ... ignored
+test tests::masked_scatter_basic ... ignored
+test tests::masked_scatter_not_enough_source_errors ... ignored
+test tests::masked_scatter_propagates_gradients_to_input_and_source ... ignored
+test tests::masked_scatter_unused_source_slots_get_zero_gradient ... ignored
+test tests::masked_select_all_false ... ignored
+test tests::masked_select_backward_gradient ... ignored
+test tests::masked_select_basic ... ignored
+test tests::masked_select_boolean_indexing_pattern ... ignored
+test tests::masked_select_shape_mismatch_error ... ignored
+test tests::matrix_exp_1x1 ... ignored
+test tests::matrix_exp_diagonal ... ignored
+test tests::matrix_exp_zero_is_identity ... ignored
+test tests::matrix_norm_1 ... ignored
+test tests::matrix_norm_frobenius ... ignored
+test tests::matrix_norm_frobenius_propagates_gradient ... ignored
+test tests::matrix_norm_inf ... ignored
+test tests::matrix_norm_inf_propagates_gradient_to_max_row ... ignored
+test tests::matrix_power_identity_any_n ... ignored
+test tests::matrix_power_negative_one_is_inverse ... ignored
+test tests::matrix_power_one_is_self ... ignored
+test tests::matrix_power_three ... ignored
+test tests::matrix_power_two_is_a_squared ... ignored
+test tests::matrix_power_zero_is_identity ... ignored
+test tests::matrix_rank_custom_tolerance ... ignored
+test tests::matrix_rank_deficient ... ignored
+test tests::matrix_rank_full_rank ... ignored
+test tests::matrix_rank_zero_matrix ... ignored
+test tests::matrix_transpose_2d_swaps_rows_and_cols ... ignored
+test tests::matrix_transpose_3d_transposes_last_two_dims_per_batch ... ignored
+test tests::matrix_transpose_double_apply_is_identity ... ignored
+test tests::matrix_transpose_propagates_gradient ... ignored
+test tests::matrix_transpose_rejects_rank_below_two ... ignored
+test tests::maximum_broadcasts_higher_rank ... ignored
+test tests::maximum_broadcasts_scalar_against_vector ... ignored
+test tests::maximum_minimum_same_shape ... ignored
+test tests::maximum_propagates_gradient_to_winning_operand ... ignored
+test tests::maximum_rejects_incompatible_shapes ... ignored
+test tests::maybe_autocast_does_not_upcast_lower_precision ... ignored
+test tests::maybe_autocast_downcasts_f64_to_f32_when_active ... ignored
+test tests::maybe_autocast_passthrough_when_disabled ... ignored
+test tests::mixed_f32_f64_binary_op_promotes_to_f64 ... ignored
+test tests::mode_1d ... ignored
+test tests::mode_2d ... ignored
+test tests::mode_propagates_gradient_to_winning_position ... ignored
+test tests::mode_scalar_errors ... ignored
+test tests::mode_single_element ... ignored
+test tests::mode_switch_is_supported ... ignored
+test tests::mode_zero_last_dim_errors ... ignored
+test tests::movedim_basic ... ignored
+test tests::movedim_out_of_range_errors ... ignored
+test tests::mse_loss_backward_produces_gradients ... ignored
+test tests::mse_loss_identical_tensors_returns_zero ... ignored
+test tests::mse_loss_known_value ... ignored
+test tests::msort_1d_returns_sorted_ascending ... ignored
+test tests::msort_alias_matches_sort_dim_zero_ascending ... ignored
+test tests::multi_margin_loss_basic ... ignored
+test tests::multi_margin_loss_misclassified ... ignored
+test tests::multi_margin_loss_propagates_gradient_through_input ... ignored
+test tests::multi_margin_loss_rejects_empty_class_dimension ... ignored
+test tests::multi_margin_loss_rejects_fractional_target ... ignored
+test tests::multi_margin_loss_rejects_invalid_p ... ignored
+test tests::multi_margin_loss_rejects_negative_target ... ignored
+test tests::multi_margin_loss_rejects_out_of_range_target ... ignored
+test tests::multigammaln_p1_matches_gammaln ... ignored
+test tests::multigammaln_propagates_gradient_via_digamma_sum ... ignored
+test tests::multilabel_soft_margin_loss_all_correct ... ignored
+test tests::multilabel_soft_margin_loss_propagates_gradient_via_bce_with_logits ... ignored
+test tests::multinomial_accepts_f32_weights ... ignored
+test tests::multinomial_basic ... ignored
+test tests::multinomial_batched ... ignored
+test tests::multinomial_rejects_infinite_weights ... ignored
+test tests::multinomial_rejects_nan_weights ... ignored
+test tests::multinomial_rejects_negative_weights ... ignored
+test tests::multinomial_rejects_too_many_positive_weight_draws_without_replacement ... ignored
+test tests::multinomial_rejects_too_many_without_replacement ... ignored
+test tests::multinomial_with_replacement ... ignored
+test tests::mv_known_values ... ignored
+test tests::mv_propagates_gradient_to_matrix_and_vector ... ignored
+test tests::mv_rejects_wrong_ranks ... ignored
+test tests::mvlgamma_alias_matches_multigammaln ... ignored
+test tests::nan_to_num_all_finite_passthrough ... ignored
+test tests::nan_to_num_custom_nan_value ... ignored
+test tests::nan_to_num_defaults_inf_to_max ... ignored
+test tests::nan_to_num_f32_preserves_dtype_and_replaces ... ignored
+test tests::nan_to_num_f32_with_requires_grad_masks_replaced_positions ... ignored
+test tests::nan_to_num_propagates_gradient_through_finite_positions ... ignored
+test tests::nan_to_num_replaces_inf ... ignored
+test tests::nan_to_num_replaces_nan ... ignored
+test tests::nanmean_accepts_f32_inputs ... ignored
+test tests::nanmean_all_nan_returns_nan ... ignored
+test tests::nanmean_divides_by_non_nan_count ... ignored
+test tests::nanmean_f32_requires_grad_scales_non_nan_positions ... ignored
+test tests::nanmean_propagates_gradient_scaled_by_one_over_count ... ignored
+test tests::nanstd_accepts_f32_inputs ... ignored
+test tests::nanstd_f32_requires_grad_uses_nanvar_backward ... ignored
+test tests::nanstd_is_sqrt_of_nanvar ... ignored
+test tests::nansum_accepts_f32_inputs ... ignored
+test tests::nansum_f32_requires_grad_masks_nan_positions ... ignored
+test tests::nansum_passes_through_inf ... ignored
+test tests::nansum_propagates_gradient_to_non_nan_positions ... ignored
+test tests::nansum_treats_nan_as_zero ... ignored
+test tests::nanvar_accepts_f32_inputs ... ignored
+test tests::nanvar_all_nan_returns_nan ... ignored
+test tests::nanvar_biased_matches_population_variance_over_non_nan ... ignored
+test tests::nanvar_f32_requires_grad_masks_nan_positions ... ignored
+test tests::nanvar_propagates_gradient_to_non_nan_positions ... ignored
+test tests::nanvar_single_non_nan_with_bessel_correction_returns_nan ... ignored
+test tests::nanvar_unbiased_matches_bessel_corrected ... ignored
+test tests::ndtr_known_values_match_closed_form ... ignored
+test tests::ndtr_propagates_gradient_via_normal_pdf ... ignored
+test tests::ndtr_propagates_nan ... ignored
+test tests::ndtr_returns_half_at_zero ... ignored
+test tests::ndtr_saturates_at_infinities ... ignored
+test tests::ndtri_at_half_returns_zero ... ignored
+test tests::ndtri_inverse_relationship_with_ndtr ... ignored
+test tests::ndtri_quantile_values ... ignored
+test tests::negative_alias_matches_neg_with_gradient ... ignored
+test tests::nested_custom_functions_chain_gradients ... ignored
+test tests::nested_no_grad_enable_grad_restores_state ... ignored
+test tests::nextafter_broadcasts_operands_like_torch ... ignored
+test tests::nextafter_fails_loud_on_requires_grad ... ignored
+test tests::nextafter_handles_signed_zero_and_infinities ... ignored
+test tests::nextafter_propagates_nan_in_either_argument ... ignored
+test tests::nextafter_steps_toward_other_in_both_directions ... ignored
+test tests::no_grad_block_produces_tensors_without_grad ... ignored
+test tests::no_grad_disables_gradient_tracking ... ignored
+test tests::no_grad_tensor_operations_skip_grad_tracking ... ignored
+test tests::nonzero_1d ... ignored
+test tests::nonzero_2d ... ignored
+test tests::nonzero_all_nonzero ... ignored
+test tests::nonzero_all_zeros ... ignored
+test tests::nonzero_as_tuple_2d ... ignored
+test tests::nonzero_f32_supports_nan ... ignored
+test tests::nonzero_nan_is_nonzero ... ignored
+test tests::nonzero_scalar_nan_is_nonzero ... ignored
+test tests::nonzero_scalar_nonzero_returns_shape_1_by_0 ... ignored
+test tests::nonzero_scalar_zero_returns_shape_0_by_0 ... ignored
+test tests::one_hot_fails_loud_on_requires_grad ... ignored
+test tests::pad_circular_1d ... ignored
+test tests::pad_constant_allows_zero_size_input_padding ... ignored
+test tests::pad_constant_mode_matches_tensor_pad ... ignored
+test tests::pad_mode_rejects_shape_overflow ... ignored
+test tests::pad_nonconstant_rejects_zero_size_input_that_would_read ... ignored
+test tests::pad_reflect_1d ... ignored
+test tests::pad_reflect_2d ... ignored
+test tests::pad_reflect_propagates_gradient_to_reused_input_positions ... ignored
+test tests::pad_reflect_rejects_padding_ge_dim_size ... ignored
+test tests::pad_reflect_rejects_unit_dim_with_padding ... ignored
+test tests::pad_replicate_1d ... ignored
+test tests::pad_replicate_2d ... ignored
+test tests::pad_replicate_and_circular_accept_padding_ge_dim_size ... ignored
+test tests::pad_replicate_and_circular_propagate_gradient_to_reused_input_positions ... ignored
+test tests::pdist_l1 ... ignored
+test tests::pdist_l2 ... ignored
+test tests::pdist_l2_propagates_gradient_through_input ... ignored
+test tests::pdist_linf_propagates_gradient_to_max_coordinate ... ignored
+test tests::pdist_rejects_invalid_p ... ignored
+test tests::pinv_identity ... ignored
+test tests::pinv_propagates_gradient_through_full_rank_input ... ignored
+test tests::pinv_propagates_gradient_through_wide_input ... ignored
+test tests::pinv_roundtrip ... ignored
+test tests::pinverse_alias_matches_linalg_pinv ... ignored
+test tests::pixel_shuffle_3d_errors ... ignored
+test tests::pixel_shuffle_basic ... ignored
+test tests::pixel_shuffle_channel_count_mismatch_errors ... ignored
+test tests::pixel_shuffle_factor_square_overflow_errors ... ignored
+test tests::pixel_shuffle_preserves_numel ... ignored
+test tests::pixel_shuffle_unshuffle_roundtrip ... ignored
+test tests::pixel_shuffle_zero_factor_errors ... ignored
+test tests::pixel_unshuffle_basic ... ignored
+test tests::pixel_unshuffle_factor_square_overflow_errors ... ignored
+test tests::pixel_unshuffle_not_divisible_errors ... ignored
+test tests::pixel_unshuffle_zero_factor_errors ... ignored
+test tests::poisson_basic_statistics ... ignored
+test tests::poisson_nll_loss_basic ... ignored
+test tests::poisson_nll_loss_propagates_gradient_through_input ... ignored
+test tests::poisson_rejects_invalid_rates ... ignored
+test tests::poisson_shape_preserved ... ignored
+test tests::poisson_zero_rate ... ignored
+test tests::polar_f32_basic ... ignored
+test tests::polygamma_n1_trigamma ... ignored
+test tests::polygamma_propagates_gradient_via_next_order ... ignored
+test tests::positive_alias_is_identity_with_gradient_passthrough ... ignored
+test tests::pow_tensor_known_values ... ignored
+test tests::pow_tensor_negative_base_produces_nan ... ignored
+test tests::pow_tensor_propagates_gradient_to_input_and_exponent ... ignored
+test tests::pow_tensor_rejects_shape_mismatch ... ignored
+test tests::pow_tensor_zero_to_zero_is_one ... ignored
+test tests::promote_types_via_session_api ... ignored
+test tests::property_eig_identity_eigenvalues_are_one ... ignored
+test tests::property_eig_trace_equals_sum_eigenvalues ... ignored
+test tests::property_exp_log_inverse ... ignored
+test tests::property_gradient_sum_of_squares_is_2x ... ignored
+test tests::property_matmul_is_linear ... ignored
+test tests::property_softmax_sums_to_one ... ignored
+test tests::property_transpose_is_involutive ... ignored
+test tests::quantile_extremes ... ignored
+test tests::quantile_interpolation ... ignored
+test tests::quantile_invalid_q_errors ... ignored
+test tests::quantile_median ... ignored
+test tests::quantile_propagates_gradients_to_input ... ignored
+test tests::quantile_propagates_nan ... ignored
+test tests::rad2deg_known_values ... ignored
+test tests::rand_creates_uniform_values ... ignored
+test tests::rand_like_matches_shape ... ignored
+test tests::rand_like_preserves_f32_dtype ... ignored
+test tests::randint_in_range ... ignored
+test tests::randint_negative_range ... ignored
+test tests::randint_rejects_empty_range ... ignored
+test tests::randint_rejects_range_overflow ... ignored
+test tests::randn_creates_normal_values ... ignored
+test tests::randn_like_matches_shape ... ignored
+test tests::randn_like_preserves_f32_dtype ... ignored
+test tests::randperm_is_permutation ... ignored
+test tests::randperm_zero ... ignored
+test tests::ravel_flattens_to_1d ... ignored
+test tests::ravel_propagates_gradient ... ignored
+test tests::ravel_scalar_returns_one_element_1d ... ignored
+test tests::renorm_clips ... ignored
+test tests::renorm_dim_out_of_range_errors ... ignored
+test tests::renorm_invalid_params_error ... ignored
+test tests::renorm_is_idempotent_and_bounds_slice_norms ... ignored
+test tests::renorm_propagates_gradient_through_input ... ignored
+test tests::repeat_interleave_basic ... ignored
+test tests::repeat_interleave_one ... ignored
+test tests::repeat_interleave_propagates_gradient_via_sum_of_repeats ... ignored
+test tests::repeat_interleave_rejects_overflow ... ignored
+test tests::rot90_360_returns_original ... ignored
+test tests::rot90_identity ... ignored
+test tests::rot90_identity_preserves_grad ... ignored
+test tests::rot90_invalid_dim_errors ... ignored
+test tests::rot90_negative_k ... ignored
+test tests::rot90_same_dims_errors ... ignored
+test tests::round_decimals_negative_rounds_to_powers_of_ten ... ignored
+test tests::round_decimals_positive_rounds_to_n_places ... ignored
+test tests::round_decimals_zero_gradient_matches_round_semantics ... ignored
+test tests::round_decimals_zero_matches_tensor_round ... ignored
+test tests::row_stack_alias ... ignored
+test tests::sampling_ops_fail_loud_on_requires_grad ... ignored
+test tests::scatter_add_2d_dim0 ... ignored
+test tests::scatter_add_as_inverse_of_gather ... ignored
+test tests::scatter_add_backward_propagates_to_input_and_src ... ignored
+test tests::scatter_add_backward_propagates_to_src ... ignored
+test tests::scatter_add_basic_accumulates ... ignored
+test tests::scatter_add_basic_accumulates_f32 ... ignored
+test tests::scatter_add_multiple_to_same_position ... ignored
+test tests::scatter_backward_honors_last_write_for_duplicate_indices ... ignored
+test tests::scatter_backward_long_duplicate_chain_picks_last_writer ... ignored
+test tests::scatter_backward_propagates_to_input_and_src ... ignored
+test tests::scatter_backward_propagates_to_src ... ignored
+test tests::scatter_reduce_amax ... ignored
+test tests::scatter_reduce_amax_propagates_gradient ... ignored
+test tests::scatter_reduce_amin ... ignored
+test tests::scatter_reduce_amin_propagates_gradient ... ignored
+test tests::scatter_reduce_f32_preserves_dtype ... ignored
+test tests::scatter_reduce_invalid_op_errors ... ignored
+test tests::scatter_reduce_mean ... ignored
+test tests::scatter_reduce_mean_propagates_gradient ... ignored
+test tests::scatter_reduce_negative_index_wraps ... ignored
+test tests::scatter_reduce_prod ... ignored
+test tests::scatter_reduce_prod_propagates_gradient ... ignored
+test tests::scatter_reduce_prod_zero_factor_propagates_only_to_single_zero ... ignored
+test tests::scatter_reduce_rejects_dtype_mismatch ... ignored
+test tests::scatter_reduce_rejects_out_of_range_index ... ignored
+test tests::scatter_reduce_rejects_rank_mismatch ... ignored
+test tests::scatter_reduce_rejects_shape_mismatch ... ignored
+test tests::scatter_reduce_rejects_src_shape_mismatch ... ignored
+test tests::scatter_reduce_sum ... ignored
+test tests::scatter_reduce_sum_propagates_gradient ... ignored
+test tests::sdpa_basic_no_mask ... ignored
+test tests::sdpa_causal_mask ... ignored
+test tests::sdpa_output_shape_matches ... ignored
+test tests::sdpa_rejects_mask_with_causal ... ignored
+test tests::sdpa_rejects_negative_dropout ... ignored
+test tests::sdpa_rejects_zero_head_dim ... ignored
+test tests::searchsorted_basic ... ignored
+test tests::searchsorted_basic_f32 ... ignored
+test tests::searchsorted_batched_2d ... ignored
+test tests::searchsorted_duplicates ... ignored
+test tests::searchsorted_empty_sequence ... ignored
+test tests::searchsorted_left_at_boundary ... ignored
+test tests::searchsorted_right ... ignored
+test tests::select_2d_col ... ignored
+test tests::select_2d_row ... ignored
+test tests::select_out_of_range_errors ... ignored
+test tests::session_abs_scalar_backward_negative_input ... ignored
+test tests::session_abs_scalar_backward_positive_input ... ignored
+test tests::session_abs_scalar_backward_zero_input ... ignored
+test tests::session_abs_scalar_positive_unchanged ... ignored
+test tests::session_abs_scalar_returns_absolute_value ... ignored
+test tests::session_activation_records_evidence ... ignored
+test tests::session_add_backward_records_evidence ... ignored
+test tests::session_argsort_basic ... ignored
+test tests::session_argsort_descending ... ignored
+test tests::session_clamp_backward_grad_passes_in_range ... ignored
+test tests::session_clamp_backward_grad_zero_outside_range ... ignored
+test tests::session_clamp_restricts_to_range ... ignored
+test tests::session_comparison_records_evidence ... ignored
+test tests::session_comparison_result_does_not_require_grad ... ignored
+test tests::session_cross_entropy_loss_basic ... ignored
+test tests::session_cross_entropy_loss_rejects_rank0_logits ... ignored
+test tests::session_cross_entropy_loss_wrong_class_is_higher ... ignored
+test tests::session_detect_anomaly_catches_nan ... ignored
+test tests::session_detect_anomaly_default_off ... ignored
+test tests::session_detect_anomaly_disabled_allows_nan ... ignored
+test tests::session_detect_anomaly_toggle ... ignored
+test tests::session_diag_1d_to_2d ... ignored
+test tests::session_diag_2d_rectangular ... ignored
+test tests::session_diag_2d_to_1d ... ignored
+test tests::session_div_backward_records_expected_gradients ... ignored
+test tests::session_empty_like_preserves_f32_dtype ... ignored
+test tests::session_erf_forward_and_backward ... ignored
+test tests::session_erfc_forward ... ignored
+test tests::session_exp_log_roundtrip_scalar ... ignored
+test tests::session_exp_records_evidence ... ignored
+test tests::session_exp_scalar_backward_produces_exp_gradient ... ignored
+test tests::session_exp_scalar_returns_expected_value ... ignored
+test tests::session_eye_1x1 ... ignored
+test tests::session_eye_3x3 ... ignored
+test tests::session_flip_1d ... ignored
+test tests::session_flip_2d_both_dims ... ignored
+test tests::session_flip_2d_dim0 ... ignored
+test tests::session_flip_backward_1d ... ignored
+test tests::session_flip_backward_2d ... ignored
+test tests::session_flip_empty_dims_is_noop ... ignored
+test tests::session_flip_rejects_invalid_dimension ... ignored
+test tests::session_full_like ... ignored
+test tests::session_full_like_preserves_f32_dtype ... ignored
+test tests::session_hardsigmoid_forward_and_backward ... ignored
+test tests::session_hardswish_forward_and_backward ... ignored
+test tests::session_hardtanh_forward_and_backward_in_range ... ignored
+test tests::session_hardtanh_forward_and_backward_out_of_range ... ignored
+test tests::session_linspace_basic ... ignored
+test tests::session_linspace_single_step ... ignored
+test tests::session_linspace_two_steps ... ignored
+test tests::session_log_records_evidence ... ignored
+test tests::session_log_scalar_backward_produces_reciprocal_gradient ... ignored
+test tests::session_log_scalar_returns_expected_value ... ignored
+test tests::session_lu_factor_and_unpack_round_trip ... ignored
+test tests::session_lu_factor_identity ... ignored
+test tests::session_lu_factor_rejects_non_square ... ignored
+test tests::session_lu_solve_2x2_system ... ignored
+test tests::session_lu_solve_3x3_system ... ignored
+test tests::session_max_backward_grad_flows_to_larger ... ignored
+test tests::session_max_returns_larger_value ... ignored
+test tests::session_min_backward_grad_flows_to_smaller ... ignored
+test tests::session_min_returns_smaller_value ... ignored
+test tests::session_mish_forward_and_backward ... ignored
+test tests::session_module_forward_hook_basic ... ignored
+test tests::session_module_forward_hook_modifies_output ... ignored
+test tests::session_module_forward_pre_hook_basic ... ignored
+test tests::session_module_forward_pre_hook_modifies_input ... ignored
+test tests::session_module_hook_removal_returns_false_for_already_removed ... ignored
+test tests::session_neg_in_expression_backward ... ignored
+test tests::session_neg_records_evidence ... ignored
+test tests::session_neg_scalar_backward_produces_minus_one_gradient ... ignored
+test tests::session_neg_scalar_double_negation_backward ... ignored
+test tests::session_neg_scalar_returns_negated_value ... ignored
+test tests::session_nll_loss_basic ... ignored
+test tests::session_nll_loss_rejects_fractional_targets ... ignored
+test tests::session_nll_loss_rejects_mismatched_target_shape ... ignored
+test tests::session_nll_loss_rejects_tiny_fractional_targets ... ignored
+test tests::session_one_hot_2d ... ignored
+test tests::session_one_hot_basic ... ignored
+test tests::session_one_hot_rejects_infinite_index ... ignored
+test tests::session_one_hot_rejects_out_of_range ... ignored
+test tests::session_ones_like ... ignored
+test tests::session_pad_1d ... ignored
+test tests::session_pad_2d ... ignored
+test tests::session_pad_2d_both_dims ... ignored
+test tests::session_pad_rejects_odd_padding ... ignored
+test tests::session_pow_scalar_backward ... ignored
+test tests::session_pow_scalar_fractional_exponent ... ignored
+test tests::session_pow_scalar_returns_expected_value ... ignored
+test tests::session_qr_complete_round_trip_3x3 ... ignored
+test tests::session_qr_identity_returns_identity ... ignored
+test tests::session_qr_reduced_round_trip_3x3 ... ignored
+test tests::session_qr_rejects_1d_tensor ... ignored
+test tests::session_qr_tall_matrix_reduced ... ignored
+test tests::session_reciprocal_scalar_backward ... ignored
+test tests::session_reciprocal_scalar_returns_expected_value ... ignored
+test tests::session_relu_records_evidence ... ignored
+test tests::session_relu_scalar_backward_negative_input ... ignored
+test tests::session_relu_scalar_backward_positive_input ... ignored
+test tests::session_relu_scalar_negative_returns_zero ... ignored
+test tests::session_relu_scalar_positive_passes_through ... ignored
+test tests::session_repeat_1d ... ignored
+test tests::session_repeat_2d ... ignored
+test tests::session_repeat_backward_1d ... ignored
+test tests::session_repeat_backward_2d ... ignored
+test tests::session_repeat_backward_with_leading_dims ... ignored
+test tests::session_repeat_rejects_shape_multiplication_overflow ... ignored
+test tests::session_repeat_rejects_short_repeat_tuple ... ignored
+test tests::session_repeat_with_leading_dims ... ignored
+test tests::session_repeat_zero_factor_produces_empty_tensor ... ignored
+test tests::session_roll_1d_negative ... ignored
+test tests::session_roll_1d_positive ... ignored
+test tests::session_roll_2d_dim1 ... ignored
+test tests::session_roll_backward_1d ... ignored
+test tests::session_roll_backward_2d ... ignored
+test tests::session_roll_large_shift_wraps_mod_dimension ... ignored
+test tests::session_roll_rejects_invalid_dimension ... ignored
+test tests::session_rsqrt_forward_and_backward ... ignored
+test tests::session_scalar_acos ... ignored
+test tests::session_scalar_asin ... ignored
+test tests::session_scalar_atan ... ignored
+test tests::session_scalar_atan2 ... ignored
+test tests::session_scalar_atan_backward ... ignored
+test tests::session_scalar_ceil ... ignored
+test tests::session_scalar_cos ... ignored
+test tests::session_scalar_cosh ... ignored
+test tests::session_scalar_elu ... ignored
+test tests::session_scalar_eq_ne_respect_ieee_special_values ... ignored
+test tests::session_scalar_eq_returns_expected_value ... ignored
+test tests::session_scalar_expm1 ... ignored
+test tests::session_scalar_floor ... ignored
+test tests::session_scalar_floor_backward_zero ... ignored
+test tests::session_scalar_fmod ... ignored
+test tests::session_scalar_frac ... ignored
+test tests::session_scalar_frac_backward ... ignored
+test tests::session_scalar_gelu ... ignored
+test tests::session_scalar_gelu_backward ... ignored
+test tests::session_scalar_isfinite ... ignored
+test tests::session_scalar_isinf ... ignored
+test tests::session_scalar_isnan ... ignored
+test tests::session_scalar_le_ge_returns_expected_values ... ignored
+test tests::session_scalar_leaky_relu ... ignored
+test tests::session_scalar_log10 ... ignored
+test tests::session_scalar_log1p ... ignored
+test tests::session_scalar_log2 ... ignored
+test tests::session_scalar_log2_backward ... ignored
+test tests::session_scalar_lt_gt_le_ge_respect_ieee_special_values ... ignored
+test tests::session_scalar_lt_gt_returns_expected_values ... ignored
+test tests::session_scalar_ne_returns_expected_value ... ignored
+test tests::session_scalar_remainder ... ignored
+test tests::session_scalar_round ... ignored
+test tests::session_scalar_sign ... ignored
+test tests::session_scalar_silu ... ignored
+test tests::session_scalar_sin ... ignored
+test tests::session_scalar_sin_backward ... ignored
+test tests::session_scalar_sinh ... ignored
+test tests::session_scalar_sinh_backward ... ignored
+test tests::session_scalar_tan ... ignored
+test tests::session_scalar_trunc ... ignored
+test tests::session_sigmoid_scalar_at_zero_returns_half ... ignored
+test tests::session_sigmoid_scalar_backward_at_zero ... ignored
+test tests::session_softplus_forward_and_backward ... ignored
+test tests::session_sort_2d_dim1 ... ignored
+test tests::session_sort_ascending ... ignored
+test tests::session_sort_backward ... ignored
+test tests::session_sort_descending ... ignored
+test tests::session_sqrt_scalar_backward ... ignored
+test tests::session_sqrt_scalar_returns_expected_value ... ignored
+test tests::session_square_forward_and_backward ... ignored
+test tests::session_sub_backward_records_negative_rhs_gradient ... ignored
+test tests::session_tanh_scalar_at_zero_returns_zero ... ignored
+test tests::session_tanh_scalar_backward_at_zero ... ignored
+test tests::session_tensor_abs_backward_mixed_signs ... ignored
+test tests::session_tensor_abs_returns_absolute_values ... ignored
+test tests::session_tensor_acos_backward_produces_gradients ... ignored
+test tests::session_tensor_acos_returns_expected_values ... ignored
+test tests::session_tensor_add_backward_records_evidence ... ignored
+test tests::session_tensor_add_fails_closed_on_device_mismatch ... ignored
+test tests::session_tensor_add_supports_non_contiguous_input ... ignored
+test tests::session_tensor_addcdiv ... ignored
+test tests::session_tensor_addcmul ... ignored
+test tests::session_tensor_addmm ... ignored
+test tests::session_tensor_addmm_scaled ... ignored
+test tests::session_tensor_addmv ... ignored
+test tests::session_tensor_all_empty_true ... ignored
+test tests::session_tensor_all_false ... ignored
+test tests::session_tensor_all_true ... ignored
+test tests::session_tensor_allclose_nan_and_inf_handling ... ignored
+test tests::session_tensor_allclose_rejects_invalid_tolerances ... ignored
+test tests::session_tensor_allclose_returns_expected_values ... ignored
+test tests::session_tensor_any_empty_false ... ignored
+test tests::session_tensor_any_false ... ignored
+test tests::session_tensor_any_true ... ignored
+test tests::session_tensor_argmax_along_dim ... ignored
+test tests::session_tensor_argmax_returns_correct_indices ... ignored
+test tests::session_tensor_argmin_along_dim ... ignored
+test tests::session_tensor_argmin_returns_correct_indices ... ignored
+test tests::session_tensor_asin ... ignored
+test tests::session_tensor_atan ... ignored
+test tests::session_tensor_atan2 ... ignored
+test tests::session_tensor_bmm_forward_and_backward ... ignored
+test tests::session_tensor_cat_backward ... ignored
+test tests::session_tensor_cat_dim0 ... ignored
+test tests::session_tensor_cat_dim1 ... ignored
+test tests::session_tensor_ceil ... ignored
+test tests::session_tensor_chunk_even ... ignored
+test tests::session_tensor_chunk_uneven ... ignored
+test tests::session_tensor_clamp_all_values_at_boundary ... ignored
+test tests::session_tensor_clamp_backward ... ignored
+test tests::session_tensor_clamp_backward_at_boundaries ... ignored
+test tests::session_tensor_clamp_restricts_elements ... ignored
+test tests::session_tensor_clone_creates_independent_copy ... ignored
+test tests::session_tensor_clone_preserves_f32_dtype ... ignored
+test tests::session_tensor_cos ... ignored
+test tests::session_tensor_cosh ... ignored
+test tests::session_tensor_cumprod_1d ... ignored
+test tests::session_tensor_cumprod_2d_dim1 ... ignored
+test tests::session_tensor_cumprod_backward ... ignored
+test tests::session_tensor_cumsum_1d ... ignored
+test tests::session_tensor_cumsum_2d_dim1 ... ignored
+test tests::session_tensor_cumsum_backward ... ignored
+test tests::session_tensor_detach_has_no_grad ... ignored
+test tests::session_tensor_detach_in_place_on_leaf_is_noop ... ignored
+test tests::session_tensor_detach_in_place_turns_non_leaf_into_leaf ... ignored
+test tests::session_tensor_diagonal ... ignored
+test tests::session_tensor_diagonal_f32 ... ignored
+test tests::session_tensor_dim ... ignored
+test tests::session_tensor_div_backward_records_expected_gradients ... ignored
+test tests::session_tensor_dot_forward_and_backward ... ignored
+test tests::session_tensor_dot_zero_length ... ignored
+test tests::session_tensor_elu ... ignored
+test tests::session_tensor_eq_f32_returns_expected_values ... ignored
+test tests::session_tensor_eq_ne_respect_ieee_special_values ... ignored
+test tests::session_tensor_eq_returns_expected_values ... ignored
+test tests::session_tensor_equal_returns_expected_values ... ignored
+test tests::session_tensor_equal_treats_nan_as_unequal ... ignored
+test tests::session_tensor_erf_forward ... ignored
+test tests::session_tensor_exp_backward_produces_exp_gradient ... ignored
+test tests::session_tensor_exp_log_roundtrip ... ignored
+test tests::session_tensor_exp_returns_expected_values ... ignored
+test tests::session_tensor_expand_backward ... ignored
+test tests::session_tensor_expand_backward_sums_over_broadcast_dims ... ignored
+test tests::session_tensor_expand_basic ... ignored
+test tests::session_tensor_expand_prepended_dims_backward_sums_like_torch ... ignored
+test tests::session_tensor_expand_prepends_dims_like_torch ... ignored
+test tests::session_tensor_expm1 ... ignored
+test tests::session_tensor_flatten_all_dims ... ignored
+test tests::session_tensor_flatten_backward ... ignored
+test tests::session_tensor_flatten_partial ... ignored
+test tests::session_tensor_floor ... ignored
+test tests::session_tensor_fmod ... ignored
+test tests::session_tensor_frac ... ignored
+test tests::session_tensor_freeze_unfreeze_controls_gradient_flow ... ignored
+test tests::session_tensor_gather_backward_scatters_gradient ... ignored
+test tests::session_tensor_gather_dim1 ... ignored
+test tests::session_tensor_gather_dim1_f32_preserves_dtype ... ignored
+test tests::session_tensor_gather_rejects_fractional_indices ... ignored
+test tests::session_tensor_gelu ... ignored
+test tests::session_tensor_gt_returns_expected_values ... ignored
+test tests::session_tensor_hardswish_forward ... ignored
+test tests::session_tensor_index_select_backward_scatter_add ... ignored
+test tests::session_tensor_index_select_dim0_swaps_rows ... ignored
+test tests::session_tensor_index_select_dim1_picks_columns ... ignored
+test tests::session_tensor_index_select_f32_preserves_dtype ... ignored
+test tests::session_tensor_index_select_rejects_nan_indices ... ignored
+test tests::session_tensor_index_select_rejects_tiny_fractional_indices ... ignored
+test tests::session_tensor_isfinite ... ignored
+test tests::session_tensor_isinf ... ignored
+test tests::session_tensor_isnan ... ignored
+test tests::session_tensor_isnan_f32 ... ignored
+test tests::session_tensor_item_multi_element_fails ... ignored
+test tests::session_tensor_item_scalar ... ignored
+test tests::session_tensor_le_ge_returns_expected_values ... ignored
+test tests::session_tensor_leaky_relu ... ignored
+test tests::session_tensor_lerp ... ignored
+test tests::session_tensor_log10_backward_produces_gradients ... ignored
+test tests::session_tensor_log10_returns_expected_values ... ignored
+test tests::session_tensor_log1p_backward_produces_gradients ... ignored
+test tests::session_tensor_log1p_returns_expected_values ... ignored
+test tests::session_tensor_log2 ... ignored
+test tests::session_tensor_log_backward_produces_reciprocal_gradient ... ignored
+test tests::session_tensor_log_returns_expected_values ... ignored
+test tests::session_tensor_log_softmax_backward ... ignored
+test tests::session_tensor_log_softmax_consistent ... ignored
+test tests::session_tensor_lt_gt_le_ge_respect_ieee_special_values ... ignored
+test tests::session_tensor_lt_returns_expected_values ... ignored
+test tests::session_tensor_masked_fill_replaces_masked_positions ... ignored
+test tests::session_tensor_masked_fill_with_comparison_mask ... ignored
+test tests::session_tensor_matmul_backward_records_expected_gradients ... ignored
+test tests::session_tensor_max_backward ... ignored
+test tests::session_tensor_max_dim_backward_scatters_gradient ... ignored
+test tests::session_tensor_max_dim_returns_values_and_indices ... ignored
+test tests::session_tensor_max_returns_elementwise_maximum ... ignored
+test tests::session_tensor_mean_backward_produces_scaled_gradient ... ignored
+test tests::session_tensor_mean_dim0_2d ... ignored
+test tests::session_tensor_mean_dim1_2d ... ignored
+test tests::session_tensor_mean_dim1_backward ... ignored
+test tests::session_tensor_mean_dim_3d_reduces_last ... ignored
+test tests::session_tensor_mean_dim_backward_scales_grad ... ignored
+test tests::session_tensor_mean_records_evidence ... ignored
+test tests::session_tensor_mean_returns_expected_value ... ignored
+test tests::session_tensor_median_backward_unique_values ... ignored
+test tests::session_tensor_median_even ... ignored
+test tests::session_tensor_median_odd ... ignored
+test tests::session_tensor_median_rejects_empty ... ignored
+test tests::session_tensor_median_single ... ignored
+test tests::session_tensor_meshgrid ... ignored
+test tests::session_tensor_min_backward ... ignored
+test tests::session_tensor_min_dim_backward_scatters_gradient ... ignored
+test tests::session_tensor_min_dim_returns_values_and_indices ... ignored
+test tests::session_tensor_min_returns_elementwise_minimum ... ignored
+test tests::session_tensor_mish_backward ... ignored
+test tests::session_tensor_mul_backward_records_expected_gradients ... ignored
+test tests::session_tensor_narrow_backward ... ignored
+test tests::session_tensor_narrow_basic ... ignored
+test tests::session_tensor_narrow_dim0 ... ignored
+test tests::session_tensor_ne_returns_expected_values ... ignored
+test tests::session_tensor_neg_backward_produces_minus_one_gradient ... ignored
+test tests::session_tensor_neg_double_negation_backward ... ignored
+test tests::session_tensor_neg_returns_negated_values ... ignored
+test tests::session_tensor_norm_dim_l2 ... ignored
+test tests::session_tensor_norm_inf ... ignored
+test tests::session_tensor_norm_l0 ... ignored
+test tests::session_tensor_norm_l1 ... ignored
+test tests::session_tensor_norm_l2 ... ignored
+test tests::session_tensor_norm_p3 ... ignored
+test tests::session_tensor_numel ... ignored
+test tests::session_tensor_outer_forward_and_backward ... ignored
+test tests::session_tensor_permute_3d_reorders_dims ... ignored
+test tests::session_tensor_permute_reorders_dims ... ignored
+test tests::session_tensor_pow_backward ... ignored
+test tests::session_tensor_pow_returns_expected_values ... ignored
+test tests::session_tensor_prod_dim0 ... ignored
+test tests::session_tensor_prod_dim1 ... ignored
+test tests::session_tensor_prod_dim_backward ... ignored
+test tests::session_tensor_prod_dim_singleton_dimension ... ignored
+test tests::session_tensor_reciprocal_backward ... ignored
+test tests::session_tensor_reciprocal_returns_expected_values ... ignored
+test tests::session_tensor_register_hook_modifies_gradient ... ignored
+test tests::session_tensor_register_hook_order_and_error ... ignored
+test tests::session_tensor_register_hook_remove_stops_callback ... ignored
+test tests::session_tensor_register_hook_supports_gradient_clipping ... ignored
+test tests::session_tensor_register_hook_supports_gradient_reversal ... ignored
+test tests::session_tensor_register_hook_supports_multiple_tensors_in_same_graph ... ignored
+test tests::session_tensor_relu_backward_produces_step_gradient ... ignored
+test tests::session_tensor_relu_returns_expected_values ... ignored
+test tests::session_tensor_remainder ... ignored
+test tests::session_tensor_requires_grad_on_non_leaf_errors ... ignored
+test tests::session_tensor_requires_grad_toggle_on_leaf_round_trips ... ignored
+test tests::session_tensor_requires_grad_toggle_works_inside_no_grad_scope ... ignored
+test tests::session_tensor_reshape_backward ... ignored
+test tests::session_tensor_reshape_forward ... ignored
+test tests::session_tensor_reshape_mismatched_numel_fails ... ignored
+test tests::session_tensor_reshape_mismatched_numel_fails_closed ... ignored
+test tests::session_tensor_reshape_rejects_shape_volume_overflow ... ignored
+test tests::session_tensor_round ... ignored
+test tests::session_tensor_rsqrt_forward_and_backward ... ignored
+test tests::session_tensor_scatter_dim1 ... ignored
+test tests::session_tensor_scatter_dim1_f32_preserves_dtype ... ignored
+test tests::session_tensor_scatter_rejects_non_finite_indices ... ignored
+test tests::session_tensor_shape ... ignored
+test tests::session_tensor_sigmoid_backward_produces_expected_gradient ... ignored
+test tests::session_tensor_sigmoid_returns_expected_values ... ignored
+test tests::session_tensor_sign ... ignored
+test tests::session_tensor_silu ... ignored
+test tests::session_tensor_sin ... ignored
+test tests::session_tensor_sin_backward ... ignored
+test tests::session_tensor_sinh ... ignored
+test tests::session_tensor_softmax_backward ... ignored
+test tests::session_tensor_softmax_single_element_dim ... ignored
+test tests::session_tensor_softmax_sums_to_one ... ignored
+test tests::session_tensor_softplus_forward ... ignored
+test tests::session_tensor_split_backward ... ignored
+test tests::session_tensor_split_basic ... ignored
+test tests::session_tensor_sqrt_backward ... ignored
+test tests::session_tensor_sqrt_returns_expected_values ... ignored
+test tests::session_tensor_square_forward_and_backward ... ignored
+test tests::session_tensor_squeeze_backward ... ignored
+test tests::session_tensor_squeeze_forward ... ignored
+test tests::session_tensor_squeeze_non_singleton_is_noop ... ignored
+test tests::session_tensor_stack_backward ... ignored
+test tests::session_tensor_stack_dim0 ... ignored
+test tests::session_tensor_std_dim0 ... ignored
+test tests::session_tensor_sum_after_mul_backward ... ignored
+test tests::session_tensor_sum_backward_produces_ones_gradient ... ignored
+test tests::session_tensor_sum_dim0_2d ... ignored
+test tests::session_tensor_sum_dim1_2d ... ignored
+test tests::session_tensor_sum_dim1_backward ... ignored
+test tests::session_tensor_sum_dim_3d_middle ... ignored
+test tests::session_tensor_sum_dim_3d_reduces_middle ... ignored
+test tests::session_tensor_sum_dim_backward_broadcasts_grad ... ignored
+test tests::session_tensor_sum_records_evidence ... ignored
+test tests::session_tensor_sum_returns_expected_value ... ignored
+test tests::session_tensor_tan ... ignored
+test tests::session_tensor_tanh_backward_produces_expected_gradient ... ignored
+test tests::session_tensor_tanh_returns_expected_values ... ignored
+test tests::session_tensor_trace_forward_and_backward ... ignored
+test tests::session_tensor_trace_non_square ... ignored
+test tests::session_tensor_transpose_backward_produces_gradients ... ignored
+test tests::session_tensor_transpose_swaps_dims ... ignored
+test tests::session_tensor_trunc ... ignored
+test tests::session_tensor_unbind ... ignored
+test tests::session_tensor_unbind_dim1 ... ignored
+test tests::session_tensor_unflatten_basic ... ignored
+test tests::session_tensor_unflatten_rejects_size_product_overflow ... ignored
+test tests::session_tensor_unflatten_roundtrip ... ignored
+test tests::session_tensor_unsqueeze_backward ... ignored
+test tests::session_tensor_unsqueeze_forward ... ignored
+test tests::session_tensor_var_dim0 ... ignored
+test tests::session_tensor_var_dim1 ... ignored
+test tests::session_tensor_var_dim_backward ... ignored
+test tests::session_tensor_var_dim_singleton_dimension ... ignored
+test tests::session_tensor_var_std_dim_correction ... ignored
+test tests::session_tensor_view_forward ... ignored
+test tests::session_tensor_where_all_false ... ignored
+test tests::session_tensor_where_all_true ... ignored
+test tests::session_tensor_where_backward ... ignored
+test tests::session_tensor_where_rejects_shape_mismatch ... ignored
+test tests::session_tensor_where_selects_by_condition ... ignored
+test tests::session_topk_2d ... ignored
+test tests::session_topk_backward ... ignored
+test tests::session_topk_largest ... ignored
+test tests::session_topk_smallest ... ignored
+test tests::session_tril_k0 ... ignored
+test tests::session_tril_k_neg1 ... ignored
+test tests::session_triu_k0 ... ignored
+test tests::session_triu_k1 ... ignored
+test tests::session_zeros_like ... ignored
+test tests::set_grad_enabled_toggles_state ... ignored
+test tests::sgn_complex_input_fails_loud ... ignored
+test tests::sgn_real_path_matches_sign ... ignored
+test tests::shrink_rejects_negative_lambd ... ignored
+test tests::signbit_distinguishes_negative_zero_from_positive_zero ... ignored
+test tests::signbit_fails_loud_on_requires_grad ... ignored
+test tests::signbit_known_values_including_signed_zero ... ignored
+test tests::sinc_handles_zero_without_nan ... ignored
+test tests::sinc_known_values ... ignored
+test tests::sinc_propagates_gradient_zero_at_x_equals_zero ... ignored
+test tests::slogdet_matches_det ... ignored
+test tests::slogdet_negative_det ... ignored
+test tests::slogdet_propagates_gradient_via_jacobi ... ignored
+test tests::slogdet_sign_does_not_require_grad ... ignored
+test tests::slogdet_singular_matrix ... ignored
+test tests::smooth_l1_loss_backward_produces_gradients ... ignored
+test tests::smooth_l1_loss_custom_beta ... ignored
+test tests::smooth_l1_loss_identical_tensors_returns_zero ... ignored
+test tests::smooth_l1_loss_linear_region ... ignored
+test tests::smooth_l1_loss_mixed_regions ... ignored
+test tests::smooth_l1_loss_quadratic_region ... ignored
+test tests::soft_margin_loss_basic ... ignored
+test tests::soft_margin_loss_propagates_gradient_through_input ... ignored
+test tests::softmin_equals_softmax_of_negation ... ignored
+test tests::softmin_propagates_gradient ... ignored
+test tests::softmin_sums_to_one_smaller_input_gets_higher_weight ... ignored
+test tests::softshrink_known_values ... ignored
+test tests::softshrink_propagates_gradient_one_outside_zero_inside ... ignored
+test tests::softsign_known_values ... ignored
+test tests::softsign_propagates_gradient ... ignored
+test tests::solve_1x1 ... ignored
+test tests::solve_2x2_system ... ignored
+test tests::solve_3x3_verify_a_times_x ... ignored
+test tests::solve_identity_a ... ignored
+test tests::solve_multiple_rhs ... ignored
+test tests::solve_propagates_gradient_through_a_and_b ... ignored
+test tests::solve_singular_errors_loud ... ignored
+test tests::special_namespace_aliases_match_canonical ... ignored
+test tests::split_with_sizes_alias_matches_split ... ignored
+test tests::squeeze_all_handles_all_size_one_dims_to_scalar_promoted_to_empty ... ignored
+test tests::squeeze_all_no_op_when_no_size_one_dims ... ignored
+test tests::squeeze_all_propagates_gradient ... ignored
+test tests::squeeze_all_removes_all_size_one_dims ... ignored
+test tests::stft_istft_complex_ops_fail_loud_on_requires_grad ... ignored
+test tests::svd_1x1 ... ignored
+test tests::svd_diagonal_matrix ... ignored
+test tests::svd_full_matrices_shapes ... ignored
+test tests::svd_identity_3x3 ... ignored
+test tests::svd_orthogonality ... ignored
+test tests::svd_reconstruction_2x2 ... ignored
+test tests::svd_rectangular_tall ... ignored
+test tests::svd_rectangular_wide ... ignored
+test tests::svd_singular_values_nonnegative ... ignored
+test tests::svd_singular_values_sorted_descending ... ignored
+test tests::svd_zero_matrix ... ignored
+test tests::svdvals_matches_svd ... ignored
+test tests::swapaxes_and_swapdims_match_transpose ... ignored
+test tests::take_along_dim_2d_dim1 ... ignored
+test tests::take_along_dim_rejects_fractional_indices ... ignored
+test tests::take_propagates_gradient_to_indexed_positions ... ignored
+test tests::take_repeated_indices_accumulate_gradient ... ignored
+test tests::take_returns_flat_indexed_values_reshaped ... ignored
+test tests::tanhshrink_known_values ... ignored
+test tests::tanhshrink_propagates_gradient_one_minus_sech_squared ... ignored
+test tests::tensor_add_in_place ... ignored
+test tests::tensor_add_in_place_f32 ... ignored
+test tests::tensor_add_in_place_records_evidence ... ignored
+test tests::tensor_add_in_place_rejects_device_mismatch ... ignored
+test tests::tensor_add_scalar_in_place ... ignored
+test tests::tensor_affine_grid_f32_propagates_gradient_through_theta ... ignored
+test tests::tensor_affine_grid_identity_align_corners_true ... ignored
+test tests::tensor_affine_grid_propagates_gradient_through_theta ... ignored
+test tests::tensor_backward_with_options_supports_hardened_reentrant_fallback ... ignored
+test tests::tensor_bernoulli_in_place ... ignored
+test tests::tensor_complex_constructs_complex64_from_f32_parts ... ignored
+test tests::tensor_complex_fail_closed_for_grad_inputs ... ignored
+test tests::tensor_complex_mixed_precision_promotes_to_complex128 ... ignored
+test tests::tensor_complex_rejects_shape_mismatch ... ignored
+test tests::tensor_div_in_place ... ignored
+test tests::tensor_existing_in_place_ops_reject_leaf_requires_grad ... ignored
+test tests::tensor_fill_in_place ... ignored
+test tests::tensor_grid_sample_affine_grid_chain_propagates_gradient_to_theta ... ignored
+test tests::tensor_grid_sample_bilinear_center_averages_neighbors ... ignored
+test tests::tensor_grid_sample_bilinear_f32_propagates_gradients_to_input_and_grid ... ignored
+test tests::tensor_grid_sample_bilinear_propagates_gradients_to_input_and_grid ... ignored
+test tests::tensor_grid_sample_bilinear_reflection_padding_f32_propagates_gradients ... ignored
+test tests::tensor_grid_sample_bilinear_reflection_padding_propagates_signed_grid_grad ... ignored
+test tests::tensor_grid_sample_border_padding_clamps_coordinates ... ignored
+test tests::tensor_grid_sample_border_padding_zeroes_grid_grad_at_exact_boundary ... ignored
+test tests::tensor_grid_sample_nearest_identity_matches_input ... ignored
+test tests::tensor_grid_sample_nearest_propagates_input_grad_and_zero_grid_grad ... ignored
+test tests::tensor_istft_fail_closed_for_grad_window ... ignored
+test tests::tensor_istft_roundtrip_no_overlap ... ignored
+test tests::tensor_mul_in_place ... ignored
+test tests::tensor_mul_scalar_in_place ... ignored
+test tests::tensor_ones_in_place ... ignored
+test tests::tensor_random_in_place ... ignored
+test tests::tensor_relu_in_place_f32 ... ignored
+test tests::tensor_stft_fail_closed_for_grad_input ... ignored
+test tests::tensor_stft_rectangular_window_known_values ... ignored
+test tests::tensor_stft_rejects_non_1d_input ... ignored
+test tests::tensor_sub_in_place ... ignored
+test tests::tensor_to_dtype_f64_to_f32_via_session ... ignored
+test tests::tensor_to_dtype_noop_same_type ... ignored
+test tests::tensor_to_dtype_rejects_int_target ... ignored
+test tests::tensor_unary_in_place_bumps_version_counter ... ignored
+test tests::tensor_unary_in_place_matches_out_of_place_variants ... ignored
+test tests::tensor_unary_in_place_ops_chain_correctly ... ignored
+test tests::tensor_unary_in_place_rejects_leaf_requires_grad ... ignored
+test tests::tensor_values_meta_returns_correct_shape_and_values ... ignored
+test tests::tensor_view_as_complex_rejects_bad_last_dim ... ignored
+test tests::tensor_view_as_complex_rejects_non_float_input ... ignored
+test tests::tensor_view_as_real_and_complex_roundtrip_complex128 ... ignored
+test tests::tensor_view_as_real_and_complex_roundtrip_complex64 ... ignored
+test tests::tensor_view_as_real_rejects_non_complex_input ... ignored
+test tests::tensor_view_backward_through_view ... ignored
+test tests::tensor_view_numel_mismatch_errors ... ignored
+test tests::tensor_view_ops_fail_closed_for_grad_inputs ... ignored
+test tests::tensor_view_zero_copy_reshape ... ignored
+test tests::tensor_zero_in_place ... ignored
+test tests::tensordot_3d_contract_1 ... ignored
+test tests::tensordot_dims0_outer_product ... ignored
+test tests::tensordot_dims1_matches_matmul ... ignored
+test tests::tensordot_dims2_full_contraction ... ignored
+test tests::tensordot_shape_mismatch_errors ... ignored
+test tests::test_addmm_inplace ... ignored
+test tests::test_addmv_inplace ... ignored
+test tests::test_addr_inplace ... ignored
+test tests::test_adjoint_2d ... ignored
+test tests::test_adjoint_errors_on_1d ... ignored
+test tests::test_arc_trig_aliases ... ignored
+test tests::test_bitwise_ops ... ignored
+test tests::test_celu_basic ... ignored
+test tests::test_chain_matmul_alias ... ignored
+test tests::test_channel_shuffle_basic ... ignored
+test tests::test_clamp_min_max_inplace ... ignored
+test tests::test_clip_inplace_alias ... ignored
+test tests::test_clip_min_max_aliases ... ignored
+test tests::test_comparison_aliases ... ignored
+test tests::test_cummax_inplace ... ignored
+test tests::test_cummin_inplace ... ignored
+test tests::test_cumprod_inplace ... ignored
+test tests::test_cumsum_inplace ... ignored
+test tests::test_diag_indices ... ignored
+test tests::test_diagonal_scatter_basic ... ignored
+test tests::test_diagonal_scatter_inplace ... ignored
+test tests::test_diagonal_scatter_offset ... ignored
+test tests::test_dtype_queries ... ignored
+test tests::test_element_size_nbytes_storage_offset ... ignored
+test tests::test_fill_diagonal_ ... ignored
+test tests::test_flip_inplace ... ignored
+test tests::test_frexp_basic ... ignored
+test tests::test_full_like ... ignored
+test tests::test_gcd_basic ... ignored
+test tests::test_gcd_negative ... ignored
+test tests::test_h_3d_batch ... ignored
+test tests::test_hfft_basic ... ignored
+test tests::test_hfft_ihfft_roundtrip ... ignored
+test tests::test_i0_basic ... ignored
+test tests::test_i0_negative ... ignored
+test tests::test_i0e_basic ... ignored
+test tests::test_i1_basic ... ignored
+test tests::test_i1_negative ... ignored
+test tests::test_i1e_basic ... ignored
+test tests::test_ihfft_basic ... ignored
+test tests::test_index_add_inplace ... ignored
+test tests::test_index_copy_inplace ... ignored
+test tests::test_index_fill_inplace ... ignored
+test tests::test_index_reduce_amax ... ignored
+test tests::test_index_reduce_prod ... ignored
+test tests::test_inference_mode ... ignored
+test tests::test_inv_pinv_aliases ... ignored
+test tests::test_irfft2_roundtrip ... ignored
+test tests::test_is_contiguous_and_contiguous ... ignored
+test tests::test_is_cpu_cuda_pinned ... ignored
+test tests::test_is_same_size ... ignored
+test tests::test_is_sparse_quantized ... ignored
+test tests::test_lcm_basic ... ignored
+test tests::test_log_ndtr_basic ... ignored
+test tests::test_logdet_basic ... ignored
+test tests::test_logical_and ... ignored
+test tests::test_logical_or ... ignored
+test tests::test_logical_xor ... ignored
+test tests::test_masked_fill_inplace ... ignored
+test tests::test_masked_scatter_inplace ... ignored
+test tests::test_moveaxis ... ignored
+test tests::test_mt_mh ... ignored
+test tests::test_multi_dot_three_matrices ... ignored
+test tests::test_multi_dot_two_matrices ... ignored
+test tests::test_nanmedian_all_nan ... ignored
+test tests::test_nanmedian_basic ... ignored
+test tests::test_nanquantile_basic ... ignored
+test tests::test_nanquantile_extremes ... ignored
+test tests::test_ndim_alias ... ignored
+test tests::test_ndtr_basic ... ignored
+test tests::test_ndtri_basic ... ignored
+test tests::test_new_factory_methods ... ignored
+test tests::test_ones_like ... ignored
+test tests::test_prelu_scalar_weight ... ignored
+test tests::test_psi_alias ... ignored
+test tests::test_put_basic ... ignored
+test tests::test_put_inplace ... ignored
+test tests::test_ravel_multi_index_basic ... ignored
+test tests::test_renorm_inplace ... ignored
+test tests::test_reshape_as ... ignored
+test tests::test_rfft2_basic ... ignored
+test tests::test_roll_inplace ... ignored
+test tests::test_rot90_inplace ... ignored
+test tests::test_rrelu_basic ... ignored
+test tests::test_scatter_add_inplace ... ignored
+test tests::test_scatter_inplace ... ignored
+test tests::test_select_scatter_col ... ignored
+test tests::test_select_scatter_inplace ... ignored
+test tests::test_select_scatter_row ... ignored
+test tests::test_selu_basic ... ignored
+test tests::test_sincos_basic ... ignored
+test tests::test_size_alias ... ignored
+test tests::test_slice_scatter_basic ... ignored
+test tests::test_slice_scatter_inplace ... ignored
+test tests::test_slice_scatter_step ... ignored
+test tests::test_slogdet_basic ... ignored
+test tests::test_sort_inplace ... ignored
+test tests::test_special_exp2 ... ignored
+test tests::test_special_expit ... ignored
+test tests::test_special_log2 ... ignored
+test tests::test_special_logit ... ignored
+test tests::test_t_0d ... ignored
+test tests::test_t_1d ... ignored
+test tests::test_t_2d ... ignored
+test tests::test_t_errors_on_3d ... ignored
+test tests::test_tensor_activation_inplace ... ignored
+test tests::test_tensor_addcmul_addcdiv_inplace ... ignored
+test tests::test_tensor_angle_conversion_inplace ... ignored
+test tests::test_tensor_array_split ... ignored
+test tests::test_tensor_autograd_grad ... ignored
+test tests::test_tensor_bool ... ignored
+test tests::test_tensor_broadcast_shapes ... ignored
+test tests::test_tensor_cfloat_cdouble ... ignored
+test tests::test_tensor_copy_ ... ignored
+test tests::test_tensor_copysign_ldexp_xlogy_inplace ... ignored
+test tests::test_tensor_cpu_and_to ... ignored
+test tests::test_tensor_data ... ignored
+test tests::test_tensor_det_alias ... ignored
+test tests::test_tensor_device ... ignored
+test tests::test_tensor_elu_selu_inplace ... ignored
+test tests::test_tensor_erf_inplace ... ignored
+test tests::test_tensor_expm1_log1p_ ... ignored
+test tests::test_tensor_float_power_nextafter_inplace ... ignored
+test tests::test_tensor_fmax_fmin_inplace ... ignored
+test tests::test_tensor_fmod_remainder_inplace ... ignored
+test tests::test_tensor_frac_ ... ignored
+test tests::test_tensor_gcd_lcm_inplace ... ignored
+test tests::test_tensor_gelu_softplus_inplace ... ignored
+test tests::test_tensor_grad_alias ... ignored
+test tests::test_tensor_gru_basic ... ignored
+test tests::test_tensor_hardswish_threshold_inplace ... ignored
+test tests::test_tensor_hardtanh_hardsigmoid_inplace ... ignored
+test tests::test_tensor_heaviside_inplace ... ignored
+test tests::test_tensor_hyperbolic_inplace ... ignored
+test tests::test_tensor_hypot_atan2_inplace ... ignored
+test tests::test_tensor_int_long ... ignored
+test tests::test_tensor_inverse_trig_inplace ... ignored
+test tests::test_tensor_isreal ... ignored
+test tests::test_tensor_leaky_relu_celu_inplace ... ignored
+test tests::test_tensor_lerp_inplace ... ignored
+test tests::test_tensor_log2_log10_ ... ignored
+test tests::test_tensor_logaddexp_inplace ... ignored
+test tests::test_tensor_logit_inplace ... ignored
+test tests::test_tensor_lstm_basic ... ignored
+test tests::test_tensor_lstm_batch_first ... ignored
+test tests::test_tensor_maximum_minimum_inplace ... ignored
+test tests::test_tensor_modf ... ignored
+test tests::test_tensor_nan_to_num_inplace ... ignored
+test tests::test_tensor_nelement ... ignored
+test tests::test_tensor_poisson_ ... ignored
+test tests::test_tensor_pow_square_inplace ... ignored
+test tests::test_tensor_reciprocal_ ... ignored
+test tests::test_tensor_relu6 ... ignored
+test tests::test_tensor_retain_grad ... ignored
+test tests::test_tensor_rnn_basic ... ignored
+test tests::test_tensor_rsqrt_ ... ignored
+test tests::test_tensor_scalbn ... ignored
+test tests::test_tensor_shrink_inplace ... ignored
+test tests::test_tensor_sign_ ... ignored
+test tests::test_tensor_std_mean ... ignored
+test tests::test_tensor_stride ... ignored
+test tests::test_tensor_tril_triu_inplace ... ignored
+test tests::test_tensor_trunc_ ... ignored
+test tests::test_tensor_var_mean ... ignored
+test tests::test_tril_basic ... ignored
+test tests::test_triu_basic ... ignored
+test tests::test_type_as ... ignored
+test tests::test_uniform_normal_fill ... ignored
+test tests::test_unravel_index_basic ... ignored
+test tests::test_vdot_basic ... ignored
+test tests::test_vdot_errors_on_2d ... ignored
+test tests::test_where_inplace ... ignored
+test tests::test_zeros_like ... ignored
+test tests::threshold_passes_through_above_threshold ... ignored
+test tests::threshold_propagates_gradient_only_above_threshold ... ignored
+test tests::threshold_with_negative_threshold_and_value ... ignored
+test tests::threshold_with_zero_threshold_matches_relu_with_custom_replacement ... ignored
+test tests::tile_2d ... ignored
+test tests::tile_basic ... ignored
+test tests::tile_identity ... ignored
+test tests::trapezoid_propagates_gradient_through_y ... ignored
+test tests::trapezoid_single_point ... ignored
+test tests::trapezoid_uniform_spacing ... ignored
+test tests::trapezoid_with_x ... ignored
+test tests::triangular_solve_lower ... ignored
+test tests::triangular_solve_propagates_gradient_through_a_and_b ... ignored
+test tests::triangular_solve_upper ... ignored
+test tests::tril_indices_3x3 ... ignored
+test tests::tril_indices_with_offset ... ignored
+test tests::triu_indices_3x3 ... ignored
+test tests::triu_indices_with_negative_offset ... ignored
+test tests::true_divide_matches_div_with_gradient ... ignored
+test tests::unfold_1d ... ignored
+test tests::unfold_invalid_args_error ... ignored
+test tests::unfold_propagates_gradient_via_scatter ... ignored
+test tests::unfold_step2 ... ignored
+test tests::unique_all_different ... ignored
+test tests::unique_all_same ... ignored
+test tests::unique_consecutive_basic ... ignored
+test tests::unique_consecutive_with_counts ... ignored
+test tests::unique_consecutive_with_inverse ... ignored
+test tests::unique_keeps_distinct_subnormals ... ignored
+test tests::unique_keeps_each_nan_distinct ... ignored
+test tests::unique_sorted ... ignored
+test tests::unique_treats_zero_and_negzero_as_equal ... ignored
+test tests::unique_unsorted ... ignored
+test tests::unique_with_counts ... ignored
+test tests::unique_with_inverse ... ignored
+test tests::unsafe_chunk_alias_matches_chunk ... ignored
+test tests::vander_custom_n ... ignored
+test tests::vander_decreasing ... ignored
+test tests::vander_increasing ... ignored
+test tests::vander_propagates_gradient_via_polynomial_backward ... ignored
+test tests::vander_rejects_too_large_n ... ignored
+test tests::vecdot_1d ... ignored
+test tests::vecdot_2d_batched ... ignored
+test tests::vecdot_rejects_scalar_inputs ... ignored
+test tests::vector_norm_empty_preserves_autograd_edge ... ignored
+test tests::vector_norm_inf ... ignored
+test tests::vector_norm_inf_propagates_gradient ... ignored
+test tests::vector_norm_l0 ... ignored
+test tests::vector_norm_l0_fails_loud_with_requires_grad ... ignored
+test tests::vector_norm_l1 ... ignored
+test tests::vector_norm_l1_propagates_gradient ... ignored
+test tests::vector_norm_l2 ... ignored
+test tests::vector_norm_l2_propagates_gradient ... ignored
+test tests::view_as_propagates_gradient ... ignored
+test tests::view_as_uses_reference_shape ... ignored
+test tests::vsplit_basic ... ignored
+test tests::vstack_1d ... ignored
+test tests::vstack_2d ... ignored
+test tests::with_autocast_closure_api ... ignored
+test tests::with_autocast_restores_state_after_panic ... ignored
+test tests::with_enable_grad_inside_no_grad ... ignored
+test tests::with_enable_grad_restores_outer_no_grad_after_panic ... ignored
+test tests::with_no_grad_closure_api ... ignored
+test tests::with_no_grad_restores_state_after_panic ... ignored
+test tests::xlog1py_basic ... ignored
+test tests::xlog1py_propagates_gradients_through_x_and_y ... ignored
+test tests::xlog1py_propagates_nan_from_y_when_x_is_zero ... ignored
+test tests::xlogy_basic ... ignored
+test tests::xlogy_propagates_gradients_through_x_and_y ... ignored
+test tests::xlogy_shape_mismatch_errors ... ignored
+test tests::xlogy_zero_times_log_is_zero ... ignored
+test tests::xlogy_zero_times_nan_is_nan ... ignored
+
+test result: ok. 0 passed; 0 failed; 1722 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running benches/ops_bench.rs (/data/tmp/cargo-target/release/deps/ops_bench-04c434a73166b803)
+Gnuplot not found, using plotters backend
+Benchmarking matmul/square/64
+Benchmarking matmul/square/64: Warming up for 3.0000 s
+Benchmarking matmul/square/64: Collecting 100 samples in estimated 5.0914 s (212k iterations)
+Benchmarking matmul/square/64: Analyzing
+matmul/square/64        time:   [14.927 µs 14.961 µs 15.003 µs]
+                        thrpt:  [17.473 Gelem/s 17.522 Gelem/s 17.562 Gelem/s]
+Found 8 outliers among 100 measurements (8.00%)
+  4 (4.00%) low severe
+  3 (3.00%) low mild
+  1 (1.00%) high severe
+Benchmarking matmul/square/128
+Benchmarking matmul/square/128: Warming up for 3.0000 s
+Benchmarking matmul/square/128: Collecting 100 samples in estimated 5.3081 s (40k iterations)
+Benchmarking matmul/square/128: Analyzing
+matmul/square/128       time:   [101.29 µs 102.48 µs 104.46 µs]
+                        thrpt:  [20.076 Gelem/s 20.464 Gelem/s 20.704 Gelem/s]
+Found 21 outliers among 100 measurements (21.00%)
+  8 (8.00%) low severe
+  9 (9.00%) low mild
+  1 (1.00%) high mild
+  3 (3.00%) high severe
+Benchmarking matmul/square/256
+Benchmarking matmul/square/256: Warming up for 3.0000 s
+Benchmarking matmul/square/256: Collecting 100 samples in estimated 8.8035 s (10k iterations)
+Benchmarking matmul/square/256: Analyzing
+matmul/square/256       time:   [743.51 µs 745.89 µs 749.00 µs]
+                        thrpt:  [22.399 Gelem/s 22.493 Gelem/s 22.565 Gelem/s]
+Found 20 outliers among 100 measurements (20.00%)
+  8 (8.00%) low severe
+  6 (6.00%) low mild
+  1 (1.00%) high mild
+  5 (5.00%) high severe
+Benchmarking matmul/square/512
+Benchmarking matmul/square/512: Warming up for 3.0000 s
+Benchmarking matmul/square/512: Collecting 100 samples in estimated 5.5510 s (900 iterations)
+Benchmarking matmul/square/512: Analyzing
+matmul/square/512       time:   [5.8098 ms 5.8379 ms 5.8752 ms]
+                        thrpt:  [22.845 Gelem/s 22.991 Gelem/s 23.102 Gelem/s]
+Found 8 outliers among 100 measurements (8.00%)
+  3 (3.00%) high mild
+  5 (5.00%) high severe
+Benchmarking matmul/square/1024
+Benchmarking matmul/square/1024: Warming up for 3.0000 s
+Benchmarking matmul/square/1024: Collecting 100 samples in estimated 9.3287 s (200 iterations)
+Benchmarking matmul/square/1024: Analyzing
+matmul/square/1024      time:   [44.627 ms 44.800 ms 45.025 ms]
+                        thrpt:  [23.848 Gelem/s 23.968 Gelem/s 24.061 Gelem/s]
+Found 9 outliers among 100 measurements (9.00%)
+  4 (4.00%) low mild
+  2 (2.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking bmm/batch/8
+Benchmarking bmm/batch/8: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 5.4s, enable flat sampling, or reduce sample count to 60.
+Benchmarking bmm/batch/8: Collecting 100 samples in estimated 5.3763 s (5050 iterations)
+Benchmarking bmm/batch/8: Analyzing
+bmm/batch/8             time:   [784.36 µs 789.01 µs 796.02 µs]
+                        thrpt:  [21.076 Gelem/s 21.264 Gelem/s 21.390 Gelem/s]
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+Benchmarking bmm/batch/16
+Benchmarking bmm/batch/16: Warming up for 3.0000 s
+Benchmarking bmm/batch/16: Collecting 100 samples in estimated 5.1238 s (2400 iterations)
+Benchmarking bmm/batch/16: Analyzing
+bmm/batch/16            time:   [1.5817 ms 1.5885 ms 1.5992 ms]
+                        thrpt:  [20.981 Gelem/s 21.124 Gelem/s 21.215 Gelem/s]
+Found 5 outliers among 100 measurements (5.00%)
+  1 (1.00%) high mild
+  4 (4.00%) high severe
+Benchmarking bmm/batch/32
+Benchmarking bmm/batch/32: Warming up for 3.0000 s
+Benchmarking bmm/batch/32: Collecting 100 samples in estimated 5.1401 s (1200 iterations)
+Benchmarking bmm/batch/32: Analyzing
+bmm/batch/32            time:   [3.2013 ms 3.2053 ms 3.2094 ms]
+                        thrpt:  [20.910 Gelem/s 20.937 Gelem/s 20.963 Gelem/s]
+
+Benchmarking conv2d/hw/32
+Benchmarking conv2d/hw/32: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 14.1s, or reduce sample count to 30.
+Benchmarking conv2d/hw/32: Collecting 100 samples in estimated 14.058 s (100 iterations)
+Benchmarking conv2d/hw/32: Analyzing
+conv2d/hw/32            time:   [120.00 ms 120.27 ms 120.55 ms]
+                        thrpt:  [2.1745 Melem/s 2.1796 Melem/s 2.1846 Melem/s]
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+Benchmarking conv2d/hw/64
+Benchmarking conv2d/hw/64: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 63.6s, or reduce sample count to 10.
+Benchmarking conv2d/hw/64: Collecting 100 samples in estimated 63.559 s (100 iterations)
+Benchmarking conv2d/hw/64: Analyzing
+conv2d/hw/64            time:   [625.05 ms 626.11 ms 627.40 ms]
+                        thrpt:  [1.6713 Melem/s 1.6748 Melem/s 1.6776 Melem/s]
+Found 7 outliers among 100 measurements (7.00%)
+  2 (2.00%) high mild
+  5 (5.00%) high severe
+Benchmarking conv2d/hw/128
+Benchmarking conv2d/hw/128: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 274.8s, or reduce sample count to 10.
+Benchmarking conv2d/hw/128: Collecting 100 samples in estimated 274.81 s (100 iterations)
+Benchmarking conv2d/hw/128: Analyzing
+conv2d/hw/128           time:   [2.7435 s 2.7550 s 2.7681 s]
+                        thrpt:  [1.5152 Melem/s 1.5224 Melem/s 1.5288 Melem/s]
+Found 7 outliers among 100 measurements (7.00%)
+  3 (3.00%) high mild
+  4 (4.00%) high severe
+
+Benchmarking sum/elements/1000
+Benchmarking sum/elements/1000: Warming up for 3.0000 s
+Benchmarking sum/elements/1000: Collecting 100 samples in estimated 5.0041 s (5.0M iterations)
+Benchmarking sum/elements/1000: Analyzing
+sum/elements/1000       time:   [797.06 ns 798.31 ns 799.82 ns]
+                        thrpt:  [1.2503 Gelem/s 1.2526 Gelem/s 1.2546 Gelem/s]
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+Benchmarking sum/elements/10000
+Benchmarking sum/elements/10000: Warming up for 3.0000 s
+Benchmarking sum/elements/10000: Collecting 100 samples in estimated 5.0019 s (1.4M iterations)
+Benchmarking sum/elements/10000: Analyzing
+sum/elements/10000      time:   [3.5474 µs 3.5493 µs 3.5515 µs]
+                        thrpt:  [2.8157 Gelem/s 2.8175 Gelem/s 2.8190 Gelem/s]
+Found 6 outliers among 100 measurements (6.00%)
+  4 (4.00%) high mild
+  2 (2.00%) high severe
+Benchmarking sum/elements/100000
+Benchmarking sum/elements/100000: Warming up for 3.0000 s
+Benchmarking sum/elements/100000: Collecting 100 samples in estimated 5.1657 s (146k iterations)
+Benchmarking sum/elements/100000: Analyzing
+sum/elements/100000     time:   [35.191 µs 35.206 µs 35.225 µs]
+                        thrpt:  [2.8389 Gelem/s 2.8404 Gelem/s 2.8416 Gelem/s]
+Found 11 outliers among 100 measurements (11.00%)
+  5 (5.00%) high mild
+  6 (6.00%) high severe
+Benchmarking sum/elements/1000000
+Benchmarking sum/elements/1000000: Warming up for 3.0000 s
+Benchmarking sum/elements/1000000: Collecting 100 samples in estimated 5.7496 s (15k iterations)
+Benchmarking sum/elements/1000000: Analyzing
+sum/elements/1000000    time:   [374.16 µs 374.32 µs 374.48 µs]
+                        thrpt:  [2.6704 Gelem/s 2.6715 Gelem/s 2.6726 Gelem/s]
+Found 10 outliers among 100 measurements (10.00%)
+  4 (4.00%) high mild
+  6 (6.00%) high severe
+
+Benchmarking softmax/vocab/128
+Benchmarking softmax/vocab/128: Warming up for 3.0000 s
+Benchmarking softmax/vocab/128: Collecting 100 samples in estimated 5.1113 s (146k iterations)
+Benchmarking softmax/vocab/128: Analyzing
+softmax/vocab/128       time:   [25.353 µs 25.395 µs 25.430 µs]
+                        thrpt:  [161.07 Melem/s 161.29 Melem/s 161.56 Melem/s]
+Benchmarking softmax/vocab/512
+Benchmarking softmax/vocab/512: Warming up for 3.0000 s
+Benchmarking softmax/vocab/512: Collecting 100 samples in estimated 5.3175 s (40k iterations)
+Benchmarking softmax/vocab/512: Analyzing
+softmax/vocab/512       time:   [95.658 µs 95.800 µs 95.915 µs]
+                        thrpt:  [170.82 Melem/s 171.02 Melem/s 171.28 Melem/s]
+Benchmarking softmax/vocab/2048
+Benchmarking softmax/vocab/2048: Warming up for 3.0000 s
+Benchmarking softmax/vocab/2048: Collecting 100 samples in estimated 5.2071 s (10k iterations)
+Benchmarking softmax/vocab/2048: Analyzing
+softmax/vocab/2048      time:   [377.31 µs 377.65 µs 377.90 µs]
+                        thrpt:  [173.42 Melem/s 173.54 Melem/s 173.69 Melem/s]
+Benchmarking softmax/vocab/8192
+Benchmarking softmax/vocab/8192: Warming up for 3.0000 s
+Benchmarking softmax/vocab/8192: Collecting 100 samples in estimated 5.0996 s (2500 iterations)
+Benchmarking softmax/vocab/8192: Analyzing
+softmax/vocab/8192      time:   [1.5091 ms 1.5120 ms 1.5157 ms]
+                        thrpt:  [172.96 Melem/s 173.38 Melem/s 173.71 Melem/s]
+Found 11 outliers among 100 measurements (11.00%)
+  1 (1.00%) high mild
+  10 (10.00%) high severe
+
+Benchmarking relu/elements/10000
+Benchmarking relu/elements/10000: Warming up for 3.0000 s
+Benchmarking relu/elements/10000: Collecting 100 samples in estimated 5.1452 s (152k iterations)
+Benchmarking relu/elements/10000: Analyzing
+relu/elements/10000     time:   [11.132 µs 12.646 µs 13.958 µs]
+                        thrpt:  [716.45 Melem/s 790.73 Melem/s 898.28 Melem/s]
+Found 22 outliers among 100 measurements (22.00%)
+  22 (22.00%) high severe
+Benchmarking relu/elements/100000
+Benchmarking relu/elements/100000: Warming up for 3.0000 s
+Benchmarking relu/elements/100000: Collecting 100 samples in estimated 5.0085 s (15k iterations)
+Benchmarking relu/elements/100000: Analyzing
+relu/elements/100000    time:   [103.69 µs 118.95 µs 132.22 µs]
+                        thrpt:  [756.32 Melem/s 840.67 Melem/s 964.43 Melem/s]
+Found 22 outliers among 100 measurements (22.00%)
+  22 (22.00%) high severe
+Benchmarking relu/elements/1000000
+Benchmarking relu/elements/1000000: Warming up for 3.0000 s
+Benchmarking relu/elements/1000000: Collecting 100 samples in estimated 5.3236 s (1600 iterations)
+Benchmarking relu/elements/1000000: Analyzing
+relu/elements/1000000   time:   [606.47 µs 611.74 µs 620.65 µs]
+                        thrpt:  [1.6112 Gelem/s 1.6347 Gelem/s 1.6489 Gelem/s]
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking exp/elements/10000
+Benchmarking exp/elements/10000: Warming up for 3.0000 s
+Benchmarking exp/elements/10000: Collecting 100 samples in estimated 5.0361 s (66k iterations)
+Benchmarking exp/elements/10000: Analyzing
+exp/elements/10000      time:   [49.143 µs 49.255 µs 49.458 µs]
+                        thrpt:  [202.19 Melem/s 203.02 Melem/s 203.49 Melem/s]
+Found 5 outliers among 100 measurements (5.00%)
+  5 (5.00%) high severe
+Benchmarking exp/elements/100000
+Benchmarking exp/elements/100000: Warming up for 3.0000 s
+Benchmarking exp/elements/100000: Collecting 100 samples in estimated 6.8199 s (10k iterations)
+Benchmarking exp/elements/100000: Analyzing
+exp/elements/100000     time:   [419.04 µs 420.22 µs 421.57 µs]
+                        thrpt:  [237.21 Melem/s 237.97 Melem/s 238.64 Melem/s]
+Found 25 outliers among 100 measurements (25.00%)
+  21 (21.00%) low severe
+  4 (4.00%) high severe
+Benchmarking exp/elements/1000000
+Benchmarking exp/elements/1000000: Warming up for 3.0000 s
+Benchmarking exp/elements/1000000: Collecting 100 samples in estimated 5.2553 s (800 iterations)
+Benchmarking exp/elements/1000000: Analyzing
+exp/elements/1000000    time:   [4.0370 ms 4.0406 ms 4.0452 ms]
+                        thrpt:  [247.21 Melem/s 247.49 Melem/s 247.71 Melem/s]
+Found 10 outliers among 100 measurements (10.00%)
+  3 (3.00%) high mild
+  7 (7.00%) high severe
+
+Benchmarking add/elements/10000
+Benchmarking add/elements/10000: Warming up for 3.0000 s
+Benchmarking add/elements/10000: Collecting 100 samples in estimated 5.1238 s (167k iterations)
+Benchmarking add/elements/10000: Analyzing
+add/elements/10000      time:   [9.1214 µs 9.8118 µs 10.609 µs]
+                        thrpt:  [942.57 Melem/s 1.0192 Gelem/s 1.0963 Gelem/s]
+Found 5 outliers among 100 measurements (5.00%)
+  5 (5.00%) high severe
+Benchmarking add/elements/100000
+Benchmarking add/elements/100000: Warming up for 3.0000 s
+Benchmarking add/elements/100000: Collecting 100 samples in estimated 5.3321 s (15k iterations)
+Benchmarking add/elements/100000: Analyzing
+add/elements/100000     time:   [124.36 µs 140.23 µs 153.80 µs]
+                        thrpt:  [650.18 Melem/s 713.11 Melem/s 804.14 Melem/s]
+Found 23 outliers among 100 measurements (23.00%)
+  23 (23.00%) high severe
+Benchmarking add/elements/1000000
+Benchmarking add/elements/1000000: Warming up for 3.0000 s
+Benchmarking add/elements/1000000: Collecting 100 samples in estimated 5.0052 s (1400 iterations)
+Benchmarking add/elements/1000000: Analyzing
+add/elements/1000000    time:   [783.44 µs 786.81 µs 792.39 µs]
+                        thrpt:  [1.2620 Gelem/s 1.2710 Gelem/s 1.2764 Gelem/s]
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking backward_matmul/size/64
+Benchmarking backward_matmul/size/64: Warming up for 3.0000 s
+Benchmarking backward_matmul/size/64: Collecting 100 samples in estimated 5.3660 s (10k iterations)
+Benchmarking backward_matmul/size/64: Analyzing
+backward_matmul/size/64 time:   [529.66 µs 530.45 µs 531.27 µs]
+                        thrpt:  [7.7098 Melem/s 7.7218 Melem/s 7.7332 Melem/s]
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high severe
+Benchmarking backward_matmul/size/128
+Benchmarking backward_matmul/size/128: Warming up for 3.0000 s
+Benchmarking backward_matmul/size/128: Collecting 100 samples in estimated 5.0417 s (1100 iterations)
+Benchmarking backward_matmul/size/128: Analyzing
+backward_matmul/size/128
+                        time:   [4.5802 ms 4.5830 ms 4.5863 ms]
+                        thrpt:  [3.5724 Melem/s 3.5749 Melem/s 3.5771 Melem/s]
+Found 12 outliers among 100 measurements (12.00%)
+  8 (8.00%) high mild
+  4 (4.00%) high severe
+Benchmarking backward_matmul/size/256
+Benchmarking backward_matmul/size/256: Warming up for 3.0000 s
+Benchmarking backward_matmul/size/256: Collecting 100 samples in estimated 8.0684 s (200 iterations)
+Benchmarking backward_matmul/size/256: Analyzing
+backward_matmul/size/256
+                        time:   [40.799 ms 41.080 ms 41.396 ms]
+                        thrpt:  [1.5831 Melem/s 1.5953 Melem/s 1.6063 Melem/s]
+Found 11 outliers among 100 measurements (11.00%)
+  4 (4.00%) high mild
+  7 (7.00%) high severe
+
+Benchmarking linear_forward/hidden/256
+Benchmarking linear_forward/hidden/256: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 7.1s, enable flat sampling, or reduce sample count to 50.
+Benchmarking linear_forward/hidden/256: Collecting 100 samples in estimated 7.0851 s (5050 iterations)
+Benchmarking linear_forward/hidden/256: Analyzing
+linear_forward/hidden/256
+                        time:   [1.1312 ms 1.1323 ms 1.1337 ms]
+                        thrpt:  [7.2256 Melem/s 7.2350 Melem/s 7.2420 Melem/s]
+Found 31 outliers among 100 measurements (31.00%)
+  13 (13.00%) low severe
+  3 (3.00%) low mild
+  7 (7.00%) high mild
+  8 (8.00%) high severe
+Benchmarking linear_forward/hidden/512
+Benchmarking linear_forward/hidden/512: Warming up for 3.0000 s
+Benchmarking linear_forward/hidden/512: Collecting 100 samples in estimated 5.1393 s (1700 iterations)
+Benchmarking linear_forward/hidden/512: Analyzing
+linear_forward/hidden/512
+                        time:   [2.3878 ms 2.4161 ms 2.4549 ms]
+                        thrpt:  [6.6739 Melem/s 6.7813 Melem/s 6.8617 Melem/s]
+Found 27 outliers among 100 measurements (27.00%)
+  17 (17.00%) low mild
+  3 (3.00%) high mild
+  7 (7.00%) high severe
+Benchmarking linear_forward/hidden/1024
+Benchmarking linear_forward/hidden/1024: Warming up for 3.0000 s
+Benchmarking linear_forward/hidden/1024: Collecting 100 samples in estimated 5.2914 s (900 iterations)
+Benchmarking linear_forward/hidden/1024: Analyzing
+linear_forward/hidden/1024
+                        time:   [4.7606 ms 4.8087 ms 4.8702 ms]
+                        thrpt:  [6.7282 Melem/s 6.8143 Melem/s 6.8832 Melem/s]
+Found 15 outliers among 100 measurements (15.00%)
+  6 (6.00%) high mild
+  9 (9.00%) high severe
+Benchmarking linear_forward/hidden/2048
+Benchmarking linear_forward/hidden/2048: Warming up for 3.0000 s
+Benchmarking linear_forward/hidden/2048: Collecting 100 samples in estimated 6.0496 s (500 iterations)
+Benchmarking linear_forward/hidden/2048: Analyzing
+linear_forward/hidden/2048
+                        time:   [9.6159 ms 9.6690 ms 9.7389 ms]
+                        thrpt:  [6.7293 Melem/s 6.7779 Melem/s 6.8154 Melem/s]
+Found 11 outliers among 100 measurements (11.00%)
+  4 (4.00%) high mild
+  7 (7.00%) high severe
+
