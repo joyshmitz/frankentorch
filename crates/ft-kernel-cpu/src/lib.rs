@@ -2303,18 +2303,41 @@ pub fn bmm_tensor_contiguous_f64(
     let rhs_start = rhs_meta.storage_offset();
     let mut out = vec![0.0_f64; out_numel];
 
-    // Use optimized GEMM for each batch
-    for b in 0..batch {
-        let lhs_base = lhs_start + b * lhs_batch_stride;
-        let rhs_base = rhs_start + b * rhs_batch_stride;
-        let out_base = b * out_batch_stride;
-        gemm::dgemm(
-            m, k, n,
-            &lhs[lhs_base..],
-            &rhs[rhs_base..],
-            &mut out[out_base..out_base + out_batch_stride],
-        );
+    if out_batch_stride == 0 {
+        return Ok(out);
     }
+
+    if batch < 8 {
+        for b in 0..batch {
+            let lhs_base = lhs_start + b * lhs_batch_stride;
+            let rhs_base = rhs_start + b * rhs_batch_stride;
+            let out_base = b * out_batch_stride;
+            gemm::dgemm(
+                m,
+                k,
+                n,
+                &lhs[lhs_base..lhs_base + lhs_batch_stride],
+                &rhs[rhs_base..rhs_base + rhs_batch_stride],
+                &mut out[out_base..out_base + out_batch_stride],
+            );
+        }
+        return Ok(out);
+    }
+
+    out.par_chunks_exact_mut(out_batch_stride)
+        .enumerate()
+        .for_each(|(b, out_batch)| {
+            let lhs_base = lhs_start + b * lhs_batch_stride;
+            let rhs_base = rhs_start + b * rhs_batch_stride;
+            gemm::dgemm(
+                m,
+                k,
+                n,
+                &lhs[lhs_base..lhs_base + lhs_batch_stride],
+                &rhs[rhs_base..rhs_base + rhs_batch_stride],
+                out_batch,
+            );
+        });
 
     Ok(out)
 }
@@ -9411,6 +9434,24 @@ mod tests {
                 "bmm batch {b} drift {drift:e} > 1e-14 tolerance (got {cell}, expected 1.0)"
             );
         }
+    }
+
+    #[test]
+    fn bmm_tensor_contiguous_respects_storage_offsets_and_batch_order() {
+        let lhs_meta =
+            TensorMeta::from_shape(vec![2, 2, 2], DType::F64, Device::Cpu).with_storage_offset(1);
+        let rhs_meta =
+            TensorMeta::from_shape(vec![2, 2, 2], DType::F64, Device::Cpu).with_storage_offset(2);
+        let lhs = vec![99.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let rhs = vec![77.0, 88.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0];
+
+        let out = bmm_tensor_contiguous_f64(&lhs, &rhs, &lhs_meta, &rhs_meta)
+            .expect("offset bmm should succeed");
+
+        assert_eq!(
+            out,
+            vec![34.0, 37.0, 78.0, 85.0, 166.0, 177.0, 226.0, 241.0]
+        );
     }
 
     #[test]

@@ -1,0 +1,4 @@
+bmm_tensor_contiguous_f64 offset batch-order golden
+lhs_shape=[2,2,2] lhs_offset=1
+rhs_shape=[2,2,2] rhs_offset=2
+values=[34.0, 37.0, 78.0, 85.0, 166.0, 177.0, 226.0, 241.0]
