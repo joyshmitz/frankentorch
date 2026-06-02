@@ -887,16 +887,19 @@ where
 {
     let numel = window.len();
     let simd_len = numel / SIMD_WIDTH * SIMD_WIDTH;
-    let mut output = Vec::with_capacity(numel);
+    let mut output = vec![0.0; numel];
 
-    for i in (0..simd_len).step_by(SIMD_WIDTH) {
-        let a = f64x4::new([window[i], window[i + 1], window[i + 2], window[i + 3]]);
+    for (out, input) in output[..simd_len]
+        .chunks_exact_mut(SIMD_WIDTH)
+        .zip(window[..simd_len].chunks_exact(SIMD_WIDTH))
+    {
+        let a = f64x4::new([input[0], input[1], input[2], input[3]]);
         let result = simd_op(a);
-        output.extend_from_slice(result.as_array_ref());
+        out.copy_from_slice(result.as_array_ref());
     }
 
-    for &value in &window[simd_len..numel] {
-        output.push(scalar_op(value));
+    for (out, &value) in output[simd_len..].iter_mut().zip(&window[simd_len..]) {
+        *out = scalar_op(value);
     }
 
     output
@@ -1809,27 +1812,25 @@ where
 {
     let numel = lhs_window.len();
     let simd_len = numel / SIMD_WIDTH * SIMD_WIDTH;
-    let mut output = Vec::with_capacity(numel);
+    let mut output = vec![0.0; numel];
 
-    for i in (0..simd_len).step_by(SIMD_WIDTH) {
-        let a = f64x4::new([
-            lhs_window[i],
-            lhs_window[i + 1],
-            lhs_window[i + 2],
-            lhs_window[i + 3],
-        ]);
-        let b = f64x4::new([
-            rhs_window[i],
-            rhs_window[i + 1],
-            rhs_window[i + 2],
-            rhs_window[i + 3],
-        ]);
+    for ((out, lhs), rhs) in output[..simd_len]
+        .chunks_exact_mut(SIMD_WIDTH)
+        .zip(lhs_window[..simd_len].chunks_exact(SIMD_WIDTH))
+        .zip(rhs_window[..simd_len].chunks_exact(SIMD_WIDTH))
+    {
+        let a = f64x4::new([lhs[0], lhs[1], lhs[2], lhs[3]]);
+        let b = f64x4::new([rhs[0], rhs[1], rhs[2], rhs[3]]);
         let result = simd_op(a, b);
-        output.extend_from_slice(result.as_array_ref());
+        out.copy_from_slice(result.as_array_ref());
     }
 
-    for i in simd_len..numel {
-        output.push(scalar_op(lhs_window[i], rhs_window[i]));
+    for ((out, &lhs), &rhs) in output[simd_len..]
+        .iter_mut()
+        .zip(&lhs_window[simd_len..])
+        .zip(&rhs_window[simd_len..])
+    {
+        *out = scalar_op(lhs, rhs);
     }
 
     output
@@ -8892,6 +8893,16 @@ mod tests {
     }
 
     #[test]
+    fn relu_tensor_contiguous_preserves_simd_tail_values() {
+        let meta = TensorMeta::from_shape(vec![5], DType::F64, Device::Cpu);
+        let input = vec![-5.0, 1.0, 2.0, 3.0, -1.0];
+
+        let out =
+            relu_tensor_contiguous_f64(&input, &meta).expect("contiguous relu should succeed");
+        assert_eq!(out, vec![0.0, 1.0, 2.0, 3.0, 0.0]);
+    }
+
+    #[test]
     fn sigmoid_scalar_at_zero_returns_half() {
         let input = ScalarTensor::new(0.0, DType::F64, Device::Cpu);
         let out = sigmoid_scalar(&input);
@@ -9520,6 +9531,17 @@ mod tests {
         let out = add_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
             .expect("contiguous add should succeed");
         assert_eq!(out, vec![1.5, 3.5, 5.5, 7.5]);
+    }
+
+    #[test]
+    fn add_tensor_contiguous_preserves_simd_tail_values() {
+        let meta = TensorMeta::from_shape(vec![5], DType::F64, Device::Cpu);
+        let lhs = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let rhs = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+
+        let out = add_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
+            .expect("contiguous add should succeed");
+        assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0, 55.0]);
     }
 
     #[test]
