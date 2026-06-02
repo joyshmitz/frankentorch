@@ -14680,6 +14680,40 @@ impl TensorTape {
                         rule: "d(mish(x))/dx=tanh(sp)+x*sig*(1-tanh^2) (cg)",
                     });
                 }
+                TensorNodeOp::Where { condition, x, y } => {
+                    // where(c, x, y) gates x where c != 0 and y otherwise. The
+                    // selection mask is a constant (condition carries no
+                    // gradient), so the gradient is a pure elementwise gate:
+                    // d/dx = grad * mask, d/dy = grad * (1 - mask). Building both
+                    // via cg_mul against constant mask leaves keeps the gradient
+                    // nodes dependent on `incoming_id`, so double-backward routes
+                    // back through the gate instead of collapsing to a detached
+                    // leaf (which would make second-order grads silently zero).
+                    let cond_vals = self.nodes[condition.0]
+                        .tensor
+                        .contiguous_values_as_f64()
+                        .map_err(AutogradError::DenseTensor)?;
+                    let shape = self.nodes[node_id.0].tensor.meta().shape().to_vec();
+                    let mask: Vec<f64> = cond_vals
+                        .iter()
+                        .map(|&c| if c != 0.0 { 1.0 } else { 0.0 })
+                        .collect();
+                    let inv_mask: Vec<f64> = mask.iter().map(|&m| 1.0 - m).collect();
+                    let mask_leaf = self.leaf(mask, shape.clone(), false)?;
+                    let inv_mask_leaf = self.leaf(inv_mask, shape, false)?;
+                    let grad_x = self.cg_mul(incoming_id, mask_leaf)?;
+                    let grad_y = self.cg_mul(incoming_id, inv_mask_leaf)?;
+                    self.cg_accumulate(x, &mut grad_nodes, grad_x)?;
+                    self.cg_accumulate(y, &mut grad_nodes, grad_y)?;
+                    Self::complete_dependency(&mut pending, x, &mut queue)?;
+                    Self::complete_dependency(&mut pending, y, &mut queue)?;
+                    Self::complete_dependency(&mut pending, condition, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(where(c,x,y))/dx=grad*c, d/dy=grad*(1-c) (cg)",
+                    });
+                }
                 // For unsupported ops, fall back to non-differentiable gradient
                 _ => {
                     return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -24529,6 +24563,69 @@ mod tests {
             "rsqrt''(1) should be 0.75, got {}",
             g2[1]
         );
+    }
+
+    #[test]
+    fn create_graph_where_gradients() {
+        // where(c, x, y) gates the gradient: d/dx = grad*mask, d/dy = grad*(1-mask).
+        let mut tape = TensorTape::new();
+        let c = tape.leaf(vec![1.0, 0.0, 1.0], vec![3], false).expect("c");
+        let x = tape.leaf(vec![2.0, 3.0, 4.0], vec![3], true).expect("x");
+        let y = tape.leaf(vec![5.0, 6.0, 7.0], vec![3], true).expect("y");
+        let w = tape.tensor_where(c, x, y).expect("where");
+        let (s, _) = tape.sum(w, ExecutionMode::Strict).expect("sum");
+        let report = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("backward");
+        // mask = [1,0,1]: gradient flows to x at 0,2 and to y at 1.
+        assert_eq!(report.gradient(x).expect("gx"), &[1.0, 0.0, 1.0]);
+        assert_eq!(report.gradient(y).expect("gy"), &[0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn create_graph_where_second_derivative_routes_through_gate() {
+        // out = sum(where(c, x*x, y*y)). The selection mask is constant, so
+        // double-backward must route curvature through the selected branch:
+        //   d2/dx2 of the gated x^2 branch = 2*mask.
+        // If the where gradient were a detached leaf, the second backward would
+        // collapse to zero — this is the regression guard for that.
+        let mut tape = TensorTape::new();
+        let c = tape.leaf(vec![1.0, 0.0], vec![2], false).expect("c");
+        let x = tape.leaf(vec![3.0, 5.0], vec![2], true).expect("x");
+        let y = tape.leaf(vec![2.0, 4.0], vec![2], true).expect("y");
+        let (xs, _) = tape.mul(x, x, ExecutionMode::Strict).expect("xs");
+        let (ys, _) = tape.mul(y, y, ExecutionMode::Strict).expect("ys");
+        let w = tape.tensor_where(c, xs, ys).expect("where");
+        let (s, _) = tape.sum(w, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                s,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward");
+        // First-order: grad_x = mask*2x = [6,0], grad_y = (1-mask)*2y = [0,8].
+        let gx = report1.gradient(x).expect("gx");
+        assert!((gx[0] - 6.0).abs() < 1e-9, "grad_x[0] expected 6.0, got {}", gx[0]);
+        assert!((gx[1] - 0.0).abs() < 1e-9, "grad_x[1] expected 0.0, got {}", gx[1]);
+        let gy = report1.gradient(y).expect("gy");
+        assert!((gy[0] - 0.0).abs() < 1e-9, "grad_y[0] expected 0.0, got {}", gy[0]);
+        assert!((gy[1] - 8.0).abs() < 1e-9, "grad_y[1] expected 8.0, got {}", gy[1]);
+
+        // Second derivative wrt x: d(2x*mask)/dx = 2*mask = [2, 0].
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2x = report2.gradient(x).expect("second gradient");
+        assert!((g2x[0] - 2.0).abs() < 1e-9, "d2/dx2[0] expected 2.0, got {}", g2x[0]);
+        assert!((g2x[1] - 0.0).abs() < 1e-9, "d2/dx2[1] expected 0.0, got {}", g2x[1]);
     }
 
     #[test]
