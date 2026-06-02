@@ -1,0 +1,8 @@
+exp_tensor_contiguous_f64 values: [1.0, 2.718281828459045, 7.38905609893065]
+parallel_exp_offset len: 8195
+parallel_exp_offset samples:
+idx 0: 0.1353352832366127
+idx 8: 1.0
+idx 16: 7.38905609893065
+idx 8193: 7.38905609893065
+idx 8194: 0.1353352832366127
