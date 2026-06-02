@@ -678,6 +678,12 @@ enum TensorNodeOp {
     CastF64 {
         input: TensorNodeId,
     },
+    CastF16 {
+        input: TensorNodeId,
+    },
+    CastBF16 {
+        input: TensorNodeId,
+    },
     CustomFunction {
         inputs: Vec<TensorNodeId>,
         function_id: usize,
@@ -4498,9 +4504,71 @@ impl TensorTape {
         Ok(out)
     }
 
-    /// Cast a tensor to the given dtype. Currently supports F32↔F64 casts.
-    /// Returns the input unchanged if already the target dtype.
-    /// Returns an error for non-floating-point target dtypes.
+    /// Cast a floating-point tensor to a half-precision dtype (F16 or BF16).
+    ///
+    /// Accepts F32 or F64 inputs (the realistic mixed-precision cast
+    /// sources) and returns the input unchanged when it already matches
+    /// the target. The cast is differentiable: backward treats it as the
+    /// identity (gradients flow in f64), matching PyTorch's `_to_copy`
+    /// behavior. Non-floating inputs surface `UnsupportedDType`.
+    fn cast_to_half(
+        &mut self,
+        input: TensorNodeId,
+        target: DType,
+    ) -> Result<TensorNodeId, AutogradError> {
+        debug_assert!(matches!(target, DType::F16 | DType::BF16));
+        let input_node = self.node(input)?;
+        let input_dtype = input_node.tensor.meta().dtype();
+        if input_dtype == target {
+            return Ok(input);
+        }
+        let f64_values: Vec<f64> = match input_dtype {
+            DType::F64 => input_node.tensor.contiguous_values()?.to_vec(),
+            DType::F32 => input_node
+                .tensor
+                .contiguous_values_f32()?
+                .iter()
+                .map(|&v| f64::from(v))
+                .collect(),
+            other => {
+                return Err(AutogradError::DenseTensor(
+                    ft_core::DenseTensorError::UnsupportedDType(other),
+                ));
+            }
+        };
+        let requires_grad = input_node.requires_grad && self.grad_enabled;
+        let meta = input_node.tensor.meta().clone();
+        let out_meta = TensorMeta::from_shape(meta.shape().to_vec(), target, meta.device());
+        let tensor = Self::tensor_from_f64_values(out_meta, f64_values)?;
+
+        let out = TensorNodeId(self.nodes.len());
+        let op = match target {
+            DType::F16 => TensorNodeOp::CastF16 { input },
+            _ => TensorNodeOp::CastBF16 { input },
+        };
+        self.nodes.push(TensorNode {
+            tensor,
+            requires_grad,
+            op,
+        });
+
+        Ok(out)
+    }
+
+    /// Cast a floating-point tensor to F16. See [`TensorTape::cast_to_half`].
+    pub fn to_f16(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.cast_to_half(input, DType::F16)
+    }
+
+    /// Cast a floating-point tensor to BF16. See [`TensorTape::cast_to_half`].
+    pub fn to_bf16(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        self.cast_to_half(input, DType::BF16)
+    }
+
+    /// Cast a tensor to the given dtype. Supports F32, F64, F16, and BF16
+    /// targets (floating-point casts are differentiable; backward is the
+    /// identity). Returns the input unchanged if already the target dtype.
+    /// Returns an error for integer, bool, complex, or quantized targets.
     pub fn to_dtype(
         &mut self,
         input: TensorNodeId,
@@ -4509,6 +4577,8 @@ impl TensorTape {
         match dtype {
             DType::F32 => self.to_f32(input),
             DType::F64 => self.to_f64(input),
+            DType::F16 => self.to_f16(input),
+            DType::BF16 => self.to_bf16(input),
             other => Err(AutogradError::DenseTensor(
                 ft_core::DenseTensorError::UnsupportedDType(other),
             )),
@@ -12866,7 +12936,10 @@ impl TensorTape {
                         rule: "d(addmv)/d_input=beta*grad, d/d_mat=alpha*outer(grad,vec), d/d_vec=alpha*mat^T@grad",
                     });
                 }
-                TensorNodeOp::CastF32 { input } | TensorNodeOp::CastF64 { input } => {
+                TensorNodeOp::CastF32 { input }
+                | TensorNodeOp::CastF64 { input }
+                | TensorNodeOp::CastF16 { input }
+                | TensorNodeOp::CastBF16 { input } => {
                     // Cast is identity for gradients — gradient passes through unchanged.
                     // Backward always operates in f64 so no conversion needed.
                     Self::accumulate_tensor_gradient(input, &mut grads[input.0], &incoming)?;
@@ -15427,7 +15500,9 @@ impl TensorTape {
                 | TensorNodeOp::Roll { input, .. }
                 | TensorNodeOp::Pad { input, .. }
                 | TensorNodeOp::CastF32 { input }
-                | TensorNodeOp::CastF64 { input } => {
+                | TensorNodeOp::CastF64 { input }
+                | TensorNodeOp::CastF16 { input }
+                | TensorNodeOp::CastBF16 { input } => {
                     stack.push(input);
                 }
                 TensorNodeOp::Scatter { input, src, .. }
@@ -15593,7 +15668,9 @@ impl TensorTape {
                 | TensorNodeOp::Roll { input, .. }
                 | TensorNodeOp::Pad { input, .. }
                 | TensorNodeOp::CastF32 { input }
-                | TensorNodeOp::CastF64 { input } => {
+                | TensorNodeOp::CastF64 { input }
+                | TensorNodeOp::CastF16 { input }
+                | TensorNodeOp::CastBF16 { input } => {
                     pending[input.0] = pending[input.0].saturating_add(1);
                 }
                 TensorNodeOp::Scatter { input, src, .. }
@@ -23520,6 +23597,86 @@ mod tests {
             ),
             "expected UnsupportedDType(Bool), got {err:?}"
         );
+    }
+
+    #[test]
+    fn to_dtype_f32_to_f16() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf_f32(vec![1.5f32, 2.0, -3.0], vec![3], false).unwrap();
+        let b = tape.to_dtype(a, DType::F16).unwrap();
+        assert_eq!(tape.dtype(b).unwrap(), DType::F16);
+        let storage = tape.node(b).unwrap().tensor.typed_storage();
+        match storage {
+            TensorStorage::F16(values) => assert_eq!(
+                values.iter().map(|v| v.to_f32()).collect::<Vec<_>>(),
+                vec![1.5f32, 2.0, -3.0]
+            ),
+            other => panic!("expected F16 storage, got {:?}", other.dtype()),
+        }
+    }
+
+    #[test]
+    fn to_dtype_f64_to_bf16() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf(vec![1.0, 2.0, 4.0], vec![3], false).unwrap();
+        let b = tape.to_dtype(a, DType::BF16).unwrap();
+        assert_eq!(tape.dtype(b).unwrap(), DType::BF16);
+        let storage = tape.node(b).unwrap().tensor.typed_storage();
+        match storage {
+            TensorStorage::BF16(values) => assert_eq!(
+                values.iter().map(|v| v.to_f32()).collect::<Vec<_>>(),
+                vec![1.0f32, 2.0, 4.0]
+            ),
+            other => panic!("expected BF16 storage, got {:?}", other.dtype()),
+        }
+    }
+
+    #[test]
+    fn to_dtype_f16_noop_same_type() {
+        let mut tape = TensorTape::new();
+        let f16_tensor = DenseTensor::from_contiguous_values_f16(
+            vec![Float16::from_f32(1.0), Float16::from_f32(2.0)],
+            vec![2],
+            Device::Cpu,
+        )
+        .unwrap();
+        let a = tape.leaf_tensor(f16_tensor, false);
+        let b = tape.to_dtype(a, DType::F16).unwrap();
+        assert_eq!(a, b); // no-op returns same node
+    }
+
+    #[test]
+    fn to_half_rejects_non_float_input() {
+        let mut tape = TensorTape::new();
+        let bf16_tensor = DenseTensor::from_contiguous_values_bf16(
+            vec![BFloat16::from_f32(1.0)],
+            vec![1],
+            Device::Cpu,
+        )
+        .unwrap();
+        let a = tape.leaf_tensor(bf16_tensor, false);
+        // BF16 → F16 is not a supported cast source (only F32/F64 inputs).
+        let err = tape.to_dtype(a, DType::F16).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AutogradError::DenseTensor(ft_core::DenseTensorError::UnsupportedDType(
+                    DType::BF16
+                ))
+            ),
+            "expected UnsupportedDType(BF16), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn to_f16_backward_is_identity() {
+        let mut tape = TensorTape::new();
+        let a = tape.leaf_f32(vec![1.0f32, 2.0, 3.0], vec![3], true).unwrap();
+        let b = tape.to_dtype(a, DType::F16).unwrap();
+        let (root, _) = tape.sum(b, ExecutionMode::Strict).unwrap();
+        let report = tape.backward(root).unwrap();
+        // Cast backward is the identity; sum contributes ones to each element.
+        assert_eq!(report.gradient(a), Some([1.0, 1.0, 1.0].as_slice()));
     }
 
     // ── view() zero-copy tests ─────────────────────────────────────────

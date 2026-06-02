@@ -1030,18 +1030,18 @@ impl FrankenTorchSession {
 
     /// PyTorch-style alias for casting a tensor to float16.
     ///
-    /// Tape-level F16 conversion is not yet implemented; this call
-    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(F16))`
-    /// until tape-level F16 lands. Tracked under frankentorch-gx0p.
+    /// Differentiable for F32/F64 inputs: backward treats the cast as the
+    /// identity (gradients flow in f64), matching PyTorch's `.half()`.
+    /// Returns the input unchanged when it is already F16.
     pub fn tensor_half(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_to_dtype(input, DType::F16)
     }
 
     /// PyTorch-style alias for casting a tensor to bfloat16.
     ///
-    /// Tape-level BF16 conversion is not yet implemented; this call
-    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(BF16))`
-    /// until tape-level BF16 lands. Tracked under frankentorch-gx0p.
+    /// Differentiable for F32/F64 inputs: backward treats the cast as the
+    /// identity (gradients flow in f64), matching PyTorch's `.bfloat16()`.
+    /// Returns the input unchanged when it is already BF16.
     pub fn tensor_bfloat16(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
         self.tensor_to_dtype(input, DType::BF16)
     }
@@ -1098,11 +1098,11 @@ impl FrankenTorchSession {
 
     /// Cast a tensor to the given dtype.
     ///
-    /// Supported floating-point casts today: F32 ↔ F64. F16 and BF16
-    /// targets surface `AutogradError::DenseTensor(UnsupportedDType(_))`
-    /// until tape-level conversion lands (frankentorch-gx0p). Returns
-    /// the input unchanged when the source dtype already matches the
-    /// target.
+    /// Supported floating-point casts: F32, F64, F16, and BF16 (all
+    /// differentiable with identity backward). Integer, bool, complex,
+    /// and quantized targets surface
+    /// `AutogradError::DenseTensor(UnsupportedDType(_))`. Returns the
+    /// input unchanged when the source dtype already matches the target.
     pub fn tensor_to_dtype(
         &mut self,
         input: TensorNodeId,
@@ -82044,6 +82044,34 @@ mod tests {
         assert!(s.tensor_to_dtype(a, DType::I32).is_err());
         assert!(s.tensor_to_dtype(a, DType::I64).is_err());
         assert!(s.tensor_to_dtype(a, DType::Bool).is_err());
+    }
+
+    #[test]
+    fn tensor_half_and_bfloat16_via_session() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable(vec![1.0, 2.0, 4.0], vec![3], false)
+            .unwrap();
+
+        let half = s.tensor_half(a).unwrap();
+        assert_eq!(s.tensor_dtype(half).unwrap(), DType::F16);
+        match s.tensor_tape.tensor(half).unwrap().typed_storage() {
+            TensorStorage::F16(values) => assert_eq!(
+                values.iter().map(|v| v.to_f32()).collect::<Vec<_>>(),
+                vec![1.0f32, 2.0, 4.0]
+            ),
+            other => panic!("expected F16 storage, got {:?}", other.dtype()),
+        }
+
+        let bf16 = s.tensor_bfloat16(a).unwrap();
+        assert_eq!(s.tensor_dtype(bf16).unwrap(), DType::BF16);
+        match s.tensor_tape.tensor(bf16).unwrap().typed_storage() {
+            TensorStorage::BF16(values) => assert_eq!(
+                values.iter().map(|v| v.to_f32()).collect::<Vec<_>>(),
+                vec![1.0f32, 2.0, 4.0]
+            ),
+            other => panic!("expected BF16 storage, got {:?}", other.dtype()),
+        }
     }
 
     #[test]
