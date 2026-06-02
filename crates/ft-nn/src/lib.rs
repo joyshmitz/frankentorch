@@ -4429,41 +4429,54 @@ impl MultiheadAttention {
         let v_proj = self.v_proj.forward(session, v_flat)?;
         let v = session.tensor_reshape(v_proj, vec![batch_size, seq_len_k, embed_dim])?;
 
+        let batch_heads = batch_size * self.num_heads;
+
+        let q_heads = session.tensor_reshape(
+            q,
+            vec![batch_size, seq_len_q, self.num_heads, self.head_dim],
+        )?;
+        let q_heads = session.tensor_permute(q_heads, vec![0, 2, 1, 3])?;
+        let q_heads =
+            session.tensor_reshape(q_heads, vec![batch_heads, seq_len_q, self.head_dim])?;
+
+        let k_heads = session.tensor_reshape(
+            k,
+            vec![batch_size, seq_len_k, self.num_heads, self.head_dim],
+        )?;
+        let k_heads = session.tensor_permute(k_heads, vec![0, 2, 1, 3])?;
+        let k_heads =
+            session.tensor_reshape(k_heads, vec![batch_heads, seq_len_k, self.head_dim])?;
+
+        let v_heads = session.tensor_reshape(
+            v,
+            vec![batch_size, seq_len_k, self.num_heads, self.head_dim],
+        )?;
+        let v_heads = session.tensor_permute(v_heads, vec![0, 2, 1, 3])?;
+        let v_heads =
+            session.tensor_reshape(v_heads, vec![batch_heads, seq_len_k, self.head_dim])?;
+
         let scale_t = session.full(
-            vec![batch_size, seq_len_q, self.head_dim],
+            vec![batch_heads, seq_len_q, self.head_dim],
             self.scale,
             false,
         )?;
+        let q_scaled = session.tensor_mul(q_heads, scale_t)?;
 
-        // Process each head separately, then concatenate
-        let mut head_outputs = Vec::with_capacity(self.num_heads);
-        for h in 0..self.num_heads {
-            let offset = h * self.head_dim;
+        // Attention scores: Q_h @ K_h^T -> [N * heads, S_q, S_k]
+        let k_t = session.tensor_transpose(k_heads, 1, 2)?;
+        let scores = session.tensor_bmm(q_scaled, k_t)?;
 
-            // Q_h = Q[:, :, offset:offset+head_dim] -> [N, S_q, head_dim]
-            let q_h = session.tensor_narrow(q, 2, offset, self.head_dim)?;
-            // K_h = K[:, :, offset:offset+head_dim] -> [N, S_k, head_dim]
-            let k_h = session.tensor_narrow(k, 2, offset, self.head_dim)?;
-            // V_h = V[:, :, offset:offset+head_dim] -> [N, S_k, head_dim]
-            let v_h = session.tensor_narrow(v, 2, offset, self.head_dim)?;
+        // Softmax over key dimension
+        let attn_weights = session.tensor_softmax(scores, 2)?;
 
-            // Scale Q: Q_h * scale
-            let q_scaled = session.tensor_mul(q_h, scale_t)?;
-
-            // Attention scores: Q_h @ K_h^T -> [N, S_q, S_k]
-            let k_t = session.tensor_transpose(k_h, 1, 2)?; // [N, head_dim, S_k]
-            let scores = session.tensor_bmm(q_scaled, k_t)?; // [N, S_q, S_k]
-
-            // Softmax over key dimension
-            let attn_weights = session.tensor_softmax(scores, 2)?;
-
-            // Weighted sum: attn @ V_h -> [N, S_q, head_dim]
-            let head_out = session.tensor_bmm(attn_weights, v_h)?;
-            head_outputs.push(head_out);
-        }
-
-        // Concatenate heads along last dim: [N, S_q, E]
-        let concat = session.tensor_cat(&head_outputs, 2)?;
+        // Weighted sum and restore row-major head concatenation: [N, S_q, E]
+        let head_out = session.tensor_bmm(attn_weights, v_heads)?;
+        let head_out = session.tensor_reshape(
+            head_out,
+            vec![batch_size, self.num_heads, seq_len_q, self.head_dim],
+        )?;
+        let concat = session.tensor_permute(head_out, vec![0, 2, 1, 3])?;
+        let concat = session.tensor_reshape(concat, vec![batch_size, seq_len_q, embed_dim])?;
 
         // Output projection: [N*S_q, E] -> Linear -> [N*S_q, E] -> [N, S_q, E]
         let concat_flat =
@@ -20965,6 +20978,28 @@ mod tests {
         assert_eq!(
             output,
             include_str!("../../../artifacts/optimization/golden_outputs/ft_nn_mha_pass18.txt")
+        );
+    }
+
+    #[test]
+    fn mha_batched_heads_golden_output_matches_fixture() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let x = session
+            .tensor_variable(
+                vec![0.25, -0.5, 0.75, 1.0, -1.25, 1.5, -1.75, 2.0],
+                vec![1, 2, 4],
+                false,
+            )
+            .expect("variable");
+        let y = mha.forward(&mut session, x).expect("forward");
+        let (vals, meta) = session.tensor_values_meta(y).expect("values");
+        let output = format!("shape={:?}\nvalues={vals:.17?}\n", meta.shape());
+        assert_eq!(
+            output,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_nn_mha_batched_heads_pass24.txt"
+            )
         );
     }
 
