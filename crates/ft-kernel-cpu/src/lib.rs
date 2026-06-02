@@ -1508,10 +1508,21 @@ pub fn pow_tensor_contiguous_f64(
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    Ok(window
-        .iter()
-        .map(|value| powf_torch_signed_zero_f64(*value, exponent))
-        .collect())
+    // powf is ~exp+log per element (compute-bound), so spread it across the
+    // rayon pool for large tensors — torch's pow is multi-threaded. The map is a
+    // pure per-element function, so the parallel result is bit-identical to the
+    // serial one (no accumulation order to disturb).
+    if numel >= PARALLEL_THRESHOLD {
+        Ok(window
+            .par_iter()
+            .map(|value| powf_torch_signed_zero_f64(*value, exponent))
+            .collect())
+    } else {
+        Ok(window
+            .iter()
+            .map(|value| powf_torch_signed_zero_f64(*value, exponent))
+            .collect())
+    }
 }
 
 pub fn clamp_tensor_contiguous_f64(
@@ -6260,10 +6271,19 @@ pub fn pow_tensor_contiguous_f32(
     }
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
-    Ok(window
-        .iter()
-        .map(|value| powf_torch_signed_zero_f32(*value, exponent))
-        .collect())
+    // See `pow_tensor_contiguous_f64`: compute-bound, pure per-element map, so
+    // par_iter is bit-identical to the serial map.
+    if numel >= PARALLEL_THRESHOLD {
+        Ok(window
+            .par_iter()
+            .map(|value| powf_torch_signed_zero_f32(*value, exponent))
+            .collect())
+    } else {
+        Ok(window
+            .iter()
+            .map(|value| powf_torch_signed_zero_f32(*value, exponent))
+            .collect())
+    }
 }
 
 pub fn clamp_tensor_contiguous_f32(
@@ -9847,6 +9867,41 @@ mod tests {
         let out = add_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta)
             .expect("empty tensors should succeed without touching storage");
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn pow_parallel_matches_elementwise_bit_exact() {
+        // Isomorphism proof for the parallel pow lever: the multi-threaded path
+        // (numel >= PARALLEL_THRESHOLD) must equal the per-element powf BIT-FOR-BIT.
+        // pow is a pure map, so parallelizing reorders nothing observable.
+        let numel = 1usize << 14; // > PARALLEL_THRESHOLD -> parallel path
+        let exponent = 2.5_f64;
+        let data: Vec<f64> = (0..numel)
+            .map(|i| (i % 97) as f64 * 0.013 + 0.001)
+            .collect();
+        let meta = TensorMeta::from_shape(vec![numel], DType::F64, Device::Cpu);
+        let out = pow_tensor_contiguous_f64(&data, &meta, exponent).expect("pow f64");
+        for (idx, (&x, o)) in data.iter().zip(out.iter()).enumerate() {
+            let reference = super::powf_torch_signed_zero_f64(x, exponent);
+            assert_eq!(
+                reference.to_bits(),
+                o.to_bits(),
+                "f64 pow diverged at {idx}: ref {reference} vs parallel {o}"
+            );
+        }
+
+        let exponent32 = 2.5_f32;
+        let data32: Vec<f32> = (0..numel).map(|i| (i % 89) as f32 * 0.017 + 0.001).collect();
+        let meta32 = TensorMeta::from_shape(vec![numel], DType::F32, Device::Cpu);
+        let out32 = pow_tensor_contiguous_f32(&data32, &meta32, exponent32).expect("pow f32");
+        for (idx, (&x, o)) in data32.iter().zip(out32.iter()).enumerate() {
+            let reference = super::powf_torch_signed_zero_f32(x, exponent32);
+            assert_eq!(
+                reference.to_bits(),
+                o.to_bits(),
+                "f32 pow diverged at {idx}: ref {reference} vs parallel {o}"
+            );
+        }
     }
 
     #[test]

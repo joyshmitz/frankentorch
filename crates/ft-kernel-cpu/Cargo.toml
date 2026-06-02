@@ -20,5 +20,9 @@ criterion = { workspace = true }
 name = "gemm_bench"
 harness = false
 
+[[bench]]
+name = "elementwise_bench"
+harness = false
+
 [lints]
 workspace = true
