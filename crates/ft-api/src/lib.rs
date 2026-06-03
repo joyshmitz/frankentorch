@@ -43580,6 +43580,33 @@ impl FrankenTorchSession {
                 },
             )));
         }
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(other)? {
+            // igamma P(a,x) is differentiable w.r.t. x (= `other`):
+            //   ∂P/∂x = x^{a-1}e^{-x}/Γ(a).
+            // Matching torch's derivatives.yaml, the `a` (= `input`) argument is
+            // non-differentiable, so its gradient is None. Forward reuses the same
+            // igamma_approx, so the value is bit-identical. frankentorch-2vxa.
+            return self.tensor_apply_function(
+                &[input, other],
+                move |ctx, inputs| {
+                    let (a, a_shape) = inputs[0];
+                    let (x, _x_shape) = inputs[1];
+                    let result = par_zip_map_f64(a, x, igamma_approx);
+                    ctx.save_for_backward(a.to_vec(), a_shape.to_vec());
+                    ctx.save_for_backward(x.to_vec(), a_shape.to_vec());
+                    Ok((result, a_shape.to_vec()))
+                },
+                move |ctx, grad_outputs| {
+                    let saved = ctx.saved_tensors();
+                    let (a, x) = (&saved[0], &saved[1]);
+                    let g = grad_outputs[0];
+                    let grad_x: Vec<f64> = (0..g.len())
+                        .map(|i| g[i] * gammainc_dx(a[i], x[i]))
+                        .collect();
+                    Ok(vec![None, Some(grad_x)])
+                },
+            );
+        }
         let input_vals = self.tensor_values(input)?;
         let other_vals = self.tensor_values(other)?;
         let result: Vec<f64> = par_zip_map_f64(&input_vals, &other_vals, igamma_approx);
@@ -43627,6 +43654,30 @@ impl FrankenTorchSession {
                     rhs: other_shape,
                 },
             )));
+        }
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(other)? {
+            // igammac Q(a,x) = 1 − P(a,x), so ∂Q/∂x = −∂P/∂x = −x^{a-1}e^{-x}/Γ(a);
+            // `a` (= `input`) is non-differentiable (matches torch). frankentorch-2vxa.
+            return self.tensor_apply_function(
+                &[input, other],
+                move |ctx, inputs| {
+                    let (a, a_shape) = inputs[0];
+                    let (x, _x_shape) = inputs[1];
+                    let result = par_zip_map_f64(a, x, igammac_approx);
+                    ctx.save_for_backward(a.to_vec(), a_shape.to_vec());
+                    ctx.save_for_backward(x.to_vec(), a_shape.to_vec());
+                    Ok((result, a_shape.to_vec()))
+                },
+                move |ctx, grad_outputs| {
+                    let saved = ctx.saved_tensors();
+                    let (a, x) = (&saved[0], &saved[1]);
+                    let g = grad_outputs[0];
+                    let grad_x: Vec<f64> = (0..g.len())
+                        .map(|i| -g[i] * gammainc_dx(a[i], x[i]))
+                        .collect();
+                    Ok(vec![None, Some(grad_x)])
+                },
+            );
         }
         let input_vals = self.tensor_values(input)?;
         let other_vals = self.tensor_values(other)?;
@@ -61484,6 +61535,30 @@ fn polygamma_approx(n: u32, mut x: f64) -> f64 {
 /// Regularized lower incomplete gamma function P(a, x) = γ(a, x) / Γ(a).
 ///
 /// Uses series expansion for small x and continued fraction for large x.
+/// ∂/∂x of the regularized lower incomplete gamma P(a,x) = γ(a,x)/Γ(a):
+///   ∂P/∂x = x^{a-1} e^{-x} / Γ(a) = exp((a-1)·ln(x) − x − lgamma(a)).
+/// This is the per-element backward for igamma w.r.t. its `x` argument
+/// (matching torch's derivatives.yaml); ∂Q/∂x for igammac is its negation.
+fn gammainc_dx(a: f64, x: f64) -> f64 {
+    if a.is_nan() || x.is_nan() {
+        return f64::NAN;
+    }
+    if x < 0.0 || a <= 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        // ∂P/∂x = x^{a-1}e^{-x}/Γ(a): 0 for a>1, 1 for a=1, +∞ for a<1.
+        return if a > 1.0 {
+            0.0
+        } else if a == 1.0 {
+            1.0
+        } else {
+            f64::INFINITY
+        };
+    }
+    ((a - 1.0) * x.ln() - x - libm::lgamma(a)).exp()
+}
+
 fn igamma_approx(a: f64, x: f64) -> f64 {
     if x.is_nan() || a.is_nan() {
         return f64::NAN;
@@ -84435,6 +84510,61 @@ mod tests {
                 (g - e).abs() < 1e-9,
                 "gammaln grad[{i}] at x={} = {g}, expected digamma(x) = {e}",
                 [1.0, 2.0, 3.0, 4.0][i]
+            );
+        }
+    }
+
+    #[test]
+    fn igamma_igammac_backward_wrt_x_matches_finite_difference() {
+        // igamma P(a,x) is differentiable w.r.t. x: ∂P/∂x = x^{a-1}e^{-x}/Γ(a)
+        // (a is non-differentiable, matching torch). igammac Q=1−P negates it.
+        let a_vals = vec![1.0, 2.0, 3.5, 0.7];
+        let x_vals = vec![0.8, 2.0, 4.0, 1.3];
+        let eps = 1e-6;
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity for igamma (grad path vs non-grad path).
+        let a_ng = s.tensor_variable(a_vals.clone(), vec![4], false).unwrap();
+        let x_ng = s.tensor_variable(x_vals.clone(), vec![4], false).unwrap();
+        let o_ng = s.tensor_igamma(a_ng, x_ng).unwrap();
+        let v_ng = s.tensor_values(o_ng).unwrap();
+        let a_g = s.tensor_variable(a_vals.clone(), vec![4], false).unwrap(); // a non-diff
+        let x_g = s.tensor_variable(x_vals.clone(), vec![4], true).unwrap();
+        let o_g = s.tensor_igamma(a_g, x_g).unwrap();
+        let v_g = s.tensor_values(o_g).unwrap();
+        for (p, q) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(p.to_bits(), q.to_bits(), "igamma grad/non-grad value mismatch");
+        }
+        // Backward of sum(P): grad_x[i] = ∂P/∂x(a_i, x_i).
+        let loss = s.tensor_sum(o_g).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_x = s.tensor_gradient(&report, x_g).expect("igamma grad_x present");
+        for i in 0..4 {
+            let fp = super::igamma_approx(a_vals[i], x_vals[i] + eps);
+            let fm = super::igamma_approx(a_vals[i], x_vals[i] - eps);
+            let fd = (fp - fm) / (2.0 * eps);
+            assert!(
+                (grad_x[i] - fd).abs() <= 1e-5 * (1.0 + fd.abs()),
+                "igamma grad_x[{i}] = {}, fd = {fd}",
+                grad_x[i]
+            );
+        }
+
+        // igammac: grad is the negation.
+        let a_g2 = s.tensor_variable(a_vals.clone(), vec![4], false).unwrap();
+        let x_g2 = s.tensor_variable(x_vals.clone(), vec![4], true).unwrap();
+        let o2 = s.tensor_igammac(a_g2, x_g2).unwrap();
+        let loss2 = s.tensor_sum(o2).unwrap();
+        let report2 = s.tensor_backward(loss2).unwrap();
+        let grad_x2 = s.tensor_gradient(&report2, x_g2).expect("igammac grad_x present");
+        for i in 0..4 {
+            let fp = super::igammac_approx(a_vals[i], x_vals[i] + eps);
+            let fm = super::igammac_approx(a_vals[i], x_vals[i] - eps);
+            let fd = (fp - fm) / (2.0 * eps);
+            assert!(
+                (grad_x2[i] - fd).abs() <= 1e-5 * (1.0 + fd.abs()),
+                "igammac grad_x[{i}] = {}, fd = {fd}",
+                grad_x2[i]
             );
         }
     }
