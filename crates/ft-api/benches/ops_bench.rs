@@ -230,6 +230,34 @@ fn bench_fft2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_stft(c: &mut Criterion) {
+    use ft_api::StftOptions;
+    let mut group = c.benchmark_group("stft");
+    // 1-D signal -> STFT with a naive per-frame DFT (cos/sin per term) =
+    // compute-bound, parallel over freq-bin rows. n_fft=512, hop=128.
+    let len = 32768usize;
+    group.throughput(Throughput::Elements(len as u64));
+    group.bench_function("len32768_nfft512", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![len], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .tensor_stft(
+                        black_box(x),
+                        512,
+                        StftOptions {
+                            hop_length: Some(128),
+                            ..StftOptions::default()
+                        },
+                    )
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_irfft2(c: &mut Criterion) {
     let mut group = c.benchmark_group("irfft2");
     // Inverse 2-D real FFT from a complex half-spectrum [batch, rows, cols/2+1]
@@ -357,6 +385,7 @@ criterion_group!(
     bench_interpolate_trilinear,
     bench_grid_sample,
     bench_fft2,
+    bench_stft,
     bench_irfft2,
     bench_rfft2,
     bench_fft_1d,

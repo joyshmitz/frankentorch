@@ -1766,24 +1766,43 @@ impl FrankenTorchSession {
         match base_dtype {
             DType::F32 => {
                 let mut spectrogram = vec![ft_core::Complex64::new(0.0, 0.0); freq_bins * frames];
+                // Precompute the windowed frames once (cheap, serial).
+                let mut all_frames = vec![0.0_f64; frames * n_fft];
                 for frame_idx in 0..frames {
                     let start = frame_idx * hop_length;
-                    let mut frame = vec![0.0; n_fft];
+                    let fbase = frame_idx * n_fft;
                     for i in 0..win_length {
-                        frame[window_pad + i] = padded[start + i] * window_values[i];
+                        all_frames[fbase + window_pad + i] = padded[start + i] * window_values[i];
                     }
-                    for k in 0..freq_bins {
+                }
+                // See the F64 path: each freq bin owns a contiguous `frames` row and
+                // the (k, frame) loop reorder is bit-identical, so parallelize the
+                // compute-bound per-cell DFT across the freq-bin rows.
+                let dft_row = |k: usize, row: &mut [ft_core::Complex64]| {
+                    for (frame_idx, slot) in row.iter_mut().enumerate() {
+                        let fbase = frame_idx * n_fft;
                         let mut re = 0.0;
                         let mut im = 0.0;
-                        for (n, &sample) in frame.iter().enumerate() {
+                        for (n, &sample) in all_frames[fbase..fbase + n_fft].iter().enumerate() {
                             let angle =
                                 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
                             re += sample * angle.cos();
                             im -= sample * angle.sin();
                         }
-                        spectrogram[k * frames + frame_idx] =
-                            ft_core::Complex64::new((re * scale) as f32, (im * scale) as f32);
+                        *slot = ft_core::Complex64::new((re * scale) as f32, (im * scale) as f32);
                     }
+                };
+                if freq_bins >= 2 && freq_bins * frames >= PARALLEL_ELEMENTWISE_MIN {
+                    use rayon::prelude::*;
+                    spectrogram
+                        .par_chunks_mut(frames)
+                        .enumerate()
+                        .for_each(|(k, row)| dft_row(k, row));
+                } else {
+                    spectrogram
+                        .chunks_mut(frames)
+                        .enumerate()
+                        .for_each(|(k, row)| dft_row(k, row));
                 }
                 let out = self.tensor_tape.leaf_tensor(
                     DenseTensor::from_typed_storage(
@@ -1804,24 +1823,46 @@ impl FrankenTorchSession {
             }
             DType::F64 => {
                 let mut spectrogram = vec![ft_core::Complex128::new(0.0, 0.0); freq_bins * frames];
+                // Precompute the windowed frames once (cheap, serial).
+                let mut all_frames = vec![0.0_f64; frames * n_fft];
                 for frame_idx in 0..frames {
                     let start = frame_idx * hop_length;
-                    let mut frame = vec![0.0; n_fft];
+                    let fbase = frame_idx * n_fft;
                     for i in 0..win_length {
-                        frame[window_pad + i] = padded[start + i] * window_values[i];
+                        all_frames[fbase + window_pad + i] = padded[start + i] * window_values[i];
                     }
-                    for k in 0..freq_bins {
+                }
+                // Output is [freq_bins, frames]: each freq bin k owns a contiguous
+                // `frames`-length row. The per-cell naive DFT (cos/sin per term) is
+                // compute-bound; reordering the (frame, k) loops to (k, frame) is
+                // bit-identical (each cell is independent and the n-summation order
+                // is unchanged), so distributing the freq-bin rows across Rayon
+                // workers matches the serial output bit-for-bit.
+                let dft_row = |k: usize, row: &mut [ft_core::Complex128]| {
+                    for (frame_idx, slot) in row.iter_mut().enumerate() {
+                        let fbase = frame_idx * n_fft;
                         let mut re = 0.0;
                         let mut im = 0.0;
-                        for (n, &sample) in frame.iter().enumerate() {
+                        for (n, &sample) in all_frames[fbase..fbase + n_fft].iter().enumerate() {
                             let angle =
                                 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
                             re += sample * angle.cos();
                             im -= sample * angle.sin();
                         }
-                        spectrogram[k * frames + frame_idx] =
-                            ft_core::Complex128::new(re * scale, im * scale);
+                        *slot = ft_core::Complex128::new(re * scale, im * scale);
                     }
+                };
+                if freq_bins >= 2 && freq_bins * frames >= PARALLEL_ELEMENTWISE_MIN {
+                    use rayon::prelude::*;
+                    spectrogram
+                        .par_chunks_mut(frames)
+                        .enumerate()
+                        .for_each(|(k, row)| dft_row(k, row));
+                } else {
+                    spectrogram
+                        .chunks_mut(frames)
+                        .enumerate()
+                        .for_each(|(k, row)| dft_row(k, row));
                 }
                 let out = self.tensor_tape.leaf_tensor(
                     DenseTensor::from_typed_storage(
@@ -80923,6 +80964,65 @@ mod tests {
         assert_eq!(got.len(), re_full.len(), "irfft2 output length");
         for (idx, (g, w)) in got.iter().zip(re_full.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "irfft2 @{idx}");
+        }
+    }
+
+    #[test]
+    fn stft_parallel_match_serial_bit_exact() {
+        // Large enough that freq_bins*frames >= PARALLEL_ELEMENTWISE_MIN so the
+        // rayon freq-bin-row path runs; it must equal a serial reference of the
+        // exact framing + naive DFT BIT-FOR-BIT (rectangular window, center pad).
+        use super::{FrankenTorchSession, StftOptions};
+        let (len, n_fft, hop) = (8192usize, 128usize, 64usize);
+        let signal: Vec<f64> = (0..len).map(|i| ((i % 263) as f64) * 0.017 - 2.0).collect();
+
+        // Serial reference (center=true zero-pad n_fft/2, window=None -> ones,
+        // win_length=n_fft -> window_pad=0, onesided, normalized=false).
+        let pad = n_fft / 2;
+        let mut padded = vec![0.0f64; len + 2 * pad];
+        padded[pad..pad + len].copy_from_slice(&signal);
+        let frames = (padded.len() - n_fft) / hop + 1;
+        let freq_bins = n_fft / 2 + 1;
+        assert!(freq_bins * frames >= 8192, "test must hit the parallel path");
+        let mut ref_re = vec![0.0f64; freq_bins * frames];
+        let mut ref_im = vec![0.0f64; freq_bins * frames];
+        for frame_idx in 0..frames {
+            let start = frame_idx * hop;
+            let frame = &padded[start..start + n_fft];
+            for k in 0..freq_bins {
+                let mut re = 0.0;
+                let mut im = 0.0;
+                for (n, &sample) in frame.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
+                    re += sample * angle.cos();
+                    im -= sample * angle.sin();
+                }
+                ref_re[k * frames + frame_idx] = re;
+                ref_im[k * frames + frame_idx] = im;
+            }
+        }
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(signal.clone(), vec![len], false).unwrap();
+        let spec = s
+            .tensor_stft(
+                x,
+                n_fft,
+                StftOptions {
+                    hop_length: Some(hop),
+                    ..StftOptions::default()
+                },
+            )
+            .unwrap();
+        let re_node = s.tensor_real(spec).unwrap();
+        let got_re = s.tensor_values(re_node).unwrap();
+        let im_node = s.tensor_imag(spec).unwrap();
+        let got_im = s.tensor_values(im_node).unwrap();
+        for (idx, (g, w)) in got_re.iter().zip(ref_re.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "stft re @{idx}");
+        }
+        for (idx, (g, w)) in got_im.iter().zip(ref_im.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "stft im @{idx}");
         }
     }
 
