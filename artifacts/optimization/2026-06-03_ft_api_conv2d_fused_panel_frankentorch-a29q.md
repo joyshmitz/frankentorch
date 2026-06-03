@@ -52,11 +52,14 @@ matmul. For hw=32 this is about a 19 MB panel plus another 19 MB permutation.
   `cargo check -p ft-api --all-targets` passed with pre-existing warnings.
 - Golden output: `ft_api_conv2d_fused_panel_frankentorch-a29q.txt`, sha256
   `fb414ed3ce5db49ddfdd26e37e647754580f18884d9417333bc4cd0468859445`.
-- `cargo fmt --check -p ft-api`, `cargo clippy -p ft-api --all-targets
-  --no-deps -- -D warnings`, and `ubs crates/ft-api/src/lib.rs ...` remain
-  blocked by pre-existing repository debt. The new conv2d hunk was manually
-  matched to rustfmt output, `git diff --check` passed, and no new
-  conv2d-specific UBS defect was isolated.
+- `cargo fmt --check -p ft-api` and `cargo clippy -p ft-api --all-targets
+  --no-deps -- -D warnings` remain blocked by pre-existing repository debt.
+  The new conv2d hunk was manually matched to rustfmt output and
+  `git diff --check` passed.
+- `ubs --only=rust crates/ft-api/src/lib.rs` completed in 353s and reported the
+  broad pre-existing `ft-api` inventory: 351 critical, 17893 warnings, 2195
+  info. Its shadow-workspace checks reported formatting, clippy, cargo check,
+  and test build clean; no new conv2d-specific UBS defect was isolated.
 
 ## Result
 
