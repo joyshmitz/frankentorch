@@ -8935,6 +8935,9 @@ impl FrankenTorchSession {
         let tgt_vals_bwd = tgt_vals.clone();
         let in_lens_bwd = in_lens.clone();
         let tgt_lens_bwd = tgt_lens.clone();
+        // Retained for the "mean" reduction, which divides each per-batch loss
+        // by its target length (clamped to >= 1) before averaging (torch parity).
+        let tgt_lens_red = tgt_lens.clone();
         let loss = self.tensor_apply_function(
             &[log_probs],
             move |ctx, inputs| {
@@ -9096,8 +9099,21 @@ impl FrankenTorchSession {
         )?;
         match reduction {
             "none" => Ok(loss),
-            "mean" => self.tensor_mean(loss),
             "sum" => self.tensor_sum(loss),
+            "mean" => {
+                // torch divides each per-batch loss by its target length
+                // (clamped to a minimum of 1 to avoid division by zero for
+                // empty targets), then averages over the batch. The divisor is
+                // a non-differentiable constant, so autograd scales each
+                // -gamma gradient by 1/(N * L_b) as required.
+                let divisors: Vec<f64> = tgt_lens_red
+                    .iter()
+                    .map(|&l| (l as usize).max(1) as f64)
+                    .collect();
+                let div_t = self.tensor_variable(divisors, vec![batch_size], false)?;
+                let scaled = self.tensor_div(loss, div_t)?;
+                self.tensor_mean(scaled)
+            }
             _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "ctc_loss: reduction must be 'none', 'mean', or 'sum'",
@@ -78326,6 +78342,70 @@ mod tests {
                 "ctc grad[{i}] = {} but FD = {fd}",
                 grad[i]
             );
+        }
+    }
+
+    #[test]
+    fn tensor_ctc_loss_mean_reduction_divides_by_target_length() {
+        // torch's ctc_loss reduction="mean" divides each per-batch loss by its
+        // target length (clamped >= 1) BEFORE averaging over the batch; "sum"
+        // does not divide. Two batches with DIFFERENT target lengths (L0=2,
+        // L1=1) exercise the per-element division. T=4, C=3, blank=0.
+        // batch0: target [1,2], input_len 4; batch1: target [1], input_len 3.
+        let lp = vec![
+            // (t, n, c) flat order: t0n0,t0n1, t1n0,t1n1, t2n0,t2n1, t3n0,t3n1
+            -1.2, -0.5, -2.0, -0.7, -1.1, -1.4, // t0
+            -0.7, -1.0, -1.5, -1.3, -0.6, -0.9, // t1
+            -2.1, -0.3, -1.1, -0.8, -1.2, -0.5, // t2
+            -0.9, -1.3, -0.8, -1.0, -0.4, -1.6, // t3
+        ];
+        let (t_len, n, c) = (4usize, 2usize, 3usize);
+        let build = |reduction: &str, grad: bool| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let log_probs = s
+                .tensor_variable(lp.clone(), vec![t_len, n, c], grad)
+                .unwrap();
+            let targets = s.tensor_variable(vec![1.0, 2.0, 1.0], vec![3], false).unwrap();
+            let in_lens = s.tensor_variable(vec![4.0, 3.0], vec![2], false).unwrap();
+            let tgt_lens = s.tensor_variable(vec![2.0, 1.0], vec![2], false).unwrap();
+            let loss = s
+                .tensor_ctc_loss(log_probs, targets, in_lens, tgt_lens, 0, reduction, false)
+                .unwrap();
+            (s, log_probs, loss)
+        };
+
+        let (mut s_none, _, loss_none) = build("none", false);
+        let none = s_none.tensor_values(loss_none).unwrap();
+        assert_eq!(none.len(), 2);
+
+        let (mut s_sum, _, loss_sum) = build("sum", false);
+        let sum = s_sum.tensor_values(loss_sum).unwrap()[0];
+        assert!((sum - (none[0] + none[1])).abs() < 1e-9, "sum mismatch");
+
+        let (mut s_mean, _, loss_mean) = build("mean", false);
+        let mean = s_mean.tensor_values(loss_mean).unwrap()[0];
+        // mean divides batch0 by L0=2, batch1 by L1=1, then averages over N=2.
+        let expected_mean = (none[0] / 2.0 + none[1] / 1.0) / 2.0;
+        assert!(
+            (mean - expected_mean).abs() < 1e-9,
+            "mean = {mean}, expected {expected_mean} (plain mean would be {})",
+            (none[0] + none[1]) / 2.0
+        );
+
+        // Gradient under mean reduction: per timestep the class gradients sum to
+        // -1/(N*L_b). batch0 -> -1/(2*2) = -0.25; batch1 -> -1/(2*1) = -0.5.
+        let (mut s_g, log_probs_g, loss_g) = build("mean", true);
+        let report = s_g.tensor_backward(loss_g).unwrap();
+        let g = s_g.tensor_gradient(&report, log_probs_g).unwrap().to_vec();
+        for (batch, (in_len, expected)) in [(4usize, -0.25_f64), (3usize, -0.5_f64)].iter().enumerate() {
+            for t in 0..*in_len {
+                let base = (t * n + batch) * c;
+                let row_sum: f64 = (0..c).map(|k| g[base + k]).sum();
+                assert!(
+                    (row_sum - expected).abs() < 1e-9,
+                    "mean-grad batch {batch} t {t} sums to {row_sum}, expected {expected}"
+                );
+            }
         }
     }
 
