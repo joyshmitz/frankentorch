@@ -43886,49 +43886,64 @@ impl FrankenTorchSession {
         out_spatial: &[usize],
         align_corners: bool,
     ) -> Result<TensorNodeId, AutogradError> {
+        use rayon::prelude::*;
         let (ih, iw) = (in_spatial[0], in_spatial[1]);
         let (oh, ow) = (out_spatial[0], out_spatial[1]);
         let total = batch * channels * oh * ow;
-        let mut values = Vec::with_capacity(total);
+        let in_plane = ih * iw;
+        let mut values = vec![0.0_f64; total];
 
-        for b in 0..batch {
-            for c in 0..channels {
-                let base = (b * channels + c) * ih * iw;
-                for oy in 0..oh {
-                    let src_y = if align_corners && oh > 1 {
-                        oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
-                    } else {
-                        (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
-                    };
-                    let src_y = src_y.max(0.0);
-                    let y0 = (src_y.floor() as usize).min(ih - 1);
-                    let y1 = (y0 + 1).min(ih - 1);
-                    let ty = src_y - y0 as f64;
+        // Output row r -> plane = r/oh, oy = r%oh (base == plane*in_plane). Each
+        // element uses identical 4-tap bilinear arithmetic and the same linear
+        // position as the serial push order, so distributing whole rows across
+        // Rayon workers is bit-for-bit identical.
+        let fill_row = |r: usize, out_row: &mut [f64]| {
+            let plane = r / oh;
+            let oy = r % oh;
+            let base = plane * in_plane;
+            let src_y = if align_corners && oh > 1 {
+                oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
+            } else {
+                (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
+            };
+            let src_y = src_y.max(0.0);
+            let y0 = (src_y.floor() as usize).min(ih - 1);
+            let y1 = (y0 + 1).min(ih - 1);
+            let ty = src_y - y0 as f64;
 
-                    for ox in 0..ow {
-                        let src_x = if align_corners && ow > 1 {
-                            ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
-                        } else {
-                            (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
-                        };
-                        let src_x = src_x.max(0.0);
-                        let x0 = (src_x.floor() as usize).min(iw - 1);
-                        let x1 = (x0 + 1).min(iw - 1);
-                        let tx = src_x - x0 as f64;
+            for (ox, slot) in out_row.iter_mut().enumerate() {
+                let src_x = if align_corners && ow > 1 {
+                    ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
+                } else {
+                    (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
+                };
+                let src_x = src_x.max(0.0);
+                let x0 = (src_x.floor() as usize).min(iw - 1);
+                let x1 = (x0 + 1).min(iw - 1);
+                let tx = src_x - x0 as f64;
 
-                        let v00 = storage[base + y0 * iw + x0];
-                        let v01 = storage[base + y0 * iw + x1];
-                        let v10 = storage[base + y1 * iw + x0];
-                        let v11 = storage[base + y1 * iw + x1];
+                let v00 = storage[base + y0 * iw + x0];
+                let v01 = storage[base + y0 * iw + x1];
+                let v10 = storage[base + y1 * iw + x0];
+                let v11 = storage[base + y1 * iw + x1];
 
-                        let val = v00 * (1.0 - ty) * (1.0 - tx)
-                            + v01 * (1.0 - ty) * tx
-                            + v10 * ty * (1.0 - tx)
-                            + v11 * ty * tx;
-                        values.push(val);
-                    }
-                }
+                *slot = v00 * (1.0 - ty) * (1.0 - tx)
+                    + v01 * (1.0 - ty) * tx
+                    + v10 * ty * (1.0 - tx)
+                    + v11 * ty * tx;
             }
+        };
+
+        if total >= PARALLEL_ELEMENTWISE_MIN {
+            values
+                .par_chunks_mut(ow)
+                .enumerate()
+                .for_each(|(r, out_row)| fill_row(r, out_row));
+        } else {
+            values
+                .chunks_mut(ow)
+                .enumerate()
+                .for_each(|(r, out_row)| fill_row(r, out_row));
         }
 
         self.tensor_variable(values, vec![batch, channels, oh, ow], false)
@@ -43943,51 +43958,69 @@ impl FrankenTorchSession {
         out_spatial: &[usize],
         align_corners: bool,
     ) -> Result<TensorNodeId, AutogradError> {
+        use rayon::prelude::*;
         let (ih, iw) = (in_spatial[0], in_spatial[1]);
         let (oh, ow) = (out_spatial[0], out_spatial[1]);
         let total = batch * channels * oh * ow;
-        let mut values = Vec::with_capacity(total);
+        let in_plane = ih * iw;
+        let mut values = vec![0.0_f64; total];
 
-        for b in 0..batch {
-            for c in 0..channels {
-                let base = (b * channels + c) * ih * iw;
-                for oy in 0..oh {
-                    let src_y = if align_corners && oh > 1 {
-                        oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
-                    } else {
-                        (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
-                    };
-                    // Cubic keeps the unclamped source coordinate (PyTorch
-                    // area_pixel_compute_source_index with cubic=true); only the tap
-                    // indices below are clamped, so the fractional offset stays correct
-                    // at the borders.
-                    let iy = src_y.floor() as i64;
-                    let ty = src_y - iy as f64;
+        // Each output row r maps to plane = r/oh and oy = r%oh (since
+        // base = (b*channels+c)*ih*iw == plane*in_plane). Every output element
+        // uses the same cubic-weight/clamp/gather arithmetic and writes the same
+        // linear position as the serial push order, so distributing whole rows
+        // across Rayon workers is bit-for-bit identical. Bicubic is compute-bound
+        // (16 cubic_weight taps per element), so it scales near-linearly.
+        let fill_row = |r: usize, out_row: &mut [f64]| {
+            let plane = r / oh;
+            let oy = r % oh;
+            let base = plane * in_plane;
+            let src_y = if align_corners && oh > 1 {
+                oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
+            } else {
+                (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
+            };
+            // Cubic keeps the unclamped source coordinate (PyTorch
+            // area_pixel_compute_source_index with cubic=true); only the tap
+            // indices below are clamped, so the fractional offset stays correct
+            // at the borders.
+            let iy = src_y.floor() as i64;
+            let ty = src_y - iy as f64;
 
-                    for ox in 0..ow {
-                        let src_x = if align_corners && ow > 1 {
-                            ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
-                        } else {
-                            (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
-                        };
-                        // Cubic keeps the unclamped source coordinate (see src_y above).
-                        let ix = src_x.floor() as i64;
-                        let tx = src_x - ix as f64;
+            for (ox, slot) in out_row.iter_mut().enumerate() {
+                let src_x = if align_corners && ow > 1 {
+                    ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
+                } else {
+                    (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
+                };
+                // Cubic keeps the unclamped source coordinate (see src_y above).
+                let ix = src_x.floor() as i64;
+                let tx = src_x - ix as f64;
 
-                        let mut val = 0.0;
-                        for dy in -1..=2_i64 {
-                            let wy = cubic_weight(ty - dy as f64);
-                            let sy = (iy + dy).clamp(0, ih as i64 - 1) as usize;
-                            for dx in -1..=2_i64 {
-                                let wx = cubic_weight(tx - dx as f64);
-                                let sx = (ix + dx).clamp(0, iw as i64 - 1) as usize;
-                                val += wy * wx * storage[base + sy * iw + sx];
-                            }
-                        }
-                        values.push(val);
+                let mut val = 0.0;
+                for dy in -1..=2_i64 {
+                    let wy = cubic_weight(ty - dy as f64);
+                    let sy = (iy + dy).clamp(0, ih as i64 - 1) as usize;
+                    for dx in -1..=2_i64 {
+                        let wx = cubic_weight(tx - dx as f64);
+                        let sx = (ix + dx).clamp(0, iw as i64 - 1) as usize;
+                        val += wy * wx * storage[base + sy * iw + sx];
                     }
                 }
+                *slot = val;
             }
+        };
+
+        if total >= PARALLEL_ELEMENTWISE_MIN {
+            values
+                .par_chunks_mut(ow)
+                .enumerate()
+                .for_each(|(r, out_row)| fill_row(r, out_row));
+        } else {
+            values
+                .chunks_mut(ow)
+                .enumerate()
+                .for_each(|(r, out_row)| fill_row(r, out_row));
         }
 
         self.tensor_variable(values, vec![batch, channels, oh, ow], false)
@@ -80271,6 +80304,83 @@ mod tests {
         for (idx, (g, &x)) in grad.iter().zip(mdata.iter()).enumerate() {
             let want = 1.0_f64 * mvgrad(x);
             assert_eq!(g.to_bits(), want.to_bits(), "multigammaln bwd @{idx}");
+        }
+    }
+
+    #[test]
+    fn interpolate_bilinear_bicubic_parallel_match_serial_bit_exact() {
+        // total output >= PARALLEL_ELEMENTWISE_MIN so the rayon row-split path
+        // runs; it must match an independent serial reference of the same
+        // bilinear/bicubic formula BIT-FOR-BIT (align_corners = false).
+        let (n, ch, ih, iw) = (2usize, 4usize, 20usize, 20usize);
+        let (oh, ow) = (ih * 2, iw * 2); // 2x -> total = 2*4*40*40 = 12800 > 8192
+        let in_plane = ih * iw;
+        let data: Vec<f64> = (0..n * ch * in_plane)
+            .map(|i| ((i % 251) as f64) * 0.013 - 1.5)
+            .collect();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(data.clone(), vec![n, ch, ih, iw], false).unwrap();
+
+        let bilinear_ref = |plane: usize, oy: usize, ox: usize| -> f64 {
+            let base = plane * in_plane;
+            let src_y = ((oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5).max(0.0);
+            let y0 = (src_y.floor() as usize).min(ih - 1);
+            let y1 = (y0 + 1).min(ih - 1);
+            let ty = src_y - y0 as f64;
+            let src_x = ((ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5).max(0.0);
+            let x0 = (src_x.floor() as usize).min(iw - 1);
+            let x1 = (x0 + 1).min(iw - 1);
+            let tx = src_x - x0 as f64;
+            let v00 = data[base + y0 * iw + x0];
+            let v01 = data[base + y0 * iw + x1];
+            let v10 = data[base + y1 * iw + x0];
+            let v11 = data[base + y1 * iw + x1];
+            v00 * (1.0 - ty) * (1.0 - tx)
+                + v01 * (1.0 - ty) * tx
+                + v10 * ty * (1.0 - tx)
+                + v11 * ty * tx
+        };
+        let bicubic_ref = |plane: usize, oy: usize, ox: usize| -> f64 {
+            let base = plane * in_plane;
+            let src_y = (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5;
+            let iy = src_y.floor() as i64;
+            let ty = src_y - iy as f64;
+            let src_x = (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5;
+            let ix = src_x.floor() as i64;
+            let tx = src_x - ix as f64;
+            let mut val = 0.0;
+            for dy in -1..=2_i64 {
+                let wy = super::cubic_weight(ty - dy as f64);
+                let sy = (iy + dy).clamp(0, ih as i64 - 1) as usize;
+                for dx in -1..=2_i64 {
+                    let wx = super::cubic_weight(tx - dx as f64);
+                    let sx = (ix + dx).clamp(0, iw as i64 - 1) as usize;
+                    val += wy * wx * data[base + sy * iw + sx];
+                }
+            }
+            val
+        };
+
+        let bil = s.tensor_interpolate(x, Some(vec![oh, ow]), None, "bilinear", Some(false)).unwrap();
+        let bil_got = s.tensor_values(bil).unwrap();
+        let bic = s.tensor_interpolate(x, Some(vec![oh, ow]), None, "bicubic", Some(false)).unwrap();
+        let bic_got = s.tensor_values(bic).unwrap();
+        for plane in 0..n * ch {
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let idx = (plane * oh + oy) * ow + ox;
+                    assert_eq!(
+                        bil_got[idx].to_bits(),
+                        bilinear_ref(plane, oy, ox).to_bits(),
+                        "bilinear @ plane{plane} oy{oy} ox{ox}"
+                    );
+                    assert_eq!(
+                        bic_got[idx].to_bits(),
+                        bicubic_ref(plane, oy, ox).to_bits(),
+                        "bicubic @ plane{plane} oy{oy} ox{ox}"
+                    );
+                }
+            }
         }
     }
 

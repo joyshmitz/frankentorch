@@ -185,6 +185,32 @@ fn bench_linear_forward(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_interpolate_bicubic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("interpolate_bicubic");
+    // [N, C, H, W] -> 2x upsample. Bicubic does 16 cubic-weight taps per output
+    // element, so it is compute-bound and parallelizes over output rows.
+    let (n, ch, h, w) = (8usize, 32usize, 64usize, 64usize);
+    group.throughput(Throughput::Elements((n * ch * h * 2 * w * 2) as u64));
+    group.bench_function("8x32x64x64_2x", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![n, ch, h, w], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .tensor_interpolate(
+                        black_box(x),
+                        Some(vec![h * 2, w * 2]),
+                        None,
+                        "bicubic",
+                        Some(false),
+                    )
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_matmul,
@@ -197,5 +223,6 @@ criterion_group!(
     bench_add,
     bench_backward_matmul,
     bench_linear_forward,
+    bench_interpolate_bicubic,
 );
 criterion_main!(benches);
