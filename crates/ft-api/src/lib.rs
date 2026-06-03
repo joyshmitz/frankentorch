@@ -81520,6 +81520,55 @@ mod tests {
     }
 
     #[test]
+    fn vander_matches_powi_reference_bit_exact() {
+        // Correctness coverage: the forward Vandermonde and its backward must
+        // match an independent serial powi reference BIT-FOR-BIT. (Added during
+        // the rejected parallelization attempt frankentorch-kgs4.30 — vander is
+        // too compute-light, so par_chunks REGRESSED it 3.6->7.1ms; left serial.)
+        use super::FrankenTorchSession;
+        let (rows, cols) = (128usize, 128usize); // 16384 >= 8192
+        let x: Vec<f64> = (0..rows).map(|i| 0.5 + (i % 50) as f64 * 0.009).collect();
+
+        // Forward reference (increasing = true).
+        let mut want_fwd = vec![0.0f64; rows * cols];
+        for i in 0..rows {
+            for j in 0..cols {
+                want_fwd[i * cols + j] = x[i].powi(j as i32);
+            }
+        }
+        // Backward reference for a sum loss (grad_y == 1).
+        let mut want_grad = vec![0.0f64; rows];
+        for i in 0..rows {
+            let mut acc = 0.0f64;
+            for j in 0..cols {
+                if j == 0 {
+                    continue;
+                }
+                acc += (j as f64) * x[i].powi((j - 1) as i32);
+            }
+            want_grad[i] = acc;
+        }
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xt = s.tensor_variable(x.clone(), vec![rows], false).unwrap();
+        let v = s.tensor_vander(xt, Some(cols), true).unwrap();
+        let got_fwd = s.tensor_values(v).unwrap();
+        for (idx, (g, w)) in got_fwd.iter().zip(want_fwd.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "vander fwd @{idx}");
+        }
+
+        let mut sb = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xg = sb.tensor_variable(x.clone(), vec![rows], true).unwrap();
+        let vg = sb.tensor_vander(xg, Some(cols), true).unwrap();
+        let loss = sb.tensor_sum(vg).unwrap();
+        let report = sb.tensor_backward(loss).unwrap();
+        let grad = sb.tensor_gradient(&report, xg).expect("vander grad present");
+        for (idx, (g, w)) in grad.iter().zip(want_grad.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "vander bwd @{idx}");
+        }
+    }
+
+    #[test]
     fn grid_sample_matches_independent_reference_bit_exact() {
         // Correctness coverage: grid_sample must equal an independent reference
         // (mirroring the (n,h,w)->c loop, align_corners = false) BIT-FOR-BIT

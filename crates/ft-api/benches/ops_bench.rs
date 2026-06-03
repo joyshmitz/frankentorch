@@ -230,6 +230,21 @@ fn bench_fft2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vander(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vander");
+    // [rows] -> [rows, cols] Vandermonde: x[i]^exp_j (powi) per element. powi is
+    // cheap and the output is memory-bound, so row-parallelizing it REGRESSED
+    // (3.6->7.1ms, rejected under frankentorch-kgs4.30); kept to track the spot.
+    let (rows, cols) = (2048usize, 256usize);
+    group.throughput(Throughput::Elements((rows * cols) as u64));
+    group.bench_function("2048x256", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_rand(vec![rows], false).unwrap();
+        b.iter(|| black_box(session.tensor_vander(black_box(x), Some(cols), true).unwrap()));
+    });
+    group.finish();
+}
+
 fn bench_matrix_nms(c: &mut Criterion) {
     let mut group = c.benchmark_group("matrix_nms");
     // [K] scores + [K, H, W] masks -> K x K IoU matrix via a naive
@@ -512,6 +527,7 @@ criterion_group!(
     bench_interpolate_trilinear,
     bench_grid_sample,
     bench_fft2,
+    bench_vander,
     bench_matrix_nms,
     bench_supcon_loss,
     bench_lrn,
