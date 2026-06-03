@@ -27,11 +27,20 @@ Alien primitive:
 
 ## Baseline
 
-Worker: `vmi1153651`
+Baseline command:
 
 ```text
-time: [12.194 ms 12.880 ms 13.435 ms]
+rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-data-mrjg-baseline cargo bench -p ft-data --bench sampler_bench -- sampler/weighted_three_positive_3x1m --warm-up-time 1 --measurement-time 5 --sample-size 20
 ```
+
+Worker: `vmi1156319`
+
+```text
+time: [11.431 ms 11.764 ms 12.144 ms]
+```
+
+The baseline kept the benchmark target and golden-order test present, but
+temporarily restored the old source path with no three-weight fast path.
 
 ## Lever
 
@@ -65,14 +74,12 @@ Verification:
 
 ```bash
 sha256sum -c artifacts/optimization/golden_checksums.txt --ignore-missing
-rch exec -- cargo test -p ft-data weighted_random_sampler -- --nocapture
-rch exec -- cargo test -p ft-data weighted_random_sampler_three_weight_fast_path_preserves_order -- --nocapture
+rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-data-mrjg-verify cargo test -p ft-data weighted_random_sampler -- --nocapture
 ```
 
 Results:
 
-- `weighted_random_sampler`: 14 passed, 0 failed.
-- `weighted_random_sampler_three_weight_fast_path_preserves_order`: 1 passed, 0 failed.
+- `weighted_random_sampler`: 14 passed, 0 failed on `vmi1227854`.
 - Checksum ledger: all present golden outputs OK, including `ft_data_weighted_small_cardinality_frankentorch-mrjg.txt`.
 
 Isomorphism:
@@ -85,21 +92,29 @@ Isomorphism:
 
 ## After
 
-Worker: `vmi1293453`
+After command:
 
 ```text
-time: [6.2889 ms 6.5025 ms 6.8231 ms]
+rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-data-mrjg-after cargo bench -p ft-data --bench sampler_bench -- sampler/weighted_three_positive_3x1m --warm-up-time 1 --measurement-time 5 --sample-size 20
+```
+
+Worker: `vmi1153651`
+
+```text
+time: [7.1255 ms 7.4022 ms 7.6631 ms]
 ```
 
 Delta:
 
-- Mean estimate: 12.880 ms -> 6.5025 ms
-- Elapsed-time improvement: 49.5%
-- Throughput multiplier: 1.98x
+- Mean estimate: 11.764 ms -> 7.4022 ms
+- Elapsed-time improvement: 37.1%
+- Throughput multiplier: 1.59x
+- `rch exec` did not expose direct worker pinning, so this is a cross-worker
+  comparison with confidence penalized despite the large effect size.
 
 Score:
 
-- Impact 4 x Confidence 4 / Effort 1 = 16.0
+- Impact 3 x Confidence 2 / Effort 1 = 6.0
 - Verdict: keep.
 
 ## Gates
@@ -107,16 +122,20 @@ Score:
 Passed:
 
 ```bash
-rch exec -- cargo fmt -p ft-data --check
-rch exec -- cargo check -p ft-data --all-targets
-rch exec -- cargo clippy -p ft-data --all-targets --no-deps -- -D warnings
-git diff --check -- crates/ft-data/src/lib.rs crates/ft-data/benches/sampler_bench.rs artifacts/optimization/golden_checksums.txt artifacts/optimization/golden_outputs/ft_data_weighted_small_cardinality_frankentorch-mrjg.txt
+rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-data-mrjg-verify cargo check -p ft-data --all-targets
+rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-data-mrjg-verify cargo clippy -p ft-data --all-targets --no-deps -- -D warnings
+cargo fmt -p ft-data --check
+git diff --check
 ```
+
+`rch exec -- cargo fmt -p ft-data --check` classified rustfmt as a
+non-compilation command and returned immediately, so rustfmt was run directly
+and package-scoped.
 
 UBS:
 
 ```bash
-ubs crates/ft-data/src/lib.rs crates/ft-data/benches/sampler_bench.rs artifacts/optimization/golden_outputs/ft_data_weighted_small_cardinality_frankentorch-mrjg.txt artifacts/optimization/golden_checksums.txt
+ubs crates/ft-data/src/lib.rs crates/ft-data/benches/sampler_bench.rs artifacts/optimization/2026-06-03_ft_data_weighted_small_cardinality_frankentorch-mrjg.md artifacts/optimization/golden_checksums.txt artifacts/optimization/golden_outputs/ft_data_weighted_small_cardinality_frankentorch-mrjg.txt
 ```
 
 UBS exited nonzero on existing broad `ft-data` inventory:
