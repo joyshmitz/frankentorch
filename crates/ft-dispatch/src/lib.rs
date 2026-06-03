@@ -939,15 +939,19 @@ impl SchemaRegistry {
             .validate_for_scalar_binary()
             .map_err(SchemaRegistryError::IncompatibleDispatchKeyset)?;
 
-        let (name, is_out_variant, schema_digest) = match parsed {
+        let (name, is_out_variant, schema_digest, normalized_name) = match parsed {
             ParsedSchemaInput::Name(name) => {
-                (name, false, digest64(name.unambiguous_name().as_str()))
+                let normalized_name = name.unambiguous_name();
+                let schema_digest = digest64(normalized_name.as_str());
+                (name, false, schema_digest, normalized_name)
             }
-            ParsedSchemaInput::Schema(schema) => {
-                (&schema.op, schema.is_out_variant, schema.schema_digest)
-            }
+            ParsedSchemaInput::Schema(schema) => (
+                &schema.op,
+                schema.is_out_variant,
+                schema.schema_digest,
+                schema.op.unambiguous_name(),
+            ),
         };
-        let normalized_name = name.unambiguous_name();
         let vacant_entry = match self.entries.entry(normalized_name) {
             Entry::Vacant(entry) => entry,
             Entry::Occupied(entry) => {
@@ -6955,6 +6959,78 @@ mod tests {
             summary,
             include_str!(
                 "../../../artifacts/optimization/golden_outputs/ft_dispatch_schema_pass21.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn schema_registry_name_only_normalized_once_matches_golden() {
+        use std::fmt::Write as _;
+
+        let keyset =
+            schema_dispatch_keyset_from_tags(&["CPU", "AutogradCPU"]).expect("keyset should parse");
+        let parsed = [
+            parse_schema_or_name("add.alpha").expect("add schema should parse"),
+            parse_schema_or_name("matmul.gamma").expect("matmul schema should parse"),
+            parse_schema_or_name("sub.beta").expect("sub schema should parse"),
+        ];
+        let mut registry = SchemaRegistry::new();
+        for schema in &parsed {
+            registry
+                .register(schema, keyset)
+                .expect("unique schema should register");
+        }
+
+        let duplicate = match registry
+            .register(&parsed[0], keyset)
+            .expect_err("duplicate registration must fail")
+        {
+            SchemaRegistryError::DuplicateSchema { name } => format!("DuplicateSchema:{name}"),
+            other => format!("unexpected:{other:?}"),
+        };
+        let unsupported = match registry
+            .register(
+                &parse_schema_or_name("pow.delta").expect("unsupported name should parse"),
+                keyset,
+            )
+            .expect_err("unsupported operator base must fail")
+        {
+            SchemaRegistryError::UnsupportedOperator { base } => {
+                format!("UnsupportedOperator:{base}")
+            }
+            other => format!("unexpected:{other:?}"),
+        };
+        let missing = match registry
+            .lookup("missing_schema")
+            .expect_err("missing lookup must fail")
+        {
+            SchemaRegistryError::MissingSchema { name } => format!("MissingSchema:{name}"),
+            other => format!("unexpected:{other:?}"),
+        };
+
+        let mut summary = String::new();
+        summary
+            .push_str("dispatch_schema=ft_dispatch_schema_normalized_once_frankentorch-kgs4.15\n");
+        let _ = writeln!(&mut summary, "registered={}", registry.len());
+        for (idx, entry) in registry.iter().enumerate() {
+            let _ = writeln!(
+                &mut summary,
+                "{idx}:{}:{:?}:{:016x}:{}:{}",
+                entry.normalized_name,
+                entry.op,
+                entry.schema_digest,
+                entry.keyset.bits(),
+                entry.is_out_variant
+            );
+        }
+        let _ = writeln!(&mut summary, "duplicate={duplicate}");
+        let _ = writeln!(&mut summary, "unsupported={unsupported}");
+        let _ = writeln!(&mut summary, "missing={missing}");
+
+        assert_eq!(
+            summary,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_dispatch_schema_registry_normalized_once_frankentorch-kgs4-15.txt"
             )
         );
     }

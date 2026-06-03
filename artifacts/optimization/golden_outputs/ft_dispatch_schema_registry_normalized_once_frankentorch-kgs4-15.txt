@@ -1,0 +1,8 @@
+dispatch_schema=ft_dispatch_schema_normalized_once_frankentorch-kgs4.15
+registered=3
+0:add_alpha:Add:793d1d272379d4f7:48:false
+1:matmul_gamma:MatMul:a6f3e706ea3a672b:48:false
+2:sub_beta:Sub:462806083e73559c:48:false
+duplicate=DuplicateSchema:add_alpha
+unsupported=UnsupportedOperator:pow
+missing=MissingSchema:missing_schema
