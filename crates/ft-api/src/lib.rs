@@ -8251,6 +8251,62 @@ impl FrankenTorchSession {
         self.tensor_bce_with_logits_loss(input, target, reduction)
     }
 
+    /// BCE-with-logits loss weighting the positive class by `pos_weight`,
+    /// matching `torch.nn.functional.binary_cross_entropy_with_logits(input,
+    /// target, pos_weight=pos_weight, reduction=reduction)` for a scalar
+    /// `pos_weight` (the common per-binary-task imbalance weight).
+    ///
+    /// Derived from `l = pos_weight·t·softplus(-x) + (1-t)·softplus(x)` and
+    /// `softplus(x) = softplus(-x) + x`:
+    ///   l = (1-t)·x + log_weight·(max(-x, 0) + log(1 + e^{-|x|}))
+    /// with `log_weight = 1 + (pos_weight-1)·t`. pos_weight=1 reduces to the
+    /// plain stable BCE-with-logits. Composed from autograd-aware ops.
+    pub fn tensor_bce_with_logits_pos_weight(
+        &mut self,
+        input: TensorNodeId,
+        target: TensorNodeId,
+        pos_weight: f64,
+        reduction: &str,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if (pos_weight - 1.0).abs() < f64::EPSILON {
+            return self.tensor_bce_with_logits_loss(input, target, reduction);
+        }
+        let shape = self.tensor_shape(input)?;
+        let ones = self.full(shape.clone(), 1.0, false)?;
+        let zeros = self.full(shape, 0.0, false)?;
+
+        // log_weight = 1 + (pos_weight - 1) * target
+        let lw_scaled = self.tensor_mul_scalar(target, pos_weight - 1.0)?;
+        let log_weight = self.tensor_add(ones, lw_scaled)?;
+
+        // softplus(-x) = max(-x, 0) + log(1 + e^{-|x|})
+        let neg_x = self.tensor_neg(input)?;
+        let max_neg = self.tensor_maximum(neg_x, zeros)?;
+        let abs_x = self.tensor_abs(input)?;
+        let neg_abs = self.tensor_neg(abs_x)?;
+        let exp_term = self.tensor_exp(neg_abs)?;
+        let one_plus_exp = self.tensor_add(ones, exp_term)?;
+        let log_term = self.tensor_log(one_plus_exp)?;
+        let softplus_neg = self.tensor_add(max_neg, log_term)?;
+
+        // term1 = (1 - t) * x ; term2 = log_weight * softplus(-x)
+        let one_minus_t = self.tensor_sub(ones, target)?;
+        let term1 = self.tensor_mul(one_minus_t, input)?;
+        let term2 = self.tensor_mul(log_weight, softplus_neg)?;
+        let loss = self.tensor_add(term1, term2)?;
+
+        match reduction {
+            "none" => Ok(loss),
+            "mean" => self.tensor_mean(loss),
+            "sum" => self.tensor_sum(loss),
+            _ => Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                    reason: "bce_with_logits: reduction must be 'none', 'mean', or 'sum'",
+                },
+            ))),
+        }
+    }
+
     /// Negative log likelihood loss.
     ///
     /// Equivalent to `torch.nn.functional.nll_loss(input, target, reduction)`.
@@ -65969,6 +66025,42 @@ mod tests {
             "expected BCEWithLogits~{expected}, got {}",
             vals[0]
         );
+    }
+
+    #[test]
+    fn bce_with_logits_pos_weight_matches_torch() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // x=2, t=1, w=3: loss = -3·log σ(2) = -3·log(0.880797) = 0.380811.
+        let x = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        let t = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let l = s.tensor_bce_with_logits_pos_weight(x, t, 3.0, "none").unwrap();
+        let sig = 1.0 / (1.0 + (-2.0_f64).exp());
+        assert!((s.tensor_values(l).unwrap()[0] - (-3.0 * sig.ln())).abs() < 1e-12);
+        // x=-1, t=0, w=3: pos_weight irrelevant for t=0 → loss = -log(1-σ(-1)).
+        let x2 = s.tensor_variable(vec![-1.0], vec![1], false).unwrap();
+        let t2 = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let l2 = s.tensor_bce_with_logits_pos_weight(x2, t2, 3.0, "none").unwrap();
+        let sig2 = 1.0 / (1.0 + 1.0_f64.exp());
+        assert!((s.tensor_values(l2).unwrap()[0] - (-(1.0 - sig2).ln())).abs() < 1e-12);
+        // pos_weight=1 matches the plain stable BCE-with-logits.
+        let xa = s.tensor_variable(vec![0.5, -1.5, 2.0], vec![3], false).unwrap();
+        let ta = s.tensor_variable(vec![1.0, 0.0, 1.0], vec![3], false).unwrap();
+        let p1 = s.tensor_bce_with_logits_pos_weight(xa, ta, 1.0, "mean").unwrap();
+        let plain = s.tensor_bce_with_logits_loss(xa, ta, "mean").unwrap();
+        assert!((s.tensor_values(p1).unwrap()[0] - s.tensor_values(plain).unwrap()[0]).abs() < 1e-12);
+        // sum == Σ none; gradient flows to logits.
+        let xg = s.tensor_variable(vec![0.5, -1.5, 2.0], vec![3], true).unwrap();
+        let tg = s.tensor_variable(vec![1.0, 0.0, 1.0], vec![3], false).unwrap();
+        let ln = s.tensor_bce_with_logits_pos_weight(xg, tg, 2.5, "none").unwrap();
+        let nv = s.tensor_values(ln).unwrap();
+        let xg2 = s.tensor_variable(vec![0.5, -1.5, 2.0], vec![3], true).unwrap();
+        let tg2 = s.tensor_variable(vec![1.0, 0.0, 1.0], vec![3], false).unwrap();
+        let ls = s.tensor_bce_with_logits_pos_weight(xg2, tg2, 2.5, "sum").unwrap();
+        assert!((s.tensor_values(ls).unwrap()[0] - nv.iter().sum::<f64>()).abs() < 1e-12);
+        let lossm = s.tensor_bce_with_logits_pos_weight(xg, tg, 2.5, "mean").unwrap();
+        let report = s.tensor_backward(lossm).unwrap();
+        let grad = s.tensor_gradient(&report, xg).expect("pos_weight bce grad present");
+        assert!(grad.iter().any(|g| g.abs() > 1e-9), "pos_weight bce grad all-zero");
     }
 
     #[test]
