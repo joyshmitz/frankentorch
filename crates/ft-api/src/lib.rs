@@ -15660,6 +15660,70 @@ impl FrankenTorchSession {
         let patch_width = Self::checked_mul(in_channels, kernel_h, "conv2d patch width overflow")?;
         let patch_width = Self::checked_mul(patch_width, kernel_w, "conv2d patch width overflow")?;
         let patch_count = Self::checked_mul(output_h, output_w, "conv2d patch count overflow")?;
+        let flat_patch_count = Self::checked_mul(
+            batch_size,
+            patch_count,
+            "conv2d flattened patch count overflow",
+        )?;
+        let input_requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
+        let weight_requires_grad = self.tensor_tape.tensor_requires_grad(weight)?;
+        let bias_requires_grad = match bias {
+            Some(bias) => self.tensor_tape.tensor_requires_grad(bias)?,
+            None => false,
+        };
+
+        if !input_requires_grad && !weight_requires_grad && !bias_requires_grad {
+            let panel_len =
+                Self::checked_mul(flat_patch_count, patch_width, "conv2d im2col size overflow")?;
+            let padded_data = self.tensor_values(padded)?;
+            let mut panel = vec![0.0; panel_len];
+            for batch in 0..batch_size {
+                let padded_batch_offset = batch * in_channels * padded_h * padded_w;
+                for out_h_idx in 0..output_h {
+                    let base_h = out_h_idx * stride_h;
+                    for out_w_idx in 0..output_w {
+                        let base_w = out_w_idx * stride_w;
+                        let row = (batch * patch_count) + (out_h_idx * output_w) + out_w_idx;
+                        let panel_row_offset = row * patch_width;
+                        for channel in 0..in_channels {
+                            let channel_offset =
+                                padded_batch_offset + channel * padded_h * padded_w;
+                            let patch_channel_offset = channel * kernel_h * kernel_w;
+                            for kernel_row in 0..kernel_h {
+                                let padded_row = base_h + kernel_row;
+                                let input_row_offset = channel_offset + padded_row * padded_w;
+                                let patch_row_offset =
+                                    panel_row_offset + patch_channel_offset + kernel_row * kernel_w;
+                                for kernel_col in 0..kernel_w {
+                                    panel[patch_row_offset + kernel_col] =
+                                        padded_data[input_row_offset + base_w + kernel_col];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let unfolded_flat =
+                self.tensor_variable(panel, vec![flat_patch_count, patch_width], false)?;
+            let weight_flat = self.tensor_reshape(weight, vec![out_channels, patch_width])?;
+            let weight_t = self.tensor_transpose(weight_flat, 0, 1)?;
+            let output_flat = self.tensor_matmul(unfolded_flat, weight_t)?;
+            let output =
+                self.tensor_reshape(output_flat, vec![batch_size, patch_count, out_channels])?;
+            let output = self.tensor_transpose(output, 1, 2)?;
+            let output =
+                self.tensor_reshape(output, vec![batch_size, out_channels, output_h, output_w])?;
+
+            return match bias {
+                Some(bias) => {
+                    let bias = self.tensor_reshape(bias, vec![1, out_channels, 1, 1])?;
+                    let bias = self
+                        .tensor_expand(bias, vec![batch_size, out_channels, output_h, output_w])?;
+                    self.tensor_add(output, bias)
+                }
+                None => Ok(output),
+            };
+        }
 
         // Use unfold to extract all patches in O(1) tensor operations instead
         // of O(output_h * output_w) narrow+reshape calls.
@@ -15673,11 +15737,6 @@ impl FrankenTorchSession {
         let unfolded = self.tensor_reshape(permuted, vec![batch_size, patch_count, patch_width])?;
         let weight_flat = self.tensor_reshape(weight, vec![out_channels, patch_width])?;
         let weight_t = self.tensor_transpose(weight_flat, 0, 1)?;
-        let flat_patch_count = Self::checked_mul(
-            batch_size,
-            patch_count,
-            "conv2d flattened patch count overflow",
-        )?;
         let unfolded_flat = self.tensor_reshape(unfolded, vec![flat_patch_count, patch_width])?;
         let output_flat = self.tensor_matmul(unfolded_flat, weight_t)?;
         let output =
@@ -81218,6 +81277,87 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(shape, vec![1, 1, 1, 1]);
         assert_eq!(vals, vec![6.0]);
+    }
+
+    #[test]
+    fn functional_conv2d_no_grad_fast_path_matches_composed_path_bit_exact() {
+        let input_shape = vec![2, 3, 5, 6];
+        let weight_shape = vec![4, 3, 3, 2];
+        let bias_shape = vec![4];
+        let input_values: Vec<f64> = (0..180)
+            .map(|idx| ((idx * 17 + 3) % 257) as f64 * 0.01 - 1.0)
+            .collect();
+        let weight_values: Vec<f64> = (0..72)
+            .map(|idx| ((idx * 19 + 11) % 131) as f64 * 0.005 - 0.3)
+            .collect();
+        let bias_values: Vec<f64> = (0..4).map(|idx| idx as f64 * 0.25 - 0.125).collect();
+
+        let mut fast = FrankenTorchSession::new(ExecutionMode::Strict);
+        let fast_input = fast
+            .tensor_variable(input_values.clone(), input_shape.clone(), false)
+            .unwrap();
+        let fast_weight = fast
+            .tensor_variable(weight_values.clone(), weight_shape.clone(), false)
+            .unwrap();
+        let fast_bias = fast
+            .tensor_variable(bias_values.clone(), bias_shape.clone(), false)
+            .unwrap();
+        let fast_out = fast
+            .functional_conv2d(fast_input, fast_weight, Some(fast_bias), (2, 1), (1, 2))
+            .unwrap();
+
+        let mut composed = FrankenTorchSession::new(ExecutionMode::Strict);
+        let composed_input = composed
+            .tensor_variable(input_values.clone(), input_shape, true)
+            .unwrap();
+        let composed_weight = composed
+            .tensor_variable(weight_values, weight_shape, false)
+            .unwrap();
+        let composed_bias = composed
+            .tensor_variable(bias_values, bias_shape, false)
+            .unwrap();
+        let composed_out = composed
+            .functional_conv2d(
+                composed_input,
+                composed_weight,
+                Some(composed_bias),
+                (2, 1),
+                (1, 2),
+            )
+            .unwrap();
+
+        assert_eq!(fast.tensor_shape(fast_out).unwrap(), vec![2, 4, 3, 9]);
+        assert_eq!(
+            fast.tensor_shape(fast_out).unwrap(),
+            composed.tensor_shape(composed_out).unwrap()
+        );
+        let fast_values = fast.tensor_values(fast_out).unwrap();
+        let composed_values = composed.tensor_values(composed_out).unwrap();
+        assert_eq!(fast_values.len(), composed_values.len());
+        let mut out_acc = 0xcbf2_9ce4_8422_2325u64;
+        for (idx, (&got, &expected)) in fast_values.iter().zip(composed_values.iter()).enumerate()
+        {
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "conv2d fused/composed output @{idx}"
+            );
+            out_acc = (out_acc ^ got.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+
+        let loss = composed.tensor_sum(composed_out).unwrap();
+        let report = composed.tensor_backward(loss).unwrap();
+        let input_grad = composed
+            .tensor_gradient(&report, composed_input)
+            .expect("composed conv2d input grad present");
+        assert_eq!(input_grad.len(), input_values.len());
+        let mut grad_acc = 0xcbf2_9ce4_8422_2325u64;
+        for grad in input_grad {
+            grad_acc = (grad_acc ^ grad.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+
+        assert_eq!(out_acc, 0x1c8a_815a_c09b_13df);
+        assert_eq!(grad_acc, 0x0b15_7cdb_2c35_b4bd);
     }
 
     #[test]

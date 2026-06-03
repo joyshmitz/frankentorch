@@ -1,0 +1,16 @@
+functional_conv2d fused im2col panel fixture
+bead: frankentorch-a29q
+target: conv2d/hw/32
+reference: functional_conv2d_no_grad_fast_path_matches_composed_path_bit_exact
+shape: input [2, 3, 5, 6], weight [4, 3, 3, 2], bias [4]
+stride: [2, 1]
+padding: [1, 2]
+
+output_digest:
+0x1c8a815ac09b13df
+
+composed_input_grad_digest:
+0x0b157cdb2c35b4bd
+
+ordering_contract:
+NCHW output order, patch-major panel rows, channel/kernel-minor columns, matmul accumulation unchanged
