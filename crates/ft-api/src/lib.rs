@@ -16812,6 +16812,61 @@ impl FrankenTorchSession {
     /// Lp-norm pooling for 1-D input `[N, C, L]`.
     ///
     /// Equivalent to `torch.nn.LPPool1d`. Computes the Lp norm over each pooling window.
+    /// Build the differentiable output of an Lp-pool from per-output windows
+    /// (`windows[k]` lists the input flat indices that contribute to output `k`,
+    /// in summation order). Each output is `out_k = (Σ_i |x_i|^p)^(1/p)`, so with
+    /// `s_k = Σ_i |x_i|^p`:
+    ///   d out_k / d x_i = s_k^(1/p - 1) · |x_i|^(p-1) · sign(x_i)
+    /// and the backward scatter-adds `grad_out_k · s_k^(1/p-1) · |x_i|^(p-1)
+    /// · sign(x_i)` into each contributing input (positions shared by overlapping
+    /// windows accumulate). The forward sums in the same order as the caller, so
+    /// the output is bit-identical to the non-grad path.
+    fn lp_pool_grad_output(
+        &mut self,
+        input: TensorNodeId,
+        windows: Vec<Vec<usize>>,
+        p: f64,
+        out_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let windows_fwd = windows.clone();
+        self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (xv, _shape) = inputs[0];
+                let mut out = vec![0.0_f64; windows_fwd.len()];
+                for (k, win) in windows_fwd.iter().enumerate() {
+                    let mut s = 0.0_f64;
+                    for &i in win {
+                        s += xv[i].abs().powf(p);
+                    }
+                    out[k] = s.powf(1.0 / p);
+                }
+                ctx.save_for_backward(xv.to_vec(), vec![xv.len()]);
+                Ok((out, out_shape.clone()))
+            },
+            move |ctx, grad_outputs| {
+                let x = &ctx.saved_tensors()[0];
+                let g = grad_outputs[0];
+                let mut grad_in = vec![0.0_f64; x.len()];
+                for (k, win) in windows.iter().enumerate() {
+                    let mut s = 0.0_f64;
+                    for &i in win {
+                        s += x[i].abs().powf(p);
+                    }
+                    if s > 0.0 {
+                        // s^(1/p - 1) = s^(1/p) / s.
+                        let coeff = g[k] * s.powf(1.0 / p) / s;
+                        for &i in win {
+                            let xi = x[i];
+                            grad_in[i] += coeff * xi.abs().powf(p - 1.0) * xi.signum();
+                        }
+                    }
+                }
+                Ok(vec![Some(grad_in)])
+            },
+        )
+    }
+
     pub fn functional_lp_pool1d(
         &mut self,
         input: TensorNodeId,
@@ -16840,8 +16895,24 @@ impl FrankenTorchSession {
             return self.empty(vec![n, c, 0], false);
         }
 
-        let input_data = self.tensor_values(input)?;
         let total_out = n * c * l_out;
+
+        if self.tensor_requires_grad(input)? {
+            let mut windows: Vec<Vec<usize>> = Vec::with_capacity(total_out);
+            for batch in 0..n {
+                for channel in 0..c {
+                    let base = batch * c * l_in + channel * l_in;
+                    for ol in 0..l_out {
+                        let start = ol * stride;
+                        let end = (start + kernel_size).min(l_in);
+                        windows.push((start..end).map(|il| base + il).collect());
+                    }
+                }
+            }
+            return self.lp_pool_grad_output(input, windows, norm_type, vec![n, c, l_out]);
+        }
+
+        let input_data = self.tensor_values(input)?;
         let mut out_data = vec![0.0; total_out];
 
         for batch in 0..n {
@@ -16900,8 +16971,34 @@ impl FrankenTorchSession {
             return self.empty(vec![n, c, h_out, w_out], false);
         }
 
-        let input_data = self.tensor_values(input)?;
         let total_out = n * c * h_out * w_out;
+
+        if self.tensor_requires_grad(input)? {
+            let mut windows: Vec<Vec<usize>> = Vec::with_capacity(total_out);
+            for batch in 0..n {
+                for channel in 0..c {
+                    let base = batch * c * h_in * w_in + channel * h_in * w_in;
+                    for oh in 0..h_out {
+                        let h_start = oh * sh;
+                        let h_end = (h_start + kh).min(h_in);
+                        for ow in 0..w_out {
+                            let w_start = ow * sw;
+                            let w_end = (w_start + kw).min(w_in);
+                            let mut win = Vec::new();
+                            for ih in h_start..h_end {
+                                for iw in w_start..w_end {
+                                    win.push(base + ih * w_in + iw);
+                                }
+                            }
+                            windows.push(win);
+                        }
+                    }
+                }
+            }
+            return self.lp_pool_grad_output(input, windows, norm_type, vec![n, c, h_out, w_out]);
+        }
+
+        let input_data = self.tensor_values(input)?;
         let mut out_data = vec![0.0; total_out];
 
         for batch in 0..n {
@@ -16988,8 +17085,45 @@ impl FrankenTorchSession {
             return self.empty(vec![n, c, d_out, h_out, w_out], false);
         }
 
-        let input_data = self.tensor_values(input)?;
         let total_out = n * c * d_out * h_out * w_out;
+
+        if self.tensor_requires_grad(input)? {
+            let mut windows: Vec<Vec<usize>> = Vec::with_capacity(total_out);
+            for batch in 0..n {
+                for channel in 0..c {
+                    let base = batch * c * d_in * h_in * w_in + channel * d_in * h_in * w_in;
+                    for od in 0..d_out {
+                        let d_start = od * sd;
+                        let d_end = (d_start + kd).min(d_in);
+                        for oh in 0..h_out {
+                            let h_start = oh * sh;
+                            let h_end = (h_start + kh).min(h_in);
+                            for ow in 0..w_out {
+                                let w_start = ow * sw;
+                                let w_end = (w_start + kw).min(w_in);
+                                let mut win = Vec::new();
+                                for id in d_start..d_end {
+                                    for ih in h_start..h_end {
+                                        for iw in w_start..w_end {
+                                            win.push(base + id * h_in * w_in + ih * w_in + iw);
+                                        }
+                                    }
+                                }
+                                windows.push(win);
+                            }
+                        }
+                    }
+                }
+            }
+            return self.lp_pool_grad_output(
+                input,
+                windows,
+                norm_type,
+                vec![n, c, d_out, h_out, w_out],
+            );
+        }
+
+        let input_data = self.tensor_values(input)?;
         let mut out_data = vec![0.0; total_out];
 
         for batch in 0..n {
@@ -79694,6 +79828,54 @@ mod tests {
         let report = s.tensor_backward(loss).unwrap();
         let grad = s.tensor_gradient(&report, x_g).expect("max_unpool1d grad present");
         assert_eq!(grad, vec![20.0, 40.0]);
+    }
+
+    #[test]
+    fn lp_pool1d_backward_matches_finite_difference_and_value_parity() {
+        use ft_core::{DType, Device};
+        // [1,1,6] input; p=2, kernel=3, stride=2 → overlapping windows
+        // [0,1,2] and [2,3,4]: input index 2 contributes to BOTH windows, so its
+        // gradient accumulates. l_out = (6-3)/2 + 1 = 2.
+        let data = vec![1.0, -2.0, 3.0, 0.5, -1.5, 2.0];
+        let p = 2.0;
+        let dir = vec![0.3, -0.2, 0.5, 0.1, -0.4, 0.25];
+        let n = data.len();
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity.
+        let a_ng = s.tensor_variable(data.clone(), vec![1, 1, 6], false).unwrap();
+        let o_ng = s.functional_lp_pool1d(a_ng, p, 3, Some(2), false).unwrap();
+        let v_ng = s.tensor_values(o_ng).unwrap();
+        let a_g = s.tensor_variable(data.clone(), vec![1, 1, 6], true).unwrap();
+        let o_g = s.functional_lp_pool1d(a_g, p, 3, Some(2), false).unwrap();
+        let v_g = s.tensor_values(o_g).unwrap();
+        for (x, y) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "lp_pool1d grad/non-grad value mismatch");
+        }
+
+        // loss = sum of squares of the pooled output (exercises a non-uniform
+        // upstream gradient).
+        let sq = s.tensor_mul(o_g, o_g).unwrap();
+        let loss = s.tensor_sum(sq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, a_g).expect("lp_pool1d grad present");
+        let analytic: f64 = grad.iter().zip(dir.iter()).map(|(g, d)| g * d).sum();
+
+        let loss_of = |mat: &[f64]| -> f64 {
+            let meta = TensorMeta::from_shape(vec![1, 1, n], DType::F64, Device::Cpu);
+            let mut sess = FrankenTorchSession::new(ExecutionMode::Strict);
+            let t = sess.tensor_variable(mat.to_vec(), meta.shape().to_vec(), false).unwrap();
+            let o = sess.functional_lp_pool1d(t, p, 3, Some(2), false).unwrap();
+            sess.tensor_values(o).unwrap().iter().map(|v| v * v).sum::<f64>()
+        };
+        let eps = 1e-6;
+        let ap: Vec<f64> = data.iter().zip(dir.iter()).map(|(x, d)| x + eps * d).collect();
+        let am: Vec<f64> = data.iter().zip(dir.iter()).map(|(x, d)| x - eps * d).collect();
+        let fd = (loss_of(&ap) - loss_of(&am)) / (2.0 * eps);
+        assert!(
+            (analytic - fd).abs() <= 1e-5 * (1.0 + fd.abs()),
+            "lp_pool1d backward mismatch: analytic={analytic}, fd={fd}"
+        );
     }
 
     #[test]
