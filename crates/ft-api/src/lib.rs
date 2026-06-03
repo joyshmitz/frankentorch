@@ -8336,11 +8336,9 @@ impl FrankenTorchSession {
         }
         let n = input_shape[0];
         let c = input_shape[1];
-        let input_vals = self.tensor_values(input)?;
         let target_vals = self.tensor_values(target)?;
-        let mut losses = Vec::with_capacity(n);
-        for i in 0..n {
-            let class_idx = target_vals[i] as usize;
+        for &t in &target_vals {
+            let class_idx = t as usize;
             if class_idx >= c {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -8348,9 +8346,17 @@ impl FrankenTorchSession {
                     },
                 )));
             }
-            losses.push(-input_vals[i * c + class_idx]);
         }
-        let loss = self.tensor_variable(losses.clone(), vec![n], false)?;
+        // Autograd-aware: gather the per-sample log-prob at the target class via
+        // the autograd-tracked tensor_gather, then negate — the gradient scatters
+        // −grad back to input[i, target[i]]. The previous body extracted values
+        // and rebuilt a requires_grad=false leaf, silently severing the gradient
+        // of nll_loss (and hence cross_entropy / functional_cross_entropy).
+        // The gathered value is the same scalar, so the forward is bit-identical.
+        let index = self.tensor_variable(target_vals, vec![n, 1], false)?;
+        let gathered = self.tensor_gather(input, 1, index)?; // [n, 1]
+        let neg = self.tensor_neg(gathered)?;
+        let loss = self.tensor_reshape(neg, vec![n])?; // [n]
         match reduction {
             "none" => Ok(loss),
             "mean" => self.tensor_mean(loss),
@@ -67966,6 +67972,37 @@ mod tests {
             (val - 3.0_f64.ln()).abs() < 0.01,
             "full smoothing = uniform loss = log(3), got {val}"
         );
+    }
+
+    #[test]
+    fn nll_and_cross_entropy_propagate_gradient_to_logits() {
+        // Regression: tensor_nll_loss used to extract values and rebuild a
+        // requires_grad=false leaf, severing the gradient of cross_entropy /
+        // functional_cross_entropy. The fix routes through tensor_gather.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // cross_entropy: ∂/∂x = softmax(x) − onehot(target).
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], true).unwrap();
+        let t = s.tensor_variable(vec![2.0], vec![1], false).unwrap();
+        let ce = s.tensor_cross_entropy(x, t, "mean").unwrap();
+        // Forward value bit-identical: CE = -log_softmax[2] = 3.40760 - 3 = 0.40760.
+        assert!((s.tensor_values(ce).unwrap()[0] - 0.4076059644443804).abs() < 1e-12);
+        let report = s.tensor_backward(ce).unwrap();
+        let g = s.tensor_gradient(&report, x).expect("cross_entropy grad present");
+        // softmax([1,2,3]) = [0.09003, 0.24473, 0.66524]; grad = sm − [0,0,1].
+        let sm = [0.09003057317038046, 0.24472847105479764, 0.6652409557748219];
+        assert!((g[0] - sm[0]).abs() < 1e-9, "g0={}", g[0]);
+        assert!((g[1] - sm[1]).abs() < 1e-9, "g1={}", g[1]);
+        assert!((g[2] - (sm[2] - 1.0)).abs() < 1e-9, "g2={}", g[2]);
+
+        // nll_loss directly with 'none': grad to log_probs is −1 at the target.
+        let lp = s.tensor_variable(vec![-2.0, -1.0, -0.5], vec![1, 3], true).unwrap();
+        let t2 = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let nll = s.tensor_nll_loss(lp, t2, "none").unwrap();
+        assert_eq!(s.tensor_values(nll).unwrap(), vec![1.0]); // −(−1.0)
+        let rep2 = s.tensor_backward(nll).unwrap();
+        let g2 = s.tensor_gradient(&rep2, lp).expect("nll grad present");
+        assert_eq!(g2, vec![0.0, -1.0, 0.0]);
     }
 
     #[test]
