@@ -966,11 +966,20 @@ pub fn load_state_dict_from_bytes(
             });
         }
         let mut shape = Vec::with_capacity(ndim);
+        let mut numel = 1usize;
+        let mut shape_overflow = false;
         for _ in 0..ndim {
             let dim = read_u64(data, &mut pos)?;
             let dim = usize::try_from(dim).map_err(|_| TensorIOError::Corrupt {
                 reason: format!("shape dimension exceeds usize for tensor '{key}'"),
             })?;
+            if !shape_overflow {
+                if let Some(next) = numel.checked_mul(dim) {
+                    numel = next;
+                } else {
+                    shape_overflow = true;
+                }
+            }
             shape.push(dim);
         }
 
@@ -984,11 +993,11 @@ pub fn load_state_dict_from_bytes(
         pos += 1;
 
         // Values — use checked arithmetic to reject adversarial shapes
-        let numel: usize = shape.iter().try_fold(1usize, |acc, &dim| {
-            acc.checked_mul(dim).ok_or_else(|| TensorIOError::Corrupt {
+        if shape_overflow {
+            return Err(TensorIOError::Corrupt {
                 reason: format!("shape overflow in native state dict tensor '{key}'"),
-            })
-        })?;
+            });
+        }
         let meta = TensorMeta::from_shape(shape, dtype, Device::Cpu);
 
         let tensor = match dtype {
