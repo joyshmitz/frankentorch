@@ -4309,59 +4309,121 @@ pub fn lu_factor_contiguous_f64(
     let mut lu: Vec<f64> = data[offset..offset + n * n].to_vec();
     let mut pivots: Vec<usize> = (0..n).collect();
 
-    for k in 0..n {
-        // Find pivot: row with max |lu[i][k]| for i >= k
-        let mut max_val = lu[k * n + k].abs();
-        let mut max_row = k;
-        for i in (k + 1)..n {
-            let val = lu[i * n + k].abs();
-            if val > max_val {
-                max_val = val;
-                max_row = i;
-            }
-        }
+    // Blocked right-looking LU with partial pivoting (the LAPACK getrf scheme):
+    // factor a column panel, then apply it to the trailing matrix as a single
+    // matrix multiply. The trailing update — which dominates the O(n^3) cost —
+    // becomes a cache-blocked, multi-threaded `gemm::dgemm` (compute-bound)
+    // instead of a long stream of memory-bound rank-1 updates. Partial pivoting
+    // is still column-by-column with full-row swaps, so the PIVOT SEQUENCE is
+    // identical to the unblocked algorithm; only the trailing arithmetic
+    // reassociates (the factorization stays a valid P·L·U = A to working
+    // precision, checked by `lu_factor_reconstructs_pa_eq_lu`).
+    const NB: usize = 64;
+    const LU_PAR_MIN_ROWS: usize = 64;
+    let singular_tol = f64::EPSILON * 1e3;
 
-        // Swap rows k and max_row
-        if max_row != k {
-            pivots.swap(k, max_row);
-            for j in 0..n {
-                let a = k * n + j;
-                let b = max_row * n + j;
-                lu.swap(a, b);
-            }
-        }
+    let mut k0 = 0;
+    while k0 < n {
+        let pe = (k0 + NB).min(n); // panel end (exclusive)
 
-        let diag = lu[k * n + k];
-        if diag.abs() < f64::EPSILON * 1e3 {
-            // Near-singular: we continue but the result may be unreliable.
-            // Downstream consumers (det, inv, solve) should check for this.
-            continue;
-        }
-
-        // Elimination: rows below the pivot are independent once the pivot row
-        // is fixed. Keep pivot search/swaps serial, then split only this
-        // trailing row update across Rayon workers.
-        const LU_PAR_MIN_ROWS: usize = 64;
-        let rows_below = n - k - 1;
-        if rows_below >= LU_PAR_MIN_ROWS && rayon::current_num_threads() > 1 {
-            let (head, tail) = lu.split_at_mut((k + 1) * n);
-            let pivot_row = &head[k * n..(k + 1) * n];
-            tail.par_chunks_mut(n).for_each(|row_i| {
-                let multiplier = row_i[k] / diag;
-                row_i[k] = multiplier; // Store L factor
-                for j in (k + 1)..n {
-                    row_i[j] -= multiplier * pivot_row[j];
-                }
-            });
-        } else {
+        // --- 1. Factor the column panel [k0, pe), eliminating within the panel ---
+        for k in k0..pe {
+            // Pivot: row with max |lu[i][k]| for i >= k.
+            let mut max_val = lu[k * n + k].abs();
+            let mut max_row = k;
             for i in (k + 1)..n {
-                let multiplier = lu[i * n + k] / diag;
-                lu[i * n + k] = multiplier; // Store L factor
-                for j in (k + 1)..n {
-                    lu[i * n + j] -= multiplier * lu[k * n + j];
+                let val = lu[i * n + k].abs();
+                if val > max_val {
+                    max_val = val;
+                    max_row = i;
+                }
+            }
+            if max_row != k {
+                pivots.swap(k, max_row);
+                for j in 0..n {
+                    lu.swap(k * n + j, max_row * n + j); // full-row swap
+                }
+            }
+            let diag = lu[k * n + k];
+            if diag.abs() < singular_tol {
+                // Near-singular: zero the column's multipliers so the trailing
+                // GEMM contributes nothing for it. Downstream (det/inv/solve)
+                // detect singularity via the U diagonal.
+                for i in (k + 1)..n {
+                    lu[i * n + k] = 0.0;
+                }
+                continue;
+            }
+            // Scale L below the pivot and eliminate WITHIN the panel only
+            // (columns k+1..pe); trailing columns are deferred to the GEMM.
+            let rows_below = n - k - 1;
+            if rows_below >= LU_PAR_MIN_ROWS && rayon::current_num_threads() > 1 {
+                let (head, tail) = lu.split_at_mut((k + 1) * n);
+                let pivot_row = &head[k * n..(k + 1) * n];
+                tail.par_chunks_mut(n).for_each(|row_i| {
+                    let m = row_i[k] / diag;
+                    row_i[k] = m;
+                    for j in (k + 1)..pe {
+                        row_i[j] -= m * pivot_row[j];
+                    }
+                });
+            } else {
+                for i in (k + 1)..n {
+                    let m = lu[i * n + k] / diag;
+                    lu[i * n + k] = m;
+                    for j in (k + 1)..pe {
+                        lu[i * n + j] -= m * lu[k * n + j];
+                    }
                 }
             }
         }
+
+        let kb = pe - k0; // panel width
+        let tcols = n - pe; // trailing columns
+        if tcols == 0 {
+            break;
+        }
+
+        // --- 2. Triangular solve U12 = L11^{-1} * A12 (unit-lower L11) ---
+        // Forward substitution over panel rows in increasing order, so lu[t][j]
+        // already holds U[t][j] when row i (> t) consumes it.
+        for i in k0..pe {
+            for t in k0..i {
+                let lit = lu[i * n + t];
+                if lit != 0.0 {
+                    for j in pe..n {
+                        lu[i * n + j] -= lit * lu[t * n + j];
+                    }
+                }
+            }
+        }
+
+        // --- 3. GEMM trailing update A22 -= L21 * U12 ---
+        let trows = n - pe;
+        // Pack L21 (rows pe..n, cols k0..pe) -> contiguous [trows x kb].
+        let mut l21 = vec![0.0f64; trows * kb];
+        for ii in 0..trows {
+            let src = (pe + ii) * n + k0;
+            l21[ii * kb..ii * kb + kb].copy_from_slice(&lu[src..src + kb]);
+        }
+        // Pack U12 (rows k0..pe, cols pe..n) -> contiguous [kb x tcols].
+        let mut u12 = vec![0.0f64; kb * tcols];
+        for ii in 0..kb {
+            let src = (k0 + ii) * n + pe;
+            u12[ii * tcols..ii * tcols + tcols].copy_from_slice(&lu[src..src + tcols]);
+        }
+        // product = L21 * U12  -> [trows x tcols], then A22 -= product.
+        let mut prod = vec![0.0f64; trows * tcols];
+        gemm::dgemm(trows, kb, tcols, &l21, &u12, &mut prod);
+        for ii in 0..trows {
+            let dst = (pe + ii) * n + pe;
+            let prow = &prod[ii * tcols..ii * tcols + tcols];
+            for jj in 0..tcols {
+                lu[dst + jj] -= prow[jj];
+            }
+        }
+
+        k0 = pe;
     }
 
     Ok(LuFactorResult { lu, pivots, n })
@@ -13195,10 +13257,14 @@ mod tests {
     }
 
     #[test]
-    fn lu_factor_matches_reference_gaussian_elimination() {
-        // Regression guard: lu_factor_contiguous_f64 reproduces a straightforward
-        // reference Gaussian elimination with partial pivoting BIT-FOR-BIT (same
-        // pivots, same LU bits) on a larger well-conditioned matrix.
+    fn lu_factor_reconstructs_pa_eq_lu() {
+        // Parity guard for the blocked (getrf-style) factorization: the pivot
+        // SEQUENCE is identical to a straightforward reference Gaussian
+        // elimination with partial pivoting (blocked LU pivots column-by-column,
+        // same as unblocked), and P·L·U reconstructs A to working precision.
+        // The blocked trailing GEMM reassociates the trailing update, so the LU
+        // bits differ from naive GE by ~1 ulp — exactly what LAPACK/numpy do —
+        // hence reconstruction rather than a bit-for-bit comparison.
         let n = 200usize;
         // Diagonally dominant so pivoting is well-defined and no near-singular
         // `continue` fires; fractional values so rounding actually matters.
@@ -13245,13 +13311,35 @@ mod tests {
 
         let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
         let result = super::lu_factor_contiguous_f64(&a, &meta).expect("lu_factor");
+        // Pivot sequence must be identical to the reference (column-by-column
+        // partial pivoting is unchanged by blocking).
         assert_eq!(result.pivots, piv_ref, "pivot order diverged");
-        for (idx, (&actual, &expected)) in result.lu.iter().zip(lu_ref.iter()).enumerate() {
-            assert_eq!(
-                actual.to_bits(),
-                expected.to_bits(),
-                "LU factor diverged at {idx}"
-            );
+
+        // Reconstruction: P · L · U == A to working precision. L is unit-lower
+        // and U upper, so (L·U)[i][j] = sum_{t<=min(i,j)} L[i][t]·U[t][j].
+        let unpacked = super::lu_unpack(&result);
+        let mut lu_prod = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0;
+                for t in 0..=i.min(j) {
+                    s += unpacked.l[i * n + t] * unpacked.u[t * n + j];
+                }
+                lu_prod[i * n + j] = s;
+            }
+        }
+        // P·(L·U): row `orig` of the product = row `pos` of lu_prod where
+        // pivots[pos]==orig.
+        for pos in 0..n {
+            let orig = result.pivots[pos];
+            for j in 0..n {
+                let recon = lu_prod[pos * n + j];
+                let expected = a[orig * n + j];
+                assert!(
+                    (recon - expected).abs() < 1e-9,
+                    "P·L·U mismatch at ({orig},{j}): {recon} vs {expected}"
+                );
+            }
         }
     }
 
