@@ -1,0 +1,5 @@
+command: rch exec -- cargo bench -p ft-api --bench ops_bench -- istft/nfft512_frames256 --warm-up-time 1 --measurement-time 5 --sample-size 10
+worker: vmi1293453
+benchmark: istft/nfft512_frames256
+time: [200.55 ms 220.72 ms 243.49 ms]
+throughput: [270.20 Kelem/s 298.08 Kelem/s 328.06 Kelem/s]

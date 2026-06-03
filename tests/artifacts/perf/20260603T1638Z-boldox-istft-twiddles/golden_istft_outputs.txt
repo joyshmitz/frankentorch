@@ -1,0 +1,14 @@
+istft_twiddle_precompute fixture
+reference: tensor_istft_roundtrip_no_overlap + istft_parallel_match_serial_bit_exact
+small-roundtrip:
+input: [1.0, 2.0, 3.0, 4.0]
+stft: n_fft=4 hop_length=4 win_length=4 center=false onesided=true normalized=false
+istft: n_fft=4 hop_length=4 win_length=4 center=false length=4
+expected_values:
+0: 1.0
+1: 2.0
+2: 3.0
+3: 4.0
+
+large-bit-exact-test:
+istft_parallel_match_serial_bit_exact passed via rch. It checks n_fft=128, frames=64, hop=32, center=true, onesided=true, frames*n_fft >= PARALLEL_ELEMENTWISE_MIN, reconstructs the Hermitian full spectrum, runs the direct inverse DFT, serial overlap-adds and envelope-normalizes, and compares every output bit against a serial reference.

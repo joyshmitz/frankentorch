@@ -24721,10 +24721,27 @@ impl FrankenTorchSession {
         } else {
             1.0 / plan.n_fft as f64
         };
+        const ISTFT_TWIDDLE_PRECOMPUTE_MAX: usize = 1 << 20;
+        let inverse_dft_twiddles = plan
+            .n_fft
+            .checked_mul(plan.n_fft)
+            .filter(|&count| count <= ISTFT_TWIDDLE_PRECOMPUTE_MAX)
+            .map(|count| {
+                let mut twiddles = vec![ft_core::Complex128::new(0.0, 0.0); count];
+                for n in 0..plan.n_fft {
+                    for k in 0..plan.n_fft {
+                        let angle =
+                            2.0 * std::f64::consts::PI * k as f64 * n as f64 / plan.n_fft as f64;
+                        twiddles[n * plan.n_fft + k] =
+                            ft_core::Complex128::new(angle.cos(), angle.sin());
+                    }
+                }
+                twiddles
+            });
 
         // Each frame's inverse transform is independent and dominates the cost
-        // (naive O(n_fft^2) DFT, cos/sin per term). Compute every frame's
-        // time-domain signal in parallel into a contiguous n_fft block, then
+        // (direct O(n_fft^2) DFT). Compute every frame's time-domain signal in
+        // parallel into a contiguous n_fft block, then
         // overlap-add them SERIALLY in ascending frame order so the accumulation
         // into `signal`/`envelope` (a reduction over overlapping regions) stays
         // bit-for-bit identical to the original interleaved loop.
@@ -24750,11 +24767,18 @@ impl FrankenTorchSession {
             }
             for (n, sample) in ft_slice.iter_mut().enumerate() {
                 let mut value = ft_core::Complex128::new(0.0, 0.0);
-                for (k, coeff) in full_spectrum.iter().enumerate() {
-                    let angle =
-                        2.0 * std::f64::consts::PI * k as f64 * n as f64 / plan.n_fft as f64;
-                    let twiddle = ft_core::Complex128::new(angle.cos(), angle.sin());
-                    value += *coeff * twiddle;
+                if let Some(twiddles) = inverse_dft_twiddles.as_ref() {
+                    let row = &twiddles[n * plan.n_fft..(n + 1) * plan.n_fft];
+                    for (coeff, &twiddle) in full_spectrum.iter().zip(row.iter()) {
+                        value += *coeff * twiddle;
+                    }
+                } else {
+                    for (k, coeff) in full_spectrum.iter().enumerate() {
+                        let angle =
+                            2.0 * std::f64::consts::PI * k as f64 * n as f64 / plan.n_fft as f64;
+                        let twiddle = ft_core::Complex128::new(angle.cos(), angle.sin());
+                        value += *coeff * twiddle;
+                    }
                 }
                 *sample = value.re * scale;
             }
