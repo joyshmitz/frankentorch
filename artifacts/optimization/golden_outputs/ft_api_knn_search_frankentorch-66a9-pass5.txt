@@ -1,0 +1,16 @@
+knn_search query-tiled top-k fixture
+bead: frankentorch-66a9
+pass: 5
+target: knn_search/8192x512_k8
+reference: knn_search_bench_scale_matches_full_sort_reference_bit_exact
+shape: points [8192, 3], queries [512, 3]
+k: 8
+
+idx_digest:
+0x31c1945c1c1bdd25
+
+distance_bits_digest:
+0x5146b549cd8f131d
+
+ordering_contract:
+per-query point scan ascending, stable full-sort reference, strict-less top-k insertion

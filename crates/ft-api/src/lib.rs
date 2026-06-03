@@ -34702,58 +34702,72 @@ impl FrankenTorchSession {
             let dist_t = self.tensor_variable(Vec::<f64>::new(), out_shape, false)?;
             return Ok((idx_t, dist_t));
         }
+        fn consider_knn_candidate(best: &mut Vec<(usize, f64)>, k: usize, pi: usize, d: f64) {
+            // Early-reject once the top-k buffer is full. `best` is kept
+            // sorted ascending, so best[k-1] is the worst retained distance.
+            // The insertion scan only fires when `d` sorts strictly before a
+            // retained entry, i.e. d < worst; otherwise it is a no-op.
+            if best.len() == k
+                && d.partial_cmp(&best[k - 1].1) != Some(std::cmp::Ordering::Less)
+            {
+                return;
+            }
+            let insert_at = best
+                .iter()
+                .position(|&(_, best_d)| d.partial_cmp(&best_d) == Some(std::cmp::Ordering::Less));
+            if let Some(pos) = insert_at {
+                best.insert(pos, (pi, d));
+                if best.len() > k {
+                    best.pop();
+                }
+            } else if best.len() < k {
+                best.push((pi, d));
+            }
+        }
+
         let p_data = self.tensor_values(points)?;
         let q_data = self.tensor_values(queries)?;
         let mut indices = vec![0.0; batch_size * n_queries * k];
         let mut distances = vec![0.0; batch_size * n_queries * k];
+        const KNN_QUERY_TILE: usize = 16;
         for b in 0..batch_size {
             let p_off = b * n_points * 3;
             let q_off = b * n_queries * 3;
             let out_off = b * n_queries * k;
-            let mut best: Vec<(usize, f64)> = Vec::with_capacity(k);
-            for qi in 0..n_queries {
-                let (qx, qy, qz) = (
-                    q_data[q_off + qi * 3],
-                    q_data[q_off + qi * 3 + 1],
-                    q_data[q_off + qi * 3 + 2],
-                );
-                best.clear();
+            let mut bests: Vec<Vec<(usize, f64)>> = (0..KNN_QUERY_TILE)
+                .map(|_| Vec::with_capacity(k))
+                .collect();
+            let mut tile_qx = [0.0f64; KNN_QUERY_TILE];
+            let mut tile_qy = [0.0f64; KNN_QUERY_TILE];
+            let mut tile_qz = [0.0f64; KNN_QUERY_TILE];
+            for q_start in (0..n_queries).step_by(KNN_QUERY_TILE) {
+                let tile_len = (n_queries - q_start).min(KNN_QUERY_TILE);
+                for local_q in 0..tile_len {
+                    let qi = q_start + local_q;
+                    tile_qx[local_q] = q_data[q_off + qi * 3];
+                    tile_qy[local_q] = q_data[q_off + qi * 3 + 1];
+                    tile_qz[local_q] = q_data[q_off + qi * 3 + 2];
+                    bests[local_q].clear();
+                }
                 for pi in 0..n_points {
                     let (px, py, pz) = (
                         p_data[p_off + pi * 3],
                         p_data[p_off + pi * 3 + 1],
                         p_data[p_off + pi * 3 + 2],
                     );
-                    let d = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2);
-                    // Early-reject once the top-k buffer is full. `best` is kept
-                    // sorted ascending, so best[k-1] is the worst retained
-                    // distance. The streaming insert below only fires when `d`
-                    // sorts strictly before some retained entry, i.e. d < worst;
-                    // otherwise position() returns None and the `len() < k` arm
-                    // is false, making it a no-op. Skipping here is bit-for-bit
-                    // identical (same partial_cmp, same NaN handling) while
-                    // avoiding the O(k) scan for the overwhelming majority of
-                    // points that cannot enter the neighbourhood.
-                    if best.len() == k
-                        && d.partial_cmp(&best[k - 1].1) != Some(std::cmp::Ordering::Less)
-                    {
-                        continue;
-                    }
-                    let insert_at = best.iter().position(|&(_, best_d)| {
-                        d.partial_cmp(&best_d) == Some(std::cmp::Ordering::Less)
-                    });
-                    if let Some(pos) = insert_at {
-                        best.insert(pos, (pi, d));
-                        if best.len() > k {
-                            best.pop();
-                        }
-                    } else if best.len() < k {
-                        best.push((pi, d));
+                    for local_q in 0..tile_len {
+                        let d = (px - tile_qx[local_q]).powi(2)
+                            + (py - tile_qy[local_q]).powi(2)
+                            + (pz - tile_qz[local_q]).powi(2);
+                        consider_knn_candidate(&mut bests[local_q], k, pi, d);
                     }
                 }
-                for (j, &(pi, d)) in best.iter().enumerate() {
-                    indices[out_off + qi * k + j] = pi as f64;
-                    distances[out_off + qi * k + j] = d.sqrt();
+                for local_q in 0..tile_len {
+                    let qi = q_start + local_q;
+                    for (j, &(pi, d)) in bests[local_q].iter().enumerate() {
+                        indices[out_off + qi * k + j] = pi as f64;
+                        distances[out_off + qi * k + j] = d.sqrt();
+                    }
                 }
             }
         }
