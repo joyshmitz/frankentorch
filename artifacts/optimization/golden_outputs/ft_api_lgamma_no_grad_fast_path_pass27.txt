@@ -1,0 +1,18 @@
+bead=frankentorch-kgs4.31
+op=tensor_gammaln_no_grad_fast_path
+n=8209
+shape=[8209]
+dtype=F64
+fast_requires_grad=false
+tracked_requires_grad=true
+fast_digest=0x5dceb5a6b608b006
+tracked_digest=0x5dceb5a6b608b006
+fast_ledger_kind=Dispatch
+fast_ledger_summary=gammaln in=0 out=1
+tracked_ledger_kind=Dispatch
+tracked_ledger_summary=gammaln in=0 out=1
+sample[0]=input_bits=0x3fd0000000000000 output_bits=0x3ff49bbd81c16efb
+sample[1]=input_bits=0x3fd116872b020c4a output_bits=0x3ff37f23cf624ef1
+sample[127]=input_bits=0x400345a1cac08313 output_bits=0x3fcc8346fccb379c
+sample[8192]=input_bits=0x400f60c38f366949 output_bits=0x3ffb1e8c5694a011
+sample[8208]=input_bits=0x4010c6e8f29d40ee output_bits=0x40005400dbc46867
