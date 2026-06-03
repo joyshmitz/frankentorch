@@ -38222,13 +38222,54 @@ impl FrankenTorchSession {
                 );
                 return Ok(out);
             }
-            // Cholesky backward is implementable but non-trivial
-            // (involves the phi = lower(L^T L) tridiag formula).
-            // Fail loud for now (parking-lot pattern matching pvfk
-            // / 3v6e). Tracked under frankentorch-rl4g.
+            // General N x N backward for the lower factor (the torch default).
+            // Uses the standard differentiable-Cholesky result (Murray 2016 /
+            // PyTorch cholesky_backward):
+            //   phi      = tril_half_diag(L^T @ L_bar)
+            //   A_bar    = L^{-T} @ phi @ L^{-1}
+            //   grad_A   = (A_bar + A_bar^T) / 2   (A is symmetric).
+            // frankentorch-rl4g.
+            let shape = input_meta.shape();
+            if !upper
+                && shape.len() == 2
+                && shape[0] == shape[1]
+                && input_meta.dtype() == DType::F64
+            {
+                let device = input_meta.device();
+                let out = self.tensor_apply_function(
+                    &[input],
+                    move |ctx, inputs| {
+                        let (values, in_shape) = inputs[0];
+                        let meta =
+                            TensorMeta::from_shape(in_shape.to_vec(), DType::F64, device);
+                        let result = ft_kernel_cpu::cholesky_contiguous_f64(values, &meta, false)
+                            .map_err(|e| {
+                                AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                            })?;
+                        let n = result.n;
+                        ctx.save_for_backward(result.factor.clone(), vec![n, n]);
+                        Ok((result.factor, vec![n, n]))
+                    },
+                    move |ctx, grad_outputs| {
+                        let saved = ctx.saved_tensors();
+                        let l = &saved[0];
+                        let grad_l = grad_outputs[0];
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let n = (l.len() as f64).sqrt().round() as usize;
+                        let grad_a = Self::cholesky_backward_lower(l, grad_l, n);
+                        Ok(vec![Some(grad_a)])
+                    },
+                )?;
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!("linalg_cholesky input={} out={} upper=false (autograd)", input.0, out.0),
+                );
+                return Ok(out);
+            }
+            // Upper factor / non-square / non-F64: not yet supported.
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "linalg_cholesky: autograd not supported (cholesky backward not yet implemented)",
+                    reason: "linalg_cholesky: autograd only supported for the lower factor of a square F64 matrix",
                 },
             )));
         }
@@ -38237,6 +38278,65 @@ impl FrankenTorchSession {
             .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
         let n = result.n;
         self.tensor_variable(result.factor, vec![n, n], false)
+    }
+
+    /// Gradient of A through `A = L L^T` (lower Cholesky), given `l` (the n x n
+    /// lower factor, row-major) and `grad_l` (the upstream gradient w.r.t. L).
+    /// Returns the symmetric `grad_A` (row-major n x n). Standard differentiable
+    /// Cholesky: `phi = tril_half_diag(L^T grad_L)`, `A_bar = L^-T phi L^-1`,
+    /// `grad_A = (A_bar + A_bar^T)/2`.
+    fn cholesky_backward_lower(l: &[f64], grad_l: &[f64], n: usize) -> Vec<f64> {
+        // phi = lower-triangular part of (L^T @ grad_L), diagonal halved.
+        let mut phi = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let mut m = 0.0_f64;
+                for k in 0..n {
+                    m += l[k * n + i] * grad_l[k * n + j];
+                }
+                phi[i * n + j] = if i == j { 0.5 * m } else { m };
+            }
+        }
+        // L^-1 (lower-triangular) via forward substitution: solve L @ Linv = I.
+        let mut linv = vec![0.0_f64; n * n];
+        for c in 0..n {
+            for i in c..n {
+                let mut s = if i == c { 1.0 } else { 0.0 };
+                for j in c..i {
+                    s -= l[i * n + j] * linv[j * n + c];
+                }
+                linv[i * n + c] = s / l[i * n + i];
+            }
+        }
+        // t = phi @ Linv.
+        let mut t = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0_f64;
+                for k in 0..n {
+                    s += phi[i * n + k] * linv[k * n + j];
+                }
+                t[i * n + j] = s;
+            }
+        }
+        // a_bar = Linv^T @ t, then symmetrize: grad_A = (a_bar + a_bar^T)/2.
+        let mut a_bar = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0_f64;
+                for k in 0..n {
+                    s += linv[k * n + i] * t[k * n + j];
+                }
+                a_bar[i * n + j] = s;
+            }
+        }
+        let mut grad_a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                grad_a[i * n + j] = 0.5 * (a_bar[i * n + j] + a_bar[j * n + i]);
+            }
+        }
+        grad_a
     }
 
     /// Cholesky decomposition with info output.
@@ -79024,6 +79124,67 @@ mod tests {
             .tensor_gradient(&report, a)
             .expect("1x1 cholesky must propagate sqrt derivative");
         assert!((grad[0] - (1.0 / 6.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cholesky_nxn_backward_matches_finite_difference() {
+        use ft_core::{DType, Device};
+        let n = 4usize;
+        // SPD A = B B^T + n*I (symmetric, well-conditioned).
+        let mut b = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                b[i * n + j] = ((i * 3 + j) % 5) as f64 * 0.1 + 0.05;
+            }
+        }
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0;
+                for k in 0..n {
+                    s += b[i * n + k] * b[j * n + k];
+                }
+                a[i * n + j] = s;
+            }
+            a[i * n + i] += n as f64;
+        }
+        // Symmetric perturbation direction V.
+        let mut v = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let val = ((i + 2 * j) % 4) as f64 * 0.1 - 0.15;
+                v[i * n + j] = val;
+                v[j * n + i] = val;
+            }
+        }
+
+        // loss(M) = sum of squares of the lower Cholesky factor of M.
+        let loss_of = |mat: &[f64]| -> f64 {
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let r = ft_kernel_cpu::cholesky_contiguous_f64(mat, &meta, false).unwrap();
+            r.factor.iter().map(|x| x * x).sum::<f64>()
+        };
+
+        // Analytic directional derivative via autograd: <grad_A, V>.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let at = s.tensor_variable(a.clone(), vec![n, n], true).unwrap();
+        let l = s.tensor_linalg_cholesky(at, false).unwrap();
+        let lsq = s.tensor_mul(l, l).unwrap();
+        let loss = s.tensor_sum(lsq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_a = s.tensor_gradient(&report, at).expect("cholesky grad present");
+        let analytic: f64 = grad_a.iter().zip(v.iter()).map(|(g, vv)| g * vv).sum();
+
+        // Central finite difference of the same loss along V.
+        let eps = 1e-6;
+        let a_plus: Vec<f64> = a.iter().zip(v.iter()).map(|(x, vv)| x + eps * vv).collect();
+        let a_minus: Vec<f64> = a.iter().zip(v.iter()).map(|(x, vv)| x - eps * vv).collect();
+        let fd = (loss_of(&a_plus) - loss_of(&a_minus)) / (2.0 * eps);
+
+        assert!(
+            (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
+            "cholesky backward mismatch: analytic={analytic}, fd={fd}"
+        );
     }
 
     #[test]
