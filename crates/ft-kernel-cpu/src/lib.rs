@@ -948,6 +948,19 @@ const PARALLEL_THRESHOLD: usize = 8192;
 // parallel are bit-for-bit identical — this only changes scheduling.
 const SCALAR_UNARY_PARALLEL_THRESHOLD: usize = 1 << 19; // 524288
 
+// Row-parallel softmax/log_softmax over the last dim spreads independent rows
+// across the rayon pool, but for the common classifier/attention shapes the
+// total work is tiny and rayon's split/join dominates. Same-worker A/B
+// (RAYON_NUM_THREADS=1 vs default, 64-core) on softmax/vocab [32, n]:
+//   numel 4096   serial 72 us   vs parallel 556 us  (7.7x slower parallel)
+//   numel 16384  serial 214 us  vs parallel 676 us  (3.2x slower parallel)
+//   numel 65536  serial 1.03 ms vs parallel 1.02 ms (break-even)
+//   numel 262144 serial 2.74 ms vs parallel 1.13 ms (2.4x faster parallel)
+// Gate the per-row parallel path at the ~65536 crossover. Rows are independent
+// and each is reduced identically regardless of thread, so output is
+// bit-for-bit identical to the single-threaded path.
+const SOFTMAX_PARALLEL_NUMEL_THRESHOLD: usize = 1 << 16; // 65536
+
 fn unary_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, KernelError>
 where
     F: Fn(f64) -> f64 + Sync,
@@ -2748,19 +2761,27 @@ pub fn softmax_dim_tensor_contiguous_f64(
     // so we can exp(x - max) directly into `output` and pairwise-sum
     // from there with zero scratch allocation.
     if inner_size == 1 {
-        output
-            .par_chunks_mut(reduce_size)
-            .zip(data[..numel].par_chunks(reduce_size))
-            .for_each(|(out_slice, in_slice)| {
-                let max_val = in_slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                for (out, &x) in out_slice.iter_mut().zip(in_slice.iter()) {
-                    *out = (x - max_val).exp();
-                }
-                let sum = pairwise_sum_f64(out_slice);
-                for v in out_slice {
-                    *v /= sum;
-                }
-            });
+        let process = |out_slice: &mut [f64], in_slice: &[f64]| {
+            let max_val = in_slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            for (out, &x) in out_slice.iter_mut().zip(in_slice.iter()) {
+                *out = (x - max_val).exp();
+            }
+            let sum = pairwise_sum_f64(out_slice);
+            for v in out_slice {
+                *v /= sum;
+            }
+        };
+        if numel >= SOFTMAX_PARALLEL_NUMEL_THRESHOLD {
+            output
+                .par_chunks_mut(reduce_size)
+                .zip(data[..numel].par_chunks(reduce_size))
+                .for_each(|(out_slice, in_slice)| process(out_slice, in_slice));
+        } else {
+            output
+                .chunks_mut(reduce_size)
+                .zip(data[..numel].chunks(reduce_size))
+                .for_each(|(out_slice, in_slice)| process(out_slice, in_slice));
+        }
         return Ok(output);
     }
 
@@ -2827,17 +2848,25 @@ pub fn log_softmax_dim_tensor_contiguous_f64(
     // stays serial because Criterion showed Rayon overhead dominates there.
     // exp is compute-bound and each slice is independent -> bit-identical.
     if inner_size == 1 {
-        output
-            .par_chunks_mut(reduce_size)
-            .zip(data[..numel].par_chunks(reduce_size))
-            .for_each(|(out_slice, in_slice)| {
-                let max_val = in_slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                let sum_exp = pairwise_sum_map_f64(in_slice, |x| (x - max_val).exp());
-                let log_sum_exp = sum_exp.ln();
-                for (out, &x) in out_slice.iter_mut().zip(in_slice.iter()) {
-                    *out = (x - max_val) - log_sum_exp;
-                }
-            });
+        let process = |out_slice: &mut [f64], in_slice: &[f64]| {
+            let max_val = in_slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let sum_exp = pairwise_sum_map_f64(in_slice, |x| (x - max_val).exp());
+            let log_sum_exp = sum_exp.ln();
+            for (out, &x) in out_slice.iter_mut().zip(in_slice.iter()) {
+                *out = (x - max_val) - log_sum_exp;
+            }
+        };
+        if numel >= SOFTMAX_PARALLEL_NUMEL_THRESHOLD {
+            output
+                .par_chunks_mut(reduce_size)
+                .zip(data[..numel].par_chunks(reduce_size))
+                .for_each(|(out_slice, in_slice)| process(out_slice, in_slice));
+        } else {
+            output
+                .chunks_mut(reduce_size)
+                .zip(data[..numel].chunks(reduce_size))
+                .for_each(|(out_slice, in_slice)| process(out_slice, in_slice));
+        }
         return Ok(output);
     }
 
