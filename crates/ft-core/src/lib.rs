@@ -338,6 +338,7 @@ impl QuantizationParams {
 pub struct TensorMeta {
     shape: Vec<usize>,
     strides: Vec<usize>,
+    numel: usize,
     storage_offset: usize,
     dtype: DType,
     device: Device,
@@ -350,6 +351,7 @@ impl TensorMeta {
         Self {
             shape: Vec::new(),
             strides: Vec::new(),
+            numel: 1,
             storage_offset: 0,
             dtype,
             device,
@@ -360,9 +362,11 @@ impl TensorMeta {
     #[must_use]
     pub fn from_shape(shape: Vec<usize>, dtype: DType, device: Device) -> Self {
         let strides = contiguous_strides(&shape);
+        let numel = saturated_numel(&shape);
         Self {
             shape,
             strides,
+            numel,
             storage_offset: 0,
             dtype,
             device,
@@ -404,9 +408,11 @@ impl TensorMeta {
         dtype: DType,
         device: Device,
     ) -> Result<Self, TensorMetaError> {
+        let numel = saturated_numel(&shape);
         let meta = Self {
             shape,
             strides,
+            numel,
             storage_offset,
             dtype,
             device,
@@ -426,9 +432,11 @@ impl TensorMeta {
         zero_point: i64,
     ) -> Result<Self, TensorMetaError> {
         let quantization = QuantizationParams::new(scale, zero_point)?;
+        let numel = saturated_numel(&shape);
         let meta = Self {
             shape,
             strides,
+            numel,
             storage_offset,
             dtype,
             device,
@@ -450,9 +458,11 @@ impl TensorMeta {
         axis: usize,
     ) -> Result<Self, TensorMetaError> {
         let quantization = QuantizationParams::per_channel(scales, zero_points, axis)?;
+        let numel = saturated_numel(&shape);
         let meta = Self {
             shape,
             strides,
+            numel,
             storage_offset,
             dtype,
             device,
@@ -561,20 +571,7 @@ impl TensorMeta {
 
     #[must_use]
     pub fn numel(&self) -> usize {
-        if self.shape.is_empty() {
-            return 1;
-        }
-        let mut product = 1usize;
-        for dim in self.shape.iter().copied() {
-            if dim == 0 {
-                return 0;
-            }
-            let Some(next) = product.checked_mul(dim) else {
-                return usize::MAX;
-            };
-            product = next;
-        }
-        product
+        self.numel
     }
 
     #[must_use]
@@ -1993,6 +1990,23 @@ pub fn contiguous_strides(shape: &[usize]) -> Vec<usize> {
         running = running.saturating_mul(shape[idx]);
     }
     strides
+}
+
+fn saturated_numel(shape: &[usize]) -> usize {
+    if shape.is_empty() {
+        return 1;
+    }
+    if shape.contains(&0) {
+        return 0;
+    }
+    let mut product = 1usize;
+    for dim in shape.iter().copied() {
+        let Some(next) = product.checked_mul(dim) else {
+            return usize::MAX;
+        };
+        product = next;
+    }
+    product
 }
 
 // ── Sparse Tensor Types ────────────────────────────────────────────────
