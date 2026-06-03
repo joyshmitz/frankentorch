@@ -61633,10 +61633,14 @@ fn zeta_approx(s: f64, a: f64) -> f64 {
         return f64::INFINITY;
     }
 
-    // For s > 1, use direct summation with Euler-Maclaurin
+    // Hurwitz zeta ζ(s, a) = Σ_{n=0}^{N-1}(n+a)^{-s} + tail, with the tail
+    // Σ_{n=N}^∞(n+a)^{-s} evaluated by Euler-Maclaurin:
+    //   ∫_N^∞ f + f(N)/2 - Σ_k B_{2k}/(2k)! f^{(2k-1)}(N),  f(x)=(x+a)^{-s}.
+    // The k=1 term is +s·(N+a)^{-s-1}/12 (the previous code had it negated —
+    // a ~7-digit precision loss vs torch); the k=2 term is added so the result
+    // reaches ~f64 accuracy for N=100.
     let n_terms = 100;
     let mut sum = 0.0;
-
     for n in 0..n_terms {
         let term = (n as f64 + a).powf(-s);
         if !term.is_finite() {
@@ -61645,11 +61649,11 @@ fn zeta_approx(s: f64, a: f64) -> f64 {
         sum += term;
     }
 
-    // Euler-Maclaurin correction for remainder
-    let last = (n_terms as f64 + a).powf(-s);
-    let last_deriv = -s * (n_terms as f64 + a).powf(-s - 1.0);
-    sum += last / 2.0 + (n_terms as f64 + a).powf(1.0 - s) / (s - 1.0);
-    sum += last_deriv / 12.0;
+    let na = n_terms as f64 + a;
+    sum += na.powf(1.0 - s) / (s - 1.0); // ∫_N^∞ f(x) dx
+    sum += 0.5 * na.powf(-s); // f(N)/2
+    sum += s * na.powf(-s - 1.0) / 12.0; // -B2/2! · f'(N)
+    sum -= s * (s + 1.0) * (s + 2.0) * na.powf(-s - 3.0) / 720.0; // -B4/4! · f'''(N)
 
     sum
 }
@@ -83077,6 +83081,22 @@ mod tests {
         for (idx, ((g, &svv), &qvv)) in z_got.iter().zip(sv.iter()).zip(qv.iter()).enumerate() {
             assert_eq!(g.to_bits(), super::zeta_approx(svv, qvv).to_bits(), "zeta @{idx}");
         }
+    }
+
+    #[test]
+    fn hurwitz_zeta_matches_f64_reference_values() {
+        // Reference values from scipy.special.zeta / closed forms. The previous
+        // Euler-Maclaurin tail had its B2 correction negated (~3e-7 error); the
+        // corrected tail (+ a B4 term) is f64-accurate, so a 1e-11 tolerance
+        // both confirms the fix and guards against regressions.
+        let rel = |got: f64, want: f64| (got - want).abs() <= 1e-11 * (1.0 + want.abs());
+        assert!(rel(super::zeta_approx(2.0, 1.0), 1.6449340668482264)); // π²/6
+        assert!(rel(super::zeta_approx(3.0, 1.0), 1.2020569031595942)); // Apéry
+        assert!(rel(super::zeta_approx(4.0, 1.0), 1.0823232337111381)); // π⁴/90
+        assert!(rel(super::zeta_approx(6.0, 1.0), 1.0173430619844491)); // π⁶/945
+        assert!(rel(super::zeta_approx(2.0, 2.0), 0.6449340668482264)); // π²/6 − 1
+        assert!(rel(super::zeta_approx(2.0, 0.5), 4.934802200544679)); // π²/2
+        assert!(rel(super::zeta_approx(8.0, 1.0), 1.0040773561979443)); // π⁸/9450
     }
 
     #[test]
