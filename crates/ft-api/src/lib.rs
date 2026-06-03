@@ -34692,6 +34692,16 @@ impl FrankenTorchSession {
                 "knn_search: k > number of points",
             ));
         }
+        if k == 0 {
+            let out_shape = if p_shape.len() == 2 {
+                vec![n_queries, k]
+            } else {
+                vec![batch_size, n_queries, k]
+            };
+            let idx_t = self.tensor_variable(Vec::<f64>::new(), out_shape.clone(), false)?;
+            let dist_t = self.tensor_variable(Vec::<f64>::new(), out_shape, false)?;
+            return Ok((idx_t, dist_t));
+        }
         let p_data = self.tensor_values(points)?;
         let q_data = self.tensor_values(queries)?;
         let mut indices = vec![0.0; batch_size * n_queries * k];
@@ -34700,7 +34710,7 @@ impl FrankenTorchSession {
             let p_off = b * n_points * 3;
             let q_off = b * n_queries * 3;
             let out_off = b * n_queries * k;
-            let mut best = Vec::with_capacity(k);
+            let mut best: Vec<(usize, f64)> = Vec::with_capacity(k);
             for qi in 0..n_queries {
                 let (qx, qy, qz) = (
                     q_data[q_off + qi * 3],
@@ -34715,6 +34725,20 @@ impl FrankenTorchSession {
                         p_data[p_off + pi * 3 + 2],
                     );
                     let d = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2);
+                    // Early-reject once the top-k buffer is full. `best` is kept
+                    // sorted ascending, so best[k-1] is the worst retained
+                    // distance. The streaming insert below only fires when `d`
+                    // sorts strictly before some retained entry, i.e. d < worst;
+                    // otherwise position() returns None and the `len() < k` arm
+                    // is false, making it a no-op. Skipping here is bit-for-bit
+                    // identical (same partial_cmp, same NaN handling) while
+                    // avoiding the O(k) scan for the overwhelming majority of
+                    // points that cannot enter the neighbourhood.
+                    if best.len() == k
+                        && d.partial_cmp(&best[k - 1].1) != Some(std::cmp::Ordering::Less)
+                    {
+                        continue;
+                    }
                     let insert_at = best.iter().position(|&(_, best_d)| {
                         d.partial_cmp(&best_d) == Some(std::cmp::Ordering::Less)
                     });
@@ -85760,6 +85784,82 @@ mod tests {
         {
             assert_eq!(got.to_bits(), expected.to_bits(), "knn distance @{i}");
         }
+    }
+
+    #[test]
+    fn knn_search_zero_k_returns_empty_outputs() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let points = s
+            .tensor_variable(vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0], vec![2, 3], false)
+            .unwrap();
+        let queries = s
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![1, 3], false)
+            .unwrap();
+
+        let (idx_t, dist_t) = s.knn_search(points, queries, 0).unwrap();
+
+        assert_eq!(s.tensor_shape(idx_t).unwrap(), vec![1, 0]);
+        assert_eq!(s.tensor_shape(dist_t).unwrap(), vec![1, 0]);
+        assert!(s.tensor_values(idx_t).unwrap().is_empty());
+        assert!(s.tensor_values(dist_t).unwrap().is_empty());
+    }
+
+    #[test]
+    fn knn_search_bench_scale_matches_full_sort_reference_bit_exact() {
+        // Bench-scale (8192 x 512, k=8) isomorphism proof for the early-reject
+        // top-k lever (frankentorch-66a9). The streaming neighbourhood must
+        // match an INDEPENDENT full-sort reference BIT-FOR-BIT over the exact
+        // deterministic bench input, including index tie-breaking and the
+        // sqrt'd distances. Folded FNV-1a digests of every output bit are held
+        // as golden constants so any divergence flips the hash.
+        let (n_points, n_queries, k) = (8192usize, 512usize, 8usize);
+        let points: Vec<f64> = (0..n_points * 3)
+            .map(|idx| ((idx * 17 + 13) % 1021) as f64 * 0.001)
+            .collect();
+        let queries: Vec<f64> = (0..n_queries * 3)
+            .map(|idx| ((idx * 31 + 7) % 997) as f64 * 0.001)
+            .collect();
+
+        // Independent reference: full stable sort of all squared distances.
+        let mut ref_indices = Vec::with_capacity(n_queries * k);
+        let mut ref_distances = Vec::with_capacity(n_queries * k);
+        for qi in 0..n_queries {
+            let (qx, qy, qz) = (queries[qi * 3], queries[qi * 3 + 1], queries[qi * 3 + 2]);
+            let mut dists: Vec<(usize, f64)> = (0..n_points)
+                .map(|pi| {
+                    let (px, py, pz) = (points[pi * 3], points[pi * 3 + 1], points[pi * 3 + 2]);
+                    let d = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2);
+                    (pi, d)
+                })
+                .collect();
+            dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            for &(idx, d) in dists.iter().take(k) {
+                ref_indices.push(idx as f64);
+                ref_distances.push(d.sqrt());
+            }
+        }
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let p_t = s.tensor_variable(points, vec![n_points, 3], false).unwrap();
+        let q_t = s
+            .tensor_variable(queries, vec![n_queries, 3], false)
+            .unwrap();
+        let (idx_t, dist_t) = s.knn_search(p_t, q_t, k).unwrap();
+        let got_indices = s.tensor_values(idx_t).unwrap();
+        let got_distances = s.tensor_values(dist_t).unwrap();
+        assert_eq!(got_indices, ref_indices);
+        for (i, (got, expected)) in got_distances.iter().zip(ref_distances.iter()).enumerate() {
+            assert_eq!(got.to_bits(), expected.to_bits(), "knn bench-scale distance @{i}");
+        }
+
+        let mut idx_acc = 0xcbf2_9ce4_8422_2325u64;
+        let mut dist_acc = 0xcbf2_9ce4_8422_2325u64;
+        for (&gi, &gd) in got_indices.iter().zip(got_distances.iter()) {
+            idx_acc = (idx_acc ^ (gi as u64)).wrapping_mul(0x0000_0100_0000_01b3);
+            dist_acc = (dist_acc ^ gd.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(idx_acc, 0x31c1_945c_1c1b_dd25);
+        assert_eq!(dist_acc, 0x5146_b549_cd8f_131d);
     }
 
     #[test]
