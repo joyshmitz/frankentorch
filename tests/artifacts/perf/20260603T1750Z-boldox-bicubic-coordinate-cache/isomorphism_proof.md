@@ -16,7 +16,9 @@
 ## Evidence
 
 - Baseline: `RCH_REQUIRE_REMOTE=1 rch exec -- cargo bench -p ft-api --bench ops_bench -- interpolate_bicubic/8x32x64x64_2x --warm-up-time 1 --measurement-time 5 --sample-size 10` on `vmi1156319`: `[52.242 ms 56.937 ms 60.054 ms]`.
-- Proof test: `RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p ft-api interpolate_bilinear_bicubic_parallel_match_serial_bit_exact -- --nocapture` passed on `vmi1293453`.
+- Proof test: `RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p ft-api interpolate_bilinear_bicubic_parallel_match_serial_bit_exact -- --nocapture` passed on `vmi1293453`; rerun passed on `vmi1227854`.
+- Compile check: `RCH_REQUIRE_REMOTE=1 rch exec -- cargo check -p ft-api --all-targets` passed on `vmi1227854`.
 - After: same Criterion target on `vmi1156319`: `[17.611 ms 18.827 ms 20.476 ms]`.
 - Golden outputs: `sha256sum -c tests/artifacts/perf/20260603T1750Z-boldox-bicubic-coordinate-cache/golden_checksums.txt` passed.
+- Gate blockers: `cargo clippy -p ft-api --all-targets -- -D warnings` fails before this code on existing `ft-kernel-cpu` lints; `cargo fmt -p ft-api --check` fails on broad existing `ft-api` formatting drift; `ubs` exits nonzero on existing monolithic `ft-api` findings while its fmt/clippy/build subchecks are OK.
 - Score: impact 5 x confidence 4 / effort 2 = 10.0.
