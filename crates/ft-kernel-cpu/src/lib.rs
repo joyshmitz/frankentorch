@@ -13634,6 +13634,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn svd_tall_orthonormal_and_reconstructs_40x24() {
+        // Strong structural-parity test for the SVD at a non-trivial size with a
+        // wider singular-value spread than the tiny fixtures. Verifies the
+        // properties numpy / torch.linalg.svd guarantee: U^T U = I, V V^T = I,
+        // descending non-negative singular values, and U diag(s) V^T = A. Guards
+        // any future eigensolver-based SVD rewrite: the bare Gram (A^T A)
+        // shortcut fails U^T U = I here because squaring the condition number
+        // corrupts the small-singular-value U directions.
+        let (m, n) = (40usize, 24usize);
+        let mut a = vec![0.0f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                a[i * n + j] = (((i * 53 + j * 29 + 11) % 101) as f64) * 0.07 - 3.0
+                    + ((i as f64) * 0.3 - (j as f64) * 0.2).cos();
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        let r = super::svd_contiguous_f64(&a, &meta, false).unwrap();
+        let k = n; // reduced, m >= n
+        assert_eq!(r.s.len(), k);
+
+        // Singular values non-negative and descending.
+        for i in 1..k {
+            assert!(r.s[i] >= -1e-12 && r.s[i] <= r.s[i - 1] + 1e-9, "s not sorted at {i}");
+        }
+        // U columns orthonormal: U^T U = I_k (U is m x k).
+        for c1 in 0..k {
+            for c2 in 0..k {
+                let mut dot = 0.0;
+                for row in 0..m {
+                    dot += r.u[row * k + c1] * r.u[row * k + c2];
+                }
+                let expected = if c1 == c2 { 1.0 } else { 0.0 };
+                assert!((dot - expected).abs() < 1e-9, "U^T U[{c1},{c2}]={dot}");
+            }
+        }
+        // V rows orthonormal: vh is (k x n); vh vh^T = I_k.
+        for r1 in 0..k {
+            for r2 in 0..k {
+                let mut dot = 0.0;
+                for col in 0..n {
+                    dot += r.vh[r1 * n + col] * r.vh[r2 * n + col];
+                }
+                let expected = if r1 == r2 { 1.0 } else { 0.0 };
+                assert!((dot - expected).abs() < 1e-9, "V V^T[{r1},{r2}]={dot}");
+            }
+        }
+        // Reconstruction: U diag(s) V^T = A.
+        for i in 0..m {
+            for j in 0..n {
+                let mut val = 0.0;
+                for l in 0..k {
+                    val += r.u[i * k + l] * r.s[l] * r.vh[l * n + j];
+                }
+                assert!(
+                    (val - a[i * n + j]).abs() < 1e-9,
+                    "reconstructed[{i},{j}]={val}, expected {}",
+                    a[i * n + j]
+                );
+            }
+        }
+    }
+
     // ---- Cholesky Decomposition tests (bd-2drq.5) ----
 
     #[test]

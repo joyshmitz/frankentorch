@@ -5,7 +5,25 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
-use ft_kernel_cpu::{cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64};
+use ft_kernel_cpu::{
+    cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64, svd_contiguous_f64,
+};
+
+fn bench_svd(c: &mut Criterion) {
+    // Tall and square cases; SVD reduces to a symmetric eigenproblem on A^T A.
+    for &(m, n) in &[(256usize, 128usize), (256usize, 256usize)] {
+        let mut a = vec![0.0_f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                a[i * n + j] = ((i * 31 + j * 17) % 97) as f64 * 0.013 - 0.5;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        c.bench_function(&format!("svd_f64_{m}x{n}"), |bch| {
+            bch.iter(|| black_box(svd_contiguous_f64(black_box(&a), &meta, false).unwrap()))
+        });
+    }
+}
 
 fn bench_eigh(c: &mut Criterion) {
     for &n in &[128usize, 256usize] {
@@ -70,5 +88,5 @@ fn bench_cholesky(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_lu, bench_cholesky, bench_eigh);
+criterion_group!(benches, bench_lu, bench_cholesky, bench_eigh, bench_svd);
 criterion_main!(benches);

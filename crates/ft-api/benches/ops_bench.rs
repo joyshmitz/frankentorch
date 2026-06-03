@@ -266,6 +266,37 @@ fn bench_matrix_nms(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_knn_search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("knn_search");
+    // [N,3] points + [M,3] queries, k=8. The current implementation computes
+    // every squared distance and fully sorts all N distances per query even
+    // though only the first k entries are returned.
+    let (n_points, n_queries, k) = (8192usize, 512usize, 8usize);
+    group.throughput(Throughput::Elements((n_points * n_queries) as u64));
+    group.bench_function("8192x512_k8", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let points = (0..n_points * 3)
+            .map(|idx| ((idx * 17 + 13) % 1021) as f64 * 0.001)
+            .collect::<Vec<_>>();
+        let queries = (0..n_queries * 3)
+            .map(|idx| ((idx * 31 + 7) % 997) as f64 * 0.001)
+            .collect::<Vec<_>>();
+        let points = session
+            .tensor_variable(points, vec![n_points, 3], false)
+            .unwrap();
+        let queries = session
+            .tensor_variable(queries, vec![n_queries, 3], false)
+            .unwrap();
+        b.iter(|| {
+            let (indices, distances) = session
+                .knn_search(black_box(points), black_box(queries), black_box(k))
+                .unwrap();
+            black_box((indices, distances))
+        });
+    });
+    group.finish();
+}
+
 fn bench_supcon_loss(c: &mut Criterion) {
     let mut group = c.benchmark_group("supcon_loss");
     // [N, D] embeddings -> N x N similarity matrix via a naive O(N^2 * D) dot
@@ -529,6 +560,7 @@ criterion_group!(
     bench_fft2,
     bench_vander,
     bench_matrix_nms,
+    bench_knn_search,
     bench_supcon_loss,
     bench_lrn,
     bench_rope_freqs,

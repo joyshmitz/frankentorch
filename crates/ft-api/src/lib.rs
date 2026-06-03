@@ -34671,25 +34671,34 @@ impl FrankenTorchSession {
             let p_off = b * n_points * 3;
             let q_off = b * n_queries * 3;
             let out_off = b * n_queries * k;
+            let mut best = Vec::with_capacity(k);
             for qi in 0..n_queries {
                 let (qx, qy, qz) = (
                     q_data[q_off + qi * 3],
                     q_data[q_off + qi * 3 + 1],
                     q_data[q_off + qi * 3 + 2],
                 );
-                let mut dists: Vec<(usize, f64)> = (0..n_points)
-                    .map(|pi| {
-                        let (px, py, pz) = (
-                            p_data[p_off + pi * 3],
-                            p_data[p_off + pi * 3 + 1],
-                            p_data[p_off + pi * 3 + 2],
-                        );
-                        let d = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2);
-                        (pi, d)
-                    })
-                    .collect();
-                dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                for (j, (pi, d)) in dists.into_iter().take(k).enumerate() {
+                best.clear();
+                for pi in 0..n_points {
+                    let (px, py, pz) = (
+                        p_data[p_off + pi * 3],
+                        p_data[p_off + pi * 3 + 1],
+                        p_data[p_off + pi * 3 + 2],
+                    );
+                    let d = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2);
+                    let insert_at = best.iter().position(|&(_, best_d)| {
+                        d.partial_cmp(&best_d) == Some(std::cmp::Ordering::Less)
+                    });
+                    if let Some(pos) = insert_at {
+                        best.insert(pos, (pi, d));
+                        if best.len() > k {
+                            best.pop();
+                        }
+                    } else if best.len() < k {
+                        best.push((pi, d));
+                    }
+                }
+                for (j, &(pi, d)) in best.iter().enumerate() {
                     indices[out_off + qi * k + j] = pi as f64;
                     distances[out_off + qi * k + j] = d.sqrt();
                 }
@@ -85613,6 +85622,58 @@ mod tests {
         assert_eq!(got_sc.len(), want_sc.len());
         for (idx, (g, wv)) in got_sc.iter().zip(want_sc.iter()).enumerate() {
             assert_eq!(g.to_bits(), wv.to_bits(), "matrix_nms score @{idx}");
+        }
+    }
+
+    #[test]
+    fn knn_search_streaming_topk_matches_full_sort_reference_bit_exact() {
+        let points: Vec<f64> = vec![
+            0.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, //
+            -1.0, 0.0, 0.0, //
+            0.0, 2.0, 0.0, //
+            0.0, -2.0, 0.0, //
+            0.0, 0.0, 3.0, //
+            0.0, 0.0, -3.0,
+        ];
+        let queries: Vec<f64> = vec![
+            0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0,
+        ];
+        let (n_points, n_queries, k) = (7usize, 2usize, 4usize);
+        let mut expected_indices = Vec::with_capacity(n_queries * k);
+        let mut expected_distances = Vec::with_capacity(n_queries * k);
+        for qi in 0..n_queries {
+            let (qx, qy, qz) = (queries[qi * 3], queries[qi * 3 + 1], queries[qi * 3 + 2]);
+            let mut dists: Vec<(usize, f64)> = (0..n_points)
+                .map(|pi| {
+                    let (px, py, pz) = (points[pi * 3], points[pi * 3 + 1], points[pi * 3 + 2]);
+                    let d = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2);
+                    (pi, d)
+                })
+                .collect();
+            dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            for &(idx, d) in dists.iter().take(k) {
+                expected_indices.push(idx as f64);
+                expected_distances.push(d.sqrt());
+            }
+        }
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let p_t = s.tensor_variable(points, vec![n_points, 3], false).unwrap();
+        let q_t = s
+            .tensor_variable(queries, vec![n_queries, 3], false)
+            .unwrap();
+        let (idx_t, dist_t) = s.knn_search(p_t, q_t, k).unwrap();
+        let got_indices = s.tensor_values(idx_t).unwrap();
+        let got_distances = s.tensor_values(dist_t).unwrap();
+        assert_eq!(got_indices, expected_indices);
+        for (i, (got, expected)) in got_distances
+            .iter()
+            .zip(expected_distances.iter())
+            .enumerate()
+        {
+            assert_eq!(got.to_bits(), expected.to_bits(), "knn distance @{i}");
         }
     }
 
