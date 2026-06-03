@@ -80385,6 +80385,111 @@ mod tests {
     }
 
     #[test]
+    fn grid_sample_matches_independent_reference_bit_exact() {
+        // Correctness coverage: grid_sample must equal an independent reference
+        // (mirroring the (n,h,w)->c loop, align_corners = false) BIT-FOR-BIT
+        // across modes and padding modes. (Added during the rejected row-parallel
+        // attempt frankentorch-kgs4.10 — grid_sample is memory-bound, only ~1.3x;
+        // kept as a correctness guard.)
+        use super::{FrankenTorchSession, GridSampleMode, GridSamplePaddingMode};
+        let (n, ch, ih, iw, oh, ow) = (2usize, 8usize, 12usize, 12usize, 24usize, 24usize);
+        // total = 2*8*24*24 = 9216 > 8192 -> parallel path.
+        let in_data: Vec<f64> = (0..n * ch * ih * iw)
+            .map(|i| ((i % 197) as f64) * 0.011 - 1.0)
+            .collect();
+        // grid [n, oh, ow, 2] spanning roughly [-1.2, 1.2] to exercise borders.
+        let grid_data: Vec<f64> = (0..n * oh * ow * 2)
+            .map(|i| ((i % 241) as f64) / 100.0 - 1.2)
+            .collect();
+
+        let configs = [
+            (GridSampleMode::Bilinear, GridSamplePaddingMode::Zeros),
+            (GridSampleMode::Bilinear, GridSamplePaddingMode::Reflection),
+            (GridSampleMode::Nearest, GridSamplePaddingMode::Border),
+        ];
+        for (mode, padding) in configs {
+            let sample = |nn: usize, cc: usize, y: isize, x: isize| -> f64 {
+                if y < 0 || y >= ih as isize || x < 0 || x >= iw as isize {
+                    0.0
+                } else {
+                    in_data[((nn * ch + cc) * ih + y as usize) * iw + x as usize]
+                }
+            };
+            let mut want = vec![0.0f64; n * ch * oh * ow];
+            for nn in 0..n {
+                for hh in 0..oh {
+                    for ww in 0..ow {
+                        let gb = ((nn * oh + hh) * ow + ww) * 2;
+                        let mut gx = grid_data[gb];
+                        let mut gy = grid_data[gb + 1];
+                        if gx.is_nan() {
+                            gx = -1.0;
+                        }
+                        if gy.is_nan() {
+                            gy = -1.0;
+                        }
+                        let mut ix = FrankenTorchSession::grid_sampler_unnormalize(gx, iw, false);
+                        let mut iy = FrankenTorchSession::grid_sampler_unnormalize(gy, ih, false);
+                        match padding {
+                            GridSamplePaddingMode::Zeros => {}
+                            GridSamplePaddingMode::Border => {
+                                ix = ix.clamp(0.0, (iw.saturating_sub(1)) as f64);
+                                iy = iy.clamp(0.0, (ih.saturating_sub(1)) as f64);
+                            }
+                            GridSamplePaddingMode::Reflection => {
+                                ix = FrankenTorchSession::grid_sampler_reflect(ix, iw, false);
+                                iy = FrankenTorchSession::grid_sampler_reflect(iy, ih, false);
+                            }
+                        }
+                        for cc in 0..ch {
+                            let value = match mode {
+                                GridSampleMode::Nearest => {
+                                    let nx = ix.round() as isize;
+                                    let ny = iy.round() as isize;
+                                    match padding {
+                                        GridSamplePaddingMode::Zeros => sample(nn, cc, ny, nx),
+                                        _ => sample(
+                                            nn,
+                                            cc,
+                                            ny.clamp(0, ih as isize - 1),
+                                            nx.clamp(0, iw as isize - 1),
+                                        ),
+                                    }
+                                }
+                                GridSampleMode::Bilinear => {
+                                    let x0 = ix.floor();
+                                    let y0 = iy.floor();
+                                    let x1 = x0 + 1.0;
+                                    let y1 = y0 + 1.0;
+                                    let wx1 = ix - x0;
+                                    let wy1 = iy - y0;
+                                    let wx0 = 1.0 - wx1;
+                                    let wy0 = 1.0 - wy1;
+                                    let v00 = sample(nn, cc, y0 as isize, x0 as isize);
+                                    let v01 = sample(nn, cc, y0 as isize, x1 as isize);
+                                    let v10 = sample(nn, cc, y1 as isize, x0 as isize);
+                                    let v11 = sample(nn, cc, y1 as isize, x1 as isize);
+                                    v00 * wx0 * wy0 + v01 * wx1 * wy0 + v10 * wx0 * wy1 + v11 * wx1 * wy1
+                                }
+                            };
+                            want[((nn * ch + cc) * oh + hh) * ow + ww] = value;
+                        }
+                    }
+                }
+            }
+
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let inp = s.tensor_variable(in_data.clone(), vec![n, ch, ih, iw], false).unwrap();
+            let g = s.tensor_variable(grid_data.clone(), vec![n, oh, ow, 2], false).unwrap();
+            let y = s.tensor_grid_sample(inp, g, mode, padding, false).unwrap();
+            let got = s.tensor_values(y).unwrap();
+            for (idx, (gv, wv)) in got.iter().zip(want.iter()).enumerate() {
+                assert_eq!(gv.to_bits(), wv.to_bits(), "grid_sample {mode:?}/{padding:?} @{idx}");
+            }
+        }
+    }
+
+    #[test]
     fn lgamma_digamma_parallel_match_serial_bit_exact() {
         // Isomorphism proof for parallelizing lgamma/digamma: with > 8192 elements
         // the rayon path runs; a pure per-element map must equal the serial

@@ -185,6 +185,36 @@ fn bench_linear_forward(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_grid_sample(c: &mut Criterion) {
+    use ft_api::{GridSampleMode, GridSamplePaddingMode};
+    let mut group = c.benchmark_group("grid_sample");
+    // [N, C, H, W] input + [N, H, W, 2] grid -> bilinear sample. The 4 scattered
+    // bilinear gathers make this memory-bandwidth-bound (row-parallelizing it only
+    // reached ~1.3x, rejected under frankentorch-kgs4.10); kept to track the hotspot.
+    let (n, ch, h, w) = (8usize, 32usize, 64usize, 64usize);
+    group.throughput(Throughput::Elements((n * ch * h * w) as u64));
+    group.bench_function("8x32x64x64_bilinear", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = session.tensor_randn(vec![n, ch, h, w], false).unwrap();
+        // Grid values in roughly [-1, 1] via tanh-free scaling of randn.
+        let grid = session.tensor_rand(vec![n, h, w, 2], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .tensor_grid_sample(
+                        black_box(input),
+                        black_box(grid),
+                        GridSampleMode::Bilinear,
+                        GridSamplePaddingMode::Zeros,
+                        false,
+                    )
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_interpolate_bicubic(c: &mut Criterion) {
     let mut group = c.benchmark_group("interpolate_bicubic");
     // [N, C, H, W] -> 2x upsample. Bicubic does 16 cubic-weight taps per output
@@ -224,5 +254,6 @@ criterion_group!(
     bench_backward_matmul,
     bench_linear_forward,
     bench_interpolate_bicubic,
+    bench_grid_sample,
 );
 criterion_main!(benches);
