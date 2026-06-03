@@ -51692,16 +51692,29 @@ impl FrankenTorchSession {
         seq_len: usize,
         d_model: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let mut encoding = Vec::with_capacity(seq_len * d_model);
-        for pos in 0..seq_len {
-            for i in 0..d_model {
+        // Each position owns a contiguous d_model row and every element is an
+        // independent powf + sin/cos (compute-bound), so distribute the positions
+        // across Rayon workers. The per-element formula and the linear write
+        // position (pos*d_model + i) are unchanged, so the result is bit-for-bit
+        // identical to the serial push loop.
+        let mut encoding = vec![0.0_f64; seq_len * d_model];
+        let fill_row = |pos: usize, row: &mut [f64]| {
+            for (i, slot) in row.iter_mut().enumerate() {
                 let angle = (pos as f64) / (10000_f64).powf((2 * (i / 2)) as f64 / d_model as f64);
-                if i % 2 == 0 {
-                    encoding.push(angle.sin());
-                } else {
-                    encoding.push(angle.cos());
-                }
+                *slot = if i % 2 == 0 { angle.sin() } else { angle.cos() };
             }
+        };
+        if seq_len >= 2 && seq_len * d_model >= PARALLEL_ELEMENTWISE_MIN {
+            use rayon::prelude::*;
+            encoding
+                .par_chunks_mut(d_model)
+                .enumerate()
+                .for_each(|(pos, row)| fill_row(pos, row));
+        } else {
+            encoding
+                .chunks_mut(d_model)
+                .enumerate()
+                .for_each(|(pos, row)| fill_row(pos, row));
         }
         self.tensor_tape
             .leaf(encoding, vec![seq_len, d_model], false)
@@ -81130,6 +81143,28 @@ mod tests {
         assert_eq!(got.len(), want.len(), "istft output length");
         for (idx, (g, w)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "istft @{idx}");
+        }
+    }
+
+    #[test]
+    fn sinusoidal_position_encoding_parallel_match_serial_bit_exact() {
+        // seq_len*d_model >= PARALLEL_ELEMENTWISE_MIN so the rayon row path runs;
+        // it must match the serial per-element powf+sin/cos formula BIT-FOR-BIT.
+        use super::FrankenTorchSession;
+        let (seq_len, d_model) = (128usize, 128usize); // 16384 >= 8192
+        let mut want = vec![0.0f64; seq_len * d_model];
+        for pos in 0..seq_len {
+            for i in 0..d_model {
+                let angle = (pos as f64) / (10000_f64).powf((2 * (i / 2)) as f64 / d_model as f64);
+                want[pos * d_model + i] = if i % 2 == 0 { angle.sin() } else { angle.cos() };
+            }
+        }
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let pe = s.sinusoidal_position_encoding(seq_len, d_model).unwrap();
+        let got = s.tensor_values(pe).unwrap();
+        assert_eq!(got.len(), want.len());
+        for (idx, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "pos_encoding @{idx}");
         }
     }
 

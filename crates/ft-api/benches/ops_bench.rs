@@ -230,6 +230,25 @@ fn bench_fft2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_sinusoidal_pe(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sinusoidal_pe");
+    // [seq_len, d_model] sinusoidal positional encoding: powf + sin/cos per
+    // element -> compute-bound, parallel over positions.
+    let (seq_len, d_model) = (4096usize, 1024usize);
+    group.throughput(Throughput::Elements((seq_len * d_model) as u64));
+    group.bench_function("4096x1024", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        b.iter(|| {
+            black_box(
+                session
+                    .sinusoidal_position_encoding(black_box(seq_len), black_box(d_model))
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_istft(c: &mut Criterion) {
     use ft_api::IstftOptions;
     let mut group = c.benchmark_group("istft");
@@ -417,6 +436,7 @@ criterion_group!(
     bench_interpolate_trilinear,
     bench_grid_sample,
     bench_fft2,
+    bench_sinusoidal_pe,
     bench_istft,
     bench_stft,
     bench_irfft2,
