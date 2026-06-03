@@ -35281,10 +35281,22 @@ impl FrankenTorchSession {
         let top_k = pre_nms_top_k.min(n);
         indices.truncate(top_k);
         let k = indices.len();
+        // The K x K mask-IoU matrix is an O(K^2 * H*W) pairwise sweep
+        // (compute-bound). The serial form writes the symmetric pair (i,j)+(j,i)
+        // from one computation, which couples rows. Since IoU is symmetric and
+        // deterministic, instead let each row i compute IoU(i, j) for every j and
+        // write only its own row; the value at [j, i] is then produced by row j
+        // and is bit-for-bit identical (same masked products, same summation
+        // order, same union). That makes the rows independent and contiguous, so
+        // distribute them across Rayon workers (at the cost of computing each IoU
+        // twice — cheap next to the parallel win). Diagonal entries stay 0.
         let mut iou_matrix = vec![0.0_f64; k * k];
-        for i in 0..k {
+        let compute_row = |i: usize, row: &mut [f64]| {
             let mi = &masks_data[indices[i] * mask_area..(indices[i] + 1) * mask_area];
-            for j in (i + 1)..k {
+            for (j, slot) in row.iter_mut().enumerate() {
+                if j == i {
+                    continue;
+                }
                 let mj = &masks_data[indices[j] * mask_area..(indices[j] + 1) * mask_area];
                 let mut inter = 0.0_f64;
                 let mut union_i = 0.0_f64;
@@ -35297,10 +35309,20 @@ impl FrankenTorchSession {
                     union_j += bi;
                 }
                 let union_val = (union_i + union_j - inter).max(1e-6_f64);
-                let iou = inter / union_val;
-                iou_matrix[i * k + j] = iou;
-                iou_matrix[j * k + i] = iou;
+                *slot = inter / union_val;
             }
+        };
+        if k >= 2 && k * k >= PARALLEL_ELEMENTWISE_MIN {
+            use rayon::prelude::*;
+            iou_matrix
+                .par_chunks_mut(k)
+                .enumerate()
+                .for_each(|(i, row)| compute_row(i, row));
+        } else {
+            iou_matrix
+                .chunks_mut(k)
+                .enumerate()
+                .for_each(|(i, row)| compute_row(i, row));
         }
         let mut decay_factors = vec![1.0_f64; k];
         for i in 0..k {
@@ -81432,6 +81454,69 @@ mod tests {
         let got = s.tensor_values(loss).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].to_bits(), want.to_bits(), "supcon_loss scalar");
+    }
+
+    #[test]
+    fn matrix_nms_parallel_match_serial_bit_exact() {
+        // k*k >= PARALLEL_ELEMENTWISE_MIN so the rayon IoU-matrix path runs; the
+        // selected (indices, scores) must match a full serial reference exactly.
+        use super::FrankenTorchSession;
+        let (num, h, w) = (128usize, 10usize, 10usize); // k*k = 16384
+        let mask_area = h * w;
+        let (sigma, pre, post) = (2.0_f64, num, 50usize);
+        let scores_data: Vec<f64> = (0..num).map(|i| (i as f64) * 0.007 + 0.1).collect();
+        let masks_data: Vec<f64> = (0..num * mask_area).map(|i| ((i % 17) as f64) / 17.0).collect();
+
+        // Serial reference mirroring matrix_nms exactly.
+        let mut indices: Vec<usize> = (0..num).collect();
+        indices.sort_by(|&a, &b| {
+            scores_data[b].partial_cmp(&scores_data[a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        indices.truncate(pre.min(num));
+        let k = indices.len();
+        let mut iou = vec![0.0f64; k * k];
+        for i in 0..k {
+            let mi = &masks_data[indices[i] * mask_area..(indices[i] + 1) * mask_area];
+            for j in (i + 1)..k {
+                let mj = &masks_data[indices[j] * mask_area..(indices[j] + 1) * mask_area];
+                let (mut inter, mut ui, mut uj) = (0.0f64, 0.0f64, 0.0f64);
+                for (a, b) in mi.iter().zip(mj.iter()) {
+                    let ai = if *a > 0.5 { 1.0 } else { 0.0 };
+                    let bi = if *b > 0.5 { 1.0 } else { 0.0 };
+                    inter += ai * bi;
+                    ui += ai;
+                    uj += bi;
+                }
+                let v = inter / (ui + uj - inter).max(1e-6);
+                iou[i * k + j] = v;
+                iou[j * k + i] = v;
+            }
+        }
+        let mut decay = vec![1.0f64; k];
+        for i in 0..k {
+            for j in 0..i {
+                decay[i] *= (-iou[i * k + j] * iou[i * k + j] / sigma).exp();
+            }
+        }
+        let new_scores: Vec<f64> =
+            indices.iter().enumerate().map(|(i, &idx)| scores_data[idx] * decay[i]).collect();
+        let mut si: Vec<usize> = (0..k).collect();
+        si.sort_by(|&a, &b| {
+            new_scores[b].partial_cmp(&new_scores[a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let fk = post.min(k);
+        let want_idx: Vec<usize> = si[..fk].iter().map(|&i| indices[i]).collect();
+        let want_sc: Vec<f64> = si[..fk].iter().map(|&i| new_scores[i]).collect();
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let sc_t = s.tensor_variable(scores_data.clone(), vec![num], false).unwrap();
+        let m_t = s.tensor_variable(masks_data.clone(), vec![num, h, w], false).unwrap();
+        let (got_idx, got_sc) = s.matrix_nms(sc_t, m_t, sigma, pre, post).unwrap();
+        assert_eq!(got_idx, want_idx, "matrix_nms indices");
+        assert_eq!(got_sc.len(), want_sc.len());
+        for (idx, (g, wv)) in got_sc.iter().zip(want_sc.iter()).enumerate() {
+            assert_eq!(g.to_bits(), wv.to_bits(), "matrix_nms score @{idx}");
+        }
     }
 
     #[test]

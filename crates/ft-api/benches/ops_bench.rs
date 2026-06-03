@@ -230,6 +230,27 @@ fn bench_fft2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_matrix_nms(c: &mut Criterion) {
+    let mut group = c.benchmark_group("matrix_nms");
+    // [K] scores + [K, H, W] masks -> K x K IoU matrix via a naive
+    // O(K^2 * H*W) pairwise loop (compute-bound), parallel over rows.
+    let (num, h, w) = (256usize, 48usize, 48usize);
+    group.throughput(Throughput::Elements((num * num * h * w) as u64));
+    group.bench_function("256x48x48", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let scores = session.tensor_rand(vec![num], false).unwrap();
+        let masks = session.tensor_rand(vec![num, h, w], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .matrix_nms(black_box(scores), black_box(masks), 2.0, num, 100)
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_supcon_loss(c: &mut Criterion) {
     let mut group = c.benchmark_group("supcon_loss");
     // [N, D] embeddings -> N x N similarity matrix via a naive O(N^2 * D) dot
@@ -491,6 +512,7 @@ criterion_group!(
     bench_interpolate_trilinear,
     bench_grid_sample,
     bench_fft2,
+    bench_matrix_nms,
     bench_supcon_loss,
     bench_lrn,
     bench_rope_freqs,
