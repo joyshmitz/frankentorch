@@ -935,6 +935,19 @@ fn checked_dim_loop_sizes(
 
 const PARALLEL_THRESHOLD: usize = 8192;
 
+// The generic scalar-map unary path (exp/ln/sin/gelu/erf/...) is dominated by a
+// per-element libm call (~15-20 ns), but rayon's split/join/collect overhead on
+// a many-core pool only amortises at very large N. A same-worker A/B
+// (RAYON_NUM_THREADS=1 vs default, 64-core) showed `tensor_exp` PARALLEL was a
+// net loss until ~0.5M elements:
+//   exp/10000   serial 149 us  vs parallel 833 us   (5.6x slower parallel)
+//   exp/100000  serial 1.28 ms vs parallel 2.63 ms  (2.0x slower parallel)
+//   exp/1000000 serial 19.5 ms vs parallel 9.0 ms   (2.2x faster parallel)
+// So gate the scalar-unary parallel path much higher than the cheap/SIMD ops.
+// The map is elementwise with no cross-element accumulation, so serial and
+// parallel are bit-for-bit identical — this only changes scheduling.
+const SCALAR_UNARY_PARALLEL_THRESHOLD: usize = 1 << 19; // 524288
+
 fn unary_f64<F>(input: &[f64], meta: &TensorMeta, op: F) -> Result<Vec<f64>, KernelError>
 where
     F: Fn(f64) -> f64 + Sync,
@@ -953,7 +966,7 @@ where
     let start = meta.storage_offset();
     let window = &input[start..start + numel];
 
-    if numel >= PARALLEL_THRESHOLD {
+    if numel >= SCALAR_UNARY_PARALLEL_THRESHOLD {
         Ok(window.par_iter().map(|value| op(*value)).collect())
     } else {
         Ok(window.iter().map(|value| op(*value)).collect())
