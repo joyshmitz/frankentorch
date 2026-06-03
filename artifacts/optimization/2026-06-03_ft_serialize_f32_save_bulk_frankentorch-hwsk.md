@@ -1,96 +1,126 @@
-# frankentorch-hwsk: ft-serialize bulk native f32 save writes
-
-## Profile-backed target
+# ft-serialize Native F32 Save Bulk Writes
 
 - Bead: `frankentorch-hwsk`
-- Target: `ft-serialize` native state-dict save of one contiguous F32 tensor with 1,000,000 values.
-- Hotspot: the baseline writer issued one `write_all` call per F32 scalar after materializing the contiguous F32 view.
-- Single lever: batch F32 values into a bounded 64 KiB scratch byte buffer and write each chunk through the existing `write_native_bytes` wrapper.
+- Agent: `TurquoisePine`
+- Skill loop: `/repeatedly-apply-skill` applying `/extreme-software-optimization`
+- Target: native state-dict save for one contiguous F32 tensor with 1,000,000 values
+- Lever: batch F32 value-byte writes into 64 KiB chunks
 
-## Baseline
+## Profile-Backed Target
 
-Command:
+After the ready queue drained and active kernel/optimizer perf beads were claimed by other agents, the fallback profile target was native state-dict save. The old F32 path wrote each scalar through `write_native_bytes`, so a large contiguous F32 tensor made 1,000,000 tiny `write_all` calls even with a buffered writer.
 
-```bash
-mkdir -p target/turquoise-pine-ft-serialize-hwsk-baseline && rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-serialize-hwsk-baseline cargo bench -p ft-serialize --bench serialize_bench -- native_state_dict/save_single_f32_1m --warm-up-time 1 --measurement-time 5 --sample-size 20
-```
-
-Worker: `vmi1167313`
-
-Criterion:
+Baseline Criterion artifact:
 
 ```text
-native_state_dict/save_single_f32_1m time: [2.7095 ms 2.7922 ms 2.8563 ms]
+target/turquoise-pine-ft-serialize-hwsk-baseline/criterion/native_state_dict/save_single_f32_1m/new/estimates.json
 ```
 
-## After
-
-Command:
-
-```bash
-mkdir -p target/turquoise-pine-ft-serialize-hwsk-after && rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-serialize-hwsk-after cargo bench -p ft-serialize --bench serialize_bench -- native_state_dict/save_single_f32_1m --warm-up-time 1 --measurement-time 5 --sample-size 20
-```
-
-Worker: `vmi1156319`
-
-Criterion:
+Baseline command:
 
 ```text
-native_state_dict/save_single_f32_1m time: [1.2766 ms 1.3617 ms 1.4775 ms]
+rch exec -- cargo bench -p ft-serialize --bench serialize_bench -- native_state_dict/save_single_f32_1m --warm-up-time 1 --measurement-time 5 --sample-size 20
 ```
 
-Delta: mean `2.7922 ms` -> `1.3617 ms`, `2.05x` faster.
+Baseline result:
 
-Score: Impact `3` x Confidence `2` / Effort `1` = `6.0`.
+```text
+mean:   2.809513 ms
+CI:     [2.714829 ms 2.905417 ms]
+median: 2.813118 ms
+```
 
-## Isomorphism proof
+## Change
 
-- Ordering: unchanged because `write_state_dict_to_writer` still iterates the caller's `BTreeMap` in key order.
-- Tie-breaking: unchanged; no comparison or selection logic changed.
-- Floating point: unchanged; each F32 value still uses `value.to_le_bytes()` in original slice order, preserving sign-zero, subnormal, infinity, and NaN payload bits.
-- RNG: not used by the target.
-- Error ordering: unchanged up to value writes; `contiguous_values_f32()` and dtype validation run before chunked writing as before. I/O errors still flow through `write_native_bytes` and `io_err`.
-- Memory: the new scratch buffer is bounded at 64 KiB, avoiding a large whole-tensor byte allocation.
+The F32 branch still obtains the same contiguous F32 slice after the same validation. It now sends that slice to `write_native_f32_values`, which converts values to little-endian bytes in order into a reusable 64 KiB scratch buffer, then calls the same `write_native_bytes` helper once per chunk.
+
+The benchmark adds `native_state_dict/save_single_f32_1m`.
+
+## Isomorphism Proof
+
+- Ordering: unchanged; `BTreeMap` key order, tensor order, shape order, and per-value order are preserved.
+- Tie-breaking: N/A; no comparisons or selection logic changed.
+- Floating point: unchanged; values are never recomputed, and each scalar still uses `f32::to_le_bytes`.
+- RNG: N/A; no random draw path is involved.
+- Error classes: unchanged; validation, unsupported dtype handling, and I/O errors still flow through the existing `TensorIOError` paths.
+- Byte format: unchanged; FTSV magic/version, key bytes, ndim/shape bytes, dtype tags, and little-endian value bytes are identical.
 
 Golden fixture:
 
 ```text
-a4f99bf82139749e11ea6a626324f0fb77a7498f797085350280c5d63fabc233  artifacts/optimization/golden_outputs/ft_serialize_f32_save_bulk_pass26.txt
+artifacts/optimization/golden_outputs/ft_serialize_f32_save_bulk_pass26.txt
 ```
 
-The fixture pins the full native encoded hex plus per-key F32 bit strings for keys `a.norm` and `z.edge`.
+Golden sha256:
 
-## Verification
-
-```bash
-rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-serialize-hwsk-verify cargo test -p ft-serialize native_format_f32_save_bulk_golden_summary_matches_fixture -- --nocapture
+```text
+a4f99bf82139749e11ea6a626324f0fb77a7498f797085350280c5d63fabc233
 ```
 
-Result: passed on `vmi1293453` (`1 passed`).
+Proof commands:
 
-```bash
-rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-serialize-hwsk-verify cargo test -p ft-serialize streaming_native_save_matches_encoder_bytes -- --nocapture
-```
-
-Result: passed on `vmi1153651` (`1 passed`).
-
-```bash
-rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-serialize-hwsk-verify cargo check -p ft-serialize --all-targets
-```
-
-Result: passed on `vmi1153651`.
-
-```bash
-rch exec -- env CARGO_TARGET_DIR=target/turquoise-pine-ft-serialize-hwsk-verify cargo clippy -p ft-serialize --all-targets --no-deps -- -D warnings
-```
-
-Result: passed on `vmi1153651`.
-
-```bash
-cargo fmt -p ft-serialize --check
+```text
 sha256sum -c artifacts/optimization/golden_checksums.txt --ignore-missing
-git diff --check
-ubs crates/ft-serialize/src/lib.rs crates/ft-serialize/benches/serialize_bench.rs artifacts/optimization/golden_checksums.txt artifacts/optimization/golden_outputs/ft_serialize_f32_save_bulk_pass26.txt
+rch exec -- cargo test -p ft-serialize native_format_f32_save_bulk_golden_summary_matches_fixture -- --nocapture
 ```
 
-Result: passed. UBS exited `0`; it reported no critical findings and only the existing ft-serialize warning inventory plus the intentional benchmark vector allocation.
+Results:
+
+```text
+sha256sum: passed for the F32 save fixture
+ft-serialize golden test: 1 passed
+```
+
+## Bench Delta
+
+Confirmation re-bench command:
+
+```text
+CARGO_TARGET_DIR=target/turquoise-pine-ft-serialize-hwsk-after-confirm rch exec -- cargo bench -p ft-serialize --bench serialize_bench -- native_state_dict/save_single_f32_1m --warm-up-time 1 --measurement-time 5 --sample-size 20
+```
+
+Confirmation after result:
+
+```text
+worker: vmi1293453
+time:   [717.19 us 727.73 us 740.41 us]
+mean:   0.723594 ms
+CI:     [0.712035 ms 0.735668 ms]
+```
+
+Integrated delta:
+
+```text
+mean: 2.809513 ms -> 0.723594 ms
+elapsed: 74.2% faster
+throughput: 3.88x
+```
+
+Score:
+
+```text
+Impact 4 * Confidence 4 / Effort 1 = 16.0
+```
+
+Verdict: keep.
+
+## Gates
+
+Passed:
+
+```text
+sha256sum -c artifacts/optimization/golden_checksums.txt --ignore-missing
+git diff --check -- crates/ft-serialize/src/lib.rs crates/ft-serialize/benches/serialize_bench.rs artifacts/optimization/golden_checksums.txt artifacts/optimization/golden_outputs/ft_serialize_f32_save_bulk_pass26.txt
+rch exec -- cargo test -p ft-serialize native_format_f32_save_bulk_golden_summary_matches_fixture -- --nocapture
+rch exec -- cargo fmt -p ft-serialize --check
+rch exec -- cargo check -p ft-serialize --all-targets
+rch exec -- cargo clippy -p ft-serialize --all-targets --no-deps -- -D warnings
+```
+
+UBS:
+
+```text
+ubs crates/ft-serialize/src/lib.rs crates/ft-serialize/benches/serialize_bench.rs artifacts/optimization/2026-06-03_ft_serialize_f32_save_bulk_frankentorch-hwsk.md artifacts/optimization/golden_outputs/ft_serialize_f32_save_bulk_pass26.txt artifacts/optimization/golden_checksums.txt .skill-loop-progress-TurquoisePine.md
+```
+
+UBS exited 0. It reported existing warning/info inventory in `ft-serialize`, but no critical findings, and its built-in formatting, clippy, cargo check, test-build, cargo-audit, and cargo-deny probes passed.
