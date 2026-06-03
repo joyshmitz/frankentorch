@@ -36654,20 +36654,14 @@ impl FrankenTorchSession {
             mask_areas[row_idx] = area;
         }
 
-        // The K x K mask-IoU matrix is an O(K^2 * H*W) pairwise sweep. Threshold
-        // each selected mask once into packed u64 words, then compute pairwise
-        // intersections via bitwise AND + popcount. The original loop only summed
-        // 0/1 mask indicators, so these integer counts are exactly the same f64
-        // values before the unchanged decay math below.
-        let mut iou_matrix = vec![0.0_f64; k * k];
-        let compute_row = |i: usize, row: &mut [f64]| {
+        // Decay only depends on higher-scoring masks, so compute each row's
+        // factor directly instead of materializing a dense K x K IoU matrix.
+        let compute_decay = |i: usize| {
             let row_start = i * words_per_mask;
             let row_words = &packed_masks[row_start..row_start + words_per_mask];
             let row_area = mask_areas[i];
-            for (j, slot) in row.iter_mut().enumerate() {
-                if j == i {
-                    continue;
-                }
+            let mut factor = 1.0_f64;
+            for j in 0..i {
                 let other_start = j * words_per_mask;
                 let other_words = &packed_masks[other_start..other_start + words_per_mask];
                 let mut inter = 0_usize;
@@ -36676,29 +36670,17 @@ impl FrankenTorchSession {
                 }
                 let union_count = row_area + mask_areas[j] - inter;
                 let union_val = (union_count as f64).max(1e-6_f64);
-                *slot = (inter as f64) / union_val;
+                let iou = (inter as f64) / union_val;
+                factor *= (-iou * iou / sigma).exp();
             }
+            factor
         };
-        if k >= 2 && k * k >= PARALLEL_ELEMENTWISE_MIN {
+        let decay_factors: Vec<f64> = if k >= 2 && k * k >= PARALLEL_ELEMENTWISE_MIN {
             use rayon::prelude::*;
-            iou_matrix
-                .par_chunks_mut(k)
-                .enumerate()
-                .for_each(|(i, row)| compute_row(i, row));
+            (0..k).into_par_iter().map(compute_decay).collect()
         } else {
-            iou_matrix
-                .chunks_mut(k)
-                .enumerate()
-                .for_each(|(i, row)| compute_row(i, row));
-        }
-        let mut decay_factors = vec![1.0_f64; k];
-        for i in 0..k {
-            for j in 0..i {
-                let iou = iou_matrix[i * k + j];
-                let decay = (-iou * iou / sigma).exp();
-                decay_factors[i] *= decay;
-            }
-        }
+            (0..k).map(compute_decay).collect()
+        };
         let new_scores: Vec<f64> = indices
             .iter()
             .enumerate()

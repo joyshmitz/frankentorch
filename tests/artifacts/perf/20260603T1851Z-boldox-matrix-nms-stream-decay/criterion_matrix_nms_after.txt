@@ -1,0 +1,10 @@
+frankentorch-6099 Matrix NMS streaming-decay after
+
+Command:
+RCH_REQUIRE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankentorch-boldox-matrix-nms-stream-after-target rch exec -- cargo bench -p ft-api --bench ops_bench -- matrix_nms/256x48x48 --warm-up-time 1 --measurement-time 5 --sample-size 10
+
+Worker:
+vmi1227854
+
+Result:
+matrix_nms/256x48x48 time [4.0589 ms 4.2103 ms 4.4688 ms]
