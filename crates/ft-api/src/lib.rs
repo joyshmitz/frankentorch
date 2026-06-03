@@ -8,9 +8,9 @@ use ft_autograd::{
     TensorBackwardReport, TensorClampOperationEvent, TensorHookHandle, TensorJoinOperationEvent,
     TensorLerpOperationEvent, TensorNodeId, TensorNormDimOperationEvent, TensorNormOperationEvent,
     TensorNormalizeDimOperationEvent, TensorOperationEvent, TensorPowOperationEvent,
-    TensorReductionDimOperationEvent, TensorReductionOperationEvent, TensorScanDimOperationEvent,
-    TensorSortOperationEvent, TensorTape, TensorTopKOperationEvent, TensorUnaryOperationEvent,
-    UnaryOperationEvent,
+    TensorReductionDimOperationEvent, TensorReductionOperationEvent, TensorScalarOperationEvent,
+    TensorScanDimOperationEvent, TensorSortOperationEvent, TensorTape, TensorTopKOperationEvent,
+    TensorUnaryOperationEvent, UnaryOperationEvent,
 };
 use ft_core::{
     BFloat16, Complex64, Complex128, DType, DenseI64Tensor, DenseTensor, Device, ExecutionMode,
@@ -4232,6 +4232,16 @@ impl FrankenTorchSession {
     ) -> Result<TensorNodeId, AutogradError> {
         let (out, event) = self.tensor_tape.mul(lhs, rhs, self.mode())?;
         self.record_tensor_operation(&event);
+        Ok(out)
+    }
+
+    pub fn tensor_mul_scalar(
+        &mut self,
+        input: TensorNodeId,
+        scalar: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (out, event) = self.tensor_tape.mul_scalar(input, scalar)?;
+        self.record_tensor_scalar_operation(&event);
         Ok(out)
     }
 
@@ -30978,6 +30988,16 @@ impl FrankenTorchSession {
         );
     }
 
+    fn record_tensor_scalar_operation(&mut self, event: &TensorScalarOperationEvent) {
+        self.runtime.ledger_mut().record(
+            EvidenceKind::Dispatch,
+            format!(
+                "tensor_scalar_op={:?} input={} scalar={} out={} output_dtype={:?}",
+                event.op, event.input.0, event.scalar, event.out.0, event.output_dtype
+            ),
+        );
+    }
+
     fn record_tensor_in_place_operation(
         &mut self,
         op: &'static str,
@@ -32254,6 +32274,51 @@ impl FrankenTorchSession {
             )));
         }
 
+        if self.tensor_requires_grad(input)? {
+            // nanmedian selects a single element (the lower-median of the
+            // non-NaN values), so the gradient is a scatter: the full upstream
+            // gradient flows to that element's original position, all others 0.
+            // The forward filter+sort+select is identical to the non-grad path
+            // below, so the value is bit-identical; only the gradient is
+            // restored (this op silently returned a non-grad leaf). frankentorch-o4j2.
+            return self.tensor_apply_function(
+                &[input],
+                move |ctx, inputs| {
+                    let (vals, _in_shape) = inputs[0];
+                    let n = vals.len();
+                    let mut pairs: Vec<(f64, usize)> = vals
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, v)| !v.is_nan())
+                        .map(|(i, &v)| (v, i))
+                        .collect();
+                    if pairs.is_empty() {
+                        // All-NaN: constant NaN output, zero gradient. Encode a
+                        // weight-0 scatter so backward needs no special case.
+                        ctx.save_for_backward(vec![n as f64, 0.0, 0.0], vec![3]);
+                        return Ok((vec![f64::NAN], vec![1]));
+                    }
+                    pairs.sort_by(|a, b| {
+                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let median_idx = (pairs.len() - 1) / 2;
+                    let (val, orig) = pairs[median_idx];
+                    ctx.save_for_backward(vec![n as f64, orig as f64, 1.0], vec![3]);
+                    Ok((vec![val], vec![1]))
+                },
+                move |ctx, grad_outputs| {
+                    let saved = &ctx.saved_tensors()[0];
+                    let n = saved[0] as usize;
+                    let orig = saved[1] as usize;
+                    let weight = saved[2];
+                    let g = grad_outputs[0][0];
+                    let mut grad = vec![0.0_f64; n];
+                    grad[orig] += weight * g;
+                    Ok(vec![Some(grad)])
+                },
+            );
+        }
+
         let vals = self.tensor_values(input)?;
         let mut non_nan: Vec<f64> = vals.into_iter().filter(|x| !x.is_nan()).collect();
 
@@ -32284,6 +32349,65 @@ impl FrankenTorchSession {
                     reason: "nanquantile: q must be in [0, 1]",
                 },
             )));
+        }
+
+        if self.tensor_requires_grad(input)? {
+            // nanquantile linearly interpolates between two order statistics of
+            // the non-NaN values, so the gradient is a 2-element scatter: the
+            // lower bracket's original element gets weight (1-frac), the upper
+            // gets weight frac. Forward filter+sort+interpolate is identical to
+            // the non-grad path, so the value is bit-identical; only the gradient
+            // is restored (was a silent non-grad leaf). frankentorch-o4j2.
+            return self.tensor_apply_function(
+                &[input],
+                move |ctx, inputs| {
+                    let (vals, _in_shape) = inputs[0];
+                    let total = vals.len();
+                    let mut pairs: Vec<(f64, usize)> = vals
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, v)| !v.is_nan())
+                        .map(|(i, &v)| (v, i))
+                        .collect();
+                    if pairs.is_empty() {
+                        ctx.save_for_backward(vec![total as f64, 0.0, 0.0, 0.0, 0.0], vec![5]);
+                        return Ok((vec![f64::NAN], vec![1]));
+                    }
+                    pairs.sort_by(|a, b| {
+                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let n = pairs.len();
+                    let idx_f = q * (n - 1) as f64;
+                    let idx_lo = idx_f.floor() as usize;
+                    let idx_hi = idx_f.ceil() as usize;
+                    let frac = idx_f - idx_lo as f64;
+                    let (lo_val, lo_orig) = pairs[idx_lo];
+                    let (hi_val, hi_orig) = pairs[idx_hi];
+                    let (result, w_lo, w_hi) = if idx_lo == idx_hi {
+                        (lo_val, 1.0, 0.0)
+                    } else {
+                        (lo_val * (1.0 - frac) + hi_val * frac, 1.0 - frac, frac)
+                    };
+                    ctx.save_for_backward(
+                        vec![total as f64, lo_orig as f64, w_lo, hi_orig as f64, w_hi],
+                        vec![5],
+                    );
+                    Ok((vec![result], vec![1]))
+                },
+                move |ctx, grad_outputs| {
+                    let saved = &ctx.saved_tensors()[0];
+                    let total = saved[0] as usize;
+                    let lo_orig = saved[1] as usize;
+                    let w_lo = saved[2];
+                    let hi_orig = saved[3] as usize;
+                    let w_hi = saved[4];
+                    let g = grad_outputs[0][0];
+                    let mut grad = vec![0.0_f64; total];
+                    grad[lo_orig] += w_lo * g;
+                    grad[hi_orig] += w_hi * g;
+                    Ok(vec![Some(grad)])
+                },
+            );
         }
 
         let vals = self.tensor_values(input)?;
@@ -90872,6 +90996,74 @@ mod tests {
         let q1 = s.tensor_nanquantile(input, 1.0).unwrap();
         assert!((s.tensor_values(q0).unwrap()[0] - 1.0).abs() < 1e-10);
         assert!((s.tensor_values(q1).unwrap()[0] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn nanmedian_backward_scatters_to_selected_element_and_value_parity() {
+        // Non-NaN values [1,3,2,5] (positions 0,2,3,5); sorted [1,2,3,5],
+        // lower-median index (4-1)/2=1 → value 2 at original position 3.
+        let data = vec![1.0, f64::NAN, 3.0, 2.0, f64::NAN, 5.0];
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity vs non-grad path.
+        let a_ng = s.tensor_variable(data.clone(), vec![6], false).unwrap();
+        let out_ng = s.tensor_nanmedian(a_ng).unwrap();
+        let v_ng = s.tensor_values(out_ng).unwrap()[0];
+        let a_g = s.tensor_variable(data.clone(), vec![6], true).unwrap();
+        let out_g = s.tensor_nanmedian(a_g).unwrap();
+        let v_g = s.tensor_values(out_g).unwrap()[0];
+        assert_eq!(v_ng.to_bits(), v_g.to_bits(), "nanmedian grad/non-grad value mismatch");
+        // Backward: full gradient to position 3 only.
+        let report = s.tensor_backward(out_g).unwrap();
+        let grad = s.tensor_gradient(&report, a_g).expect("nanmedian grad present");
+        let expected = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        for (i, (gi, ei)) in grad.iter().zip(expected.iter()).enumerate() {
+            assert!((gi - ei).abs() < 1e-12, "grad[{i}]={gi} expected {ei}");
+        }
+    }
+
+    #[test]
+    fn nanquantile_backward_matches_finite_difference() {
+        use ft_core::{DType, Device};
+        // Non-NaN [2,9,4,7,5] at positions 0,1,3,4,6; q=0.4 interpolates.
+        let data = vec![2.0, 9.0, f64::NAN, 4.0, 7.0, f64::NAN, 5.0];
+        let q = 0.4;
+        let dir = vec![0.3, -0.2, 0.0, 0.5, -0.4, 0.0, 0.1];
+        let n = data.len();
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity.
+        let a_ng = s.tensor_variable(data.clone(), vec![n], false).unwrap();
+        let o_ng = s.tensor_nanquantile(a_ng, q).unwrap();
+        let v_ng = s.tensor_values(o_ng).unwrap()[0];
+        let a_g = s.tensor_variable(data.clone(), vec![n], true).unwrap();
+        let o_g = s.tensor_nanquantile(a_g, q).unwrap();
+        let v_g = s.tensor_values(o_g).unwrap()[0];
+        assert_eq!(v_ng.to_bits(), v_g.to_bits(), "nanquantile grad/non-grad value mismatch");
+
+        let report = s.tensor_backward(o_g).unwrap();
+        let grad = s.tensor_gradient(&report, a_g).expect("nanquantile grad present");
+        let analytic: f64 = grad.iter().zip(dir.iter()).map(|(g, d)| g * d).sum();
+
+        let loss_of = |mat: &[f64]| -> f64 {
+            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+            // Mirror the kernel-free nanquantile: filter NaN, sort, interpolate.
+            let mut nn: Vec<f64> = mat.iter().copied().filter(|x| !x.is_nan()).collect();
+            nn.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let k = nn.len();
+            let idx = q * (k - 1) as f64;
+            let lo = idx.floor() as usize;
+            let hi = idx.ceil() as usize;
+            let frac = idx - lo as f64;
+            if lo == hi { nn[lo] } else { nn[lo] * (1.0 - frac) + nn[hi] * frac }
+        };
+        let eps = 1e-6;
+        let ap: Vec<f64> = data.iter().zip(dir.iter()).map(|(x, d)| x + eps * d).collect();
+        let am: Vec<f64> = data.iter().zip(dir.iter()).map(|(x, d)| x - eps * d).collect();
+        let fd = (loss_of(&ap) - loss_of(&am)) / (2.0 * eps);
+        assert!(
+            (analytic - fd).abs() <= 1e-6 * (1.0 + fd.abs()),
+            "nanquantile backward mismatch: analytic={analytic}, fd={fd}"
+        );
     }
 
     #[test]
