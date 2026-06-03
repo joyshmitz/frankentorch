@@ -230,6 +230,25 @@ fn bench_fft2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_rope_freqs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rope_freqs");
+    // RoPE cos/sin tables [max_seq_len, head_dim/2]: cos + sin per element ->
+    // compute-bound, parallel over positions.
+    let (max_seq_len, head_dim) = (32768usize, 128usize);
+    group.throughput(Throughput::Elements((max_seq_len * head_dim / 2) as u64));
+    group.bench_function("32768x128", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        b.iter(|| {
+            black_box(
+                session
+                    .precompute_rope_freqs(black_box(max_seq_len), black_box(head_dim), 10000.0)
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_sinusoidal_pe(c: &mut Criterion) {
     let mut group = c.benchmark_group("sinusoidal_pe");
     // [seq_len, d_model] sinusoidal positional encoding: powf + sin/cos per
@@ -436,6 +455,7 @@ criterion_group!(
     bench_interpolate_trilinear,
     bench_grid_sample,
     bench_fft2,
+    bench_rope_freqs,
     bench_sinusoidal_pe,
     bench_istft,
     bench_stft,

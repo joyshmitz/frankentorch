@@ -5024,12 +5024,31 @@ impl FrankenTorchSession {
         }
         let mut cos_data = vec![0.0_f64; max_seq_len * half_dim];
         let mut sin_data = vec![0.0_f64; max_seq_len * half_dim];
-        for pos in 0..max_seq_len {
-            for i in 0..half_dim {
+        // Each position owns a contiguous half_dim row of both tables and every
+        // element is an independent cos/sin (compute-bound), so distribute the
+        // positions across Rayon workers. The per-element formula and the linear
+        // write position (pos*half_dim + i) are unchanged, so the result is
+        // bit-for-bit identical to the serial loop.
+        let fill_row = |pos: usize, cos_row: &mut [f64], sin_row: &mut [f64]| {
+            for (i, (c, s)) in cos_row.iter_mut().zip(sin_row.iter_mut()).enumerate() {
                 let angle = (pos as f64) * freqs[i];
-                cos_data[pos * half_dim + i] = angle.cos();
-                sin_data[pos * half_dim + i] = angle.sin();
+                *c = angle.cos();
+                *s = angle.sin();
             }
+        };
+        if max_seq_len >= 2 && max_seq_len * half_dim >= PARALLEL_ELEMENTWISE_MIN {
+            use rayon::prelude::*;
+            cos_data
+                .par_chunks_mut(half_dim)
+                .zip(sin_data.par_chunks_mut(half_dim))
+                .enumerate()
+                .for_each(|(pos, (cos_row, sin_row))| fill_row(pos, cos_row, sin_row));
+        } else {
+            cos_data
+                .chunks_mut(half_dim)
+                .zip(sin_data.chunks_mut(half_dim))
+                .enumerate()
+                .for_each(|(pos, (cos_row, sin_row))| fill_row(pos, cos_row, sin_row));
         }
         let cos_node = self.tensor_variable(cos_data, vec![max_seq_len, half_dim], false)?;
         let sin_node = self.tensor_variable(sin_data, vec![max_seq_len, half_dim], false)?;
@@ -81165,6 +81184,38 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for (idx, (g, w)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "pos_encoding @{idx}");
+        }
+    }
+
+    #[test]
+    fn precompute_rope_freqs_parallel_match_serial_bit_exact() {
+        // max_seq_len*half_dim >= PARALLEL_ELEMENTWISE_MIN so the rayon row path
+        // runs; both cos/sin tables must match the serial formula BIT-FOR-BIT.
+        use super::FrankenTorchSession;
+        let (max_seq_len, head_dim, base) = (128usize, 128usize, 10000.0_f64); // 128*64=8192
+        let half_dim = head_dim / 2;
+        let mut freqs = vec![0.0f64; half_dim];
+        for i in 0..half_dim {
+            freqs[i] = 1.0 / base.powf((2 * i) as f64 / head_dim as f64);
+        }
+        let mut want_cos = vec![0.0f64; max_seq_len * half_dim];
+        let mut want_sin = vec![0.0f64; max_seq_len * half_dim];
+        for pos in 0..max_seq_len {
+            for i in 0..half_dim {
+                let angle = (pos as f64) * freqs[i];
+                want_cos[pos * half_dim + i] = angle.cos();
+                want_sin[pos * half_dim + i] = angle.sin();
+            }
+        }
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let (cos_n, sin_n) = s.precompute_rope_freqs(max_seq_len, head_dim, base).unwrap();
+        let got_cos = s.tensor_values(cos_n).unwrap();
+        let got_sin = s.tensor_values(sin_n).unwrap();
+        for (idx, (g, w)) in got_cos.iter().zip(want_cos.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "rope cos @{idx}");
+        }
+        for (idx, (g, w)) in got_sin.iter().zip(want_sin.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "rope sin @{idx}");
         }
     }
 
