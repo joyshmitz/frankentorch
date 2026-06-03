@@ -427,6 +427,21 @@ impl WeightedRandomSampler {
             return Ok(vec![0; self.num_samples]);
         }
 
+        if self.weights.len() == 2 {
+            let first_threshold = cumulative.first().copied().ok_or_else(|| {
+                transform_config_error(
+                    "WeightedRandomSampler: weights must produce cumulative thresholds",
+                )
+            })? / total;
+            let mut rng = SimpleRng::new(self.seed);
+            let mut result = Vec::with_capacity(self.num_samples);
+            for _ in 0..self.num_samples {
+                let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+                result.push(if u <= first_threshold { 0 } else { 1 });
+            }
+            return Ok(result);
+        }
+
         for threshold in &mut cumulative {
             *threshold /= total;
         }
@@ -1907,6 +1922,21 @@ mod tests {
             .indices()
             .expect("weighted samples");
         assert_eq!(a, b, "same seed must produce identical weighted samples");
+    }
+
+    #[test]
+    fn weighted_random_sampler_two_weight_fast_path_preserves_order() {
+        let indices = WeightedRandomSampler::new(vec![1.0, 3.0], 32)
+            .with_seed(0x5151_0002)
+            .indices()
+            .expect("weighted samples");
+        assert_eq!(
+            indices,
+            vec![
+                1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0,
+                0, 1, 1, 0,
+            ]
+        );
     }
 
     #[test]
