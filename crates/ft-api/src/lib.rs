@@ -8970,7 +8970,6 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let input_vals = self.tensor_values(input)?;
         let target_vals = self.tensor_values(target)?;
         let weights = if let Some(w) = weight {
             let w_shape = self.tensor_shape(w)?;
@@ -8985,36 +8984,81 @@ impl FrankenTorchSession {
         } else {
             None
         };
-        let mut losses = Vec::with_capacity(n);
-        for i in 0..n {
-            let y = target_vals[i] as usize;
-            if y >= c {
-                return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                    ft_dispatch::DispatchKeyError::IncompatibleSet {
-                        reason: "multi_margin_loss: target class index out of range",
-                    },
-                )));
-            }
-            let x_y = input_vals[i * c + y];
-            let mut sum = 0.0;
-            for j in 0..c {
-                if j != y {
-                    let x_j = input_vals[i * c + j];
-                    let margin_term = margin - x_y + x_j;
-                    if margin_term > 0.0 {
-                        let loss_j = if p == 1 {
-                            margin_term
-                        } else {
-                            margin_term * margin_term
-                        };
-                        let w = weights.as_ref().map_or(1.0, |ws| ws[y]);
-                        sum += w * loss_j;
+        // Route through apply_function so the gradient reaches `input` (target is
+        // an integer class index, non-differentiable). The hinge term
+        // `t = margin - x_y + x_j > 0` has subgradient w_y/C * d(t^p): for p=1
+        // that is +1 to x_j and -1 to x_y; for p=2 it is 2t scaled likewise.
+        let target_for_backward = target_vals.clone();
+        let weights_for_backward = weights.clone();
+        let loss = self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (input_vals, _shape) = inputs[0];
+                let mut losses = Vec::with_capacity(n);
+                for i in 0..n {
+                    let y = target_vals[i] as usize;
+                    if y >= c {
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "multi_margin_loss: target class index out of range",
+                            },
+                        )));
+                    }
+                    let x_y = input_vals[i * c + y];
+                    let mut sum = 0.0;
+                    for j in 0..c {
+                        if j != y {
+                            let x_j = input_vals[i * c + j];
+                            let margin_term = margin - x_y + x_j;
+                            if margin_term > 0.0 {
+                                let loss_j = if p == 1 {
+                                    margin_term
+                                } else {
+                                    margin_term * margin_term
+                                };
+                                let w = weights.as_ref().map_or(1.0, |ws| ws[y]);
+                                sum += w * loss_j;
+                            }
+                        }
+                    }
+                    losses.push(sum / c as f64);
+                }
+                ctx.save_for_backward(input_vals.to_vec(), vec![n, c]);
+                Ok((losses, vec![n]))
+            },
+            move |ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let input_vals = &saved[0];
+                let inv_c = 1.0 / c as f64;
+                let mut grad_input = vec![0.0; n * c];
+                for i in 0..n {
+                    let gi = g[i];
+                    if gi == 0.0 {
+                        continue;
+                    }
+                    let y = target_for_backward[i] as usize;
+                    if y >= c {
+                        continue;
+                    }
+                    let x_y = input_vals[i * c + y];
+                    let w = weights_for_backward.as_ref().map_or(1.0, |ws| ws[y]);
+                    for j in 0..c {
+                        if j != y {
+                            let x_j = input_vals[i * c + j];
+                            let t = margin - x_y + x_j;
+                            if t > 0.0 {
+                                let dp = if p == 1 { 1.0 } else { 2.0 * t };
+                                let factor = gi * inv_c * w * dp;
+                                grad_input[i * c + j] += factor;
+                                grad_input[i * c + y] -= factor;
+                            }
+                        }
                     }
                 }
-            }
-            losses.push(sum / c as f64);
-        }
-        let loss = self.tensor_variable(losses, vec![n], false)?;
+                Ok(vec![Some(grad_input)])
+            },
+        )?;
         match reduction {
             "none" => Ok(loss),
             "mean" => self.tensor_mean(loss),
@@ -9059,33 +9103,76 @@ impl FrankenTorchSession {
         }
         let n = input_shape[0];
         let c = input_shape[1];
-        let input_vals = self.tensor_values(input)?;
         let target_vals = self.tensor_values(target)?;
-        let mut losses = Vec::with_capacity(n);
-        for i in 0..n {
-            let row_offset = i * c;
-            // Collect positive label indices (non-negative target values)
-            let positive_indices: Vec<usize> = (0..c)
-                .filter(|&j| target_vals[row_offset + j] >= 0.0)
-                .map(|j| target_vals[row_offset + j] as usize)
-                .filter(|&idx| idx < c)
-                .collect();
-            let mut sum = 0.0;
-            for &y_j in &positive_indices {
-                let x_y = input_vals[row_offset + y_j];
-                for k in 0..c {
-                    if !positive_indices.contains(&k) {
-                        let x_k = input_vals[row_offset + k];
-                        let margin_term = 1.0 - x_y + x_k;
-                        if margin_term > 0.0 {
-                            sum += margin_term;
+        // Route through apply_function so the gradient reaches `input` (target is
+        // integer label indices, non-differentiable). The hinge is piecewise
+        // linear: each active margin term `1 - x[y] + x[k] > 0` contributes
+        // -1/C to grad x[y] and +1/C to grad x[k] (subgradient at the kink = 0).
+        let target_for_backward = target_vals.clone();
+        let loss = self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (input_vals, _shape) = inputs[0];
+                let mut losses = Vec::with_capacity(n);
+                for i in 0..n {
+                    let row_offset = i * c;
+                    // Collect positive label indices (non-negative target values)
+                    let positive_indices: Vec<usize> = (0..c)
+                        .filter(|&j| target_vals[row_offset + j] >= 0.0)
+                        .map(|j| target_vals[row_offset + j] as usize)
+                        .filter(|&idx| idx < c)
+                        .collect();
+                    let mut sum = 0.0;
+                    for &y_j in &positive_indices {
+                        let x_y = input_vals[row_offset + y_j];
+                        for k in 0..c {
+                            if !positive_indices.contains(&k) {
+                                let x_k = input_vals[row_offset + k];
+                                let margin_term = 1.0 - x_y + x_k;
+                                if margin_term > 0.0 {
+                                    sum += margin_term;
+                                }
+                            }
+                        }
+                    }
+                    losses.push(sum / c as f64);
+                }
+                ctx.save_for_backward(input_vals.to_vec(), vec![n, c]);
+                Ok((losses, vec![n]))
+            },
+            move |ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let input_vals = &saved[0];
+                let inv_c = 1.0 / c as f64;
+                let mut grad_input = vec![0.0; n * c];
+                for i in 0..n {
+                    let gi = g[i];
+                    if gi == 0.0 {
+                        continue;
+                    }
+                    let row_offset = i * c;
+                    let positive_indices: Vec<usize> = (0..c)
+                        .filter(|&j| target_for_backward[row_offset + j] >= 0.0)
+                        .map(|j| target_for_backward[row_offset + j] as usize)
+                        .filter(|&idx| idx < c)
+                        .collect();
+                    for &y_j in &positive_indices {
+                        let x_y = input_vals[row_offset + y_j];
+                        for k in 0..c {
+                            if !positive_indices.contains(&k) {
+                                let x_k = input_vals[row_offset + k];
+                                if 1.0 - x_y + x_k > 0.0 {
+                                    grad_input[row_offset + y_j] -= gi * inv_c;
+                                    grad_input[row_offset + k] += gi * inv_c;
+                                }
+                            }
                         }
                     }
                 }
-            }
-            losses.push(sum / c as f64);
-        }
-        let loss = self.tensor_variable(losses, vec![n], false)?;
+                Ok(vec![Some(grad_input)])
+            },
+        )?;
         match reduction {
             "none" => Ok(loss),
             "mean" => self.tensor_mean(loss),
@@ -9144,27 +9231,60 @@ impl FrankenTorchSession {
         } else {
             None
         };
-        let input_vals = self.tensor_values(input)?;
         let target_vals = self.tensor_values(target)?;
-        let mut losses = Vec::with_capacity(n);
-        for i in 0..n {
-            let row_offset = i * c;
-            let mut sum = 0.0;
-            for j in 0..c {
-                let x = input_vals[row_offset + j];
-                let y = target_vals[row_offset + j];
-                let w = weights.as_ref().map_or(1.0, |ws| ws[j]);
-                // log(sigmoid(x)) = x - softplus(x) = -softplus(-x)
-                // log(1 - sigmoid(x)) = -softplus(x)
-                let softplus_x = (1.0 + x.exp()).ln();
-                let softplus_neg_x = (1.0 + (-x).exp()).ln();
-                let log_sigmoid = -softplus_neg_x;
-                let log_one_minus_sigmoid = -softplus_x;
-                sum += w * (y * log_sigmoid + (1.0 - y) * log_one_minus_sigmoid);
-            }
-            losses.push(-sum / c as f64);
-        }
-        let loss = self.tensor_variable(losses, vec![n], false)?;
+        // Route through apply_function so the gradient reaches `input`. The loss
+        // is smooth: d/dx_j [y log sigmoid(x) + (1-y) log(1-sigmoid(x))] = y - sigmoid(x),
+        // so d loss_i/d x_j = w_j/C * (sigmoid(x_j) - y_j).
+        let target_for_backward = target_vals.clone();
+        let weights_for_backward = weights.clone();
+        let loss = self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (input_vals, _shape) = inputs[0];
+                let mut losses = Vec::with_capacity(n);
+                for i in 0..n {
+                    let row_offset = i * c;
+                    let mut sum = 0.0;
+                    for j in 0..c {
+                        let x = input_vals[row_offset + j];
+                        let y = target_vals[row_offset + j];
+                        let w = weights.as_ref().map_or(1.0, |ws| ws[j]);
+                        // log(sigmoid(x)) = x - softplus(x) = -softplus(-x)
+                        // log(1 - sigmoid(x)) = -softplus(x)
+                        let softplus_x = (1.0 + x.exp()).ln();
+                        let softplus_neg_x = (1.0 + (-x).exp()).ln();
+                        let log_sigmoid = -softplus_neg_x;
+                        let log_one_minus_sigmoid = -softplus_x;
+                        sum += w * (y * log_sigmoid + (1.0 - y) * log_one_minus_sigmoid);
+                    }
+                    losses.push(-sum / c as f64);
+                }
+                ctx.save_for_backward(input_vals.to_vec(), vec![n, c]);
+                Ok((losses, vec![n]))
+            },
+            move |ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let input_vals = &saved[0];
+                let inv_c = 1.0 / c as f64;
+                let mut grad_input = vec![0.0; n * c];
+                for i in 0..n {
+                    let gi = g[i];
+                    if gi == 0.0 {
+                        continue;
+                    }
+                    let row_offset = i * c;
+                    for j in 0..c {
+                        let x = input_vals[row_offset + j];
+                        let y = target_for_backward[row_offset + j];
+                        let w = weights_for_backward.as_ref().map_or(1.0, |ws| ws[j]);
+                        let sigmoid = 1.0 / (1.0 + (-x).exp());
+                        grad_input[row_offset + j] = gi * inv_c * w * (sigmoid - y);
+                    }
+                }
+                Ok(vec![Some(grad_input)])
+            },
+        )?;
         match reduction {
             "none" => Ok(loss),
             "mean" => self.tensor_mean(loss),
@@ -77895,6 +78015,74 @@ mod tests {
                 "multi_margin_loss grad[{i}] = {g}, expected {e}"
             );
         }
+    }
+
+    #[test]
+    fn tensor_multi_margin_loss_propagates_gradient_through_input() {
+        // Regression: tensor_multi_margin_loss (the tensor_-prefix duplicate of
+        // multi_margin_loss) rebuilt a requires_grad=false leaf, severing the
+        // gradient to input. Now routes through apply_function with the hinge
+        // subgradient. input=[[0,3]], target=[0], p=1, margin=1, mean reduction:
+        // loss = max(0, 1-0+3)/2 = 2.0; grad = [-0.5, 0.5].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0, 3.0], vec![1, 2], true).unwrap();
+        let target = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let loss = s
+            .tensor_multi_margin_loss(input, target, 1, 1.0, None, "mean")
+            .unwrap();
+        assert!((s.tensor_values(loss).unwrap()[0] - 2.0).abs() < 1e-12);
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("tensor_multi_margin_loss must propagate gradient through input");
+        assert_eq!(grad, &vec![-0.5, 0.5]);
+    }
+
+    #[test]
+    fn tensor_multilabel_margin_loss_propagates_gradient_through_input() {
+        // Regression: tensor_multilabel_margin_loss severed input gradient.
+        // input=[[0.5,0.4,0.1,0.2]], target=[[0,1,-1,-1]] (positives {0,1}),
+        // reduction="sum". Each of the 4 active hinge terms (1 - x_y + x_k > 0)
+        // contributes -1/C to x_y and +1/C to x_k (C=4 -> 0.25). Loss = 2.8/4 = 0.7;
+        // grad = [-0.5, -0.5, 0.5, 0.5].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s
+            .tensor_variable(vec![0.5, 0.4, 0.1, 0.2], vec![1, 4], true)
+            .unwrap();
+        let target = s
+            .tensor_variable(vec![0.0, 1.0, -1.0, -1.0], vec![1, 4], false)
+            .unwrap();
+        let loss = s
+            .tensor_multilabel_margin_loss(input, target, "sum")
+            .unwrap();
+        assert!((s.tensor_values(loss).unwrap()[0] - 0.7).abs() < 1e-12);
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("tensor_multilabel_margin_loss must propagate gradient through input");
+        for (i, (&g, &e)) in grad.iter().zip([-0.5, -0.5, 0.5, 0.5].iter()).enumerate() {
+            assert!((g - e).abs() < 1e-12, "grad[{i}] = {g}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn tensor_multilabel_soft_margin_loss_propagates_gradient_through_input() {
+        // Regression: tensor_multilabel_soft_margin_loss severed input gradient.
+        // Smooth loss; grad x_j = w_j/C * (sigmoid(x_j) - y_j). input=[[0,0]],
+        // target=[[1,0]], C=2, sum reduction: loss = -ln(0.5) = ln 2;
+        // grad = [(0.5-1)/2, (0.5-0)/2] = [-0.25, 0.25].
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let input = s.tensor_variable(vec![0.0, 0.0], vec![1, 2], true).unwrap();
+        let target = s.tensor_variable(vec![1.0, 0.0], vec![1, 2], false).unwrap();
+        let loss = s
+            .tensor_multilabel_soft_margin_loss(input, target, None, "sum")
+            .unwrap();
+        assert!((s.tensor_values(loss).unwrap()[0] - std::f64::consts::LN_2).abs() < 1e-12);
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, input)
+            .expect("tensor_multilabel_soft_margin_loss must propagate gradient through input");
+        assert_eq!(grad, &vec![-0.25, 0.25]);
     }
 
     #[test]
