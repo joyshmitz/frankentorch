@@ -60653,238 +60653,40 @@ fn bessel_i1e_derivative_scalar(x: f64) -> f64 {
 /// Bessel function of the first kind J0 via polynomial approximation.
 /// Uses Abramowitz & Stegun 9.4.1 / 9.4.3 for small/large arguments.
 fn bessel_j0_scalar(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    let ax = x.abs();
-    if ax < 8.0 {
-        let y = x * x;
-        let num = eval_poly_f64(
-            y,
-            &[
-                57568490574.0,
-                -13362590354.0,
-                651619640.7,
-                -11214424.18,
-                77392.33017,
-                -184.9052456,
-            ],
-        );
-        let den = eval_poly_f64(
-            y,
-            &[
-                57568490411.0,
-                1029532985.0,
-                9494680.718,
-                59272.64853,
-                267.8532712,
-                1.0,
-            ],
-        );
-        num / den
-    } else {
-        let z = 8.0 / ax;
-        let y = z * z;
-        let xx = ax - std::f64::consts::FRAC_PI_4;
-        let p = eval_poly_f64(
-            y,
-            &[
-                1.0,
-                -0.1098628627e-2,
-                0.2734510407e-4,
-                -0.2073370639e-5,
-                0.2093887211e-6,
-            ],
-        );
-        let q = eval_poly_f64(
-            y,
-            &[
-                -0.1562499995e-1,
-                0.1430488765e-3,
-                -0.6911147651e-5,
-                0.7621095161e-6,
-                -0.934945152e-7,
-            ],
-        );
-        (std::f64::consts::FRAC_2_PI / ax).sqrt() * (xx.cos() * p - z * xx.sin() * q)
-    }
+    // libm::j0 is f64-accurate (~1 ULP) and bit-aligns with torch, which wraps
+    // the same routine; the previous Numerical-Recipes polynomial was only
+    // single precision (~1e-7). J0 is entire, so no domain guard is needed
+    // (libm propagates NaN). frankentorch-2vxa.
+    libm::j0(x)
 }
 
 /// Bessel function of the first kind J1 via polynomial approximation.
 fn bessel_j1_scalar(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    let ax = x.abs();
-    if ax < 8.0 {
-        let y = x * x;
-        let num = x * eval_poly_f64(
-            y,
-            &[
-                72362614232.0,
-                -7895059235.0,
-                242396853.1,
-                -2972611.439,
-                15704.48260,
-                -30.16036606,
-            ],
-        );
-        let den = eval_poly_f64(
-            y,
-            &[
-                144725228442.0,
-                2300535178.0,
-                18583304.74,
-                99447.43394,
-                376.9991397,
-                1.0,
-            ],
-        );
-        num / den
-    } else {
-        let z = 8.0 / ax;
-        let y = z * z;
-        let xx = ax - 2.356194491;
-        let p = eval_poly_f64(
-            y,
-            &[
-                1.0,
-                0.183105e-2,
-                -0.3516396496e-4,
-                0.2457520174e-5,
-                -0.240337019e-6,
-            ],
-        );
-        let q = eval_poly_f64(
-            y,
-            &[
-                0.04687499995,
-                -0.2002690873e-3,
-                0.8449199096e-5,
-                -0.88228987e-6,
-                0.105787412e-6,
-            ],
-        );
-        let result = (std::f64::consts::FRAC_2_PI / ax).sqrt() * (xx.cos() * p - z * xx.sin() * q);
-        if x < 0.0 { -result } else { result }
-    }
+    // libm::j1 is f64-accurate and torch-aligned (was single-precision NR).
+    // J1 is entire (odd); libm propagates NaN. frankentorch-2vxa.
+    libm::j1(x)
 }
 
 /// Bessel function of the second kind Y0 via polynomial approximation.
 fn bessel_y0_scalar(x: f64) -> f64 {
+    // Y0 is only defined for x > 0; preserve the existing x<=0 / NaN -> NaN
+    // contract and route the valid domain through libm::y0 (f64-accurate,
+    // torch-aligned; was single-precision NR). frankentorch-2vxa.
     if x.is_nan() || x <= 0.0 {
         return f64::NAN;
     }
-    if x < 8.0 {
-        let y = x * x;
-        let num = eval_poly_f64(
-            y,
-            &[
-                -2957821389.0,
-                7062834065.0,
-                -512359803.6,
-                10879881.29,
-                -86327.92757,
-                228.4622733,
-            ],
-        );
-        let den = eval_poly_f64(
-            y,
-            &[
-                40076544269.0,
-                745249964.8,
-                7189466.438,
-                47447.26470,
-                226.1030244,
-                1.0,
-            ],
-        );
-        num / den + std::f64::consts::FRAC_2_PI * bessel_j0_scalar(x) * x.ln()
-    } else {
-        let z = 8.0 / x;
-        let y = z * z;
-        let xx = x - std::f64::consts::FRAC_PI_4;
-        let p = eval_poly_f64(
-            y,
-            &[
-                1.0,
-                -0.1098628627e-2,
-                0.2734510407e-4,
-                -0.2073370639e-5,
-                0.2093887211e-6,
-            ],
-        );
-        let q = eval_poly_f64(
-            y,
-            &[
-                -0.1562499995e-1,
-                0.1430488765e-3,
-                -0.6911147651e-5,
-                0.7621095161e-6,
-                -0.934945152e-7,
-            ],
-        );
-        (std::f64::consts::FRAC_2_PI / x).sqrt() * (xx.sin() * p + z * xx.cos() * q)
-    }
+    libm::y0(x)
 }
 
 /// Bessel function of the second kind Y1 via polynomial approximation.
 fn bessel_y1_scalar(x: f64) -> f64 {
+    // Y1 is only defined for x > 0; preserve the x<=0 / NaN -> NaN contract and
+    // route the valid domain through libm::y1 (f64-accurate, torch-aligned; was
+    // single-precision NR). frankentorch-2vxa.
     if x.is_nan() || x <= 0.0 {
         return f64::NAN;
     }
-    if x < 8.0 {
-        let y = x * x;
-        let num = x * eval_poly_f64(
-            y,
-            &[
-                -0.4900604943e13,
-                0.1275274390e13,
-                -0.5153438139e11,
-                0.7349264551e9,
-                -0.4237922726e7,
-                0.8511937935e4,
-            ],
-        );
-        let den = eval_poly_f64(
-            y,
-            &[
-                0.2499580570e14,
-                0.4244419664e12,
-                0.3733650367e10,
-                0.2245904002e8,
-                0.1020426050e6,
-                0.3549632885e3,
-                1.0,
-            ],
-        );
-        num / den + std::f64::consts::FRAC_2_PI * (bessel_j1_scalar(x) * x.ln() - 1.0 / x)
-    } else {
-        let z = 8.0 / x;
-        let y = z * z;
-        let xx = x - 2.356194491;
-        let p = eval_poly_f64(
-            y,
-            &[
-                1.0,
-                0.183105e-2,
-                -0.3516396496e-4,
-                0.2457520174e-5,
-                -0.240337019e-6,
-            ],
-        );
-        let q = eval_poly_f64(
-            y,
-            &[
-                0.04687499995,
-                -0.2002690873e-3,
-                0.8449199096e-5,
-                -0.88228987e-6,
-                0.105787412e-6,
-            ],
-        );
-        (std::f64::consts::FRAC_2_PI / x).sqrt() * (xx.sin() * p + z * xx.cos() * q)
-    }
+    libm::y1(x)
 }
 
 /// Modified Bessel function of the second kind K0.
@@ -82394,6 +82196,31 @@ mod tests {
             assert!(rel(super::bessel_i0e_scalar(xv), super::bessel_i0_scalar(xv) * e), "i0e({xv})");
             assert!(rel(super::bessel_i1e_scalar(xv), super::bessel_i1_scalar(xv) * e), "i1e({xv})");
         }
+    }
+
+    #[test]
+    fn bessel_jy_family_matches_f64_reference_values() {
+        // Reference values from scipy.special (= libm = torch). The previous
+        // Numerical-Recipes polynomials were only ~1e-7, so a 1e-12 tolerance
+        // both confirms the libm upgrade and guards against regressions.
+        let rel = |got: f64, want: f64| (got - want).abs() <= 1e-12 * (1.0 + want.abs());
+        // J0 / J1 (entire; check small-x, large-x and sign behaviour).
+        assert!(rel(super::bessel_j0_scalar(0.0), 1.0));
+        assert!(rel(super::bessel_j0_scalar(1.0), 0.7651976865579666));
+        assert!(rel(super::bessel_j0_scalar(5.0), -0.17759677131433826));
+        assert!(rel(super::bessel_j0_scalar(-1.0), super::bessel_j0_scalar(1.0))); // even
+        assert!(rel(super::bessel_j1_scalar(0.0), 0.0));
+        assert!(rel(super::bessel_j1_scalar(1.0), 0.4400505857449335));
+        assert!(rel(super::bessel_j1_scalar(5.0), -0.3275791375914652));
+        assert!(rel(super::bessel_j1_scalar(-2.0), -super::bessel_j1_scalar(2.0))); // odd
+        // Y0 / Y1 (x > 0; x <= 0 and NaN are NaN by contract).
+        assert!(rel(super::bessel_y0_scalar(1.0), 0.08825696421567697));
+        assert!(rel(super::bessel_y0_scalar(5.0), -0.30851762524903303));
+        assert!(rel(super::bessel_y1_scalar(1.0), -0.7812128213002887));
+        assert!(rel(super::bessel_y1_scalar(5.0), 0.14786314339122683));
+        assert!(super::bessel_y0_scalar(-1.0).is_nan());
+        assert!(super::bessel_y0_scalar(0.0).is_nan());
+        assert!(super::bessel_y1_scalar(f64::NAN).is_nan());
     }
 
     #[test]
