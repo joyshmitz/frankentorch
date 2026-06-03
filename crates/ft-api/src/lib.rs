@@ -11374,7 +11374,7 @@ impl FrankenTorchSession {
             &[input],
             |ctx, inputs| {
                 let (vals, shape) = inputs[0];
-                let result: Vec<f64> = vals.iter().map(|&x| log_ndtr_scalar(x)).collect();
+                let result: Vec<f64> = par_map_f64(vals, log_ndtr_scalar);
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
                 Ok((result, shape.to_vec()))
             },
@@ -11382,11 +11382,8 @@ impl FrankenTorchSession {
                 let saved = ctx.saved_tensors();
                 let x_vals = &saved[0];
                 let grad_y = grad_outputs[0];
-                let grad_x: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_y.iter())
-                    .map(|(&x, &gy)| gy * log_ndtr_grad_scalar(x))
-                    .collect();
+                let grad_x: Vec<f64> =
+                    par_zip_map_f64(x_vals, grad_y, |x, gy| gy * log_ndtr_grad_scalar(x));
                 Ok(vec![Some(grad_x)])
             },
         )
@@ -42243,18 +42240,15 @@ impl FrankenTorchSession {
             move |ctx, inputs| {
                 let (vals, shape) = inputs[0];
                 ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = vals
-                    .iter()
-                    .map(|&x| {
-                        let mut sum = constant;
-                        for i in 0..p {
-                            #[allow(clippy::cast_precision_loss)]
-                            let shift = i as f64 / 2.0;
-                            sum += lgamma_approx(x - shift);
-                        }
-                        sum
-                    })
-                    .collect();
+                let values: Vec<f64> = par_map_f64(vals, |x| {
+                    let mut sum = constant;
+                    for i in 0..p {
+                        #[allow(clippy::cast_precision_loss)]
+                        let shift = i as f64 / 2.0;
+                        sum += lgamma_approx(x - shift);
+                    }
+                    sum
+                });
                 Ok((values, shape.to_vec()))
             },
             move |ctx, grad_outputs| {
@@ -42268,19 +42262,15 @@ impl FrankenTorchSession {
                         },
                     )));
                 }
-                let grad_in: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_out.iter())
-                    .map(|(&x, &go)| {
-                        let mut deriv = 0.0_f64;
-                        for i in 0..p {
-                            #[allow(clippy::cast_precision_loss)]
-                            let shift = i as f64 / 2.0;
-                            deriv += digamma_approx(x - shift);
-                        }
-                        go * deriv
-                    })
-                    .collect();
+                let grad_in: Vec<f64> = par_zip_map_f64(x_vals, grad_out, |x, go| {
+                    let mut deriv = 0.0_f64;
+                    for i in 0..p {
+                        #[allow(clippy::cast_precision_loss)]
+                        let shift = i as f64 / 2.0;
+                        deriv += digamma_approx(x - shift);
+                    }
+                    go * deriv
+                });
                 Ok(vec![Some(grad_in)])
             },
         )?;
@@ -80222,6 +80212,65 @@ mod tests {
         let z_got = s.tensor_values(z).unwrap();
         for (idx, ((g, &svv), &qvv)) in z_got.iter().zip(sv.iter()).zip(qv.iter()).enumerate() {
             assert_eq!(g.to_bits(), super::zeta_approx(svv, qvv).to_bits(), "zeta @{idx}");
+        }
+    }
+
+    #[test]
+    fn multigammaln_log_ndtr_parallel_match_serial_bit_exact() {
+        // Isomorphism proof for routing multigammaln (p-term lgamma sum) and
+        // log_ndtr through par_map_f64 (forward) + par_zip_map_f64 (backward):
+        // with > 8192 elements the rayon paths run and must equal the serial
+        // maps BIT-FOR-BIT.
+        let n_elems = 1usize << 14;
+        let p = 4usize;
+        // multigammaln: x - (p-1)/2 must stay positive -> x in [3, 4.6).
+        let mdata: Vec<f64> = (0..n_elems).map(|i| 3.0 + (i % 161) as f64 * 0.01).collect();
+        // log_ndtr: full real line.
+        let ldata: Vec<f64> = (0..n_elems).map(|i| ((i % 801) as f64) * 0.01 - 4.0).collect();
+
+        // Serial references for the exact per-element forms.
+        let log_pi = std::f64::consts::PI.ln();
+        let constant = (p * (p - 1)) as f64 / 4.0 * log_pi;
+        let mvref = |x: f64| -> f64 {
+            let mut sum = constant;
+            for i in 0..p {
+                sum += super::lgamma_approx(x - i as f64 / 2.0);
+            }
+            sum
+        };
+        let mvgrad = |x: f64| -> f64 {
+            let mut d = 0.0_f64;
+            for i in 0..p {
+                d += super::digamma_approx(x - i as f64 / 2.0);
+            }
+            d
+        };
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mt = s.tensor_variable(mdata.clone(), vec![n_elems], false).unwrap();
+        let lt = s.tensor_variable(ldata.clone(), vec![n_elems], false).unwrap();
+        let mg = s.tensor_multigammaln(mt, p).unwrap();
+        let ln = s.tensor_special_log_ndtr(lt).unwrap();
+
+        let mg_got = s.tensor_values(mg).unwrap();
+        for (idx, (g, &x)) in mg_got.iter().zip(mdata.iter()).enumerate() {
+            assert_eq!(g.to_bits(), mvref(x).to_bits(), "multigammaln fwd @{idx}");
+        }
+        let ln_got = s.tensor_values(ln).unwrap();
+        for (idx, (g, &x)) in ln_got.iter().zip(ldata.iter()).enumerate() {
+            assert_eq!(g.to_bits(), super::log_ndtr_scalar(x).to_bits(), "log_ndtr fwd @{idx}");
+        }
+
+        // Backward exercises par_zip_map_f64: grad of multigammaln with the
+        // default ones-seed is `1.0 * sum_i digamma(x - i/2)` per element.
+        let mut sb = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xg = sb.tensor_variable(mdata.clone(), vec![n_elems], true).unwrap();
+        let y = sb.tensor_multigammaln(xg, p).unwrap();
+        let report = sb.tensor_backward(y).unwrap();
+        let grad = sb.tensor_gradient(&report, xg).expect("multigammaln grad present");
+        for (idx, (g, &x)) in grad.iter().zip(mdata.iter()).enumerate() {
+            let want = 1.0_f64 * mvgrad(x);
+            assert_eq!(g.to_bits(), want.to_bits(), "multigammaln bwd @{idx}");
         }
     }
 

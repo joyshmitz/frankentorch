@@ -23,6 +23,17 @@ fn bench_special(c: &mut Criterion) {
         b.iter(|| black_box(s.digamma_tensor(black_box(x)).unwrap()));
     });
 
+    // multigammaln(x, p=4): sum of p lgamma evaluations per element (p x heavier
+    // than lgamma; autograd-aware, routed through par_map_f64). 1M elements.
+    c.bench_function("multigammaln_p4_1m", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // x in [3, 4) keeps every (x - i/2) argument comfortably positive.
+        let base = s.tensor_rand(vec![n], false).unwrap();
+        let off = s.full(vec![n], 3.0, false).unwrap();
+        let x = s.tensor_add(base, off).unwrap();
+        b.iter(|| black_box(s.tensor_multigammaln(black_box(x), 4).unwrap()));
+    });
+
     // igamma(a, x): regularized lower incomplete gamma — power series / continued
     // fraction per element (heavy iterative, binary op via par_zip_map_f64). 1M.
     c.bench_function("igamma_1m", |b| {
