@@ -46592,45 +46592,55 @@ impl FrankenTorchSession {
         let in_plane = ih * iw;
         let mut values = vec![0.0_f64; total];
 
+        #[derive(Clone, Copy)]
+        struct CubicPlan {
+            indices: [usize; 4],
+            weights: [f64; 4],
+        }
+
+        let build_plan = |out_size: usize, in_size: usize| -> Vec<CubicPlan> {
+            (0..out_size)
+                .map(|out_idx| {
+                    let src = if align_corners && out_size > 1 {
+                        out_idx as f64 * (in_size - 1) as f64 / (out_size - 1) as f64
+                    } else {
+                        (out_idx as f64 + 0.5) * in_size as f64 / out_size as f64 - 0.5
+                    };
+                    let base = src.floor() as i64;
+                    let frac = src - base as f64;
+                    let mut indices = [0usize; 4];
+                    let mut weights = [0.0_f64; 4];
+                    for (slot, offset) in (-1..=2_i64).enumerate() {
+                        indices[slot] = (base + offset).clamp(0, in_size as i64 - 1) as usize;
+                        weights[slot] = cubic_weight(frac - offset as f64);
+                    }
+                    CubicPlan { indices, weights }
+                })
+                .collect()
+        };
+        let y_plan = build_plan(oh, ih);
+        let x_plan = build_plan(ow, iw);
+
         // Each output row r maps to plane = r/oh and oy = r%oh (since
         // base = (b*channels+c)*ih*iw == plane*in_plane). Every output element
-        // uses the same cubic-weight/clamp/gather arithmetic and writes the same
-        // linear position as the serial push order, so distributing whole rows
-        // across Rayon workers is bit-for-bit identical. Bicubic is compute-bound
-        // (16 cubic_weight taps per element), so it scales near-linearly.
+        // uses the same cached cubic-weight/clamp/gather arithmetic and writes
+        // the same linear position as the serial push order, so distributing
+        // whole rows across Rayon workers is bit-for-bit identical.
         let fill_row = |r: usize, out_row: &mut [f64]| {
             let plane = r / oh;
             let oy = r % oh;
             let base = plane * in_plane;
-            let src_y = if align_corners && oh > 1 {
-                oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
-            } else {
-                (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
-            };
-            // Cubic keeps the unclamped source coordinate (PyTorch
-            // area_pixel_compute_source_index with cubic=true); only the tap
-            // indices below are clamped, so the fractional offset stays correct
-            // at the borders.
-            let iy = src_y.floor() as i64;
-            let ty = src_y - iy as f64;
+            let y = y_plan[oy];
 
             for (ox, slot) in out_row.iter_mut().enumerate() {
-                let src_x = if align_corners && ow > 1 {
-                    ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
-                } else {
-                    (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
-                };
-                // Cubic keeps the unclamped source coordinate (see src_y above).
-                let ix = src_x.floor() as i64;
-                let tx = src_x - ix as f64;
-
+                let x = x_plan[ox];
                 let mut val = 0.0;
-                for dy in -1..=2_i64 {
-                    let wy = cubic_weight(ty - dy as f64);
-                    let sy = (iy + dy).clamp(0, ih as i64 - 1) as usize;
-                    for dx in -1..=2_i64 {
-                        let wx = cubic_weight(tx - dx as f64);
-                        let sx = (ix + dx).clamp(0, iw as i64 - 1) as usize;
+                for dy in 0..4 {
+                    let wy = y.weights[dy];
+                    let sy = y.indices[dy];
+                    for dx in 0..4 {
+                        let wx = x.weights[dx];
+                        let sx = x.indices[dx];
                         val += wy * wx * storage[base + sy * iw + sx];
                     }
                 }

@@ -1,0 +1,1 @@
+707d9f133d6ba346fa850f63808d9494560659274170be12865ea7e83da2ee98  tests/artifacts/perf/20260603T1750Z-boldox-bicubic-coordinate-cache/golden_outputs/bicubic_coordinate_cache_golden.txt
