@@ -17,7 +17,15 @@ mod gemm {
     // k-accumulation order is fixed by the micro-kernel and does NOT depend on the
     // row count, so the parallel result is bit-for-bit identical to the single
     // call (proved by `gemm_row_split_matches_single_bit_exact`).
-    const PAR_MIN_FLOPS: u128 = 1 << 29;
+    // Row-block parallelism pays once a block carries enough work to dwarf the
+    // rayon dispatch cost. The previous 1<<29 (~537M FMA) gate left medium GEMMs
+    // single-threaded on multi-core hosts — notably the conv2d im2col matmul
+    // (M=4096,K=576,N=64 ≈ 151M FMA) and a 512×512 matmul (134M) — so all but
+    // one core sat idle. 1<<27 (~134M) brings both under the parallel path while
+    // keeping genuinely small matmuls (≤256×256 ≈ 16.7M) serial. The split is
+    // bit-for-bit identical to the single call regardless of block count
+    // (proved by `gemm_row_split_matches_single_bit_exact`).
+    const PAR_MIN_FLOPS: u128 = 1 << 27;
     const MIN_BLOCK_ROWS: usize = 8;
 
     fn should_parallelize(m: usize, k: usize, n: usize) -> bool {
