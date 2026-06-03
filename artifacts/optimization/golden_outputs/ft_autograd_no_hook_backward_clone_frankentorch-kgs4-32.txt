@@ -1,0 +1,10 @@
+ft_autograd_no_hook_backward_clone_frankentorch-kgs4.32
+no_hook_loss=[46.0]
+no_hook_x_grad=[6.0, 9.0, 12.0]
+no_hook_y_grad=[1.0, 2.0, 3.0]
+no_hook_execution_order=[4, 3, 2, 1, 0]
+no_hook_dependency_snapshot=[2, 1, 1, 1, 0]
+hooked_y_grad=[4.0, 4.0]
+hooked_x_grad=[-4.0, -4.0]
+hook_order=["first", "second"]
+hooked_execution_order=[1, 0]
