@@ -1,0 +1,11 @@
+target=ft-data WeightedRandomSampler single positive weight
+weights=[5.0]
+num_samples=32
+seed=0x51510001
+indices_len=32
+indices_first16=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+indices_last16=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+unique_indices=[0]
+invalid_zero_samples=WeightedRandomSampler: num_samples must be > 0
+invalid_infinite_weight=WeightedRandomSampler: weights must be finite
+invalid_zero_weight=WeightedRandomSampler: sum of weights must be > 0

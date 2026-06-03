@@ -1,5 +1,5 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
-use ft_data::RandomSampler;
+use ft_data::{RandomSampler, WeightedRandomSampler};
 
 fn bench_random_sampler(c: &mut Criterion) {
     let mut group = c.benchmark_group("sampler");
@@ -12,6 +12,22 @@ fn bench_random_sampler(c: &mut Criterion) {
                     .with_seed(0xA5A5_5A5A_0123_4567)
             },
             |sampler| black_box(sampler.indices()),
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("weighted_single_positive_1x1m", |b| {
+        b.iter_batched(
+            || WeightedRandomSampler::new(vec![5.0], 1_000_000).with_seed(0x5151_0001),
+            |sampler| black_box(sampler.indices().expect("weighted samples")),
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("weighted_two_positive_2x1m", |b| {
+        b.iter_batched(
+            || WeightedRandomSampler::new(vec![1.0, 3.0], 1_000_000).with_seed(0x5151_0002),
+            |sampler| black_box(sampler.indices().expect("weighted samples")),
             BatchSize::SmallInput,
         );
     });

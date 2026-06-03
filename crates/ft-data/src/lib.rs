@@ -423,6 +423,10 @@ impl WeightedRandomSampler {
             ));
         }
 
+        if self.weights.len() == 1 {
+            return Ok(vec![0; self.num_samples]);
+        }
+
         for threshold in &mut cumulative {
             *threshold /= total;
         }
@@ -1920,6 +1924,39 @@ mod tests {
         assert!(
             indices.iter().all(|&i| i == 0),
             "single weight = always index 0"
+        );
+    }
+
+    #[test]
+    fn weighted_random_sampler_single_weight_preserves_validation_order() {
+        let zero_samples = WeightedRandomSampler::new(vec![5.0], 0).with_seed(42);
+        let zero_samples_message = zero_samples
+            .indices()
+            .expect_err("zero samples should fail before single-weight fast path")
+            .to_string();
+        assert!(
+            zero_samples_message.contains("num_samples must be > 0"),
+            "unexpected error: {zero_samples_message}"
+        );
+
+        let infinity = WeightedRandomSampler::new(vec![f64::INFINITY], 8).with_seed(42);
+        let infinity_message = infinity
+            .indices()
+            .expect_err("infinite single weight must fail before fast path")
+            .to_string();
+        assert!(
+            infinity_message.contains("weights must be finite"),
+            "unexpected error: {infinity_message}"
+        );
+
+        let zero_weight = WeightedRandomSampler::new(vec![0.0], 8).with_seed(42);
+        let zero_weight_message = zero_weight
+            .indices()
+            .expect_err("zero single weight must fail before fast path")
+            .to_string();
+        assert!(
+            zero_weight_message.contains("sum of weights must be > 0"),
+            "unexpected error: {zero_weight_message}"
         );
     }
 
