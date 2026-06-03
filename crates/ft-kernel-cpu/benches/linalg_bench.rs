@@ -6,9 +6,25 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
-    cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64, svd_contiguous_f64,
-    svdvals_contiguous_f64,
+    cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64, matrix_exp_contiguous_f64,
+    svd_contiguous_f64, svdvals_contiguous_f64,
 };
+
+fn bench_matrix_exp(c: &mut Criterion) {
+    // Scaling-and-squaring matrix exponential: dominated by the n x n matmuls.
+    for &n in &[128usize, 256usize] {
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = (((i * 41 + j * 23 + 5) % 89) as f64) * 0.011 - 0.5;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        c.bench_function(&format!("matrix_exp_f64_{n}x{n}"), |bch| {
+            bch.iter(|| black_box(matrix_exp_contiguous_f64(black_box(&a), &meta).unwrap()))
+        });
+    }
+}
 
 fn bench_svdvals(c: &mut Criterion) {
     // Values-only SVD: a bidiagonalize-then-bidiagonal-QR path can skip all
@@ -107,5 +123,13 @@ fn bench_cholesky(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_lu, bench_cholesky, bench_eigh, bench_svd, bench_svdvals);
+criterion_group!(
+    benches,
+    bench_lu,
+    bench_cholesky,
+    bench_eigh,
+    bench_svd,
+    bench_svdvals,
+    bench_matrix_exp
+);
 criterion_main!(benches);

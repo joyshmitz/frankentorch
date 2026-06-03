@@ -4926,12 +4926,17 @@ pub fn matrix_exp_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<
     }
 
     // Horner's method: (((...(A/12 + I)*A/11 + I)*A/10 + I)...)*A + I
+    // Each step is an n x n matmul routed through the cache-blocked, multi-
+    // threaded `gemm::dgemm` rather than a naive triple loop — the matmuls
+    // dominate matrix_exp's cost, so this is the lever. `dgemm` writes with
+    // beta = 0, so the destination only needs to be the right length.
     let num_terms = 13; // A^0 through A^12
     let mut result = identity.clone();
+    let mut temp = vec![0.0f64; n * n];
 
     for k in (1..num_terms).rev() {
         // result = result * A / k + I
-        let temp = mat_mul_nn_generic(&result, &a, n);
+        gemm::dgemm(n, n, n, &result, &a, &mut temp);
         let inv_k = 1.0 / k as f64;
         for i in 0..n * n {
             result[i] = temp[i] * inv_k + identity[i];
@@ -4940,25 +4945,11 @@ pub fn matrix_exp_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<
 
     // Square s times: result = result^(2^s)
     for _ in 0..s {
-        let temp = mat_mul_nn_generic(&result, &result, n);
-        result = temp;
+        gemm::dgemm(n, n, n, &result, &result, &mut temp);
+        result.copy_from_slice(&temp);
     }
 
     Ok(result)
-}
-
-/// Helper: multiply two n×n matrices (row-major).
-fn mat_mul_nn_generic(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
-    let mut c = vec![0.0f64; n * n];
-    for i in 0..n {
-        for k in 0..n {
-            let a_ik = a[i * n + k];
-            for j in 0..n {
-                c[i * n + j] += a_ik * b[k * n + j];
-            }
-        }
-    }
-    c
 }
 
 /// Result of symmetric eigendecomposition.
