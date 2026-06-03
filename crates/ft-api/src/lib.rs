@@ -7972,50 +7972,6 @@ impl FrankenTorchSession {
         let num_embeddings = weight_shape[0];
         let embedding_dim = weight_shape[1];
         let num_bags = offsets_shape[0];
-        let input_vals = self.tensor_values(input)?;
-        let weight_vals = self.tensor_values(weight)?;
-        let offsets_vals = self.tensor_values(offsets)?;
-        let input_len = input_vals.len();
-        let mut result = Vec::with_capacity(num_bags * embedding_dim);
-        for b in 0..num_bags {
-            let start = offsets_vals[b] as usize;
-            let end = if b + 1 < num_bags {
-                offsets_vals[b + 1] as usize
-            } else {
-                input_len
-            };
-            let bag_size = end.saturating_sub(start);
-            let mut agg = vec![0.0_f64; embedding_dim];
-            for i in start..end.min(input_len) {
-                let idx = input_vals[i] as usize;
-                if idx >= num_embeddings {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "embedding_bag: index out of range",
-                        },
-                    )));
-                }
-                let emb_start = idx * embedding_dim;
-                for j in 0..embedding_dim {
-                    let val = weight_vals[emb_start + j];
-                    match mode {
-                        "sum" | "mean" => agg[j] += val,
-                        "max" => {
-                            if i == start || val > agg[j] {
-                                agg[j] = val;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if mode == "mean" && bag_size > 0 {
-                for v in &mut agg {
-                    *v /= bag_size as f64;
-                }
-            }
-            result.extend(agg);
-        }
         match mode {
             "sum" | "mean" | "max" => {}
             _ => {
@@ -8026,7 +7982,123 @@ impl FrankenTorchSession {
                 )));
             }
         }
-        self.tensor_variable(result, vec![num_bags, embedding_dim], false)
+        let input_vals = self.tensor_values(input)?;
+        let offsets_vals = self.tensor_values(offsets)?;
+        let input_len = input_vals.len();
+        // Route through apply_function so the gradient reaches `weight` (input
+        // indices and offsets are integer/non-differentiable). sum/mean
+        // scatter-add grad_out back to each looked-up row (mean scaled by
+        // 1/bag_size); max routes grad only to the argmax row per column.
+        let mode_owned = mode.to_string();
+        let mode_for_backward = mode.to_string();
+        let input_for_backward = input_vals.clone();
+        let offsets_for_backward = offsets_vals.clone();
+        self.tensor_apply_function(
+            &[weight],
+            move |ctx, inputs| {
+                let (weight_vals, _shape) = inputs[0];
+                let mut result = Vec::with_capacity(num_bags * embedding_dim);
+                for b in 0..num_bags {
+                    let start = offsets_vals[b] as usize;
+                    let end = if b + 1 < num_bags {
+                        offsets_vals[b + 1] as usize
+                    } else {
+                        input_len
+                    };
+                    let bag_size = end.saturating_sub(start);
+                    let mut agg = vec![0.0_f64; embedding_dim];
+                    for i in start..end.min(input_len) {
+                        let idx = input_vals[i] as usize;
+                        if idx >= num_embeddings {
+                            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                                ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                    reason: "embedding_bag: index out of range",
+                                },
+                            )));
+                        }
+                        let emb_start = idx * embedding_dim;
+                        for j in 0..embedding_dim {
+                            let val = weight_vals[emb_start + j];
+                            match mode_owned.as_str() {
+                                "sum" | "mean" => agg[j] += val,
+                                "max" => {
+                                    if i == start || val > agg[j] {
+                                        agg[j] = val;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if mode_owned == "mean" && bag_size > 0 {
+                        for v in &mut agg {
+                            *v /= bag_size as f64;
+                        }
+                    }
+                    result.extend(agg);
+                }
+                ctx.save_for_backward(weight_vals.to_vec(), vec![num_embeddings, embedding_dim]);
+                Ok((result, vec![num_bags, embedding_dim]))
+            },
+            move |ctx, grad_outputs| {
+                let g = grad_outputs[0];
+                let saved = ctx.saved_tensors();
+                let weight_vals = &saved[0];
+                let mut grad_weight = vec![0.0_f64; num_embeddings * embedding_dim];
+                for b in 0..num_bags {
+                    let start = offsets_for_backward[b] as usize;
+                    let end = if b + 1 < num_bags {
+                        offsets_for_backward[b + 1] as usize
+                    } else {
+                        input_len
+                    };
+                    let bag_size = end.saturating_sub(start);
+                    let go = &g[b * embedding_dim..b * embedding_dim + embedding_dim];
+                    match mode_for_backward.as_str() {
+                        "sum" => {
+                            for i in start..end.min(input_len) {
+                                let idx = input_for_backward[i] as usize;
+                                for j in 0..embedding_dim {
+                                    grad_weight[idx * embedding_dim + j] += go[j];
+                                }
+                            }
+                        }
+                        "mean" => {
+                            if bag_size > 0 {
+                                let inv = 1.0 / bag_size as f64;
+                                for i in start..end.min(input_len) {
+                                    let idx = input_for_backward[i] as usize;
+                                    for j in 0..embedding_dim {
+                                        grad_weight[idx * embedding_dim + j] += go[j] * inv;
+                                    }
+                                }
+                            }
+                        }
+                        "max" => {
+                            // Recompute argmax per column with the forward tie-break
+                            // (first element initializes, strict `>` updates -> earliest max wins).
+                            for j in 0..embedding_dim {
+                                let mut best_idx: Option<usize> = None;
+                                let mut best_val = 0.0_f64;
+                                for i in start..end.min(input_len) {
+                                    let idx = input_for_backward[i] as usize;
+                                    let val = weight_vals[idx * embedding_dim + j];
+                                    if i == start || val > best_val {
+                                        best_val = val;
+                                        best_idx = Some(idx);
+                                    }
+                                }
+                                if let Some(idx) = best_idx {
+                                    grad_weight[idx * embedding_dim + j] += go[j];
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(vec![Some(grad_weight)])
+            },
+        )
     }
 
     /// Compute cosine similarity between tensors along a dimension.
@@ -80591,6 +80663,49 @@ mod tests {
         let g2 = s.tensor_gradient(&report2, weight2).expect("padding grad present");
         // Only row 0 (the non-padding lookup) gets gradient [1,1]; row 1 padding → 0.
         assert_eq!(g2, &vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn tensor_embedding_bag_propagates_weight_gradient() {
+        // Regression: tensor_embedding_bag (pooled sibling of tensor_embedding)
+        // rebuilt a requires_grad=false leaf, severing the gradient to weight.
+        // weight [4,2] = [[1,2],[3,4],[5,6],[7,8]]; input=[0,1,2,2], offsets=[0,2]
+        // => bag0 = rows {0,1}, bag1 = rows {2,2}.
+        let w = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let run = |mode: &str| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let weight = s.tensor_variable(w.clone(), vec![4, 2], true).unwrap();
+            let input = s
+                .tensor_variable(vec![0.0, 1.0, 2.0, 2.0], vec![4], false)
+                .unwrap();
+            let offsets = s.tensor_variable(vec![0.0, 2.0], vec![2], false).unwrap();
+            let out = s.tensor_embedding_bag(input, weight, offsets, mode).unwrap();
+            let fwd = s.tensor_values(out).unwrap();
+            let loss = s.tensor_sum(out).unwrap();
+            let report = s.tensor_backward(loss).unwrap();
+            let g = s
+                .tensor_gradient(&report, weight)
+                .expect("tensor_embedding_bag must propagate gradient to weight")
+                .to_vec();
+            (fwd, g)
+        };
+
+        // sum: bag0=[1+3,2+4]=[4,6], bag1=[5+5,6+6]=[10,12].
+        // grad: row0,row1 each +[1,1]; row2 used 2x -> [2,2]; row3 unused.
+        let (fwd, g) = run("sum");
+        assert_eq!(fwd, vec![4.0, 6.0, 10.0, 12.0]);
+        assert_eq!(g, vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 0.0, 0.0]);
+
+        // mean: bag0=[2,3], bag1=[5,6]. grad scaled by 1/bag_size (=0.5 each).
+        let (fwd, g) = run("mean");
+        assert_eq!(fwd, vec![2.0, 3.0, 5.0, 6.0]);
+        assert_eq!(g, vec![0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 0.0, 0.0]);
+
+        // max: bag0=max(row0,row1)=[3,4] (row1 wins), bag1=[5,6] (row2).
+        // grad routes only to the argmax row per column.
+        let (fwd, g) = run("max");
+        assert_eq!(fwd, vec![3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(g, vec![0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]);
     }
 
     #[test]
