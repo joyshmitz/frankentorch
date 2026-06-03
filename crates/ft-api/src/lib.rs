@@ -44244,11 +44244,14 @@ impl FrankenTorchSession {
             while stage <= n {
                 let half = stage / 2;
                 let angle_step = sign * two_pi / stage as f64;
-                for start in (0..n).step_by(stage) {
-                    for k in 0..half {
+                let twiddles: Vec<(f64, f64)> = (0..half)
+                    .map(|k| {
                         let angle = angle_step * k as f64;
-                        let w_re = angle.cos();
-                        let w_im = angle.sin();
+                        (angle.cos(), angle.sin())
+                    })
+                    .collect();
+                for start in (0..n).step_by(stage) {
+                    for (k, (w_re, w_im)) in twiddles.iter().copied().enumerate() {
                         let idx = start + k;
                         let jdx = start + k + half;
                         let tw_re = w_re * re[jdx] - w_im * im[jdx];
@@ -80769,6 +80772,86 @@ mod tests {
         }
         for (idx, (g, w)) in got_im.iter().zip(ref_im.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "fft im @{idx}");
+        }
+    }
+
+    #[test]
+    fn dft_stage_twiddles_match_per_butterfly_reference_bit_exact() {
+        use super::FrankenTorchSession;
+
+        fn reference_dft_inplace_1d(re: &mut [f64], im: &mut [f64], inverse: bool) {
+            let n = re.len();
+            assert_eq!(re.len(), im.len());
+            assert!(n.is_power_of_two());
+            if n <= 1 {
+                return;
+            }
+
+            let mut j = 0usize;
+            for i in 1..n {
+                let mut bit = n >> 1;
+                while j & bit != 0 {
+                    j ^= bit;
+                    bit >>= 1;
+                }
+                j ^= bit;
+                if i < j {
+                    re.swap(i, j);
+                    im.swap(i, j);
+                }
+            }
+
+            let sign = if inverse { 1.0 } else { -1.0 };
+            let two_pi = 2.0 * std::f64::consts::PI;
+            let mut stage = 2usize;
+            while stage <= n {
+                let half = stage / 2;
+                let angle_step = sign * two_pi / stage as f64;
+                for start in (0..n).step_by(stage) {
+                    for k in 0..half {
+                        let angle = angle_step * k as f64;
+                        let w_re = angle.cos();
+                        let w_im = angle.sin();
+                        let idx = start + k;
+                        let jdx = start + k + half;
+                        let tw_re = w_re * re[jdx] - w_im * im[jdx];
+                        let tw_im = w_re * im[jdx] + w_im * re[jdx];
+                        re[jdx] = re[idx] - tw_re;
+                        im[jdx] = im[idx] - tw_im;
+                        re[idx] += tw_re;
+                        im[idx] += tw_im;
+                    }
+                }
+                stage *= 2;
+            }
+
+            if inverse {
+                let inv_n = 1.0 / n as f64;
+                for v in re.iter_mut() {
+                    *v *= inv_n;
+                }
+                for v in im.iter_mut() {
+                    *v *= inv_n;
+                }
+            }
+        }
+
+        for inverse in [false, true] {
+            let n = 2048usize;
+            let mut got_re: Vec<f64> = (0..n).map(|i| ((i % 251) as f64) * 0.013 - 1.5).collect();
+            let mut got_im: Vec<f64> = (0..n).map(|i| ((i % 197) as f64) * 0.017 - 1.0).collect();
+            let mut want_re = got_re.clone();
+            let mut want_im = got_im.clone();
+
+            reference_dft_inplace_1d(&mut want_re, &mut want_im, inverse);
+            FrankenTorchSession::dft_inplace_1d(&mut got_re, &mut got_im, inverse);
+
+            for (idx, (got, want)) in got_re.iter().zip(want_re.iter()).enumerate() {
+                assert_eq!(got.to_bits(), want.to_bits(), "dft re @{idx}");
+            }
+            for (idx, (got, want)) in got_im.iter().zip(want_im.iter()).enumerate() {
+                assert_eq!(got.to_bits(), want.to_bits(), "dft im @{idx}");
+            }
         }
     }
 
