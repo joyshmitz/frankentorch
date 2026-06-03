@@ -10926,21 +10926,11 @@ impl FrankenTorchSession {
         Ok(out)
     }
 
-    /// Parametric ReLU activation.
-    ///
-    /// prelu(x, weight) = max(0,x) + weight * min(0,x)
-    /// Weight is a 1D tensor (per-channel) or scalar broadcasted.
-    /// Tracked under frankentorch-bf19.
-    pub fn tensor_prelu(
-        &mut self,
-        input: TensorNodeId,
-        weight: TensorNodeId,
-    ) -> Result<TensorNodeId, AutogradError> {
-        let input_shape = self.tensor_shape(input)?;
-        let weight_vals = self.tensor_values(weight)?;
-        let input_vals = self.tensor_values(input)?;
-
-        let result: Vec<f64> = if weight_vals.len() == 1 {
+    /// Elementwise PReLU forward values, shared by the autograd and non-grad
+    /// paths so they stay bit-identical. `x >= 0 ? x : w_c * x`, where `w_c` is
+    /// the single shared weight (len 1) or the per-channel weight.
+    fn prelu_forward_values(input_vals: &[f64], input_shape: &[usize], weight_vals: &[f64]) -> Vec<f64> {
+        if weight_vals.len() == 1 {
             let w = weight_vals[0];
             input_vals
                 .iter()
@@ -10965,7 +10955,80 @@ impl FrankenTorchSession {
                     if x >= 0.0 { x } else { weight_vals[c] * x }
                 })
                 .collect()
-        };
+        }
+    }
+
+    /// Parametric ReLU activation.
+    ///
+    /// prelu(x, weight) = max(0,x) + weight * min(0,x)
+    /// Weight is a 1D tensor (per-channel) or scalar broadcasted.
+    /// Tracked under frankentorch-bf19.
+    pub fn tensor_prelu(
+        &mut self,
+        input: TensorNodeId,
+        weight: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let input_shape = self.tensor_shape(input)?;
+
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(weight)? {
+            // PReLU(x, w) = x if x>=0 else w_c * x (w_c is the per-channel weight,
+            // or the single shared weight). Linear in both args on each side of 0:
+            //   d/dx = 1 if x>=0 else w_c
+            //   d/dw_c = sum over x<0 in channel c of (grad_out * x)
+            // 2-input apply_function; forward is identical to the non-grad path so
+            // the value is bit-identical, only the severed gradient is restored.
+            // frankentorch-avfl.
+            let ndim = input_shape.len();
+            let shape_f64: Vec<f64> = input_shape.iter().map(|&d| d as f64).collect();
+            return self.tensor_apply_function(
+                &[input, weight],
+                move |ctx, inputs| {
+                    let (xv, x_shape) = inputs[0];
+                    let (wv, w_shape) = inputs[1];
+                    let result = Self::prelu_forward_values(xv, x_shape, wv);
+                    ctx.save_for_backward(xv.to_vec(), x_shape.to_vec());
+                    ctx.save_for_backward(wv.to_vec(), w_shape.to_vec());
+                    Ok((result, x_shape.to_vec()))
+                },
+                move |ctx, grad_outputs| {
+                    let g = grad_outputs[0];
+                    let saved = ctx.saved_tensors();
+                    let xv = &saved[0];
+                    let wv = &saved[1];
+                    let nch = wv.len();
+                    let channel_size: usize = if ndim >= 2 {
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let cs = shape_f64[2..].iter().product::<f64>() as usize;
+                        cs.max(1)
+                    } else {
+                        1
+                    };
+                    let mut grad_x = vec![0.0_f64; xv.len()];
+                    let mut grad_w = vec![0.0_f64; nch];
+                    for (i, &x) in xv.iter().enumerate() {
+                        let c = if nch == 1 {
+                            0
+                        } else if ndim >= 2 {
+                            (i / channel_size) % nch
+                        } else {
+                            i % nch
+                        };
+                        if x >= 0.0 {
+                            grad_x[i] = g[i];
+                        } else {
+                            grad_x[i] = g[i] * wv[c];
+                            grad_w[c] += g[i] * x;
+                        }
+                    }
+                    Ok(vec![Some(grad_x), Some(grad_w)])
+                },
+            );
+        }
+
+        let weight_vals = self.tensor_values(weight)?;
+        let input_vals = self.tensor_values(input)?;
+
+        let result = Self::prelu_forward_values(&input_vals, &input_shape, &weight_vals);
 
         let out = self.tensor_variable(result, input_shape, false)?;
         self.runtime.ledger_mut().record(
@@ -91887,6 +91950,48 @@ mod tests {
         assert!((vals[1] + 0.25).abs() < 1e-10); // -1 * 0.25
         assert!((vals[2] - 2.0).abs() < 1e-10);
         assert!((vals[3] + 0.5).abs() < 1e-10); // -2 * 0.25
+    }
+
+    #[test]
+    fn prelu_backward_input_and_weight_and_value_parity() {
+        // Scalar weight. x = [1,-1,2,-2], w = 0.25.
+        // grad_x = [1, w, 1, w] = [1, 0.25, 1, 0.25] (upstream ones).
+        // grad_w = sum over x<0 of x = -1 + -2 = -3.
+        let x = vec![1.0, -1.0, 2.0, -2.0];
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity.
+        let x_ng = s.tensor_variable(x.clone(), vec![4], false).unwrap();
+        let w_ng = s.tensor_variable(vec![0.25], vec![1], false).unwrap();
+        let o_ng = s.tensor_prelu(x_ng, w_ng).unwrap();
+        let v_ng = s.tensor_values(o_ng).unwrap();
+        let x_g = s.tensor_variable(x.clone(), vec![4], true).unwrap();
+        let w_g = s.tensor_variable(vec![0.25], vec![1], true).unwrap();
+        let o_g = s.tensor_prelu(x_g, w_g).unwrap();
+        let v_g = s.tensor_values(o_g).unwrap();
+        for (a, b) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(a.to_bits(), b.to_bits(), "prelu grad/non-grad value mismatch");
+        }
+        let loss = s.tensor_sum(o_g).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let gx = s.tensor_gradient(&report, x_g).expect("prelu grad_x present");
+        let gw = s.tensor_gradient(&report, w_g).expect("prelu grad_w present");
+        assert_eq!(gx, vec![1.0, 0.25, 1.0, 0.25]);
+        assert_eq!(gw, vec![-3.0]);
+
+        // Per-channel weight on [N,C,L] = [1,2,2]: x = [[1,-2],[-3,4]],
+        // w = [0.5, 0.1]. channel 0 = {1,-2}, channel 1 = {-3,4}.
+        // grad_x = [1, w0, w1, 1] = [1, 0.5, 0.1, 1].
+        // grad_w0 = sum x<0 in ch0 = -2; grad_w1 = -3.
+        let x2 = vec![1.0, -2.0, -3.0, 4.0];
+        let x2g = s.tensor_variable(x2, vec![1, 2, 2], true).unwrap();
+        let w2g = s.tensor_variable(vec![0.5, 0.1], vec![2], true).unwrap();
+        let o2 = s.tensor_prelu(x2g, w2g).unwrap();
+        let loss2 = s.tensor_sum(o2).unwrap();
+        let report2 = s.tensor_backward(loss2).unwrap();
+        let gx2 = s.tensor_gradient(&report2, x2g).expect("prelu grad_x2 present");
+        let gw2 = s.tensor_gradient(&report2, w2g).expect("prelu grad_w2 present");
+        assert_eq!(gx2, vec![1.0, 0.5, 0.1, 1.0]);
+        assert_eq!(gw2, vec![-2.0, -3.0]);
     }
 
     #[test]
