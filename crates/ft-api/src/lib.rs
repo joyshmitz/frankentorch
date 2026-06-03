@@ -26281,8 +26281,8 @@ impl FrankenTorchSession {
             (row_start, 0, diag_len)
         };
 
-        let src_vals = self.tensor_values(src)?;
-        if src_vals.len() != diag_len {
+        let src_len = self.tensor_shape(src)?.iter().product::<usize>();
+        if src_len != diag_len {
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
                     reason: "diagonal_scatter: src length must match diagonal length",
@@ -26290,6 +26290,38 @@ impl FrankenTorchSession {
             )));
         }
 
+        if self.tensor_requires_grad(input)? || self.tensor_requires_grad(src)? {
+            // diagonal_scatter copies `input` and overwrites the `offset`-diagonal
+            // with `src`. So the gradient splits: grad flows to `input` everywhere
+            // except the overwritten diagonal (zeroed there), and to `src` from the
+            // diagonal positions. Forward is identical to the non-grad path → value
+            // bit-identical; only the severed gradient is restored. frankentorch-avfl.
+            return self.tensor_apply_function(
+                &[input, src],
+                move |_ctx, inputs| {
+                    let (in_vals, in_shape) = inputs[0];
+                    let (src_vals, _src_shape) = inputs[1];
+                    let mut result = in_vals.to_vec();
+                    for (i, &value) in src_vals.iter().enumerate() {
+                        result[(row_start + i) * n + col_start + i] = value;
+                    }
+                    Ok((result, in_shape.to_vec()))
+                },
+                move |_ctx, grad_outputs| {
+                    let g = grad_outputs[0];
+                    let mut grad_input = g.to_vec();
+                    let mut grad_src = vec![0.0_f64; diag_len];
+                    for (i, gs) in grad_src.iter_mut().enumerate() {
+                        let idx = (row_start + i) * n + col_start + i;
+                        *gs = g[idx];
+                        grad_input[idx] = 0.0;
+                    }
+                    Ok(vec![Some(grad_input), Some(grad_src)])
+                },
+            );
+        }
+
+        let src_vals = self.tensor_values(src)?;
         let mut result = self.tensor_values(input)?;
         for (i, &value) in src_vals.iter().enumerate() {
             let idx = (row_start + i) * n + col_start + i;
@@ -92025,6 +92057,38 @@ mod tests {
         assert!((vals[4] - 2.0).abs() < 1e-10);
         assert!((vals[8] - 3.0).abs() < 1e-10);
         assert!(vals[1].abs() < 1e-10);
+    }
+
+    #[test]
+    fn diagonal_scatter_backward_splits_to_input_and_src_and_value_parity() {
+        // 3x3 input, src on the main diagonal (offset 0). Output overwrites
+        // positions 0,4,8 with src; gradient of input is zero there and one
+        // elsewhere, gradient of src is one at each diagonal slot.
+        let input = vec![10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0];
+        let src = vec![1.0, 2.0, 3.0];
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity.
+        let in_ng = s.tensor_variable(input.clone(), vec![3, 3], false).unwrap();
+        let src_ng = s.tensor_variable(src.clone(), vec![3], false).unwrap();
+        let o_ng = s.tensor_diagonal_scatter(in_ng, src_ng, 0).unwrap();
+        let v_ng = s.tensor_values(o_ng).unwrap();
+        let in_g = s.tensor_variable(input.clone(), vec![3, 3], true).unwrap();
+        let src_g = s.tensor_variable(src.clone(), vec![3], true).unwrap();
+        let o_g = s.tensor_diagonal_scatter(in_g, src_g, 0).unwrap();
+        let v_g = s.tensor_values(o_g).unwrap();
+        for (a, b) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(a.to_bits(), b.to_bits(), "diagonal_scatter grad/non-grad value mismatch");
+        }
+        assert_eq!(v_g, vec![1.0, 11.0, 12.0, 13.0, 2.0, 15.0, 16.0, 17.0, 3.0]);
+
+        // loss = sum(out). grad_out = ones → grad_input is ones with the diagonal
+        // zeroed; grad_src is ones.
+        let loss = s.tensor_sum(o_g).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let gin = s.tensor_gradient(&report, in_g).expect("diag_scatter grad_input present");
+        let gsrc = s.tensor_gradient(&report, src_g).expect("diag_scatter grad_src present");
+        assert_eq!(gin, vec![0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0]);
+        assert_eq!(gsrc, vec![1.0, 1.0, 1.0]);
     }
 
     #[test]
