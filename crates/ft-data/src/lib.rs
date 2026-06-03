@@ -442,6 +442,32 @@ impl WeightedRandomSampler {
             return Ok(result);
         }
 
+        if self.weights.len() == 3 {
+            let first_threshold = cumulative.first().copied().ok_or_else(|| {
+                transform_config_error(
+                    "WeightedRandomSampler: weights must produce cumulative thresholds",
+                )
+            })? / total;
+            let second_threshold = cumulative.get(1).copied().ok_or_else(|| {
+                transform_config_error(
+                    "WeightedRandomSampler: weights must produce cumulative thresholds",
+                )
+            })? / total;
+            let mut rng = SimpleRng::new(self.seed);
+            let mut result = Vec::with_capacity(self.num_samples);
+            for _ in 0..self.num_samples {
+                let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+                result.push(if u <= first_threshold {
+                    0
+                } else if u <= second_threshold {
+                    1
+                } else {
+                    2
+                });
+            }
+            return Ok(result);
+        }
+
         for threshold in &mut cumulative {
             *threshold /= total;
         }
@@ -1935,6 +1961,21 @@ mod tests {
             vec![
                 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0,
                 0, 1, 1, 0,
+            ]
+        );
+    }
+
+    #[test]
+    fn weighted_random_sampler_three_weight_fast_path_preserves_order() {
+        let indices = WeightedRandomSampler::new(vec![1.0, 3.0, 6.0], 32)
+            .with_seed(0x5151_0003)
+            .indices()
+            .expect("weighted samples");
+        assert_eq!(
+            indices,
+            vec![
+                2, 1, 2, 1, 1, 2, 2, 2, 2, 1, 2, 1, 2, 2, 1, 2, 2, 2, 2, 2, 2, 2, 0, 2, 0, 0, 2, 2,
+                0, 2, 1, 2,
             ]
         );
     }
