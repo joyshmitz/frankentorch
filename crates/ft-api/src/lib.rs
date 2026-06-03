@@ -39525,9 +39525,63 @@ impl FrankenTorchSession {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         if self.tensor_requires_grad(input)? {
+            // Singular-value backward (SVD analog of eigvalsh): with A = U Σ Vh
+            // (reduced), the gradient of the l-th singular value σ_l is the rank-1
+            // outer product u_l v_l^T, so
+            //   grad_A = U diag(grad_σ) V^T,  grad_A[i][j] = Σ_l grad_σ_l U[i][l] Vh[l][j].
+            // svdvals_contiguous_f64 simply calls svd_contiguous_f64(.., false) and
+            // returns its .s, so computing the reduced SVD here yields singular
+            // values bit-identical to the non-grad path (parity preserved). Valid
+            // for simple (distinct, nonzero) singular values — the standard
+            // svdvals-backward assumption, matching upstream. frankentorch-rl4g.
+            let input_meta = self.tensor_tape.tensor_meta(input)?.clone();
+            let shape = input_meta.shape();
+            if shape.len() == 2 && input_meta.dtype() == DType::F64 {
+                let device = input_meta.device();
+                let out = self.tensor_apply_function(
+                    &[input],
+                    move |ctx, inputs| {
+                        let (values, in_shape) = inputs[0];
+                        let meta = TensorMeta::from_shape(in_shape.to_vec(), DType::F64, device);
+                        let r = ft_kernel_cpu::svd_contiguous_f64(values, &meta, false)
+                            .map_err(|e| {
+                                AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                            })?;
+                        let (m, n, k) = (r.m, r.n, r.k);
+                        ctx.save_for_backward(r.u, vec![m, k]); // U (m x k)
+                        ctx.save_for_backward(r.vh, vec![k, n]); // Vh (k x n)
+                        Ok((r.s, vec![k]))
+                    },
+                    move |ctx, grad_outputs| {
+                        let saved = ctx.saved_tensors();
+                        let u = &saved[0]; // U, m x k
+                        let vh = &saved[1]; // Vh, k x n
+                        let grad_s = grad_outputs[0]; // grad w.r.t. singular values, [k]
+                        let k = grad_s.len();
+                        let m = u.len() / k;
+                        let n = vh.len() / k;
+                        let mut grad_a = vec![0.0_f64; m * n];
+                        for i in 0..m {
+                            for j in 0..n {
+                                let mut acc = 0.0_f64;
+                                for l in 0..k {
+                                    acc += grad_s[l] * u[i * k + l] * vh[l * n + j];
+                                }
+                                grad_a[i * n + j] = acc;
+                            }
+                        }
+                        Ok(vec![Some(grad_a)])
+                    },
+                )?;
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!("linalg_svdvals input={} out={} (autograd)", input.0, out.0),
+                );
+                return Ok(out);
+            }
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "linalg_svdvals: autograd not supported (SVD backward not yet implemented). Tracked under frankentorch-rl4g.",
+                    reason: "linalg_svdvals: autograd only supported for a 2-D F64 matrix",
                 },
             )));
         }
@@ -74268,13 +74322,13 @@ mod tests {
     #[test]
     fn linalg_svd_class_ops_fail_loud_on_requires_grad() {
         // Regression for frankentorch-rl4g: SVD-class linalg ops
-        // (svd, svdvals, eigh, qr) used to silently sever autograd by
-        // extracting tensor_values and rebuilding non-grad leaves. Each
-        // still fails loud when input requires_grad — matches the
-        // parking-lot pattern of pvfk (det/slogdet) and 3v6e (stft/istft).
-        // NOTE: eigvalsh and cholesky have since gained real autograd
-        // backward (frankentorch-rl4g), so they are covered by their own
-        // finite-difference tests and intentionally excluded here.
+        // (svd, eigh, qr) used to silently sever autograd by extracting
+        // tensor_values and rebuilding non-grad leaves. Each still fails
+        // loud when input requires_grad — matches the parking-lot pattern
+        // of pvfk (det/slogdet) and 3v6e (stft/istft).
+        // NOTE: eigvalsh, cholesky, and svdvals have since gained real
+        // autograd backward (frankentorch-rl4g), so they are covered by
+        // their own finite-difference tests and intentionally excluded here.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = s
             .tensor_variable(vec![2.0, 0.5, 0.5, 1.0], vec![2, 2], true)
@@ -74284,11 +74338,6 @@ mod tests {
             .tensor_linalg_svd(a, false)
             .expect_err("svd must fail loud on requires_grad");
         assert!(format!("{svd_err:?}").contains("autograd not supported"));
-
-        let svdvals_err = s
-            .tensor_linalg_svdvals(a)
-            .expect_err("svdvals must fail loud on requires_grad");
-        assert!(format!("{svdvals_err:?}").contains("autograd not supported"));
 
         let eigh_err = s
             .tensor_linalg_eigh(a)
@@ -79483,6 +79532,56 @@ mod tests {
         assert!(
             (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
             "eigvalsh backward mismatch: analytic={analytic}, fd={fd}"
+        );
+    }
+
+    #[test]
+    fn svdvals_backward_matches_finite_difference_and_value_parity() {
+        use ft_core::{DType, Device};
+        // Rectangular 4x3 matrix with well-separated singular values.
+        let (m, n) = (4usize, 3usize);
+        #[rustfmt::skip]
+        let a = vec![
+            3.0, 0.2, -0.1,
+            0.1, 2.0, 0.3,
+            -0.2, 0.4, 1.0,
+            0.5, -0.3, 0.2,
+        ];
+        let v: Vec<f64> = (0..m * n)
+            .map(|i| ((i * 7 + 3) % 11) as f64 * 0.05 - 0.25)
+            .collect();
+
+        // Bit-exact forward parity: grad path (full reduced SVD) vs non-grad
+        // path (svdvals_contiguous_f64, which itself calls svd(.., false).s).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_ng = s.tensor_variable(a.clone(), vec![m, n], false).unwrap();
+        let sv_ng = s.tensor_linalg_svdvals(a_ng).unwrap();
+        let sv_ng_v = s.tensor_values(sv_ng).unwrap();
+        let a_g = s.tensor_variable(a.clone(), vec![m, n], true).unwrap();
+        let sv_g = s.tensor_linalg_svdvals(a_g).unwrap();
+        let sv_g_v = s.tensor_values(sv_g).unwrap();
+        for (x, y) in sv_ng_v.iter().zip(sv_g_v.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "svdvals grad/non-grad value mismatch");
+        }
+
+        // FD verification of the restored gradient: loss = sum(σ^2).
+        let loss_of = |mat: &[f64]| -> f64 {
+            let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+            let sv = ft_kernel_cpu::svdvals_contiguous_f64(mat, &meta).unwrap();
+            sv.iter().map(|x| x * x).sum::<f64>()
+        };
+        let sq = s.tensor_mul(sv_g, sv_g).unwrap();
+        let loss = s.tensor_sum(sq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_a = s.tensor_gradient(&report, a_g).expect("svdvals grad present");
+        let analytic: f64 = grad_a.iter().zip(v.iter()).map(|(g, vv)| g * vv).sum();
+        let eps = 1e-6;
+        let a_plus: Vec<f64> = a.iter().zip(v.iter()).map(|(x, vv)| x + eps * vv).collect();
+        let a_minus: Vec<f64> = a.iter().zip(v.iter()).map(|(x, vv)| x - eps * vv).collect();
+        let fd = (loss_of(&a_plus) - loss_of(&a_minus)) / (2.0 * eps);
+        assert!(
+            (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
+            "svdvals backward mismatch: analytic={analytic}, fd={fd}"
         );
     }
 
