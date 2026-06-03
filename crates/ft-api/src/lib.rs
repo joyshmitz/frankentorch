@@ -17655,11 +17655,91 @@ impl FrankenTorchSession {
             ));
         }
 
-        let data = self.tensor_values(input)?;
         let channels = shape[1];
         let spatial: usize = shape[2..].iter().product();
         let batch_size = shape[0];
         let half = size / 2;
+
+        if self.tensor_requires_grad(input)? {
+            // LRN: out_c = x_c / denom_c^β, denom_c = k + (α/size)·Σ_{j∈win(c)} x_j².
+            // The denominator couples a channel window, so the backward is
+            //   grad_x_m = grad_out_m / denom_m^β
+            //            − (2αβ/size)·x_m·Σ_{c∈win(m)} grad_out_c·x_c / denom_c^(β+1)
+            // (the window is symmetric: m∈win(c) ⇔ c∈win(m)). The forward is the
+            // serial form of the non-grad path — bit-identical per its own
+            // isomorphism note — so only the severed gradient is restored.
+            // frankentorch-avfl.
+            let size_f = size as f64;
+            return self.tensor_apply_function(
+                &[input],
+                move |ctx, inputs| {
+                    let (x, x_shape) = inputs[0];
+                    let mut out = vec![0.0_f64; x.len()];
+                    for b in 0..batch_size {
+                        let base = b * channels * spatial;
+                        for c in 0..channels {
+                            let c_start = c.saturating_sub(half);
+                            let c_end = (c + half + 1).min(channels);
+                            for s in 0..spatial {
+                                let mut sum_sq = 0.0;
+                                for nc in c_start..c_end {
+                                    let v = x[base + nc * spatial + s];
+                                    sum_sq += v * v;
+                                }
+                                let norm = (k + alpha * sum_sq / size_f).powf(beta);
+                                out[base + c * spatial + s] = x[base + c * spatial + s] / norm;
+                            }
+                        }
+                    }
+                    ctx.save_for_backward(x.to_vec(), x_shape.to_vec());
+                    Ok((out, x_shape.to_vec()))
+                },
+                move |ctx, grad_outputs| {
+                    let x = &ctx.saved_tensors()[0];
+                    let g = grad_outputs[0];
+                    let mut grad_in = vec![0.0_f64; x.len()];
+                    let coeff = 2.0 * alpha * beta / size_f;
+                    for b in 0..batch_size {
+                        let base = b * channels * spatial;
+                        for s in 0..spatial {
+                            // Per (b, s) channel column: denom_c and the ratio
+                            // r_c = grad_out_c · x_c / denom_c^(β+1).
+                            let mut denom = vec![0.0_f64; channels];
+                            let mut r = vec![0.0_f64; channels];
+                            for c in 0..channels {
+                                let c_start = c.saturating_sub(half);
+                                let c_end = (c + half + 1).min(channels);
+                                let mut sum_sq = 0.0;
+                                for nc in c_start..c_end {
+                                    let v = x[base + nc * spatial + s];
+                                    sum_sq += v * v;
+                                }
+                                let d = k + alpha * sum_sq / size_f;
+                                denom[c] = d;
+                                let xc = x[base + c * spatial + s];
+                                let gc = g[base + c * spatial + s];
+                                r[c] = gc * xc / d.powf(beta + 1.0);
+                            }
+                            for m in 0..channels {
+                                let m_start = m.saturating_sub(half);
+                                let m_end = (m + half + 1).min(channels);
+                                let mut win_sum = 0.0;
+                                for c in m_start..m_end {
+                                    win_sum += r[c];
+                                }
+                                let xm = x[base + m * spatial + s];
+                                let gm = g[base + m * spatial + s];
+                                grad_in[base + m * spatial + s] =
+                                    gm / denom[m].powf(beta) - coeff * xm * win_sum;
+                            }
+                        }
+                    }
+                    Ok(vec![Some(grad_in)])
+                },
+            );
+        }
+
+        let data = self.tensor_values(input)?;
 
         // Each (batch, channel) pair owns a contiguous `spatial`-length output
         // row, and every element does a local-window sum-of-squares plus a powf
@@ -83885,6 +83965,55 @@ mod tests {
         for (idx, (g, w)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "lrn @{idx}");
         }
+    }
+
+    #[test]
+    fn local_response_norm_backward_matches_finite_difference_and_value_parity() {
+        use ft_core::{DType, Device};
+        // [1, C=4, S=2] so the channel window genuinely couples (size=3).
+        let (channels, spatial) = (4usize, 2usize);
+        let (size, alpha, beta, k) = (3usize, 1e-2_f64, 0.75_f64, 2.0_f64);
+        let data = vec![1.0, -2.0, 0.5, 1.5, -1.0, 2.0, 0.3, -0.7];
+        let dir: Vec<f64> = (0..channels * spatial)
+            .map(|i| ((i * 5 + 1) % 7) as f64 * 0.1 - 0.3)
+            .collect();
+        let n_el = channels * spatial;
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity.
+        let a_ng = s.tensor_variable(data.clone(), vec![1, channels, spatial], false).unwrap();
+        let o_ng = s.functional_local_response_norm(a_ng, size, alpha, beta, k).unwrap();
+        let v_ng = s.tensor_values(o_ng).unwrap();
+        let a_g = s.tensor_variable(data.clone(), vec![1, channels, spatial], true).unwrap();
+        let o_g = s.functional_local_response_norm(a_g, size, alpha, beta, k).unwrap();
+        let v_g = s.tensor_values(o_g).unwrap();
+        for (x, y) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "lrn grad/non-grad value mismatch");
+        }
+
+        // loss = sum of squares of the normalized output.
+        let sq = s.tensor_mul(o_g, o_g).unwrap();
+        let loss = s.tensor_sum(sq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, a_g).expect("lrn grad present");
+        let analytic: f64 = grad.iter().zip(dir.iter()).map(|(g, d)| g * d).sum();
+
+        let loss_of = |mat: &[f64]| -> f64 {
+            let _meta = TensorMeta::from_shape(vec![1, channels, spatial], DType::F64, Device::Cpu);
+            let mut sess = FrankenTorchSession::new(ExecutionMode::Strict);
+            let t = sess.tensor_variable(mat.to_vec(), vec![1, channels, spatial], false).unwrap();
+            let o = sess.functional_local_response_norm(t, size, alpha, beta, k).unwrap();
+            sess.tensor_values(o).unwrap().iter().map(|v| v * v).sum::<f64>()
+        };
+        let eps = 1e-6;
+        let ap: Vec<f64> = data.iter().zip(dir.iter()).map(|(x, d)| x + eps * d).collect();
+        let am: Vec<f64> = data.iter().zip(dir.iter()).map(|(x, d)| x - eps * d).collect();
+        let fd = (loss_of(&ap) - loss_of(&am)) / (2.0 * eps);
+        assert_eq!(n_el, grad.len());
+        assert!(
+            (analytic - fd).abs() <= 1e-5 * (1.0 + fd.abs()),
+            "lrn backward mismatch: analytic={analytic}, fd={fd}"
+        );
     }
 
     #[test]
