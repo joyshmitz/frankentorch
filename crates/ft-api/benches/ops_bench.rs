@@ -230,6 +230,38 @@ fn bench_fft2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_istft(c: &mut Criterion) {
+    use ft_api::IstftOptions;
+    let mut group = c.benchmark_group("istft");
+    // Complex spectrogram [n_fft/2+1, frames] -> inverse STFT. The per-frame
+    // inverse pass is a naive O(n_fft^2) DFT (cos/sin per term) = compute-bound,
+    // parallel over frames; the overlap-add is a cheap serial reduction.
+    let (n_fft, frames) = (512usize, 256usize);
+    let freq_bins = n_fft / 2 + 1;
+    group.throughput(Throughput::Elements((freq_bins * frames) as u64));
+    group.bench_function("nfft512_frames256", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let re = session.tensor_randn(vec![freq_bins, frames], false).unwrap();
+        let im = session.tensor_randn(vec![freq_bins, frames], false).unwrap();
+        let spec = session.tensor_complex(re, im).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .tensor_istft(
+                        black_box(spec),
+                        512,
+                        IstftOptions {
+                            hop_length: Some(128),
+                            ..IstftOptions::default()
+                        },
+                    )
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_stft(c: &mut Criterion) {
     use ft_api::StftOptions;
     let mut group = c.benchmark_group("stft");
@@ -385,6 +417,7 @@ criterion_group!(
     bench_interpolate_trilinear,
     bench_grid_sample,
     bench_fft2,
+    bench_istft,
     bench_stft,
     bench_irfft2,
     bench_rfft2,

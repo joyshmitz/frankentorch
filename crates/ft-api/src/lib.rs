@@ -23628,7 +23628,14 @@ impl FrankenTorchSession {
             1.0 / plan.n_fft as f64
         };
 
-        for frame_idx in 0..plan.frames {
+        // Each frame's inverse transform is independent and dominates the cost
+        // (naive O(n_fft^2) DFT, cos/sin per term). Compute every frame's
+        // time-domain signal in parallel into a contiguous n_fft block, then
+        // overlap-add them SERIALLY in ascending frame order so the accumulation
+        // into `signal`/`envelope` (a reduction over overlapping regions) stays
+        // bit-for-bit identical to the original interleaved loop.
+        let mut frame_times = vec![0.0_f64; plan.frames * plan.n_fft];
+        let compute_frame = |frame_idx: usize, ft_slice: &mut [f64]| {
             let mut full_spectrum = vec![ft_core::Complex128::new(0.0, 0.0); plan.n_fft];
             if plan.onesided {
                 for k in 0..plan.freq_bins {
@@ -23647,9 +23654,7 @@ impl FrankenTorchSession {
                     full_spectrum[k] = spectrogram[k * plan.frames + frame_idx];
                 }
             }
-
-            let mut frame_time = vec![0.0; plan.n_fft];
-            for (n, sample) in frame_time.iter_mut().enumerate() {
+            for (n, sample) in ft_slice.iter_mut().enumerate() {
                 let mut value = ft_core::Complex128::new(0.0, 0.0);
                 for (k, coeff) in full_spectrum.iter().enumerate() {
                     let angle =
@@ -23659,8 +23664,23 @@ impl FrankenTorchSession {
                 }
                 *sample = value.re * scale;
             }
+        };
+        if plan.frames >= 2 && plan.frames * plan.n_fft >= PARALLEL_ELEMENTWISE_MIN {
+            use rayon::prelude::*;
+            frame_times
+                .par_chunks_mut(plan.n_fft)
+                .enumerate()
+                .for_each(|(frame_idx, ft_slice)| compute_frame(frame_idx, ft_slice));
+        } else {
+            frame_times
+                .chunks_mut(plan.n_fft)
+                .enumerate()
+                .for_each(|(frame_idx, ft_slice)| compute_frame(frame_idx, ft_slice));
+        }
 
+        for frame_idx in 0..plan.frames {
             let start = frame_idx * plan.hop_length;
+            let frame_time = &frame_times[frame_idx * plan.n_fft..(frame_idx + 1) * plan.n_fft];
             for i in 0..plan.window_values.len() {
                 let sample = frame_time[plan.window_pad + i] * plan.window_values[i];
                 signal[start + i] += sample;
@@ -81023,6 +81043,93 @@ mod tests {
         }
         for (idx, (g, w)) in got_im.iter().zip(ref_im.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "stft im @{idx}");
+        }
+    }
+
+    #[test]
+    fn istft_parallel_match_serial_bit_exact() {
+        // frames*n_fft >= PARALLEL_ELEMENTWISE_MIN so the parallel per-frame
+        // inverse-DFT path runs; the result must equal a serial reference of the
+        // full reconstruction (Hermitian + naive inverse DFT + overlap-add +
+        // envelope normalize + center trim) BIT-FOR-BIT.
+        use super::{FrankenTorchSession, IstftOptions};
+        use ft_core::Complex128;
+        let (n_fft, frames, hop) = (128usize, 64usize, 32usize);
+        let freq_bins = n_fft / 2 + 1;
+        let re_in: Vec<f64> = (0..freq_bins * frames)
+            .map(|i| ((i % 251) as f64) * 0.013 - 1.5)
+            .collect();
+        let im_in: Vec<f64> = (0..freq_bins * frames)
+            .map(|i| ((i % 197) as f64) * 0.017 - 1.0)
+            .collect();
+        // Column-major [freq_bins, frames]: spectrogram[k*frames + frame].
+        let spec: Vec<Complex128> = (0..freq_bins * frames)
+            .map(|i| Complex128::new(re_in[i], im_in[i]))
+            .collect();
+
+        // Serial reference (onesided, center, window=ones, win_length=n_fft,
+        // normalized=false -> scale=1/n_fft, length=None).
+        let window: Vec<f64> = vec![1.0; n_fft];
+        let window_pad = 0usize;
+        let scale = 1.0 / n_fft as f64;
+        let output_len = n_fft + hop * (frames - 1);
+        let mut signal = vec![0.0f64; output_len];
+        let mut envelope = vec![0.0f64; output_len];
+        for frame_idx in 0..frames {
+            let mut full = vec![Complex128::new(0.0, 0.0); n_fft];
+            for k in 0..freq_bins {
+                full[k] = spec[k * frames + frame_idx];
+            }
+            let upper = if n_fft.is_multiple_of(2) {
+                freq_bins.saturating_sub(1)
+            } else {
+                freq_bins
+            };
+            for k in 1..upper {
+                full[n_fft - k] = full[k].conj();
+            }
+            let mut frame_time = vec![0.0f64; n_fft];
+            for (n, sample) in frame_time.iter_mut().enumerate() {
+                let mut value = Complex128::new(0.0, 0.0);
+                for (k, coeff) in full.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
+                    let tw = Complex128::new(angle.cos(), angle.sin());
+                    value += *coeff * tw;
+                }
+                *sample = value.re * scale;
+            }
+            let start = frame_idx * hop;
+            for i in 0..window.len() {
+                signal[start + i] += frame_time[window_pad + i] * window[i];
+                envelope[start + i] += window[i] * window[i];
+            }
+        }
+        for (sm, nm) in signal.iter_mut().zip(envelope.iter()) {
+            if *nm > 1e-12 {
+                *sm /= *nm;
+            }
+        }
+        let pad = n_fft / 2;
+        let want = signal[pad..signal.len() - pad].to_vec();
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let re_t = s.tensor_variable(re_in.clone(), vec![freq_bins, frames], false).unwrap();
+        let im_t = s.tensor_variable(im_in.clone(), vec![freq_bins, frames], false).unwrap();
+        let cplx = s.tensor_complex(re_t, im_t).unwrap();
+        let y = s
+            .tensor_istft(
+                cplx,
+                n_fft,
+                IstftOptions {
+                    hop_length: Some(hop),
+                    ..IstftOptions::default()
+                },
+            )
+            .unwrap();
+        let got = s.tensor_values(y).unwrap();
+        assert_eq!(got.len(), want.len(), "istft output length");
+        for (idx, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "istft @{idx}");
         }
     }
 
