@@ -38293,6 +38293,76 @@ impl FrankenTorchSession {
     /// Returns the symmetric `grad_A` (row-major n x n). Standard differentiable
     /// Cholesky: `phi = tril_half_diag(L^T grad_L)`, `A_bar = L^-T phi L^-1`,
     /// `grad_A = (A_bar + A_bar^T)/2`.
+    /// Reverse-mode VJP of the reduced QR factorization for the tall case
+    /// (m >= n), full-rank R. Implements the standard formula
+    ///   M  = R @ grad_R^T - grad_Q^T @ Q              (n x n)
+    ///   S  = copyltu(M) = tril(M) + tril(M,-1)^T      (symmetric)
+    ///   grad_A = (grad_Q + Q @ S) @ R^{-T}            (m x n)
+    /// which is LINEAR in (grad_Q, grad_R); callers that only carry one of the
+    /// two output gradients pass zeros for the other and the contributions sum.
+    /// Q is m x n, R is n x n (upper triangular).
+    fn qr_backward_tall(q: &[f64], r: &[f64], grad_q: &[f64], grad_r: &[f64], m: usize, n: usize) -> Vec<f64> {
+        // M = R @ grad_R^T - grad_Q^T @ Q   (n x n)
+        let mut mmat = vec![0.0_f64; n * n];
+        for a in 0..n {
+            for b in 0..n {
+                let mut s = 0.0_f64;
+                // (R @ grad_R^T)[a][b] = sum_l R[a][l] grad_R[b][l]
+                for l in 0..n {
+                    s += r[a * n + l] * grad_r[b * n + l];
+                }
+                // -(grad_Q^T @ Q)[a][b] = -sum_i grad_Q[i][a] Q[i][b]
+                let mut t = 0.0_f64;
+                for i in 0..m {
+                    t += grad_q[i * n + a] * q[i * n + b];
+                }
+                mmat[a * n + b] = s - t;
+            }
+        }
+        // S = copyltu(M): symmetric, lower triangle (incl diag) taken from M.
+        let mut s_sym = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                s_sym[i * n + j] = if i >= j { mmat[i * n + j] } else { mmat[j * n + i] };
+            }
+        }
+        // Z = grad_Q + Q @ S   (m x n)
+        let mut z = vec![0.0_f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = grad_q[i * n + j];
+                for b in 0..n {
+                    acc += q[i * n + b] * s_sym[b * n + j];
+                }
+                z[i * n + j] = acc;
+            }
+        }
+        // R^{-1} (upper triangular) by back-substitution: solve R @ Rinv = I.
+        let mut rinv = vec![0.0_f64; n * n];
+        for j in 0..n {
+            rinv[j * n + j] = 1.0 / r[j * n + j];
+            for i in (0..j).rev() {
+                let mut acc = 0.0_f64;
+                for l in (i + 1)..=j {
+                    acc += r[i * n + l] * rinv[l * n + j];
+                }
+                rinv[i * n + j] = -acc / r[i * n + i];
+            }
+        }
+        // grad_A = Z @ R^{-T}: grad_A[i][j] = sum_b Z[i][b] Rinv[j][b]
+        let mut grad_a = vec![0.0_f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = 0.0_f64;
+                for b in 0..n {
+                    acc += z[i * n + b] * rinv[j * n + b];
+                }
+                grad_a[i * n + j] = acc;
+            }
+        }
+        grad_a
+    }
+
     fn cholesky_backward_lower(l: &[f64], grad_l: &[f64], n: usize) -> Vec<f64> {
         // phi = lower-triangular part of (L^T @ grad_L), diagonal halved.
         let mut phi = vec![0.0_f64; n * n];
@@ -40454,9 +40524,88 @@ impl FrankenTorchSession {
         reduced: bool,
     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
         if self.tensor_requires_grad(input)? {
+            // QR backward via the two-independent-nodes pattern (same as eigh):
+            // the QR VJP grad_A = (grad_Q + Q copyltu(M)) R^{-T},
+            // M = R grad_R^T - grad_Q^T Q, is LINEAR in (grad_Q, grad_R), so the
+            // Q-output and R-output nodes each contribute their own term and the
+            // engine sums them into grad[input]. Supported for the standard
+            // differentiable case: reduced QR, tall/square input (m >= n),
+            // full-rank R. Each forward recomputes the deterministic QR, so both
+            // outputs are bit-identical to the non-grad path. frankentorch-rl4g.
+            let input_meta = self.tensor_tape.tensor_meta(input)?.clone();
+            let shape = input_meta.shape();
+            if reduced
+                && shape.len() == 2
+                && shape[0] >= shape[1]
+                && input_meta.dtype() == DType::F64
+            {
+                let device = input_meta.device();
+                // Q node — backward carries grad_Q (grad_R := 0).
+                let q_node = self.tensor_apply_function(
+                    &[input],
+                    move |ctx, inputs| {
+                        let (values, in_shape) = inputs[0];
+                        let meta = TensorMeta::from_shape(in_shape.to_vec(), DType::F64, device);
+                        let r = ft_kernel_cpu::qr_contiguous_f64(values, &meta, true).map_err(|e| {
+                            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                        })?;
+                        let (mm, nn) = (in_shape[0], in_shape[1]);
+                        ctx.save_for_backward(r.q.clone(), vec![mm, nn]);
+                        ctx.save_for_backward(r.r, vec![nn, nn]);
+                        Ok((r.q, vec![mm, nn]))
+                    },
+                    move |ctx, grad_outputs| {
+                        let saved = ctx.saved_tensors();
+                        let q = &saved[0];
+                        let r = &saved[1];
+                        let grad_q = grad_outputs[0];
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+                        let n = (r.len() as f64).sqrt().round() as usize;
+                        let m = q.len() / n;
+                        let zero_r = vec![0.0_f64; n * n];
+                        let grad_a = Self::qr_backward_tall(q, r, grad_q, &zero_r, m, n);
+                        Ok(vec![Some(grad_a)])
+                    },
+                )?;
+                // R node — backward carries grad_R (grad_Q := 0).
+                let r_node = self.tensor_apply_function(
+                    &[input],
+                    move |ctx, inputs| {
+                        let (values, in_shape) = inputs[0];
+                        let meta = TensorMeta::from_shape(in_shape.to_vec(), DType::F64, device);
+                        let r = ft_kernel_cpu::qr_contiguous_f64(values, &meta, true).map_err(|e| {
+                            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                        })?;
+                        let (mm, nn) = (in_shape[0], in_shape[1]);
+                        ctx.save_for_backward(r.q, vec![mm, nn]);
+                        ctx.save_for_backward(r.r.clone(), vec![nn, nn]);
+                        Ok((r.r, vec![nn, nn]))
+                    },
+                    move |ctx, grad_outputs| {
+                        let saved = ctx.saved_tensors();
+                        let q = &saved[0];
+                        let r = &saved[1];
+                        let grad_r = grad_outputs[0];
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+                        let n = (r.len() as f64).sqrt().round() as usize;
+                        let m = q.len() / n;
+                        let zero_q = vec![0.0_f64; m * n];
+                        let grad_a = Self::qr_backward_tall(q, r, &zero_q, grad_r, m, n);
+                        Ok(vec![Some(grad_a)])
+                    },
+                )?;
+                self.runtime.ledger_mut().record(
+                    EvidenceKind::Dispatch,
+                    format!(
+                        "linalg_qr input={} q={} r={} (autograd)",
+                        input.0, q_node.0, r_node.0
+                    ),
+                );
+                return Ok((q_node, r_node));
+            }
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "linalg_qr: autograd not supported (QR backward not yet implemented). Tracked under frankentorch-rl4g.",
+                    reason: "linalg_qr: autograd only supported for reduced QR of a tall/square (m>=n) F64 matrix",
                 },
             )));
         }
@@ -74447,14 +74596,13 @@ mod tests {
 
     #[test]
     fn linalg_svd_class_ops_fail_loud_on_requires_grad() {
-        // Regression for frankentorch-rl4g: SVD-class linalg ops (svd, qr)
-        // used to silently sever autograd by extracting tensor_values and
-        // rebuilding non-grad leaves. Each still fails loud when input
-        // requires_grad — matches the parking-lot pattern of pvfk
-        // (det/slogdet) and 3v6e (stft/istft).
-        // NOTE: eigvalsh, cholesky, svdvals, and eigh have since gained real
-        // autograd backward (frankentorch-rl4g), so they are covered by
-        // their own finite-difference tests and intentionally excluded here.
+        // Regression for frankentorch-rl4g: linalg_svd used to silently sever
+        // autograd by extracting tensor_values and rebuilding non-grad leaves.
+        // It still fails loud when input requires_grad — matches the parking-lot
+        // pattern of pvfk (det/slogdet) and 3v6e (stft/istft).
+        // NOTE: eigvalsh, cholesky, svdvals, eigh, and qr have since gained real
+        // autograd backward (frankentorch-rl4g), so they are covered by their
+        // own finite-difference tests and intentionally excluded here.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = s
             .tensor_variable(vec![2.0, 0.5, 0.5, 1.0], vec![2, 2], true)
@@ -74464,11 +74612,6 @@ mod tests {
             .tensor_linalg_svd(a, false)
             .expect_err("svd must fail loud on requires_grad");
         assert!(format!("{svd_err:?}").contains("autograd not supported"));
-
-        let qr_err = s
-            .tensor_linalg_qr(a, true)
-            .expect_err("qr must fail loud on requires_grad");
-        assert!(format!("{qr_err:?}").contains("autograd not supported"));
     }
 
     #[test]
@@ -79770,6 +79913,77 @@ mod tests {
         assert!(
             (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
             "eigh eigenvector backward mismatch: analytic={analytic}, fd={fd}"
+        );
+    }
+
+    #[test]
+    fn qr_backward_matches_finite_difference_and_value_parity() {
+        use ft_core::{DType, Device};
+        // Tall 4x3 full-rank matrix; reduced QR → Q is 4x3, R is 3x3.
+        let (m, n) = (4usize, 3usize);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 0.5, -0.3,
+            0.2, 2.0, 0.4,
+            -0.4, 0.1, 1.5,
+            0.6, -0.7, 0.2,
+        ];
+        // Fixed weights → loss = <Q, Wq> + <R, Wr> is LINEAR in (Q, R), so
+        // grad_Q=Wq, grad_R=Wr and the central FD is exact to O(eps^2). QR with
+        // the deterministic Householder sign convention is smooth in A at a
+        // full-rank point, so no sign-flip discontinuity over the FD step.
+        let wq: Vec<f64> = (0..m * n).map(|i| ((i * 5 + 1) % 7) as f64 * 0.1 - 0.3).collect();
+        let wr: Vec<f64> = (0..n * n).map(|i| ((i * 3 + 2) % 5) as f64 * 0.1 - 0.2).collect();
+        let dir: Vec<f64> = (0..m * n).map(|i| ((i * 7 + 3) % 11) as f64 * 0.02 - 0.1).collect();
+
+        // Value parity: grad-path Q,R bit-identical to the non-grad path.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_ng = s.tensor_variable(a.clone(), vec![m, n], false).unwrap();
+        let (q_ng, r_ng) = s.tensor_linalg_qr(a_ng, true).unwrap();
+        let q_ng_v = s.tensor_values(q_ng).unwrap();
+        let r_ng_v = s.tensor_values(r_ng).unwrap();
+        let a_g = s.tensor_variable(a.clone(), vec![m, n], true).unwrap();
+        let (q_g, r_g) = s.tensor_linalg_qr(a_g, true).unwrap();
+        let q_g_v = s.tensor_values(q_g).unwrap();
+        let r_g_v = s.tensor_values(r_g).unwrap();
+        for (x, y) in q_ng_v.iter().zip(q_g_v.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "qr Q grad/non-grad value mismatch");
+        }
+        for (x, y) in r_ng_v.iter().zip(r_g_v.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "qr R grad/non-grad value mismatch");
+        }
+
+        // Analytic gradient of loss = <Q, Wq> + <R, Wr> through both outputs.
+        let wq_t = s.tensor_variable(wq.clone(), vec![m, n], false).unwrap();
+        let wr_t = s.tensor_variable(wr.clone(), vec![n, n], false).unwrap();
+        let qw = s.tensor_mul(q_g, wq_t).unwrap();
+        let rw = s.tensor_mul(r_g, wr_t).unwrap();
+        let sq = s.tensor_sum(qw).unwrap();
+        let sr = s.tensor_sum(rw).unwrap();
+        let loss = s.tensor_add(sq, sr).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_a = s.tensor_gradient(&report, a_g).expect("qr grad present");
+        let analytic: f64 = grad_a.iter().zip(dir.iter()).map(|(g, d)| g * d).sum();
+
+        let loss_of = |mat: &[f64]| -> f64 {
+            let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+            let r = ft_kernel_cpu::qr_contiguous_f64(mat, &meta, true).unwrap();
+            let mut acc = 0.0;
+            for (qi, wqi) in r.q.iter().zip(wq.iter()) {
+                acc += qi * wqi;
+            }
+            for (ri, wri) in r.r.iter().zip(wr.iter()) {
+                acc += ri * wri;
+            }
+            acc
+        };
+        let eps = 1e-6;
+        let a_plus: Vec<f64> = a.iter().zip(dir.iter()).map(|(x, d)| x + eps * d).collect();
+        let a_minus: Vec<f64> = a.iter().zip(dir.iter()).map(|(x, d)| x - eps * d).collect();
+        let fd = (loss_of(&a_plus) - loss_of(&a_minus)) / (2.0 * eps);
+        assert!(
+            (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
+            "qr backward mismatch: analytic={analytic}, fd={fd}"
         );
     }
 
