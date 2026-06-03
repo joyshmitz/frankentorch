@@ -25834,6 +25834,40 @@ impl FrankenTorchSession {
         }
 
         let (m, n) = (shape[0], shape[1]);
+        if self.tensor_requires_grad(input)? {
+            // tril is a linear masking op: kept positions (j <= i + diagonal)
+            // pass through, others are zeroed. Its gradient applies the SAME mask
+            // to the upstream gradient. The forward is identical to the non-grad
+            // path, so the value is bit-identical; only the previously-severed
+            // gradient is restored. frankentorch-avfl.
+            return self.tensor_apply_function(
+                &[input],
+                move |_ctx, inputs| {
+                    let (vals, _shape) = inputs[0];
+                    let mut result = vec![0.0_f64; m * n];
+                    for i in 0..m {
+                        for j in 0..n {
+                            if (j as i64) <= (i as i64) + diagonal {
+                                result[i * n + j] = vals[i * n + j];
+                            }
+                        }
+                    }
+                    Ok((result, vec![m, n]))
+                },
+                move |_ctx, grad_outputs| {
+                    let g = grad_outputs[0];
+                    let mut grad_in = vec![0.0_f64; m * n];
+                    for i in 0..m {
+                        for j in 0..n {
+                            if (j as i64) <= (i as i64) + diagonal {
+                                grad_in[i * n + j] = g[i * n + j];
+                            }
+                        }
+                    }
+                    Ok(vec![Some(grad_in)])
+                },
+            );
+        }
         let vals = self.tensor_values(input)?;
         let mut result = vec![0.0; m * n];
         for i in 0..m {
@@ -25867,6 +25901,38 @@ impl FrankenTorchSession {
         }
 
         let (m, n) = (shape[0], shape[1]);
+        if self.tensor_requires_grad(input)? {
+            // triu masks to j >= i + diagonal; gradient applies the same mask to
+            // the upstream gradient. Bit-identical forward; only the severed
+            // gradient is restored. frankentorch-avfl.
+            return self.tensor_apply_function(
+                &[input],
+                move |_ctx, inputs| {
+                    let (vals, _shape) = inputs[0];
+                    let mut result = vec![0.0_f64; m * n];
+                    for i in 0..m {
+                        for j in 0..n {
+                            if (j as i64) >= (i as i64) + diagonal {
+                                result[i * n + j] = vals[i * n + j];
+                            }
+                        }
+                    }
+                    Ok((result, vec![m, n]))
+                },
+                move |_ctx, grad_outputs| {
+                    let g = grad_outputs[0];
+                    let mut grad_in = vec![0.0_f64; m * n];
+                    for i in 0..m {
+                        for j in 0..n {
+                            if (j as i64) >= (i as i64) + diagonal {
+                                grad_in[i * n + j] = g[i * n + j];
+                            }
+                        }
+                    }
+                    Ok(vec![Some(grad_in)])
+                },
+            );
+        }
         let vals = self.tensor_values(input)?;
         let mut result = vec![0.0; m * n];
         for i in 0..m {
@@ -91515,6 +91581,43 @@ mod tests {
         assert!(vals[3].abs() < 1e-10); // (1,0) zeroed
         assert!((vals[4] - 5.0).abs() < 1e-10); // (1,1)
         assert!(vals[6].abs() < 1e-10); // (2,0) zeroed
+    }
+
+    #[test]
+    fn tril_triu_backward_apply_mask_and_value_parity() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        // tril(diagonal=0): keep j <= i. Upstream grad = all ones → grad_in is
+        // the lower-triangular mask (1 on/below diag, 0 above).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity.
+        let a_ng = s.tensor_variable(data.clone(), vec![3, 3], false).unwrap();
+        let t_ng = s.tensor_tril(a_ng, 0).unwrap();
+        let v_ng = s.tensor_values(t_ng).unwrap();
+        let a_g = s.tensor_variable(data.clone(), vec![3, 3], true).unwrap();
+        let t_g = s.tensor_tril(a_g, 0).unwrap();
+        let v_g = s.tensor_values(t_g).unwrap();
+        for (x, y) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "tril grad/non-grad value mismatch");
+        }
+        // Backward with ones upstream (loss = sum(tril)).
+        let loss = s.tensor_sum(t_g).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, a_g).expect("tril grad present");
+        let expected_tril = [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0];
+        for (i, (g, e)) in grad.iter().zip(expected_tril.iter()).enumerate() {
+            assert!((g - e).abs() < 1e-12, "tril grad[{i}]={g} expected {e}");
+        }
+
+        // triu(diagonal=1): keep j >= i+1 (strictly above diagonal).
+        let a_g2 = s.tensor_variable(data.clone(), vec![3, 3], true).unwrap();
+        let u_g = s.tensor_triu(a_g2, 1).unwrap();
+        let loss2 = s.tensor_sum(u_g).unwrap();
+        let report2 = s.tensor_backward(loss2).unwrap();
+        let grad2 = s.tensor_gradient(&report2, a_g2).expect("triu grad present");
+        let expected_triu = [0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+        for (i, (g, e)) in grad2.iter().zip(expected_triu.iter()).enumerate() {
+            assert!((g - e).abs() < 1e-12, "triu grad[{i}]={g} expected {e}");
+        }
     }
 
     #[test]
