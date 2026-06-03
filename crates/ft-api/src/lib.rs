@@ -38222,19 +38222,14 @@ impl FrankenTorchSession {
                 );
                 return Ok(out);
             }
-            // General N x N backward for the lower factor (the torch default).
-            // Uses the standard differentiable-Cholesky result (Murray 2016 /
-            // PyTorch cholesky_backward):
-            //   phi      = tril_half_diag(L^T @ L_bar)
-            //   A_bar    = L^{-T} @ phi @ L^{-1}
-            //   grad_A   = (A_bar + A_bar^T) / 2   (A is symmetric).
-            // frankentorch-rl4g.
+            // General N x N backward. Uses the standard differentiable-Cholesky
+            // result (Murray 2016 / PyTorch cholesky_backward) on the lower
+            // factor: phi = tril_half_diag(L^T @ L_bar); A_bar = L^-T phi L^-1;
+            // grad_A = (A_bar + A_bar^T)/2. For the upper factor U = L^T, feed
+            // L = U^T and grad_L = grad_U^T (grad_A is symmetric, so no transpose
+            // back). frankentorch-rl4g.
             let shape = input_meta.shape();
-            if !upper
-                && shape.len() == 2
-                && shape[0] == shape[1]
-                && input_meta.dtype() == DType::F64
-            {
+            if shape.len() == 2 && shape[0] == shape[1] && input_meta.dtype() == DType::F64 {
                 let device = input_meta.device();
                 let out = self.tensor_apply_function(
                     &[input],
@@ -38242,7 +38237,7 @@ impl FrankenTorchSession {
                         let (values, in_shape) = inputs[0];
                         let meta =
                             TensorMeta::from_shape(in_shape.to_vec(), DType::F64, device);
-                        let result = ft_kernel_cpu::cholesky_contiguous_f64(values, &meta, false)
+                        let result = ft_kernel_cpu::cholesky_contiguous_f64(values, &meta, upper)
                             .map_err(|e| {
                                 AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
                             })?;
@@ -38252,24 +38247,37 @@ impl FrankenTorchSession {
                     },
                     move |ctx, grad_outputs| {
                         let saved = ctx.saved_tensors();
-                        let l = &saved[0];
-                        let grad_l = grad_outputs[0];
+                        let factor = &saved[0];
+                        let grad = grad_outputs[0];
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                        let n = (l.len() as f64).sqrt().round() as usize;
-                        let grad_a = Self::cholesky_backward_lower(l, grad_l, n);
+                        let n = (factor.len() as f64).sqrt().round() as usize;
+                        let grad_a = if upper {
+                            // L = U^T, grad_L = grad_U^T.
+                            let mut l = vec![0.0_f64; n * n];
+                            let mut gl = vec![0.0_f64; n * n];
+                            for i in 0..n {
+                                for j in 0..n {
+                                    l[i * n + j] = factor[j * n + i];
+                                    gl[i * n + j] = grad[j * n + i];
+                                }
+                            }
+                            Self::cholesky_backward_lower(&l, &gl, n)
+                        } else {
+                            Self::cholesky_backward_lower(factor, grad, n)
+                        };
                         Ok(vec![Some(grad_a)])
                     },
                 )?;
                 self.runtime.ledger_mut().record(
                     EvidenceKind::Dispatch,
-                    format!("linalg_cholesky input={} out={} upper=false (autograd)", input.0, out.0),
+                    format!("linalg_cholesky input={} out={} upper={upper} (autograd)", input.0, out.0),
                 );
                 return Ok(out);
             }
-            // Upper factor / non-square / non-F64: not yet supported.
+            // Non-square / non-F64: not yet supported.
             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                 ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "linalg_cholesky: autograd only supported for the lower factor of a square F64 matrix",
+                    reason: "linalg_cholesky: autograd only supported for a square F64 matrix",
                 },
             )));
         }
@@ -79184,6 +79192,63 @@ mod tests {
         assert!(
             (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
             "cholesky backward mismatch: analytic={analytic}, fd={fd}"
+        );
+    }
+
+    #[test]
+    fn cholesky_upper_backward_matches_finite_difference() {
+        use ft_core::{DType, Device};
+        let n = 4usize;
+        let mut b = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                b[i * n + j] = ((i * 2 + j) % 5) as f64 * 0.1 + 0.05;
+            }
+        }
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0;
+                for k in 0..n {
+                    s += b[i * n + k] * b[j * n + k];
+                }
+                a[i * n + j] = s;
+            }
+            a[i * n + i] += n as f64;
+        }
+        let mut v = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let val = ((i + 3 * j) % 4) as f64 * 0.1 - 0.15;
+                v[i * n + j] = val;
+                v[j * n + i] = val;
+            }
+        }
+
+        // loss(M) = sum of squares of the UPPER Cholesky factor.
+        let loss_of = |mat: &[f64]| -> f64 {
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let r = ft_kernel_cpu::cholesky_contiguous_f64(mat, &meta, true).unwrap();
+            r.factor.iter().map(|x| x * x).sum::<f64>()
+        };
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let at = s.tensor_variable(a.clone(), vec![n, n], true).unwrap();
+        let u = s.tensor_linalg_cholesky(at, true).unwrap();
+        let usq = s.tensor_mul(u, u).unwrap();
+        let loss = s.tensor_sum(usq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_a = s.tensor_gradient(&report, at).expect("cholesky upper grad present");
+        let analytic: f64 = grad_a.iter().zip(v.iter()).map(|(g, vv)| g * vv).sum();
+
+        let eps = 1e-6;
+        let a_plus: Vec<f64> = a.iter().zip(v.iter()).map(|(x, vv)| x + eps * vv).collect();
+        let a_minus: Vec<f64> = a.iter().zip(v.iter()).map(|(x, vv)| x - eps * vv).collect();
+        let fd = (loss_of(&a_plus) - loss_of(&a_minus)) / (2.0 * eps);
+
+        assert!(
+            (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
+            "cholesky upper backward mismatch: analytic={analytic}, fd={fd}"
         );
     }
 
