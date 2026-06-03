@@ -44035,69 +44035,87 @@ impl FrankenTorchSession {
         out_spatial: &[usize],
         align_corners: bool,
     ) -> Result<TensorNodeId, AutogradError> {
+        use rayon::prelude::*;
         let (id, ih, iw) = (in_spatial[0], in_spatial[1], in_spatial[2]);
         let (od, oh, ow) = (out_spatial[0], out_spatial[1], out_spatial[2]);
         let total = batch * channels * od * oh * ow;
-        let mut values = Vec::with_capacity(total);
+        let in_plane = id * ih * iw;
+        let mut values = vec![0.0_f64; total];
 
-        for b in 0..batch {
-            for c in 0..channels {
-                let base = (b * channels + c) * id * ih * iw;
-                for oz in 0..od {
-                    let src_z = if align_corners && od > 1 {
-                        oz as f64 * (id - 1) as f64 / (od - 1) as f64
-                    } else {
-                        (oz as f64 + 0.5) * id as f64 / od as f64 - 0.5
-                    };
-                    let src_z = src_z.max(0.0);
-                    let z0 = (src_z.floor() as usize).min(id - 1);
-                    let z1 = (z0 + 1).min(id - 1);
-                    let tz = src_z - z0 as f64;
+        // Output row r = (((b*channels+c)*od + oz)*oh + oy) maps to
+        // plane = r/(od*oh), oz = (r/oh)%od, oy = r%oh (base == plane*in_plane).
+        // Every element uses identical 8-tap trilinear arithmetic and the same
+        // linear position as the serial push order, and the corner reads come
+        // from a local 2x2x2 cube (cache-friendly), so distributing whole rows
+        // across Rayon workers is bit-for-bit identical.
+        let fill_row = |r: usize, out_row: &mut [f64]| {
+            let oy = r % oh;
+            let r2 = r / oh; // = plane*od + oz
+            let oz = r2 % od;
+            let plane = r2 / od;
+            let base = plane * in_plane;
 
-                    for oy in 0..oh {
-                        let src_y = if align_corners && oh > 1 {
-                            oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
-                        } else {
-                            (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
-                        };
-                        let src_y = src_y.max(0.0);
-                        let y0 = (src_y.floor() as usize).min(ih - 1);
-                        let y1 = (y0 + 1).min(ih - 1);
-                        let ty = src_y - y0 as f64;
+            let src_z = if align_corners && od > 1 {
+                oz as f64 * (id - 1) as f64 / (od - 1) as f64
+            } else {
+                (oz as f64 + 0.5) * id as f64 / od as f64 - 0.5
+            };
+            let src_z = src_z.max(0.0);
+            let z0 = (src_z.floor() as usize).min(id - 1);
+            let z1 = (z0 + 1).min(id - 1);
+            let tz = src_z - z0 as f64;
 
-                        for ox in 0..ow {
-                            let src_x = if align_corners && ow > 1 {
-                                ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
-                            } else {
-                                (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
-                            };
-                            let src_x = src_x.max(0.0);
-                            let x0 = (src_x.floor() as usize).min(iw - 1);
-                            let x1 = (x0 + 1).min(iw - 1);
-                            let tx = src_x - x0 as f64;
+            let src_y = if align_corners && oh > 1 {
+                oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
+            } else {
+                (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
+            };
+            let src_y = src_y.max(0.0);
+            let y0 = (src_y.floor() as usize).min(ih - 1);
+            let y1 = (y0 + 1).min(ih - 1);
+            let ty = src_y - y0 as f64;
 
-                            let v000 = storage[base + z0 * ih * iw + y0 * iw + x0];
-                            let v001 = storage[base + z0 * ih * iw + y0 * iw + x1];
-                            let v010 = storage[base + z0 * ih * iw + y1 * iw + x0];
-                            let v011 = storage[base + z0 * ih * iw + y1 * iw + x1];
-                            let v100 = storage[base + z1 * ih * iw + y0 * iw + x0];
-                            let v101 = storage[base + z1 * ih * iw + y0 * iw + x1];
-                            let v110 = storage[base + z1 * ih * iw + y1 * iw + x0];
-                            let v111 = storage[base + z1 * ih * iw + y1 * iw + x1];
+            for (ox, slot) in out_row.iter_mut().enumerate() {
+                let src_x = if align_corners && ow > 1 {
+                    ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
+                } else {
+                    (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
+                };
+                let src_x = src_x.max(0.0);
+                let x0 = (src_x.floor() as usize).min(iw - 1);
+                let x1 = (x0 + 1).min(iw - 1);
+                let tx = src_x - x0 as f64;
 
-                            let val = v000 * (1.0 - tz) * (1.0 - ty) * (1.0 - tx)
-                                + v001 * (1.0 - tz) * (1.0 - ty) * tx
-                                + v010 * (1.0 - tz) * ty * (1.0 - tx)
-                                + v011 * (1.0 - tz) * ty * tx
-                                + v100 * tz * (1.0 - ty) * (1.0 - tx)
-                                + v101 * tz * (1.0 - ty) * tx
-                                + v110 * tz * ty * (1.0 - tx)
-                                + v111 * tz * ty * tx;
-                            values.push(val);
-                        }
-                    }
-                }
+                let v000 = storage[base + z0 * ih * iw + y0 * iw + x0];
+                let v001 = storage[base + z0 * ih * iw + y0 * iw + x1];
+                let v010 = storage[base + z0 * ih * iw + y1 * iw + x0];
+                let v011 = storage[base + z0 * ih * iw + y1 * iw + x1];
+                let v100 = storage[base + z1 * ih * iw + y0 * iw + x0];
+                let v101 = storage[base + z1 * ih * iw + y0 * iw + x1];
+                let v110 = storage[base + z1 * ih * iw + y1 * iw + x0];
+                let v111 = storage[base + z1 * ih * iw + y1 * iw + x1];
+
+                *slot = v000 * (1.0 - tz) * (1.0 - ty) * (1.0 - tx)
+                    + v001 * (1.0 - tz) * (1.0 - ty) * tx
+                    + v010 * (1.0 - tz) * ty * (1.0 - tx)
+                    + v011 * (1.0 - tz) * ty * tx
+                    + v100 * tz * (1.0 - ty) * (1.0 - tx)
+                    + v101 * tz * (1.0 - ty) * tx
+                    + v110 * tz * ty * (1.0 - tx)
+                    + v111 * tz * ty * tx;
             }
+        };
+
+        if total >= PARALLEL_ELEMENTWISE_MIN {
+            values
+                .par_chunks_mut(ow)
+                .enumerate()
+                .for_each(|(r, out_row)| fill_row(r, out_row));
+        } else {
+            values
+                .chunks_mut(ow)
+                .enumerate()
+                .for_each(|(r, out_row)| fill_row(r, out_row));
         }
 
         self.tensor_variable(values, vec![batch, channels, od, oh, ow], false)
@@ -80379,6 +80397,67 @@ mod tests {
                         bicubic_ref(plane, oy, ox).to_bits(),
                         "bicubic @ plane{plane} oy{oy} ox{ox}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interpolate_trilinear_parallel_match_serial_bit_exact() {
+        // total output >= PARALLEL_ELEMENTWISE_MIN so the rayon row-split runs; it
+        // must match an independent serial reference of the same 8-tap trilinear
+        // formula BIT-FOR-BIT (align_corners = false).
+        let (n, ch, id, ih, iw) = (2usize, 2usize, 12usize, 12usize, 12usize);
+        let (od, oh, ow) = (id * 2, ih * 2, iw * 2); // total = 2*2*24*24*24 = 55296
+        let in_plane = id * ih * iw;
+        let data: Vec<f64> = (0..n * ch * in_plane)
+            .map(|i| ((i % 251) as f64) * 0.013 - 1.5)
+            .collect();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(data.clone(), vec![n, ch, id, ih, iw], false)
+            .unwrap();
+
+        let trilinear_ref = |plane: usize, oz: usize, oy: usize, ox: usize| -> f64 {
+            let base = plane * in_plane;
+            let src_z = ((oz as f64 + 0.5) * id as f64 / od as f64 - 0.5).max(0.0);
+            let z0 = (src_z.floor() as usize).min(id - 1);
+            let z1 = (z0 + 1).min(id - 1);
+            let tz = src_z - z0 as f64;
+            let src_y = ((oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5).max(0.0);
+            let y0 = (src_y.floor() as usize).min(ih - 1);
+            let y1 = (y0 + 1).min(ih - 1);
+            let ty = src_y - y0 as f64;
+            let src_x = ((ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5).max(0.0);
+            let x0 = (src_x.floor() as usize).min(iw - 1);
+            let x1 = (x0 + 1).min(iw - 1);
+            let tx = src_x - x0 as f64;
+            let g = |z: usize, y: usize, xx: usize| data[base + z * ih * iw + y * iw + xx];
+            g(z0, y0, x0) * (1.0 - tz) * (1.0 - ty) * (1.0 - tx)
+                + g(z0, y0, x1) * (1.0 - tz) * (1.0 - ty) * tx
+                + g(z0, y1, x0) * (1.0 - tz) * ty * (1.0 - tx)
+                + g(z0, y1, x1) * (1.0 - tz) * ty * tx
+                + g(z1, y0, x0) * tz * (1.0 - ty) * (1.0 - tx)
+                + g(z1, y0, x1) * tz * (1.0 - ty) * tx
+                + g(z1, y1, x0) * tz * ty * (1.0 - tx)
+                + g(z1, y1, x1) * tz * ty * tx
+        };
+
+        let y = s
+            .tensor_interpolate(x, Some(vec![od, oh, ow]), None, "trilinear", Some(false))
+            .unwrap();
+        let got = s.tensor_values(y).unwrap();
+        for plane in 0..n * ch {
+            for oz in 0..od {
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let idx = (((plane * od + oz) * oh + oy) * ow) + ox;
+                        assert_eq!(
+                            got[idx].to_bits(),
+                            trilinear_ref(plane, oz, oy, ox).to_bits(),
+                            "trilinear @ plane{plane} oz{oz} oy{oy} ox{ox}"
+                        );
+                    }
                 }
             }
         }

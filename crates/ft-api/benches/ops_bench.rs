@@ -215,6 +215,33 @@ fn bench_grid_sample(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_interpolate_trilinear(c: &mut Criterion) {
+    let mut group = c.benchmark_group("interpolate_trilinear");
+    // [N, C, D, H, W] -> 2x upsample. Trilinear blends 8 local corner taps with
+    // ~24 mults/output: compute-bound with cache-friendly local access, parallel
+    // over output rows.
+    let (n, ch, d, h, w) = (2usize, 8usize, 16usize, 16usize, 16usize);
+    group.throughput(Throughput::Elements((n * ch * d * 2 * h * 2 * w * 2) as u64));
+    group.bench_function("2x8x16x16x16_2x", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![n, ch, d, h, w], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .tensor_interpolate(
+                        black_box(x),
+                        Some(vec![d * 2, h * 2, w * 2]),
+                        None,
+                        "trilinear",
+                        Some(false),
+                    )
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_interpolate_bicubic(c: &mut Criterion) {
     let mut group = c.benchmark_group("interpolate_bicubic");
     // [N, C, H, W] -> 2x upsample. Bicubic does 16 cubic-weight taps per output
@@ -254,6 +281,7 @@ criterion_group!(
     bench_backward_matmul,
     bench_linear_forward,
     bench_interpolate_bicubic,
+    bench_interpolate_trilinear,
     bench_grid_sample,
 );
 criterion_main!(benches);
