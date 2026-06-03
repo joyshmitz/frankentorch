@@ -1084,6 +1084,44 @@ fn read_f64_payload(
     key: &str,
 ) -> Result<Vec<f64>, TensorIOError> {
     let payload = native_payload(data, pos, numel, 8, "f64", key, "truncated f64 data")?;
+    if numel == 4 {
+        return Ok(vec![
+            f64::from_le_bytes([
+                payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6],
+                payload[7],
+            ]),
+            f64::from_le_bytes([
+                payload[8],
+                payload[9],
+                payload[10],
+                payload[11],
+                payload[12],
+                payload[13],
+                payload[14],
+                payload[15],
+            ]),
+            f64::from_le_bytes([
+                payload[16],
+                payload[17],
+                payload[18],
+                payload[19],
+                payload[20],
+                payload[21],
+                payload[22],
+                payload[23],
+            ]),
+            f64::from_le_bytes([
+                payload[24],
+                payload[25],
+                payload[26],
+                payload[27],
+                payload[28],
+                payload[29],
+                payload[30],
+                payload[31],
+            ]),
+        ]);
+    }
     let mut values = Vec::with_capacity(numel);
     for chunk in payload.chunks_exact(8) {
         values.push(f64::from_le_bytes([
@@ -3567,6 +3605,72 @@ mod tests {
                 "../../../artifacts/optimization/golden_outputs/ft_serialize_decode_pass19.txt"
             )
         );
+    }
+
+    #[test]
+    fn native_format_width4_f64_preserves_raw_bits() {
+        let tensors = [
+            (
+                "bits_a",
+                [
+                    0x0000_0000_0000_0000_u64,
+                    0x8000_0000_0000_0000,
+                    0x0000_0000_0000_0001,
+                    0x7ff0_0000_0000_0000,
+                ],
+            ),
+            (
+                "bits_b",
+                [
+                    0xfff0_0000_0000_0000_u64,
+                    0x7ff8_0000_0000_0001,
+                    0x7ff0_0000_0000_0001,
+                    0x3ff0_0000_0000_0000,
+                ],
+            ),
+        ];
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1_u32.to_le_bytes());
+        data.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        for (key, bits) in tensors {
+            data.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            data.extend_from_slice(key.as_bytes());
+            data.extend_from_slice(&1_u64.to_le_bytes());
+            data.extend_from_slice(&4_u64.to_le_bytes());
+            data.push(super::FT_DTYPE_TAG_F64);
+            for value in bits {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        let loaded = load_state_dict_from_bytes(&data).unwrap();
+        for (key, bits) in tensors {
+            let values = loaded[key].contiguous_values().unwrap();
+            let decoded_bits = values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+            assert_eq!(decoded_bits, bits.to_vec());
+        }
+    }
+
+    #[test]
+    fn native_format_rejects_truncated_width4_f64_data() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"FTSV");
+        data.extend_from_slice(&1_u32.to_le_bytes());
+        data.extend_from_slice(&1_u64.to_le_bytes());
+        data.extend_from_slice(&1_u64.to_le_bytes());
+        data.push(b'w');
+        data.extend_from_slice(&1_u64.to_le_bytes());
+        data.extend_from_slice(&4_u64.to_le_bytes());
+        data.push(super::FT_DTYPE_TAG_F64);
+        data.extend_from_slice(&[0_u8; 31]);
+
+        let err = load_state_dict_from_bytes(&data).expect_err("truncated f64 payload must fail");
+        assert!(matches!(err, TensorIOError::Corrupt { .. }));
+        assert!(err.to_string().contains("truncated f64 data"));
     }
 
     #[test]
