@@ -44645,32 +44645,75 @@ impl FrankenTorchSession {
 
         let mut re_out = vec![0.0_f64; batch_size * rows * cols];
         let mut im_out = vec![0.0_f64; batch_size * rows * cols];
+        let plane = rows * cols;
+        let parallel = batch_size * rows * cols >= PARALLEL_ELEMENTWISE_MIN;
 
-        // FFT along columns (last dim) for each row
-        for b in 0..batch_size {
-            for r in 0..rows {
-                let start = b * rows * cols + r * cols;
-                let mut re_row: Vec<f64> = vals[start..start + cols].to_vec();
-                let mut im_row = vec![0.0_f64; cols];
-                Self::dft_inplace_1d(&mut re_row, &mut im_row, false);
-                re_out[start..start + cols].copy_from_slice(&re_row);
-                im_out[start..start + cols].copy_from_slice(&im_row);
+        // FFT along columns (last dim) for each row. Every (b, r) row is a
+        // contiguous `cols` block, so the per-row 1-D transform runs in place
+        // across Rayon workers with no gather/scatter. Bit-for-bit identical to
+        // the serial loop (independent rows, deterministic dft_inplace_1d).
+        if parallel && batch_size * rows >= 2 {
+            use rayon::prelude::*;
+            re_out
+                .par_chunks_mut(cols)
+                .zip(im_out.par_chunks_mut(cols))
+                .enumerate()
+                .for_each(|(row, (re_row, im_row))| {
+                    let start = row * cols;
+                    re_row.copy_from_slice(&vals[start..start + cols]);
+                    Self::dft_inplace_1d(re_row, im_row, false);
+                });
+        } else {
+            for b in 0..batch_size {
+                for r in 0..rows {
+                    let start = b * rows * cols + r * cols;
+                    let mut re_row: Vec<f64> = vals[start..start + cols].to_vec();
+                    let mut im_row = vec![0.0_f64; cols];
+                    Self::dft_inplace_1d(&mut re_row, &mut im_row, false);
+                    re_out[start..start + cols].copy_from_slice(&re_row);
+                    im_out[start..start + cols].copy_from_slice(&im_row);
+                }
             }
         }
 
-        // FFT along rows (second-to-last dim)
-        for b in 0..batch_size {
-            for c in 0..cols {
-                let mut re_col = vec![0.0_f64; rows];
-                let mut im_col = vec![0.0_f64; rows];
-                for r in 0..rows {
-                    re_col[r] = re_out[b * rows * cols + r * cols + c];
-                    im_col[r] = im_out[b * rows * cols + r * cols + c];
-                }
-                Self::dft_inplace_1d(&mut re_col, &mut im_col, false);
-                for r in 0..rows {
-                    re_out[b * rows * cols + r * cols + c] = re_col[r];
-                    im_out[b * rows * cols + r * cols + c] = im_col[r];
+        // FFT along rows (second-to-last dim). Each batch plane is a contiguous
+        // rows*cols block whose columns are independent; distribute the planes
+        // across workers (each reuses one scratch column buffer). Bit-for-bit
+        // identical to the serial loop.
+        if parallel && batch_size >= 2 {
+            use rayon::prelude::*;
+            re_out
+                .par_chunks_mut(plane)
+                .zip(im_out.par_chunks_mut(plane))
+                .for_each(|(re_b, im_b)| {
+                    let mut re_col = vec![0.0_f64; rows];
+                    let mut im_col = vec![0.0_f64; rows];
+                    for c in 0..cols {
+                        for r in 0..rows {
+                            re_col[r] = re_b[r * cols + c];
+                            im_col[r] = im_b[r * cols + c];
+                        }
+                        Self::dft_inplace_1d(&mut re_col, &mut im_col, false);
+                        for r in 0..rows {
+                            re_b[r * cols + c] = re_col[r];
+                            im_b[r * cols + c] = im_col[r];
+                        }
+                    }
+                });
+        } else {
+            for b in 0..batch_size {
+                for c in 0..cols {
+                    let mut re_col = vec![0.0_f64; rows];
+                    let mut im_col = vec![0.0_f64; rows];
+                    for r in 0..rows {
+                        re_col[r] = re_out[b * rows * cols + r * cols + c];
+                        im_col[r] = im_out[b * rows * cols + r * cols + c];
+                    }
+                    Self::dft_inplace_1d(&mut re_col, &mut im_col, false);
+                    for r in 0..rows {
+                        re_out[b * rows * cols + r * cols + c] = re_col[r];
+                        im_out[b * rows * cols + r * cols + c] = im_col[r];
+                    }
                 }
             }
         }
@@ -80516,6 +80559,65 @@ mod tests {
         }
         for (idx, (g, w)) in got_im.iter().zip(ref_im.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "fft im @{idx}");
+        }
+    }
+
+    #[test]
+    fn fft2_parallel_match_serial_bit_exact() {
+        // With a batched input above the threshold, tensor_fft2 runs both the row
+        // (par_chunks_mut(cols)) and column (par_chunks_mut(plane)) passes across
+        // Rayon; the result must equal a serial reference (row-FFT then col-FFT
+        // via the same dft_inplace_1d) BIT-FOR-BIT.
+        use super::FrankenTorchSession;
+        let (batch, rows, cols) = (4usize, 32usize, 64usize); // total 8192, batch>=2
+        let plane = rows * cols;
+        let data: Vec<f64> = (0..batch * plane)
+            .map(|i| ((i % 251) as f64) * 0.013 - 1.5)
+            .collect();
+
+        // Serial reference mirroring tensor_fft2's algorithm.
+        let mut ref_re = vec![0.0f64; batch * plane];
+        let mut ref_im = vec![0.0f64; batch * plane];
+        for b in 0..batch {
+            for r in 0..rows {
+                let start = b * plane + r * cols;
+                let mut re_row: Vec<f64> = data[start..start + cols].to_vec();
+                let mut im_row = vec![0.0f64; cols];
+                FrankenTorchSession::dft_inplace_1d(&mut re_row, &mut im_row, false);
+                ref_re[start..start + cols].copy_from_slice(&re_row);
+                ref_im[start..start + cols].copy_from_slice(&im_row);
+            }
+        }
+        for b in 0..batch {
+            for c in 0..cols {
+                let mut re_col = vec![0.0f64; rows];
+                let mut im_col = vec![0.0f64; rows];
+                for r in 0..rows {
+                    re_col[r] = ref_re[b * plane + r * cols + c];
+                    im_col[r] = ref_im[b * plane + r * cols + c];
+                }
+                FrankenTorchSession::dft_inplace_1d(&mut re_col, &mut im_col, false);
+                for r in 0..rows {
+                    ref_re[b * plane + r * cols + c] = re_col[r];
+                    ref_im[b * plane + r * cols + c] = im_col[r];
+                }
+            }
+        }
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(data.clone(), vec![batch, rows, cols], false)
+            .unwrap();
+        let y = s.tensor_fft2(x).unwrap();
+        let re_node = s.tensor_real(y).unwrap();
+        let got_re = s.tensor_values(re_node).unwrap();
+        let im_node = s.tensor_imag(y).unwrap();
+        let got_im = s.tensor_values(im_node).unwrap();
+        for (idx, (g, w)) in got_re.iter().zip(ref_re.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "fft2 re @{idx}");
+        }
+        for (idx, (g, w)) in got_im.iter().zip(ref_im.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "fft2 im @{idx}");
         }
     }
 

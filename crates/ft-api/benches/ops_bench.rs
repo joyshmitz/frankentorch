@@ -215,6 +215,35 @@ fn bench_grid_sample(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_fft2(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fft2");
+    // Batched 2-D FFT [batch, rows, cols]: the row pass (per-row 1-D FFT) and the
+    // column pass (per-column 1-D FFT) are both compute-bound trig and parallel
+    // over rows / batch planes respectively.
+    let (batch, rows, cols) = (32usize, 128usize, 128usize);
+    group.throughput(Throughput::Elements((batch * rows * cols) as u64));
+    group.bench_function("32x128x128", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![batch, rows, cols], false).unwrap();
+        b.iter(|| black_box(session.tensor_fft2(black_box(x)).unwrap()));
+    });
+    group.finish();
+}
+
+fn bench_fft_1d(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fft_1d");
+    // Single large power-of-two 1-D FFT: isolates dft_inplace_1d (one lane, no
+    // lane parallelism) so the twiddle-precompute speedup is measured directly.
+    let n = 1usize << 18; // 262144-pt
+    group.throughput(Throughput::Elements(n as u64));
+    group.bench_function("262144pt", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![n], false).unwrap();
+        b.iter(|| black_box(session.tensor_fft(black_box(x), None).unwrap()));
+    });
+    group.finish();
+}
+
 fn bench_fftn(c: &mut Criterion) {
     let mut group = c.benchmark_group("fftn");
     // [lanes, N] real input, FFT along the last dim: `lanes` independent
@@ -298,6 +327,8 @@ criterion_group!(
     bench_interpolate_bicubic,
     bench_interpolate_trilinear,
     bench_grid_sample,
+    bench_fft2,
+    bench_fft_1d,
     bench_fftn,
 );
 criterion_main!(benches);
