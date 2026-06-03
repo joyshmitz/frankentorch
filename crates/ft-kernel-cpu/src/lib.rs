@@ -4976,6 +4976,173 @@ pub struct EighResult {
 ///
 /// Returns eigenvalues sorted ascending and corresponding orthonormal eigenvectors.
 /// The input must be a square symmetric matrix.
+/// Numerically stable `sqrt(a^2 + b^2)` without overflow/underflow.
+fn eigh_pythag(a: f64, b: f64) -> f64 {
+    let absa = a.abs();
+    let absb = b.abs();
+    if absa > absb {
+        absa * (1.0 + (absb / absa).powi(2)).sqrt()
+    } else if absb == 0.0 {
+        0.0
+    } else {
+        absb * (1.0 + (absa / absb).powi(2)).sqrt()
+    }
+}
+
+/// Householder reduction of a real-symmetric `n x n` matrix (row-major `z`,
+/// lower triangle used) to symmetric tridiagonal form. On return `z` holds the
+/// accumulated orthogonal transformation, `d` the diagonal, `e` the
+/// sub-diagonal (`e[0] = 0`). EISPACK `tred2` lineage. O(4/3 n^3).
+fn eigh_tred2(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
+    for i in (1..n).rev() {
+        let l = i - 1;
+        let mut h = 0.0;
+        let mut scale = 0.0;
+        if l > 0 {
+            for k in 0..=l {
+                scale += z[i * n + k].abs();
+            }
+            if scale == 0.0 {
+                e[i] = z[i * n + l];
+            } else {
+                for k in 0..=l {
+                    z[i * n + k] /= scale;
+                    h += z[i * n + k] * z[i * n + k];
+                }
+                let mut f = z[i * n + l];
+                let g = if f >= 0.0 { -h.sqrt() } else { h.sqrt() };
+                e[i] = scale * g;
+                h -= f * g;
+                z[i * n + l] = f - g;
+                f = 0.0;
+                for j in 0..=l {
+                    z[j * n + i] = z[i * n + j] / h;
+                    let mut gg = 0.0;
+                    for k in 0..=j {
+                        gg += z[j * n + k] * z[i * n + k];
+                    }
+                    for k in (j + 1)..=l {
+                        gg += z[k * n + j] * z[i * n + k];
+                    }
+                    e[j] = gg / h;
+                    f += e[j] * z[i * n + j];
+                }
+                let hh = f / (h + h);
+                for j in 0..=l {
+                    f = z[i * n + j];
+                    let gg = e[j] - hh * f;
+                    e[j] = gg;
+                    for k in 0..=j {
+                        z[j * n + k] -= f * e[k] + gg * z[i * n + k];
+                    }
+                }
+            }
+        } else {
+            e[i] = z[i * n + l];
+        }
+        d[i] = h;
+    }
+    d[0] = 0.0;
+    e[0] = 0.0;
+    for i in 0..n {
+        if d[i] != 0.0 {
+            for j in 0..i {
+                let mut g = 0.0;
+                for k in 0..i {
+                    g += z[i * n + k] * z[k * n + j];
+                }
+                for k in 0..i {
+                    z[k * n + j] -= g * z[k * n + i];
+                }
+            }
+        }
+        d[i] = z[i * n + i];
+        z[i * n + i] = 1.0;
+        for j in 0..i {
+            z[j * n + i] = 0.0;
+            z[i * n + j] = 0.0;
+        }
+    }
+}
+
+/// QL algorithm with implicit shifts on a symmetric tridiagonal matrix.
+/// `d` (diagonal) becomes the eigenvalues, `z` (the `tred2` transform) becomes
+/// the eigenvectors as columns. EISPACK `tql2` lineage. Each eigenvalue
+/// converges in O(1) shifted QL steps, so the whole solve is O(n^3) with a far
+/// smaller constant than cyclic Jacobi. Gives up gracefully (leaving the
+/// best-so-far estimate) after a generous iteration cap, mirroring Jacobi's
+/// bounded-sweep behavior rather than erroring.
+fn eigh_tql2(n: usize, d: &mut [f64], e: &mut [f64], z: &mut [f64]) {
+    if n == 0 {
+        return;
+    }
+    for i in 1..n {
+        e[i - 1] = e[i];
+    }
+    e[n - 1] = 0.0;
+    for l in 0..n {
+        let mut iter = 0;
+        loop {
+            // Locate a negligible sub-diagonal element to split off.
+            let mut m = l;
+            while m < n - 1 {
+                let dd = d[m].abs() + d[m + 1].abs();
+                if e[m].abs() <= f64::EPSILON * dd {
+                    break;
+                }
+                m += 1;
+            }
+            if m == l {
+                break;
+            }
+            if iter >= 50 {
+                break;
+            }
+            iter += 1;
+            // Form the Wilkinson shift.
+            let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+            let mut r = eigh_pythag(g, 1.0);
+            let sr = if g >= 0.0 { r.abs() } else { -r.abs() };
+            g = d[m] - d[l] + e[l] / (g + sr);
+            let mut s = 1.0;
+            let mut c = 1.0;
+            let mut p = 0.0;
+            let mut bailed = false;
+            for i in (l..m).rev() {
+                let mut f = s * e[i];
+                let b = c * e[i];
+                r = eigh_pythag(f, g);
+                e[i + 1] = r;
+                if r == 0.0 {
+                    d[i + 1] -= p;
+                    e[m] = 0.0;
+                    bailed = true;
+                    break;
+                }
+                s = f / r;
+                c = g / r;
+                g = d[i + 1] - p;
+                r = (d[i] - g) * s + 2.0 * c * b;
+                p = s * r;
+                d[i + 1] = g + p;
+                g = c * r - b;
+                // Accumulate the rotation into the eigenvector columns.
+                for k in 0..n {
+                    f = z[k * n + i + 1];
+                    z[k * n + i + 1] = s * z[k * n + i] + c * f;
+                    z[k * n + i] = c * z[k * n + i] - s * f;
+                }
+            }
+            if bailed {
+                continue;
+            }
+            d[l] -= p;
+            e[l] = g;
+            e[m] = 0.0;
+        }
+    }
+}
+
 pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
@@ -4996,96 +5163,32 @@ pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult
 
     let offset = meta.storage_offset();
 
-    // Copy into working matrix (symmetric, so we use the full matrix)
-    let mut a = vec![0.0f64; n * n];
+    // Householder tridiagonalization (tred2) + implicit-shift QL (tql2): a
+    // real-symmetric eigensolver in the EISPACK/LAPACK lineage. This is O(n^3)
+    // with a small constant, replacing the previous cyclic Jacobi which ran up
+    // to 100 full O(n^3) sweeps. `z` starts as the input (lower triangle used)
+    // and becomes the orthonormal eigenvector matrix; `d`/`e` carry the
+    // tridiagonal diagonal/sub-diagonal.
+    let mut z = vec![0.0f64; n * n];
     for i in 0..n {
         for j in 0..n {
-            a[i * n + j] = data[offset + i * n + j];
+            z[i * n + j] = data[offset + i * n + j];
         }
     }
+    let mut d = vec![0.0f64; n];
+    let mut e = vec![0.0f64; n];
+    eigh_tred2(n, &mut z, &mut d, &mut e);
+    eigh_tql2(n, &mut d, &mut e, &mut z);
 
-    // Initialize V = I (eigenvectors accumulator)
-    let mut v = vec![0.0f64; n * n];
-    for i in 0..n {
-        v[i * n + i] = 1.0;
-    }
-
-    let max_sweeps = 100;
-    let tol = 1e-15;
-
-    // Jacobi eigenvalue algorithm: repeatedly zero off-diagonal elements
-    for _sweep in 0..max_sweeps {
-        // Find largest off-diagonal element
-        let mut max_off = 0.0f64;
-        for i in 0..n {
-            for j in (i + 1)..n {
-                max_off = max_off.max(a[i * n + j].abs());
-            }
-        }
-        if max_off <= tol {
-            break;
-        }
-
-        // Sweep over all pairs (p, q)
-        for p in 0..n {
-            for q in (p + 1)..n {
-                let apq = a[p * n + q];
-                if apq.abs() <= tol {
-                    continue;
-                }
-
-                // Compute rotation angle
-                let tau = (a[q * n + q] - a[p * n + p]) / (2.0 * apq);
-                let t = if tau >= 0.0 {
-                    1.0 / (tau + (1.0 + tau * tau).sqrt())
-                } else {
-                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
-                };
-                let c = 1.0 / (1.0 + t * t).sqrt();
-                let s = t * c;
-
-                // Apply Jacobi rotation to A: A' = J^T @ A @ J
-                // Update rows/cols p and q
-                let app = a[p * n + p];
-                let aqq = a[q * n + q];
-                a[p * n + p] = c * c * app - 2.0 * s * c * apq + s * s * aqq;
-                a[q * n + q] = s * s * app + 2.0 * s * c * apq + c * c * aqq;
-                a[p * n + q] = 0.0;
-                a[q * n + p] = 0.0;
-
-                for r in 0..n {
-                    if r == p || r == q {
-                        continue;
-                    }
-                    let arp = a[r * n + p];
-                    let arq = a[r * n + q];
-                    a[r * n + p] = c * arp - s * arq;
-                    a[p * n + r] = a[r * n + p];
-                    a[r * n + q] = s * arp + c * arq;
-                    a[q * n + r] = a[r * n + q];
-                }
-
-                // Update eigenvectors: V' = V @ J
-                for i in 0..n {
-                    let vip = v[i * n + p];
-                    let viq = v[i * n + q];
-                    v[i * n + p] = c * vip - s * viq;
-                    v[i * n + q] = s * vip + c * viq;
-                }
-            }
-        }
-    }
-
-    // Extract eigenvalues from diagonal
-    let mut eigen_pairs: Vec<(f64, usize)> = (0..n).map(|i| (a[i * n + i], i)).collect();
-    // Sort ascending by eigenvalue
+    // Sort eigenvalues ascending, permuting eigenvector columns to match.
+    let mut eigen_pairs: Vec<(f64, usize)> = (0..n).map(|i| (d[i], i)).collect();
     eigen_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let eigenvalues: Vec<f64> = eigen_pairs.iter().map(|(val, _)| *val).collect();
     let mut eigenvectors = vec![0.0f64; n * n];
     for (new_col, &(_, old_col)) in eigen_pairs.iter().enumerate() {
         for row in 0..n {
-            eigenvectors[row * n + new_col] = v[row * n + old_col];
+            eigenvectors[row * n + new_col] = z[row * n + old_col];
         }
     }
 
@@ -13268,6 +13371,72 @@ mod tests {
         let vals_only = super::eigvalsh_contiguous_f64(&a, &meta).unwrap();
         for (i, (&f, &o)) in full.eigenvalues.iter().zip(vals_only.iter()).enumerate() {
             assert!((f - o).abs() < 1e-12, "mismatch at [{i}]");
+        }
+    }
+
+    #[test]
+    fn eigh_tred2_tql2_orthonormal_and_reconstructs_24x24() {
+        // Exercises the Householder/QL eigensolver at a size where the
+        // tridiagonalization + shifted-QL machinery is fully engaged (small
+        // cases can finish in a single step). Builds a non-trivial symmetric
+        // matrix and verifies the three defining properties of a symmetric
+        // eigendecomposition.
+        let n = 24;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let v = (((i * 37 + j * 101 + 7) % 53) as f64) * 0.11 - 2.5
+                    + ((i as f64) - (j as f64)).abs().sin();
+                a[i * n + j] = v;
+            }
+        }
+        // Symmetrize.
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let s = 0.5 * (a[i * n + j] + a[j * n + i]);
+                a[i * n + j] = s;
+                a[j * n + i] = s;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let r = super::eigh_contiguous_f64(&a, &meta).unwrap();
+
+        // (1) Eigenvalues sorted ascending.
+        for i in 1..n {
+            assert!(
+                r.eigenvalues[i] >= r.eigenvalues[i - 1] - 1e-12,
+                "eigenvalues not ascending at {i}"
+            );
+        }
+        // (2) Eigenvectors orthonormal: V^T V = I.
+        for c1 in 0..n {
+            for c2 in 0..n {
+                let mut dot = 0.0;
+                for row in 0..n {
+                    dot += r.eigenvectors[row * n + c1] * r.eigenvectors[row * n + c2];
+                }
+                let expected = if c1 == c2 { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - expected).abs() < 1e-9,
+                    "V^T V[{c1},{c2}] = {dot}, expected {expected}"
+                );
+            }
+        }
+        // (3) Reconstruction: V diag(λ) V^T = A.
+        for i in 0..n {
+            for j in 0..n {
+                let mut val = 0.0;
+                for k in 0..n {
+                    val += r.eigenvectors[i * n + k]
+                        * r.eigenvalues[k]
+                        * r.eigenvectors[j * n + k];
+                }
+                assert!(
+                    (val - a[i * n + j]).abs() < 1e-9,
+                    "reconstructed[{i},{j}] = {val}, expected {}",
+                    a[i * n + j]
+                );
+            }
         }
     }
 
