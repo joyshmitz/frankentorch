@@ -6,9 +6,28 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
-    cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64, matrix_exp_contiguous_f64,
-    svd_contiguous_f64, svdvals_contiguous_f64,
+    cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64, inv_tensor_contiguous_f64,
+    matrix_exp_contiguous_f64, svd_contiguous_f64, svdvals_contiguous_f64,
 };
+
+fn bench_inv(c: &mut Criterion) {
+    // Matrix inverse = LU factor (already parallel) + solve against the n-column
+    // identity; the matrix-RHS triangular solve is the parallelization target.
+    for &n in &[256usize, 512usize] {
+        // Diagonally dominant -> well-conditioned, non-singular.
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = ((i * 31 + j * 17) % 97) as f64 * 0.013 - 0.5;
+            }
+            a[i * n + i] += n as f64;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        c.bench_function(&format!("inv_f64_{n}x{n}"), |bch| {
+            bch.iter(|| black_box(inv_tensor_contiguous_f64(black_box(&a), &meta).unwrap()))
+        });
+    }
+}
 
 fn bench_matrix_exp(c: &mut Criterion) {
     // Scaling-and-squaring matrix exponential: dominated by the n x n matmuls.
@@ -130,6 +149,7 @@ criterion_group!(
     bench_eigh,
     bench_svd,
     bench_svdvals,
-    bench_matrix_exp
+    bench_matrix_exp,
+    bench_inv
 );
 criterion_main!(benches);

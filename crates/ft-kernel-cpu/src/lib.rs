@@ -4457,7 +4457,9 @@ pub fn lu_solve_contiguous_f64(
         }
     }
 
-    // Forward substitution: L * y = P * b
+    // Forward substitution: L * y = P * b. The inner `rhs` loop is deliberate:
+    // each L coefficient is loaded once and applied across all RHS columns
+    // (cache/SIMD-amortized), which beats a per-column solve that re-streams L.
     for k in 0..n {
         for i in (k + 1)..n {
             let l_ik = factor.lu[i * n + k];
