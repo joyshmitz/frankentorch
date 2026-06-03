@@ -215,6 +215,21 @@ fn bench_grid_sample(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_fftn(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fftn");
+    // [lanes, N] real input, FFT along the last dim: `lanes` independent
+    // O(N log N) Cooley-Tukey transforms (trig butterflies) -> compute-bound,
+    // parallel over lanes. 512 lanes x 2048-pt.
+    let (lanes, n) = (512usize, 2048usize);
+    group.throughput(Throughput::Elements((lanes * n) as u64));
+    group.bench_function("512x2048_dim1", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![lanes, n], false).unwrap();
+        b.iter(|| black_box(session.tensor_fftn(black_box(x), None, Some(&[1])).unwrap()));
+    });
+    group.finish();
+}
+
 fn bench_interpolate_trilinear(c: &mut Criterion) {
     let mut group = c.benchmark_group("interpolate_trilinear");
     // [N, C, D, H, W] -> 2x upsample. Trilinear blends 8 local corner taps with
@@ -283,5 +298,6 @@ criterion_group!(
     bench_interpolate_bicubic,
     bench_interpolate_trilinear,
     bench_grid_sample,
+    bench_fftn,
 );
 criterion_main!(benches);

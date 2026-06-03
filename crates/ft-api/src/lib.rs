@@ -44251,20 +44251,39 @@ impl FrankenTorchSession {
             re_data = vals;
             im_data = vec![0.0_f64; total_elements];
         }
-        for outer in 0..stride_outer {
-            for inner in 0..stride_inner {
-                let mut re_slice = vec![0.0_f64; dim_size];
-                let mut im_slice = vec![0.0_f64; dim_size];
-                for k in 0..dim_size {
-                    let idx = outer * dim_size * stride_inner + k * stride_inner + inner;
-                    re_slice[k] = re_data[idx];
-                    im_slice[k] = im_data[idx];
-                }
-                Self::dft_inplace_1d(&mut re_slice, &mut im_slice, inverse);
-                for k in 0..dim_size {
-                    let idx = outer * dim_size * stride_inner + k * stride_inner + inner;
-                    re_data[idx] = re_slice[k];
-                    im_data[idx] = im_slice[k];
+        // Each (outer, inner) lane is an independent 1-D DFT (O(N log N) trig
+        // butterflies — compute-bound). When the transform dim is the last one
+        // (stride_inner == 1) every lane is a CONTIGUOUS block of dim_size, so we
+        // can run dft_inplace_1d in place on `par_chunks_mut(dim_size)` with no
+        // gather/scatter and no per-lane allocation. Each lane is independent and
+        // the transform is deterministic, so the result is bit-for-bit identical
+        // to the serial loop. (Strided non-last-dim transforms keep the serial
+        // gather/scatter — fftn drives the last dim first anyway.)
+        let num_lanes = stride_outer * stride_inner;
+        if stride_inner == 1 && num_lanes >= 2 && total_elements >= PARALLEL_ELEMENTWISE_MIN {
+            use rayon::prelude::*;
+            re_data
+                .par_chunks_mut(dim_size)
+                .zip(im_data.par_chunks_mut(dim_size))
+                .for_each(|(re_slice, im_slice)| {
+                    Self::dft_inplace_1d(re_slice, im_slice, inverse);
+                });
+        } else {
+            for outer in 0..stride_outer {
+                for inner in 0..stride_inner {
+                    let mut re_slice = vec![0.0_f64; dim_size];
+                    let mut im_slice = vec![0.0_f64; dim_size];
+                    for k in 0..dim_size {
+                        let idx = outer * dim_size * stride_inner + k * stride_inner + inner;
+                        re_slice[k] = re_data[idx];
+                        im_slice[k] = im_data[idx];
+                    }
+                    Self::dft_inplace_1d(&mut re_slice, &mut im_slice, inverse);
+                    for k in 0..dim_size {
+                        let idx = outer * dim_size * stride_inner + k * stride_inner + inner;
+                        re_data[idx] = re_slice[k];
+                        im_data[idx] = im_slice[k];
+                    }
                 }
             }
         }
@@ -80460,6 +80479,43 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn fft_along_dim_parallel_match_serial_bit_exact() {
+        // With total >= PARALLEL_ELEMENTWISE_MIN and >= 2 lanes, tensor_fft_along_dim
+        // runs the per-lane DFTs across Rayon; the result must equal a serial
+        // per-lane reference (same dft_inplace_1d) BIT-FOR-BIT.
+        use super::FrankenTorchSession;
+        let (lanes, n) = (16usize, 512usize); // total = 8192 -> parallel, 16 lanes
+        let data: Vec<f64> = (0..lanes * n)
+            .map(|i| ((i % 263) as f64) * 0.017 - 2.0)
+            .collect();
+
+        // Serial reference: row r is lane (outer=r, inner=0) for fft along dim 1.
+        let mut ref_re = vec![0.0f64; lanes * n];
+        let mut ref_im = vec![0.0f64; lanes * n];
+        for r in 0..lanes {
+            let mut re: Vec<f64> = data[r * n..(r + 1) * n].to_vec();
+            let mut im = vec![0.0f64; n];
+            FrankenTorchSession::dft_inplace_1d(&mut re, &mut im, false);
+            ref_re[r * n..(r + 1) * n].copy_from_slice(&re);
+            ref_im[r * n..(r + 1) * n].copy_from_slice(&im);
+        }
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(data.clone(), vec![lanes, n], false).unwrap();
+        let y = s.tensor_fftn(x, None, Some(&[1])).unwrap();
+        let re_node = s.tensor_real(y).unwrap();
+        let im_node = s.tensor_imag(y).unwrap();
+        let got_re = s.tensor_values(re_node).unwrap();
+        let got_im = s.tensor_values(im_node).unwrap();
+        for (idx, (g, w)) in got_re.iter().zip(ref_re.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "fft re @{idx}");
+        }
+        for (idx, (g, w)) in got_im.iter().zip(ref_im.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "fft im @{idx}");
         }
     }
 
