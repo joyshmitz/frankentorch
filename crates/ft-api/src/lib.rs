@@ -16463,6 +16463,56 @@ impl FrankenTorchSession {
     /// argmax input position, so the backward is a scatter-add. The forward
     /// gathers `input[flat_idx[k]]`, which equals the max value computed by the
     /// caller's loop, so the output is bit-identical to the non-grad path.
+    /// Build the differentiable output of a max-unpool from a placement map
+    /// (`placement[in_idx]` is the output flat index each input value scatters
+    /// to, or `>= out_numel` for inputs dropped out of range). The forward
+    /// scatters `input` into a zeroed output (bit-identical to the non-grad
+    /// path); the backward gathers each input's gradient back from its placed
+    /// output position.
+    fn max_unpool_grad_output(
+        &mut self,
+        input: TensorNodeId,
+        placement: Vec<usize>,
+        out_numel: usize,
+        out_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        #[allow(clippy::cast_precision_loss)]
+        let placement_f64: Vec<f64> = placement.iter().map(|&o| o as f64).collect();
+        self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (vals, _shape) = inputs[0];
+                let mut out = vec![0.0_f64; out_numel];
+                for (in_idx, &o_f) in placement_f64.iter().enumerate() {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let o = o_f as usize;
+                    if o < out_numel {
+                        out[o] = vals[in_idx];
+                    }
+                }
+                ctx.save_for_backward(placement_f64.clone(), vec![placement_f64.len()]);
+                ctx.save_for_backward(vec![out_numel as f64], vec![1]);
+                Ok((out, out_shape.clone()))
+            },
+            move |ctx, grad_outputs| {
+                let saved = ctx.saved_tensors();
+                let placement = &saved[0];
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let out_numel = saved[1][0] as usize;
+                let g = grad_outputs[0];
+                let mut grad_in = vec![0.0_f64; placement.len()];
+                for (in_idx, &o_f) in placement.iter().enumerate() {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let o = o_f as usize;
+                    if o < out_numel {
+                        grad_in[in_idx] = g[o];
+                    }
+                }
+                Ok(vec![Some(grad_in)])
+            },
+        )
+    }
+
     fn max_pool_grad_output(
         &mut self,
         input: TensorNodeId,
@@ -17032,7 +17082,9 @@ impl FrankenTorchSession {
 
         let input_data = self.tensor_values(input)?;
         let indices_data = self.tensor_values(indices)?;
-        let mut out_data = vec![0.0; n * c * l_out];
+        let out_numel = n * c * l_out;
+        let mut out_data = vec![0.0; out_numel];
+        let mut placement = vec![out_numel; n * c * l_in];
 
         for batch in 0..n {
             for channel in 0..c {
@@ -17042,12 +17094,17 @@ impl FrankenTorchSession {
                     if target_l < l_out {
                         let out_idx = batch * c * l_out + channel * l_out + target_l;
                         out_data[out_idx] = input_data[in_idx];
+                        placement[in_idx] = out_idx;
                     }
                 }
             }
         }
 
-        self.tensor_variable(out_data, vec![n, c, l_out], false)
+        let out_shape = vec![n, c, l_out];
+        if self.tensor_requires_grad(input)? {
+            return self.max_unpool_grad_output(input, placement, out_numel, out_shape);
+        }
+        self.tensor_variable(out_data, out_shape, false)
     }
 
     /// Inverse of max_pool2d using indices from a previous max_pool2d operation.
@@ -17083,7 +17140,9 @@ impl FrankenTorchSession {
 
         let input_data = self.tensor_values(input)?;
         let indices_data = self.tensor_values(indices)?;
-        let mut out_data = vec![0.0; n * c * h_out * w_out];
+        let out_numel = n * c * h_out * w_out;
+        let mut out_data = vec![0.0; out_numel];
+        let mut placement = vec![out_numel; n * c * h_in * w_in];
 
         for batch in 0..n {
             for channel in 0..c {
@@ -17100,13 +17159,18 @@ impl FrankenTorchSession {
                                 + target_h * w_out
                                 + target_w;
                             out_data[out_idx] = input_data[in_idx];
+                            placement[in_idx] = out_idx;
                         }
                     }
                 }
             }
         }
 
-        self.tensor_variable(out_data, vec![n, c, h_out, w_out], false)
+        let out_shape = vec![n, c, h_out, w_out];
+        if self.tensor_requires_grad(input)? {
+            return self.max_unpool_grad_output(input, placement, out_numel, out_shape);
+        }
+        self.tensor_variable(out_data, out_shape, false)
     }
 
     /// Inverse of max_pool3d using indices from a previous max_pool3d operation.
@@ -17143,7 +17207,9 @@ impl FrankenTorchSession {
 
         let input_data = self.tensor_values(input)?;
         let indices_data = self.tensor_values(indices)?;
-        let mut out_data = vec![0.0; n * c * d_out * h_out * w_out];
+        let out_numel = n * c * d_out * h_out * w_out;
+        let mut out_data = vec![0.0; out_numel];
+        let mut placement = vec![out_numel; n * c * d_in * h_in * w_in];
         let hw_out = h_out * w_out;
 
         for batch in 0..n {
@@ -17168,6 +17234,7 @@ impl FrankenTorchSession {
                                     + target_h * w_out
                                     + target_w;
                                 out_data[out_idx] = input_data[in_idx];
+                                placement[in_idx] = out_idx;
                             }
                         }
                     }
@@ -17175,7 +17242,11 @@ impl FrankenTorchSession {
             }
         }
 
-        self.tensor_variable(out_data, vec![n, c, d_out, h_out, w_out], false)
+        let out_shape = vec![n, c, d_out, h_out, w_out];
+        if self.tensor_requires_grad(input)? {
+            return self.max_unpool_grad_output(input, placement, out_numel, out_shape);
+        }
+        self.tensor_variable(out_data, out_shape, false)
     }
 
     /// Alias for `functional_max_unpool1d`.
@@ -79592,6 +79663,37 @@ mod tests {
         let report2 = s.tensor_backward(loss2).unwrap();
         let grad2 = s.tensor_gradient(&report2, a_g2).expect("max_pool2d grad present");
         assert_eq!(grad2, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn max_unpool1d_backward_gathers_from_placement_and_value_parity() {
+        // input [1,1,2] = [5,7], indices place them at output positions 1 and 3
+        // of a length-4 output: out = [0,5,0,7].
+        let data = vec![5.0, 7.0];
+        let idx = vec![1.0, 3.0];
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity.
+        let x_ng = s.tensor_variable(data.clone(), vec![1, 1, 2], false).unwrap();
+        let i_ng = s.tensor_variable(idx.clone(), vec![1, 1, 2], false).unwrap();
+        let o_ng = s.functional_max_unpool1d(x_ng, i_ng, 2, None, 0, Some(4)).unwrap();
+        let v_ng = s.tensor_values(o_ng).unwrap();
+        assert_eq!(v_ng, vec![0.0, 5.0, 0.0, 7.0]);
+        let x_g = s.tensor_variable(data.clone(), vec![1, 1, 2], true).unwrap();
+        let i_g = s.tensor_variable(idx.clone(), vec![1, 1, 2], false).unwrap();
+        let o_g = s.functional_max_unpool1d(x_g, i_g, 2, None, 0, Some(4)).unwrap();
+        let v_g = s.tensor_values(o_g).unwrap();
+        for (a, b) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(a.to_bits(), b.to_bits(), "max_unpool1d grad/non-grad value mismatch");
+        }
+        // Non-uniform upstream: loss = sum(out * w), w = [10,20,30,40]. Then
+        // grad gathers grad_out at each input's placed position:
+        //   grad_in[0] = w[1] = 20 ; grad_in[1] = w[3] = 40.
+        let w = s.tensor_variable(vec![10.0, 20.0, 30.0, 40.0], vec![1, 1, 4], false).unwrap();
+        let weighted = s.tensor_mul(o_g, w).unwrap();
+        let loss = s.tensor_sum(weighted).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, x_g).expect("max_unpool1d grad present");
+        assert_eq!(grad, vec![20.0, 40.0]);
     }
 
     #[test]
