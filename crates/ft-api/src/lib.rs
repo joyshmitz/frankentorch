@@ -1083,22 +1083,54 @@ impl FrankenTorchSession {
 
     /// PyTorch-style alias for casting a tensor to complex64.
     ///
-    /// Equivalent to `tensor.cfloat()` in PyTorch.
-    ///
-    /// Tape-level Complex64 conversion is not yet implemented; this call
-    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(Complex64))`.
+    /// Equivalent to `tensor.cfloat()` in PyTorch. A real input becomes a
+    /// complex tensor with a zero imaginary part; a complex input is re-cast to
+    /// single precision. As elsewhere in this port, complex-valued autograd is
+    /// unsupported, so a `requires_grad` input fails loud (matching `fft`/`polar`).
     pub fn tensor_cfloat(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        self.tensor_to_dtype(input, DType::Complex64)
+        self.cast_real_to_complex(input, DType::F32, DType::Complex64)
     }
 
     /// PyTorch-style alias for casting a tensor to complex128.
     ///
-    /// Equivalent to `tensor.cdouble()` in PyTorch.
-    ///
-    /// Tape-level Complex128 conversion is not yet implemented; this call
-    /// currently returns `AutogradError::DenseTensor(UnsupportedDType(Complex128))`.
+    /// Equivalent to `tensor.cdouble()` in PyTorch. A real input becomes a
+    /// complex tensor with a zero imaginary part; a complex input is re-cast to
+    /// double precision. Complex-valued autograd is unsupported, so a
+    /// `requires_grad` input fails loud (matching `fft`/`polar`).
     pub fn tensor_cdouble(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        self.tensor_to_dtype(input, DType::Complex128)
+        self.cast_real_to_complex(input, DType::F64, DType::Complex128)
+    }
+
+    /// Cast `input` to a complex dtype: real input -> (input, 0i) at
+    /// `real_dtype` precision; complex input -> re-cast both components to
+    /// `real_dtype`. `complex_dtype` is the matching complex target
+    /// (F32 -> Complex64, F64 -> Complex128). Composes through the existing
+    /// (non-differentiable) `tensor_complex`, so it inherits its requires_grad
+    /// guard. Backs `tensor_cfloat`/`tensor_cdouble`.
+    fn cast_real_to_complex(
+        &mut self,
+        input: TensorNodeId,
+        real_dtype: DType,
+        complex_dtype: DType,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let dtype = self.tensor_dtype(input)?;
+        if dtype == complex_dtype {
+            return Ok(input);
+        }
+        if dtype == DType::Complex64 || dtype == DType::Complex128 {
+            // Complex -> complex precision change: split, re-cast, recombine.
+            let re = self.tensor_real(input)?;
+            let im = self.tensor_imag(input)?;
+            let re_c = self.tensor_to_dtype(re, real_dtype)?;
+            let im_c = self.tensor_to_dtype(im, real_dtype)?;
+            return self.tensor_complex(re_c, im_c);
+        }
+        // Real input: real = input at target precision, imaginary = zeros.
+        let re = self.tensor_to_dtype(input, real_dtype)?;
+        let shape = self.tensor_shape(re)?;
+        let zeros = self.tensor_zeros(shape, false)?;
+        let zeros_c = self.tensor_to_dtype(zeros, real_dtype)?;
+        self.tensor_complex(re, zeros_c)
     }
 
     /// Cast a tensor to the given dtype.
@@ -69410,6 +69442,37 @@ mod tests {
         let c = session.tensor_to_f64(b).unwrap();
         assert_eq!(session.tensor_dtype(c).unwrap(), DType::F64);
         assert_eq!(session.tensor_values(c).unwrap(), vec![1.5, 2.5]);
+    }
+
+    #[test]
+    fn cfloat_cdouble_cast_real_and_complex() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Real f64 -> complex128: real part preserved, imaginary part zero.
+        let x = s.tensor_variable(vec![1.5, -2.0, 3.25], vec![3], false).unwrap();
+        let z = s.tensor_cdouble(x).unwrap();
+        assert_eq!(s.tensor_dtype(z).unwrap(), DType::Complex128);
+        let re = s.tensor_real(z).unwrap();
+        let im = s.tensor_imag(z).unwrap();
+        assert_eq!(s.tensor_values(re).unwrap(), vec![1.5, -2.0, 3.25]);
+        assert_eq!(s.tensor_values(im).unwrap(), vec![0.0, 0.0, 0.0]);
+
+        // Real f32 -> complex64 (real/imag parts are F32, read via _f32).
+        let xf = s.tensor_variable_f32(vec![0.5_f32, 4.0], vec![2], false).unwrap();
+        let zf = s.tensor_cfloat(xf).unwrap();
+        assert_eq!(s.tensor_dtype(zf).unwrap(), DType::Complex64);
+        let ref_f = s.tensor_real(zf).unwrap();
+        let imf = s.tensor_imag(zf).unwrap();
+        assert_eq!(s.tensor_values_f32(ref_f).unwrap(), vec![0.5_f32, 4.0]);
+        assert_eq!(s.tensor_values_f32(imf).unwrap(), vec![0.0_f32, 0.0]);
+
+        // Already-target complex passes through unchanged.
+        assert_eq!(s.tensor_cdouble(z).unwrap(), z);
+
+        // Complex128 -> complex64 downcast keeps the (now single-precision) parts.
+        let down = s.tensor_cfloat(z).unwrap();
+        assert_eq!(s.tensor_dtype(down).unwrap(), DType::Complex64);
+        let down_re = s.tensor_real(down).unwrap();
+        assert_eq!(s.tensor_values_f32(down_re).unwrap(), vec![1.5_f32, -2.0, 3.25]);
     }
 
     #[test]
