@@ -582,6 +582,7 @@ const FT_DTYPE_TAG_F16: u8 = 2;
 const FT_DTYPE_TAG_BF16: u8 = 3;
 const FT_MIN_NATIVE_TENSOR_HEADER_BYTES: usize = 8 + 8 + 1; // key_len + ndim + dtype tag
 const FT_NATIVE_SAVE_BUFFER_BYTES: usize = 1024 * 1024;
+const FT_NATIVE_F32_VALUE_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Errors from tensor state dict save/load operations.
 #[derive(Debug, Clone, PartialEq)]
@@ -811,9 +812,7 @@ fn write_state_dict_to_writer<W: Write>(
                 let values = tensor
                     .contiguous_values_f32()
                     .map_err(TensorIOError::TensorError)?;
-                for &v in values {
-                    write_native_bytes(writer, &v.to_le_bytes(), io_path)?;
-                }
+                write_native_f32_values(writer, values, io_path)?;
             }
             DType::F16 => {
                 let (start, end) = contiguous_native_storage_bounds(tensor, key)?;
@@ -854,6 +853,23 @@ fn write_native_bytes<W: Write>(
     io_path: &str,
 ) -> Result<(), TensorIOError> {
     writer.write_all(bytes).map_err(|e| io_err(io_path, e))
+}
+
+fn write_native_f32_values<W: Write>(
+    writer: &mut W,
+    values: &[f32],
+    io_path: &str,
+) -> Result<(), TensorIOError> {
+    let values_per_chunk = FT_NATIVE_F32_VALUE_CHUNK_BYTES / std::mem::size_of::<f32>();
+    let mut bytes = Vec::with_capacity(FT_NATIVE_F32_VALUE_CHUNK_BYTES);
+    for chunk in values.chunks(values_per_chunk) {
+        bytes.clear();
+        for &value in chunk {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        write_native_bytes(writer, &bytes, io_path)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3419,6 +3435,54 @@ mod tests {
         summary
     }
 
+    fn hex_lower(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            write!(&mut out, "{byte:02x}").unwrap();
+        }
+        out
+    }
+
+    fn f32_tensor_from_bits(bits: &[u32], shape: Vec<usize>) -> DenseTensor {
+        let values = bits
+            .iter()
+            .map(|bits| f32::from_bits(*bits))
+            .collect::<Vec<_>>();
+        DenseTensor::from_contiguous_values_f32(values, shape, Device::Cpu).unwrap()
+    }
+
+    fn native_f32_save_bulk_summary(state_dict: &BTreeMap<String, DenseTensor>) -> String {
+        use std::fmt::Write as _;
+
+        let encoded = super::encode_state_dict_to_bytes(state_dict).unwrap();
+        let mut summary = String::new();
+        writeln!(
+            &mut summary,
+            "native_state_dict=ft_serialize_f32_save_bulk_pass26"
+        )
+        .unwrap();
+        writeln!(&mut summary, "total_len={}", encoded.len()).unwrap();
+        writeln!(&mut summary, "encoded_hex={}", hex_lower(&encoded)).unwrap();
+        for (key, tensor) in state_dict {
+            let values = tensor.contiguous_values_f32().unwrap();
+            let bits = values
+                .iter()
+                .map(|value| format!("{:08x}", value.to_bits()))
+                .collect::<Vec<_>>()
+                .join(",");
+            writeln!(
+                &mut summary,
+                "key={key} dtype={:?} shape={:?} bits={bits}",
+                tensor.meta().dtype(),
+                tensor.meta().shape()
+            )
+            .unwrap();
+        }
+        summary
+    }
+
     fn test_temp_path(basename: &str) -> std::path::PathBuf {
         let thread_id = format!("{:?}", std::thread::current().id());
         let thread_id_sanitized: String = thread_id
@@ -3719,6 +3783,38 @@ mod tests {
 
         let roundtrip = super::encode_state_dict_to_bytes(&loaded).unwrap();
         assert_eq!(roundtrip, expected);
+    }
+
+    #[test]
+    fn native_format_f32_save_bulk_golden_summary_matches_fixture() {
+        let mut sd = BTreeMap::new();
+        sd.insert(
+            "z.edge".to_string(),
+            f32_tensor_from_bits(
+                &[
+                    0x0000_0000,
+                    0x8000_0000,
+                    0x0000_0001,
+                    0x7f80_0000,
+                    0xff80_0000,
+                    0x7fc0_0001,
+                    0x7f80_0001,
+                    0x3f80_0000,
+                ],
+                vec![8],
+            ),
+        );
+        sd.insert(
+            "a.norm".to_string(),
+            f32_tensor_from_bits(&[0xc020_0000, 0x3fa0_0000], vec![2]),
+        );
+
+        assert_eq!(
+            native_f32_save_bulk_summary(&sd),
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_serialize_f32_save_bulk_pass26.txt"
+            )
+        );
     }
 
     #[test]

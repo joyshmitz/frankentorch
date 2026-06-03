@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use ft_serialize::load_state_dict_from_bytes;
+use ft_core::{DenseTensor, Device};
+use ft_serialize::{load_state_dict_from_bytes, save_state_dict};
 
 fn native_many_small_f64_payload(tensors: usize, width: usize) -> Vec<u8> {
     let key_bytes = "layer.0000.weight".len();
@@ -38,5 +41,25 @@ fn bench_native_load(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_native_load);
+fn native_single_f32_state_dict(len: usize) -> BTreeMap<String, DenseTensor> {
+    let values = (0..len)
+        .map(|idx| idx as f32 * 0.000_001)
+        .collect::<Vec<_>>();
+    let tensor =
+        DenseTensor::from_contiguous_values_f32(values, vec![len], Device::Cpu).expect("tensor");
+    let mut state_dict = BTreeMap::new();
+    state_dict.insert("layer.0000.weight".to_string(), tensor);
+    state_dict
+}
+
+fn bench_native_save(c: &mut Criterion) {
+    let state_dict = native_single_f32_state_dict(1_000_000);
+    let mut group = c.benchmark_group("native_state_dict");
+    group.bench_function("save_single_f32_1m", |b| {
+        b.iter(|| save_state_dict(black_box(&state_dict), black_box("/dev/null")).expect("save"));
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_native_load, bench_native_save);
 criterion_main!(benches);
