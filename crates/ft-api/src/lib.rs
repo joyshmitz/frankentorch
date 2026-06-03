@@ -11200,13 +11200,47 @@ impl FrankenTorchSession {
     /// Bessel function of the first kind, order 0.
     ///
     /// Equivalent to `torch.special.bessel_j0(input)`. No autograd support.
+    /// Shared implementation for an elementwise special function `fwd` with a
+    /// known scalar derivative `deriv` (used for the Bessel family). Under
+    /// requires_grad, routes through `tensor_apply_function` saving the input x;
+    /// the backward is `grad_in[i] = deriv(x[i]) * grad_out[i]`. The forward uses
+    /// the same `par_map_f64(.., fwd)` as the non-grad path, so the value is
+    /// bit-identical and only the previously-severed gradient is restored.
+    fn special_unary_with_deriv(
+        &mut self,
+        input: TensorNodeId,
+        fwd: fn(f64) -> f64,
+        deriv: fn(f64) -> f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        if self.tensor_requires_grad(input)? {
+            return self.tensor_apply_function(
+                &[input],
+                move |ctx, inputs| {
+                    let (vals, in_shape) = inputs[0];
+                    let result = par_map_f64(vals, fwd);
+                    ctx.save_for_backward(vals.to_vec(), in_shape.to_vec());
+                    Ok((result, in_shape.to_vec()))
+                },
+                move |ctx, grad_outputs| {
+                    let x = &ctx.saved_tensors()[0];
+                    let g = grad_outputs[0];
+                    let grad_in: Vec<f64> =
+                        x.iter().zip(g.iter()).map(|(&xi, &gi)| deriv(xi) * gi).collect();
+                    Ok(vec![Some(grad_in)])
+                },
+            );
+        }
+        let (vals, meta) = self.tensor_values_meta(input)?;
+        let result: Vec<f64> = par_map_f64(&vals, fwd);
+        self.tensor_variable(result, meta.shape().to_vec(), false)
+    }
+
     pub fn tensor_special_bessel_j0(
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = par_map_f64(&vals, bessel_j0_scalar);
-        self.tensor_variable(result, meta.shape().to_vec(), false)
+        // J0'(x) = -J1(x).
+        self.special_unary_with_deriv(input, bessel_j0_scalar, |x| -bessel_j1_scalar(x))
     }
 
     /// Bessel function of the first kind, order 1.
@@ -11216,9 +11250,10 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = par_map_f64(&vals, bessel_j1_scalar);
-        self.tensor_variable(result, meta.shape().to_vec(), false)
+        // J1'(x) = J0(x) - J1(x)/x.
+        self.special_unary_with_deriv(input, bessel_j1_scalar, |x| {
+            bessel_j0_scalar(x) - bessel_j1_scalar(x) / x
+        })
     }
 
     /// Bessel function of the second kind, order 0.
@@ -11228,9 +11263,8 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = par_map_f64(&vals, bessel_y0_scalar);
-        self.tensor_variable(result, meta.shape().to_vec(), false)
+        // Y0'(x) = -Y1(x).
+        self.special_unary_with_deriv(input, bessel_y0_scalar, |x| -bessel_y1_scalar(x))
     }
 
     /// Bessel function of the second kind, order 1.
@@ -11240,9 +11274,10 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = par_map_f64(&vals, bessel_y1_scalar);
-        self.tensor_variable(result, meta.shape().to_vec(), false)
+        // Y1'(x) = Y0(x) - Y1(x)/x.
+        self.special_unary_with_deriv(input, bessel_y1_scalar, |x| {
+            bessel_y0_scalar(x) - bessel_y1_scalar(x) / x
+        })
     }
 
     /// Modified Bessel function of the second kind, order 0.
@@ -11252,9 +11287,8 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = par_map_f64(&vals, bessel_k0_scalar);
-        self.tensor_variable(result, meta.shape().to_vec(), false)
+        // K0'(x) = -K1(x).
+        self.special_unary_with_deriv(input, bessel_k0_scalar, |x| -bessel_k1_scalar(x))
     }
 
     /// Modified Bessel function of the second kind, order 1.
@@ -11264,9 +11298,10 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = par_map_f64(&vals, bessel_k1_scalar);
-        self.tensor_variable(result, meta.shape().to_vec(), false)
+        // K1'(x) = -K0(x) - K1(x)/x.
+        self.special_unary_with_deriv(input, bessel_k1_scalar, |x| {
+            -bessel_k0_scalar(x) - bessel_k1_scalar(x) / x
+        })
     }
 
     /// Scaled modified Bessel K0: exp(x) * K0(x).
@@ -11276,9 +11311,10 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = par_map_f64(&vals, bessel_k0e_scalar);
-        self.tensor_variable(result, meta.shape().to_vec(), false)
+        // d/dx [e^x K0(x)] = e^x(K0 - K1) = k0e(x) - k1e(x).
+        self.special_unary_with_deriv(input, bessel_k0e_scalar, |x| {
+            bessel_k0e_scalar(x) - bessel_k1e_scalar(x)
+        })
     }
 
     /// Scaled modified Bessel K1: exp(x) * K1(x).
@@ -11288,9 +11324,10 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let (vals, meta) = self.tensor_values_meta(input)?;
-        let result: Vec<f64> = par_map_f64(&vals, bessel_k1e_scalar);
-        self.tensor_variable(result, meta.shape().to_vec(), false)
+        // d/dx [e^x K1(x)] = e^x(K1 - K0 - K1/x) = k1e(x) - k0e(x) - k1e(x)/x.
+        self.special_unary_with_deriv(input, bessel_k1e_scalar, |x| {
+            bessel_k1e_scalar(x) - bessel_k0e_scalar(x) - bessel_k1e_scalar(x) / x
+        })
     }
 
     /// Chebyshev polynomial of the first kind T_n(x).
@@ -82234,6 +82271,72 @@ mod tests {
             let got = s.tensor_values(*node).unwrap();
             for (idx, (g, &x)) in got.iter().zip(data.iter()).enumerate() {
                 assert_eq!(g.to_bits(), scalar(x).to_bits(), "{name} diverged at {idx}");
+            }
+        }
+    }
+
+    #[test]
+    fn bessel_family_backward_matches_finite_difference_and_value_parity() {
+        // Each Bessel fn's analytic derivative (via the OTHER Bessel kernels) must
+        // match a central finite difference, and the grad-path forward must be
+        // bit-identical to the non-grad path. Points chosen well away from 0
+        // (the 1/x terms in j1/y1/k1/k1e are singular at the origin).
+        let xs = [0.5_f64, 1.3, 2.7, 4.1];
+        // (name, forward fn, analytic derivative)
+        type ApiFn = fn(&mut FrankenTorchSession, TensorNodeId) -> Result<TensorNodeId, AutogradError>;
+        let cases: &[(&str, ApiFn, fn(f64) -> f64)] = &[
+            ("j0", |s, x| s.tensor_special_bessel_j0(x), |x| -super::bessel_j1_scalar(x)),
+            ("j1", |s, x| s.tensor_special_bessel_j1(x), |x| {
+                super::bessel_j0_scalar(x) - super::bessel_j1_scalar(x) / x
+            }),
+            ("y0", |s, x| s.tensor_special_bessel_y0(x), |x| -super::bessel_y1_scalar(x)),
+            ("y1", |s, x| s.tensor_special_bessel_y1(x), |x| {
+                super::bessel_y0_scalar(x) - super::bessel_y1_scalar(x) / x
+            }),
+            ("k0", |s, x| s.tensor_special_modified_bessel_k0(x), |x| -super::bessel_k1_scalar(x)),
+            ("k1", |s, x| s.tensor_special_modified_bessel_k1(x), |x| {
+                -super::bessel_k0_scalar(x) - super::bessel_k1_scalar(x) / x
+            }),
+            ("k0e", |s, x| s.tensor_special_scaled_modified_bessel_k0(x), |x| {
+                super::bessel_k0e_scalar(x) - super::bessel_k1e_scalar(x)
+            }),
+            ("k1e", |s, x| s.tensor_special_scaled_modified_bessel_k1(x), |x| {
+                super::bessel_k1e_scalar(x) - super::bessel_k0e_scalar(x) - super::bessel_k1e_scalar(x) / x
+            }),
+        ];
+        let eps = 1e-7;
+        for (name, fwd, _deriv) in cases.iter() {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let data = xs.to_vec();
+            // Value parity: grad path vs non-grad path.
+            let a_ng = s.tensor_variable(data.clone(), vec![data.len()], false).unwrap();
+            let o_ng = fwd(&mut s, a_ng).unwrap();
+            let v_ng = s.tensor_values(o_ng).unwrap();
+            let a_g = s.tensor_variable(data.clone(), vec![data.len()], true).unwrap();
+            let o_g = fwd(&mut s, a_g).unwrap();
+            let v_g = s.tensor_values(o_g).unwrap();
+            for (p, q) in v_ng.iter().zip(v_g.iter()) {
+                assert_eq!(p.to_bits(), q.to_bits(), "{name} grad/non-grad value mismatch");
+            }
+            // Backward with upstream ones → grad_in[i] = deriv(x_i).
+            let loss = s.tensor_sum(o_g).unwrap();
+            let report = s.tensor_backward(loss).unwrap();
+            let grad = s.tensor_gradient(&report, a_g).expect("bessel grad present");
+            for (i, &x) in xs.iter().enumerate() {
+                // Central FD of the scalar forward (recompute via a fresh session).
+                let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xp = s2.tensor_variable(vec![x + eps], vec![1], false).unwrap();
+                let xm = s2.tensor_variable(vec![x - eps], vec![1], false).unwrap();
+                let op = fwd(&mut s2, xp).unwrap();
+                let fp = s2.tensor_values(op).unwrap()[0];
+                let om = fwd(&mut s2, xm).unwrap();
+                let fm = s2.tensor_values(om).unwrap()[0];
+                let fd = (fp - fm) / (2.0 * eps);
+                assert!(
+                    (grad[i] - fd).abs() <= 1e-5 * (1.0 + fd.abs()),
+                    "{name} backward mismatch at x={x}: analytic={}, fd={fd}",
+                    grad[i]
+                );
             }
         }
     }
