@@ -1,0 +1,12 @@
+bead=frankentorch-5x62
+target=ft-api tensor_fft power-of-two stage twiddle reuse
+proof_test=tensor_fft_stage_twiddle_path_matches_per_stage_reference_bit_exact
+output_digest=0x8216e8d606eb37d0
+baseline_worker=ts2
+baseline_command=rch exec -- cargo bench -p ft-api --bench ops_bench -- fft_1d/262144pt --warm-up-time 1 --measurement-time 5 --sample-size 10
+baseline_ts2_fft_1d_262144pt=[18.839 ms 19.095 ms 19.339 ms]
+candidate_worker=ts2
+candidate_command=rch exec -- cargo bench -p ft-api --bench ops_bench -- fft_1d/262144pt --warm-up-time 1 --measurement-time 5 --sample-size 10
+candidate_ts2_fft_1d_262144pt=[18.261 ms 18.632 ms 18.967 ms]
+p50_speedup=1.0249x
+isomorphism=bit_reversal_order,stage_order,k_order,twiddle_formula,butterfly_arithmetic,output_order,dtype_shape_errors_rng_unchanged

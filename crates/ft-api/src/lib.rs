@@ -47231,7 +47231,17 @@ impl FrankenTorchSession {
 
         // Cooley-Tukey for power-of-two N, O(N^2) fallback otherwise.
         // frankentorch-hpo6.
-        Self::dft_inplace_1d(&mut re_buf, &mut im_buf, false);
+        if fft_len.is_power_of_two() {
+            let twiddles = Self::fft_stage_twiddles(fft_len, false);
+            Self::dft_inplace_1d_with_stage_twiddles(
+                &mut re_buf,
+                &mut im_buf,
+                false,
+                Some(&twiddles),
+            );
+        } else {
+            Self::dft_inplace_1d(&mut re_buf, &mut im_buf, false);
+        }
 
         // Create real and imag tensors, then combine as complex
         let re_node = self.tensor_variable(re_buf, vec![fft_len], false)?;
@@ -76600,6 +76610,35 @@ mod tests {
                 "irfft(rfft(x))[{i}] = {got}, expected x[{i}] = {expected}, diff = {diff:e}"
             );
         }
+    }
+
+    #[test]
+    fn tensor_fft_stage_twiddle_path_matches_per_stage_reference_bit_exact() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let n = 2048usize;
+        let input: Vec<f64> = (0..n).map(|i| ((i % 251) as f64) * 0.013 - 1.5).collect();
+        let mut want_re = input.clone();
+        let mut want_im = vec![0.0_f64; n];
+        FrankenTorchSession::dft_inplace_1d(&mut want_re, &mut want_im, false);
+
+        let x = s.tensor_variable(input, vec![n], false).unwrap();
+        let y = s.tensor_fft(x, None).expect("fft");
+        let re = s.tensor_real(y).expect("fft real");
+        let im = s.tensor_imag(y).expect("fft imag");
+        let got_re = s.tensor_values(re).expect("real values");
+        let got_im = s.tensor_values(im).expect("imag values");
+        assert_eq!(got_re.len(), n);
+        assert_eq!(got_im.len(), n);
+        let mut digest = 0xcbf2_9ce4_8422_2325u64;
+        for (idx, (got, want)) in got_re.iter().zip(want_re.iter()).enumerate() {
+            assert_eq!(got.to_bits(), want.to_bits(), "fft re @{idx}");
+            digest = (digest ^ got.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        for (idx, (got, want)) in got_im.iter().zip(want_im.iter()).enumerate() {
+            assert_eq!(got.to_bits(), want.to_bits(), "fft im @{idx}");
+            digest = (digest ^ got.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(digest, 0x8216_e8d6_06eb_37d0);
     }
 
     #[test]
