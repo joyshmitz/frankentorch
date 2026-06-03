@@ -5570,76 +5570,293 @@ pub fn svd_contiguous_f64(
     }
 }
 
-/// SVD for tall/square matrices (m >= n) using one-sided Jacobi rotations.
-fn svd_tall(a: &[f64], m: usize, n: usize, full_matrices: bool) -> Result<SvdResult, KernelError> {
-    let k = n; // since m >= n, k = min(m,n) = n
+/// `|a|` carrying the sign of `b` (Numerical-Recipes `SIGN`).
+fn nr_sign(a: f64, b: f64) -> f64 {
+    if b >= 0.0 { a.abs() } else { -a.abs() }
+}
 
-    // Work on a copy; columns of `work` will converge to U * diag(S)
-    let mut work = a.to_vec();
-
-    // V accumulates right rotations: starts as identity
+/// Golub-Reinsch SVD of a real `m x n` matrix with `m >= n`, row-major.
+///
+/// On input `a` is the matrix; on output `a` is overwritten with the (reduced,
+/// m x n) left singular vectors U. Returns `(w, v)` where `w[0..n]` are the
+/// non-negative singular values (unsorted, bidiagonal order) and `v` is the
+/// `n x n` right singular vectors as columns, so `A = U diag(w) V^T`.
+///
+/// This is the classic Householder-bidiagonalization + implicit-shift QR
+/// diagonalization of the bidiagonal form: it never forms `A^T A`, so it keeps
+/// full singular-value/-vector accuracy (no condition-number squaring), unlike
+/// the Gram-matrix shortcuts. O(m n^2) with a small constant. `pythag` is the
+/// stable hypot already used by the eigensolver.
+fn golub_reinsch_svd(a: &mut [f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+    let mut w = vec![0.0f64; n];
     let mut v = vec![0.0f64; n * n];
+    let mut rv1 = vec![0.0f64; n];
+
+    let mut g = 0.0f64;
+    let mut scale = 0.0f64;
+    let mut anorm = 0.0f64;
+
+    // --- Householder reduction to bidiagonal form ---
     for i in 0..n {
-        v[i * n + i] = 1.0;
-    }
-
-    let max_sweeps = 100;
-    let tol = 1e-15;
-
-    for _sweep in 0..max_sweeps {
-        let mut converged = true;
-
-        // Sweep over all pairs (p, q) with p < q
-        for p in 0..n {
-            for q in (p + 1)..n {
-                // Compute 2x2 Gram sub-matrix: G = [a_p^T a_p, a_p^T a_q; a_q^T a_p, a_q^T a_q]
-                let mut app = 0.0f64;
-                let mut aqq = 0.0f64;
-                let mut apq = 0.0f64;
-                for i in 0..m {
-                    let wp = work[i * n + p];
-                    let wq = work[i * n + q];
-                    app += wp * wp;
-                    aqq += wq * wq;
-                    apq += wp * wq;
+        let l = i + 1;
+        rv1[i] = scale * g;
+        g = 0.0;
+        let mut s = 0.0;
+        scale = 0.0;
+        if i < m {
+            for k in i..m {
+                scale += a[k * n + i].abs();
+            }
+            if scale != 0.0 {
+                for k in i..m {
+                    a[k * n + i] /= scale;
+                    s += a[k * n + i] * a[k * n + i];
                 }
-
-                // Check convergence for this pair
-                if apq.abs() <= tol * (app * aqq).sqrt() {
-                    continue;
+                let f = a[i * n + i];
+                g = -nr_sign(s.sqrt(), f);
+                let h = f * g - s;
+                a[i * n + i] = f - g;
+                for j in l..n {
+                    let mut s2 = 0.0;
+                    for k in i..m {
+                        s2 += a[k * n + i] * a[k * n + j];
+                    }
+                    let f2 = s2 / h;
+                    for k in i..m {
+                        a[k * n + j] += f2 * a[k * n + i];
+                    }
                 }
-                converged = false;
-
-                // Compute Jacobi rotation angle
-                let tau = (aqq - app) / (2.0 * apq);
-                let t = if tau >= 0.0 {
-                    1.0 / (tau + (1.0 + tau * tau).sqrt())
-                } else {
-                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
-                };
-                let c = 1.0 / (1.0 + t * t).sqrt();
-                let s = t * c;
-
-                // Apply rotation to work columns p and q
-                for i in 0..m {
-                    let wp = work[i * n + p];
-                    let wq = work[i * n + q];
-                    work[i * n + p] = c * wp - s * wq;
-                    work[i * n + q] = s * wp + c * wq;
-                }
-
-                // Apply rotation to V columns p and q
-                for i in 0..n {
-                    let vp = v[i * n + p];
-                    let vq = v[i * n + q];
-                    v[i * n + p] = c * vp - s * vq;
-                    v[i * n + q] = s * vp + c * vq;
+                for k in i..m {
+                    a[k * n + i] *= scale;
                 }
             }
         }
+        w[i] = scale * g;
+        g = 0.0;
+        s = 0.0;
+        scale = 0.0;
+        if i < m && i != n - 1 {
+            for k in l..n {
+                scale += a[i * n + k].abs();
+            }
+            if scale != 0.0 {
+                for k in l..n {
+                    a[i * n + k] /= scale;
+                    s += a[i * n + k] * a[i * n + k];
+                }
+                let f = a[i * n + l];
+                g = -nr_sign(s.sqrt(), f);
+                let h = f * g - s;
+                a[i * n + l] = f - g;
+                for k in l..n {
+                    rv1[k] = a[i * n + k] / h;
+                }
+                for j in l..m {
+                    let mut s2 = 0.0;
+                    for k in l..n {
+                        s2 += a[j * n + k] * a[i * n + k];
+                    }
+                    for k in l..n {
+                        a[j * n + k] += s2 * rv1[k];
+                    }
+                }
+                for k in l..n {
+                    a[i * n + k] *= scale;
+                }
+            }
+        }
+        anorm = anorm.max(w[i].abs() + rv1[i].abs());
+    }
 
-        if converged {
-            break;
+    // --- Accumulation of right-hand transformations (V) ---
+    for i in (0..n).rev() {
+        let l = i + 1;
+        if i < n - 1 {
+            if g != 0.0 {
+                for j in l..n {
+                    // Avoid possible underflow via division as in NR.
+                    v[j * n + i] = (a[i * n + j] / a[i * n + l]) / g;
+                }
+                for j in l..n {
+                    let mut s = 0.0;
+                    for k in l..n {
+                        s += a[i * n + k] * v[k * n + j];
+                    }
+                    for k in l..n {
+                        v[k * n + j] += s * v[k * n + i];
+                    }
+                }
+            }
+            for j in l..n {
+                v[i * n + j] = 0.0;
+                v[j * n + i] = 0.0;
+            }
+        }
+        v[i * n + i] = 1.0;
+        g = rv1[i];
+    }
+
+    // --- Accumulation of left-hand transformations (U, overwriting a) ---
+    for i in (0..n).rev() {
+        let l = i + 1;
+        g = w[i];
+        for j in l..n {
+            a[i * n + j] = 0.0;
+        }
+        if g != 0.0 {
+            g = 1.0 / g;
+            for j in l..n {
+                let mut s = 0.0;
+                for k in l..m {
+                    s += a[k * n + i] * a[k * n + j];
+                }
+                let f = (s / a[i * n + i]) * g;
+                for k in i..m {
+                    a[k * n + j] += f * a[k * n + i];
+                }
+            }
+            for j in i..m {
+                a[j * n + i] *= g;
+            }
+        } else {
+            for j in i..m {
+                a[j * n + i] = 0.0;
+            }
+        }
+        a[i * n + i] += 1.0;
+    }
+
+    // --- Diagonalization of the bidiagonal form: QR with implicit shifts ---
+    for k in (0..n).rev() {
+        for _its in 0..30 {
+            let mut flag = true;
+            let mut l = k;
+            let mut nm = 0usize;
+            // Test for splitting (find a negligible super-diagonal element).
+            loop {
+                nm = l.saturating_sub(1);
+                if l == 0 || (rv1[l].abs() + anorm) == anorm {
+                    flag = false;
+                    break;
+                }
+                if (w[nm].abs() + anorm) == anorm {
+                    break;
+                }
+                l -= 1;
+            }
+            if flag {
+                // Cancellation of rv1[l], if l > 0.
+                let mut c = 0.0;
+                let mut s = 1.0;
+                for i in l..=k {
+                    let f = s * rv1[i];
+                    rv1[i] = c * rv1[i];
+                    if (f.abs() + anorm) == anorm {
+                        break;
+                    }
+                    g = w[i];
+                    let h = eigh_pythag(f, g);
+                    w[i] = h;
+                    let hinv = 1.0 / h;
+                    c = g * hinv;
+                    s = -f * hinv;
+                    for j in 0..m {
+                        let y = a[j * n + nm];
+                        let z = a[j * n + i];
+                        a[j * n + nm] = y * c + z * s;
+                        a[j * n + i] = z * c - y * s;
+                    }
+                }
+            }
+            let z = w[k];
+            if l == k {
+                // Convergence: make the singular value non-negative.
+                if z < 0.0 {
+                    w[k] = -z;
+                    for j in 0..n {
+                        v[j * n + k] = -v[j * n + k];
+                    }
+                }
+                break;
+            }
+            if _its == 29 {
+                return Err(KernelError::SingularMatrix { size: n });
+            }
+            // Shift from bottom 2x2 minor.
+            let mut x = w[l];
+            nm = k - 1;
+            let mut y = w[nm];
+            g = rv1[nm];
+            let mut h = rv1[k];
+            let mut f = ((y - z) * (y + z) + (g - h) * (g + h)) / (2.0 * h * y);
+            g = eigh_pythag(f, 1.0);
+            f = ((x - z) * (x + z) + h * ((y / (f + nr_sign(g, f))) - h)) / x;
+            // Next QR transformation (Givens rotations).
+            let mut c = 1.0;
+            let mut s = 1.0;
+            for j in l..=nm {
+                let i = j + 1;
+                g = rv1[i];
+                y = w[i];
+                h = s * g;
+                g = c * g;
+                let mut zz = eigh_pythag(f, h);
+                rv1[j] = zz;
+                c = f / zz;
+                s = h / zz;
+                f = x * c + g * s;
+                g = g * c - x * s;
+                h = y * s;
+                y *= c;
+                for jj in 0..n {
+                    let xv = v[jj * n + j];
+                    let zv = v[jj * n + i];
+                    v[jj * n + j] = xv * c + zv * s;
+                    v[jj * n + i] = zv * c - xv * s;
+                }
+                zz = eigh_pythag(f, h);
+                w[j] = zz;
+                if zz != 0.0 {
+                    let zinv = 1.0 / zz;
+                    c = f * zinv;
+                    s = h * zinv;
+                }
+                f = c * g + s * y;
+                x = c * y - s * g;
+                for jj in 0..m {
+                    let yu = a[jj * n + j];
+                    let zu = a[jj * n + i];
+                    a[jj * n + j] = yu * c + zu * s;
+                    a[jj * n + i] = zu * c - yu * s;
+                }
+            }
+            rv1[l] = 0.0;
+            rv1[k] = f;
+            w[k] = x;
+        }
+    }
+
+    Ok((w, v))
+}
+
+/// SVD for tall/square matrices (m >= n) via Golub-Reinsch bidiagonalization.
+fn svd_tall(a: &[f64], m: usize, n: usize, full_matrices: bool) -> Result<SvdResult, KernelError> {
+    let k = n; // since m >= n, k = min(m,n) = n
+    let tol = 1e-15;
+
+    // Golub-Reinsch SVD: A = U_b diag(w) V^T with U_b the reduced (m x n) left
+    // singular vectors. We rescale into `work[:,j] = w[j] * U_b[:,j]` so the
+    // column norm of `work[:,j]` is exactly w[j] — matching the contract the
+    // singular-value extraction, descending sort, U re-normalization,
+    // orthonormal-basis completion, and V^T construction below already expect
+    // (they were written for the prior one-sided-Jacobi `work = U diag(S)`).
+    let mut u = a.to_vec();
+    let (w_bidiag, v) = golub_reinsch_svd(&mut u, m, n)?;
+    let mut work = vec![0.0f64; m * n];
+    for j in 0..n {
+        let wj = w_bidiag[j];
+        for i in 0..m {
+            work[i * n + j] = wj * u[i * n + j];
         }
     }
 
