@@ -61453,17 +61453,30 @@ fn polygamma_approx(n: u32, mut x: f64) -> f64 {
         x += 1.0;
     }
 
-    // Asymptotic expansion (leading terms)
+    // Asymptotic expansion (Abramowitz & Stegun 6.4.11):
+    //   ψ^(n)(x) ~ (-1)^{n-1}[ (n-1)!/x^n + n!/(2 x^{n+1})
+    //                + Σ_{k>=1} B_{2k} (2k+n-1)!/(2k)! / x^{2k+n} ].
+    // The Bernoulli corrections live only at x^{n+2}, x^{n+4}, x^{n+6}, …; the
+    // previous code put the second correction at x^{n+3} with the wrong
+    // coefficient (for n=1 it added −1/(20x⁴) where the series term is
+    // −1/(30x⁵)), leaving ~5e-6 error even after the recurrence shift to x>=10.
     let np1 = n_f + 1.0;
-    let sign_lead = if n.is_multiple_of(2) { -1.0 } else { 1.0 };
-    // psi_n(x) ~ (-1)^(n+1) * [ (n-1)!/x^n + n!/(2*x^(n+1)) + ... ]
+    let np2 = n_f + 2.0;
+    let np3 = n_f + 3.0;
+    let np4 = n_f + 4.0;
+    let np5 = n_f + 5.0;
+    let sign_lead = if n.is_multiple_of(2) { -1.0 } else { 1.0 }; // (-1)^{n-1}
     let xn = x.powf(n_f);
     let xn1 = xn * x;
     let xn2 = xn1 * x;
-    let xn3 = xn2 * x;
+    let xn4 = xn2 * x * x;
+    let xn6 = xn4 * x * x;
     result += sign_lead
-        * (factorial / (n_f * xn) + factorial / (2.0 * xn1) + factorial * np1 / (12.0 * xn2)
-            - factorial * np1 * (n_f + 2.0) / (120.0 * xn3));
+        * (factorial / (n_f * xn)                                       // (n-1)!/x^n
+            + factorial / (2.0 * xn1)                                   // n!/(2 x^{n+1})
+            + factorial * np1 / (12.0 * xn2)                            // B2: +(n+1)!/12 / x^{n+2}
+            - factorial * np1 * np2 * np3 / (720.0 * xn4)               // B4: −(n+3)!/720 / x^{n+4}
+            + factorial * np1 * np2 * np3 * np4 * np5 / (30240.0 * xn6)); // B6: +(n+5)!/30240 / x^{n+6}
 
     result
 }
@@ -84748,10 +84761,28 @@ mod tests {
         let vals = s.tensor_values(result).unwrap();
         let expected = std::f64::consts::PI.powi(2) / 6.0;
         assert!(
-            (vals[0] - expected).abs() < 0.01,
+            (vals[0] - expected).abs() < 1e-9,
             "trigamma(1) ≈ {expected}, got {}",
             vals[0]
         );
+    }
+
+    #[test]
+    fn polygamma_matches_f64_reference_values() {
+        // Closed-form references; the previous asymptotic mis-term left ~5e-6
+        // error, so 1e-9 both confirms the fix and guards against regressions.
+        let rel = |got: f64, want: f64| (got - want).abs() <= 1e-9 * (1.0 + want.abs());
+        let pi = std::f64::consts::PI;
+        // Trigamma ψ'(x) = polygamma(1, x).
+        assert!(rel(super::polygamma_approx(1, 1.0), pi * pi / 6.0)); // π²/6
+        assert!(rel(super::polygamma_approx(1, 2.0), pi * pi / 6.0 - 1.0)); // π²/6 − 1
+        assert!(rel(super::polygamma_approx(1, 0.5), pi * pi / 2.0)); // π²/2
+        // Tetragamma ψ''(1) = −2ζ(3).
+        assert!(rel(super::polygamma_approx(2, 1.0), -2.404113806319188));
+        // Pentagamma ψ'''(1) = π⁴/15.
+        assert!(rel(super::polygamma_approx(3, 1.0), pi.powi(4) / 15.0));
+        // ψ''(2) = −2ζ(3) + 2 (recurrence ψ''(2)=ψ''(1)+2/1³).
+        assert!(rel(super::polygamma_approx(2, 2.0), -2.404113806319188 + 2.0));
     }
 
     #[test]
