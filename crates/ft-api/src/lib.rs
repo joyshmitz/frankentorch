@@ -7852,11 +7852,11 @@ impl FrankenTorchSession {
         let num_embeddings = weight_shape[0];
         let embedding_dim = weight_shape[1];
         let input_vals = self.tensor_values(input)?;
-        let weight_vals = self.tensor_values(weight)?;
         let num_indices: usize = input_shape.iter().product();
-        let mut result = Vec::with_capacity(num_indices * embedding_dim);
-        for &idx in &input_vals {
-            let idx = idx as usize;
+        // Resolve + bounds-check the (non-differentiable) lookup indices.
+        let mut idx_usize: Vec<usize> = Vec::with_capacity(num_indices);
+        for &v in &input_vals {
+            let idx = v as usize;
             if idx >= num_embeddings {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -7864,15 +7864,68 @@ impl FrankenTorchSession {
                     },
                 )));
             }
+            idx_usize.push(idx);
+        }
+        let mut out_shape = input_shape;
+        out_shape.push(embedding_dim);
+
+        if self.tensor_requires_grad(weight)? {
+            // Embedding lookup is differentiable w.r.t. `weight`: the gradient
+            // scatter-adds the upstream gradient back to each looked-up row
+            // (accumulating for repeated indices; padding rows get none). The
+            // indices are non-differentiable. The forward gathers the same rows,
+            // so the value is bit-identical; the previous body rebuilt a
+            // requires_grad=false leaf, silently severing the embedding gradient.
+            let pad = padding_idx;
+            let dim = embedding_dim;
+            let ne = num_embeddings;
+            let idx_fwd = idx_usize.clone();
+            let out_shape_fwd = out_shape.clone();
+            return self.tensor_apply_function(
+                &[weight],
+                move |ctx, inputs| {
+                    let (wv, _wshape) = inputs[0];
+                    let mut result = Vec::with_capacity(idx_fwd.len() * dim);
+                    for &idx in &idx_fwd {
+                        if pad == Some(idx) {
+                            result.extend(std::iter::repeat_n(0.0, dim));
+                        } else {
+                            let start = idx * dim;
+                            result.extend_from_slice(&wv[start..start + dim]);
+                        }
+                    }
+                    let idx_f: Vec<f64> = idx_fwd.iter().map(|&i| i as f64).collect();
+                    ctx.save_for_backward(idx_f, vec![idx_fwd.len()]);
+                    Ok((result, out_shape_fwd.clone()))
+                },
+                move |ctx, grad_outputs| {
+                    let saved = &ctx.saved_tensors()[0];
+                    let g = grad_outputs[0];
+                    let mut grad_w = vec![0.0_f64; ne * dim];
+                    for (k, &idxf) in saved.iter().enumerate() {
+                        let idx = idxf as usize;
+                        if pad == Some(idx) {
+                            continue;
+                        }
+                        for d in 0..dim {
+                            grad_w[idx * dim + d] += g[k * dim + d];
+                        }
+                    }
+                    Ok(vec![Some(grad_w)])
+                },
+            );
+        }
+
+        let weight_vals = self.tensor_values(weight)?;
+        let mut result = Vec::with_capacity(num_indices * embedding_dim);
+        for &idx in &idx_usize {
             if padding_idx == Some(idx) {
-                result.extend(std::iter::repeat(0.0).take(embedding_dim));
+                result.extend(std::iter::repeat_n(0.0, embedding_dim));
             } else {
                 let start = idx * embedding_dim;
                 result.extend_from_slice(&weight_vals[start..start + embedding_dim]);
             }
         }
-        let mut out_shape = input_shape;
-        out_shape.push(embedding_dim);
         self.tensor_variable(result, out_shape, false)
     }
 
@@ -80319,6 +80372,37 @@ mod tests {
         // For sum(out): gradient at row k = (count of k in indices) * [1, 1].
         // Row 0 used 2x → grad [2, 2]; row 1 unused → [0, 0]; row 2 → [1, 1]; row 3 → [1, 1].
         assert_eq!(grad, &vec![2.0, 2.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn tensor_embedding_propagates_weight_gradient_and_padding() {
+        // Regression: tensor_embedding (distinct from functional_embedding) used
+        // to rebuild a requires_grad=false leaf, severing the embedding weight
+        // gradient. Now routes through a scatter-add backward.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let w = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]; // 4x2
+        // No padding: indices [0,2,0] → rows 0,2,0.
+        let weight = s.tensor_variable(w.clone(), vec![4, 2], true).unwrap();
+        let idx = s.tensor_variable(vec![0.0, 2.0, 0.0], vec![3], false).unwrap();
+        let out = s.tensor_embedding(idx, weight, None).unwrap();
+        // Forward value parity: rows 0,2,0 = [1,2,5,6,1,2].
+        assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 2.0, 5.0, 6.0, 1.0, 2.0]);
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let g = s.tensor_gradient(&report, weight).expect("tensor_embedding weight grad present");
+        // Row 0 used 2x → [2,2]; row 2 once → [1,1]; rows 1,3 unused → 0.
+        assert_eq!(g, &vec![2.0, 2.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]);
+
+        // padding_idx=1: index 1 lookups output zeros and receive no gradient.
+        let weight2 = s.tensor_variable(w, vec![4, 2], true).unwrap();
+        let idx2 = s.tensor_variable(vec![1.0, 0.0, 1.0], vec![3], false).unwrap();
+        let out2 = s.tensor_embedding(idx2, weight2, Some(1)).unwrap();
+        assert_eq!(s.tensor_values(out2).unwrap(), vec![0.0, 0.0, 1.0, 2.0, 0.0, 0.0]);
+        let loss2 = s.tensor_sum(out2).unwrap();
+        let report2 = s.tensor_backward(loss2).unwrap();
+        let g2 = s.tensor_gradient(&report2, weight2).expect("padding grad present");
+        // Only row 0 (the non-padding lookup) gets gradient [1,1]; row 1 padding → 0.
+        assert_eq!(g2, &vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]
