@@ -11055,27 +11055,7 @@ impl FrankenTorchSession {
         &mut self,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        self.tensor_apply_function(
-            &[input],
-            |ctx, inputs| {
-                let (vals, shape) = inputs[0];
-                let result: Vec<f64> = vals.iter().map(|&x| bessel_i0_scalar(x)).collect();
-                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                Ok((result, shape.to_vec()))
-            },
-            |ctx, grad_outputs| {
-                let saved = ctx.saved_tensors();
-                let x_vals = &saved[0];
-                let grad_y = grad_outputs[0];
-                // d/dx i0(x) = i1(x).
-                let grad_x: Vec<f64> = x_vals
-                    .iter()
-                    .zip(grad_y.iter())
-                    .map(|(&x, &gy)| gy * bessel_i1_scalar(x))
-                    .collect();
-                Ok(vec![Some(grad_x)])
-            },
-        )
+        self.special_unary_with_deriv(input, bessel_i0_scalar, bessel_i1_scalar)
     }
 
     /// Exponentially scaled modified Bessel of the first kind,
@@ -16414,6 +16394,48 @@ impl FrankenTorchSession {
     ///
     /// Equivalent to `torch.nn.functional.adaptive_max_pool1d(input, output_size)`.
     /// Returns (output, indices) where indices contains the argmax positions.
+    /// Build the differentiable value output of a max-pool from precomputed
+    /// global argmax indices (`flat_idx[k]` is the input flat index selected for
+    /// output element `k`). Max-pool routes each output gradient back to its
+    /// argmax input position, so the backward is a scatter-add. The forward
+    /// gathers `input[flat_idx[k]]`, which equals the max value computed by the
+    /// caller's loop, so the output is bit-identical to the non-grad path.
+    fn max_pool_grad_output(
+        &mut self,
+        input: TensorNodeId,
+        flat_idx: Vec<usize>,
+        out_shape: Vec<usize>,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let total_out = flat_idx.len();
+        #[allow(clippy::cast_precision_loss)]
+        let flat_idx_f: Vec<f64> = flat_idx.iter().map(|&i| i as f64).collect();
+        self.tensor_apply_function(
+            &[input],
+            move |ctx, inputs| {
+                let (vals, _shape) = inputs[0];
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let result: Vec<f64> = flat_idx_f.iter().map(|&fi| vals[fi as usize]).collect();
+                ctx.save_for_backward(flat_idx_f.clone(), vec![total_out]);
+                ctx.save_for_backward(vec![vals.len() as f64], vec![1]);
+                Ok((result, out_shape.clone()))
+            },
+            move |ctx, grad_outputs| {
+                let saved = ctx.saved_tensors();
+                let fidx = &saved[0];
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let numel = saved[1][0] as usize;
+                let g = grad_outputs[0];
+                let mut grad_in = vec![0.0_f64; numel];
+                for (k, &fi) in fidx.iter().enumerate() {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let pos = fi as usize;
+                    grad_in[pos] += g[k];
+                }
+                Ok(vec![Some(grad_in)])
+            },
+        )
+    }
+
     pub fn functional_adaptive_max_pool1d(
         &mut self,
         input: TensorNodeId,
@@ -16438,9 +16460,11 @@ impl FrankenTorchSession {
         let total_out = n * c * l_out;
         let mut out_data = vec![f64::NEG_INFINITY; total_out];
         let mut idx_data = vec![0.0; total_out];
+        let mut flat_idx = vec![0usize; total_out];
 
         for batch in 0..n {
             for channel in 0..c {
+                let base = batch * c * l_in + channel * l_in;
                 for ol in 0..l_out {
                     let (start, end) = Self::adaptive_avg_pool_window(
                         ol,
@@ -16451,7 +16475,7 @@ impl FrankenTorchSession {
                     let mut max_val = f64::NEG_INFINITY;
                     let mut max_idx = start;
                     for il in start..end {
-                        let in_idx = batch * c * l_in + channel * l_in + il;
+                        let in_idx = base + il;
                         if input_data[in_idx] > max_val {
                             max_val = input_data[in_idx];
                             max_idx = il;
@@ -16460,13 +16484,18 @@ impl FrankenTorchSession {
                     let out_idx = batch * c * l_out + channel * l_out + ol;
                     out_data[out_idx] = max_val;
                     idx_data[out_idx] = max_idx as f64;
+                    flat_idx[out_idx] = base + max_idx;
                 }
             }
         }
 
         let out_shape = vec![n, c, l_out];
-        let output = self.tensor_variable(out_data, out_shape.clone(), false)?;
-        let indices = self.tensor_variable(idx_data, out_shape, false)?;
+        let indices = self.tensor_variable(idx_data, out_shape.clone(), false)?;
+        let output = if self.tensor_requires_grad(input)? {
+            self.max_pool_grad_output(input, flat_idx, out_shape)?
+        } else {
+            self.tensor_variable(out_data, out_shape, false)?
+        };
         Ok((output, indices))
     }
 
@@ -16498,9 +16527,11 @@ impl FrankenTorchSession {
         let total_out = n * c * h_out * w_out;
         let mut out_data = vec![f64::NEG_INFINITY; total_out];
         let mut idx_data = vec![0.0; total_out];
+        let mut flat_idx = vec![0usize; total_out];
 
         for batch in 0..n {
             for channel in 0..c {
+                let base = batch * c * h_in * w_in + channel * h_in * w_in;
                 for oh in 0..h_out {
                     let (h_start, h_end) = Self::adaptive_avg_pool_window(
                         oh,
@@ -16519,10 +16550,7 @@ impl FrankenTorchSession {
                         let mut max_idx = h_start * w_in + w_start;
                         for ih in h_start..h_end {
                             for iw in w_start..w_end {
-                                let in_idx = batch * c * h_in * w_in
-                                    + channel * h_in * w_in
-                                    + ih * w_in
-                                    + iw;
+                                let in_idx = base + ih * w_in + iw;
                                 if input_data[in_idx] > max_val {
                                     max_val = input_data[in_idx];
                                     max_idx = ih * w_in + iw;
@@ -16533,14 +16561,19 @@ impl FrankenTorchSession {
                             batch * c * h_out * w_out + channel * h_out * w_out + oh * w_out + ow;
                         out_data[out_idx] = max_val;
                         idx_data[out_idx] = max_idx as f64;
+                        flat_idx[out_idx] = base + max_idx;
                     }
                 }
             }
         }
 
         let out_shape = vec![n, c, h_out, w_out];
-        let output = self.tensor_variable(out_data, out_shape.clone(), false)?;
-        let indices = self.tensor_variable(idx_data, out_shape, false)?;
+        let indices = self.tensor_variable(idx_data, out_shape.clone(), false)?;
+        let output = if self.tensor_requires_grad(input)? {
+            self.max_pool_grad_output(input, flat_idx, out_shape)?
+        } else {
+            self.tensor_variable(out_data, out_shape, false)?
+        };
         Ok((output, indices))
     }
 
@@ -16572,10 +16605,12 @@ impl FrankenTorchSession {
         let total_out = n * c * d_out * h_out * w_out;
         let mut out_data = vec![f64::NEG_INFINITY; total_out];
         let mut idx_data = vec![0.0; total_out];
+        let mut flat_idx = vec![0usize; total_out];
         let hw_in = h_in * w_in;
 
         for batch in 0..n {
             for channel in 0..c {
+                let base = batch * c * d_in * hw_in + channel * d_in * hw_in;
                 for od in 0..d_out {
                     let (d_start, d_end) = Self::adaptive_avg_pool_window(
                         od,
@@ -16602,11 +16637,7 @@ impl FrankenTorchSession {
                             for id in d_start..d_end {
                                 for ih in h_start..h_end {
                                     for iw in w_start..w_end {
-                                        let in_idx = batch * c * d_in * hw_in
-                                            + channel * d_in * hw_in
-                                            + id * hw_in
-                                            + ih * w_in
-                                            + iw;
+                                        let in_idx = base + id * hw_in + ih * w_in + iw;
                                         if input_data[in_idx] > max_val {
                                             max_val = input_data[in_idx];
                                             max_idx = id * hw_in + ih * w_in + iw;
@@ -16621,6 +16652,7 @@ impl FrankenTorchSession {
                                 + ow;
                             out_data[out_idx] = max_val;
                             idx_data[out_idx] = max_idx as f64;
+                            flat_idx[out_idx] = base + max_idx;
                         }
                     }
                 }
@@ -16628,8 +16660,12 @@ impl FrankenTorchSession {
         }
 
         let out_shape = vec![n, c, d_out, h_out, w_out];
-        let output = self.tensor_variable(out_data, out_shape.clone(), false)?;
-        let indices = self.tensor_variable(idx_data, out_shape, false)?;
+        let indices = self.tensor_variable(idx_data, out_shape.clone(), false)?;
+        let output = if self.tensor_requires_grad(input)? {
+            self.max_pool_grad_output(input, flat_idx, out_shape)?
+        } else {
+            self.tensor_variable(out_data, out_shape, false)?
+        };
         Ok((output, indices))
     }
 
@@ -43155,30 +43191,69 @@ impl FrankenTorchSession {
     /// Equivalent to `torch.special.i0(input)`.
     /// Tracked under frankentorch-qdvs.
     pub fn tensor_i0(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
-        let out = self.tensor_apply_function(
-            &[input],
-            |ctx, inputs| {
-                let (vals, shape) = inputs[0];
-                ctx.save_for_backward(vals.to_vec(), shape.to_vec());
-                let values: Vec<f64> = par_map_f64(vals, i0_approx);
-                Ok((values, shape.to_vec()))
-            },
-            |ctx, grad_outputs| {
-                let grad_out = grad_outputs[0];
-                let saved = ctx.saved_tensors();
-                let x_vals = &saved[0];
-                if grad_out.len() != x_vals.len() {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "i0 backward: incoming gradient length mismatch",
-                        },
-                    )));
+        let out = if !self.tensor_tape.tensor_requires_grad(input)?
+            || !self.tensor_tape.is_grad_enabled()
+        {
+            let (meta, values) = {
+                let tensor = self.tensor_tape.tensor(input)?;
+                let meta = tensor.meta().clone();
+                let vals = tensor.contiguous_values_as_f64()?;
+                (meta, par_map_f64(&vals, i0_approx))
+            };
+            let dtype = meta.dtype();
+            let output = match dtype {
+                DType::F64 => DenseTensor::from_storage(meta, values)?,
+                DType::F32 => DenseTensor::from_storage_f32(
+                    meta,
+                    values.into_iter().map(|value| value as f32).collect(),
+                )?,
+                DType::F16 => DenseTensor::from_storage_f16(
+                    meta,
+                    values
+                        .into_iter()
+                        .map(|value| Float16::from_f32(value as f32))
+                        .collect(),
+                )?,
+                DType::BF16 => DenseTensor::from_storage_bf16(
+                    meta,
+                    values
+                        .into_iter()
+                        .map(|value| BFloat16::from_f32(value as f32))
+                        .collect(),
+                )?,
+                other => {
+                    return Err(AutogradError::DenseTensor(
+                        ft_core::DenseTensorError::UnsupportedDType(other),
+                    ));
                 }
-                let grad_in: Vec<f64> =
-                    par_zip_map_f64(x_vals, grad_out, |x, go| go * i1_approx(x));
-                Ok(vec![Some(grad_in)])
-            },
-        )?;
+            };
+            self.tensor_variable_from_storage(output, false)
+        } else {
+            self.tensor_apply_function(
+                &[input],
+                |ctx, inputs| {
+                    let (vals, shape) = inputs[0];
+                    ctx.save_for_backward(vals.to_vec(), shape.to_vec());
+                    let values: Vec<f64> = par_map_f64(vals, i0_approx);
+                    Ok((values, shape.to_vec()))
+                },
+                |ctx, grad_outputs| {
+                    let grad_out = grad_outputs[0];
+                    let saved = ctx.saved_tensors();
+                    let x_vals = &saved[0];
+                    if grad_out.len() != x_vals.len() {
+                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+                            ft_dispatch::DispatchKeyError::IncompatibleSet {
+                                reason: "i0 backward: incoming gradient length mismatch",
+                            },
+                        )));
+                    }
+                    let grad_in: Vec<f64> =
+                        par_zip_map_f64(x_vals, grad_out, |x, go| go * i1_approx(x));
+                    Ok(vec![Some(grad_in)])
+                },
+            )?
+        };
         self.runtime.ledger_mut().record(
             EvidenceKind::Dispatch,
             format!("i0 in={} out={}", input.0, out.0),
@@ -79421,6 +79496,42 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_max_pool_backward_scatters_to_argmax_and_value_parity() {
+        // 1-D: input [1,1,4] = [1,3,2,4], output_size=2. Adaptive windows
+        // [0,2) and [2,4) → maxes 3 (idx1) and 4 (idx3). Gradient of sum is the
+        // one-hot scatter [0,1,0,1].
+        let data = vec![1.0, 3.0, 2.0, 4.0];
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity.
+        let a_ng = s.tensor_variable(data.clone(), vec![1, 1, 4], false).unwrap();
+        let (o_ng, _i_ng) = s.functional_adaptive_max_pool1d(a_ng, 2).unwrap();
+        let v_ng = s.tensor_values(o_ng).unwrap();
+        let a_g = s.tensor_variable(data.clone(), vec![1, 1, 4], true).unwrap();
+        let (o_g, idx_g) = s.functional_adaptive_max_pool1d(a_g, 2).unwrap();
+        let v_g = s.tensor_values(o_g).unwrap();
+        for (x, y) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "max_pool1d grad/non-grad value mismatch");
+        }
+        assert_eq!(v_g, vec![3.0, 4.0]);
+        assert_eq!(s.tensor_values(idx_g).unwrap(), vec![1.0, 3.0]);
+        let loss = s.tensor_sum(o_g).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, a_g).expect("max_pool1d grad present");
+        assert_eq!(grad, vec![0.0, 1.0, 0.0, 1.0]);
+
+        // 2-D: a position selected by multiple output windows accumulates.
+        // input [1,1,2,2] = [[1,2],[3,4]], output (1,1) → single max at idx3.
+        let data2 = vec![1.0, 2.0, 3.0, 4.0];
+        let a_g2 = s.tensor_variable(data2, vec![1, 1, 2, 2], true).unwrap();
+        let (o_g2, _i) = s.functional_adaptive_max_pool2d(a_g2, (1, 1)).unwrap();
+        assert_eq!(s.tensor_values(o_g2).unwrap(), vec![4.0]);
+        let loss2 = s.tensor_sum(o_g2).unwrap();
+        let report2 = s.tensor_backward(loss2).unwrap();
+        let grad2 = s.tensor_gradient(&report2, a_g2).expect("max_pool2d grad present");
+        assert_eq!(grad2, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
     fn functional_layer_norm_applies_affine() {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = s
@@ -81800,6 +81911,54 @@ mod tests {
         let out = s.tensor_special_i0(x).unwrap();
         let v = s.tensor_values(out).unwrap();
         assert!(v[0].is_nan());
+    }
+
+    #[test]
+    fn i0_no_grad_golden_summary_matches_fixture() {
+        use std::fmt::Write as _;
+
+        let data = vec![-5.0, -3.5, -1.0, -0.0, 0.0, 1.0, 3.5, 5.0, f64::NAN];
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(data.clone(), vec![data.len()], false).unwrap();
+        let out = s.tensor_special_i0(x).unwrap();
+        let values = s.tensor_values(out).unwrap();
+
+        let mut summary = String::new();
+        summary.push_str("ft_api_i0_no_grad_pass25\n");
+        for (idx, (&input, &output)) in data.iter().zip(values.iter()).enumerate() {
+            let _ = writeln!(
+                &mut summary,
+                "{idx}:{:016x}->{:016x}",
+                input.to_bits(),
+                output.to_bits()
+            );
+        }
+        assert_eq!(
+            summary,
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_api_i0_no_grad_pass25.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn i0_no_grad_parallel_matches_serial_bit_exact() {
+        let n_elems = 1usize << 14;
+        let data: Vec<f64> = (0..n_elems)
+            .map(|i| -8.0 + (i % 4099) as f64 * 0.004)
+            .collect();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(data.clone(), vec![n_elems], false).unwrap();
+        let out = s.tensor_special_i0(x).unwrap();
+        let values = s.tensor_values(out).unwrap();
+
+        for (idx, (&got, &input)) in values.iter().zip(data.iter()).enumerate() {
+            assert_eq!(
+                got.to_bits(),
+                super::bessel_i0_scalar(input).to_bits(),
+                "i0 no-grad parallel diverged at {idx}"
+            );
+        }
     }
 
     #[test]
