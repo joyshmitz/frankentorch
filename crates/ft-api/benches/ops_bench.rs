@@ -230,6 +230,22 @@ fn bench_fft2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_supcon_loss(c: &mut Criterion) {
+    let mut group = c.benchmark_group("supcon_loss");
+    // [N, D] embeddings -> N x N similarity matrix via a naive O(N^2 * D) dot
+    // product loop (compute-bound), parallel over rows.
+    let (n, d) = (512usize, 512usize);
+    group.throughput(Throughput::Elements((n * n * d) as u64));
+    group.bench_function("512x512", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let emb = session.tensor_randn(vec![n, d], false).unwrap();
+        let labels_v: Vec<f64> = (0..n).map(|i| (i % 8) as f64).collect();
+        let labels = session.tensor_variable(labels_v, vec![n], false).unwrap();
+        b.iter(|| black_box(session.supcon_loss(black_box(emb), black_box(labels), 0.07).unwrap()));
+    });
+    group.finish();
+}
+
 fn bench_lrn(c: &mut Criterion) {
     let mut group = c.benchmark_group("local_response_norm");
     // [N, C, H, W] LRN: a powf per output element over a local channel window ->
@@ -475,6 +491,7 @@ criterion_group!(
     bench_interpolate_trilinear,
     bench_grid_sample,
     bench_fft2,
+    bench_supcon_loss,
     bench_lrn,
     bench_rope_freqs,
     bench_sinusoidal_pe,

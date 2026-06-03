@@ -32982,15 +32982,33 @@ impl FrankenTorchSession {
                 emb_data[start..end].iter().map(move |&x| x / norm)
             })
             .collect();
+        // The N x N similarity matrix is a naive O(N^2 * D) dot-product sweep
+        // (compute-bound). Each row i is independent and owns a contiguous
+        // N-length block, so distribute the rows across Rayon workers. The
+        // per-(i,j) dot keeps its k-summation order and the linear write position
+        // (i*N + j), so the result is bit-for-bit identical to the serial loop.
+        // (A GEMM would reassociate the k-sum and is therefore not used here.)
         let mut sim_matrix = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
+        let compute_row = |i: usize, row: &mut [f64]| {
+            for (j, slot) in row.iter_mut().enumerate() {
                 let mut dot = 0.0;
                 for k in 0..d {
                     dot += normalized[i * d + k] * normalized[j * d + k];
                 }
-                sim_matrix[i * n + j] = dot / temperature;
+                *slot = dot / temperature;
             }
+        };
+        if n >= 2 && n * n >= PARALLEL_ELEMENTWISE_MIN {
+            use rayon::prelude::*;
+            sim_matrix
+                .par_chunks_mut(n)
+                .enumerate()
+                .for_each(|(i, row)| compute_row(i, row));
+        } else {
+            sim_matrix
+                .chunks_mut(n)
+                .enumerate()
+                .for_each(|(i, row)| compute_row(i, row));
         }
         let mut total_loss = 0.0;
         let mut count = 0;
@@ -81357,6 +81375,63 @@ mod tests {
         for (idx, (g, w)) in got.iter().zip(want.iter()).enumerate() {
             assert_eq!(g.to_bits(), w.to_bits(), "lrn @{idx}");
         }
+    }
+
+    #[test]
+    fn supcon_loss_parallel_match_serial_bit_exact() {
+        // n*n >= PARALLEL_ELEMENTWISE_MIN so the rayon similarity-matrix path
+        // runs; the scalar loss must equal a full serial reference BIT-FOR-BIT.
+        use super::FrankenTorchSession;
+        let (n, d, temperature) = (128usize, 16usize, 0.07_f64); // n*n = 16384
+        let emb: Vec<f64> = (0..n * d).map(|i| ((i % 251) as f64) * 0.013 - 1.5).collect();
+        let labels: Vec<f64> = (0..n).map(|i| (i % 8) as f64).collect();
+
+        // Serial reference mirroring supcon_loss.
+        let normalized: Vec<f64> = (0..n)
+            .flat_map(|i| {
+                let s = i * d;
+                let e = s + d;
+                let norm = emb[s..e].iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-12);
+                emb[s..e].iter().map(move |&x| x / norm)
+            })
+            .collect();
+        let mut sim = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut dot = 0.0;
+                for k in 0..d {
+                    dot += normalized[i * d + k] * normalized[j * d + k];
+                }
+                sim[i * n + j] = dot / temperature;
+            }
+        }
+        let mut total = 0.0;
+        let mut count = 0;
+        for i in 0..n {
+            let li = labels[i] as i64;
+            let positives: Vec<usize> = (0..n).filter(|&j| j != i && labels[j] as i64 == li).collect();
+            if positives.is_empty() {
+                continue;
+            }
+            let max_sim = sim[i * n..(i + 1) * n].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let exp_sum: f64 = (0..n).filter(|&j| j != i).map(|j| (sim[i * n + j] - max_sim).exp()).sum();
+            let log_denom = max_sim + exp_sum.ln();
+            let mut pos_loss = 0.0;
+            for &p in &positives {
+                pos_loss += sim[i * n + p] - log_denom;
+            }
+            total -= pos_loss / positives.len() as f64;
+            count += 1;
+        }
+        let want = if count > 0 { total / count as f64 } else { 0.0 };
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let emb_t = s.tensor_variable(emb.clone(), vec![n, d], false).unwrap();
+        let lab_t = s.tensor_variable(labels.clone(), vec![n], false).unwrap();
+        let loss = s.supcon_loss(emb_t, lab_t, temperature).unwrap();
+        let got = s.tensor_values(loss).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].to_bits(), want.to_bits(), "supcon_loss scalar");
     }
 
     #[test]
