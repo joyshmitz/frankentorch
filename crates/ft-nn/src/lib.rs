@@ -4455,12 +4455,7 @@ impl MultiheadAttention {
         let v_heads =
             session.tensor_reshape(v_heads, vec![batch_heads, seq_len_k, self.head_dim])?;
 
-        let scale_t = session.full(
-            vec![batch_heads, seq_len_q, self.head_dim],
-            self.scale,
-            false,
-        )?;
-        let q_scaled = session.tensor_mul(q_heads, scale_t)?;
+        let q_scaled = session.tensor_mul_scalar(q_heads, self.scale)?;
 
         // Attention scores: Q_h @ K_h^T -> [N * heads, S_q, S_k]
         let k_t = session.tensor_transpose(k_heads, 1, 2)?;

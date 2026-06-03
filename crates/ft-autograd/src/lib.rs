@@ -255,6 +255,10 @@ enum TensorNodeOp {
         lhs: TensorNodeId,
         rhs: TensorNodeId,
     },
+    MulScalar {
+        input: TensorNodeId,
+        scalar: f64,
+    },
     MatMul {
         lhs: TensorNodeId,
         rhs: TensorNodeId,
@@ -892,6 +896,15 @@ pub struct TensorOperationEvent {
     pub rhs: TensorNodeId,
     pub out: TensorNodeId,
     pub decision: DispatchDecision,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorScalarOperationEvent {
+    pub op: BinaryOp,
+    pub input: TensorNodeId,
+    pub scalar: f64,
+    pub out: TensorNodeId,
+    pub output_dtype: DType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4601,6 +4614,68 @@ impl TensorTape {
         mode: ExecutionMode,
     ) -> Result<(TensorNodeId, TensorOperationEvent), AutogradError> {
         self.binary(BinaryOp::Mul, lhs, rhs, mode)
+    }
+
+    pub fn mul_scalar(
+        &mut self,
+        input: TensorNodeId,
+        scalar: f64,
+    ) -> Result<(TensorNodeId, TensorScalarOperationEvent), AutogradError> {
+        let (requires_grad, output_shape, output_device, output_storage) = {
+            let input_node = self.node(input)?;
+            let requires_grad = input_node.requires_grad && self.grad_enabled;
+            let input_meta = input_node.tensor.meta().clone();
+            let input_storage = Self::compact_typed_storage(&input_node.tensor)?;
+            let output_storage = match input_storage {
+                TensorStorage::F64(values) => TensorStorage::F64(Arc::new(
+                    values.iter().map(|&value| value * scalar).collect(),
+                )),
+                TensorStorage::F32(values) => TensorStorage::F64(Arc::new(
+                    values
+                        .iter()
+                        .map(|&value| f64::from(value) * scalar)
+                        .collect(),
+                )),
+                other => {
+                    let scalar = scalar as f32;
+                    TensorStorage::F32(Arc::new(
+                        other
+                            .to_f32_vec()
+                            .into_iter()
+                            .map(|value| value * scalar)
+                            .collect(),
+                    ))
+                }
+            };
+            (
+                requires_grad,
+                input_meta.shape().to_vec(),
+                input_meta.device(),
+                output_storage,
+            )
+        };
+
+        let output_dtype = output_storage.dtype();
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_typed_storage(
+                ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
+                output_storage,
+            )?,
+            requires_grad,
+            op: TensorNodeOp::MulScalar { input, scalar },
+        });
+
+        Ok((
+            out,
+            TensorScalarOperationEvent {
+                op: BinaryOp::Mul,
+                input,
+                scalar,
+                out,
+                output_dtype,
+            },
+        ))
     }
 
     pub fn sub(
@@ -9860,6 +9935,24 @@ impl TensorTape {
                         rule: "d(a*b)/da=b; d(a*b)/db=a",
                     });
                 }
+                TensorNodeOp::MulScalar { input, scalar } => {
+                    let input_values = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    Self::ensure_tensor_len(input, input_values.len(), incoming.len())?;
+
+                    let input_contrib = incoming
+                        .iter()
+                        .map(|grad| grad * scalar)
+                        .collect::<Vec<_>>();
+                    Self::accumulate_tensor_gradient(input, &mut grads[input.0], &input_contrib)?;
+
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: incoming.len(),
+                        rule: "d(a*c)/da=c",
+                    });
+                }
                 TensorNodeOp::MatMul { lhs, rhs } => {
                     let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
                     let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
@@ -13044,6 +13137,7 @@ impl TensorTape {
                         TensorNodeOp::Add { .. } => "add",
                         TensorNodeOp::Sub { .. } => "sub",
                         TensorNodeOp::Mul { .. } => "mul",
+                        TensorNodeOp::MulScalar { .. } => "mul_scalar",
                         TensorNodeOp::Div { .. } => "div",
                         TensorNodeOp::Neg { .. } => "neg",
                         TensorNodeOp::Exp { .. } => "exp",
@@ -13241,6 +13335,16 @@ impl TensorTape {
                         node: node_id,
                         incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
                         rule: "d(a*b)/da=b*grad,d/db=a*grad (cg)",
+                    });
+                }
+                TensorNodeOp::MulScalar { input, scalar } => {
+                    let grad_input = self.cg_mul_scalar(incoming_id, scalar)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_input)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(a*c)/da=c*grad (cg)",
                     });
                 }
                 TensorNodeOp::Div { lhs, rhs } => {
@@ -15302,6 +15406,7 @@ impl TensorTape {
                         TensorNodeOp::Add { .. } => "add",
                         TensorNodeOp::Sub { .. } => "sub",
                         TensorNodeOp::Mul { .. } => "mul",
+                        TensorNodeOp::MulScalar { .. } => "mul_scalar",
                         TensorNodeOp::Div { .. } => "div",
                         TensorNodeOp::Neg { .. } => "neg",
                         TensorNodeOp::Exp { .. } => "exp",
@@ -15563,6 +15668,32 @@ impl TensorTape {
             tensor: DenseTensor::from_storage(meta, result)?,
             requires_grad,
             op: TensorNodeOp::Mul { lhs, rhs },
+        });
+        Ok(out)
+    }
+
+    /// Helper: elementwise multiply by a constant for create_graph backward.
+    fn cg_mul_scalar(
+        &mut self,
+        input: TensorNodeId,
+        scalar: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (requires_grad, result, shape, dtype, device) = {
+            let node = self.node(input)?;
+            let data = node.tensor.contiguous_values_as_f64()?;
+            let shape = node.tensor.meta().shape().to_vec();
+            let dtype = node.tensor.meta().dtype();
+            let device = node.tensor.meta().device();
+            let result = data.iter().map(|&value| value * scalar).collect();
+            (node.requires_grad, result, shape, dtype, device)
+        };
+
+        let meta = ft_core::TensorMeta::from_shape(shape, dtype, device);
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(meta, result)?,
+            requires_grad,
+            op: TensorNodeOp::MulScalar { input, scalar },
         });
         Ok(out)
     }
@@ -16119,6 +16250,9 @@ impl TensorTape {
                     stack.push(lhs);
                     stack.push(rhs);
                 }
+                TensorNodeOp::MulScalar { input, .. } => {
+                    stack.push(input);
+                }
                 TensorNodeOp::Neg { input }
                 | TensorNodeOp::Abs { input }
                 | TensorNodeOp::Exp { input }
@@ -16286,6 +16420,9 @@ impl TensorTape {
                 | TensorNodeOp::Remainder { lhs, rhs } => {
                     pending[lhs.0] = pending[lhs.0].saturating_add(1);
                     pending[rhs.0] = pending[rhs.0].saturating_add(1);
+                }
+                TensorNodeOp::MulScalar { input, .. } => {
+                    pending[input.0] = pending[input.0].saturating_add(1);
                 }
                 TensorNodeOp::Neg { input }
                 | TensorNodeOp::Abs { input }
@@ -17861,6 +17998,73 @@ mod tests {
         assert_eq!(
             report.gradient(y).expect("y grad should exist"),
             &[1.0, 1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn tensor_mul_scalar_matches_full_scale_tensor_forward_backward() {
+        let mut direct = TensorTape::new();
+        let x = direct
+            .leaf(vec![1.0, 2.0, 3.0], vec![3], true)
+            .expect("direct input leaf should succeed");
+        let (out, event) = direct
+            .mul_scalar(x, 0.5)
+            .expect("scalar multiply should succeed");
+        assert_eq!(event.output_dtype, DType::F64);
+        assert_eq!(
+            direct.values(out).expect("direct values should resolve"),
+            vec![0.5, 1.0, 1.5]
+        );
+
+        let direct_report = direct.backward(out).expect("direct backward should succeed");
+        assert_eq!(
+            direct_report.gradient(x).expect("direct grad should exist"),
+            &[0.5, 0.5, 0.5]
+        );
+
+        let mut reference = TensorTape::new();
+        let x_ref = reference
+            .leaf(vec![1.0, 2.0, 3.0], vec![3], true)
+            .expect("reference input leaf should succeed");
+        let scale = reference
+            .leaf(vec![0.5, 0.5, 0.5], vec![3], false)
+            .expect("reference scale leaf should succeed");
+        let (out_ref, _) = reference
+            .mul(x_ref, scale, ExecutionMode::Strict)
+            .expect("full tensor multiply should succeed");
+        assert_eq!(
+            reference.values(out_ref).expect("reference values should resolve"),
+            direct.values(out).expect("direct values should still resolve")
+        );
+        let reference_report = reference
+            .backward(out_ref)
+            .expect("reference backward should succeed");
+        assert_eq!(
+            reference_report
+                .gradient(x_ref)
+                .expect("reference grad should exist"),
+            direct_report.gradient(x).expect("direct grad should still exist")
+        );
+    }
+
+    #[test]
+    fn tensor_mul_scalar_promotes_f32_like_full_f64_scale_tensor() {
+        let mut tape = TensorTape::new();
+        let input = DenseTensor::from_storage_f32(
+            TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu),
+            vec![1.0f32, 2.0],
+        )
+        .expect("f32 tensor should build");
+        let input = tape.leaf_tensor(input, true);
+
+        let (out, event) = tape
+            .mul_scalar(input, 0.25)
+            .expect("scalar multiply should succeed");
+        assert_eq!(event.output_dtype, DType::F64);
+        assert_eq!(tape.dtype(out).expect("dtype should resolve"), DType::F64);
+        assert_eq!(
+            tape.values(out).expect("values should resolve"),
+            vec![0.25, 0.5]
         );
     }
 
