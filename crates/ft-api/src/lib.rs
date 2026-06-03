@@ -44282,6 +44282,35 @@ impl FrankenTorchSession {
                 },
             )));
         }
+
+        if self.tensor_requires_grad(s)? || self.tensor_requires_grad(a)? {
+            // Hurwitz ζ(s, a) is differentiable w.r.t. the parameter a:
+            //   ∂ζ(s,a)/∂a = -s · ζ(s+1, a).
+            // Matching torch's derivatives.yaml, the exponent s is
+            // non-differentiable (its gradient is None). Forward reuses the same
+            // zeta_approx, so the value is bit-identical. frankentorch-2vxa.
+            return self.tensor_apply_function(
+                &[s, a],
+                move |ctx, inputs| {
+                    let (sv, s_shape) = inputs[0];
+                    let (av, _a_shape) = inputs[1];
+                    let values = par_zip_map_f64(sv, av, zeta_approx);
+                    ctx.save_for_backward(sv.to_vec(), s_shape.to_vec());
+                    ctx.save_for_backward(av.to_vec(), s_shape.to_vec());
+                    Ok((values, s_shape.to_vec()))
+                },
+                move |ctx, grad_outputs| {
+                    let saved = ctx.saved_tensors();
+                    let (sv, av) = (&saved[0], &saved[1]);
+                    let g = grad_outputs[0];
+                    let grad_a: Vec<f64> = (0..g.len())
+                        .map(|i| g[i] * (-sv[i]) * zeta_approx(sv[i] + 1.0, av[i]))
+                        .collect();
+                    Ok(vec![None, Some(grad_a)])
+                },
+            );
+        }
+
         let values: Vec<f64> = par_zip_map_f64(&s_vals, &a_vals, zeta_approx);
         let out = self.tensor_tape.leaf(values, s_shape, false)?;
         self.runtime.ledger_mut().record(
@@ -83185,6 +83214,45 @@ mod tests {
         assert!(rel(super::zeta_approx(2.0, 2.0), 0.6449340668482264)); // π²/6 − 1
         assert!(rel(super::zeta_approx(2.0, 0.5), 4.934802200544679)); // π²/2
         assert!(rel(super::zeta_approx(8.0, 1.0), 1.0040773561979443)); // π⁸/9450
+    }
+
+    #[test]
+    fn zeta_backward_wrt_q_matches_finite_difference() {
+        // Hurwitz ζ(s, q) is differentiable w.r.t. q: ∂ζ/∂q = −s·ζ(s+1, q)
+        // (s is non-differentiable, matching torch). Closed check at (2,2):
+        // −2·ζ(3,2) = −2(ζ(3)−1) = −0.404113806319188.
+        let s_vals = vec![2.0, 3.0, 2.5, 4.0];
+        let q_vals = vec![2.0, 1.5, 3.0, 0.5];
+        let eps = 1e-6;
+
+        let mut sess = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Value parity (grad path vs non-grad path).
+        let s_ng = sess.tensor_variable(s_vals.clone(), vec![4], false).unwrap();
+        let q_ng = sess.tensor_variable(q_vals.clone(), vec![4], false).unwrap();
+        let o_ng = sess.tensor_special_zeta(s_ng, q_ng).unwrap();
+        let v_ng = sess.tensor_values(o_ng).unwrap();
+        let s_g = sess.tensor_variable(s_vals.clone(), vec![4], false).unwrap(); // s non-diff
+        let q_g = sess.tensor_variable(q_vals.clone(), vec![4], true).unwrap();
+        let o_g = sess.tensor_special_zeta(s_g, q_g).unwrap();
+        let v_g = sess.tensor_values(o_g).unwrap();
+        for (p, r) in v_ng.iter().zip(v_g.iter()) {
+            assert_eq!(p.to_bits(), r.to_bits(), "zeta grad/non-grad value mismatch");
+        }
+        let loss = sess.tensor_sum(o_g).unwrap();
+        let report = sess.tensor_backward(loss).unwrap();
+        let grad_q = sess.tensor_gradient(&report, q_g).expect("zeta grad_q present");
+        // Closed-form check at index 0: (s,q)=(2,2) → −2·ζ(3,2).
+        assert!((grad_q[0] - (-0.404113806319188)).abs() < 1e-9, "zeta grad_q[0]={}", grad_q[0]);
+        for i in 0..4 {
+            let fp = super::zeta_approx(s_vals[i], q_vals[i] + eps);
+            let fm = super::zeta_approx(s_vals[i], q_vals[i] - eps);
+            let fd = (fp - fm) / (2.0 * eps);
+            assert!(
+                (grad_q[i] - fd).abs() <= 1e-6 * (1.0 + fd.abs()),
+                "zeta grad_q[{i}] = {}, fd = {fd}",
+                grad_q[i]
+            );
+        }
     }
 
     #[test]
