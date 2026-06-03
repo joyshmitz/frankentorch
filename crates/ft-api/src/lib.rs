@@ -38358,11 +38358,17 @@ impl FrankenTorchSession {
         upper: bool,
     ) -> Result<(TensorNodeId, i32), AutogradError> {
         if self.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "linalg_cholesky_ex: autograd not supported",
-                },
-            )));
+            // cholesky_ex differs from cholesky only by reporting `info` instead
+            // of erroring on a non-positive-definite input. Under autograd the
+            // factorization must succeed for the differentiable-Cholesky backward
+            // to be defined, so we delegate to the autograd-aware
+            // `tensor_linalg_cholesky` — whose forward uses the same
+            // `cholesky_contiguous_f64` kernel, making the returned factor
+            // bit-identical to the non-grad path — and report info=0. A non-PD
+            // input under requires_grad surfaces cholesky's fail-loud (backward
+            // through a failed factorization is undefined). frankentorch-rl4g.
+            let out = self.tensor_linalg_cholesky(input, upper)?;
+            return Ok((out, 0));
         }
         let (values, meta) = self.tensor_values_meta(input)?;
         match ft_kernel_cpu::cholesky_contiguous_f64(&values, &meta, upper) {
@@ -38539,11 +38545,16 @@ impl FrankenTorchSession {
         input: TensorNodeId,
     ) -> Result<(TensorNodeId, i32), AutogradError> {
         if self.tensor_requires_grad(input)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "linalg_inv_ex: autograd not supported",
-                },
-            )));
+            // inv_ex differs from inv only by reporting `info` instead of erroring
+            // on a singular matrix. Under autograd the factorization must succeed
+            // for the backward (-Y^T grad_Y Y^T) to be defined, so we delegate to
+            // the autograd-aware `tensor_linalg_inv` — whose forward uses the same
+            // `inv_tensor_contiguous_f64` kernel, making the returned inverse
+            // bit-identical to the non-grad path — and report info=0. A singular
+            // input under requires_grad surfaces inv's fail-loud (backward through
+            // a singular inverse is undefined). frankentorch-rl4g.
+            let out = self.tensor_linalg_inv(input)?;
+            return Ok((out, 0));
         }
         let shape = self.tensor_shape(input)?;
         if shape.len() != 2 || shape[0] != shape[1] {
@@ -38579,11 +38590,15 @@ impl FrankenTorchSession {
         b: TensorNodeId,
     ) -> Result<(TensorNodeId, i32), AutogradError> {
         if self.tensor_requires_grad(a)? || self.tensor_requires_grad(b)? {
-            return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                ft_dispatch::DispatchKeyError::IncompatibleSet {
-                    reason: "linalg_solve_ex: autograd not supported",
-                },
-            )));
+            // solve_ex differs from solve only by reporting `info` instead of
+            // erroring on a singular A. Under autograd A must be invertible for
+            // the solve adjoint to be defined, so we delegate to the
+            // autograd-aware `tensor_linalg_solve` — which computes inv(A) @ B via
+            // the same `tensor_linalg_inv` + matmul path as the non-grad branch
+            // below, making X bit-identical — and report info=0. A singular A
+            // under requires_grad surfaces inv's fail-loud. frankentorch-rl4g.
+            let out = self.tensor_linalg_solve(a, b)?;
+            return Ok((out, 0));
         }
         let (inv_a, info) = self.tensor_linalg_inv_ex(a)?;
         if info != 0 {
@@ -51957,15 +51972,17 @@ impl FrankenTorchSession {
         seq_len: usize,
         d_model: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        // Each position owns a contiguous d_model row and every element is an
-        // independent powf + sin/cos (compute-bound), so distribute the positions
-        // across Rayon workers. The per-element formula and the linear write
-        // position (pos*d_model + i) are unchanged, so the result is bit-for-bit
-        // identical to the serial push loop.
+        // Each position owns a contiguous d_model row, so distribute the positions
+        // across Rayon workers. The angle formula and the linear write position
+        // (pos*d_model + i) are unchanged, so the result is bit-for-bit identical
+        // to the serial push loop.
         let mut encoding = vec![0.0_f64; seq_len * d_model];
+        let denominators: Vec<f64> = (0..d_model)
+            .map(|i| (10000_f64).powf((2 * (i / 2)) as f64 / d_model as f64))
+            .collect();
         let fill_row = |pos: usize, row: &mut [f64]| {
             for (i, slot) in row.iter_mut().enumerate() {
-                let angle = (pos as f64) / (10000_f64).powf((2 * (i / 2)) as f64 / d_model as f64);
+                let angle = (pos as f64) / denominators[i];
                 *slot = if i % 2 == 0 { angle.sin() } else { angle.cos() };
             }
         };
@@ -74130,11 +74147,13 @@ mod tests {
     #[test]
     fn linalg_svd_class_ops_fail_loud_on_requires_grad() {
         // Regression for frankentorch-rl4g: SVD-class linalg ops
-        // (svd, svdvals, eigh, eigvalsh, qr, cholesky) used to
-        // silently sever autograd by extracting tensor_values and
-        // rebuilding non-grad leaves. Each now fails loud when
-        // input requires_grad — matches the parking-lot pattern of
-        // pvfk (det/slogdet) and 3v6e (stft/istft).
+        // (svd, svdvals, eigh, qr) used to silently sever autograd by
+        // extracting tensor_values and rebuilding non-grad leaves. Each
+        // still fails loud when input requires_grad — matches the
+        // parking-lot pattern of pvfk (det/slogdet) and 3v6e (stft/istft).
+        // NOTE: eigvalsh and cholesky have since gained real autograd
+        // backward (frankentorch-rl4g), so they are covered by their own
+        // finite-difference tests and intentionally excluded here.
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = s
             .tensor_variable(vec![2.0, 0.5, 0.5, 1.0], vec![2, 2], true)
@@ -74155,20 +74174,10 @@ mod tests {
             .expect_err("eigh must fail loud on requires_grad");
         assert!(format!("{eigh_err:?}").contains("autograd not supported"));
 
-        let eigvalsh_err = s
-            .tensor_linalg_eigvalsh(a)
-            .expect_err("eigvalsh must fail loud on requires_grad");
-        assert!(format!("{eigvalsh_err:?}").contains("autograd not supported"));
-
         let qr_err = s
             .tensor_linalg_qr(a, true)
             .expect_err("qr must fail loud on requires_grad");
         assert!(format!("{qr_err:?}").contains("autograd not supported"));
-
-        let chol_err = s
-            .tensor_linalg_cholesky(a, false)
-            .expect_err("cholesky must fail loud on requires_grad");
-        assert!(format!("{chol_err:?}").contains("autograd not supported"));
     }
 
     #[test]
@@ -79354,6 +79363,148 @@ mod tests {
             (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
             "eigvalsh backward mismatch: analytic={analytic}, fd={fd}"
         );
+    }
+
+    #[test]
+    fn inv_ex_autograd_matches_finite_difference_and_value_parity() {
+        use ft_core::{DType, Device};
+        let n = 3usize;
+        #[rustfmt::skip]
+        let a = vec![
+            4.0, 1.0, 0.5,
+            1.0, 3.0, 0.7,
+            0.5, 0.7, 2.0,
+        ];
+        // Direction for the directional-derivative FD check.
+        let v = vec![0.1, -0.2, 0.05, 0.3, -0.1, 0.15, -0.25, 0.2, 0.1];
+
+        // Bit-exact forward parity: the requires_grad path must return the same
+        // inverse as the non-grad path (both use inv_tensor_contiguous_f64).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_ng = s.tensor_variable(a.clone(), vec![n, n], false).unwrap();
+        let (inv_ng, info_ng) = s.tensor_linalg_inv_ex(a_ng).unwrap();
+        assert_eq!(info_ng, 0);
+        let inv_ng_v = s.tensor_values(inv_ng).unwrap();
+        let a_g = s.tensor_variable(a.clone(), vec![n, n], true).unwrap();
+        let (inv_g, info_g) = s.tensor_linalg_inv_ex(a_g).unwrap();
+        assert_eq!(info_g, 0);
+        let inv_g_v = s.tensor_values(inv_g).unwrap();
+        for (x, y) in inv_ng_v.iter().zip(inv_g_v.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "inv_ex grad/non-grad value mismatch");
+        }
+
+        // FD verification of the unlocked gradient: loss = sum(inv(A)^2).
+        let loss_of = |mat: &[f64]| -> f64 {
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let iv = ft_kernel_cpu::inv_tensor_contiguous_f64(mat, &meta).unwrap();
+            iv.iter().map(|x| x * x).sum::<f64>()
+        };
+        let sq = s.tensor_mul(inv_g, inv_g).unwrap();
+        let loss = s.tensor_sum(sq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_a = s.tensor_gradient(&report, a_g).expect("inv_ex grad present");
+        let analytic: f64 = grad_a.iter().zip(v.iter()).map(|(g, vv)| g * vv).sum();
+        let eps = 1e-6;
+        let a_plus: Vec<f64> = a.iter().zip(v.iter()).map(|(x, vv)| x + eps * vv).collect();
+        let a_minus: Vec<f64> = a.iter().zip(v.iter()).map(|(x, vv)| x - eps * vv).collect();
+        let fd = (loss_of(&a_plus) - loss_of(&a_minus)) / (2.0 * eps);
+        assert!(
+            (analytic - fd).abs() <= 1e-4 * (1.0 + fd.abs()),
+            "inv_ex backward mismatch: analytic={analytic}, fd={fd}"
+        );
+    }
+
+    #[test]
+    fn cholesky_ex_autograd_matches_base_and_value_parity() {
+        let n = 3usize;
+        // SPD matrix.
+        #[rustfmt::skip]
+        let a = vec![
+            4.0, 1.0, 0.5,
+            1.0, 3.0, 0.7,
+            0.5, 0.7, 2.0,
+        ];
+        // Forward value parity: grad path vs non-grad path (same kernel).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_ng = s.tensor_variable(a.clone(), vec![n, n], false).unwrap();
+        let (l_ng, info_ng) = s.tensor_linalg_cholesky_ex(a_ng, false).unwrap();
+        assert_eq!(info_ng, 0);
+        let l_ng_v = s.tensor_values(l_ng).unwrap();
+        let a_g = s.tensor_variable(a.clone(), vec![n, n], true).unwrap();
+        let (l_g, info_g) = s.tensor_linalg_cholesky_ex(a_g, false).unwrap();
+        assert_eq!(info_g, 0);
+        let l_g_v = s.tensor_values(l_g).unwrap();
+        for (x, y) in l_ng_v.iter().zip(l_g_v.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "cholesky_ex grad/non-grad value mismatch");
+        }
+
+        // The unlocked gradient must be bit-identical to the autograd-aware base
+        // op it delegates to (loss = sum(L^2)).
+        let sq = s.tensor_mul(l_g, l_g).unwrap();
+        let loss = s.tensor_sum(sq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_ex = s.tensor_gradient(&report, a_g).expect("cholesky_ex grad present");
+
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_base = s2.tensor_variable(a.clone(), vec![n, n], true).unwrap();
+        let l_base = s2.tensor_linalg_cholesky(a_base, false).unwrap();
+        let sq2 = s2.tensor_mul(l_base, l_base).unwrap();
+        let loss2 = s2.tensor_sum(sq2).unwrap();
+        let report2 = s2.tensor_backward(loss2).unwrap();
+        let grad_base = s2.tensor_gradient(&report2, a_base).expect("cholesky grad present");
+        for (x, y) in grad_ex.iter().zip(grad_base.iter()) {
+            assert_eq!(x.to_bits(), y.to_bits(), "cholesky_ex grad != cholesky grad");
+        }
+    }
+
+    #[test]
+    fn solve_ex_autograd_matches_base_and_value_parity() {
+        let n = 3usize;
+        #[rustfmt::skip]
+        let a = vec![
+            4.0, 1.0, 0.5,
+            1.0, 3.0, 0.7,
+            0.5, 0.7, 2.0,
+        ];
+        let b = vec![1.0, 2.0, -1.0];
+        // Forward value parity: grad path vs non-grad path.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_ng = s.tensor_variable(a.clone(), vec![n, n], false).unwrap();
+        let b_ng = s.tensor_variable(b.clone(), vec![n], false).unwrap();
+        let (x_ng, info_ng) = s.tensor_linalg_solve_ex(a_ng, b_ng).unwrap();
+        assert_eq!(info_ng, 0);
+        let x_ng_v = s.tensor_values(x_ng).unwrap();
+        let a_g = s.tensor_variable(a.clone(), vec![n, n], true).unwrap();
+        let b_g = s.tensor_variable(b.clone(), vec![n], true).unwrap();
+        let (x_g, info_g) = s.tensor_linalg_solve_ex(a_g, b_g).unwrap();
+        assert_eq!(info_g, 0);
+        let x_g_v = s.tensor_values(x_g).unwrap();
+        for (xv, yv) in x_ng_v.iter().zip(x_g_v.iter()) {
+            assert_eq!(xv.to_bits(), yv.to_bits(), "solve_ex grad/non-grad value mismatch");
+        }
+
+        // Unlocked gradient bit-identical to the base solve (loss = sum(X^2)).
+        let sq = s.tensor_mul(x_g, x_g).unwrap();
+        let loss = s.tensor_sum(sq).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad_a_ex = s.tensor_gradient(&report, a_g).expect("solve_ex grad_a present");
+        let grad_b_ex = s.tensor_gradient(&report, b_g).expect("solve_ex grad_b present");
+
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a_base = s2.tensor_variable(a.clone(), vec![n, n], true).unwrap();
+        let b_base = s2.tensor_variable(b.clone(), vec![n], true).unwrap();
+        let x_base = s2.tensor_linalg_solve(a_base, b_base).unwrap();
+        let sq2 = s2.tensor_mul(x_base, x_base).unwrap();
+        let loss2 = s2.tensor_sum(sq2).unwrap();
+        let report2 = s2.tensor_backward(loss2).unwrap();
+        let grad_a_base = s2.tensor_gradient(&report2, a_base).expect("solve grad_a present");
+        let grad_b_base = s2.tensor_gradient(&report2, b_base).expect("solve grad_b present");
+        for (xv, yv) in grad_a_ex.iter().zip(grad_a_base.iter()) {
+            assert_eq!(xv.to_bits(), yv.to_bits(), "solve_ex grad_a != solve grad_a");
+        }
+        for (xv, yv) in grad_b_ex.iter().zip(grad_b_base.iter()) {
+            assert_eq!(xv.to_bits(), yv.to_bits(), "solve_ex grad_b != solve grad_b");
+        }
     }
 
     #[test]
