@@ -287,17 +287,28 @@ impl RandomSampler {
             let mut result = Vec::with_capacity(self.num_samples);
             let mut idx: Vec<usize> = (0..self.size).collect();
             let full_passes = self.num_samples / self.size;
+            let remainder = self.num_samples % self.size;
+            let reset_count =
+                full_passes.saturating_sub(1) + usize::from(remainder > 0 && full_passes > 0);
+            let base_indices = (reset_count >= 2).then(|| idx.clone());
             for pass in 0..full_passes {
                 if pass > 0 {
-                    refill_sequential_indices(&mut idx);
+                    if let Some(base) = base_indices.as_deref() {
+                        idx.copy_from_slice(base);
+                    } else {
+                        refill_sequential_indices(&mut idx);
+                    }
                 }
                 rng.shuffle(&mut idx);
                 result.extend_from_slice(&idx);
             }
-            let remainder = self.num_samples % self.size;
             if remainder > 0 {
                 if full_passes > 0 {
-                    refill_sequential_indices(&mut idx);
+                    if let Some(base) = base_indices.as_deref() {
+                        idx.copy_from_slice(base);
+                    } else {
+                        refill_sequential_indices(&mut idx);
+                    }
                 }
                 rng.shuffle(&mut idx);
                 result.extend_from_slice(&idx[..remainder]);
@@ -1349,6 +1360,44 @@ mod tests {
         // With 20 samples from 5 elements, we expect repeats
         let unique: std::collections::HashSet<usize> = indices.iter().copied().collect();
         assert!(unique.len() < 20);
+    }
+
+    #[test]
+    fn random_sampler_repeated_passes_match_refill_reference_order() {
+        fn refill_reference(size: usize, num_samples: usize, seed: u64) -> Vec<usize> {
+            let mut rng = SimpleRng::new(seed);
+            let mut result = Vec::with_capacity(num_samples);
+            let mut idx: Vec<usize> = (0..size).collect();
+            let full_passes = num_samples / size;
+            for pass in 0..full_passes {
+                if pass > 0 {
+                    refill_sequential_indices(&mut idx);
+                }
+                rng.shuffle(&mut idx);
+                result.extend_from_slice(&idx);
+            }
+            let remainder = num_samples % size;
+            if remainder > 0 {
+                if full_passes > 0 {
+                    refill_sequential_indices(&mut idx);
+                }
+                rng.shuffle(&mut idx);
+                result.extend_from_slice(&idx[..remainder]);
+            }
+            result
+        }
+
+        let size = 37;
+        let num_samples = size * 9 + 13;
+        let seed = 0xA5A5_5A5A_0123_4567;
+        let sampler = RandomSampler::new(size)
+            .with_num_samples(num_samples)
+            .with_seed(seed);
+        assert_eq!(
+            sampler.indices(),
+            refill_reference(size, num_samples, seed),
+            "optimized repeated-pass sampler must preserve old refill order"
+        );
     }
 
     #[test]
