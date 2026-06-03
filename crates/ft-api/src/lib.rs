@@ -60482,44 +60482,124 @@ fn erfinv_approx(x: f64) -> f64 {
     sign * erfinv_positive_approx(p, q)
 }
 
-/// Scalar modified Bessel I0 via Abramowitz & Stegun 9.8.1 / 9.8.2
-/// (frankentorch-2vxa). Even in x; the polynomial pieces stay
-/// accurate to ~1.6e-7 relative — adequate for f32-equivalent
-/// precision. f64 callers needing tighter accuracy should switch
-/// to a higher-order Cephes expansion in a follow-up.
-fn bessel_i0_scalar(x: f64) -> f64 {
+// ── High-precision modified Bessel I-family (Cephes, Moshier) ───────────────
+// The previous A&S 9.8.x polynomials were only ~1.6e-7 relative — single
+// precision, an ~8-orders-of-magnitude regression vs torch (which wraps the
+// Cephes f64 routines). These Chebyshev expansions are accurate to ~1 ULP in
+// f64 and bit-align with the upstream reference. Pure Rust; no C linkage.
+
+/// Evaluate a Chebyshev series at `x` using Cephes' `chbevl` recurrence.
+fn cephes_chbevl(x: f64, coef: &[f64]) -> f64 {
+    let mut b0 = coef[0];
+    let mut b1 = 0.0_f64;
+    let mut b2 = 0.0_f64;
+    for &c in &coef[1..] {
+        b2 = b1;
+        b1 = b0;
+        b0 = x * b1 - b2 + c;
+    }
+    0.5 * (b0 - b2)
+}
+
+/// Chebyshev coefficients for exp(-x) I0(x) on [0, 8], variable x/2 - 2.
+const CEPHES_I0_A: [f64; 30] = [
+    -4.41534164647933937950e-18, 3.33079451882223809783e-17, -2.43127984654795469359e-16,
+    1.71539128555513303061e-15, -1.16853328779934516808e-14, 7.67618549860493561688e-14,
+    -4.85644678311192946090e-13, 2.95505266312963983461e-12, -1.72682629144155570723e-11,
+    9.67580903537323691224e-11, -5.18979560163526290666e-10, 2.65982372468238665035e-9,
+    -1.30002500998624804212e-8, 6.04699502254191894932e-8, -2.67079385394061173391e-7,
+    1.11738753912010371815e-6, -4.41673835845875056359e-6, 1.64484480707288970893e-5,
+    -5.75419501008210370398e-5, 1.88502885095841655729e-4, -5.76375574538582365885e-4,
+    1.63947561694133579842e-3, -4.32430999505057594430e-3, 1.05464603945949983183e-2,
+    -2.37374148058994688156e-2, 4.93052842396707084878e-2, -9.49010970480476444210e-2,
+    1.71620901522208775349e-1, -3.04682672343198398683e-1, 6.76795274409476084995e-1,
+];
+
+/// Chebyshev coefficients for exp(-x) sqrt(x) I0(x) on [8, inf], variable 32/x - 2.
+const CEPHES_I0_B: [f64; 25] = [
+    -7.23318048787475395456e-18, -4.83050448594418207126e-18, 4.46562142029675999901e-17,
+    3.46122286769746109310e-17, -2.82762398051658348494e-16, -3.42548561967721913462e-16,
+    1.77256013305652638360e-15, 3.81168066935262242075e-15, -9.55484669882830764870e-15,
+    -4.15056934728722208663e-14, 1.54008621752140982691e-14, 3.85277838274214270114e-13,
+    7.18012445138366623367e-13, -1.79417853150680611778e-12, -1.32158118404477131188e-11,
+    -3.14991652796324136454e-11, 1.18891471078464383424e-11, 4.94060238822496958910e-10,
+    3.39623202570838634515e-9, 2.26666899049817806459e-8, 2.04891858946906374183e-7,
+    2.89137052083475648297e-6, 6.88975834691682398426e-5, 3.36911647825569408990e-3,
+    8.04490411014108831608e-1,
+];
+
+/// Chebyshev coefficients for exp(-x) I1(x)/x on [0, 8], variable x/2 - 2.
+const CEPHES_I1_A: [f64; 29] = [
+    2.77791411276104639959e-18, -2.11142121435816608115e-17, 1.55363195773620046921e-16,
+    -1.10559694773538630805e-15, 7.60068429473540693410e-15, -5.04218550472791168711e-14,
+    3.22379336594557470981e-13, -1.98397439776494371520e-12, 1.17361862988909016308e-11,
+    -6.66348972350202774223e-11, 3.62559028155211703701e-10, -1.88724975172282928790e-9,
+    9.38153738649577178388e-9, -4.44505912879632808065e-8, 2.00329475355213526229e-7,
+    -8.56872026469545474066e-7, 3.47025130813767847674e-6, -1.32731636560394358279e-5,
+    4.78156510755005422638e-5, -1.61760815825896745588e-4, 5.12285956168575772895e-4,
+    -1.51357245063125314899e-3, 4.15642294431288815669e-3, -1.05640848946261981558e-2,
+    2.47264490306265168283e-2, -5.29459812080949914269e-2, 1.02643658689847095384e-1,
+    -1.76416518357834055153e-1, 2.52587186443633654823e-1,
+];
+
+/// Chebyshev coefficients for exp(-x) sqrt(x) I1(x) on [8, inf], variable 32/x - 2.
+const CEPHES_I1_B: [f64; 25] = [
+    7.51729631084210481353e-18, 4.41434832307170791151e-18, -4.65030536848935832153e-17,
+    -3.20952592199342395980e-17, 2.96262899764595013876e-16, 3.30820231092092828324e-16,
+    -1.88035477551078244854e-15, -3.81440307243700780478e-15, 1.04202769841288027642e-14,
+    4.27244001671195135429e-14, -2.10154184277266431302e-14, -4.08355111109219731823e-13,
+    -7.19855177624590851209e-13, 2.03562854414708950722e-12, 1.41258074366137813316e-11,
+    3.25260358301548823856e-11, -1.89749581235054123450e-11, -5.58974346219658380687e-10,
+    -3.83538038596423702205e-9, -2.63146884688951950684e-8, -2.51223623787020892529e-7,
+    -3.88256480887769039346e-6, -1.10588938762623716291e-4, -9.76109749136146840777e-3,
+    7.78576235018280120474e-1,
+];
+
+/// exp(-|x|) * I0(x) — Cephes f64 precision.
+fn cephes_i0e(x: f64) -> f64 {
     if x.is_nan() {
         return f64::NAN;
     }
     let ax = x.abs();
-    if ax < 3.75 {
-        // A&S 9.8.1: i0(x) ≈ Σ a_k * t^k where t = (x/3.75)².
-        let t = (x / 3.75).powi(2);
-        eval_poly_f64(
-            t,
-            &[
-                1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813,
-            ],
-        )
+    if ax <= 8.0 {
+        cephes_chbevl(ax / 2.0 - 2.0, &CEPHES_I0_A)
     } else {
-        // A&S 9.8.2: i0(x) ≈ (exp(|x|)/sqrt(|x|)) * P(3.75/|x|).
-        let u = 3.75 / ax;
-        let poly = eval_poly_f64(
-            u,
-            &[
-                0.39894228,
-                0.01328592,
-                0.00225319,
-                -0.00157565,
-                0.00916281,
-                -0.02057706,
-                0.02635537,
-                -0.01647633,
-                0.00392377,
-            ],
-        );
-        ax.exp() / ax.sqrt() * poly
+        cephes_chbevl(32.0 / ax - 2.0, &CEPHES_I0_B) / ax.sqrt()
     }
+}
+
+/// Modified Bessel I0(x) — Cephes f64 precision (even in x).
+fn cephes_i0(x: f64) -> f64 {
+    let ax = x.abs();
+    cephes_i0e(x) * ax.exp()
+}
+
+/// exp(-|x|) * I1(x) — Cephes f64 precision (odd in x).
+fn cephes_i1e(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    let z = x.abs();
+    let mut r = if z <= 8.0 {
+        cephes_chbevl(z / 2.0 - 2.0, &CEPHES_I1_A) * z
+    } else {
+        cephes_chbevl(32.0 / z - 2.0, &CEPHES_I1_B) / z.sqrt()
+    };
+    if x < 0.0 {
+        r = -r;
+    }
+    r
+}
+
+/// Modified Bessel I1(x) — Cephes f64 precision (odd in x).
+fn cephes_i1(x: f64) -> f64 {
+    let ax = x.abs();
+    cephes_i1e(x) * ax.exp()
+}
+
+/// Scalar modified Bessel I0 (Cephes f64; ~1 ULP, bit-aligned with torch).
+fn bessel_i0_scalar(x: f64) -> f64 {
+    cephes_i0(x)
 }
 
 /// Exponentially scaled I0: `exp(-|x|) * i0(x)`. Uses the same
@@ -60528,74 +60608,14 @@ fn bessel_i0_scalar(x: f64) -> f64 {
 /// large-x result stays bounded for arbitrary x. Tracked under
 /// frankentorch-2vxa.
 fn bessel_i0e_scalar(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    let ax = x.abs();
-    if ax < 3.75 {
-        // i0e(x) = exp(-|x|) * i0_polynomial(t).
-        bessel_i0_scalar(x) * (-ax).exp()
-    } else {
-        // exp(|x|) cancels: i0e(x) = (1/sqrt(|x|)) * P(3.75/|x|).
-        let u = 3.75 / ax;
-        let poly = eval_poly_f64(
-            u,
-            &[
-                0.39894228,
-                0.01328592,
-                0.00225319,
-                -0.00157565,
-                0.00916281,
-                -0.02057706,
-                0.02635537,
-                -0.01647633,
-                0.00392377,
-            ],
-        );
-        poly / ax.sqrt()
-    }
+    cephes_i0e(x)
 }
 
 /// Scalar modified Bessel I1 via Abramowitz & Stegun 9.8.3 / 9.8.4
 /// (frankentorch-ner6). Odd in x. The polynomial pieces are rated
 /// to ~1.6e-7 relative.
 fn bessel_i1_scalar(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    let ax = x.abs();
-    if ax == 0.0 {
-        return 0.0;
-    }
-    let result = if ax < 3.75 {
-        // A&S 9.8.3: i1(x)/x ≈ Σ b_k * t^k where t = (x/3.75)².
-        let t = (x / 3.75).powi(2);
-        ax * eval_poly_f64(
-            t,
-            &[
-                0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411,
-            ],
-        )
-    } else {
-        // A&S 9.8.4: i1(x) ≈ exp(|x|)/sqrt(|x|) * P(3.75/|x|).
-        let u = 3.75 / ax;
-        let poly = eval_poly_f64(
-            u,
-            &[
-                0.39894228,
-                -0.03988024,
-                -0.00362018,
-                0.00163801,
-                -0.01031555,
-                0.02282967,
-                -0.02895312,
-                0.01787654,
-                -0.00420059,
-            ],
-        );
-        ax.exp() / ax.sqrt() * poly
-    };
-    if x < 0.0 { -result } else { result }
+    cephes_i1(x)
 }
 
 fn bessel_i1_derivative_scalar(x: f64) -> f64 {
@@ -60616,34 +60636,7 @@ fn bessel_i1_derivative_scalar(x: f64) -> f64 {
 /// branch so the result stays bounded for arbitrary x. Tracked
 /// under frankentorch-ner6.
 fn bessel_i1e_scalar(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    let ax = x.abs();
-    if ax == 0.0 {
-        return 0.0;
-    }
-    let result = if ax < 3.75 {
-        bessel_i1_scalar(x).abs() * (-ax).exp()
-    } else {
-        let u = 3.75 / ax;
-        let poly = eval_poly_f64(
-            u,
-            &[
-                0.39894228,
-                -0.03988024,
-                -0.00362018,
-                0.00163801,
-                -0.01031555,
-                0.02282967,
-                -0.02895312,
-                0.01787654,
-                -0.00420059,
-            ],
-        );
-        poly / ax.sqrt()
-    };
-    if x < 0.0 { -result } else { result }
+    cephes_i1e(x)
 }
 
 fn bessel_i1e_derivative_scalar(x: f64) -> f64 {
@@ -61612,102 +61605,24 @@ fn digamma_approx(mut x: f64) -> f64 {
 ///
 /// Uses polynomial approximation from Abramowitz & Stegun.
 fn i0_approx(x: f64) -> f64 {
-    let ax = x.abs();
-    if ax < 3.75 {
-        let t = (x / 3.75).powi(2);
-        1.0 + t
-            * (3.5156229
-                + t * (3.0899424
-                    + t * (1.2067492 + t * (0.2659732 + t * (0.0360768 + t * 0.0045813)))))
-    } else {
-        let t = 3.75 / ax;
-        (ax.exp() / ax.sqrt())
-            * (0.39894228
-                + t * (0.01328592
-                    + t * (0.00225319
-                        + t * (-0.00157565
-                            + t * (0.00916281
-                                + t * (-0.02057706
-                                    + t * (0.02635537 + t * (-0.01647633 + t * 0.00392377))))))))
-    }
+    cephes_i0(x)
 }
 
-/// Modified Bessel function of the first kind, order 1.
-///
-/// Uses polynomial approximation from Abramowitz & Stegun.
+/// Modified Bessel function of the first kind, order 1 (Cephes f64; ~1 ULP).
 fn i1_approx(x: f64) -> f64 {
-    let ax = x.abs();
-    let result = if ax < 3.75 {
-        let t = (x / 3.75).powi(2);
-        ax * (0.5
-            + t * (0.87890594
-                + t * (0.51498869
-                    + t * (0.15084934 + t * (0.02658733 + t * (0.00301532 + t * 0.00032411))))))
-    } else {
-        let t = 3.75 / ax;
-        (ax.exp() / ax.sqrt())
-            * (0.39894228
-                + t * (-0.03988024
-                    + t * (-0.00362018
-                        + t * (0.00163801
-                            + t * (-0.01031555
-                                + t * (0.02282967
-                                    + t * (-0.02895312 + t * (0.01787654 + t * (-0.00420059)))))))))
-    };
-    if x < 0.0 { -result } else { result }
+    cephes_i1(x)
 }
 
 /// Exponentially scaled modified Bessel function of the first kind, order 0.
-///
-/// i0e(x) = exp(-|x|) * i0(x)
+/// i0e(x) = exp(-|x|) * i0(x) (Cephes f64; ~1 ULP).
 fn i0e_approx(x: f64) -> f64 {
-    let ax = x.abs();
-    if ax < 3.75 {
-        let t = (x / 3.75).powi(2);
-        let i0 = 1.0
-            + t * (3.5156229
-                + t * (3.0899424
-                    + t * (1.2067492 + t * (0.2659732 + t * (0.0360768 + t * 0.0045813)))));
-        i0 * (-ax).exp()
-    } else {
-        let t = 3.75 / ax;
-        (1.0 / ax.sqrt())
-            * (0.39894228
-                + t * (0.01328592
-                    + t * (0.00225319
-                        + t * (-0.00157565
-                            + t * (0.00916281
-                                + t * (-0.02057706
-                                    + t * (0.02635537 + t * (-0.01647633 + t * 0.00392377))))))))
-    }
+    cephes_i0e(x)
 }
 
 /// Exponentially scaled modified Bessel function of the first kind, order 1.
-///
-/// i1e(x) = exp(-|x|) * i1(x)
+/// i1e(x) = exp(-|x|) * i1(x) (Cephes f64; ~1 ULP).
 fn i1e_approx(x: f64) -> f64 {
-    let ax = x.abs();
-    let result = if ax < 3.75 {
-        let t = (x / 3.75).powi(2);
-        let i1 = ax
-            * (0.5
-                + t * (0.87890594
-                    + t * (0.51498869
-                        + t * (0.15084934
-                            + t * (0.02658733 + t * (0.00301532 + t * 0.00032411))))));
-        i1 * (-ax).exp()
-    } else {
-        let t = 3.75 / ax;
-        (1.0 / ax.sqrt())
-            * (0.39894228
-                + t * (-0.03988024
-                    + t * (-0.00362018
-                        + t * (0.00163801
-                            + t * (-0.01031555
-                                + t * (0.02282967
-                                    + t * (-0.02895312 + t * (0.01787654 + t * (-0.00420059)))))))))
-    };
-    if x < 0.0 { -result } else { result }
+    cephes_i1e(x)
 }
 
 /// Polygamma function of order n for n >= 1.
@@ -82447,8 +82362,38 @@ mod tests {
         let x = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
         let out = s.tensor_special_i0(x).unwrap();
         let v = s.tensor_values(out).unwrap();
-        // A&S polynomial is rated to ~1.6e-7 relative; loose tolerance.
-        assert!((v[0] - 1.26606587).abs() < 5e-7, "i0(1) = {}", v[0]);
+        // Cephes f64 expansion is ~1 ULP; tight tolerance.
+        assert!((v[0] - 1.2660658777520084).abs() < 1e-13, "i0(1) = {}", v[0]);
+    }
+
+    #[test]
+    fn cephes_i_family_matches_f64_reference_values() {
+        // Reference values from scipy.special (Cephes f64). Both the |x|<=8
+        // Chebyshev branch and the |x|>8 asymptotic branch are exercised, to
+        // catch any coefficient transcription error (which would show as ~1e-7).
+        let rel = |got: f64, want: f64| (got - want).abs() <= 1e-12 * (1.0 + want.abs());
+        // i0
+        assert!(rel(super::bessel_i0_scalar(0.0), 1.0));
+        assert!(rel(super::bessel_i0_scalar(1.0), 1.2660658777520084));
+        assert!(rel(super::bessel_i0_scalar(2.0), 2.2795853023360673));
+        assert!(rel(super::bessel_i0_scalar(5.0), 27.239871823604442));
+        assert!(rel(super::bessel_i0_scalar(10.0), 2815.7166284662544)); // |x|>8 branch
+        assert!(rel(super::bessel_i0_scalar(-3.0), super::bessel_i0_scalar(3.0))); // even
+        // i1
+        assert!(rel(super::bessel_i1_scalar(0.0), 0.0));
+        assert!(rel(super::bessel_i1_scalar(1.0), 0.5651591039924851));
+        assert!(rel(super::bessel_i1_scalar(2.0), 1.5906368546373291));
+        assert!(rel(super::bessel_i1_scalar(5.0), 24.335642142450524));
+        assert!(rel(super::bessel_i1_scalar(10.0), 2670.988303701255)); // |x|>8 branch
+        assert!(rel(super::bessel_i1_scalar(-2.0), -1.5906368546373291)); // odd
+        // i0e(1) absolute (scipy), then i0e/i1e = i0/i1 · exp(-|x|) by definition
+        // (i0/i1 are absolutely verified above, so this pins i0e/i1e too).
+        assert!(rel(super::bessel_i0e_scalar(1.0), 0.46575960759364043));
+        for &xv in &[1.0_f64, 5.0, 10.0] {
+            let e = (-xv).exp();
+            assert!(rel(super::bessel_i0e_scalar(xv), super::bessel_i0_scalar(xv) * e), "i0e({xv})");
+            assert!(rel(super::bessel_i1e_scalar(xv), super::bessel_i1_scalar(xv) * e), "i1e({xv})");
+        }
     }
 
     #[test]
