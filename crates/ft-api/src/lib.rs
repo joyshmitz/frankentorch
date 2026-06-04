@@ -18368,6 +18368,51 @@ impl FrankenTorchSession {
                 "layer_norm: batch shape volume overflow",
             )?
         };
+        // Fused no-grad fast path (f64): one streaming kernel instead of the ~14
+        // full-size op-graph intermediates. Grad / non-f64 fall through unchanged.
+        let w_grad = match weight {
+            Some(w) => self.tensor_tape.tensor_requires_grad(w)?,
+            None => false,
+        };
+        let b_grad = match bias {
+            Some(b) => self.tensor_tape.tensor_requires_grad(b)?,
+            None => false,
+        };
+        let w_f64 = match weight {
+            Some(w) => self.tensor_dtype(w)? == DType::F64,
+            None => true,
+        };
+        let b_f64 = match bias {
+            Some(b) => self.tensor_dtype(b)? == DType::F64,
+            None => true,
+        };
+        if !self.tensor_tape.tensor_requires_grad(input)?
+            && !w_grad
+            && !b_grad
+            && self.tensor_dtype(input)? == DType::F64
+            && w_f64
+            && b_f64
+        {
+            let x = self.tensor_values(input)?;
+            let wv = match weight {
+                Some(w) => Some(self.tensor_values(w)?),
+                None => None,
+            };
+            let bv = match bias {
+                Some(b) => Some(self.tensor_values(b)?),
+                None => None,
+            };
+            let out = ft_kernel_cpu::layer_norm_forward_f64(
+                &x,
+                wv.as_deref(),
+                bv.as_deref(),
+                batch_numel,
+                normalized_numel,
+                eps,
+            );
+            return self.tensor_variable(out, input_shape, false);
+        }
+
         let flat = self.tensor_reshape(input, vec![batch_numel, normalized_numel])?;
         let mean = self.tensor_mean_dim(flat, 1)?;
         let mean = self.tensor_unsqueeze(mean, 1)?;
@@ -82112,6 +82157,46 @@ mod tests {
             .unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![8.0, 23.0, 8.0, 23.0]);
+    }
+
+    #[test]
+    fn functional_layer_norm_fused_matches_reference_within_tolerance() {
+        // The fused no-grad LayerNorm kernel must match the op-graph
+        // (mean/var/normalize/affine) reference to tolerance. The reference is
+        // obtained by marking inputs requires_grad, routing around the fast path.
+        let (batch, n) = (6usize, 16usize);
+        let xv: Vec<f64> = (0..batch * n)
+            .map(|i| ((i % 13) as f64 - 6.0) * 0.3 + (i as f64) * 0.01)
+            .collect();
+        let wv: Vec<f64> = (0..n).map(|j| 1.0 + (j as f64) * 0.05).collect();
+        let bv: Vec<f64> = (0..n).map(|j| (j as f64) * 0.02 - 0.1).collect();
+        let eps = 1e-5;
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(xv.clone(), vec![batch, n], false).unwrap();
+        let w = s.tensor_variable(wv.clone(), vec![n], false).unwrap();
+        let b = s.tensor_variable(bv.clone(), vec![n], false).unwrap();
+        let out = s
+            .functional_layer_norm(x, vec![n], Some(w), Some(b), eps)
+            .unwrap();
+        let fused = s.tensor_values(out).unwrap();
+
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x2 = s2.tensor_variable(xv, vec![batch, n], true).unwrap();
+        let w2 = s2.tensor_variable(wv, vec![n], true).unwrap();
+        let b2 = s2.tensor_variable(bv, vec![n], true).unwrap();
+        let out2 = s2
+            .functional_layer_norm(x2, vec![n], Some(w2), Some(b2), eps)
+            .unwrap();
+        let reference = s2.tensor_values(out2).unwrap();
+
+        assert_eq!(fused.len(), reference.len());
+        for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12 + 1e-10 * b.abs(),
+                "[{i}]: fused {a} vs reference {b}"
+            );
+        }
     }
 
     #[test]

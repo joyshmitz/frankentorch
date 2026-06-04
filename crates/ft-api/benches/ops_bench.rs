@@ -209,6 +209,27 @@ fn bench_add(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_layer_norm(c: &mut Criterion) {
+    // LayerNorm over the last dim, no-grad f64 — every transformer layer. The
+    // op-graph path allocates ~14 full [rows, hidden] intermediates + tape nodes.
+    let mut group = c.benchmark_group("layer_norm");
+    let (rows, hidden) = (2048usize, 1024usize);
+    group.bench_function("nograd_2048x1024", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![rows, hidden], false).unwrap();
+        let w = session.tensor_randn(vec![hidden], false).unwrap();
+        let bias = session.tensor_randn(vec![hidden], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .functional_layer_norm(x, vec![hidden], Some(w), Some(bias), 1e-5)
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_sdpa(c: &mut Criterion) {
     // Scaled-dot-product attention, no-grad f64. num_bh=16, seq=512, d=64 -> the
     // score matrix is 16*512*512*8 = 33.5MB; the fused kernel never materialises
@@ -709,6 +730,7 @@ criterion_group!(
     bench_backward_matmul,
     bench_linear_train,
     bench_sdpa,
+    bench_layer_norm,
     bench_linear_forward,
     bench_interpolate_bicubic,
     bench_interpolate_trilinear,

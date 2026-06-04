@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, FunctionCtx, TensorNodeId};
-use ft_core::{DType, DenseTensor, DenseTensorError, Device};
+use ft_core::{DType, DenseTensor, DenseTensorError, Device, TensorMeta};
 use ft_dispatch::{DispatchError, DispatchKeyError};
 
 fn incompatible_error(reason: &'static str) -> AutogradError {
@@ -4462,6 +4462,272 @@ impl MultiheadAttention {
         self.num_heads
     }
 
+    fn no_grad_f64_projection_values(
+        session: &mut FrankenTorchSession,
+        projection: &Linear,
+        input_values: &[f64],
+        batch_tokens: usize,
+        embed_dim: usize,
+    ) -> Result<Option<Vec<f64>>, AutogradError> {
+        if projection.in_features() != embed_dim || projection.out_features() != embed_dim {
+            return Ok(None);
+        }
+
+        let (weight_values, weight_meta) = session.tensor_values_meta(projection.weight)?;
+        if weight_meta.dtype() != DType::F64
+            || weight_meta.device() != Device::Cpu
+            || weight_meta.shape() != [embed_dim, embed_dim]
+        {
+            return Ok(None);
+        }
+
+        let bias_values = match projection.bias {
+            Some(bias) => {
+                let (values, meta) = session.tensor_values_meta(bias)?;
+                if meta.dtype() != DType::F64
+                    || meta.device() != Device::Cpu
+                    || meta.shape() != [embed_dim]
+                {
+                    return Ok(None);
+                }
+                Some(values)
+            }
+            None => None,
+        };
+
+        Ok(Some(ft_kernel_cpu::linear_tensor_f64(
+            input_values,
+            &weight_values,
+            bias_values.as_deref(),
+            batch_tokens,
+            embed_dim,
+            embed_dim,
+        )))
+    }
+
+    fn pack_attention_heads(
+        values: &[f64],
+        seq_len: usize,
+        num_heads: usize,
+        head_dim: usize,
+        embed_dim: usize,
+    ) -> Vec<f64> {
+        let mut packed = vec![0.0; values.len()];
+        let batch_stride = seq_len * embed_dim;
+        let head_stride = seq_len * head_dim;
+        for (batch, batch_values) in values.chunks_exact(batch_stride).enumerate() {
+            for (seq, token_values) in batch_values.chunks_exact(embed_dim).enumerate() {
+                for (head, head_values) in token_values.chunks_exact(head_dim).enumerate() {
+                    let dst = (batch * num_heads + head) * head_stride + seq * head_dim;
+                    packed[dst..dst + head_dim].copy_from_slice(head_values);
+                }
+            }
+        }
+        packed
+    }
+
+    fn transpose_attention_keys(
+        values: &[f64],
+        batch_heads: usize,
+        seq_len: usize,
+        head_dim: usize,
+    ) -> Vec<f64> {
+        let mut transposed = vec![0.0; values.len()];
+        let src_head_stride = seq_len * head_dim;
+        let dst_head_stride = head_dim * seq_len;
+        for batch_head in 0..batch_heads {
+            let src_head =
+                &values[batch_head * src_head_stride..(batch_head + 1) * src_head_stride];
+            let dst_head =
+                &mut transposed[batch_head * dst_head_stride..(batch_head + 1) * dst_head_stride];
+            for (seq, row) in src_head.chunks_exact(head_dim).enumerate() {
+                for (dim, &value) in row.iter().enumerate() {
+                    dst_head[dim * seq_len + seq] = value;
+                }
+            }
+        }
+        transposed
+    }
+
+    fn concat_attention_heads(
+        values: &[f64],
+        batch_size: usize,
+        seq_len: usize,
+        num_heads: usize,
+        head_dim: usize,
+        embed_dim: usize,
+    ) -> Vec<f64> {
+        let mut concat = vec![0.0; batch_size * seq_len * embed_dim];
+        let head_stride = seq_len * head_dim;
+        let batch_stride = seq_len * embed_dim;
+        for batch in 0..batch_size {
+            for head in 0..num_heads {
+                let src_head = &values[(batch * num_heads + head) * head_stride
+                    ..(batch * num_heads + head + 1) * head_stride];
+                for (seq, head_values) in src_head.chunks_exact(head_dim).enumerate() {
+                    let dst = batch * batch_stride + seq * embed_dim + head * head_dim;
+                    concat[dst..dst + head_dim].copy_from_slice(head_values);
+                }
+            }
+        }
+        concat
+    }
+
+    fn no_grad_f64_self_attention_fast_path(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<Option<TensorNodeId>, AutogradError> {
+        if session.is_grad_enabled() {
+            return Ok(None);
+        }
+
+        let (input_values, input_meta) = session.tensor_values_meta(input)?;
+        if input_meta.dtype() != DType::F64 || input_meta.device() != Device::Cpu {
+            return Ok(None);
+        }
+        let [batch_size, seq_len, embed_dim] = input_meta.shape() else {
+            return Ok(None);
+        };
+        let (batch_size, seq_len, embed_dim) = (*batch_size, *seq_len, *embed_dim);
+        if batch_size == 0 || seq_len == 0 || embed_dim == 0 {
+            return Ok(None);
+        }
+        let Some(expected_embed) = self.num_heads.checked_mul(self.head_dim) else {
+            return Ok(None);
+        };
+        if embed_dim != expected_embed {
+            return Ok(None);
+        }
+        let Some(batch_tokens) = batch_size.checked_mul(seq_len) else {
+            return Ok(None);
+        };
+        let Some(batch_heads) = batch_size.checked_mul(self.num_heads) else {
+            return Ok(None);
+        };
+        if batch_heads.checked_mul(seq_len).is_none()
+            || seq_len.checked_mul(seq_len).is_none()
+            || batch_heads
+                .checked_mul(seq_len)
+                .and_then(|n| n.checked_mul(seq_len))
+                .is_none()
+        {
+            return Ok(None);
+        }
+
+        let Some(mut q_heads) = Self::no_grad_f64_projection_values(
+            session,
+            &self.q_proj,
+            &input_values,
+            batch_tokens,
+            embed_dim,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(k_values) = Self::no_grad_f64_projection_values(
+            session,
+            &self.k_proj,
+            &input_values,
+            batch_tokens,
+            embed_dim,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(v_values) = Self::no_grad_f64_projection_values(
+            session,
+            &self.v_proj,
+            &input_values,
+            batch_tokens,
+            embed_dim,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        q_heads =
+            Self::pack_attention_heads(&q_heads, seq_len, self.num_heads, self.head_dim, embed_dim);
+        for value in &mut q_heads {
+            *value *= self.scale;
+        }
+        let k_heads = Self::pack_attention_heads(
+            &k_values,
+            seq_len,
+            self.num_heads,
+            self.head_dim,
+            embed_dim,
+        );
+        let v_heads = Self::pack_attention_heads(
+            &v_values,
+            seq_len,
+            self.num_heads,
+            self.head_dim,
+            embed_dim,
+        );
+        let k_t = Self::transpose_attention_keys(&k_heads, batch_heads, seq_len, self.head_dim);
+
+        let q_meta = TensorMeta::from_shape(
+            vec![batch_heads, seq_len, self.head_dim],
+            DType::F64,
+            Device::Cpu,
+        );
+        let k_t_meta = TensorMeta::from_shape(
+            vec![batch_heads, self.head_dim, seq_len],
+            DType::F64,
+            Device::Cpu,
+        );
+        let scores = ft_kernel_cpu::bmm_tensor_contiguous_f64(&q_heads, &k_t, &q_meta, &k_t_meta)
+            .map_err(DispatchError::from)
+            .map_err(AutogradError::Dispatch)?;
+
+        let scores_meta =
+            TensorMeta::from_shape(vec![batch_heads, seq_len, seq_len], DType::F64, Device::Cpu);
+        let attn_weights =
+            ft_kernel_cpu::softmax_dim_tensor_contiguous_f64(&scores, &scores_meta, 2)
+                .map_err(DispatchError::from)
+                .map_err(AutogradError::Dispatch)?;
+
+        let v_meta = TensorMeta::from_shape(
+            vec![batch_heads, seq_len, self.head_dim],
+            DType::F64,
+            Device::Cpu,
+        );
+        let head_out = ft_kernel_cpu::bmm_tensor_contiguous_f64(
+            &attn_weights,
+            &v_heads,
+            &scores_meta,
+            &v_meta,
+        )
+        .map_err(DispatchError::from)
+        .map_err(AutogradError::Dispatch)?;
+        let concat = Self::concat_attention_heads(
+            &head_out,
+            batch_size,
+            seq_len,
+            self.num_heads,
+            self.head_dim,
+            embed_dim,
+        );
+
+        let Some(output_values) = Self::no_grad_f64_projection_values(
+            session,
+            &self.out_proj,
+            &concat,
+            batch_tokens,
+            embed_dim,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(session.tensor_variable(
+            output_values,
+            vec![batch_size, seq_len, embed_dim],
+            false,
+        )?))
+    }
+
     /// Forward with separate query, key, value tensors.
     ///
     /// All inputs have shape `[N, S, E]` (or `[N, T, E]` for key/value).
@@ -4576,6 +4842,9 @@ impl Module for MultiheadAttention {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if let Some(output) = self.no_grad_f64_self_attention_fast_path(session, input)? {
+            return Ok(output);
+        }
         self.forward_qkv(session, input, input, input)
     }
 
@@ -21155,6 +21424,39 @@ mod tests {
                 "../../../artifacts/optimization/golden_outputs/ft_nn_mha_no_grad_linear_fast_path_frankentorch-rngz.txt"
             )
         );
+    }
+
+    #[test]
+    fn mha_no_grad_self_attention_fast_path_matches_forward_qkv_bits() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let x = session
+            .tensor_variable(
+                vec![0.25, -0.5, 0.75, 1.0, -1.25, 1.5, -1.75, 2.0],
+                vec![1, 2, 4],
+                true,
+            )
+            .expect("variable");
+        let slow = session
+            .with_no_grad(|session| mha.forward_qkv(session, x, x, x))
+            .expect("slow forward_qkv");
+        let fast = session
+            .with_no_grad(|session| mha.forward(session, x))
+            .expect("fast forward");
+        let slow_bits: Vec<u64> = session
+            .tensor_values(slow)
+            .expect("slow values")
+            .into_iter()
+            .map(f64::to_bits)
+            .collect();
+        let fast_bits: Vec<u64> = session
+            .tensor_values(fast)
+            .expect("fast values")
+            .into_iter()
+            .map(f64::to_bits)
+            .collect();
+        assert_eq!(fast_bits, slow_bits);
+        assert!(session.tensor_backward(fast).is_err());
     }
 
     #[test]

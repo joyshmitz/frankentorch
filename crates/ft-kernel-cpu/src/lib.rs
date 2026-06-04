@@ -2620,6 +2620,52 @@ pub fn sdpa_backward_f64(
     (dq, dk, dv)
 }
 
+/// Fused LayerNorm forward (f64): per row of `[batch, norm_size]`, computes
+/// `y = (x - mean) / sqrt(var + eps) * weight + bias` in two streaming passes,
+/// NEVER materialising the ~14 full-size intermediates (broadcast mean/var, the
+/// eps tensor, diff, diff², …) the op-graph allocates. Parallel over rows.
+/// `weight`/`bias` are the flattened normalized-shape affine params (or `None`).
+/// Matches the op-graph (mean/var/normalize/affine) to tolerance.
+#[must_use]
+pub fn layer_norm_forward_f64(
+    x: &[f64],
+    weight: Option<&[f64]>,
+    bias: Option<&[f64]>,
+    batch: usize,
+    norm_size: usize,
+    eps: f64,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * norm_size];
+    let inv_n = 1.0 / norm_size as f64;
+    out.par_chunks_mut(norm_size)
+        .enumerate()
+        .for_each(|(r, orow)| {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let mut sum = 0.0f64;
+            for &v in xrow {
+                sum += v;
+            }
+            let mean = sum * inv_n;
+            let mut vsum = 0.0f64;
+            for &v in xrow {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0 / (vsum * inv_n + eps).sqrt();
+            for j in 0..norm_size {
+                let mut y = (xrow[j] - mean) * rstd;
+                if let Some(w) = weight {
+                    y *= w[j];
+                }
+                if let Some(b) = bias {
+                    y += b[j];
+                }
+                orow[j] = y;
+            }
+        });
+    out
+}
+
 pub fn linear_tensor_f64(
     x: &[f64],
     weight: &[f64],
