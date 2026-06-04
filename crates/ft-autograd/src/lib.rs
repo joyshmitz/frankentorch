@@ -4234,6 +4234,44 @@ impl TensorTape {
         self.nodes.len()
     }
 
+    /// Free every tape node at index >= `boundary`, reclaiming the autograd arena
+    /// (bead frankentorch-v2os: the tape is otherwise append-only and leaks for
+    /// the session's lifetime). Truncates `nodes` and every node-indexed side
+    /// structure (persistent grads, hooks, retains_grad) so freed handles cannot
+    /// retain memory. `custom_functions` is keyed by its own counter, not node
+    /// ids, so it is left intact.
+    ///
+    /// CONTRACT: all `TensorNodeId`s with `id >= boundary` are INVALIDATED — using
+    /// one afterwards is a logic error (it errors as unknown, or aliases a node
+    /// created later). Capture `boundary = node_count()` after building the
+    /// persistent state (model parameters are leaves at low indices), then call
+    /// this after each training step / inference request to free that
+    /// generation's graph while keeping the parameters. No-op if `boundary`
+    /// already covers the whole tape.
+    pub fn truncate_graph_to(&mut self, boundary: usize) {
+        if boundary >= self.nodes.len() {
+            return;
+        }
+        self.nodes.truncate(boundary);
+        self.persistent_grads.retain(|&id, _| id < boundary);
+        self.tensor_hooks.retain(|&id, _| id < boundary);
+        self.retains_grad.retain(|&id| id < boundary);
+        if self.consumed_boundary > boundary {
+            self.consumed_boundary = boundary;
+        }
+        if boundary == 0 {
+            self.consumed = false;
+        }
+    }
+
+    /// Free the entire autograd tape (equivalent to `truncate_graph_to(0)`).
+    /// All outstanding `TensorNodeId`s are invalidated; call only when starting a
+    /// fresh graph generation (e.g. between inference requests that re-create
+    /// their inputs).
+    pub fn clear_graph(&mut self) {
+        self.truncate_graph_to(0);
+    }
+
     #[must_use]
     pub fn is_grad_enabled(&self) -> bool {
         self.grad_enabled

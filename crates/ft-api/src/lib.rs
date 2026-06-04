@@ -355,6 +355,23 @@ impl FrankenTorchSession {
         self.tensor_tape.node_count()
     }
 
+    /// Free every autograd tape node at index >= `boundary`, reclaiming the arena
+    /// (fixes the unbounded tape growth, bead frankentorch-v2os). Capture
+    /// `boundary = autograd_graph_node_count()` once after building persistent
+    /// state (model parameters), then call this after each training step or
+    /// inference request to free that generation's graph while keeping the
+    /// parameters. All tensor handles with `id >= boundary` are invalidated.
+    pub fn truncate_autograd_graph(&mut self, boundary: usize) {
+        self.tensor_tape.truncate_graph_to(boundary);
+    }
+
+    /// Free the entire autograd tape (`truncate_autograd_graph(0)`); invalidates
+    /// all outstanding tensor handles. For use between independent graph
+    /// generations (e.g. inference requests that re-create their inputs).
+    pub fn clear_autograd_graph(&mut self) {
+        self.tensor_tape.clear_graph();
+    }
+
     /// Enter a no_grad context: disable gradient tracking for subsequent operations.
     pub fn no_grad_enter(&mut self) {
         self.grad_enabled_stack.push(false);
@@ -71858,6 +71875,37 @@ mod tests {
             "tape grew by {} for 16 no_grad ops (before={before}, after={after})",
             after - before
         );
+    }
+
+    #[test]
+    fn truncate_autograd_graph_reclaims_arena_and_keeps_low_nodes() {
+        // The fix for the unbounded-tape leak (bead frankentorch-v2os): a leaf
+        // created before `boundary` (a "parameter") survives, the per-generation
+        // graph above it is freed, and fresh ops work afterwards.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let param = session.tensor_variable(vec![2.0, 3.0], vec![2], false).unwrap();
+        let boundary = session.autograd_graph_node_count();
+
+        // Build a "generation" of ops above the boundary.
+        let mut t = param;
+        for _ in 0..24 {
+            t = session.tensor_neg(t).unwrap();
+        }
+        assert!(session.autograd_graph_node_count() > boundary);
+
+        session.truncate_autograd_graph(boundary);
+        assert_eq!(session.autograd_graph_node_count(), boundary, "arena reclaimed");
+
+        // The preserved leaf (id < boundary) is still usable...
+        let pv = session.tensor_values(param).unwrap();
+        assert_eq!(pv, vec![2.0, 3.0]);
+        // ...and a fresh op records correctly on the truncated tape.
+        let fresh = session.tensor_neg(param).unwrap();
+        assert_eq!(session.tensor_values(fresh).unwrap(), vec![-2.0, -3.0]);
+
+        // clear_autograd_graph frees everything.
+        session.clear_autograd_graph();
+        assert_eq!(session.autograd_graph_node_count(), 0);
     }
 
     #[test]
