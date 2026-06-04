@@ -24779,23 +24779,17 @@ impl FrankenTorchSession {
         } else {
             1.0 / plan.n_fft as f64
         };
-        const ISTFT_TWIDDLE_PRECOMPUTE_MAX: usize = 1 << 20;
-        let inverse_dft_twiddles = plan
+        // Inverse FFT per frame instead of the dense O(n_fft^2) inverse DFT.
+        // `dft_inplace_1d_with_stage_twiddles(inverse=true)` already applies the
+        // 1/n_fft normalization, so the dense path's `* scale` becomes a single
+        // post-multiply `n_fft * scale` (= 1.0 unnormalized, sqrt(n_fft)
+        // normalized). Power-of-two n_fft uses the radix-2 FFT; otherwise the
+        // routine falls back to the dense DFT, preserving behaviour there.
+        let inverse_fft_twiddles = plan
             .n_fft
-            .checked_mul(plan.n_fft)
-            .filter(|&count| count <= ISTFT_TWIDDLE_PRECOMPUTE_MAX)
-            .map(|count| {
-                let mut twiddles = vec![ft_core::Complex128::new(0.0, 0.0); count];
-                for n in 0..plan.n_fft {
-                    for k in 0..plan.n_fft {
-                        let angle =
-                            2.0 * std::f64::consts::PI * k as f64 * n as f64 / plan.n_fft as f64;
-                        twiddles[n * plan.n_fft + k] =
-                            ft_core::Complex128::new(angle.cos(), angle.sin());
-                    }
-                }
-                twiddles
-            });
+            .is_power_of_two()
+            .then(|| Self::fft_stage_twiddles(plan.n_fft, true));
+        let fft_post_scale = plan.n_fft as f64 * scale;
 
         // Each frame's inverse transform is independent and dominates the cost
         // (direct O(n_fft^2) DFT). Compute every frame's time-domain signal in
@@ -24805,10 +24799,14 @@ impl FrankenTorchSession {
         // bit-for-bit identical to the original interleaved loop.
         let mut frame_times = vec![0.0_f64; plan.frames * plan.n_fft];
         let compute_frame = |frame_idx: usize, ft_slice: &mut [f64]| {
-            let mut full_spectrum = vec![ft_core::Complex128::new(0.0, 0.0); plan.n_fft];
+            // Reconstruct the full Hermitian spectrum into re/im buffers.
+            let mut re = vec![0.0_f64; plan.n_fft];
+            let mut im = vec![0.0_f64; plan.n_fft];
             if plan.onesided {
                 for k in 0..plan.freq_bins {
-                    full_spectrum[k] = spectrogram[k * plan.frames + frame_idx];
+                    let c = spectrogram[k * plan.frames + frame_idx];
+                    re[k] = c.re;
+                    im[k] = c.im;
                 }
                 let upper = if plan.n_fft.is_multiple_of(2) {
                     plan.freq_bins.saturating_sub(1)
@@ -24816,29 +24814,25 @@ impl FrankenTorchSession {
                     plan.freq_bins
                 };
                 for k in 1..upper {
-                    full_spectrum[plan.n_fft - k] = full_spectrum[k].conj();
+                    // full_spectrum[n_fft - k] = full_spectrum[k].conj()
+                    re[plan.n_fft - k] = re[k];
+                    im[plan.n_fft - k] = -im[k];
                 }
             } else {
                 for k in 0..plan.n_fft {
-                    full_spectrum[k] = spectrogram[k * plan.frames + frame_idx];
+                    let c = spectrogram[k * plan.frames + frame_idx];
+                    re[k] = c.re;
+                    im[k] = c.im;
                 }
             }
+            Self::dft_inplace_1d_with_stage_twiddles(
+                &mut re,
+                &mut im,
+                true,
+                inverse_fft_twiddles.as_deref(),
+            );
             for (n, sample) in ft_slice.iter_mut().enumerate() {
-                let mut value = ft_core::Complex128::new(0.0, 0.0);
-                if let Some(twiddles) = inverse_dft_twiddles.as_ref() {
-                    let row = &twiddles[n * plan.n_fft..(n + 1) * plan.n_fft];
-                    for (coeff, &twiddle) in full_spectrum.iter().zip(row.iter()) {
-                        value += *coeff * twiddle;
-                    }
-                } else {
-                    for (k, coeff) in full_spectrum.iter().enumerate() {
-                        let angle =
-                            2.0 * std::f64::consts::PI * k as f64 * n as f64 / plan.n_fft as f64;
-                        let twiddle = ft_core::Complex128::new(angle.cos(), angle.sin());
-                        value += *coeff * twiddle;
-                    }
-                }
-                *sample = value.re * scale;
+                *sample = re[n] * fft_post_scale;
             }
         };
         if plan.frames >= 2 && plan.frames * plan.n_fft >= PARALLEL_ELEMENTWISE_MIN {
@@ -85584,11 +85578,15 @@ mod tests {
     }
 
     #[test]
-    fn istft_parallel_match_serial_bit_exact() {
-        // frames*n_fft >= PARALLEL_ELEMENTWISE_MIN so the parallel per-frame
-        // inverse-DFT path runs; the result must equal a serial reference of the
-        // full reconstruction (Hermitian + naive inverse DFT + overlap-add +
-        // envelope normalize + center trim) BIT-FOR-BIT.
+    fn istft_matches_dense_inverse_dft_within_tolerance() {
+        // frames*n_fft >= PARALLEL_ELEMENTWISE_MIN so the parallel per-frame path
+        // runs; it must match a serial reference of the full reconstruction
+        // (Hermitian + dense inverse DFT + overlap-add + envelope normalize +
+        // center trim). istft now uses the radix-2 inverse FFT for power-of-two
+        // n_fft, so it equals the dense inverse DFT only up to FFT round-off
+        // (~ULP, like PyTorch which is also FFT-based) — assert a tight tolerance
+        // rather than bit-for-bit. The frame-parallel FFT is deterministic, so
+        // this also covers parallel==serial.
         use super::{FrankenTorchSession, IstftOptions};
         use ft_core::Complex128;
         let (n_fft, frames, hop) = (128usize, 64usize, 32usize);
@@ -85666,7 +85664,10 @@ mod tests {
         let got = s.tensor_values(y).unwrap();
         assert_eq!(got.len(), want.len(), "istft output length");
         for (idx, (g, w)) in got.iter().zip(want.iter()).enumerate() {
-            assert_eq!(g.to_bits(), w.to_bits(), "istft @{idx}");
+            assert!(
+                (g - w).abs() <= 1e-7 * (1.0 + w.abs()),
+                "istft @{idx}: fft {g} vs dense inverse DFT {w}"
+            );
         }
     }
 
