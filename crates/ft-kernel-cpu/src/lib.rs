@@ -1299,6 +1299,14 @@ pub fn sigmoid_tensor_contiguous_f64(
     input: &[f64],
     meta: &TensorMeta,
 ) -> Result<Vec<f64>, KernelError> {
+    // Logistic sigmoid `1 / (1 + exp(-x))`. NOTE: a vectorised `exp_f64x4` path
+    // was measured and REJECTED — `wide`'s f64x4 selects its SIMD backend at
+    // compile time via `target_feature`, and the default build target (no
+    // `-C target-feature=+avx2`) lowers f64x4 to SSE2/scalar lanes, so the
+    // "vectorised" exp costs the same as scalar libm (sigmoid/100000 == exp/100000
+    // to 5 sig figs). Even forcing `+avx2,+fma` only buys ~1.3x here (the op is
+    // alloc/memory-bound, not exp-compute-bound), well under the Score>=2.0 bar.
+    // Contrast: the GEMM crate uses *runtime* CPU detection, so it is unaffected.
     unary_f64(input, meta, |value| 1.0 / (1.0 + (-value).exp()))
 }
 

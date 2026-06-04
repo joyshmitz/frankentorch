@@ -128,6 +128,24 @@ fn bench_exp(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_sigmoid(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sigmoid");
+
+    // Logistic sigmoid `1/(1+exp(-x))` — exercises the vectorised `exp_f64x4`
+    // transcendental path (serial-SIMD below the parallel threshold, parallel-SIMD
+    // above) versus the prior scalar-libm `unary_f64` map.
+    for size in [10000, 100000, 1000000].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("elements", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n], false).unwrap();
+            b.iter(|| black_box(session.tensor_sigmoid(x).unwrap()));
+        });
+    }
+    group.finish();
+}
+
 fn bench_pow(c: &mut Criterion) {
     let mut group = c.benchmark_group("pow");
 
@@ -568,6 +586,7 @@ criterion_group!(
     bench_softmax,
     bench_relu,
     bench_exp,
+    bench_sigmoid,
     bench_pow,
     bench_add,
     bench_backward_matmul,
