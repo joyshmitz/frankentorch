@@ -95,6 +95,70 @@ mod gemm {
         n.div_ceil(threads).max(MIN_BLOCK_COLS)
     }
 
+    /// `C[m,n] = A[m,k] @ B^T` where `B` is row-major `[n, k]` (e.g. a Linear
+    /// layer's weight `[out, in]`). Reads B through matrixmultiply's strides
+    /// (`rsb=1, csb=k`) so the transpose is NEVER materialised — eliminating the
+    /// cache-unfriendly 8MB transposed copy that `x @ weight.t()` otherwise pays.
+    /// Bit-for-bit identical to materialise-transpose-then-dgemm (same dims => same
+    /// K-accumulation; B's values are read identically, only via strides). Uses
+    /// the same column/row/serial split as `dgemm`.
+    pub fn dgemm_bt(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
+        if m == 0 || n == 0 {
+            return;
+        }
+        let a = &a[..m * k];
+        let b = &b[..n * k];
+        let c = &mut c[..m * n];
+        if should_parallelize_cols(m, k, n) {
+            // Split N (= B's rows). Block [n0,n1) is the contiguous B rows
+            // b[n0*k .. n1*k]; multiply A by their transpose into an owned buffer.
+            let nb = block_cols(n);
+            let blocks: Vec<(usize, Vec<f64>)> = (0..n.div_ceil(nb))
+                .into_par_iter()
+                .map(|blk| {
+                    let n0 = blk * nb;
+                    let bw = (n0 + nb).min(n) - n0;
+                    let mut ct = vec![0.0f64; m * bw];
+                    // SAFETY: a is m*k; b[n0*k ..] holds bw rows of k; ct is m*bw.
+                    unsafe {
+                        matrixmultiply::dgemm(
+                            m, k, bw, 1.0, a.as_ptr(), k as isize, 1,
+                            b.as_ptr().add(n0 * k), 1, k as isize,
+                            0.0, ct.as_mut_ptr(), bw as isize, 1,
+                        );
+                    }
+                    (n0, ct)
+                })
+                .collect();
+            for (n0, ct) in &blocks {
+                let bw = ct.len() / m;
+                for i in 0..m {
+                    c[i * n + n0..i * n + n0 + bw].copy_from_slice(&ct[i * bw..i * bw + bw]);
+                }
+            }
+        } else if should_parallelize(m, k, n) {
+            let br = block_rows(m);
+            c.par_chunks_mut(br * n)
+                .zip(a.par_chunks(br * k))
+                .for_each(|(c_blk, a_blk)| {
+                    dgemm_bt_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
+                });
+        } else {
+            dgemm_bt_block(m, k, n, a, b, c);
+        }
+    }
+
+    fn dgemm_bt_block(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
+        // SAFETY: a is m*k, b is n*k (read as B^T via rsb=1,csb=k), c is m*n.
+        unsafe {
+            matrixmultiply::dgemm(
+                m, k, n, 1.0, a.as_ptr(), k as isize, 1,
+                b.as_ptr(), 1, k as isize,
+                0.0, c.as_mut_ptr(), n as isize, 1,
+            );
+        }
+    }
+
     fn dgemm_col_parallel(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
         let nb = block_cols(n);
         let blocks: Vec<(usize, Vec<f64>)> = (0..n.div_ceil(nb))
@@ -2226,6 +2290,33 @@ pub fn div_tensor_broadcast_f64(
     rhs_meta: &TensorMeta,
 ) -> Result<(Vec<f64>, Vec<usize>), KernelError> {
     elementwise_broadcast_f64(lhs, rhs, lhs_meta, rhs_meta, |l, r| l / r)
+}
+
+/// Fused Linear forward `y = x @ weight^T (+ bias)` for row-major contiguous
+/// f64 data. `x` is `[batch, in]`, `weight` is `[out, in]` (NOT transposed), and
+/// `bias` (if present) is `[out]`. Routes through `dgemm_bt`, so the weight
+/// transpose is never materialised — the dominant cost of the
+/// transpose-then-matmul path. Result is `[batch, out]`, bit-for-bit identical
+/// to that path.
+#[must_use]
+pub fn linear_tensor_f64(
+    x: &[f64],
+    weight: &[f64],
+    bias: Option<&[f64]>,
+    batch: usize,
+    in_features: usize,
+    out_features: usize,
+) -> Vec<f64> {
+    let mut y = vec![0.0f64; batch * out_features];
+    gemm::dgemm_bt(batch, in_features, out_features, x, weight, &mut y);
+    if let Some(b) = bias {
+        for row in y.chunks_exact_mut(out_features) {
+            for (yj, bj) in row.iter_mut().zip(b.iter()) {
+                *yj += *bj;
+            }
+        }
+    }
+    y
 }
 
 pub fn matmul_tensor_contiguous_f64(
@@ -11444,6 +11535,40 @@ mod tests {
                 p.to_bits(),
                 "f32 GEMM col-split diverged at {idx}: single {s} vs parallel {p}"
             );
+        }
+    }
+
+    #[test]
+    fn dgemm_bt_matches_materialized_transpose_bit_exact() {
+        // dgemm_bt (A @ B^T reading B in [n,k] layout via strides) must match the
+        // materialise-transpose-then-dgemm path BIT-FOR-BIT, for the wide column
+        // path, the row path, and serial. Values lose precision under reassociation.
+        for &(m, k, n) in &[(32usize, 512usize, 2048usize), (2048, 64, 256), (5, 7, 9)] {
+            let a: Vec<f64> = (0..m * k)
+                .map(|i| ((i % 13) as f64 - 6.0) * 0.3 + (i as f64) * 1e-7)
+                .collect();
+            // b is [n, k] (a Linear weight [out, in]).
+            let b: Vec<f64> = (0..n * k)
+                .map(|i| ((i % 7) as f64 - 3.0) * 0.25 - (i as f64) * 1e-7)
+                .collect();
+            // Reference: materialise b^T [k, n] then dgemm.
+            let mut bt = vec![0.0f64; k * n];
+            for j in 0..n {
+                for l in 0..k {
+                    bt[l * n + j] = b[j * k + l];
+                }
+            }
+            let mut c_ref = vec![0.0f64; m * n];
+            crate::gemm::dgemm(m, k, n, &a, &bt, &mut c_ref);
+            let mut c_bt = vec![0.0f64; m * n];
+            crate::gemm::dgemm_bt(m, k, n, &a, &b, &mut c_bt);
+            for (idx, (r, g)) in c_ref.iter().zip(c_bt.iter()).enumerate() {
+                assert_eq!(
+                    r.to_bits(),
+                    g.to_bits(),
+                    "dgemm_bt diverged at {idx} for ({m},{k},{n}): ref {r} vs bt {g}"
+                );
+            }
         }
     }
 

@@ -15355,6 +15355,57 @@ impl FrankenTorchSession {
         weight: TensorNodeId,
         bias: Option<TensorNodeId>,
     ) -> Result<TensorNodeId, AutogradError> {
+        // Fused no-grad fast path: y = x @ weight^T (+ bias) via dgemm_bt, which
+        // reads `weight` [out, in] directly and NEVER materialises its (cache-
+        // unfriendly) transpose — the dominant cost of the addmm/matmul path. f64
+        // only; anything else (grad, non-f64, odd shapes) falls through unchanged.
+        let bias_grad = match bias {
+            Some(b) => self.tensor_tape.tensor_requires_grad(b)?,
+            None => false,
+        };
+        if !self.tensor_tape.tensor_requires_grad(input)?
+            && !self.tensor_tape.tensor_requires_grad(weight)?
+            && !bias_grad
+            && self.tensor_dtype(input)? == DType::F64
+            && self.tensor_dtype(weight)? == DType::F64
+        {
+            let in_shape = self.tensor_shape(input)?;
+            let w_shape = self.tensor_shape(weight)?;
+            if w_shape.len() == 2 && !in_shape.is_empty() {
+                let in_features = *in_shape.last().unwrap();
+                let out_features = w_shape[0];
+                let batch: usize = in_shape[..in_shape.len() - 1].iter().product();
+                let bias_ok = match bias {
+                    Some(b) => self.tensor_shape(b)? == vec![out_features],
+                    None => true,
+                };
+                if w_shape[1] == in_features
+                    && batch > 0
+                    && in_features > 0
+                    && out_features > 0
+                    && bias_ok
+                {
+                    let x = self.tensor_values(input)?;
+                    let w = self.tensor_values(weight)?;
+                    let bias_vals = match bias {
+                        Some(b) => Some(self.tensor_values(b)?),
+                        None => None,
+                    };
+                    let y = ft_kernel_cpu::linear_tensor_f64(
+                        &x,
+                        &w,
+                        bias_vals.as_deref(),
+                        batch,
+                        in_features,
+                        out_features,
+                    );
+                    let mut out_shape = in_shape;
+                    *out_shape.last_mut().unwrap() = out_features;
+                    return self.tensor_variable(y, out_shape, false);
+                }
+            }
+        }
+
         let weight_t = self.tensor_transpose(weight, 0, 1)?;
         match bias {
             Some(b) => self.tensor_addmm(b, input, weight_t, 1.0, 1.0),
