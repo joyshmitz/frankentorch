@@ -46758,12 +46758,32 @@ impl FrankenTorchSession {
         let in_plane = id * ih * iw;
         let mut values = vec![0.0_f64; total];
 
+        #[derive(Clone, Copy)]
+        struct LinearPlan {
+            lo: usize,
+            hi: usize,
+            t: f64,
+        }
+
+        let build_plan = |out_size: usize, in_size: usize| -> Vec<LinearPlan> {
+            (0..out_size)
+                .map(|out_idx| {
+                    let (lo, hi, t) =
+                        Self::interp_axis_coord(in_size, out_size, out_idx, align_corners);
+                    LinearPlan { lo, hi, t }
+                })
+                .collect()
+        };
+        let z_plan = build_plan(od, id);
+        let y_plan = build_plan(oh, ih);
+        let x_plan = build_plan(ow, iw);
+
         // Output row r = (((b*channels+c)*od + oz)*oh + oy) maps to
         // plane = r/(od*oh), oz = (r/oh)%od, oy = r%oh (base == plane*in_plane).
         // Every element uses identical 8-tap trilinear arithmetic and the same
-        // linear position as the serial push order, and the corner reads come
-        // from a local 2x2x2 cube (cache-friendly), so distributing whole rows
-        // across Rayon workers is bit-for-bit identical.
+        // linear position as the serial push order. Axis plans only hoist the
+        // source-coordinate formula that is invariant across batch/channel
+        // planes; corner accumulation order remains unchanged.
         let fill_row = |r: usize, out_row: &mut [f64]| {
             let oy = r % oh;
             let r2 = r / oh; // = plane*od + oz
@@ -46771,54 +46791,29 @@ impl FrankenTorchSession {
             let plane = r2 / od;
             let base = plane * in_plane;
 
-            let src_z = if align_corners && od > 1 {
-                oz as f64 * (id - 1) as f64 / (od - 1) as f64
-            } else {
-                (oz as f64 + 0.5) * id as f64 / od as f64 - 0.5
-            };
-            let src_z = src_z.max(0.0);
-            let z0 = (src_z.floor() as usize).min(id - 1);
-            let z1 = (z0 + 1).min(id - 1);
-            let tz = src_z - z0 as f64;
-
-            let src_y = if align_corners && oh > 1 {
-                oy as f64 * (ih - 1) as f64 / (oh - 1) as f64
-            } else {
-                (oy as f64 + 0.5) * ih as f64 / oh as f64 - 0.5
-            };
-            let src_y = src_y.max(0.0);
-            let y0 = (src_y.floor() as usize).min(ih - 1);
-            let y1 = (y0 + 1).min(ih - 1);
-            let ty = src_y - y0 as f64;
+            let z = z_plan[oz];
+            let y = y_plan[oy];
 
             for (ox, slot) in out_row.iter_mut().enumerate() {
-                let src_x = if align_corners && ow > 1 {
-                    ox as f64 * (iw - 1) as f64 / (ow - 1) as f64
-                } else {
-                    (ox as f64 + 0.5) * iw as f64 / ow as f64 - 0.5
-                };
-                let src_x = src_x.max(0.0);
-                let x0 = (src_x.floor() as usize).min(iw - 1);
-                let x1 = (x0 + 1).min(iw - 1);
-                let tx = src_x - x0 as f64;
+                let x = x_plan[ox];
 
-                let v000 = storage[base + z0 * ih * iw + y0 * iw + x0];
-                let v001 = storage[base + z0 * ih * iw + y0 * iw + x1];
-                let v010 = storage[base + z0 * ih * iw + y1 * iw + x0];
-                let v011 = storage[base + z0 * ih * iw + y1 * iw + x1];
-                let v100 = storage[base + z1 * ih * iw + y0 * iw + x0];
-                let v101 = storage[base + z1 * ih * iw + y0 * iw + x1];
-                let v110 = storage[base + z1 * ih * iw + y1 * iw + x0];
-                let v111 = storage[base + z1 * ih * iw + y1 * iw + x1];
+                let v000 = storage[base + z.lo * ih * iw + y.lo * iw + x.lo];
+                let v001 = storage[base + z.lo * ih * iw + y.lo * iw + x.hi];
+                let v010 = storage[base + z.lo * ih * iw + y.hi * iw + x.lo];
+                let v011 = storage[base + z.lo * ih * iw + y.hi * iw + x.hi];
+                let v100 = storage[base + z.hi * ih * iw + y.lo * iw + x.lo];
+                let v101 = storage[base + z.hi * ih * iw + y.lo * iw + x.hi];
+                let v110 = storage[base + z.hi * ih * iw + y.hi * iw + x.lo];
+                let v111 = storage[base + z.hi * ih * iw + y.hi * iw + x.hi];
 
-                *slot = v000 * (1.0 - tz) * (1.0 - ty) * (1.0 - tx)
-                    + v001 * (1.0 - tz) * (1.0 - ty) * tx
-                    + v010 * (1.0 - tz) * ty * (1.0 - tx)
-                    + v011 * (1.0 - tz) * ty * tx
-                    + v100 * tz * (1.0 - ty) * (1.0 - tx)
-                    + v101 * tz * (1.0 - ty) * tx
-                    + v110 * tz * ty * (1.0 - tx)
-                    + v111 * tz * ty * tx;
+                *slot = v000 * (1.0 - z.t) * (1.0 - y.t) * (1.0 - x.t)
+                    + v001 * (1.0 - z.t) * (1.0 - y.t) * x.t
+                    + v010 * (1.0 - z.t) * y.t * (1.0 - x.t)
+                    + v011 * (1.0 - z.t) * y.t * x.t
+                    + v100 * z.t * (1.0 - y.t) * (1.0 - x.t)
+                    + v101 * z.t * (1.0 - y.t) * x.t
+                    + v110 * z.t * y.t * (1.0 - x.t)
+                    + v111 * z.t * y.t * x.t;
             }
         };
 
@@ -76163,13 +76158,13 @@ mod tests {
 
         // tensorsolve(A_4x4, b_4) == linalg_solve(A, b).
         let b = vec![1.0, 2.0, -1.0, 3.0];
-        let asA = s.tensor_variable(m.clone(), vec![4, 4], false).unwrap();
+        let as_a = s.tensor_variable(m.clone(), vec![4, 4], false).unwrap();
         let bv = s.tensor_variable(b.clone(), vec![4], false).unwrap();
-        let solve_direct = s.tensor_linalg_solve(asA, bv).unwrap();
+        let solve_direct = s.tensor_linalg_solve(as_a, bv).unwrap();
         let sd = s.tensor_values(solve_direct).unwrap();
-        let asA2 = s.tensor_variable(m.clone(), vec![4, 4], false).unwrap();
+        let as_a2 = s.tensor_variable(m.clone(), vec![4, 4], false).unwrap();
         let bv2 = s.tensor_variable(b.clone(), vec![4], false).unwrap();
-        let ts = s.tensor_linalg_tensorsolve(asA2, bv2).unwrap();
+        let ts = s.tensor_linalg_tensorsolve(as_a2, bv2).unwrap();
         assert_eq!(s.tensor_shape(ts).unwrap(), vec![4]);
         let ts_v = s.tensor_values(ts).unwrap();
         for (a, c) in sd.iter().zip(ts_v.iter()) {
@@ -78610,15 +78605,15 @@ mod tests {
             (s, log_probs, loss)
         };
 
-        let (mut s_none, _, loss_none) = build("none", false);
+        let (s_none, _, loss_none) = build("none", false);
         let none = s_none.tensor_values(loss_none).unwrap();
         assert_eq!(none.len(), 2);
 
-        let (mut s_sum, _, loss_sum) = build("sum", false);
+        let (s_sum, _, loss_sum) = build("sum", false);
         let sum = s_sum.tensor_values(loss_sum).unwrap()[0];
         assert!((sum - (none[0] + none[1])).abs() < 1e-9, "sum mismatch");
 
-        let (mut s_mean, _, loss_mean) = build("mean", false);
+        let (s_mean, _, loss_mean) = build("mean", false);
         let mean = s_mean.tensor_values(loss_mean).unwrap()[0];
         // mean divides batch0 by L0=2, batch1 by L1=1, then averages over N=2.
         let expected_mean = (none[0] / 2.0 + none[1] / 1.0) / 2.0;
@@ -94082,7 +94077,6 @@ mod tests {
 
     #[test]
     fn nanquantile_backward_matches_finite_difference() {
-        use ft_core::{DType, Device};
         // Non-NaN [2,9,4,7,5] at positions 0,1,3,4,6; q=0.4 interpolates.
         let data = vec![2.0, 9.0, f64::NAN, 4.0, 7.0, f64::NAN, 5.0];
         let q = 0.4;
@@ -94104,7 +94098,6 @@ mod tests {
         let analytic: f64 = grad.iter().zip(dir.iter()).map(|(g, d)| g * d).sum();
 
         let loss_of = |mat: &[f64]| -> f64 {
-            let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
             // Mirror the kernel-free nanquantile: filter NaN, sort, interpolate.
             let mut nn: Vec<f64> = mat.iter().copied().filter(|x| !x.is_nan()).collect();
             nn.sort_by(|a, b| a.partial_cmp(b).unwrap());

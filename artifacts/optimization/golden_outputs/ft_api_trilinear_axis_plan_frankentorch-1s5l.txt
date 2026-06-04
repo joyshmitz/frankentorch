@@ -1,0 +1,11 @@
+target=ft-api tensor_interpolate trilinear axis-plan reuse
+bead=frankentorch-1s5l
+input_shape=[1,1,2,2,2]
+output_shape=[1,1,1,1,1]
+mode=trilinear
+align_corners=false
+input_values=[0,1,2,3,4,5,6,7]
+axis_coord_each_dim=lo0_hi1_t0.5
+corner_weights=[0.125,0.125,0.125,0.125,0.125,0.125,0.125,0.125]
+corner_accumulation_order=[000,001,010,011,100,101,110,111]
+output_value_bits=[400c000000000000]
