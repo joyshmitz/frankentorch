@@ -228,6 +228,20 @@ fn bench_sdpa(c: &mut Criterion) {
             )
         });
     });
+    // Forward + backward (training): exercises the fused grad SDPA custom op.
+    group.bench_function("grad_16x512x64", |b| {
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let q = session.tensor_randn(vec![bh, seq, d], true).unwrap();
+            let k = session.tensor_randn(vec![bh, seq, d], true).unwrap();
+            let v = session.tensor_randn(vec![bh, seq, d], true).unwrap();
+            let out = session
+                .scaled_dot_product_attention(q, k, v, None, 0.0, false)
+                .unwrap();
+            let loss = session.tensor_sum(out).unwrap();
+            black_box(session.tensor_backward(loss).unwrap())
+        });
+    });
     group.finish();
 }
 

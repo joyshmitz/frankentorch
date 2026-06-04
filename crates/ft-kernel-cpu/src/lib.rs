@@ -2440,6 +2440,118 @@ pub fn sdpa_forward_f64(
     out
 }
 
+/// Backward of [`sdpa_forward_f64`]. Given the saved `q`/`k`/`v` and the output
+/// gradient `dout` (`[num_bh, seq_q, d_v]`), returns `(dq, dk, dv)`.
+///
+/// Recomputes the softmax probabilities `P = softmax(scale·QKᵀ)` per
+/// `(batch·head)` block (cheaper than saving the `[num_bh, seq_q, seq_k]`
+/// matrix), then:
+///   `dV = Pᵀ @ dOut`,  `dP = dOut @ Vᵀ`,
+///   `dU = P ⊙ (dP − rowsum(P⊙dP))`   (softmax Jacobian, U = scale·QKᵀ),
+///   `dQ = scale · dU @ K`,  `dK = scale · dUᵀ @ Q`.
+/// Each `(batch·head)` block keeps its `[seq_q, seq_k]` scratch in cache; matmuls
+/// reuse the vectorised `matrixmultiply` microkernels. Matches the op-graph
+/// (bmm/softmax/bmm) backward to tolerance.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn sdpa_backward_f64(
+    q: &[f64],
+    k: &[f64],
+    v: &[f64],
+    dout: &[f64],
+    num_bh: usize,
+    seq_q: usize,
+    seq_k: usize,
+    d_k: usize,
+    d_v: usize,
+    scale: f64,
+    causal: bool,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut dq = vec![0.0f64; num_bh * seq_q * d_k];
+    let mut dk = vec![0.0f64; num_bh * seq_k * d_k];
+    let mut dv = vec![0.0f64; num_bh * seq_k * d_v];
+    let qs = seq_q * d_k;
+    let ks = seq_k * d_k;
+    let vs = seq_k * d_v;
+    let os = seq_q * d_v;
+    dq.par_chunks_mut(qs)
+        .zip(dk.par_chunks_mut(ks))
+        .zip(dv.par_chunks_mut(vs))
+        .enumerate()
+        .for_each(|(bh, ((dq_bh, dk_bh), dv_bh))| {
+            let qh = &q[bh * qs..bh * qs + qs];
+            let kh = &k[bh * ks..bh * ks + ks];
+            let vh = &v[bh * vs..bh * vs + vs];
+            let doh = &dout[bh * os..bh * os + os];
+            // P = softmax(scale·Q@Kᵀ) row-wise.  [seq_q, seq_k]
+            let mut p = vec![0.0f64; seq_q * seq_k];
+            gemm::dgemm_bt(seq_q, d_k, seq_k, qh, kh, &mut p);
+            for i in 0..seq_q {
+                let limit = if causal { (i + 1).min(seq_k) } else { seq_k };
+                let row = &mut p[i * seq_k..(i + 1) * seq_k];
+                let mut m = f64::NEG_INFINITY;
+                for s in row.iter_mut().take(limit) {
+                    *s *= scale;
+                    if *s > m {
+                        m = *s;
+                    }
+                }
+                let mut sum = 0.0f64;
+                for s in row.iter_mut().take(limit) {
+                    let e = (*s - m).exp();
+                    *s = e;
+                    sum += e;
+                }
+                for s in row.iter_mut().take(limit) {
+                    *s /= sum;
+                }
+                for s in row.iter_mut().skip(limit) {
+                    *s = 0.0;
+                }
+            }
+            // dP = dOut @ Vᵀ  [seq_q, seq_k]
+            let mut du = vec![0.0f64; seq_q * seq_k];
+            gemm::dgemm_bt(seq_q, d_v, seq_k, doh, vh, &mut du);
+            // dU = P ⊙ (dP − rowsum(P⊙dP)); overwrite du in place.
+            for i in 0..seq_q {
+                let pr = &p[i * seq_k..(i + 1) * seq_k];
+                let dr = &mut du[i * seq_k..(i + 1) * seq_k];
+                let mut dot = 0.0f64;
+                for j in 0..seq_k {
+                    dot += pr[j] * dr[j];
+                }
+                for j in 0..seq_k {
+                    dr[j] = pr[j] * (dr[j] - dot);
+                }
+            }
+            // dV = Pᵀ @ dOut  [seq_k, d_v]
+            let mut pt = vec![0.0f64; seq_k * seq_q];
+            for i in 0..seq_q {
+                for j in 0..seq_k {
+                    pt[j * seq_q + i] = p[i * seq_k + j];
+                }
+            }
+            gemm::dgemm(seq_k, seq_q, d_v, &pt, doh, dv_bh);
+            // dQ = scale · dU @ K  [seq_q, d_k]
+            gemm::dgemm(seq_q, seq_k, d_k, &du, kh, dq_bh);
+            for x in dq_bh.iter_mut() {
+                *x *= scale;
+            }
+            // dK = scale · dUᵀ @ Q  [seq_k, d_k]
+            let mut dut = vec![0.0f64; seq_k * seq_q];
+            for i in 0..seq_q {
+                for j in 0..seq_k {
+                    dut[j * seq_q + i] = du[i * seq_k + j];
+                }
+            }
+            gemm::dgemm(seq_k, seq_q, d_k, &dut, qh, dk_bh);
+            for x in dk_bh.iter_mut() {
+                *x *= scale;
+            }
+        });
+    (dq, dk, dv)
+}
+
 pub fn linear_tensor_f64(
     x: &[f64],
     weight: &[f64],

@@ -4554,6 +4554,75 @@ impl FrankenTorchSession {
             }
         }
 
+        // Fused GRAD SDPA fast path (f64, batched, no dropout, no explicit
+        // attn_mask): a custom autograd op whose forward is the fused flash-
+        // attention kernel and whose backward (sdpa_backward_f64) recomputes P per
+        // block and emits dQ/dK/dV via gemms — no [.., seq, seq] score / softmax
+        // tape nodes. Same gradients as the bmm+softmax+bmm graph, to tolerance.
+        let grad_needed = self.tensor_tape.tensor_requires_grad(query)?
+            || self.tensor_tape.tensor_requires_grad(key)?
+            || self.tensor_tape.tensor_requires_grad(value)?;
+        if grad_needed
+            && k_shape.len() >= 3
+            && q_shape.len() == k_shape.len()
+            && dropout_p == 0.0
+            && attn_mask.is_none()
+            && self.tensor_dtype(query)? == DType::F64
+            && self.tensor_dtype(key)? == DType::F64
+            && self.tensor_dtype(value)? == DType::F64
+        {
+            let v_shape = self.tensor_shape(value)?;
+            if v_shape.len() == q_shape.len() {
+                let nd = q_shape.len();
+                let seq_q = q_shape[nd - 2];
+                let d_k_dim = q_shape[nd - 1];
+                let seq_k = k_shape[nd - 2];
+                let d_v = v_shape[nd - 1];
+                let q_bh: usize = q_shape[..nd - 2].iter().product();
+                let k_bh: usize = k_shape[..nd - 2].iter().product();
+                let v_bh: usize = v_shape[..nd - 2].iter().product();
+                if q_bh == k_bh
+                    && q_bh == v_bh
+                    && k_shape[nd - 1] == d_k_dim
+                    && v_shape[nd - 2] == seq_k
+                    && q_bh > 0
+                    && seq_q > 0
+                    && seq_k > 0
+                    && d_k_dim > 0
+                    && d_v > 0
+                {
+                    let causal = is_causal;
+                    let (qsh, ksh, vsh) = (q_shape.clone(), k_shape.clone(), v_shape.clone());
+                    return self.tensor_apply_function(
+                        &[query, key, value],
+                        move |ctx, ins| {
+                            let (qv, _) = ins[0];
+                            let (kv, _) = ins[1];
+                            let (vv, _) = ins[2];
+                            let out = ft_kernel_cpu::sdpa_forward_f64(
+                                qv, kv, vv, q_bh, seq_q, seq_k, d_k_dim, d_v, scale, causal,
+                            );
+                            ctx.save_for_backward(qv.to_vec(), qsh.clone());
+                            ctx.save_for_backward(kv.to_vec(), ksh.clone());
+                            ctx.save_for_backward(vv.to_vec(), vsh.clone());
+                            let mut osh = qsh.clone();
+                            osh[nd - 1] = d_v;
+                            Ok((out, osh))
+                        },
+                        move |ctx, grad_outputs| {
+                            let dout = grad_outputs[0];
+                            let saved = ctx.saved_tensors();
+                            let (dq, dk, dv) = ft_kernel_cpu::sdpa_backward_f64(
+                                &saved[0], &saved[1], &saved[2], dout, q_bh, seq_q, seq_k,
+                                d_k_dim, d_v, scale, causal,
+                            );
+                            Ok(vec![Some(dq), Some(dk), Some(dv)])
+                        },
+                    );
+                }
+            }
+        }
+
         // Q @ K^T — use bmm for 3D batched inputs, matmul for 2D
         let ndim = k_shape.len();
         let key_t = self.tensor_transpose(key, ndim - 2, ndim - 1)?;
@@ -82338,6 +82407,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn sdpa_fused_grad_matches_reference_within_tolerance() {
+        // The fused grad SDPA op (custom autograd: fused forward + sdpa_backward_f64)
+        // must match the explicit bmm + scale + softmax + bmm op-graph backward to
+        // tolerance, for dQ, dK and dV.
+        let shape = vec![3usize, 6, 4]; // num_bh3, seq6, d4
+        let n: usize = shape.iter().product();
+        let qv: Vec<f64> = (0..n).map(|i| ((i % 7) as f64 - 3.0) * 0.2).collect();
+        let kv: Vec<f64> = (0..n).map(|i| ((i % 5) as f64 - 2.0) * 0.3).collect();
+        let vv: Vec<f64> = (0..n).map(|i| ((i % 9) as f64 - 4.0) * 0.15).collect();
+        let scale = 1.0 / (shape[2] as f64).sqrt();
+
+        // Fused grad path (requires_grad routes through the custom op).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let q = s.tensor_variable(qv.clone(), shape.clone(), true).unwrap();
+        let k = s.tensor_variable(kv.clone(), shape.clone(), true).unwrap();
+        let vt = s.tensor_variable(vv.clone(), shape.clone(), true).unwrap();
+        let out = s
+            .scaled_dot_product_attention(q, k, vt, None, 0.0, false)
+            .unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        s.tensor_backward(loss).unwrap();
+        let gq = s.tensor_grad(q).unwrap().unwrap();
+        let gk = s.tensor_grad(k).unwrap().unwrap();
+        let gv = s.tensor_grad(vt).unwrap().unwrap();
+
+        // Reference: explicit op-graph (bmm + scale + softmax + bmm).
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let q2 = s2.tensor_variable(qv.clone(), shape.clone(), true).unwrap();
+        let k2 = s2.tensor_variable(kv.clone(), shape.clone(), true).unwrap();
+        let v2 = s2.tensor_variable(vv.clone(), shape.clone(), true).unwrap();
+        let kt = s2.tensor_transpose(k2, 1, 2).unwrap();
+        let scores = s2.tensor_bmm(q2, kt).unwrap();
+        let sc_shape = s2.tensor_shape(scores).unwrap();
+        let scale_t = s2.full(sc_shape, scale, false).unwrap();
+        let scaled = s2.tensor_mul(scores, scale_t).unwrap();
+        let sm = s2.tensor_softmax(scaled, 2).unwrap();
+        let out2 = s2.tensor_bmm(sm, v2).unwrap();
+        let loss2 = s2.tensor_sum(out2).unwrap();
+        s2.tensor_backward(loss2).unwrap();
+        let gq2 = s2.tensor_grad(q2).unwrap().unwrap();
+        let gk2 = s2.tensor_grad(k2).unwrap().unwrap();
+        let gv2 = s2.tensor_grad(v2).unwrap().unwrap();
+
+        let close = |a: &[f64], b: &[f64], what: &str| {
+            assert_eq!(a.len(), b.len());
+            for (i, (p, r)) in a.iter().zip(b.iter()).enumerate() {
+                assert!(
+                    (p - r).abs() <= 1e-10 + 1e-8 * r.abs(),
+                    "{what}[{i}]: fused {p} vs reference {r}"
+                );
+            }
+        };
+        close(&gq, &gq2, "dq");
+        close(&gk, &gk2, "dk");
+        close(&gv, &gv2, "dv");
     }
 
     #[test]
