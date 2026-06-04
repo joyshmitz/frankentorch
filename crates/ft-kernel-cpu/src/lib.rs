@@ -4735,15 +4735,21 @@ pub fn lu_solve_contiguous_f64(
     // each L coefficient is loaded once and applied across all RHS columns
     // (cache/SIMD-amortized), which beats a per-column solve that re-streams L.
     //
-    // DELIBERATELY SERIAL — do not rayon-parallelize the trailing-row updates.
-    // Measured (inv via lu_solve, num_rhs = n): a per-step row fan-out gated on
-    // work REGRESSED inv ~2x (256: 49->132ms, 512: 199->380ms). The updates are
-    // memory-bound rank-1 AXPYs and the k-loop is sequential, so each step is a
-    // short parallel region; ~2n rayon join barriers plus shared-memory-bandwidth
-    // contention swamp the gain. (Contrast cholesky, whose per-column inner DOT
-    // products are compute-bound and do parallelize ~1.7x.) The real lever here is
-    // a cache-BLOCKED triangular solve (TRSM via the cache-blocked dgemm), not
-    // thread-level parallelism. See project_perf_binding_constraints memory.
+    // DELIBERATELY SERIAL at the benched sizes — TWO faster-looking levers were
+    // measured and BOTH regressed:
+    //  (a) rayon per-step row fan-out: REGRESSED inv ~2x (256: 49->132, 512:
+    //      199->380ms). The updates are memory-bound rank-1 AXPYs and the k-loop
+    //      is sequential -> ~2n short parallel regions whose join barriers +
+    //      shared-bandwidth contention swamp the gain.
+    //  (b) cache-BLOCKED TRSM (diagonal block solve + trailing update via
+    //      gemm::dgemm): also REGRESSED inv (256: 44->54, 512: 124->240ms). Unlike
+    //      cholesky's SYRK (m x NB x m, large in both dims -> crosses dgemm's 1<<27
+    //      parallel gate), the TRSM trailing update is SKINNY-K (m x NB x num_rhs)
+    //      and stays below the gate at n<=512 -> serial dgemm, and at these sizes
+    //      the RHS matrix is cache-resident so the naive sweep is already near
+    //      optimal; the packing + skinny-GEMM overhead nets a loss.
+    // Blocking would only pay for n >> 1500 (RHS spills cache); inv is benched at
+    // 256/512. See project_perf_binding_constraints memory.
     for k in 0..n {
         for i in (k + 1)..n {
             let l_ik = factor.lu[i * n + k];
