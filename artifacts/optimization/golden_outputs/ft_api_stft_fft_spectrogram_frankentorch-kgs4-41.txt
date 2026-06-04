@@ -1,0 +1,15 @@
+bead=frankentorch-kgs4.41
+target=ft-api tensor_stft power-of-two per-frame radix-2 FFT
+proof_test=stft_matches_dense_dft_within_tolerance
+benchmark=stft/len32768_nfft512
+baseline_worker=vmi1149989
+baseline_command=RCH_REQUIRE_REMOTE=1 rch exec -- cargo bench -p ft-api --bench ops_bench -- stft/len32768_nfft512 --warm-up-time 1 --measurement-time 5 --sample-size 20
+baseline_vmi1149989_stft_len32768_nfft512=[8.2820 ms 8.5425 ms 8.8311 ms]
+candidate_worker=vmi1149989
+candidate_command=RCH_REQUIRE_REMOTE=1 rch exec -- cargo bench -p ft-api --bench ops_bench -- stft/len32768_nfft512 --warm-up-time 1 --measurement-time 5 --sample-size 20
+candidate_vmi1149989_stft_len32768_nfft512=[1.7817 ms 2.4087 ms 2.9633 ms]
+p50_speedup=3.546x
+golden_small_rectangular_stft_shape=[3,2]
+golden_small_rectangular_stft_bin_major_complex128_bits=[4024000000000000:0000000000000000,401c000000000000:0000000000000000,c000000000000000:4000000000000000,4008000000000000:c010000000000000,c000000000000000:0000000000000000,bff0000000000000:0000000000000000]
+large_parallel_dense_dft_tolerance=max_abs_error<=1e-7*(1+abs(reference))
+isomorphism=shape_dtype_errors_ledger_rng_unchanged,bin_major_output_order_preserved,non_power_of_two_dense_fallback_preserved,power_of_two_floating_point_changes_from_dense_dft_to_fft_and_is_tolerance_proved
