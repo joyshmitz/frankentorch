@@ -985,6 +985,82 @@ impl Linear {
     pub fn out_features(&self) -> usize {
         self.out_features
     }
+
+    fn no_grad_f64_fast_path(
+        &self,
+        session: &mut FrankenTorchSession,
+        input: TensorNodeId,
+    ) -> Result<Option<TensorNodeId>, AutogradError> {
+        if session.is_grad_enabled()
+            || !matches!(session.tensor_dtype(input)?, DType::F64)
+            || !matches!(session.tensor_dtype(self.weight)?, DType::F64)
+        {
+            return Ok(None);
+        }
+
+        let input_shape = session.tensor_shape(input)?;
+        let Some((&in_features, leading_shape)) = input_shape.split_last() else {
+            return Ok(None);
+        };
+        if !in_features.eq(&self.in_features) {
+            return Ok(None);
+        }
+
+        let weight_shape = session.tensor_shape(self.weight)?;
+        let [weight_out, weight_in] = weight_shape.as_slice() else {
+            return Ok(None);
+        };
+        if !weight_out.eq(&self.out_features) || !weight_in.eq(&self.in_features) {
+            return Ok(None);
+        }
+
+        let Some(batch) = leading_shape
+            .iter()
+            .try_fold(1usize, |acc, dim| acc.checked_mul(*dim))
+        else {
+            return Ok(None);
+        };
+        if batch == 0 || self.in_features == 0 || self.out_features == 0 {
+            return Ok(None);
+        }
+
+        let bias_values = match self.bias {
+            Some(bias) => {
+                if !matches!(session.tensor_dtype(bias)?, DType::F64) {
+                    return Ok(None);
+                }
+                let bias_shape = session.tensor_shape(bias)?;
+                let [bias_out] = bias_shape.as_slice() else {
+                    return Ok(None);
+                };
+                if !bias_out.eq(&self.out_features) {
+                    return Ok(None);
+                }
+                Some(session.tensor_values(bias)?)
+            }
+            None => None,
+        };
+
+        let mut out_shape = input_shape;
+        if let Some(last) = out_shape.last_mut() {
+            *last = self.out_features;
+        }
+        let input_values = session.tensor_values(input)?;
+        let weight_values = session.tensor_values(self.weight)?;
+        let output_values = ft_kernel_cpu::linear_tensor_f64(
+            &input_values,
+            &weight_values,
+            bias_values.as_deref(),
+            batch,
+            self.in_features,
+            self.out_features,
+        );
+        Ok(Some(session.tensor_variable(
+            output_values,
+            out_shape,
+            false,
+        )?))
+    }
 }
 
 impl Module for Linear {
@@ -993,6 +1069,10 @@ impl Module for Linear {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if let Some(output) = self.no_grad_f64_fast_path(session, input)? {
+            return Ok(output);
+        }
+
         // Transpose weight: [out, in] -> [in, out]
         let weight_t = session.tensor_transpose(self.weight, 0, 1)?;
         // output = input @ weight^T => [batch, in] @ [in, out] => [batch, out]
@@ -21042,6 +21122,37 @@ mod tests {
             mha_self_flat_reuse_golden_summary(),
             include_str!(
                 "../../../artifacts/optimization/golden_outputs/ft_nn_mha_self_flat_reuse_frankentorch-l3mm.txt"
+            )
+        );
+    }
+
+    fn mha_no_grad_linear_fast_path_golden_summary() -> String {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let x = session
+            .tensor_variable(
+                vec![0.25, -0.5, 0.75, 1.0, -1.25, 1.5, -1.75, 2.0],
+                vec![1, 2, 4],
+                true,
+            )
+            .expect("variable");
+        let y = session
+            .with_no_grad(|session| mha.forward(session, x))
+            .expect("forward");
+        let (vals, meta) = session.tensor_values_meta(y).expect("values");
+        let backward_err = session.tensor_backward(y).is_err();
+        format!(
+            "shape={:?}\nvalues={vals:.17?}\nbackward_err={backward_err}\n",
+            meta.shape()
+        )
+    }
+
+    #[test]
+    fn mha_no_grad_linear_fast_path_golden_output_matches_fixture() {
+        assert_eq!(
+            mha_no_grad_linear_fast_path_golden_summary(),
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_nn_mha_no_grad_linear_fast_path_frankentorch-rngz.txt"
             )
         );
     }
