@@ -4,7 +4,7 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
-use ft_kernel_cpu::topk_tensor_contiguous_f64;
+use ft_kernel_cpu::{topk_tensor_contiguous_f32, topk_tensor_contiguous_f64};
 
 fn bench_topk(c: &mut Criterion) {
     let (rows, cols, k) = (8192usize, 1024usize, 50usize);
@@ -16,6 +16,19 @@ fn bench_topk(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 topk_tensor_contiguous_f64(black_box(&data), &meta, k, 1, true, true)
+                    .expect("valid topk input"),
+            )
+        })
+    });
+
+    let data32: Vec<f32> = (0..rows * cols)
+        .map(|i| ((i * 2654435761usize) % 100003) as f32 * 0.001)
+        .collect();
+    let meta32 = TensorMeta::from_shape(vec![rows, cols], DType::F32, Device::Cpu);
+    c.bench_function("topk_f32_8192x1024_k50_dim1", |b| {
+        b.iter(|| {
+            black_box(
+                topk_tensor_contiguous_f32(black_box(&data32), &meta32, k, 1, true, true)
                     .expect("valid topk input"),
             )
         })

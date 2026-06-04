@@ -1,0 +1,12 @@
+target=ft-kernel-cpu topk_tensor_contiguous_f32 bounded selection
+bead=frankentorch-cltj
+input_shape=[2,6]
+dim=1
+k=3
+largest=true
+sorted=true
+input_bits_row0=[3f800000,7fc00000,40400000,80000000,00000000,40000000]
+input_bits_row1=[40800000,40800000,bf800000,7fc00000,40a00000,40a00000]
+output_value_bits=[7fc00000,40400000,40000000,7fc00000,40a00000,40a00000]
+output_indices=[1,2,5,3,4,5]
+ordering=NaN largest, equal values keep original index order

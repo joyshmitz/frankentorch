@@ -4133,6 +4133,15 @@ fn nan_greatest_cmp_f32(a: f32, b: f32) -> std::cmp::Ordering {
     }
 }
 
+fn topk_lane_cmp_f32(a: &(usize, f32), b: &(usize, f32), largest: bool) -> std::cmp::Ordering {
+    let value_order = if largest {
+        nan_greatest_cmp_f32(b.1, a.1)
+    } else {
+        nan_greatest_cmp_f32(a.1, b.1)
+    };
+    value_order.then_with(|| a.0.cmp(&b.0))
+}
+
 /// Sort a contiguous f64 tensor along the given dimension.
 ///
 /// Returns `(sorted_values, indices)` where `indices[i]` is the original position
@@ -5692,7 +5701,11 @@ fn nr_sign(a: f64, b: f64) -> f64 {
 /// full singular-value/-vector accuracy (no condition-number squaring), unlike
 /// the Gram-matrix shortcuts. O(m n^2) with a small constant. `pythag` is the
 /// stable hypot already used by the eigensolver.
-fn golub_reinsch_svd(a: &mut [f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+fn golub_reinsch_svd(
+    a: &mut [f64],
+    m: usize,
+    n: usize,
+) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
     let mut w = vec![0.0f64; n];
     let mut v = vec![0.0f64; n * n];
     let mut rv1 = vec![0.0f64; n];
@@ -5836,7 +5849,7 @@ fn golub_reinsch_svd(a: &mut [f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec
         for _its in 0..30 {
             let mut flag = true;
             let mut l = k;
-            let mut nm = 0usize;
+            let mut nm;
             // Test for splitting (find a negligible super-diagonal element).
             loop {
                 nm = l.saturating_sub(1);
@@ -5855,7 +5868,7 @@ fn golub_reinsch_svd(a: &mut [f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec
                 let mut s = 1.0;
                 for i in l..=k {
                     let f = s * rv1[i];
-                    rv1[i] = c * rv1[i];
+                    rv1[i] *= c;
                     if (f.abs() + anorm) == anorm {
                         break;
                     }
@@ -5904,7 +5917,7 @@ fn golub_reinsch_svd(a: &mut [f64], m: usize, n: usize) -> Result<(Vec<f64>, Vec
                 g = rv1[i];
                 y = w[i];
                 h = s * g;
-                g = c * g;
+                g *= c;
                 let mut zz = eigh_pythag(f, h);
                 rv1[j] = zz;
                 c = f / zz;
@@ -6059,7 +6072,7 @@ fn golub_reinsch_singular_values(
                 let mut s = 1.0;
                 for i in l..=k {
                     let f = s * rv1[i];
-                    rv1[i] = c * rv1[i];
+                    rv1[i] *= c;
                     if (f.abs() + anorm) == anorm {
                         break;
                     }
@@ -6096,7 +6109,7 @@ fn golub_reinsch_singular_values(
                 g = rv1[i];
                 y = w[i];
                 h = s * g;
-                g = c * g;
+                g *= c;
                 let mut zz = eigh_pythag(f, h);
                 rv1[j] = zz;
                 c = f / zz;
@@ -8725,8 +8738,9 @@ pub fn topk_tensor_contiguous_f32(
     let data = &input[offset..];
     let mut out_values = vec![0.0f32; out_numel];
     let mut out_indices = vec![0usize; out_numel];
-    // F32 mirror: parallelize over independent per-outer blocks; bit-identical
-    // to the serial version (stable sort, fixed comparator). See the f64 path.
+    // F32 mirror: parallelize over independent per-outer blocks. Every lane
+    // selects independently with a total value+original-index order equivalent
+    // to the serial stable sort; see the f64 path.
     let in_block = dim_size * inner_size;
     let out_block = k * inner_size;
     let in_total = outer_size * in_block;
@@ -8739,16 +8753,29 @@ pub fn topk_tensor_contiguous_f32(
                 let mut lane: Vec<(usize, f32)> = (0..dim_size)
                     .map(|d| (d, in_block_data[d * inner_size + inner]))
                     .collect();
-                if largest {
-                    lane.sort_by(|a, b| nan_greatest_cmp_f32(b.1, a.1));
-                } else {
-                    lane.sort_by(|a, b| nan_greatest_cmp_f32(a.1, b.1));
+
+                if k < dim_size {
+                    let (selected, _, _) =
+                        lane.select_nth_unstable_by(k, |a, b| topk_lane_cmp_f32(a, b, largest));
+                    if sorted {
+                        selected.sort_by(|a, b| topk_lane_cmp_f32(a, b, largest));
+                    } else {
+                        selected.sort_by_key(|(orig_idx, _)| *orig_idx);
+                    }
+                    for (out_d, (orig_d, val)) in selected.iter().copied().enumerate() {
+                        ov_block[out_d * inner_size + inner] = val;
+                        oi_block[out_d * inner_size + inner] = orig_d;
+                    }
+                    continue;
                 }
-                let mut selected: Vec<(usize, f32)> = lane[..k].to_vec();
+
+                lane.sort_by(|a, b| topk_lane_cmp_f32(a, b, largest));
+                let selected = &mut lane[..k];
                 if !sorted {
                     selected.sort_by_key(|(orig_idx, _)| *orig_idx);
                 }
-                for (out_d, (orig_d, val)) in selected.into_iter().enumerate() {
+
+                for (out_d, (orig_d, val)) in selected.iter().copied().enumerate() {
                     ov_block[out_d * inner_size + inner] = val;
                     oi_block[out_d * inner_size + inner] = orig_d;
                 }
@@ -13239,6 +13266,75 @@ mod tests {
     }
 
     #[test]
+    fn topk_f32_bounded_selection_matches_full_sort_bit_exact() {
+        // F32 isomorphism proof for the bounded-selection path: match the old
+        // full-sort select exactly, including NaN-as-largest and original-index
+        // tie order for equal values/signed zeros.
+        for (shape, dim, k, largest, srt) in [
+            (vec![11usize, 24usize, 3usize], 1usize, 5usize, true, true),
+            (vec![11usize, 24usize, 3usize], 1usize, 5usize, true, false),
+            (vec![73usize, 40usize], 1usize, 7usize, false, false),
+        ] {
+            let reduce = shape[dim];
+            let inner: usize = shape[dim + 1..].iter().product();
+            let outer: usize = shape[..dim].iter().product();
+            let numel: usize = shape.iter().product();
+            let mut data: Vec<f32> = (0..numel)
+                .map(|i| ((i * 53 + 7) % 17) as f32 * 0.25)
+                .collect();
+            for i in (0..numel).step_by(37) {
+                let payload = u32::try_from(i & 0xff).expect("masked payload fits u32");
+                data[i] = f32::from_bits(0x7fc0_0000 | payload);
+            }
+            for i in (11..numel).step_by(41) {
+                data[i] = -0.0;
+            }
+            for i in (17..numel).step_by(43) {
+                data[i] = 0.0;
+            }
+
+            let mut v_ref = vec![0.0_f32; outer * k * inner];
+            let mut i_ref = vec![0usize; outer * k * inner];
+            for o in 0..outer {
+                for inr in 0..inner {
+                    let mut lane: Vec<(usize, f32)> = (0..reduce)
+                        .map(|d| (d, data[o * reduce * inner + d * inner + inr]))
+                        .collect();
+                    if largest {
+                        lane.sort_by(|a, b| super::nan_greatest_cmp_f32(b.1, a.1));
+                    } else {
+                        lane.sort_by(|a, b| super::nan_greatest_cmp_f32(a.1, b.1));
+                    }
+                    let mut sel: Vec<(usize, f32)> = lane[..k].to_vec();
+                    if !srt {
+                        sel.sort_by_key(|(o2, _)| *o2);
+                    }
+                    for (od, (orig, val)) in sel.into_iter().enumerate() {
+                        let idx = o * k * inner + od * inner + inr;
+                        v_ref[idx] = val;
+                        i_ref[idx] = orig;
+                    }
+                }
+            }
+
+            let meta = TensorMeta::from_shape(shape.clone(), DType::F32, Device::Cpu);
+            let (v, i) = super::topk_tensor_contiguous_f32(&data, &meta, k, dim, largest, srt)
+                .expect("topk_f32");
+            assert_eq!(
+                i, i_ref,
+                "topk_f32 indices diverged {shape:?} k={k} sorted={srt}"
+            );
+            for t in 0..v.len() {
+                assert_eq!(
+                    v[t].to_bits(),
+                    v_ref[t].to_bits(),
+                    "topk_f32 values diverged at {t} {shape:?} k={k} sorted={srt}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn topk_largest_sorted() {
         let meta = TensorMeta::from_shape(vec![5], DType::F64, Device::Cpu);
         let input = vec![3.0, 1.0, 4.0, 1.0, 5.0];
@@ -13998,9 +14094,7 @@ mod tests {
             for j in 0..n {
                 let mut val = 0.0;
                 for k in 0..n {
-                    val += r.eigenvectors[i * n + k]
-                        * r.eigenvalues[k]
-                        * r.eigenvectors[j * n + k];
+                    val += r.eigenvectors[i * n + k] * r.eigenvalues[k] * r.eigenvectors[j * n + k];
                 }
                 assert!(
                     (val - a[i * n + j]).abs() < 1e-9,
@@ -14256,7 +14350,10 @@ mod tests {
 
         // Singular values non-negative and descending.
         for i in 1..k {
-            assert!(r.s[i] >= -1e-12 && r.s[i] <= r.s[i - 1] + 1e-9, "s not sorted at {i}");
+            assert!(
+                r.s[i] >= -1e-12 && r.s[i] <= r.s[i - 1] + 1e-9,
+                "s not sorted at {i}"
+            );
         }
         // U columns orthonormal: U^T U = I_k (U is m x k).
         for c1 in 0..k {
