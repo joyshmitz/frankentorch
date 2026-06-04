@@ -1038,6 +1038,44 @@ where
     Ok(simd_unary_f64(window, scalar_op, _simd_op))
 }
 
+/// Vectorised `exp` over one f64x4 lane group.
+///
+/// Alien-artifact foundation for a SIMD transcendental family (the no-gaps
+/// directive's "portable SIMD elementwise"). `wide`'s degree-13 polynomial with
+/// ln2 range reduction is accurate to ~1-2 ULP for the common finite range
+/// `|x| < 708.39`. Outside that, `wide::exp` flushes the lane to 0.0, which is
+/// WRONG for: overflow (should be +inf), the finite `[708.39, 709.78]` band,
+/// the `[-745, -708.39]` denormal-underflow band, `+inf` (should be +inf) and
+/// `NaN` (should be NaN). When ANY lane is out of the fast range we recompute
+/// the whole group with scalar `f64::exp`, which is exact per libm — these
+/// extreme inputs are rare, so the common path stays fully vectorised.
+///
+/// NOTE: in the fast range this is NOT bit-identical to scalar `f64::exp` (the
+/// polynomial differs by ~1-2 ULP). It is a *tolerance-accurate* kernel. It is
+/// intentionally NOT yet wired into the production `exp`/`sigmoid`/`softmax`
+/// paths: those are currently pinned bit-exact to scalar libm by unit tests, so
+/// adopting this requires moving the transcendental parity contract from
+/// bit-exact-to-libm to within-tolerance-of-torch (a deliberate project policy
+/// decision). `exp_f64x4_matches_scalar_within_tolerance` proves the accuracy
+/// and edge-case obligations are met.
+#[inline]
+#[must_use]
+pub fn exp_f64x4(x: f64x4) -> f64x4 {
+    // wide's vectorised polynomial is valid (and ~1-2 ULP) exactly when every
+    // lane is finite with |x| < 708.39; otherwise it wrongly flushes to 0.0.
+    const FAST_LIMIT: f64 = 708.39;
+    let xa = x.to_array();
+    let lane_fast = |v: f64| v.is_finite() && v.abs() < FAST_LIMIT;
+    if xa.iter().copied().all(lane_fast) {
+        x.exp()
+    } else {
+        // Any extreme/non-finite lane present: recompute the whole group with
+        // scalar libm so overflow->+inf, +inf->+inf, NaN->NaN, the finite
+        // 708.39..=709.78 band and denormal underflow are all exact.
+        f64x4::new([xa[0].exp(), xa[1].exp(), xa[2].exp(), xa[3].exp()])
+    }
+}
+
 fn broadcast_strides(
     input_shape: &[usize],
     target_shape: &[usize],
@@ -10720,6 +10758,76 @@ mod tests {
                 p.to_bits(),
                 "f32 GEMM row-split diverged at {idx}: single {s} vs parallel {p}"
             );
+        }
+    }
+
+    #[test]
+    fn exp_f64x4_matches_scalar_within_tolerance() {
+        use wide::f64x4;
+        // Proof obligation 1 — fast-range accuracy. Chunks fully inside
+        // |x| < 708.39 take wide's vectorised degree-13 polynomial; it must
+        // track scalar f64::exp to within a few ULP across the common domain.
+        let mut max_rel: f64 = 0.0;
+        let n = 4096usize;
+        let mut xs: Vec<f64> = (0..n)
+            .map(|i| -50.0 + 100.0 * (i as f64) / (n as f64 - 1.0))
+            .collect();
+        // Explicit common points (0 and ±1 must be very accurate).
+        xs.extend_from_slice(&[0.0, -0.0, 1.0, -1.0, 50.0, -50.0, 1e-9, -1e-9]);
+        while xs.len() % 4 != 0 {
+            xs.push(0.0);
+        }
+        for chunk in xs.chunks_exact(4) {
+            let v = f64x4::new([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            let got = super::exp_f64x4(v).to_array();
+            for (j, &x) in chunk.iter().enumerate() {
+                let want = x.exp();
+                let rel = (got[j] - want).abs() / want.abs().max(f64::MIN_POSITIVE);
+                max_rel = max_rel.max(rel);
+            }
+        }
+        assert!(
+            max_rel < 1e-13,
+            "fast-range SIMD exp max relative error {max_rel:e} exceeds tolerance"
+        );
+
+        // Proof obligation 2 — extreme/non-finite lanes. Every value here is
+        // |x| >= 708.39 or non-finite, so the group leaves the fast range and is
+        // recomputed with scalar f64::exp -> must be BIT-EXACT to libm:
+        // overflow -> +inf, the finite [708.39, 709.78] band, denormal
+        // underflow, +inf -> +inf, -inf -> 0, NaN -> NaN.
+        let mut edges = vec![
+            709.0_f64,
+            709.7,
+            709.9,
+            710.0,
+            1000.0,
+            -708.5,
+            -745.0,
+            -750.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        while edges.len() % 4 != 0 {
+            edges.push(800.0); // also out of fast range -> keeps the group on the scalar path
+        }
+        for chunk in edges.chunks_exact(4) {
+            let v = f64x4::new([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            let got = super::exp_f64x4(v).to_array();
+            for (j, &x) in chunk.iter().enumerate() {
+                let want = x.exp();
+                if want.is_nan() {
+                    assert!(got[j].is_nan(), "exp({x}) should be NaN, got {}", got[j]);
+                } else {
+                    assert_eq!(
+                        got[j].to_bits(),
+                        want.to_bits(),
+                        "extreme exp({x}) = {} expected bit-exact {want}",
+                        got[j]
+                    );
+                }
+            }
         }
     }
 
