@@ -18939,6 +18939,106 @@ impl FrankenTorchSession {
                         reason: "group_norm: group size overflow",
                     },
                 )))?;
+        // Fused fast paths (f64): one streaming kernel per group instead of the
+        // ~15 op-graph reshape/mean/expand/full/sqrt/div intermediates. No-grad
+        // returns a leaf; grad (affine weight+bias present) routes a custom autograd
+        // op. Non-f64 / non-affine-grad fall through unchanged.
+        let w_grad = match weight {
+            Some(w) => self.tensor_tape.tensor_requires_grad(w)?,
+            None => false,
+        };
+        let b_grad = match bias {
+            Some(b) => self.tensor_tape.tensor_requires_grad(b)?,
+            None => false,
+        };
+        let w_f64 = match weight {
+            Some(w) => self.tensor_dtype(w)? == DType::F64,
+            None => true,
+        };
+        let b_f64 = match bias {
+            Some(b) => self.tensor_dtype(b)? == DType::F64,
+            None => true,
+        };
+        let input_f64 = self.tensor_dtype(input)? == DType::F64;
+        if !self.tensor_tape.tensor_requires_grad(input)?
+            && !w_grad
+            && !b_grad
+            && input_f64
+            && w_f64
+            && b_f64
+        {
+            let x = self.tensor_values(input)?;
+            let wv = match weight {
+                Some(w) => Some(self.tensor_values(w)?),
+                None => None,
+            };
+            let bv = match bias {
+                Some(b) => Some(self.tensor_values(b)?),
+                None => None,
+            };
+            let out = ft_kernel_cpu::group_norm_forward_f64(
+                &x,
+                wv.as_deref(),
+                bv.as_deref(),
+                batch_size,
+                num_groups,
+                channels_per_group,
+                spatial,
+                eps,
+            );
+            return self.tensor_variable(out, input_shape, false);
+        }
+        if let (Some(w), Some(bs)) = (weight, bias) {
+            if (self.tensor_tape.tensor_requires_grad(input)? || w_grad || b_grad)
+                && input_f64
+                && self.tensor_dtype(w)? == DType::F64
+                && self.tensor_dtype(bs)? == DType::F64
+            {
+                let (bsz, ng, cpg, sp, eps_c) =
+                    (batch_size, num_groups, channels_per_group, spatial, eps);
+                let ishape = input_shape.clone();
+                return self.tensor_apply_function(
+                    &[input, w, bs],
+                    move |ctx, ins| {
+                        let (xv, _) = ins[0];
+                        let (wv, _) = ins[1];
+                        let (bv, _) = ins[2];
+                        let out = ft_kernel_cpu::group_norm_forward_f64(
+                            xv,
+                            Some(wv),
+                            Some(bv),
+                            bsz,
+                            ng,
+                            cpg,
+                            sp,
+                            eps_c,
+                        );
+                        ctx.save_for_backward(xv.to_vec(), ishape.clone());
+                        ctx.save_for_backward(wv.to_vec(), vec![ng * cpg]);
+                        Ok((out, ishape.clone()))
+                    },
+                    move |ctx, grad_outputs| {
+                        let dy = grad_outputs[0];
+                        let saved = ctx.saved_tensors();
+                        // saved[0] = x; reconstruct weight from the second input.
+                        let xv = &saved[0];
+                        let wv = &saved[1];
+                        let (dx, dw, db) = ft_kernel_cpu::group_norm_backward_f64(
+                            dy,
+                            xv,
+                            Some(wv.as_slice()),
+                            bsz,
+                            ng,
+                            cpg,
+                            sp,
+                            eps_c,
+                        );
+                        Ok(vec![Some(dx), Some(dw.unwrap()), Some(db.unwrap())])
+                    },
+                );
+            }
+        }
+
         let reshaped = self.tensor_reshape(input, vec![batch_size, num_groups, group_numel])?;
         let mean = self.tensor_mean_dim(reshaped, 2)?;
         let mean = self.tensor_unsqueeze(mean, 2)?;
@@ -82600,6 +82700,102 @@ mod tests {
             .unwrap();
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![8.0, 12.0, 17.0, 23.0]);
+    }
+
+    #[test]
+    fn functional_group_norm_fused_matches_reference_within_tolerance() {
+        // Fused no-grad GroupNorm must match the op-graph reference to tolerance.
+        let (n, c, sp, groups) = (2usize, 6usize, 4usize, 3usize);
+        let xv: Vec<f64> = (0..n * c * sp)
+            .map(|i| ((i % 11) as f64 - 5.0) * 0.3 + (i as f64) * 0.01)
+            .collect();
+        let wv: Vec<f64> = (0..c).map(|j| 0.8 + (j as f64) * 0.1).collect();
+        let bv: Vec<f64> = (0..c).map(|j| (j as f64) * 0.05 - 0.2).collect();
+        let eps = 1e-5;
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(xv.clone(), vec![n, c, sp], false).unwrap();
+        let w = s.tensor_variable(wv.clone(), vec![c], false).unwrap();
+        let b = s.tensor_variable(bv.clone(), vec![c], false).unwrap();
+        let out = s
+            .functional_group_norm(x, groups, Some(w), Some(b), eps)
+            .unwrap();
+        let fused = s.tensor_values(out).unwrap();
+
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x2 = s2.tensor_variable(xv, vec![n, c, sp], true).unwrap();
+        let w2 = s2.tensor_variable(wv, vec![c], true).unwrap();
+        let b2 = s2.tensor_variable(bv, vec![c], true).unwrap();
+        let out2 = s2
+            .functional_group_norm(x2, groups, Some(w2), Some(b2), eps)
+            .unwrap();
+        let reference = s2.tensor_values(out2).unwrap();
+        assert_eq!(fused.len(), reference.len());
+        for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-12 + 1e-10 * b.abs(),
+                "[{i}]: fused {a} vs reference {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn functional_group_norm_grad_matches_finite_diff() {
+        let (n, c, sp, groups) = (2usize, 4usize, 3usize, 2usize);
+        let xv: Vec<f64> = (0..n * c * sp)
+            .map(|i| ((i % 7) as f64 - 3.0) * 0.35 + (i as f64) * 0.02)
+            .collect();
+        let wv: Vec<f64> = (0..c).map(|j| 0.7 + (j as f64) * 0.1).collect();
+        let bv: Vec<f64> = (0..c).map(|j| (j as f64) * 0.05).collect();
+        let eps = 1e-5;
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(xv.clone(), vec![n, c, sp], true).unwrap();
+        let w = s.tensor_variable(wv.clone(), vec![c], true).unwrap();
+        let b = s.tensor_variable(bv.clone(), vec![c], true).unwrap();
+        let out = s
+            .functional_group_norm(x, groups, Some(w), Some(b), eps)
+            .unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        s.tensor_backward(loss).unwrap();
+        let gx = s.tensor_grad(x).unwrap().unwrap();
+        let gw = s.tensor_grad(w).unwrap().unwrap();
+        let gb = s.tensor_grad(b).unwrap().unwrap();
+
+        let loss_fn = |xs: &[f64], ws: &[f64], bs: &[f64]| -> f64 {
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xi = s2.tensor_variable(xs.to_vec(), vec![n, c, sp], false).unwrap();
+            let wi = s2.tensor_variable(ws.to_vec(), vec![c], false).unwrap();
+            let bi = s2.tensor_variable(bs.to_vec(), vec![c], false).unwrap();
+            let o = s2
+                .functional_group_norm(xi, groups, Some(wi), Some(bi), eps)
+                .unwrap();
+            s2.tensor_values(o).unwrap().iter().sum()
+        };
+        let h = 1e-6;
+        let check = |g: f64, fd: f64, what: &str, idx: usize| {
+            assert!(
+                (g - fd).abs() <= 1e-4 + 1e-4 * fd.abs(),
+                "{what}[{idx}]: analytic {g} vs finite-diff {fd}"
+            );
+        };
+        for i in 0..n * c * sp {
+            let (mut xp, mut xm) = (xv.clone(), xv.clone());
+            xp[i] += h;
+            xm[i] -= h;
+            let fd = (loss_fn(&xp, &wv, &bv) - loss_fn(&xm, &wv, &bv)) / (2.0 * h);
+            check(gx[i], fd, "dx", i);
+        }
+        for j in 0..c {
+            let (mut wp, mut wm) = (wv.clone(), wv.clone());
+            wp[j] += h;
+            wm[j] -= h;
+            let fdw = (loss_fn(&xv, &wp, &bv) - loss_fn(&xv, &wm, &bv)) / (2.0 * h);
+            check(gw[j], fdw, "dweight", j);
+            let (mut bp, mut bm) = (bv.clone(), bv.clone());
+            bp[j] += h;
+            bm[j] -= h;
+            let fdb = (loss_fn(&xv, &wv, &bp) - loss_fn(&xv, &wv, &bm)) / (2.0 * h);
+            check(gb[j], fdb, "dbias", j);
+        }
     }
 
     #[test]

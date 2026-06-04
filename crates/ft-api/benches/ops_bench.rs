@@ -244,6 +244,40 @@ fn bench_layer_norm(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_group_norm(c: &mut Criterion) {
+    // GroupNorm over [N, C, H, W] = [32, 256, 28, 28], num_groups=32 (ResNet-ish),
+    // no-grad and grad f64. The op-graph allocates ~15 full-size intermediates.
+    let mut group = c.benchmark_group("group_norm");
+    let (n, ch, h, w, groups) = (32usize, 256usize, 28usize, 28usize, 32usize);
+    group.bench_function("nograd_32x256x28x28", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![n, ch, h, w], false).unwrap();
+        let wt = session.tensor_randn(vec![ch], false).unwrap();
+        let bias = session.tensor_randn(vec![ch], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .functional_group_norm(x, groups, Some(wt), Some(bias), 1e-5)
+                    .unwrap(),
+            )
+        });
+    });
+    group.bench_function("grad_32x256x28x28", |b| {
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n, ch, h, w], true).unwrap();
+            let wt = session.tensor_randn(vec![ch], true).unwrap();
+            let bias = session.tensor_randn(vec![ch], true).unwrap();
+            let out = session
+                .functional_group_norm(x, groups, Some(wt), Some(bias), 1e-5)
+                .unwrap();
+            let loss = session.tensor_sum(out).unwrap();
+            black_box(session.tensor_backward(loss).unwrap())
+        });
+    });
+    group.finish();
+}
+
 fn bench_cross_entropy(c: &mut Criterion) {
     // Softmax-cross-entropy, no-grad and grad f64. [batch, classes] = [4096, 8192]
     // (LLM-vocab scale) — the op-graph materialises a 256MB log-softmax tensor.
@@ -802,6 +836,7 @@ criterion_group!(
     bench_layer_norm,
     bench_rms_norm,
     bench_cross_entropy,
+    bench_group_norm,
     bench_linear_forward,
     bench_interpolate_bicubic,
     bench_interpolate_trilinear,
