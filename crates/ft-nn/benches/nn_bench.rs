@@ -40,5 +40,32 @@ fn bench_multihead_attention(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_multihead_attention);
+fn bench_multihead_attention_nograd(c: &mut Criterion) {
+    let mut group = c.benchmark_group("multihead_attention");
+    group.bench_function("forward_8x64x128_h8_nograd", |b| {
+        b.iter_batched(
+            make_mha_case,
+            |(mut session, attention, input)| {
+                session.no_grad_enter();
+                let output = attention.forward(&mut session, input).expect("forward");
+                let first = session
+                    .tensor_values(output)
+                    .expect("values")
+                    .first()
+                    .copied()
+                    .expect("nonempty output");
+                session.no_grad_exit();
+                black_box(first)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_multihead_attention,
+    bench_multihead_attention_nograd
+);
 criterion_main!(benches);
