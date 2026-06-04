@@ -70,10 +70,7 @@ impl RuntimeContext {
     #[must_use]
     pub fn new(mode: ExecutionMode) -> Self {
         let mut ledger = EvidenceLedger::with_capacity(2);
-        ledger.record(
-            EvidenceKind::Policy,
-            policy_summary("mode initialized to ", mode),
-        );
+        ledger.record(EvidenceKind::Policy, policy_initialized_summary(mode));
         Self { mode, ledger }
     }
 
@@ -84,10 +81,8 @@ impl RuntimeContext {
 
     pub fn set_mode(&mut self, mode: ExecutionMode) {
         self.mode = mode;
-        self.ledger.record(
-            EvidenceKind::Policy,
-            policy_summary("mode switched to ", mode),
-        );
+        self.ledger
+            .record(EvidenceKind::Policy, policy_switched_summary(mode));
     }
 
     #[must_use]
@@ -207,19 +202,18 @@ fn now_unix_ms() -> u128 {
         .map_or(0, |duration| duration.as_millis())
 }
 
-fn execution_mode_label(mode: ExecutionMode) -> &'static str {
+fn policy_initialized_summary(mode: ExecutionMode) -> &'static str {
     match mode {
-        ExecutionMode::Strict => "Strict",
-        ExecutionMode::Hardened => "Hardened",
+        ExecutionMode::Strict => "mode initialized to Strict",
+        ExecutionMode::Hardened => "mode initialized to Hardened",
     }
 }
 
-fn policy_summary(prefix: &str, mode: ExecutionMode) -> String {
-    let label = execution_mode_label(mode);
-    let mut summary = String::with_capacity(prefix.len() + label.len());
-    summary.push_str(prefix);
-    summary.push_str(label);
-    summary
+fn policy_switched_summary(mode: ExecutionMode) -> &'static str {
+    match mode {
+        ExecutionMode::Strict => "mode switched to Strict",
+        ExecutionMode::Hardened => "mode switched to Hardened",
+    }
 }
 
 #[cfg(test)]
