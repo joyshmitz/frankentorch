@@ -1046,20 +1046,24 @@ impl SchemaRegistry {
             .validate_for_scalar_binary()
             .map_err(SchemaRegistryError::IncompatibleDispatchKeyset)?;
 
-        let (name, is_out_variant, schema_digest, normalized_name) = match parsed {
+        let (name, is_out_variant, schema_digest, normalized_name, name_digest) = match parsed {
             ParsedSchemaInput::Name(name) => {
                 let normalized_name = name.unambiguous_name();
                 let schema_digest = digest64(normalized_name.as_str());
-                (name, false, schema_digest, normalized_name)
+                (name, false, schema_digest, normalized_name, schema_digest)
             }
-            ParsedSchemaInput::Schema(schema) => (
-                &schema.op,
-                schema.is_out_variant,
-                schema.schema_digest,
-                schema.op.unambiguous_name(),
-            ),
+            ParsedSchemaInput::Schema(schema) => {
+                let normalized_name = schema.op.unambiguous_name();
+                let name_digest = digest64(normalized_name.as_str());
+                (
+                    &schema.op,
+                    schema.is_out_variant,
+                    schema.schema_digest,
+                    normalized_name,
+                    name_digest,
+                )
+            }
         };
-        let name_digest = digest64(normalized_name.as_str());
         if self
             .index_for_name(name_digest, normalized_name.as_str())
             .is_some()
