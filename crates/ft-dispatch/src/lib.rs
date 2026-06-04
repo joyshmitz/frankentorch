@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    hash::{BuildHasherDefault, Hasher},
+    sync::Arc,
+};
 
 use ft_core::{
     BFloat16, DType, Device, ExecutionMode, Float16, ScalarTensor, TensorCompatError, TensorMeta,
@@ -917,10 +922,37 @@ impl fmt::Display for SchemaRegistryError {
 
 impl std::error::Error for SchemaRegistryError {}
 
+struct SchemaNameHasher {
+    hash: u64,
+}
+
+impl Default for SchemaNameHasher {
+    fn default() -> Self {
+        Self {
+            hash: 0xcbf2_9ce4_8422_2325,
+        }
+    }
+}
+
+impl Hasher for SchemaNameHasher {
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.hash ^= u64::from(*byte);
+            self.hash = self.hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+}
+
+type SchemaNameBuildHasher = BuildHasherDefault<SchemaNameHasher>;
+
 #[derive(Clone, Default)]
 pub struct SchemaRegistry {
     entries: Vec<SchemaDispatchEntry>,
-    name_to_index: HashMap<String, usize>,
+    name_to_index: HashMap<String, usize, SchemaNameBuildHasher>,
 }
 
 impl fmt::Debug for SchemaRegistry {
