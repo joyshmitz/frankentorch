@@ -1,0 +1,13 @@
+bead=frankentorch-mafg
+target=ft-device DeviceError::Mismatch fixed device-name display
+proof_test=device_error_display
+benchmark=device_guard/mismatch_display_65536
+baseline_worker=ts2
+baseline_command=RCH_REQUIRE_REMOTE=1 rch exec -- cargo bench -p ft-device --bench device_bench -- device_guard/mismatch_display_65536 --warm-up-time 1 --measurement-time 5 --sample-size 20
+baseline_ts2_mismatch_display_65536=[2.6904 ms 2.7043 ms 2.7147 ms]
+candidate_worker=ts2
+candidate_command=RCH_REQUIRE_REMOTE=1 rch exec -- cargo bench -p ft-device --bench device_bench -- device_guard/mismatch_display_65536 --warm-up-time 1 --measurement-time 5 --sample-size 20
+candidate_ts2_mismatch_display_65536=[1.9664 ms 1.9800 ms 1.9961 ms]
+p50_speedup=1.366x
+golden_display=device mismatch: expected Cpu, got Cuda
+isomorphism=display_string_unchanged,error_variant_values_unchanged,ordering_tie_rng_fp_not_applicable

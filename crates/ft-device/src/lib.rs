@@ -13,13 +13,23 @@ impl fmt::Display for DeviceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Mismatch { expected, actual } => {
-                write!(f, "device mismatch: expected {expected:?}, got {actual:?}")
+                f.write_str("device mismatch: expected ")?;
+                f.write_str(device_name(*expected))?;
+                f.write_str(", got ")?;
+                f.write_str(device_name(*actual))
             }
         }
     }
 }
 
 impl std::error::Error for DeviceError {}
+
+fn device_name(device: Device) -> &'static str {
+    match device {
+        Device::Cpu => "Cpu",
+        Device::Cuda => "Cuda",
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceGuard {
@@ -299,10 +309,7 @@ mod tests {
             expected: Device::Cpu,
             actual: Device::Cuda,
         };
-        let msg = format!("{err}");
-        assert!(msg.contains("Cpu"));
-        assert!(msg.contains("Cuda"));
-        assert!(msg.contains("mismatch"));
+        assert_eq!(format!("{err}"), "device mismatch: expected Cpu, got Cuda");
     }
 
     #[test]
