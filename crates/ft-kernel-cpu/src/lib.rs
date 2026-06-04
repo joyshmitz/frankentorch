@@ -2666,6 +2666,83 @@ pub fn layer_norm_forward_f64(
     out
 }
 
+/// Backward of [`layer_norm_forward_f64`] with affine weight (and bias). Given
+/// `dy` (`[batch, norm_size]`), the saved input `x` and `weight`, returns
+/// `(dx, dweight, dbias)`. Recomputes `mean`/`rstd`/`xhat` per row (cheap) so the
+/// forward need only save `x` and `weight`:
+///   `dxhat = dy·w`,
+///   `dx = rstd·(dxhat − mean_j(dxhat) − xhat·mean_j(dxhat·xhat))`,
+///   `dweight[j] = Σ_rows dy·xhat`,  `dbias[j] = Σ_rows dy`.
+/// `dx` is parallel over rows; the affine grads are a deterministic serial row
+/// reduction (matches the op-graph backward to tolerance).
+#[must_use]
+pub fn layer_norm_backward_f64(
+    dy: &[f64],
+    x: &[f64],
+    weight: &[f64],
+    batch: usize,
+    norm_size: usize,
+    eps: f64,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let inv_n = 1.0 / norm_size as f64;
+    let mut dx = vec![0.0f64; batch * norm_size];
+    dx.par_chunks_mut(norm_size)
+        .enumerate()
+        .for_each(|(r, dxrow)| {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let dyrow = &dy[r * norm_size..r * norm_size + norm_size];
+            let mut sum = 0.0f64;
+            for &v in xrow {
+                sum += v;
+            }
+            let mean = sum * inv_n;
+            let mut vsum = 0.0f64;
+            for &v in xrow {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0 / (vsum * inv_n + eps).sqrt();
+            let mut c1 = 0.0f64;
+            let mut c2 = 0.0f64;
+            for j in 0..norm_size {
+                let xhat = (xrow[j] - mean) * rstd;
+                let dxhat = dyrow[j] * weight[j];
+                c1 += dxhat;
+                c2 += dxhat * xhat;
+            }
+            for j in 0..norm_size {
+                let xhat = (xrow[j] - mean) * rstd;
+                let dxhat = dyrow[j] * weight[j];
+                dxrow[j] = rstd * (dxhat - (c1 + xhat * c2) * inv_n);
+            }
+        });
+    // Affine grads: deterministic serial reduction over rows (cache-friendly,
+    // run-to-run stable — a parallel float reduce would reorder the sum).
+    let mut dweight = vec![0.0f64; norm_size];
+    let mut dbias = vec![0.0f64; norm_size];
+    for r in 0..batch {
+        let xrow = &x[r * norm_size..r * norm_size + norm_size];
+        let dyrow = &dy[r * norm_size..r * norm_size + norm_size];
+        let mut sum = 0.0f64;
+        for &v in xrow {
+            sum += v;
+        }
+        let mean = sum * inv_n;
+        let mut vsum = 0.0f64;
+        for &v in xrow {
+            let d = v - mean;
+            vsum += d * d;
+        }
+        let rstd = 1.0 / (vsum * inv_n + eps).sqrt();
+        for j in 0..norm_size {
+            let xhat = (xrow[j] - mean) * rstd;
+            dweight[j] += dyrow[j] * xhat;
+            dbias[j] += dyrow[j];
+        }
+    }
+    (dx, dweight, dbias)
+}
+
 pub fn linear_tensor_f64(
     x: &[f64],
     weight: &[f64],

@@ -227,6 +227,20 @@ fn bench_layer_norm(c: &mut Criterion) {
             )
         });
     });
+    // Forward + backward (training): exercises the fused grad LayerNorm op.
+    group.bench_function("grad_2048x1024", |b| {
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![rows, hidden], true).unwrap();
+            let w = session.tensor_randn(vec![hidden], true).unwrap();
+            let bias = session.tensor_randn(vec![hidden], true).unwrap();
+            let out = session
+                .functional_layer_norm(x, vec![hidden], Some(w), Some(bias), 1e-5)
+                .unwrap();
+            let loss = session.tensor_sum(out).unwrap();
+            black_box(session.tensor_backward(loss).unwrap())
+        });
+    });
     group.finish();
 }
 
