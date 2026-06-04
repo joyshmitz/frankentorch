@@ -2834,6 +2834,76 @@ pub fn rms_norm_backward_f64(
     (dx, dweight)
 }
 
+/// Fused softmax-cross-entropy forward (f64): per row of `[batch, classes]`
+/// logits with a class-index `target`, returns the per-row loss
+/// `lse(logits) - logits[target]` (`= -log_softmax[target]`) in one streaming
+/// pass — NEVER materialising the full `[batch, classes]` log-softmax tensor the
+/// `log_softmax + nll_loss` op-graph allocates just to gather `batch` scalars.
+#[must_use]
+pub fn cross_entropy_forward_f64(
+    logits: &[f64],
+    target: &[usize],
+    batch: usize,
+    classes: usize,
+) -> Vec<f64> {
+    let mut loss = vec![0.0f64; batch];
+    loss.par_iter_mut().enumerate().for_each(|(i, li)| {
+        let row = &logits[i * classes..i * classes + classes];
+        let mut m = f64::NEG_INFINITY;
+        for &v in row {
+            if v > m {
+                m = v;
+            }
+        }
+        let mut s = 0.0f64;
+        for &v in row {
+            s += (v - m).exp();
+        }
+        let lse = m + s.ln();
+        *li = lse - row[target[i]];
+    });
+    loss
+}
+
+/// Backward of [`cross_entropy_forward_f64`]. Given `dloss` (`[batch]`, the grad
+/// of the per-row losses), the saved `logits` and `target`, returns `dlogits`
+/// (`[batch, classes]`): `dlogits[i][c] = dloss[i]·(softmax(logits[i])[c] −
+/// [c == target[i]])`. Parallel over rows.
+#[must_use]
+pub fn cross_entropy_backward_f64(
+    logits: &[f64],
+    target: &[usize],
+    dloss: &[f64],
+    batch: usize,
+    classes: usize,
+) -> Vec<f64> {
+    let mut dlogits = vec![0.0f64; batch * classes];
+    dlogits
+        .par_chunks_mut(classes)
+        .enumerate()
+        .for_each(|(i, drow)| {
+            let row = &logits[i * classes..i * classes + classes];
+            let mut m = f64::NEG_INFINITY;
+            for &v in row {
+                if v > m {
+                    m = v;
+                }
+            }
+            let mut s = 0.0f64;
+            for &v in row {
+                s += (v - m).exp();
+            }
+            let lse = m + s.ln();
+            let g = dloss[i];
+            let t = target[i];
+            for c in 0..classes {
+                let sm = (row[c] - lse).exp();
+                drow[c] = g * (sm - if c == t { 1.0 } else { 0.0 });
+            }
+        });
+    dlogits
+}
+
 pub fn linear_tensor_f64(
     x: &[f64],
     weight: &[f64],

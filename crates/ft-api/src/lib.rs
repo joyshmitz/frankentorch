@@ -8666,6 +8666,65 @@ impl FrankenTorchSession {
         target: TensorNodeId,
         reduction: &str,
     ) -> Result<TensorNodeId, AutogradError> {
+        // Fused fast path: 2-D f64 logits with an in-range class-index target
+        // [batch]. Computes per-row loss (lse - logits[target]) directly, never
+        // materialising the [batch, classes] log-softmax tensor (nor its backward
+        // intermediates) — then the requested reduction. Falls through for other
+        // shapes / dtypes / out-of-range or non-integer targets (e.g. ignore_index).
+        let in_shape = self.tensor_shape(input)?;
+        if matches!(reduction, "none" | "mean" | "sum")
+            && in_shape.len() == 2
+            && self.tensor_dtype(input)? == DType::F64
+            && self.tensor_shape(target)? == vec![in_shape[0]]
+        {
+            let (batch, classes) = (in_shape[0], in_shape[1]);
+            let tvals = self.tensor_values(target)?;
+            if classes > 0
+                && tvals
+                    .iter()
+                    .all(|&t| t >= 0.0 && t.fract() == 0.0 && (t as usize) < classes)
+            {
+                let target_idx: Vec<usize> = tvals.iter().map(|&t| t as usize).collect();
+                let per_row = if self.tensor_tape.tensor_requires_grad(input)? {
+                    let (b, c) = (batch, classes);
+                    let ti_fwd = target_idx.clone();
+                    let ti_bwd = target_idx;
+                    self.tensor_apply_function(
+                        &[input],
+                        move |ctx, ins| {
+                            let (logits, _) = ins[0];
+                            let loss =
+                                ft_kernel_cpu::cross_entropy_forward_f64(logits, &ti_fwd, b, c);
+                            ctx.save_for_backward(logits.to_vec(), vec![b, c]);
+                            Ok((loss, vec![b]))
+                        },
+                        move |ctx, grad_outputs| {
+                            let dloss = grad_outputs[0];
+                            let saved = ctx.saved_tensors();
+                            let dlogits = ft_kernel_cpu::cross_entropy_backward_f64(
+                                &saved[0], &ti_bwd, dloss, b, c,
+                            );
+                            Ok(vec![Some(dlogits)])
+                        },
+                    )?
+                } else {
+                    let logits = self.tensor_values(input)?;
+                    let loss = ft_kernel_cpu::cross_entropy_forward_f64(
+                        &logits,
+                        &target_idx,
+                        batch,
+                        classes,
+                    );
+                    self.tensor_variable(loss, vec![batch], false)?
+                };
+                return match reduction {
+                    "none" => Ok(per_row),
+                    "mean" => self.tensor_mean(per_row),
+                    _ => self.tensor_sum(per_row),
+                };
+            }
+        }
+
         let log_probs = self.tensor_log_softmax(input, 1)?;
         self.tensor_nll_loss(log_probs, target, reduction)
     }
@@ -68926,6 +68985,81 @@ mod tests {
             "cross entropy for correct class should be small, got {}",
             val
         );
+    }
+
+    #[test]
+    fn cross_entropy_fused_matches_op_graph_within_tolerance() {
+        // Fused cross-entropy must match the log_softmax + nll_loss op-graph (built
+        // manually so it bypasses the fast path) to tolerance, for every reduction.
+        let (batch, classes) = (5usize, 7usize);
+        let logits: Vec<f64> = (0..batch * classes)
+            .map(|i| ((i % 9) as f64 - 4.0) * 0.4)
+            .collect();
+        let tgt: Vec<f64> = vec![0.0, 3.0, 6.0, 2.0, 5.0];
+        for red in ["none", "mean", "sum"] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s
+                .tensor_variable(logits.clone(), vec![batch, classes], false)
+                .unwrap();
+            let t = s.tensor_variable(tgt.clone(), vec![batch], false).unwrap();
+            let out = s.functional_cross_entropy(x, t, red).unwrap();
+            let fused = s.tensor_values(out).unwrap();
+
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x2 = s2
+                .tensor_variable(logits.clone(), vec![batch, classes], false)
+                .unwrap();
+            let t2 = s2.tensor_variable(tgt.clone(), vec![batch], false).unwrap();
+            let lp = s2.tensor_log_softmax(x2, 1).unwrap();
+            let out2 = s2.tensor_nll_loss(lp, t2, red).unwrap();
+            let reference = s2.tensor_values(out2).unwrap();
+            assert_eq!(fused.len(), reference.len());
+            for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-12 + 1e-10 * b.abs(),
+                    "red={red} [{i}]: fused {a} vs op-graph {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cross_entropy_fused_grad_matches_finite_diff() {
+        let (batch, classes) = (4usize, 5usize);
+        let logits: Vec<f64> = (0..batch * classes)
+            .map(|i| ((i % 7) as f64 - 3.0) * 0.5)
+            .collect();
+        let tgt: Vec<f64> = vec![1.0, 4.0, 0.0, 2.0];
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(logits.clone(), vec![batch, classes], true)
+            .unwrap();
+        let t = s.tensor_variable(tgt.clone(), vec![batch], false).unwrap();
+        let out = s.functional_cross_entropy(x, t, "mean").unwrap();
+        s.tensor_backward(out).unwrap();
+        let gx = s.tensor_grad(x).unwrap().unwrap();
+
+        let loss_fn = |ls: &[f64]| -> f64 {
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xi = s2
+                .tensor_variable(ls.to_vec(), vec![batch, classes], false)
+                .unwrap();
+            let ti = s2.tensor_variable(tgt.clone(), vec![batch], false).unwrap();
+            let o = s2.functional_cross_entropy(xi, ti, "mean").unwrap();
+            s2.tensor_values(o).unwrap()[0]
+        };
+        let h = 1e-6;
+        for i in 0..batch * classes {
+            let (mut lp, mut lm) = (logits.clone(), logits.clone());
+            lp[i] += h;
+            lm[i] -= h;
+            let fd = (loss_fn(&lp) - loss_fn(&lm)) / (2.0 * h);
+            assert!(
+                (gx[i] - fd).abs() <= 1e-4 + 1e-4 * fd.abs(),
+                "dx[{i}]: analytic {} vs finite-diff {fd}",
+                gx[i]
+            );
+        }
     }
 
     #[test]

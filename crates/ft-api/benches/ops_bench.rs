@@ -244,6 +244,30 @@ fn bench_layer_norm(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_cross_entropy(c: &mut Criterion) {
+    // Softmax-cross-entropy, no-grad and grad f64. [batch, classes] = [4096, 8192]
+    // (LLM-vocab scale) — the op-graph materialises a 256MB log-softmax tensor.
+    let mut group = c.benchmark_group("cross_entropy");
+    let (batch, classes) = (2048usize, 4096usize);
+    let targets: Vec<f64> = (0..batch).map(|i| (i % classes) as f64).collect();
+    group.bench_function("nograd_4096x8192", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(vec![batch, classes], false).unwrap();
+        let t = session.tensor_variable(targets.clone(), vec![batch], false).unwrap();
+        b.iter(|| black_box(session.functional_cross_entropy(x, t, "mean").unwrap()));
+    });
+    group.bench_function("grad_4096x8192", |b| {
+        b.iter(|| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![batch, classes], true).unwrap();
+            let t = session.tensor_variable(targets.clone(), vec![batch], false).unwrap();
+            let loss = session.functional_cross_entropy(x, t, "mean").unwrap();
+            black_box(session.tensor_backward(loss).unwrap())
+        });
+    });
+    group.finish();
+}
+
 fn bench_rms_norm(c: &mut Criterion) {
     // RMSNorm over the last dim (LLaMA-style), no-grad and grad f64.
     let mut group = c.benchmark_group("rms_norm");
@@ -777,6 +801,7 @@ criterion_group!(
     bench_sdpa,
     bench_layer_norm,
     bench_rms_norm,
+    bench_cross_entropy,
     bench_linear_forward,
     bench_interpolate_bicubic,
     bench_interpolate_trilinear,
