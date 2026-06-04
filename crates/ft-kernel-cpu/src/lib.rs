@@ -6082,6 +6082,17 @@ fn golub_reinsch_svd(
     }
 
     // --- Diagonalization of the bidiagonal form: QR with implicit shifts ---
+    // PERF NOTE: this implicit-QR sweep is the DOMINANT cost of the full SVD
+    // (svd_f64_256x256 ~1.6s, ~300x slower than LAPACK dgesdd). It is a long
+    // sequence of BLAS-1 Givens rotations applied to U (m rows) and V (n rows)
+    // every iteration; the rotation loops touch only 2 elements per row, so
+    // row-parallelizing them is memory-bound (would regress, cf. grid_sample).
+    // Parallelizing the upstream Householder bidiagonalization / U,V accumulation
+    // (the apply pattern that won 6.4x on QR `f832ce77`) was MEASURED here and
+    // REGRESSED svd/svdvals (the applies are a small fraction vs this sweep, and
+    // the two-phase restructure adds overhead at the benched 128-256 sizes). The
+    // real lever is ALGORITHMIC: a divide-and-conquer bidiagonal SVD (dbdsdc) or a
+    // BLAS-3 back-transformation, not parallelizing the existing rotation stream.
     for k in (0..n).rev() {
         for _its in 0..30 {
             let mut flag = true;
