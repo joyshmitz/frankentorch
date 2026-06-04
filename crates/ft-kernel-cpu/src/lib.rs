@@ -6090,9 +6090,15 @@ fn golub_reinsch_svd(
     // Parallelizing the upstream Householder bidiagonalization / U,V accumulation
     // (the apply pattern that won 6.4x on QR `f832ce77`) was MEASURED here and
     // REGRESSED svd/svdvals (the applies are a small fraction vs this sweep, and
-    // the two-phase restructure adds overhead at the benched 128-256 sizes). The
-    // real lever is ALGORITHMIC: a divide-and-conquer bidiagonal SVD (dbdsdc) or a
-    // BLAS-3 back-transformation, not parallelizing the existing rotation stream.
+    // the two-phase restructure adds overhead at the benched 128-256 sizes).
+    // Transposing U/V so the rotations hit contiguous rows was also MEASURED and
+    // REGRESSED (~1.4x slower): the two rotated columns are ADJACENT (j, j+1), so
+    // in row-major they already share a cache line per row — transposing puts them
+    // `stride` apart, doubling the cache lines touched. So the sweep is NOT
+    // cache-bound; it is just an O(n^3) BLAS-1 rotation stream. The real lever is
+    // ALGORITHMIC: a divide-and-conquer bidiagonal SVD (dbdsdc) or a BLAS-3
+    // back-transformation (accumulate each sweep's rotations into a banded
+    // orthogonal block, apply to U/V via dgemm), not micro-tuning the stream.
     for k in (0..n).rev() {
         for _its in 0..30 {
             let mut flag = true;
