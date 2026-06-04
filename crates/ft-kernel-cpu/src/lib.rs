@@ -6637,27 +6637,70 @@ pub fn qr_contiguous_f64(
         }
         let inv_norm = 1.0 / norm_v2;
 
-        // Apply Householder to R: R[j:m, :] -= 2 * v * (v^T @ R[j:m, :])
-        for col in 0..n {
-            let mut dot = 0.0;
-            for i in 0..col_len {
-                dot += v[i] * r_mat[(i + j) * n + col];
+        // Apply Householder to R: R[j:m, :] -= 2 * v * (v^T @ R[j:m, :]). Each
+        // output column's factor is an INDEPENDENT dot over the reflected rows,
+        // and each reflected row's update is independent, so both fan out with
+        // the SAME fp op order -> bit-for-bit identical to the serial sweep. The
+        // factor `2*dot*inv_norm` is folded into `w` so the update keeps the exact
+        // `factor * v[i]` association.
+        const QR_PAR_WORK: u64 = 1 << 14;
+        let r_work = (col_len as u64) * (n as u64);
+        if r_work >= QR_PAR_WORK {
+            let mut w = vec![0.0f64; n];
+            {
+                let r_ref: &[f64] = &r_mat;
+                w.par_iter_mut().enumerate().for_each(|(col, wc)| {
+                    let mut dot = 0.0;
+                    for i in 0..col_len {
+                        dot += v[i] * r_ref[(i + j) * n + col];
+                    }
+                    *wc = 2.0 * dot * inv_norm;
+                });
             }
-            let factor = 2.0 * dot * inv_norm;
-            for i in 0..col_len {
-                r_mat[(i + j) * n + col] -= factor * v[i];
+            let (_, tail) = r_mat.split_at_mut(j * n);
+            tail.par_chunks_mut(n).enumerate().for_each(|(i, row)| {
+                let vi = v[i];
+                for col in 0..n {
+                    row[col] -= w[col] * vi;
+                }
+            });
+        } else {
+            for col in 0..n {
+                let mut dot = 0.0;
+                for i in 0..col_len {
+                    dot += v[i] * r_mat[(i + j) * n + col];
+                }
+                let factor = 2.0 * dot * inv_norm;
+                for i in 0..col_len {
+                    r_mat[(i + j) * n + col] -= factor * v[i];
+                }
             }
         }
 
-        // Apply Householder to Q: Q[:, j:m] -= 2 * Q[:, j:m] @ v * v^T
-        for row in 0..m {
-            let mut dot = 0.0;
-            for i in 0..col_len {
-                dot += q_mat[row * m + (i + j)] * v[i];
-            }
-            let factor = 2.0 * dot * inv_norm;
-            for i in 0..col_len {
-                q_mat[row * m + (i + j)] -= factor * v[i];
+        // Apply Householder to Q: Q[:, j:m] -= 2 * Q[:, j:m] @ v * v^T. Each row of
+        // Q is independent and contiguous -> clean bit-exact row fan-out.
+        let q_work = (m as u64) * (col_len as u64);
+        if q_work >= QR_PAR_WORK {
+            q_mat.par_chunks_mut(m).for_each(|q_row| {
+                let mut dot = 0.0;
+                for i in 0..col_len {
+                    dot += q_row[i + j] * v[i];
+                }
+                let factor = 2.0 * dot * inv_norm;
+                for i in 0..col_len {
+                    q_row[i + j] -= factor * v[i];
+                }
+            });
+        } else {
+            for row in 0..m {
+                let mut dot = 0.0;
+                for i in 0..col_len {
+                    dot += q_mat[row * m + (i + j)] * v[i];
+                }
+                let factor = 2.0 * dot * inv_norm;
+                for i in 0..col_len {
+                    q_mat[row * m + (i + j)] -= factor * v[i];
+                }
             }
         }
     }
@@ -15062,6 +15105,41 @@ mod tests {
             }
         }
         t
+    }
+
+    #[test]
+    fn qr_parallel_apply_reconstructs_and_orthonormal() {
+        // n=256 crosses QR_PAR_WORK so the column/row apply fan-outs engage. The
+        // parallelization keeps the exact fp op order (bit-exact by construction);
+        // this guards the indexing by checking the proof obligations Q*R == A and
+        // Q^T*Q == I at a size the small unit tests never reach.
+        let n = 256usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = (((i * 53 + j * 31) % 97) as f64 - 48.0) * 0.1;
+            }
+            a[i * n + i] += n as f64;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let r = super::qr_contiguous_f64(&a, &meta, true).expect("qr");
+        // Q*R == A
+        for &(i, j) in &[(0usize, 0usize), (5, 200), (255, 1), (128, 128), (200, 17)] {
+            let mut dot = 0.0;
+            for t in 0..n {
+                dot += r.q[i * n + t] * r.r[t * n + j];
+            }
+            assert!((dot - a[i * n + j]).abs() < 1e-7, "(QR)[{i},{j}]={dot} vs {}", a[i * n + j]);
+        }
+        // Q^T*Q == I (orthonormal columns)
+        for &(c1, c2) in &[(0usize, 0usize), (10, 10), (3, 200), (255, 254)] {
+            let mut dot = 0.0;
+            for t in 0..n {
+                dot += r.q[t * n + c1] * r.q[t * n + c2];
+            }
+            let expected = if c1 == c2 { 1.0 } else { 0.0 };
+            assert!((dot - expected).abs() < 1e-9, "Q^T Q[{c1},{c2}]={dot} vs {expected}");
+        }
     }
 
     #[test]

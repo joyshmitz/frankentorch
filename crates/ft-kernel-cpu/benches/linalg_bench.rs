@@ -7,8 +7,27 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
     cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64, inv_tensor_contiguous_f64,
-    matrix_exp_contiguous_f64, svd_contiguous_f64, svdvals_contiguous_f64,
+    matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64, svdvals_contiguous_f64,
 };
+
+fn bench_qr(c: &mut Criterion) {
+    // Householder QR (Q and R). Each reflection's apply to R (per-column factor +
+    // row update) and to Q (per-row) is the O(n^3) compute-bound hotspot,
+    // bit-exactly parallelized over columns/rows.
+    for &n in &[512usize, 768usize] {
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = (((i * 53 + j * 31) % 97) as f64 - 48.0) * 0.1;
+            }
+            a[i * n + i] += n as f64;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        c.bench_function(&format!("qr_f64_{n}x{n}"), |bch| {
+            bch.iter(|| black_box(qr_contiguous_f64(black_box(&a), &meta, true).unwrap()))
+        });
+    }
+}
 
 fn bench_inv(c: &mut Criterion) {
     // Matrix inverse = LU factor (already parallel) + solve against the n-column
@@ -150,6 +169,7 @@ criterion_group!(
     bench_svd,
     bench_svdvals,
     bench_matrix_exp,
-    bench_inv
+    bench_inv,
+    bench_qr
 );
 criterion_main!(benches);
