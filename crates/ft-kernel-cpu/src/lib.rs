@@ -4975,8 +4975,17 @@ pub fn cholesky_contiguous_f64(
 
     let offset = meta.storage_offset();
     let mut l = vec![0.0f64; n * n];
+    // Scratch column buffer reused across columns for the parallel sub-diagonal
+    // path, so the rayon fan-out allocates nothing per column.
+    let mut col_buf = vec![0.0f64; n];
 
-    // Standard Cholesky: for j in 0..n, compute column j of L
+    // Standard left-looking Cholesky: for j in 0..n, compute column j of L.
+    // Within a column every sub-diagonal entry L[i][j] (i > j) is an INDEPENDENT
+    // dot product over the already-finalised columns k < j, so the rows fan out
+    // across threads with the SAME k-accumulation order — bit-for-bit identical
+    // to the serial column loop. The fan-out only pays once the column carries
+    // enough work (rows * dot-length) to dwarf the rayon split cost.
+    const CHOLESKY_PAR_WORK: u64 = 1 << 17;
     for j in 0..n {
         // L[j][j] = sqrt(A[j][j] - sum_{k<j} L[j][k]^2)
         let mut sum_sq = 0.0;
@@ -4991,12 +5000,31 @@ pub fn cholesky_contiguous_f64(
         l[j * n + j] = l_jj;
 
         // L[i][j] = (A[i][j] - sum_{k<j} L[i][k]*L[j][k]) / L[j][j]  for i > j
-        for i in (j + 1)..n {
-            let mut dot = 0.0;
-            for k in 0..j {
-                dot += l[i * n + k] * l[j * n + k];
+        let rows = n - (j + 1);
+        if (rows as u64) * (j as u64) >= CHOLESKY_PAR_WORK {
+            let l_ref: &[f64] = &l;
+            col_buf[..rows]
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(idx, out)| {
+                    let i = j + 1 + idx;
+                    let mut dot = 0.0;
+                    for k in 0..j {
+                        dot += l_ref[i * n + k] * l_ref[j * n + k];
+                    }
+                    *out = (data[offset + i * n + j] - dot) / l_jj;
+                });
+            for (idx, value) in col_buf[..rows].iter().copied().enumerate() {
+                l[(j + 1 + idx) * n + j] = value;
             }
-            l[i * n + j] = (data[offset + i * n + j] - dot) / l_jj;
+        } else {
+            for i in (j + 1)..n {
+                let mut dot = 0.0;
+                for k in 0..j {
+                    dot += l[i * n + k] * l[j * n + k];
+                }
+                l[i * n + j] = (data[offset + i * n + j] - dot) / l_jj;
+            }
         }
     }
 
@@ -14824,6 +14852,55 @@ mod tests {
                     a[i * n + j]
                 );
             }
+        }
+    }
+
+    #[test]
+    fn cholesky_parallel_subdiagonal_matches_serial_bit_exact() {
+        // The sub-diagonal fan-out only triggers once a column carries
+        // CHOLESKY_PAR_WORK work; n = 768 is the smallest power-of-two-ish size
+        // that crosses it. Prove the parallel column path is BIT-FOR-BIT
+        // identical to the serial left-looking reference (same k-accumulation
+        // order, just spread across threads).
+        let n = 768usize;
+        // Cheap symmetric, strictly diagonally dominant (hence SPD) matrix.
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..i {
+                let v = (((i * 131 + j * 17) % 19) as f64 - 9.0) * 0.01;
+                a[i * n + j] = v;
+                a[j * n + i] = v;
+            }
+            a[i * n + i] = n as f64;
+        }
+
+        // Inline serial reference (the pre-parallelisation algorithm).
+        let mut l_ref = vec![0.0f64; n * n];
+        for j in 0..n {
+            let mut sum_sq = 0.0;
+            for k in 0..j {
+                sum_sq += l_ref[j * n + k] * l_ref[j * n + k];
+            }
+            let l_jj = (a[j * n + j] - sum_sq).sqrt();
+            l_ref[j * n + j] = l_jj;
+            for i in (j + 1)..n {
+                let mut dot = 0.0;
+                for k in 0..j {
+                    dot += l_ref[i * n + k] * l_ref[j * n + k];
+                }
+                l_ref[i * n + j] = (a[i * n + j] - dot) / l_jj;
+            }
+        }
+
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let got = super::cholesky_contiguous_f64(&a, &meta, false).expect("cholesky");
+        assert_eq!(got.factor.len(), l_ref.len());
+        for idx in 0..(n * n) {
+            assert_eq!(
+                got.factor[idx].to_bits(),
+                l_ref[idx].to_bits(),
+                "parallel cholesky diverged from serial at index {idx}"
+            );
         }
     }
 
