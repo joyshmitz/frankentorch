@@ -128,6 +128,23 @@ fn bench_exp(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_pow(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pow");
+
+    // Non-integer exponent forces the per-element `powf` path (~exp+log each),
+    // the transcendental scalar map gated by the parallel threshold.
+    for size in [10000, 100000, 1000000].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("elements", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n], false).unwrap();
+            b.iter(|| black_box(session.tensor_pow(x, 2.5).unwrap()));
+        });
+    }
+    group.finish();
+}
+
 fn bench_add(c: &mut Criterion) {
     let mut group = c.benchmark_group("add");
 
@@ -551,6 +568,7 @@ criterion_group!(
     bench_softmax,
     bench_relu,
     bench_exp,
+    bench_pow,
     bench_add,
     bench_backward_matmul,
     bench_linear_forward,
