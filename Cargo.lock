@@ -606,6 +606,7 @@ dependencies = [
  "ft-dispatch",
  "ft-kernel-cpu",
  "insta",
+ "rayon",
 ]
 
 [[package]]

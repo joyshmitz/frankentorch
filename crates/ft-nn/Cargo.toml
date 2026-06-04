@@ -10,6 +10,7 @@ ft-api = { workspace = true }
 ft-autograd = { workspace = true }
 ft-dispatch = { workspace = true }
 ft-kernel-cpu = { workspace = true }
+rayon = "1.10"
 
 [dev-dependencies]
 criterion = { workspace = true }

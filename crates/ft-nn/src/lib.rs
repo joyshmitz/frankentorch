@@ -6,6 +6,7 @@ use ft_api::FrankenTorchSession;
 use ft_autograd::{AutogradError, FunctionCtx, TensorNodeId};
 use ft_core::{DType, DenseTensor, DenseTensorError, Device, TensorMeta};
 use ft_dispatch::{DispatchError, DispatchKeyError};
+use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
 
 fn incompatible_error(reason: &'static str) -> AutogradError {
     AutogradError::Dispatch(DispatchError::Key(DispatchKeyError::IncompatibleSet {
@@ -4573,6 +4574,36 @@ impl MultiheadAttention {
         concat
     }
 
+    fn pairwise_sum_f64(values: &[f64]) -> f64 {
+        const BLOCK: usize = 128;
+        if values.len() <= BLOCK {
+            return values.iter().sum();
+        }
+        let mid = values.len() / 2;
+        let (left, right) = values.split_at(mid);
+        Self::pairwise_sum_f64(left) + Self::pairwise_sum_f64(right)
+    }
+
+    fn softmax_attention_rows_in_place(scores: &mut [f64], row_len: usize) {
+        const PARALLEL_NUMEL_THRESHOLD: usize = 1 << 16;
+        let process = |row: &mut [f64]| {
+            let max_val = row.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            for value in row.iter_mut() {
+                *value = (*value - max_val).exp();
+            }
+            let sum = Self::pairwise_sum_f64(row);
+            for value in row {
+                *value /= sum;
+            }
+        };
+
+        if scores.len() >= PARALLEL_NUMEL_THRESHOLD {
+            scores.par_chunks_mut(row_len).for_each(process);
+        } else {
+            scores.chunks_mut(row_len).for_each(process);
+        }
+    }
+
     fn no_grad_f64_self_attention_fast_path(
         &self,
         session: &mut FrankenTorchSession,
@@ -4677,30 +4708,24 @@ impl MultiheadAttention {
             DType::F64,
             Device::Cpu,
         );
-        let scores = ft_kernel_cpu::bmm_tensor_contiguous_f64(&q_heads, &k_t, &q_meta, &k_t_meta)
-            .map_err(DispatchError::from)
-            .map_err(AutogradError::Dispatch)?;
+        let mut scores =
+            ft_kernel_cpu::bmm_tensor_contiguous_f64(&q_heads, &k_t, &q_meta, &k_t_meta)
+                .map_err(DispatchError::from)
+                .map_err(AutogradError::Dispatch)?;
 
         let scores_meta =
             TensorMeta::from_shape(vec![batch_heads, seq_len, seq_len], DType::F64, Device::Cpu);
-        let attn_weights =
-            ft_kernel_cpu::softmax_dim_tensor_contiguous_f64(&scores, &scores_meta, 2)
-                .map_err(DispatchError::from)
-                .map_err(AutogradError::Dispatch)?;
+        Self::softmax_attention_rows_in_place(&mut scores, seq_len);
 
         let v_meta = TensorMeta::from_shape(
             vec![batch_heads, seq_len, self.head_dim],
             DType::F64,
             Device::Cpu,
         );
-        let head_out = ft_kernel_cpu::bmm_tensor_contiguous_f64(
-            &attn_weights,
-            &v_heads,
-            &scores_meta,
-            &v_meta,
-        )
-        .map_err(DispatchError::from)
-        .map_err(AutogradError::Dispatch)?;
+        let head_out =
+            ft_kernel_cpu::bmm_tensor_contiguous_f64(&scores, &v_heads, &scores_meta, &v_meta)
+                .map_err(DispatchError::from)
+                .map_err(AutogradError::Dispatch)?;
         let concat = Self::concat_attention_heads(
             &head_out,
             batch_size,
