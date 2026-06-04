@@ -15,6 +15,16 @@ fn bench_matmul(c: &mut Criterion) {
             b.iter(|| black_box(session.tensor_matmul(a, bt).unwrap()));
         });
     }
+    // Small-M / large-N (a linear/projection layer's GEMM): M too small to
+    // row-split, so the column-parallel dgemm path is the lever.
+    for &nn in &[2048usize, 4096usize] {
+        group.bench_with_input(BenchmarkId::new("wide_64x512", nn), &nn, |b, &nn| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = session.tensor_randn(vec![64, 512], false).unwrap();
+            let bt = session.tensor_randn(vec![512, nn], false).unwrap();
+            b.iter(|| black_box(session.tensor_matmul(a, bt).unwrap()));
+        });
+    }
     group.finish();
 }
 

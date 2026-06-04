@@ -46,16 +46,80 @@ mod gemm {
         let a = &a[..m * k];
         let b = &b[..k * n];
         let c = &mut c[..m * n];
-        if !should_parallelize(m, k, n) {
+        if should_parallelize(m, k, n) {
+            let br = block_rows(m);
+            c.par_chunks_mut(br * n)
+                .zip(a.par_chunks(br * k))
+                .for_each(|(c_blk, a_blk)| {
+                    dgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
+                });
+        } else if should_parallelize_cols(m, k, n) {
+            dgemm_col_parallel(m, k, n, a, b, c);
+        } else {
             dgemm_block(m, k, n, a, b, c);
-            return;
         }
-        let br = block_rows(m);
-        c.par_chunks_mut(br * n)
-            .zip(a.par_chunks(br * k))
-            .for_each(|(c_blk, a_blk)| {
-                dgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
-            });
+    }
+
+    // Column (N) parallelism for SMALL-m, LARGE-n matmuls that the row-split
+    // misses — e.g. a linear layer `[batch, in] @ [in, out]^T` with batch << out:
+    // there M is too small to row-split, so the whole GEMM ran serial. Each
+    // n-block's K-accumulation is identical to the single call (matrixmultiply's
+    // micro-kernel order is independent of the N tiling), so the result is
+    // BIT-FOR-BIT identical to dgemm_block.
+    const PAR_MIN_FLOPS_COLS: u128 = 1 << 24; // ~16.8M FMA
+    const MIN_BLOCK_COLS: usize = 128;
+
+    fn should_parallelize_cols(m: usize, k: usize, n: usize) -> bool {
+        rayon::current_num_threads() > 1
+            && n >= 4 * MIN_BLOCK_COLS
+            && n > 4 * m
+            && (m as u128) * (k as u128) * (n as u128) >= PAR_MIN_FLOPS_COLS
+    }
+
+    fn block_cols(n: usize) -> usize {
+        let threads = rayon::current_num_threads().max(1);
+        n.div_ceil(threads).max(MIN_BLOCK_COLS)
+    }
+
+    fn dgemm_col_parallel(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
+        let nb = block_cols(n);
+        let blocks: Vec<(usize, Vec<f64>)> = (0..n.div_ceil(nb))
+            .into_par_iter()
+            .map(|blk| {
+                let n0 = blk * nb;
+                let bw = (n0 + nb).min(n) - n0;
+                let mut ct = vec![0.0f64; m * bw];
+                // SAFETY: a is m*k; b is k*n, so the strided column window starting
+                // at `n0` with row stride n and `bw` columns is in bounds; ct is the
+                // exact m*bw owned output. matrixmultiply's K order is independent of
+                // the N tiling, so ct[i][j] == the single call's c[i][n0+j] bit-for-bit.
+                unsafe {
+                    matrixmultiply::dgemm(
+                        m,
+                        k,
+                        bw,
+                        1.0,
+                        a.as_ptr(),
+                        k as isize,
+                        1,
+                        b.as_ptr().add(n0),
+                        n as isize,
+                        1,
+                        0.0,
+                        ct.as_mut_ptr(),
+                        bw as isize,
+                        1,
+                    );
+                }
+                (n0, ct)
+            })
+            .collect();
+        for (n0, ct) in &blocks {
+            let bw = ct.len() / m;
+            for i in 0..m {
+                c[i * n + n0..i * n + n0 + bw].copy_from_slice(&ct[i * bw..i * bw + bw]);
+            }
+        }
     }
 
     pub fn dgemm_block(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
@@ -11275,6 +11339,32 @@ mod tests {
                 s.to_bits(),
                 p.to_bits(),
                 "f32 GEMM row-split diverged at {idx}: single {s} vs parallel {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn gemm_col_split_matches_single_bit_exact() {
+        // Isomorphism proof for the COLUMN-parallel GEMM lever (small-m, large-n):
+        // splitting the output into n-blocks must reproduce the single
+        // matrixmultiply call BIT-FOR-BIT. Shape triggers should_parallelize_cols
+        // (m small, n >> m, flops >= 1<<24) but NOT should_parallelize.
+        let (m, k, n) = (8usize, 512usize, 4096usize); // 8*512*4096 = 16.8M, n > 4m
+        let a: Vec<f64> = (0..m * k)
+            .map(|i| ((i % 13) as f64 - 6.0) * 0.3 + (i as f64) * 1e-7)
+            .collect();
+        let b: Vec<f64> = (0..k * n)
+            .map(|i| ((i % 7) as f64 - 3.0) * 0.25 - (i as f64) * 1e-7)
+            .collect();
+        let mut c_single = vec![0.0_f64; m * n];
+        crate::gemm::dgemm_block(m, k, n, &a, &b, &mut c_single);
+        let mut c_par = vec![0.0_f64; m * n];
+        crate::gemm::dgemm(m, k, n, &a, &b, &mut c_par);
+        for (idx, (s, p)) in c_single.iter().zip(c_par.iter()).enumerate() {
+            assert_eq!(
+                s.to_bits(),
+                p.to_bits(),
+                "f64 GEMM col-split diverged at {idx}: single {s} vs parallel {p}"
             );
         }
     }
