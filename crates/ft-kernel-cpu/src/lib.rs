@@ -4984,58 +4984,98 @@ pub fn cholesky_contiguous_f64(
     }
 
     let offset = meta.storage_offset();
+    // Right-looking BLOCKED Cholesky (LAPACK potrf shape). `l` starts as the lower
+    // triangle of A and is overwritten in place with L. For each NB-wide panel we
+    //   1. factor the NB×NB diagonal block (serial unblocked Cholesky on the
+    //      already-Schur-complemented block),
+    //   2. TRSM the sub-diagonal panel  L21 = A21 · L11^{-T}  (rows independent,
+    //      compute-bound nb² each -> fan out),
+    //   3. apply the trailing symmetric rank-NB update  A22 -= L21 · L21^T  through
+    //      the cache-blocked + parallel `gemm::dgemm`.
+    // The bulk O(n^3/3) FLOPs land in step 3's GEMM, whose cache blocking fixes the
+    // memory-bound row-streaming of the previous left-looking dot-product kernel.
+    // This REASSOCIATES the trailing sums (panel-by-panel vs one long dot), so the
+    // result matches the serial kernel only to tolerance — validated by
+    // reconstruction (L·L^T ≈ A) and the numpy oracle, not bit-for-bit.
+    const NB: usize = 64;
     let mut l = vec![0.0f64; n * n];
-    // Scratch column buffer reused across columns for the parallel sub-diagonal
-    // path, so the rayon fan-out allocates nothing per column.
-    let mut col_buf = vec![0.0f64; n];
-
-    // Standard left-looking Cholesky: for j in 0..n, compute column j of L.
-    // Within a column every sub-diagonal entry L[i][j] (i > j) is an INDEPENDENT
-    // dot product over the already-finalised columns k < j, so the rows fan out
-    // across threads with the SAME k-accumulation order — bit-for-bit identical
-    // to the serial column loop. The fan-out only pays once the column carries
-    // enough work (rows * dot-length) to dwarf the rayon split cost.
-    const CHOLESKY_PAR_WORK: u64 = 1 << 17;
-    for j in 0..n {
-        // L[j][j] = sqrt(A[j][j] - sum_{k<j} L[j][k]^2)
-        let mut sum_sq = 0.0;
-        for k in 0..j {
-            sum_sq += l[j * n + k] * l[j * n + k];
+    for i in 0..n {
+        for j in 0..=i {
+            l[i * n + j] = data[offset + i * n + j];
         }
-        let diag = data[offset + j * n + j] - sum_sq;
-        if diag <= 0.0 {
-            return Err(KernelError::NotPositiveDefinite);
-        }
-        let l_jj = diag.sqrt();
-        l[j * n + j] = l_jj;
+    }
 
-        // L[i][j] = (A[i][j] - sum_{k<j} L[i][k]*L[j][k]) / L[j][j]  for i > j
-        let rows = n - (j + 1);
-        if (rows as u64) * (j as u64) >= CHOLESKY_PAR_WORK {
-            let l_ref: &[f64] = &l;
-            col_buf[..rows]
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(idx, out)| {
-                    let i = j + 1 + idx;
-                    let mut dot = 0.0;
-                    for k in 0..j {
-                        dot += l_ref[i * n + k] * l_ref[j * n + k];
-                    }
-                    *out = (data[offset + i * n + j] - dot) / l_jj;
-                });
-            for (idx, value) in col_buf[..rows].iter().copied().enumerate() {
-                l[(j + 1 + idx) * n + j] = value;
+    let mut jb = 0;
+    while jb < n {
+        let je = (jb + NB).min(n);
+        let nb = je - jb;
+
+        // 1. Factor the diagonal block l[jb:je, jb:je] (lower) in place.
+        for jj in jb..je {
+            let mut s = l[jj * n + jj];
+            for p in jb..jj {
+                s -= l[jj * n + p] * l[jj * n + p];
             }
-        } else {
-            for i in (j + 1)..n {
-                let mut dot = 0.0;
-                for k in 0..j {
-                    dot += l[i * n + k] * l[j * n + k];
+            if s <= 0.0 {
+                return Err(KernelError::NotPositiveDefinite);
+            }
+            let d = s.sqrt();
+            l[jj * n + jj] = d;
+            for ii in (jj + 1)..je {
+                let mut t = l[ii * n + jj];
+                for p in jb..jj {
+                    t -= l[ii * n + p] * l[jj * n + p];
                 }
-                l[i * n + j] = (data[offset + i * n + j] - dot) / l_jj;
+                l[ii * n + jj] = t / d;
             }
         }
+
+        let m = n - je; // trailing rows below the panel
+        if m == 0 {
+            break;
+        }
+
+        // 2. TRSM: L21 = A21 · L11^{-T}, panel l[je:n, jb:je] in place. Each
+        //    trailing row solves the lower-triangular L11 independently.
+        let (head, tail) = l.split_at_mut(je * n);
+        let trsm_body = |row: &mut [f64]| {
+            for c in 0..nb {
+                let mut t = row[jb + c];
+                for p in 0..c {
+                    t -= row[jb + p] * head[(jb + c) * n + (jb + p)];
+                }
+                row[jb + c] = t / head[(jb + c) * n + (jb + c)];
+            }
+        };
+        if m >= 64 {
+            tail.par_chunks_mut(n).for_each(trsm_body);
+        } else {
+            tail.chunks_mut(n).for_each(trsm_body);
+        }
+
+        // 3. Trailing update A22 -= L21 · L21^T via the blocked/parallel GEMM.
+        //    Pack L21 (m×nb) and its transpose (nb×m) contiguously, multiply, then
+        //    subtract the lower triangle back into l[je:n, je:n].
+        let mut l21 = vec![0.0f64; m * nb];
+        let mut l21t = vec![0.0f64; nb * m];
+        for i in 0..m {
+            for c in 0..nb {
+                let v = l[(je + i) * n + (jb + c)];
+                l21[i * nb + c] = v;
+                l21t[c * m + i] = v;
+            }
+        }
+        let mut prod = vec![0.0f64; m * m];
+        gemm::dgemm(m, nb, m, &l21, &l21t, &mut prod);
+        for i in 0..m {
+            let row_base = (je + i) * n + je;
+            let p_base = i * m;
+            for j in 0..=i {
+                l[row_base + j] -= prod[p_base + j];
+            }
+        }
+
+        jb = je;
     }
 
     if upper {
@@ -14866,12 +14906,12 @@ mod tests {
     }
 
     #[test]
-    fn cholesky_parallel_subdiagonal_matches_serial_bit_exact() {
-        // The sub-diagonal fan-out only triggers once a column carries
-        // CHOLESKY_PAR_WORK work; n = 768 is the smallest power-of-two-ish size
-        // that crosses it. Prove the parallel column path is BIT-FOR-BIT
-        // identical to the serial left-looking reference (same k-accumulation
-        // order, just spread across threads).
+    fn cholesky_blocked_matches_serial_and_reconstructs() {
+        // n = 768 > NB exercises the blocked panel/TRSM/SYRK path. The blocked
+        // right-looking algorithm REASSOCIATES the trailing sums (panel-by-panel
+        // through GEMM) vs the serial left-looking long dot, so it matches the
+        // serial reference only to TOLERANCE — assert that, plus the strict
+        // proof obligation that L is lower-triangular and reconstructs A.
         let n = 768usize;
         // Cheap symmetric, strictly diagonally dominant (hence SPD) matrix.
         let mut a = vec![0.0f64; n * n];
@@ -14884,7 +14924,7 @@ mod tests {
             a[i * n + i] = n as f64;
         }
 
-        // Inline serial reference (the pre-parallelisation algorithm).
+        // Serial left-looking reference factor.
         let mut l_ref = vec![0.0f64; n * n];
         for j in 0..n {
             let mut sum_sq = 0.0;
@@ -14904,12 +14944,33 @@ mod tests {
 
         let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
         let got = super::cholesky_contiguous_f64(&a, &meta, false).expect("cholesky");
-        assert_eq!(got.factor.len(), l_ref.len());
-        for idx in 0..(n * n) {
-            assert_eq!(
-                got.factor[idx].to_bits(),
-                l_ref[idx].to_bits(),
-                "parallel cholesky diverged from serial at index {idx}"
+        assert_eq!(got.factor.len(), n * n);
+        for i in 0..n {
+            for j in 0..n {
+                let v = got.factor[i * n + j];
+                if j > i {
+                    // strictly upper triangle must be exactly zero
+                    assert_eq!(v, 0.0, "factor not lower-triangular at ({i},{j})");
+                } else {
+                    let rel = (v - l_ref[i * n + j]).abs() / (l_ref[i * n + j].abs() + 1.0);
+                    assert!(
+                        rel < 1e-9,
+                        "blocked factor[{i},{j}]={v} vs serial {} (rel {rel:e})",
+                        l_ref[i * n + j]
+                    );
+                }
+            }
+        }
+        // Reconstruction L·L^T ≈ A on a sample of entries (full check is O(n^3)).
+        for &(i, j) in &[(0usize, 0usize), (5, 2), (700, 699), (767, 0), (400, 400)] {
+            let mut dot = 0.0;
+            for k in 0..=j.min(i) {
+                dot += got.factor[i * n + k] * got.factor[j * n + k];
+            }
+            assert!(
+                (dot - a[i * n + j]).abs() < 1e-7,
+                "(L·L^T)[{i},{j}]={dot} expected {}",
+                a[i * n + j]
             );
         }
     }
