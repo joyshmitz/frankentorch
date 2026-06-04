@@ -2440,6 +2440,74 @@ pub fn sdpa_forward_f64(
     out
 }
 
+/// f32 mirror of [`sdpa_forward_f64`] (the common transformer inference dtype):
+/// same block-row flash-attention pattern, using the `sgemm_bt`/`sgemm`
+/// microkernels and f32 softmax.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn sdpa_forward_f32(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    num_bh: usize,
+    seq_q: usize,
+    seq_k: usize,
+    d_k: usize,
+    d_v: usize,
+    scale: f32,
+    causal: bool,
+) -> Vec<f32> {
+    const BR: usize = 64;
+    let mut out = vec![0.0f32; num_bh * seq_q * d_v];
+    let q_stride = seq_q * d_k;
+    let k_stride = seq_k * d_k;
+    let v_stride = seq_k * d_v;
+    let o_stride = seq_q * d_v;
+    out.par_chunks_mut(o_stride)
+        .enumerate()
+        .for_each(|(bh, o_chunk)| {
+            let qh = &q[bh * q_stride..bh * q_stride + q_stride];
+            let kh = &k[bh * k_stride..bh * k_stride + k_stride];
+            let vh = &v[bh * v_stride..bh * v_stride + v_stride];
+            let mut scores = vec![0.0f32; BR.min(seq_q) * seq_k];
+            let mut q0 = 0;
+            while q0 < seq_q {
+                let br = (q0 + BR).min(seq_q) - q0;
+                let q_block = &qh[q0 * d_k..(q0 + br) * d_k];
+                let sc = &mut scores[..br * seq_k];
+                gemm::sgemm_bt(br, d_k, seq_k, q_block, kh, sc);
+                for r in 0..br {
+                    let qi = q0 + r;
+                    let limit = if causal { (qi + 1).min(seq_k) } else { seq_k };
+                    let row = &mut sc[r * seq_k..(r + 1) * seq_k];
+                    let mut m = f32::NEG_INFINITY;
+                    for s in row.iter_mut().take(limit) {
+                        *s *= scale;
+                        if *s > m {
+                            m = *s;
+                        }
+                    }
+                    let mut sum = 0.0f32;
+                    for s in row.iter_mut().take(limit) {
+                        let e = (*s - m).exp();
+                        *s = e;
+                        sum += e;
+                    }
+                    for s in row.iter_mut().take(limit) {
+                        *s /= sum;
+                    }
+                    for s in row.iter_mut().skip(limit) {
+                        *s = 0.0;
+                    }
+                }
+                let o_block = &mut o_chunk[q0 * d_v..(q0 + br) * d_v];
+                gemm::sgemm(br, seq_k, d_v, sc, vh, o_block);
+                q0 += br;
+            }
+        });
+    out
+}
+
 /// Backward of [`sdpa_forward_f64`]. Given the saved `q`/`k`/`v` and the output
 /// gradient `dout` (`[num_bh, seq_q, d_v]`), returns `(dq, dk, dv)`.
 ///

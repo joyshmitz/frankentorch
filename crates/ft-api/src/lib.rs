@@ -4506,10 +4506,11 @@ impl FrankenTorchSession {
         }
         let scale = 1.0 / (d_k as f64).sqrt();
 
-        // Fused no-grad SDPA fast path (f64, batched, no dropout, no explicit
+        // Fused no-grad SDPA fast path (f64/f32, batched, no dropout, no explicit
         // attn_mask): a block-row flash-attention kernel that never materialises
         // the [.., seq_q, seq_k] score matrix, the scale tensor, or the softmax
-        // intermediate. Grad / masked / non-f64 / 2-D fall through unchanged.
+        // intermediate. Grad / masked / other dtype / 2-D fall through unchanged.
+        let sdpa_dtype = self.tensor_dtype(query)?;
         if k_shape.len() >= 3
             && q_shape.len() == k_shape.len()
             && dropout_p == 0.0
@@ -4517,9 +4518,9 @@ impl FrankenTorchSession {
             && !self.tensor_tape.tensor_requires_grad(query)?
             && !self.tensor_tape.tensor_requires_grad(key)?
             && !self.tensor_tape.tensor_requires_grad(value)?
-            && self.tensor_dtype(query)? == DType::F64
-            && self.tensor_dtype(key)? == DType::F64
-            && self.tensor_dtype(value)? == DType::F64
+            && (sdpa_dtype == DType::F64 || sdpa_dtype == DType::F32)
+            && self.tensor_dtype(key)? == sdpa_dtype
+            && self.tensor_dtype(value)? == sdpa_dtype
         {
             let v_shape = self.tensor_shape(value)?;
             if v_shape.len() == q_shape.len() {
@@ -4541,15 +4542,25 @@ impl FrankenTorchSession {
                     && d_k_dim > 0
                     && d_v > 0
                 {
-                    let qv = self.tensor_values(query)?;
-                    let kv = self.tensor_values(key)?;
-                    let vv = self.tensor_values(value)?;
-                    let out = ft_kernel_cpu::sdpa_forward_f64(
-                        &qv, &kv, &vv, q_bh, seq_q, seq_k, d_k_dim, d_v, scale, is_causal,
-                    );
                     let mut out_shape = q_shape.clone();
                     out_shape[nd - 1] = d_v;
-                    return self.tensor_variable(out, out_shape, false);
+                    if sdpa_dtype == DType::F64 {
+                        let qv = self.tensor_values(query)?;
+                        let kv = self.tensor_values(key)?;
+                        let vv = self.tensor_values(value)?;
+                        let out = ft_kernel_cpu::sdpa_forward_f64(
+                            &qv, &kv, &vv, q_bh, seq_q, seq_k, d_k_dim, d_v, scale, is_causal,
+                        );
+                        return self.tensor_variable(out, out_shape, false);
+                    }
+                    // f32
+                    let qv = self.tensor_values_f32(query)?;
+                    let kv = self.tensor_values_f32(key)?;
+                    let vv = self.tensor_values_f32(value)?;
+                    let out = ft_kernel_cpu::sdpa_forward_f32(
+                        &qv, &kv, &vv, q_bh, seq_q, seq_k, d_k_dim, d_v, scale as f32, is_causal,
+                    );
+                    return self.tensor_tape.leaf_f32(out, out_shape, false);
                 }
             }
         }
@@ -82404,6 +82415,51 @@ mod tests {
                 assert!(
                     (a - b).abs() <= 1e-12 + 1e-10 * b.abs(),
                     "causal={causal} [{i}]: fused {a} vs reference {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sdpa_fused_f32_matches_f64_within_tolerance() {
+        // The fused f32 SDPA kernel must match the (already op-graph-validated)
+        // fused f64 path on the same values, to f32 tolerance.
+        let shape = vec![4usize, 8, 4];
+        let n: usize = shape.iter().product();
+        let qf: Vec<f32> = (0..n).map(|i| ((i % 7) as f32 - 3.0) * 0.2).collect();
+        let kf: Vec<f32> = (0..n).map(|i| ((i % 5) as f32 - 2.0) * 0.3).collect();
+        let vf: Vec<f32> = (0..n).map(|i| ((i % 9) as f32 - 4.0) * 0.15).collect();
+        for &causal in &[false, true] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let q = s.tensor_tape.leaf_f32(qf.clone(), shape.clone(), false).unwrap();
+            let k = s.tensor_tape.leaf_f32(kf.clone(), shape.clone(), false).unwrap();
+            let vt = s.tensor_tape.leaf_f32(vf.clone(), shape.clone(), false).unwrap();
+            let out = s
+                .scaled_dot_product_attention(q, k, vt, None, 0.0, causal)
+                .unwrap();
+            let fused = s.tensor_values_f32(out).unwrap();
+
+            // f64 reference (the fused f64 path, validated against the op-graph).
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let q2 = s2
+                .tensor_variable(qf.iter().map(|&x| x as f64).collect(), shape.clone(), false)
+                .unwrap();
+            let k2 = s2
+                .tensor_variable(kf.iter().map(|&x| x as f64).collect(), shape.clone(), false)
+                .unwrap();
+            let v2 = s2
+                .tensor_variable(vf.iter().map(|&x| x as f64).collect(), shape.clone(), false)
+                .unwrap();
+            let out2 = s2
+                .scaled_dot_product_attention(q2, k2, v2, None, 0.0, causal)
+                .unwrap();
+            let reference = s2.tensor_values(out2).unwrap();
+
+            assert_eq!(fused.len(), reference.len());
+            for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (f64::from(*a) - b).abs() <= 1e-4 + 1e-4 * b.abs(),
+                    "causal={causal} [{i}]: f32 fused {a} vs f64 {b}"
                 );
             }
         }

@@ -228,6 +228,20 @@ fn bench_sdpa(c: &mut Criterion) {
             )
         });
     });
+    // f32 forward (the common transformer inference dtype).
+    group.bench_function("nograd_f32_16x512x64", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let q = session.randn_f32(vec![bh, seq, d], false).unwrap();
+        let k = session.randn_f32(vec![bh, seq, d], false).unwrap();
+        let v = session.randn_f32(vec![bh, seq, d], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .scaled_dot_product_attention(q, k, v, None, 0.0, false)
+                    .unwrap(),
+            )
+        });
+    });
     // Forward + backward (training): exercises the fused grad SDPA custom op.
     group.bench_function("grad_16x512x64", |b| {
         b.iter(|| {
