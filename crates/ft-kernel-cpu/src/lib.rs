@@ -46,15 +46,19 @@ mod gemm {
         let a = &a[..m * k];
         let b = &b[..k * n];
         let c = &mut c[..m * n];
-        if should_parallelize(m, k, n) {
+        // Column path takes precedence for WIDE matmuls (n >> m): row-splitting
+        // a small-M GEMM yields only ~m/MIN_BLOCK_ROWS blocks, while the column
+        // path scales with N. (should_parallelize_cols already requires n > 4*m,
+        // so non-wide matmuls are unaffected and keep the row split.)
+        if should_parallelize_cols(m, k, n) {
+            dgemm_col_parallel(m, k, n, a, b, c);
+        } else if should_parallelize(m, k, n) {
             let br = block_rows(m);
             c.par_chunks_mut(br * n)
                 .zip(a.par_chunks(br * k))
                 .for_each(|(c_blk, a_blk)| {
                     dgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
                 });
-        } else if should_parallelize_cols(m, k, n) {
-            dgemm_col_parallel(m, k, n, a, b, c);
         } else {
             dgemm_block(m, k, n, a, b, c);
         }
