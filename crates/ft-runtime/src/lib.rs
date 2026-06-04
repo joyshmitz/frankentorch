@@ -36,12 +36,34 @@ impl EvidenceLedger {
         }
     }
 
+    /// Upper bound on retained evidence entries. The ledger records one entry per
+    /// dispatched op (plus policy/backward/durability events); left unbounded this
+    /// grew without limit for the lifetime of a session — a real memory leak for
+    /// long-running inference, since each entry owns a heap-allocated summary
+    /// `String` and the only readers want either the first (policy anchor) or the
+    /// most recent entries (e.g. the durability search scans from the tail).
+    const SOFT_CAP: usize = 1 << 15; // 32768 entries
+
     pub fn record(&mut self, kind: EvidenceKind, summary: impl Into<String>) {
+        if self.entries.len() >= Self::SOFT_CAP {
+            // Bound memory by dropping the oldest *middle* entries: keep
+            // `entries[0]` (the policy-init anchor that consumers assert on) and
+            // retain the most recent half. Amortised O(1) per record.
+            let drop = self.entries.len() / 2;
+            self.entries.drain(1..=drop);
+        }
         self.entries.push(EvidenceEntry {
             ts_unix_ms: now_unix_ms(),
             kind,
             summary: summary.into(),
         });
+    }
+
+    /// Drop all retained evidence, freeing the backing allocation's contents.
+    /// Lets long-running consumers reclaim ledger memory between batches without
+    /// tearing down the whole `RuntimeContext`.
+    pub fn clear(&mut self) {
+        self.entries.clear();
     }
 
     #[must_use]
@@ -425,6 +447,39 @@ mod tests {
                 "timestamps should be monotonically non-decreasing"
             );
         }
+    }
+
+    #[test]
+    fn evidence_ledger_is_bounded_and_pins_policy_anchor() {
+        let mut ctx = RuntimeContext::new(ExecutionMode::Strict);
+        let anchor = ctx.ledger().entries()[0].clone();
+        assert_eq!(anchor.kind, EvidenceKind::Policy);
+
+        // Far exceed the soft cap; a previously-unbounded ledger would retain
+        // every entry (the inference memory leak this guards against).
+        for i in 0..(super::EvidenceLedger::SOFT_CAP * 3) {
+            ctx.ledger_mut()
+                .record(EvidenceKind::Dispatch, format!("op {i}"));
+        }
+
+        assert!(
+            ctx.ledger().len() <= super::EvidenceLedger::SOFT_CAP,
+            "ledger must stay bounded by the soft cap"
+        );
+        // The policy-init anchor is preserved at index 0...
+        assert_eq!(ctx.ledger().entries()[0], anchor);
+        // ...and the most recent evidence is retained (tail readers depend on it).
+        assert!(
+            ctx.ledger()
+                .entries()
+                .last()
+                .expect("non-empty")
+                .summary
+                .contains(&format!("op {}", super::EvidenceLedger::SOFT_CAP * 3 - 1))
+        );
+
+        ctx.ledger_mut().clear();
+        assert_eq!(ctx.ledger().len(), 0);
     }
 
     #[cfg(feature = "asupersync-integration")]
