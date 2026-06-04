@@ -1,0 +1,9 @@
+tensor_dataset_schema_cache=frankentorch-ygsc
+first_input_shape=[3, 2]
+first_input_values=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+first_target_shape=[3, 1]
+first_target_values=[0.0, 1.0, 2.0]
+second_input_shape=[1, 2]
+second_input_values=[6.0, 7.0]
+second_target_shape=[1, 1]
+second_target_values=[3.0]
