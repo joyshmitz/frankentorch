@@ -19335,6 +19335,104 @@ impl FrankenTorchSession {
         let sample_count = batch_size * height * width;
         self.validate_optional_affine(weight, bias, &[channels], "group_norm")?;
 
+        // Fused no-grad fast path (f64): compute per-channel stats + normalize +
+        // affine in two streaming passes over the native NCHW layout — avoiding the
+        // op-graph's TWO full-tensor permutes ([N,C,H,W]<->[N,H,W,C]) and ~10
+        // expand/full intermediates. Covers eval (inference) and training-forward;
+        // grad / non-f64 fall through to the op-graph.
+        let bn_grad = self.tensor_tape.tensor_requires_grad(input)?
+            || matches!(weight, Some(w) if self.tensor_tape.tensor_requires_grad(w).unwrap_or(false))
+            || matches!(bias, Some(b) if self.tensor_tape.tensor_requires_grad(b).unwrap_or(false));
+        let affine_f64 = match (weight, bias) {
+            (w, b) => {
+                let wf = w.map_or(Ok(true), |t| self.tensor_dtype(t).map(|d| d == DType::F64))?;
+                let bf = b.map_or(Ok(true), |t| self.tensor_dtype(t).map(|d| d == DType::F64))?;
+                wf && bf
+            }
+        };
+        let rm_f64 = running_mean.map_or(Ok(true), |t| self.tensor_dtype(t).map(|d| d == DType::F64))?;
+        let rv_f64 = running_var.map_or(Ok(true), |t| self.tensor_dtype(t).map(|d| d == DType::F64))?;
+        if !bn_grad
+            && self.tensor_dtype(input)? == DType::F64
+            && affine_f64
+            && rm_f64
+            && rv_f64
+            && (training || (running_mean.is_some() && running_var.is_some()))
+        {
+            let spatial = height * width;
+            let x = self.tensor_values(input)?;
+            let wv = match weight {
+                Some(w) => Some(self.tensor_values(w)?),
+                None => None,
+            };
+            let bv = match bias {
+                Some(b) => Some(self.tensor_values(b)?),
+                None => None,
+            };
+            if training {
+                let (mean, var) =
+                    ft_kernel_cpu::batch_norm_stats_f64(&x, batch_size, channels, spatial);
+                let out = ft_kernel_cpu::batch_norm_apply_f64(
+                    &x,
+                    &mean,
+                    &var,
+                    wv.as_deref(),
+                    bv.as_deref(),
+                    batch_size,
+                    channels,
+                    spatial,
+                    eps,
+                );
+                let out_t = self.tensor_variable(out, input_shape, false)?;
+                let updated_mean = match running_mean {
+                    Some(rm) => {
+                        let rmv = self.tensor_values(rm)?;
+                        let um: Vec<f64> = rmv
+                            .iter()
+                            .zip(mean.iter())
+                            .map(|(&r, &m)| (1.0 - momentum) * r + momentum * m)
+                            .collect();
+                        Some(self.tensor_variable(um, vec![channels], false)?)
+                    }
+                    None => None,
+                };
+                let updated_var = match running_var {
+                    Some(rv) => {
+                        let bessel = if sample_count > 1 {
+                            sample_count as f64 / (sample_count as f64 - 1.0)
+                        } else {
+                            1.0
+                        };
+                        let rvv = self.tensor_values(rv)?;
+                        let uv: Vec<f64> = rvv
+                            .iter()
+                            .zip(var.iter())
+                            .map(|(&r, &v)| (1.0 - momentum) * r + momentum * v * bessel)
+                            .collect();
+                        Some(self.tensor_variable(uv, vec![channels], false)?)
+                    }
+                    None => None,
+                };
+                return Ok((out_t, updated_mean, updated_var));
+            }
+            // eval: running_mean and running_var are present (gated above).
+            let rmv = self.tensor_values(running_mean.unwrap())?;
+            let rvv = self.tensor_values(running_var.unwrap())?;
+            let out = ft_kernel_cpu::batch_norm_apply_f64(
+                &x,
+                &rmv,
+                &rvv,
+                wv.as_deref(),
+                bv.as_deref(),
+                batch_size,
+                channels,
+                spatial,
+                eps,
+            );
+            let out_t = self.tensor_variable(out, input_shape, false)?;
+            return Ok((out_t, None, None));
+        }
+
         let permuted = self.tensor_permute(input, vec![0, 2, 3, 1])?;
         let flat = self.tensor_reshape(permuted, vec![sample_count, channels])?;
         let (normalized_flat, updated_mean, updated_var) = if training {
@@ -82889,6 +82987,66 @@ mod tests {
         assert_eq!(s.tensor_values(out).unwrap(), vec![1.0, 1.0, 3.0, 2.0]);
         assert!(updated_mean.is_none());
         assert!(updated_var.is_none());
+    }
+
+    #[test]
+    fn functional_batch_norm2d_fused_matches_op_graph_within_tolerance() {
+        // Fused no-grad BatchNorm2d (training + eval) must match the op-graph
+        // (permute/normalize/permute) reference to tolerance, for output AND the
+        // updated running stats. Reference uses requires_grad to bypass the fast path.
+        let (n, ch, h, w) = (3usize, 4usize, 2usize, 3usize);
+        let xv: Vec<f64> = (0..n * ch * h * w)
+            .map(|i| ((i % 13) as f64 - 6.0) * 0.3 + (i as f64) * 0.01)
+            .collect();
+        let rm: Vec<f64> = (0..ch).map(|c| 0.1 * c as f64).collect();
+        let rv: Vec<f64> = (0..ch).map(|c| 1.0 + 0.2 * c as f64).collect();
+        let wv: Vec<f64> = (0..ch).map(|c| 0.7 + 0.1 * c as f64).collect();
+        let bv: Vec<f64> = (0..ch).map(|c| 0.05 * c as f64 - 0.1).collect();
+        let (mom, eps) = (0.1, 1e-5);
+        let close = |a: &[f64], b: &[f64], what: &str| {
+            assert_eq!(a.len(), b.len(), "{what} len");
+            for (i, (p, q)) in a.iter().zip(b.iter()).enumerate() {
+                assert!(
+                    (p - q).abs() <= 1e-10 + 1e-9 * q.abs(),
+                    "{what}[{i}]: fused {p} vs op-graph {q}"
+                );
+            }
+        };
+        for training in [true, false] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(xv.clone(), vec![n, ch, h, w], false).unwrap();
+            let rmt = s.tensor_variable(rm.clone(), vec![ch], false).unwrap();
+            let rvt = s.tensor_variable(rv.clone(), vec![ch], false).unwrap();
+            let wt = s.tensor_variable(wv.clone(), vec![ch], false).unwrap();
+            let bt = s.tensor_variable(bv.clone(), vec![ch], false).unwrap();
+            let (out, um, uv) = s
+                .functional_batch_norm2d(x, Some(rmt), Some(rvt), Some(wt), Some(bt), training, mom, eps)
+                .unwrap();
+            let fout = s.tensor_values(out).unwrap();
+
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x2 = s2.tensor_variable(xv.clone(), vec![n, ch, h, w], true).unwrap();
+            let rmt2 = s2.tensor_variable(rm.clone(), vec![ch], false).unwrap();
+            let rvt2 = s2.tensor_variable(rv.clone(), vec![ch], false).unwrap();
+            let wt2 = s2.tensor_variable(wv.clone(), vec![ch], true).unwrap();
+            let bt2 = s2.tensor_variable(bv.clone(), vec![ch], true).unwrap();
+            let (out2, um2, uv2) = s2
+                .functional_batch_norm2d(x2, Some(rmt2), Some(rvt2), Some(wt2), Some(bt2), training, mom, eps)
+                .unwrap();
+            close(&fout, &s2.tensor_values(out2).unwrap(), "output");
+            if training {
+                close(
+                    &s.tensor_values(um.unwrap()).unwrap(),
+                    &s2.tensor_values(um2.unwrap()).unwrap(),
+                    "running_mean",
+                );
+                close(
+                    &s.tensor_values(uv.unwrap()).unwrap(),
+                    &s2.tensor_values(uv2.unwrap()).unwrap(),
+                    "running_var",
+                );
+            }
+        }
     }
 
     #[test]

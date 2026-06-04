@@ -3044,6 +3044,82 @@ pub fn group_norm_backward_f64(
     (dx, dweight, dbias)
 }
 
+/// Per-channel batch statistics for BatchNorm over `[batch, channels, spatial]`
+/// (NCHW with `spatial = H·W`): `mean[c]`, `var[c]` over all `batch·spatial`
+/// elements of channel `c`. Works directly on the NCHW layout (channel `c` is
+/// `batch` contiguous `spatial`-blocks strided by `channels·spatial`) — NO
+/// permute. Parallel over channels.
+#[must_use]
+pub fn batch_norm_stats_f64(
+    x: &[f64],
+    batch: usize,
+    channels: usize,
+    spatial: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let inv_n = 1.0 / (batch * spatial) as f64;
+    let cs = channels * spatial;
+    let mut mean = vec![0.0f64; channels];
+    let mut var = vec![0.0f64; channels];
+    mean.par_iter_mut()
+        .zip(var.par_iter_mut())
+        .enumerate()
+        .for_each(|(c, (mc, vc))| {
+            let mut sum = 0.0f64;
+            for n in 0..batch {
+                let base = n * cs + c * spatial;
+                for s in 0..spatial {
+                    sum += x[base + s];
+                }
+            }
+            let m = sum * inv_n;
+            let mut vs = 0.0f64;
+            for n in 0..batch {
+                let base = n * cs + c * spatial;
+                for s in 0..spatial {
+                    let d = x[base + s] - m;
+                    vs += d * d;
+                }
+            }
+            *mc = m;
+            *vc = vs * inv_n;
+        });
+    (mean, var)
+}
+
+/// Apply a BatchNorm normalization+affine with given per-channel `mean`/`var`
+/// (batch stats for training, running stats for eval): `y = (x − mean[c]) /
+/// sqrt(var[c] + eps) · weight[c] + bias[c]`, folded to `x·scale[c] + shift[c]`.
+/// One streaming pass over the NCHW `(sample, channel)` blocks, parallel.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn batch_norm_apply_f64(
+    x: &[f64],
+    mean: &[f64],
+    var: &[f64],
+    weight: Option<&[f64]>,
+    bias: Option<&[f64]>,
+    batch: usize,
+    channels: usize,
+    spatial: usize,
+    eps: f64,
+) -> Vec<f64> {
+    let _ = batch;
+    let mut out = vec![0.0f64; x.len()];
+    out.par_chunks_mut(spatial)
+        .enumerate()
+        .for_each(|(idx, orow)| {
+            let c = idx % channels;
+            let base = idx * spatial;
+            let rstd = 1.0 / (var[c] + eps).sqrt();
+            let scale = rstd * weight.map_or(1.0, |w| w[c]);
+            let shift = bias.map_or(0.0, |b| b[c]) - mean[c] * scale;
+            for s in 0..spatial {
+                orow[s] = x[base + s] * scale + shift;
+            }
+        });
+    out
+}
+
 pub fn linear_tensor_f64(
     x: &[f64],
     weight: &[f64],

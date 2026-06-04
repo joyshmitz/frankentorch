@@ -244,6 +244,35 @@ fn bench_layer_norm(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_batch_norm(c: &mut Criterion) {
+    // BatchNorm2d over [N,C,H,W] = [32,256,28,28], no-grad f64, training + eval.
+    // The op-graph does two full-tensor permutes + ~10 expand/full intermediates.
+    let mut group = c.benchmark_group("batch_norm");
+    let (n, ch, h, w) = (32usize, 256usize, 28usize, 28usize);
+    for (label, training) in [("train", true), ("eval", false)] {
+        group.bench_function(format!("nograd_{label}_32x256x28x28"), |b| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n, ch, h, w], false).unwrap();
+            let rm = session.tensor_randn(vec![ch], false).unwrap();
+            let rv = session
+                .tensor_variable(vec![1.0; ch], vec![ch], false)
+                .unwrap();
+            let wt = session.tensor_randn(vec![ch], false).unwrap();
+            let bias = session.tensor_randn(vec![ch], false).unwrap();
+            b.iter(|| {
+                black_box(
+                    session
+                        .functional_batch_norm2d(
+                            x, Some(rm), Some(rv), Some(wt), Some(bias), training, 0.1, 1e-5,
+                        )
+                        .unwrap(),
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_group_norm(c: &mut Criterion) {
     // GroupNorm over [N, C, H, W] = [32, 256, 28, 28], num_groups=32 (ResNet-ish),
     // no-grad and grad f64. The op-graph allocates ~15 full-size intermediates.
@@ -837,6 +866,7 @@ criterion_group!(
     bench_rms_norm,
     bench_cross_entropy,
     bench_group_norm,
+    bench_batch_norm,
     bench_linear_forward,
     bench_interpolate_bicubic,
     bench_interpolate_trilinear,
