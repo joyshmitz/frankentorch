@@ -26,12 +26,22 @@ mod gemm {
     // bit-for-bit identical to the single call regardless of block count
     // (proved by `gemm_row_split_matches_single_bit_exact`).
     const PAR_MIN_FLOPS: u128 = 1 << 27;
+    // A TALL GEMM (many rows, modest total flops) can sit below PAR_MIN_FLOPS yet
+    // still split into plenty of well-sized row blocks — e.g. an attention/linear
+    // projection `[batch*S, embed] @ [embed, embed]` at large S (M = batch*S).
+    // Parallelize it too: enough rows to fill the pool AND enough total work to
+    // dwarf the dispatch. Thread-count-independent (so it isn't fragile at the
+    // pool-size boundary) and OR'd with the flop gate, so it only ADDS parallelism
+    // — no previously-parallel or previously-serial-small matmul changes.
+    const TALL_MIN_ROWS: usize = 1024;
+    const TALL_MIN_FLOPS: u128 = 1 << 25; // ~33.6M FMA total
     const MIN_BLOCK_ROWS: usize = 8;
 
     fn should_parallelize(m: usize, k: usize, n: usize) -> bool {
+        let flops = (m as u128) * (k as u128) * (n as u128);
         rayon::current_num_threads() > 1
             && m > MIN_BLOCK_ROWS
-            && (m as u128) * (k as u128) * (n as u128) >= PAR_MIN_FLOPS
+            && (flops >= PAR_MIN_FLOPS || (m >= TALL_MIN_ROWS && flops >= TALL_MIN_FLOPS))
     }
 
     fn block_rows(m: usize) -> usize {
@@ -11308,7 +11318,7 @@ mod tests {
         // Values are chosen so partial sums lose precision (reassociation WOULD
         // change the low bits), so a passing test means the k-accumulation order
         // is genuinely preserved across the row split.
-        let (m, k, n) = (130usize, 64usize, 130usize); // flops >= 1<<20 -> parallel path
+        let (m, k, n) = (2048usize, 64usize, 256usize); // tall: m>=1024 & 1<<25 flops -> row-split path
         let a: Vec<f64> = (0..m * k)
             .map(|i| ((i % 13) as f64 - 6.0) * 0.3 + (i as f64) * 1e-7)
             .collect();

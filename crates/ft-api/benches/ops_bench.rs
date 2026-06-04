@@ -25,6 +25,17 @@ fn bench_matmul(c: &mut Criterion) {
             b.iter(|| black_box(session.tensor_matmul(a, bt).unwrap()));
         });
     }
+    // Tall-M / small-N (an attention/linear projection [batch*S, embed] @
+    // [embed, embed] at large S): below the total-flops gate but splits into many
+    // row blocks, so the per-row-block parallel gate is the lever.
+    for &mm in &[4096usize, 8192usize] {
+        group.bench_with_input(BenchmarkId::new("tall_x128x128", mm), &mm, |b, &mm| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = session.tensor_randn(vec![mm, 128], false).unwrap();
+            let bt = session.tensor_randn(vec![128, 128], false).unwrap();
+            b.iter(|| black_box(session.tensor_matmul(a, bt).unwrap()));
+        });
+    }
     group.finish();
 }
 
