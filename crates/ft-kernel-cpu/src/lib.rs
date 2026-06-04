@@ -5344,6 +5344,15 @@ fn eigh_pythag(a: f64, b: f64) -> f64 {
 /// lower triangle used) to symmetric tridiagonal form. On return `z` holds the
 /// accumulated orthogonal transformation, `d` the diagonal, `e` the
 /// sub-diagonal (`e[0] = 0`). EISPACK `tred2` lineage. O(4/3 n^3).
+///
+/// PERF NOTE: serial scalar, ~half of eigh's cost (the other half is tql2).
+/// eigh is FAST (eigh_f64_256x256 ~77ms) — not iteration-bound like SVD — but
+/// ~11x slower than LAPACK syevd. rayon-parallelizing the accumulation/applies
+/// here was MEASURED and REGRESSED (eigh 256 77->85ms): at the benched n<=256 the
+/// per-step work (~i^2) is too small to amortize the fan-out (Vec alloc + 2
+/// dispatches per i). The real lever is BLOCKED tridiagonalization (LAPACK
+/// dsytrd: panel + symmetric rank-2k trailing update via gemm::dgemm), the same
+/// BLAS-3 family that won blocked-cholesky/QR — a multi-turn rewrite.
 fn eigh_tred2(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
     for i in (1..n).rev() {
         let l = i - 1;
