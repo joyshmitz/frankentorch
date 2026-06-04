@@ -167,16 +167,61 @@ mod gemm {
         let a = &a[..m * k];
         let b = &b[..k * n];
         let c = &mut c[..m * n];
-        if !should_parallelize(m, k, n) {
+        // Same structure as dgemm: column path for WIDE matmuls (n >> m), else
+        // row split (square/tall via should_parallelize), else serial.
+        if should_parallelize_cols(m, k, n) {
+            sgemm_col_parallel(m, k, n, a, b, c);
+        } else if should_parallelize(m, k, n) {
+            let br = block_rows(m);
+            c.par_chunks_mut(br * n)
+                .zip(a.par_chunks(br * k))
+                .for_each(|(c_blk, a_blk)| {
+                    sgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
+                });
+        } else {
             sgemm_block(m, k, n, a, b, c);
-            return;
         }
-        let br = block_rows(m);
-        c.par_chunks_mut(br * n)
-            .zip(a.par_chunks(br * k))
-            .for_each(|(c_blk, a_blk)| {
-                sgemm_block(c_blk.len() / n, k, n, a_blk, b, c_blk);
-            });
+    }
+
+    fn sgemm_col_parallel(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        let nb = block_cols(n);
+        let blocks: Vec<(usize, Vec<f32>)> = (0..n.div_ceil(nb))
+            .into_par_iter()
+            .map(|blk| {
+                let n0 = blk * nb;
+                let bw = (n0 + nb).min(n) - n0;
+                let mut ct = vec![0.0f32; m * bw];
+                // SAFETY: mirror of dgemm_col_parallel — a is m*k; b's strided
+                // column window at n0 (row stride n, bw cols) is in bounds; ct is
+                // the exact m*bw owned output. K order is independent of N tiling,
+                // so ct[i][j] == the single call's c[i][n0+j] bit-for-bit.
+                unsafe {
+                    matrixmultiply::sgemm(
+                        m,
+                        k,
+                        bw,
+                        1.0,
+                        a.as_ptr(),
+                        k as isize,
+                        1,
+                        b.as_ptr().add(n0),
+                        n as isize,
+                        1,
+                        0.0,
+                        ct.as_mut_ptr(),
+                        bw as isize,
+                        1,
+                    );
+                }
+                (n0, ct)
+            })
+            .collect();
+        for (n0, ct) in &blocks {
+            let bw = ct.len() / m;
+            for i in 0..m {
+                c[i * n + n0..i * n + n0 + bw].copy_from_slice(&ct[i * bw..i * bw + bw]);
+            }
+        }
     }
 
     pub fn sgemm_block(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
@@ -11379,6 +11424,25 @@ mod tests {
                 s.to_bits(),
                 p.to_bits(),
                 "f64 GEMM col-split diverged at {idx}: single {s} vs parallel {p}"
+            );
+        }
+
+        // Same for f32 (sgemm column path).
+        let af: Vec<f32> = (0..m * k)
+            .map(|i| ((i % 11) as f32 - 5.0) * 0.2 + (i as f32) * 1e-5)
+            .collect();
+        let bf: Vec<f32> = (0..k * n)
+            .map(|i| ((i % 5) as f32 - 2.0) * 0.3 - (i as f32) * 1e-5)
+            .collect();
+        let mut cf_single = vec![0.0_f32; m * n];
+        crate::gemm::sgemm_block(m, k, n, &af, &bf, &mut cf_single);
+        let mut cf_par = vec![0.0_f32; m * n];
+        crate::gemm::sgemm(m, k, n, &af, &bf, &mut cf_par);
+        for (idx, (s, p)) in cf_single.iter().zip(cf_par.iter()).enumerate() {
+            assert_eq!(
+                s.to_bits(),
+                p.to_bits(),
+                "f32 GEMM col-split diverged at {idx}: single {s} vs parallel {p}"
             );
         }
     }

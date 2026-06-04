@@ -36,6 +36,15 @@ fn bench_matmul(c: &mut Criterion) {
             b.iter(|| black_box(session.tensor_matmul(a, bt).unwrap()));
         });
     }
+    // f32 wide (the common ML dtype): exercises the sgemm column-parallel path.
+    for &nn in &[2048usize, 4096usize] {
+        group.bench_with_input(BenchmarkId::new("wide_f32_64x512", nn), &nn, |b, &nn| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let a = session.randn_f32(vec![64, 512], false).unwrap();
+            let bt = session.randn_f32(vec![512, nn], false).unwrap();
+            b.iter(|| black_box(session.tensor_matmul(a, bt).unwrap()));
+        });
+    }
     group.finish();
 }
 
