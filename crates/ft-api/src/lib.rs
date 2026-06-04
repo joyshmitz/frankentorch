@@ -46919,6 +46919,59 @@ impl FrankenTorchSession {
         (out_re, out_im)
     }
 
+    /// Inverse FFT producing a REAL signal of length `n` (even) from its
+    /// non-redundant `n/2 + 1` frequencies `(in_re, in_im)` (Hermitian).
+    ///
+    /// The dual of [`real_fft_1d_f64`]: recover the `m = n/2`-point spectrum
+    /// `Z[k] = Even[k] + i Odd[k]` (Even/Odd from `X[k]` & `conj X[m-k]`), take an
+    /// `m`-point INVERSE FFT, and unpack `x[2j] = Re z[j]`, `x[2j+1] = Im z[j]`.
+    /// Half the inverse-FFT work of the current full-`n` complex transform.
+    /// Equals the dense path up to FFT round-off (~ULP), matching PyTorch.
+    /// Validated by `irfft_1d_matches_full_complex_within_tolerance`.
+    #[must_use]
+    fn irfft_1d_f64(in_re: &[f64], in_im: &[f64], n: usize) -> Vec<f64> {
+        debug_assert!(n.is_multiple_of(2), "irfft_1d_f64 requires even n");
+        let m = n / 2;
+        if m == 0 {
+            return vec![0.0; n];
+        }
+        debug_assert!(in_re.len() >= m + 1 && in_im.len() >= m + 1);
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let mut zr = vec![0.0_f64; m];
+        let mut zi = vec![0.0_f64; m];
+        for k in 0..m {
+            let xk_re = in_re[k];
+            let xk_im = in_im[k];
+            // conj(X[m-k]); X[m-0]=X[m], X[m-(m-1)]=X[1] — all within 0..=m.
+            let xmk_re = in_re[m - k];
+            let xmk_im = -in_im[m - k];
+            // Even = (X[k] + conj X[m-k]) / 2
+            let even_re = (xk_re + xmk_re) * 0.5;
+            let even_im = (xk_im + xmk_im) * 0.5;
+            // diff = (X[k] - conj X[m-k]) / 2
+            let diff_re = (xk_re - xmk_re) * 0.5;
+            let diff_im = (xk_im - xmk_im) * 0.5;
+            // conj(W_N^k) = exp(+2 pi i k / n)
+            let ang = two_pi * (k as f64) / (n as f64);
+            let cw_re = ang.cos();
+            let cw_im = ang.sin();
+            // Odd = diff * conj(W^k)
+            let odd_re = diff_re * cw_re - diff_im * cw_im;
+            let odd_im = diff_re * cw_im + diff_im * cw_re;
+            // Z[k] = Even + i*Odd
+            zr[k] = even_re - odd_im;
+            zi[k] = even_im + odd_re;
+        }
+        // m-point inverse FFT (includes 1/m normalization).
+        Self::dft_inplace_1d(&mut zr, &mut zi, true);
+        let mut out = vec![0.0_f64; n];
+        for j in 0..m {
+            out[2 * j] = zr[j];
+            out[2 * j + 1] = zi[j];
+        }
+        out
+    }
+
     fn dft_inplace_1d_with_stage_twiddles(
         re: &mut [f64],
         im: &mut [f64],
@@ -85321,6 +85374,47 @@ mod tests {
             for (idx, (got, want)) in got_im.iter().zip(want_im.iter()).enumerate() {
                 assert_eq!(got.to_bits(), want.to_bits(), "dft im @{idx}");
             }
+        }
+    }
+
+    #[test]
+    fn irfft_1d_matches_full_complex_within_tolerance() {
+        use super::FrankenTorchSession;
+        // irfft_1d must (a) invert real_fft_1d (round-trip) and (b) equal the
+        // full-complex inverse FFT of the Hermitian-expanded spectrum (real
+        // part), both within FFT round-off — the proof obligation for wiring it
+        // into irfft2.
+        for &n in &[2usize, 4, 8, 16, 64, 128, 256, 1024] {
+            let x: Vec<f64> = (0..n)
+                .map(|i| ((i * 53 + 17) % 97) as f64 * 0.011 - 0.5)
+                .collect();
+            let (xr, xi) = FrankenTorchSession::real_fft_1d_f64(&x);
+            // (a) round-trip irfft(rfft(x)) == x
+            let got = FrankenTorchSession::irfft_1d_f64(&xr, &xi, n);
+            assert_eq!(got.len(), n, "irfft len n={n}");
+            let mut rt_err = 0.0_f64;
+            for j in 0..n {
+                rt_err = rt_err.max((got[j] - x[j]).abs());
+            }
+            assert!(rt_err <= 1e-9 * (1.0 + n as f64), "irfft round-trip n={n}: {rt_err:e}");
+            // (b) match full-complex IFFT of the Hermitian-expanded spectrum.
+            let m = n / 2;
+            let mut fr = vec![0.0_f64; n];
+            let mut fi = vec![0.0_f64; n];
+            for k in 0..=m {
+                fr[k] = xr[k];
+                fi[k] = xi[k];
+            }
+            for k in 1..m {
+                fr[n - k] = xr[k];
+                fi[n - k] = -xi[k];
+            }
+            FrankenTorchSession::dft_inplace_1d(&mut fr, &mut fi, true);
+            let mut ref_err = 0.0_f64;
+            for j in 0..n {
+                ref_err = ref_err.max((got[j] - fr[j]).abs());
+            }
+            assert!(ref_err <= 1e-9 * (1.0 + n as f64), "irfft vs dense n={n}: {ref_err:e}");
         }
     }
 
