@@ -1717,6 +1717,59 @@ impl FrankenTorchSession {
         self.tensor_variable(values, vec![window_length], requires_grad)
     }
 
+    /// STFT spectrogram via per-frame FFT instead of the naive
+    /// O(freq_bins * n_fft) per-(k,frame) DFT. For a power-of-two `n_fft` the
+    /// shared radix-2 FFT replaces the O(N^2) inner sum with O(N log N) (the
+    /// `stft/len32768_nfft512` bench drops ~28ms -> a few ms); for a
+    /// non-power-of-two `n_fft` the same routine falls back to the dense DFT, so
+    /// behaviour is preserved there. Each frame is an independent transform, so
+    /// distributing frames across Rayon is deterministic. The result equals the
+    /// dense DFT up to FFT round-off (~ULP) — matching PyTorch, which is also
+    /// FFT-based; the DC bin is a pure sum and stays exact. Returns bin-major
+    /// `[freq_bins, frames]` (re, im) pairs in f64.
+    fn stft_fft_spectrogram(
+        all_frames: &[f64],
+        frames: usize,
+        n_fft: usize,
+        freq_bins: usize,
+        scale: f64,
+    ) -> Vec<(f64, f64)> {
+        let twiddles = n_fft
+            .is_power_of_two()
+            .then(|| Self::fft_stage_twiddles(n_fft, false));
+        let mut frame_major = vec![(0.0_f64, 0.0_f64); frames * freq_bins];
+        let compute = |frame_idx: usize, out_row: &mut [(f64, f64)]| {
+            let fbase = frame_idx * n_fft;
+            let mut re: Vec<f64> = all_frames[fbase..fbase + n_fft].to_vec();
+            let mut im = vec![0.0_f64; n_fft];
+            Self::dft_inplace_1d_with_stage_twiddles(&mut re, &mut im, false, twiddles.as_deref());
+            for (k, slot) in out_row.iter_mut().enumerate() {
+                *slot = (re[k] * scale, im[k] * scale);
+            }
+        };
+        if frames >= 2 && frames * freq_bins >= PARALLEL_ELEMENTWISE_MIN {
+            use rayon::prelude::*;
+            frame_major
+                .par_chunks_mut(freq_bins)
+                .enumerate()
+                .for_each(|(frame_idx, row)| compute(frame_idx, row));
+        } else {
+            frame_major
+                .chunks_mut(freq_bins)
+                .enumerate()
+                .for_each(|(frame_idx, row)| compute(frame_idx, row));
+        }
+        // Transpose frame-major [frames, freq_bins] -> bin-major [freq_bins, frames].
+        let mut bin_major = vec![(0.0_f64, 0.0_f64); freq_bins * frames];
+        for frame_idx in 0..frames {
+            let fb = frame_idx * freq_bins;
+            for k in 0..freq_bins {
+                bin_major[k * frames + frame_idx] = frame_major[fb + k];
+            }
+        }
+        bin_major
+    }
+
     /// Short-time Fourier transform for 1-D real signals.
     pub fn tensor_stft(
         &mut self,
@@ -1794,13 +1847,6 @@ impl FrankenTorchSession {
             1.0
         };
         let window_pad = (n_fft - win_length) / 2;
-        let mut dft_twiddles = vec![(0.0_f64, 0.0_f64); freq_bins * n_fft];
-        for k in 0..freq_bins {
-            for n in 0..n_fft {
-                let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
-                dft_twiddles[k * n_fft + n] = (angle.cos(), angle.sin());
-            }
-        }
 
         match base_dtype {
             DType::F32 => {
@@ -1814,33 +1860,11 @@ impl FrankenTorchSession {
                         all_frames[fbase + window_pad + i] = padded[start + i] * window_values[i];
                     }
                 }
-                // See the F64 path: each freq bin owns a contiguous `frames` row and
-                // the (k, frame) loop reorder is bit-identical, so parallelize the
-                // compute-bound per-cell DFT across the freq-bin rows.
-                let dft_row = |k: usize, row: &mut [ft_core::Complex64]| {
-                    for (frame_idx, slot) in row.iter_mut().enumerate() {
-                        let fbase = frame_idx * n_fft;
-                        let mut re = 0.0;
-                        let mut im = 0.0;
-                        for (n, &sample) in all_frames[fbase..fbase + n_fft].iter().enumerate() {
-                            let (tw_re, tw_im) = dft_twiddles[k * n_fft + n];
-                            re += sample * tw_re;
-                            im -= sample * tw_im;
-                        }
-                        *slot = ft_core::Complex64::new((re * scale) as f32, (im * scale) as f32);
-                    }
-                };
-                if freq_bins >= 2 && freq_bins * frames >= PARALLEL_ELEMENTWISE_MIN {
-                    use rayon::prelude::*;
-                    spectrogram
-                        .par_chunks_mut(frames)
-                        .enumerate()
-                        .for_each(|(k, row)| dft_row(k, row));
-                } else {
-                    spectrogram
-                        .chunks_mut(frames)
-                        .enumerate()
-                        .for_each(|(k, row)| dft_row(k, row));
+                // FFT spectrogram (bin-major) cast to single precision.
+                let bin_major =
+                    Self::stft_fft_spectrogram(&all_frames, frames, n_fft, freq_bins, scale);
+                for (slot, &(re, im)) in spectrogram.iter_mut().zip(bin_major.iter()) {
+                    *slot = ft_core::Complex64::new(re as f32, im as f32);
                 }
                 let out = self.tensor_tape.leaf_tensor(
                     DenseTensor::from_typed_storage(
@@ -1870,36 +1894,11 @@ impl FrankenTorchSession {
                         all_frames[fbase + window_pad + i] = padded[start + i] * window_values[i];
                     }
                 }
-                // Output is [freq_bins, frames]: each freq bin k owns a contiguous
-                // `frames`-length row. The per-cell naive DFT (cos/sin per term) is
-                // compute-bound; reordering the (frame, k) loops to (k, frame) is
-                // bit-identical (each cell is independent and the n-summation order
-                // is unchanged), so distributing the freq-bin rows across Rayon
-                // workers matches the serial output bit-for-bit.
-                let dft_row = |k: usize, row: &mut [ft_core::Complex128]| {
-                    for (frame_idx, slot) in row.iter_mut().enumerate() {
-                        let fbase = frame_idx * n_fft;
-                        let mut re = 0.0;
-                        let mut im = 0.0;
-                        for (n, &sample) in all_frames[fbase..fbase + n_fft].iter().enumerate() {
-                            let (tw_re, tw_im) = dft_twiddles[k * n_fft + n];
-                            re += sample * tw_re;
-                            im -= sample * tw_im;
-                        }
-                        *slot = ft_core::Complex128::new(re * scale, im * scale);
-                    }
-                };
-                if freq_bins >= 2 && freq_bins * frames >= PARALLEL_ELEMENTWISE_MIN {
-                    use rayon::prelude::*;
-                    spectrogram
-                        .par_chunks_mut(frames)
-                        .enumerate()
-                        .for_each(|(k, row)| dft_row(k, row));
-                } else {
-                    spectrogram
-                        .chunks_mut(frames)
-                        .enumerate()
-                        .for_each(|(k, row)| dft_row(k, row));
+                // FFT spectrogram (bin-major [freq_bins, frames]).
+                let bin_major =
+                    Self::stft_fft_spectrogram(&all_frames, frames, n_fft, freq_bins, scale);
+                for (slot, &(re, im)) in spectrogram.iter_mut().zip(bin_major.iter()) {
+                    *slot = ft_core::Complex128::new(re, im);
                 }
                 let out = self.tensor_tape.leaf_tensor(
                     DenseTensor::from_typed_storage(
@@ -85514,10 +85513,14 @@ mod tests {
     }
 
     #[test]
-    fn stft_parallel_match_serial_bit_exact() {
-        // Large enough that freq_bins*frames >= PARALLEL_ELEMENTWISE_MIN so the
-        // rayon freq-bin-row path runs; it must equal a serial reference of the
-        // exact framing + naive DFT BIT-FOR-BIT (rectangular window, center pad).
+    fn stft_matches_dense_dft_within_tolerance() {
+        // Large enough that frames*freq_bins >= PARALLEL_ELEMENTWISE_MIN so the
+        // rayon frame-parallel FFT path runs; it must match a serial reference of
+        // the exact framing + dense DFT (rectangular window, center pad). STFT now
+        // uses the radix-2 FFT for power-of-two n_fft, so it equals the dense DFT
+        // only up to FFT round-off (~ULP, like PyTorch which is also FFT-based) —
+        // assert a tight tolerance rather than bit-for-bit. The frame-parallel FFT
+        // is deterministic, so this also covers parallel==serial.
         use super::{FrankenTorchSession, StftOptions};
         let (len, n_fft, hop) = (8192usize, 128usize, 64usize);
         let signal: Vec<f64> = (0..len).map(|i| ((i % 263) as f64) * 0.017 - 2.0).collect();
@@ -85564,11 +85567,19 @@ mod tests {
         let got_re = s.tensor_values(re_node).unwrap();
         let im_node = s.tensor_imag(spec).unwrap();
         let got_im = s.tensor_values(im_node).unwrap();
+        // Magnitudes reach ~O(n_fft * sample) ~ hundreds, so a few-ULP relative
+        // FFT error is well under 1e-7 absolute here.
         for (idx, (g, w)) in got_re.iter().zip(ref_re.iter()).enumerate() {
-            assert_eq!(g.to_bits(), w.to_bits(), "stft re @{idx}");
+            assert!(
+                (g - w).abs() <= 1e-7 * (1.0 + w.abs()),
+                "stft re @{idx}: fft {g} vs dense DFT {w}"
+            );
         }
         for (idx, (g, w)) in got_im.iter().zip(ref_im.iter()).enumerate() {
-            assert_eq!(g.to_bits(), w.to_bits(), "stft im @{idx}");
+            assert!(
+                (g - w).abs() <= 1e-7 * (1.0 + w.abs()),
+                "stft im @{idx}: fft {g} vs dense DFT {w}"
+            );
         }
     }
 
