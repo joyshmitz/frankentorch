@@ -47707,52 +47707,49 @@ impl FrankenTorchSession {
         let out_cols = cols / 2 + 1;
         let batch_size: usize = shape[..ndim - 2].iter().product();
 
-        let mut re_tmp = vec![0.0_f64; batch_size * rows * cols];
-        let mut im_tmp = vec![0.0_f64; batch_size * rows * cols];
         let parallel = batch_size * rows * cols >= PARALLEL_ELEMENTWISE_MIN;
-
-        // FFT along columns (last dim) for each row — contiguous cols blocks, run
-        // in place across workers. Bit-for-bit identical to the serial loop.
-        if parallel && batch_size * rows >= 2 {
-            use rayon::prelude::*;
-            re_tmp
-                .par_chunks_mut(cols)
-                .zip(im_tmp.par_chunks_mut(cols))
-                .enumerate()
-                .for_each(|(row, (re_row, im_row))| {
-                    let start = row * cols;
-                    re_row.copy_from_slice(&vals[start..start + cols]);
-                    Self::dft_inplace_1d(re_row, im_row, false);
-                });
-        } else {
-            for b in 0..batch_size {
-                for r in 0..rows {
-                    let start = b * rows * cols + r * cols;
-                    let mut re_row: Vec<f64> = vals[start..start + cols].to_vec();
-                    let mut im_row = vec![0.0_f64; cols];
-                    Self::dft_inplace_1d(&mut re_row, &mut im_row, false);
-                    re_tmp[start..start + cols].copy_from_slice(&re_row);
-                    im_tmp[start..start + cols].copy_from_slice(&im_row);
-                }
-            }
-        }
-
-        // Real-input rfft: only the first `out_cols = cols/2 + 1` columns
-        // survive (the rest are conjugate-redundant). Extract them BEFORE the
-        // row transform and skip the row-FFT of the redundant upper half
-        // entirely — ~halving the row-pass work. Each surviving column's row
-        // transform is the same independent `dft_inplace_1d` on the same column
-        // data as the full-then-trim version, so the output is bit-for-bit
-        // unchanged.
         let red_plane = rows * out_cols;
         let mut re_out = vec![0.0_f64; batch_size * red_plane];
         let mut im_out = vec![0.0_f64; batch_size * red_plane];
-        for b in 0..batch_size {
-            for r in 0..rows {
-                let src = b * rows * cols + r * cols;
-                let dst = b * red_plane + r * out_cols;
-                re_out[dst..dst + out_cols].copy_from_slice(&re_tmp[src..src + out_cols]);
-                im_out[dst..dst + out_cols].copy_from_slice(&im_tmp[src..src + out_cols]);
+        let total_rows = batch_size * rows;
+
+        // Column (last-dim) transform. For an even `cols` the input row is real,
+        // so use the real-input FFT directly: an n/2-point complex FFT + O(n)
+        // recombine yields the onesided `out_cols` spectrum with HALF the
+        // butterflies and no full-width intermediate. (Odd `cols` falls back to
+        // the full complex FFT then trim.) Equals the dense path up to FFT
+        // round-off (validated by `real_fft_1d_matches_full_complex_within_tolerance`).
+        if cols.is_multiple_of(2) {
+            if parallel && total_rows >= 2 {
+                use rayon::prelude::*;
+                re_out
+                    .par_chunks_mut(out_cols)
+                    .zip(im_out.par_chunks_mut(out_cols))
+                    .enumerate()
+                    .for_each(|(row, (ro, io))| {
+                        let start = row * cols;
+                        let (r, i) = Self::real_fft_1d_f64(&vals[start..start + cols]);
+                        ro.copy_from_slice(&r);
+                        io.copy_from_slice(&i);
+                    });
+            } else {
+                for row in 0..total_rows {
+                    let start = row * cols;
+                    let (r, i) = Self::real_fft_1d_f64(&vals[start..start + cols]);
+                    let dst = row * out_cols;
+                    re_out[dst..dst + out_cols].copy_from_slice(&r);
+                    im_out[dst..dst + out_cols].copy_from_slice(&i);
+                }
+            }
+        } else {
+            for row in 0..total_rows {
+                let start = row * cols;
+                let mut re_row: Vec<f64> = vals[start..start + cols].to_vec();
+                let mut im_row = vec![0.0_f64; cols];
+                Self::dft_inplace_1d(&mut re_row, &mut im_row, false);
+                let dst = row * out_cols;
+                re_out[dst..dst + out_cols].copy_from_slice(&re_row[..out_cols]);
+                im_out[dst..dst + out_cols].copy_from_slice(&im_row[..out_cols]);
             }
         }
 
@@ -85517,11 +85514,22 @@ mod tests {
         let rgot_re = s.tensor_values(ryr).unwrap();
         let ryi = s.tensor_imag(ry).unwrap();
         let rgot_im = s.tensor_values(ryi).unwrap();
+        // rfft2 now uses the real-input FFT (half-size complex FFT + recombine)
+        // for the real column pass, so it equals the dense full-complex
+        // reference only up to FFT round-off (~ULP, like PyTorch which is also
+        // real-FFT-based) — assert a tight tolerance rather than bit-for-bit.
+        // (The ifft2 path above is unchanged and still checked bit-for-bit.)
         for (idx, (g, w)) in rgot_re.iter().zip(ref_re.iter()).enumerate() {
-            assert_eq!(g.to_bits(), w.to_bits(), "rfft2 re @{idx}");
+            assert!(
+                (g - w).abs() <= 1e-7 * (1.0 + w.abs()),
+                "rfft2 re @{idx}: real-fft {g} vs dense {w}"
+            );
         }
         for (idx, (g, w)) in rgot_im.iter().zip(ref_im.iter()).enumerate() {
-            assert_eq!(g.to_bits(), w.to_bits(), "rfft2 im @{idx}");
+            assert!(
+                (g - w).abs() <= 1e-7 * (1.0 + w.abs()),
+                "rfft2 im @{idx}: real-fft {g} vs dense {w}"
+            );
         }
     }
 
