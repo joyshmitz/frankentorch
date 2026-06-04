@@ -46857,6 +46857,68 @@ impl FrankenTorchSession {
         Self::dft_inplace_1d_with_stage_twiddles(re, im, inverse, None);
     }
 
+    /// Forward FFT of a REAL signal `x` (length `n`, even) returning only the
+    /// non-redundant `n/2 + 1` frequencies as `(re, im)`.
+    ///
+    /// Uses the standard real-FFT packing: form `m = n/2` complex samples
+    /// `z[j] = x[2j] + i x[2j+1]`, take an `m`-point complex FFT, and recombine
+    /// (`X[k] = Even[k] + W_N^k Odd[k]`, with the even/odd split recovered from
+    /// `Z[k]` and `conj Z[m-k]`). This does HALF the FFT work of the current
+    /// full-`n` complex transform that `tensor_rfft`/`rfft2`/STFT run on real
+    /// input. It equals the dense path up to FFT round-off (~ULP) — matching
+    /// PyTorch, which is also real-FFT-based.
+    ///
+    /// Not yet wired into the production rfft paths (they are pinned bit-exact to
+    /// the full-complex FFT by `*_parallel_match_serial` tests); validated by
+    /// `real_fft_1d_matches_full_complex_within_tolerance`.
+    #[must_use]
+    fn real_fft_1d_f64(x: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = x.len();
+        debug_assert!(n.is_multiple_of(2), "real_fft_1d_f64 requires even length");
+        let m = n / 2;
+        let out_len = m + 1;
+        if m == 0 {
+            // n == 0: empty; n handled by caller. (n>=2 in practice.)
+            return (vec![0.0; out_len.min(1)], vec![0.0; out_len.min(1)]);
+        }
+        let mut re = vec![0.0_f64; m];
+        let mut im = vec![0.0_f64; m];
+        for j in 0..m {
+            re[j] = x[2 * j];
+            im[j] = x[2 * j + 1];
+        }
+        Self::dft_inplace_1d(&mut re, &mut im, false);
+
+        let mut out_re = vec![0.0_f64; out_len];
+        let mut out_im = vec![0.0_f64; out_len];
+        let two_pi = 2.0 * std::f64::consts::PI;
+        for k in 0..out_len {
+            let k1 = k % m;
+            let k2 = (m - k) % m;
+            let zk_re = re[k1];
+            let zk_im = im[k1];
+            // conj(Z[m-k])
+            let zmk_re = re[k2];
+            let zmk_im = -im[k2];
+            // Even = (Z[k] + conj Z[m-k]) / 2
+            let even_re = (zk_re + zmk_re) * 0.5;
+            let even_im = (zk_im + zmk_im) * 0.5;
+            // Odd = (Z[k] - conj Z[m-k]) * (-i/2)
+            let d_re = zk_re - zmk_re;
+            let d_im = zk_im - zmk_im;
+            let odd_re = 0.5 * d_im;
+            let odd_im = -0.5 * d_re;
+            // twiddle W_N^k = exp(-2 pi i k / n)
+            let ang = two_pi * (k as f64) / (n as f64);
+            let tw_re = ang.cos();
+            let tw_im = -ang.sin();
+            // X[k] = Even + twiddle * Odd
+            out_re[k] = even_re + (tw_re * odd_re - tw_im * odd_im);
+            out_im[k] = even_im + (tw_re * odd_im + tw_im * odd_re);
+        }
+        (out_re, out_im)
+    }
+
     fn dft_inplace_1d_with_stage_twiddles(
         re: &mut [f64],
         im: &mut [f64],
@@ -85262,6 +85324,36 @@ mod tests {
             for (idx, (got, want)) in got_im.iter().zip(want_im.iter()).enumerate() {
                 assert_eq!(got.to_bits(), want.to_bits(), "dft im @{idx}");
             }
+        }
+    }
+
+    #[test]
+    fn real_fft_1d_matches_full_complex_within_tolerance() {
+        use super::FrankenTorchSession;
+        // The packed real FFT must match a full complex FFT (kept to n/2+1) for
+        // several even lengths, up to FFT round-off — the proof obligation for
+        // wiring it into rfft/rfft2/STFT later.
+        for &n in &[2usize, 4, 8, 16, 64, 128, 256, 1024] {
+            let x: Vec<f64> = (0..n)
+                .map(|i| ((i * 37 + 11) % 101) as f64 * 0.013 - 0.7)
+                .collect();
+            let mut re = x.clone();
+            let mut im = vec![0.0_f64; n];
+            FrankenTorchSession::dft_inplace_1d(&mut re, &mut im, false);
+            let out_len = n / 2 + 1;
+            let (got_re, got_im) = FrankenTorchSession::real_fft_1d_f64(&x);
+            assert_eq!(got_re.len(), out_len, "out_len n={n}");
+            let mut max_err = 0.0_f64;
+            for k in 0..out_len {
+                max_err = max_err
+                    .max((got_re[k] - re[k]).abs())
+                    .max((got_im[k] - im[k]).abs());
+            }
+            // Magnitudes are O(n); a few-ULP relative error is well under this.
+            assert!(
+                max_err <= 1e-9 * (1.0 + n as f64),
+                "real_fft n={n}: max abs err {max_err:e}"
+            );
         }
     }
 
