@@ -229,6 +229,18 @@ fn refill_sequential_indices(indices: &mut [usize]) {
     }
 }
 
+#[inline]
+fn threshold_index_4(
+    u: f64,
+    first_threshold: f64,
+    second_threshold: f64,
+    third_threshold: f64,
+) -> usize {
+    usize::from(u > first_threshold)
+        + usize::from(u > second_threshold)
+        + usize::from(u > third_threshold)
+}
+
 /// Yields sample indices sequentially: 0, 1, 2, ..., n-1.
 pub struct SequentialSampler {
     size: usize,
@@ -510,15 +522,12 @@ impl WeightedRandomSampler {
             let mut result = Vec::with_capacity(self.num_samples);
             for _ in 0..self.num_samples {
                 let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
-                result.push(if u <= first_threshold {
-                    0
-                } else if u <= second_threshold {
-                    1
-                } else if u <= third_threshold {
-                    2
-                } else {
-                    3
-                });
+                result.push(threshold_index_4(
+                    u,
+                    first_threshold,
+                    second_threshold,
+                    third_threshold,
+                ));
             }
             return Ok(result);
         }
@@ -2135,6 +2144,65 @@ mod tests {
                 3, 3, 1, 2,
             ]
         );
+    }
+
+    fn weighted_sampler_branchless_golden_summary() -> String {
+        let two = WeightedRandomSampler::new(vec![1.0, 3.0], 32)
+            .with_seed(0x5151_0002)
+            .indices()
+            .expect("two-weight samples");
+        let three = WeightedRandomSampler::new(vec![1.0, 3.0, 6.0], 32)
+            .with_seed(0x5151_0003)
+            .indices()
+            .expect("three-weight samples");
+        let four = WeightedRandomSampler::new(vec![1.0, 2.0, 3.0, 4.0], 32)
+            .with_seed(0x5151_0004)
+            .indices()
+            .expect("four-weight samples");
+        let edge_inputs = [0.0, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875];
+        let edges: Vec<usize> = edge_inputs
+            .into_iter()
+            .map(|u| threshold_index_4(u, 0.25, 0.5, 0.75))
+            .collect();
+
+        format!(
+            "weighted_sampler_branchless_frankentorch-sx6l\n\
+             two_seed=0x51510002 weights=[1.0, 3.0] samples={two:?}\n\
+             three_seed=0x51510003 weights=[1.0, 3.0, 6.0] samples={three:?}\n\
+             four_seed=0x51510004 weights=[1.0, 2.0, 3.0, 4.0] samples={four:?}\n\
+             threshold4_edges inputs=[0.0, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875] outputs={edges:?}\n"
+        )
+    }
+
+    #[test]
+    fn weighted_sampler_branchless_golden_output_matches_fixture() {
+        assert_eq!(
+            weighted_sampler_branchless_golden_summary(),
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_data_weighted_sampler_branchless_frankentorch-sx6l.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn weighted_sampler_four_threshold_helper_matches_branch_chain_edges() {
+        let first = 0.25;
+        let second = 0.5;
+        let third = 0.75;
+        let samples = [0.0, first, 0.375, second, 0.625, third, 0.875];
+
+        for u in samples {
+            let expected = if u <= first {
+                0
+            } else if u <= second {
+                1
+            } else if u <= third {
+                2
+            } else {
+                3
+            };
+            assert_eq!(threshold_index_4(u, first, second, third), expected);
+        }
     }
 
     #[test]
