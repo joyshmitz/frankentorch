@@ -65,6 +65,27 @@ fn bench_bmm(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_max_pool2d(c: &mut Criterion) {
+    // max_pool2d (every CNN): [N,C,H,W]=[8,64,64,64], 2x2 stride 2. no-grad + grad.
+    let mut group = c.benchmark_group("max_pool2d");
+    let (n, ch, h, w) = (8usize, 64usize, 64usize, 64usize);
+    group.bench_function("nograd", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_randn(vec![n, ch, h, w], false).unwrap();
+        b.iter(|| black_box(s.functional_max_pool2d(x, (2, 2), (2, 2)).unwrap()));
+    });
+    group.bench_function("grad", |b| {
+        b.iter(|| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_randn(vec![n, ch, h, w], true).unwrap();
+            let out = s.functional_max_pool2d(x, (2, 2), (2, 2)).unwrap();
+            let loss = s.tensor_sum(out).unwrap();
+            black_box(s.tensor_backward(loss).unwrap())
+        });
+    });
+    group.finish();
+}
+
 fn bench_conv_transpose2d(c: &mut Criterion) {
     // conv_transpose2d (GAN/segmentation upsampling): [N,C,H,W]=[2,64,16,16],
     // weight [C_in,C_out,3,3], stride 2 -> 2x upsample. no-grad + grad.
@@ -1068,6 +1089,7 @@ criterion_group!(
     bench_conv2d,
     bench_conv3d,
     bench_conv_transpose2d,
+    bench_max_pool2d,
     bench_sum,
     bench_softmax,
     bench_relu,

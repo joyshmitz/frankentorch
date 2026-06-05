@@ -16979,6 +16979,44 @@ impl FrankenTorchSession {
             "max_pool2d flattened channels overflow",
         )?;
         let patch_count = Self::checked_mul(output_h, output_w, "max_pool2d patch count overflow")?;
+
+        // Fused fast paths (f64): one windowed-max pass instead of the
+        // output_h*output_w narrow/max_dim/cat composed path. No-grad returns a
+        // leaf; grad routes a custom autograd op (backward scatters to the argmax).
+        if self.tensor_dtype(input)? == DType::F64 {
+            let out_shape = vec![batch_size, channels, output_h, output_w];
+            if !self.tensor_tape.tensor_requires_grad(input)? {
+                let iv = self.tensor_values(input)?;
+                let out = ft_kernel_cpu::max_pool2d_forward_f64(
+                    &iv, batch_size, channels, input_h, input_w, kernel_h, kernel_w, output_h,
+                    output_w, stride_h, stride_w,
+                );
+                return self.tensor_variable(out, out_shape, false);
+            }
+            let (b_, ch_, ih_, iw_) = (batch_size, channels, input_h, input_w);
+            let (kh_, kw_, oh_, ow_, sh_, sw_) =
+                (kernel_h, kernel_w, output_h, output_w, stride_h, stride_w);
+            return self.tensor_apply_function(
+                &[input],
+                move |ctx, ins| {
+                    let (iv, _) = ins[0];
+                    let out = ft_kernel_cpu::max_pool2d_forward_f64(
+                        iv, b_, ch_, ih_, iw_, kh_, kw_, oh_, ow_, sh_, sw_,
+                    );
+                    ctx.save_for_backward(iv.to_vec(), vec![b_, ch_, ih_, iw_]);
+                    Ok((out, vec![b_, ch_, oh_, ow_]))
+                },
+                move |ctx, grad_outputs| {
+                    let dout = grad_outputs[0];
+                    let s = ctx.saved_tensors();
+                    let di = ft_kernel_cpu::max_pool2d_backward_f64(
+                        dout, &s[0], b_, ch_, ih_, iw_, kh_, kw_, oh_, ow_, sh_, sw_,
+                    );
+                    Ok(vec![Some(di)])
+                },
+            );
+        }
+
         let mut patches = Vec::with_capacity(patch_count);
         for out_h in 0..output_h {
             let row_start = Self::checked_mul(out_h, stride_h, "max_pool2d row start overflow")?;
@@ -83138,6 +83176,37 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(shape, vec![1, 1, 1, 1]);
         assert_eq!(vals, vec![2.5]);
+    }
+
+    #[test]
+    fn functional_max_pool2d_grad_matches_finite_diff() {
+        // Fused max_pool2d grad routes each output's gradient to its window argmax.
+        // Distinct input values (no ties) + kernel 2 / stride 1 (overlapping
+        // windows -> accumulation) make finite differences well-defined.
+        let (n, c, h, w, kh, kw) = (2usize, 2usize, 4usize, 4usize, 2usize, 2usize);
+        let nin = n * c * h * w;
+        // A permutation-like set of distinct values.
+        let xv: Vec<f64> = (0..nin).map(|i| (((i * 37 + 5) % nin) as f64) * 0.1 + 0.001 * i as f64).collect();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(xv.clone(), vec![n, c, h, w], true).unwrap();
+        let out = s.functional_max_pool2d(x, (kh, kw), (1, 1)).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        s.tensor_backward(loss).unwrap();
+        let gx = s.tensor_grad(x).unwrap().unwrap();
+        let loss_fn = |xs: &[f64]| -> f64 {
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xi = s2.tensor_variable(xs.to_vec(), vec![n, c, h, w], false).unwrap();
+            let o = s2.functional_max_pool2d(xi, (kh, kw), (1, 1)).unwrap();
+            s2.tensor_values(o).unwrap().iter().sum()
+        };
+        let hh = 1e-6;
+        for i in 0..nin {
+            let (mut p, mut m) = (xv.clone(), xv.clone());
+            p[i] += hh;
+            m[i] -= hh;
+            let fd = (loss_fn(&p) - loss_fn(&m)) / (2.0 * hh);
+            assert!((gx[i] - fd).abs() <= 1e-5 + 1e-4 * fd.abs(), "dx[{i}]: {} vs {fd}", gx[i]);
+        }
     }
 
     #[test]

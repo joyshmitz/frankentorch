@@ -3247,6 +3247,96 @@ pub fn conv2d_backward_f64(
     (dpadded, dweight, dbias)
 }
 
+/// Fused max-pool2d forward (f64): per output `[n,c,oy,ox]`, the max over its
+/// `kh×kw` window of `[batch, ch, ih, iw]`. One pass, parallel over `(batch,ch)`
+/// planes.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn max_pool2d_forward_f64(
+    input: &[f64],
+    batch: usize,
+    ch: usize,
+    ih: usize,
+    iw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * ch * oh * ow];
+    out.par_chunks_mut(oh * ow).enumerate().for_each(|(plane, orow)| {
+        let ibase = plane * ih * iw;
+        for oy in 0..oh {
+            let base_h = oy * sh;
+            for ox in 0..ow {
+                let base_w = ox * sw;
+                let mut m = f64::NEG_INFINITY;
+                for kr in 0..kh {
+                    let irow = ibase + (base_h + kr) * iw + base_w;
+                    for kc in 0..kw {
+                        let v = input[irow + kc];
+                        if v > m {
+                            m = v;
+                        }
+                    }
+                }
+                orow[oy * ow + ox] = m;
+            }
+        }
+    });
+    out
+}
+
+/// Backward of [`max_pool2d_forward_f64`]: recomputes the (first) argmax of each
+/// window and routes the output gradient there. Parallel over `(batch,ch)`
+/// planes; overlapping windows accumulate deterministically within a plane.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn max_pool2d_backward_f64(
+    dout: &[f64],
+    input: &[f64],
+    batch: usize,
+    ch: usize,
+    ih: usize,
+    iw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f64> {
+    let mut din = vec![0.0f64; batch * ch * ih * iw];
+    din.par_chunks_mut(ih * iw)
+        .enumerate()
+        .for_each(|(plane, drow)| {
+            let ibase = plane * ih * iw;
+            let dbase = plane * oh * ow;
+            for oy in 0..oh {
+                let base_h = oy * sh;
+                for ox in 0..ow {
+                    let base_w = ox * sw;
+                    let mut m = f64::NEG_INFINITY;
+                    let mut arg = 0usize;
+                    for kr in 0..kh {
+                        let loc = (base_h + kr) * iw + base_w;
+                        for kc in 0..kw {
+                            let v = input[ibase + loc + kc];
+                            if v > m {
+                                m = v;
+                                arg = loc + kc;
+                            }
+                        }
+                    }
+                    drow[arg] += dout[dbase + oy * ow + ox];
+                }
+            }
+        });
+    din
+}
+
 /// Fused conv_transpose2d forward (f64), computed DIRECTLY (no scatter, no
 /// per-position tensor allocs): each output element `[n,oc,oy,ox]` gathers the
 /// valid `(ic,kh,kw)` contributions `input[n,ic,iy,ix]·weight[ic,oc,kh,kw]` where
