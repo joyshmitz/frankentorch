@@ -2145,6 +2145,39 @@ where
     pairwise_sum_map_f64(&values[..mid], f) + pairwise_sum_map_f64(&values[mid..], f)
 }
 
+/// Parallel `pairwise_sum_map_f64` for large FULL reductions (e.g. an L2 norm
+/// over a whole weight tensor). Splits the SAME mid tree via rayon::join down to
+/// PAR_BLOCK, so the result is BIT-FOR-BIT identical. NOT for the per-row norm /
+/// softmax callers, where the reduction is small.
+fn pairwise_sum_map_f64_par<F>(values: &[f64], f: F) -> f64
+where
+    F: Fn(f64) -> f64 + Copy + Sync,
+{
+    const PAR_BLOCK: usize = 1 << 14;
+    if values.len() <= PAR_BLOCK {
+        return pairwise_sum_map_f64(values, f);
+    }
+    let mid = values.len() / 2;
+    let (left, right) = values.split_at(mid);
+    let (ls, rs) = rayon::join(
+        || pairwise_sum_map_f64_par(left, f),
+        || pairwise_sum_map_f64_par(right, f),
+    );
+    ls + rs
+}
+
+#[inline]
+fn pairwise_sum_map_f64_maybe_par<F>(values: &[f64], f: F) -> f64
+where
+    F: Fn(f64) -> f64 + Copy + Sync,
+{
+    if values.len() >= SUM_PARALLEL_THRESHOLD {
+        pairwise_sum_map_f64_par(values, f)
+    } else {
+        pairwise_sum_map_f64(values, f)
+    }
+}
+
 pub fn sum_tensor_contiguous_f64(input: &[f64], meta: &TensorMeta) -> Result<f64, KernelError> {
     ensure_unary_layout_and_storage(input, meta)?;
     let numel = meta.numel();
@@ -5027,12 +5060,12 @@ pub fn norm_tensor_contiguous_f64(
         // L0 "norm": count of non-zero elements
         Ok(data.iter().filter(|&&x| x != 0.0).count() as f64)
     } else if p == 1.0 {
-        Ok(pairwise_sum_map_f64(data, |x| x.abs()))
+        Ok(pairwise_sum_map_f64_maybe_par(data, |x| x.abs()))
     } else if p == 2.0 {
-        let sum_sq = pairwise_sum_map_f64(data, |x| x * x);
+        let sum_sq = pairwise_sum_map_f64_maybe_par(data, |x| x * x);
         Ok(sum_sq.sqrt())
     } else {
-        let sum_pow = pairwise_sum_map_f64(data, |x| x.abs().powf(p));
+        let sum_pow = pairwise_sum_map_f64_maybe_par(data, |x| x.abs().powf(p));
         Ok(sum_pow.powf(1.0 / p))
     }
 }
@@ -20061,5 +20094,18 @@ mod tests {
         assert_eq!(small_neg, vec![-1.0, -2.0, -3.0]);
         let expected: Vec<f64> = (1..=16).map(|x| -(x as f64)).collect();
         assert_eq!(large_neg, expected);
+    }
+
+    #[test]
+    fn pairwise_sum_map_parallel_matches_serial_bit_exact() {
+        let numel = (1 << 19) + 77;
+        let v: Vec<f64> = (0..numel).map(|i| ((i * 11 + 7) % 211) as f64 * 0.017 - 1.8).collect();
+        let serial = super::pairwise_sum_map_f64(&v, |x| x * x);
+        let parallel = super::pairwise_sum_map_f64_par(&v, |x| x * x);
+        assert_eq!(serial.to_bits(), parallel.to_bits(), "{serial} vs {parallel}");
+        // L2 norm wires the parallel path above the threshold.
+        let meta = TensorMeta::from_shape(vec![numel], DType::F64, Device::Cpu);
+        let nrm = super::norm_tensor_contiguous_f64(&v, &meta, 2.0).expect("norm");
+        assert_eq!(nrm.to_bits(), serial.sqrt().to_bits());
     }
 }

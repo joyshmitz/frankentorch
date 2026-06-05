@@ -310,6 +310,20 @@ fn bench_sum(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_norm(c: &mut Criterion) {
+    let mut group = c.benchmark_group("norm");
+    for size in [100000, 1000000].iter() {
+        let n = *size;
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("l2", n), &n, |b, &n| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = session.tensor_randn(vec![n], false).unwrap();
+            b.iter(|| black_box(session.tensor_norm(x, 2.0).unwrap()));
+        });
+    }
+    group.finish();
+}
+
 fn bench_softmax(c: &mut Criterion) {
     let mut group = c.benchmark_group("softmax");
 
@@ -1172,6 +1186,7 @@ criterion_group!(
     bench_max_pool3d,
     bench_pool1d_ct1d,
     bench_sum,
+    bench_norm,
     bench_softmax,
     bench_relu,
     bench_exp,
