@@ -2825,6 +2825,50 @@ pub fn layer_norm_forward_f64(
     out
 }
 
+/// f32 mirror of [`layer_norm_forward_f64`]: per-row mean/rstd normalize + affine,
+/// one streaming pass per row, parallel over rows. Replaces the f32 op-graph
+/// (mean_dim/sub/var/rsqrt/affine, ~14 full-size nodes) the f32 no-grad path fell
+/// through to.
+#[must_use]
+pub fn layer_norm_forward_f32(
+    x: &[f32],
+    weight: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    batch: usize,
+    norm_size: usize,
+    eps: f32,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * norm_size];
+    let inv_n = 1.0 / norm_size as f32;
+    out.par_chunks_mut(norm_size)
+        .enumerate()
+        .for_each(|(r, orow)| {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let mut sum = 0.0f32;
+            for &v in xrow {
+                sum += v;
+            }
+            let mean = sum * inv_n;
+            let mut vsum = 0.0f32;
+            for &v in xrow {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0 / (vsum * inv_n + eps).sqrt();
+            for j in 0..norm_size {
+                let mut y = (xrow[j] - mean) * rstd;
+                if let Some(w) = weight {
+                    y *= w[j];
+                }
+                if let Some(b) = bias {
+                    y += b[j];
+                }
+                orow[j] = y;
+            }
+        });
+    out
+}
+
 #[must_use]
 pub fn layer_norm_forward_with_stats_f64(
     x: &[f64],

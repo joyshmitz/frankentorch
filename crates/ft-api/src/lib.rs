@@ -19144,6 +19144,45 @@ impl FrankenTorchSession {
             return self.tensor_variable(out, input_shape, false);
         }
 
+        // F32 no-grad fused fast path (dominant ML dtype): same streaming kernel
+        // via layer_norm_forward_f32, replacing the f32 op-graph (mean_dim/sub/var/
+        // rsqrt/affine, ~14 full-size nodes) the f32 path fell through to.
+        let w_f32 = match weight {
+            Some(w) => self.tensor_dtype(w)? == DType::F32,
+            None => true,
+        };
+        let b_f32 = match bias {
+            Some(b) => self.tensor_dtype(b)? == DType::F32,
+            None => true,
+        };
+        if !self.tensor_tape.tensor_requires_grad(input)?
+            && !w_grad
+            && !b_grad
+            && self.tensor_dtype(input)? == DType::F32
+            && w_f32
+            && b_f32
+        {
+            let x = self.tensor_values_f32(input)?;
+            let wv = match weight {
+                Some(w) => Some(self.tensor_values_f32(w)?),
+                None => None,
+            };
+            let bv = match bias {
+                Some(b) => Some(self.tensor_values_f32(b)?),
+                None => None,
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let out = ft_kernel_cpu::layer_norm_forward_f32(
+                &x,
+                wv.as_deref(),
+                bv.as_deref(),
+                batch_numel,
+                normalized_numel,
+                eps as f32,
+            );
+            return self.tensor_variable_f32(out, input_shape, false);
+        }
+
         // Fused GRAD fast path (f64, affine weight+bias present): a custom autograd
         // op whose forward is the fused kernel and whose backward
         // (layer_norm_backward_f64) emits dx/dweight/dbias directly — no op-graph
@@ -84644,6 +84683,45 @@ mod tests {
             assert!(
                 (a - b).abs() <= 1e-12 + 1e-10 * b.abs(),
                 "[{i}]: fused {a} vs reference {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn functional_layer_norm_f32_fused_matches_op_graph_within_tolerance() {
+        // Isomorphism for the f32 no-grad fused LayerNorm
+        // (ft_kernel_cpu::layer_norm_forward_f32): matches the f32 op-graph
+        // (forced via requires_grad=true) within f32 tolerance.
+        let (batch, n) = (6usize, 16usize);
+        let xv: Vec<f32> = (0..batch * n)
+            .map(|i| ((i % 13) as f32 - 6.0) * 0.3 + (i as f32) * 0.01)
+            .collect();
+        let wv: Vec<f32> = (0..n).map(|j| 1.0 + (j as f32) * 0.05).collect();
+        let bv: Vec<f32> = (0..n).map(|j| (j as f32) * 0.02 - 0.1).collect();
+        let eps = 1e-5;
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable_f32(xv.clone(), vec![batch, n], false).unwrap();
+        let w = s.tensor_variable_f32(wv.clone(), vec![n], false).unwrap();
+        let b = s.tensor_variable_f32(bv.clone(), vec![n], false).unwrap();
+        let out = s.functional_layer_norm(x, vec![n], Some(w), Some(b), eps).unwrap();
+        let fused = s.tensor_values_f32(out).unwrap();
+
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x2 = s2.tensor_variable_f32(xv, vec![batch, n], true).unwrap();
+        let w2 = s2.tensor_variable_f32(wv, vec![n], true).unwrap();
+        let b2 = s2.tensor_variable_f32(bv, vec![n], true).unwrap();
+        let out2 = s2.functional_layer_norm(x2, vec![n], Some(w2), Some(b2), eps).unwrap();
+        // The op-graph path upcasts to f64 (its `full(eps)`/mean intermediates are
+        // f64) and so returns an F64 tensor — read it as f64. Our fused path
+        // correctly returns F32; compare its values to the op-graph's within f32 tol.
+        let reference = s2.tensor_values(out2).unwrap();
+
+        assert_eq!(fused.len(), reference.len());
+        for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (f64::from(*a) - b).abs() <= 1e-5 + 1e-4 * b.abs(),
+                "[{i}]: f32 fused {a} vs op-graph {b}"
             );
         }
     }

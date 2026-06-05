@@ -467,6 +467,26 @@ fn bench_layer_norm(c: &mut Criterion) {
             )
         });
     });
+    // F32 no-grad (dominant ML dtype): fused layer_norm_forward_f32 vs the f32
+    // op-graph (which also upcast to f64) it fell through to.
+    group.bench_function("nograd_f32_2048x1024", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xv: Vec<f32> = (0..rows * hidden)
+            .map(|i| (i % 251) as f32 * 0.001 - 0.12)
+            .collect();
+        let wv: Vec<f32> = (0..hidden).map(|j| 1.0 + (j % 17) as f32 * 0.01).collect();
+        let bv: Vec<f32> = (0..hidden).map(|j| (j % 13) as f32 * 0.005 - 0.03).collect();
+        let x = session.tensor_variable_f32(xv, vec![rows, hidden], false).unwrap();
+        let w = session.tensor_variable_f32(wv, vec![hidden], false).unwrap();
+        let bias = session.tensor_variable_f32(bv, vec![hidden], false).unwrap();
+        b.iter(|| {
+            black_box(
+                session
+                    .functional_layer_norm(x, vec![hidden], Some(w), Some(bias), 1e-5)
+                    .unwrap(),
+            )
+        });
+    });
     // Forward + backward (training): exercises the fused grad LayerNorm op.
     group.bench_function("grad_2048x1024", |b| {
         b.iter(|| {
