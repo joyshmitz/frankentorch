@@ -10989,6 +10989,56 @@ impl RNNCell {
         }
     }
 
+    /// Transpose of the input-hidden weight `W_ih` (constant across timesteps).
+    fn w_ih_transposed(
+        &self,
+        session: &mut FrankenTorchSession,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_transpose(self.w_ih, 0, 1)
+    }
+
+    /// Transpose of the hidden-hidden weight `W_hh` (constant across timesteps).
+    fn w_hh_transposed(
+        &self,
+        session: &mut FrankenTorchSession,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_transpose(self.w_hh, 0, 1)
+    }
+
+    /// One RNN step given the precomputed input projection `xw`
+    /// (= `input @ W_ih^T`, shape `[batch, hidden]`) and the pre-transposed
+    /// recurrent weight `w_hh_t` (= `W_hh^T`). Pulling the non-recurrent input
+    /// projection out lets the runner batch it across all timesteps in a single
+    /// GEMM and hoist the two constant transposes. Bit-for-bit identical to
+    /// `forward_cell` (same ops, same add order `((xw + hw) + b_ih) + b_hh`);
+    /// only `xw` arrives precomputed and `W_hh` arrives pre-transposed.
+    fn forward_cell_projected(
+        &self,
+        session: &mut FrankenTorchSession,
+        xw: TensorNodeId,
+        hx: TensorNodeId,
+        w_hh_t: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let hw = session.tensor_matmul(hx, w_hh_t)?;
+
+        let out_shape = {
+            let (_, meta) = session.tensor_values_meta(xw)?;
+            meta.shape().to_vec()
+        };
+        let b_ih_exp = Self::expand_bias(session, self.b_ih, out_shape.clone())?;
+        let b_hh_exp = Self::expand_bias(session, self.b_hh, out_shape)?;
+
+        let sum1 = session.tensor_add(xw, hw)?;
+        let sum2 = session.tensor_add(sum1, b_ih_exp)?;
+        let sum3 = session.tensor_add(sum2, b_hh_exp)?;
+
+        if self.use_tanh {
+            session.tensor_tanh(sum3)
+        } else {
+            session.tensor_relu(sum3)
+        }
+    }
+
     /// Get the hidden size.
     #[must_use]
     pub fn hidden_size(&self) -> usize {
@@ -12418,19 +12468,40 @@ impl RNN {
         h_0: TensorNodeId,
         reverse: bool,
     ) -> Result<(Vec<TensorNodeId>, TensorNodeId), AutogradError> {
+        let seq_len = inputs.len();
         let mut h = h_0;
-        let mut outputs = Vec::with_capacity(inputs.len());
+        let mut outputs = Vec::with_capacity(seq_len);
+
+        if inputs.is_empty() {
+            return Ok((outputs, h));
+        }
+
+        // Hoist the two constant weight transposes out of the time loop and batch
+        // the non-recurrent input projection X@W_ih^T across ALL timesteps in a
+        // single GEMM; each step then runs only its recurrent matmul + bias +
+        // activation. A narrow() slice of the batched projection is bit-for-bit
+        // identical to the per-step matmul (row-independent reduction).
+        let w_ih_t = cell.w_ih_transposed(session)?;
+        let w_hh_t = cell.w_hh_transposed(session)?;
+        let batch_size = {
+            let (_, meta) = session.tensor_values_meta(inputs[0])?;
+            meta.shape()[0]
+        };
+        let stacked = session.tensor_cat(inputs, 0)?;
+        let xw_all = session.tensor_matmul(stacked, w_ih_t)?;
 
         if reverse {
-            for &input in inputs.iter().rev() {
-                let h_new = cell.forward_cell(session, input, h)?;
+            for t in (0..seq_len).rev() {
+                let xw = session.tensor_narrow(xw_all, 0, t * batch_size, batch_size)?;
+                let h_new = cell.forward_cell_projected(session, xw, h, w_hh_t)?;
                 outputs.push(h_new);
                 h = h_new;
             }
             outputs.reverse();
         } else {
-            for &input in inputs {
-                let h_new = cell.forward_cell(session, input, h)?;
+            for t in 0..seq_len {
+                let xw = session.tensor_narrow(xw_all, 0, t * batch_size, batch_size)?;
+                let h_new = cell.forward_cell_projected(session, xw, h, w_hh_t)?;
                 outputs.push(h_new);
                 h = h_new;
             }
