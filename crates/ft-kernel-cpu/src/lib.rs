@@ -8222,6 +8222,19 @@ pub struct EigResult {
 /// The eigenvalues are returned as pairs (real, imag) interleaved.
 /// For real eigenvalues, the imaginary part is 0.
 pub fn eig_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EigResult, KernelError> {
+    eig_impl(data, meta, true)
+}
+
+/// Shared worker for general (non-symmetric) eigendecomposition. When
+/// `want_vectors` is false the O(n^3) Schur-vector accumulation (`q_acc`) is
+/// skipped: the eigenvalues are read from the quasi-triangular `h`, which does
+/// NOT depend on `q_acc`, so they are bit-for-bit identical either way. The
+/// `eigvals` path uses `want_vectors = false`.
+fn eig_impl(
+    data: &[f64],
+    meta: &TensorMeta,
+    want_vectors: bool,
+) -> Result<EigResult, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
     if shape.len() != 2 || shape[0] != shape[1] {
@@ -8307,15 +8320,18 @@ pub fn eig_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EigResult, 
             }
         }
 
-        // Accumulate Q: Q[:, (k+1):] -= 2 * (Q[:, (k+1):] @ v) @ v^T / |v|^2
-        for i in 0..n {
-            let mut dot = 0.0;
-            for j in 0..(n - k - 1) {
-                dot += q_acc[i * n + (k + 1 + j)] * v[j];
-            }
-            let scale = 2.0 * dot / v_norm_sq;
-            for j in 0..(n - k - 1) {
-                q_acc[i * n + (k + 1 + j)] -= scale * v[j];
+        // Accumulate Q: Q[:, (k+1):] -= 2 * (Q[:, (k+1):] @ v) @ v^T / |v|^2.
+        // Pure eigenvector work — skip when only eigenvalues are requested.
+        if want_vectors {
+            for i in 0..n {
+                let mut dot = 0.0;
+                for j in 0..(n - k - 1) {
+                    dot += q_acc[i * n + (k + 1 + j)] * v[j];
+                }
+                let scale = 2.0 * dot / v_norm_sq;
+                for j in 0..(n - k - 1) {
+                    q_acc[i * n + (k + 1 + j)] -= scale * v[j];
+                }
             }
         }
     }
@@ -8395,12 +8411,15 @@ pub fn eig_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EigResult, 
                 h[j * n + (i + 1)] = s * t1 + c * t2;
             }
 
-            // Accumulate in Q
-            for j in 0..n {
-                let t1 = q_acc[j * n + i];
-                let t2 = q_acc[j * n + (i + 1)];
-                q_acc[j * n + i] = c * t1 - s * t2;
-                q_acc[j * n + (i + 1)] = s * t1 + c * t2;
+            // Accumulate the Givens rotation in Q — eigenvector-only work,
+            // skipped when only eigenvalues are requested.
+            if want_vectors {
+                for j in 0..n {
+                    let t1 = q_acc[j * n + i];
+                    let t2 = q_acc[j * n + (i + 1)];
+                    q_acc[j * n + i] = c * t1 - s * t2;
+                    q_acc[j * n + (i + 1)] = s * t1 + c * t2;
+                }
             }
         }
 
@@ -8456,7 +8475,11 @@ pub fn eig_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EigResult, 
 
 /// Compute just the eigenvalues of a general matrix (as complex pairs).
 pub fn eigvals_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
-    let result = eig_contiguous_f64(data, meta)?;
+    // Eigenvalues-only: skip the O(n^3) Schur-vector accumulation. The
+    // eigenvalues are read from the quasi-triangular `h`, which does not depend
+    // on `q_acc`, so they are bit-for-bit identical to
+    // `eig_contiguous_f64(...).eigenvalues`.
+    let result = eig_impl(data, meta, false)?;
     Ok(result.eigenvalues)
 }
 
