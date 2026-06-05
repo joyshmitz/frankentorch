@@ -15808,6 +15808,128 @@ impl FrankenTorchSession {
         }
         let d_k = query_shape[query_shape.len() - 1];
         let scale_factor = scale.unwrap_or(1.0 / (d_k as f64).sqrt());
+
+        // Fused fast paths (no-grad f64/f32, grad f64): block-row flash-attention
+        // kernels that never materialise the [.., seq, seq] score / scale / softmax
+        // tensors — the same fusion as `scaled_dot_product_attention`, here honoring
+        // the explicit `scale`. Masked / other-dtype / 2-D fall through to op-graph.
+        let sdpa_dtype = self.tensor_dtype(query)?;
+        if key_shape.len() >= 3
+            && query_shape.len() == key_shape.len()
+            && attn_mask.is_none()
+            && !self.tensor_tape.tensor_requires_grad(query)?
+            && !self.tensor_tape.tensor_requires_grad(key)?
+            && !self.tensor_tape.tensor_requires_grad(value)?
+            && (sdpa_dtype == DType::F64 || sdpa_dtype == DType::F32)
+            && self.tensor_dtype(key)? == sdpa_dtype
+            && self.tensor_dtype(value)? == sdpa_dtype
+        {
+            let v_shape = self.tensor_shape(value)?;
+            if v_shape.len() == query_shape.len() {
+                let nd = query_shape.len();
+                let seq_q = query_shape[nd - 2];
+                let d_k_dim = query_shape[nd - 1];
+                let seq_k = key_shape[nd - 2];
+                let d_v = v_shape[nd - 1];
+                let q_bh: usize = query_shape[..nd - 2].iter().product();
+                let k_bh: usize = key_shape[..nd - 2].iter().product();
+                let v_bh: usize = v_shape[..nd - 2].iter().product();
+                if q_bh == k_bh
+                    && q_bh == v_bh
+                    && key_shape[nd - 1] == d_k_dim
+                    && v_shape[nd - 2] == seq_k
+                    && q_bh > 0
+                    && seq_q > 0
+                    && seq_k > 0
+                    && d_k_dim > 0
+                    && d_v > 0
+                {
+                    let mut out_shape = query_shape.clone();
+                    out_shape[nd - 1] = d_v;
+                    if sdpa_dtype == DType::F64 {
+                        let qv = self.tensor_values(query)?;
+                        let kv = self.tensor_values(key)?;
+                        let vv = self.tensor_values(value)?;
+                        let out = ft_kernel_cpu::sdpa_forward_f64(
+                            &qv, &kv, &vv, q_bh, seq_q, seq_k, d_k_dim, d_v, scale_factor, is_causal,
+                        );
+                        return self.tensor_variable(out, out_shape, false);
+                    }
+                    let qv = self.tensor_values_f32(query)?;
+                    let kv = self.tensor_values_f32(key)?;
+                    let vv = self.tensor_values_f32(value)?;
+                    let out = ft_kernel_cpu::sdpa_forward_f32(
+                        &qv, &kv, &vv, q_bh, seq_q, seq_k, d_k_dim, d_v, scale_factor as f32,
+                        is_causal,
+                    );
+                    return self.tensor_tape.leaf_f32(out, out_shape, false);
+                }
+            }
+        }
+        let grad_needed = self.tensor_tape.tensor_requires_grad(query)?
+            || self.tensor_tape.tensor_requires_grad(key)?
+            || self.tensor_tape.tensor_requires_grad(value)?;
+        if grad_needed
+            && key_shape.len() >= 3
+            && query_shape.len() == key_shape.len()
+            && attn_mask.is_none()
+            && self.tensor_dtype(query)? == DType::F64
+            && self.tensor_dtype(key)? == DType::F64
+            && self.tensor_dtype(value)? == DType::F64
+        {
+            let v_shape = self.tensor_shape(value)?;
+            if v_shape.len() == query_shape.len() {
+                let nd = query_shape.len();
+                let seq_q = query_shape[nd - 2];
+                let d_k_dim = query_shape[nd - 1];
+                let seq_k = key_shape[nd - 2];
+                let d_v = v_shape[nd - 1];
+                let q_bh: usize = query_shape[..nd - 2].iter().product();
+                let k_bh: usize = key_shape[..nd - 2].iter().product();
+                let v_bh: usize = v_shape[..nd - 2].iter().product();
+                if q_bh == k_bh
+                    && q_bh == v_bh
+                    && key_shape[nd - 1] == d_k_dim
+                    && v_shape[nd - 2] == seq_k
+                    && q_bh > 0
+                    && seq_q > 0
+                    && seq_k > 0
+                    && d_k_dim > 0
+                    && d_v > 0
+                {
+                    let (sc, causal) = (scale_factor, is_causal);
+                    let (qsh, ksh, vsh) =
+                        (query_shape.clone(), key_shape.clone(), v_shape.clone());
+                    return self.tensor_apply_function(
+                        &[query, key, value],
+                        move |ctx, ins| {
+                            let (qv, _) = ins[0];
+                            let (kv, _) = ins[1];
+                            let (vv, _) = ins[2];
+                            let out = ft_kernel_cpu::sdpa_forward_f64(
+                                qv, kv, vv, q_bh, seq_q, seq_k, d_k_dim, d_v, sc, causal,
+                            );
+                            ctx.save_for_backward(qv.to_vec(), qsh.clone());
+                            ctx.save_for_backward(kv.to_vec(), ksh.clone());
+                            ctx.save_for_backward(vv.to_vec(), vsh.clone());
+                            let mut osh = qsh.clone();
+                            osh[nd - 1] = d_v;
+                            Ok((out, osh))
+                        },
+                        move |ctx, grad_outputs| {
+                            let dout = grad_outputs[0];
+                            let saved = ctx.saved_tensors();
+                            let (dq, dk, dv) = ft_kernel_cpu::sdpa_backward_f64(
+                                &saved[0], &saved[1], &saved[2], dout, q_bh, seq_q, seq_k, d_k_dim,
+                                d_v, sc, causal,
+                            );
+                            Ok(vec![Some(dq), Some(dk), Some(dv)])
+                        },
+                    );
+                }
+            }
+        }
+
         let key_t = self.tensor_transpose(key, key_shape.len() - 2, key_shape.len() - 1)?;
         let scores = self.tensor_matmul(query, key_t)?;
         let scores_shape = self.tensor_shape(scores)?;
@@ -84248,6 +84370,69 @@ mod tests {
         // softmax(score[0,0]) = 1.0, so output = V[0] = [10, 20]
         assert!((vals[0] - 10.0).abs() < 1e-6);
         assert!((vals[1] - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tensor_sdpa_fused_matches_validated_and_finite_diff() {
+        // tensor_scaled_dot_product_attention's new fused fast paths: with the
+        // default scale it must equal the already-validated
+        // scaled_dot_product_attention (same flash kernel); with a custom scale its
+        // grads (dQ/dK/dV) must match central finite differences.
+        let shape = vec![6usize, 5, 4]; // [batch_heads, seq, d]
+        let n: usize = shape.iter().product();
+        let qv: Vec<f64> = (0..n).map(|i| ((i % 7) as f64 - 3.0) * 0.2).collect();
+        let kv: Vec<f64> = (0..n).map(|i| ((i % 5) as f64 - 2.0) * 0.3).collect();
+        let vv: Vec<f64> = (0..n).map(|i| ((i % 9) as f64 - 4.0) * 0.15).collect();
+
+        // Default scale == the validated scaled_dot_product_attention.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let q = s.tensor_variable(qv.clone(), shape.clone(), false).unwrap();
+        let k = s.tensor_variable(kv.clone(), shape.clone(), false).unwrap();
+        let vt = s.tensor_variable(vv.clone(), shape.clone(), false).unwrap();
+        let a = s.tensor_scaled_dot_product_attention(q, k, vt, None, false, None).unwrap();
+        let b = s.scaled_dot_product_attention(q, k, vt, None, 0.0, false).unwrap();
+        let (av, bv) = (s.tensor_values(a).unwrap(), s.tensor_values(b).unwrap());
+        for (x, y) in av.iter().zip(bv.iter()) {
+            assert!((x - y).abs() <= 1e-12, "tensor_sdpa default != scaled_dot_product_attention");
+        }
+
+        // Custom-scale grad vs finite differences.
+        let cs = Some(0.37_f64);
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let q2 = s2.tensor_variable(qv.clone(), shape.clone(), true).unwrap();
+        let k2 = s2.tensor_variable(kv.clone(), shape.clone(), true).unwrap();
+        let v2 = s2.tensor_variable(vv.clone(), shape.clone(), true).unwrap();
+        let o = s2.tensor_scaled_dot_product_attention(q2, k2, v2, None, false, cs).unwrap();
+        let loss = s2.tensor_sum(o).unwrap();
+        s2.tensor_backward(loss).unwrap();
+        let gq = s2.tensor_grad(q2).unwrap().unwrap();
+        let gk = s2.tensor_grad(k2).unwrap().unwrap();
+        let gv = s2.tensor_grad(v2).unwrap().unwrap();
+        let loss_fn = |qs: &[f64], ks: &[f64], vs: &[f64]| -> f64 {
+            let mut s3 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let qi = s3.tensor_variable(qs.to_vec(), shape.clone(), false).unwrap();
+            let ki = s3.tensor_variable(ks.to_vec(), shape.clone(), false).unwrap();
+            let vi = s3.tensor_variable(vs.to_vec(), shape.clone(), false).unwrap();
+            let oo = s3.tensor_scaled_dot_product_attention(qi, ki, vi, None, false, cs).unwrap();
+            s3.tensor_values(oo).unwrap().iter().sum()
+        };
+        let h = 1e-6;
+        let chk = |g: &[f64], which: u8| {
+            for i in 0..n {
+                let mut up = (qv.clone(), kv.clone(), vv.clone());
+                let mut dn = (qv.clone(), kv.clone(), vv.clone());
+                match which {
+                    0 => { up.0[i] += h; dn.0[i] -= h; }
+                    1 => { up.1[i] += h; dn.1[i] -= h; }
+                    _ => { up.2[i] += h; dn.2[i] -= h; }
+                }
+                let fd = (loss_fn(&up.0, &up.1, &up.2) - loss_fn(&dn.0, &dn.1, &dn.2)) / (2.0 * h);
+                assert!((g[i] - fd).abs() <= 1e-5 + 1e-4 * fd.abs(), "grad{which}[{i}]: {} vs {fd}", g[i]);
+            }
+        };
+        chk(&gq, 0);
+        chk(&gk, 1);
+        chk(&gv, 2);
     }
 
     #[test]
