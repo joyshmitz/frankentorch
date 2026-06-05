@@ -7926,6 +7926,46 @@ impl FrankenTorchSession {
         let m = shape[1];
         let out_len = n * (n - 1) / 2;
 
+        // Euclidean (p == 2) fast path — same matmul identity as tensor_cdist
+        // (frankentorch-fb6s). The full N×N distance matrix is
+        //     d² = ‖x_i‖² + ‖x_j‖² − 2·x_i·x_jᵀ
+        // where the cross term is one GEMM-routed `input @ inputᵀ`; the i<j
+        // upper triangle is then gathered with a single index_select. This
+        // avoids the [out_len, M] pair-difference tensor the broadcasted path
+        // builds (out_len = N·(N−1)/2 row pairs × M each). Fully autograd-aware
+        // (matmul/sum/clamp/sqrt/index_select record on the tape); for distinct
+        // rows the gradient matches the direct path, and equal rows clamp to an
+        // exact 0 before sqrt. Matches the direct sum to f64 round-off (~1e-12).
+        if p == 2.0 && m > 0 && out_len > 0 {
+            let input_sq = self.tensor_mul(input, input)?;
+            let xnorm = self.tensor_sum_dim(input_sq, 1)?; // [N]
+            let input_t = self.tensor_transpose(input, 0, 1)?; // [M, N]
+            let gram = self.tensor_matmul(input, input_t)?; // [N, N]
+            let xnorm_i = self.tensor_unsqueeze(xnorm, 1)?; // [N, 1]
+            let xnorm_j = self.tensor_unsqueeze(xnorm, 0)?; // [1, N]
+            let target = vec![n, n];
+            let xi_e = self.tensor_expand(xnorm_i, target.clone())?;
+            let xj_e = self.tensor_expand(xnorm_j, target)?;
+            let norm_sum = self.tensor_add(xi_e, xj_e)?;
+            let two_gram = self.tensor_mul_scalar(gram, 2.0)?;
+            let d2 = self.tensor_sub(norm_sum, two_gram)?;
+            let d2_clamped = self.tensor_clamp_min(d2, 0.0)?; // [N, N]
+            let d2_flat = self.tensor_reshape(d2_clamped, vec![n * n])?;
+            // Gather the strict upper triangle (i < j) at flat index i·N + j,
+            // THEN sqrt — so the always-zero diagonal (self-distances) is never
+            // square-rooted, avoiding the 0/0 in sqrt's backward.
+            #[allow(clippy::cast_precision_loss)]
+            let mut tri_idx = Vec::with_capacity(out_len);
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    tri_idx.push((i * n + j) as f64);
+                }
+            }
+            let tri_t = self.tensor_tape.leaf(tri_idx, vec![out_len], false)?;
+            let d2_tri = self.tensor_index_select(d2_flat, 0, tri_t)?; // [out_len]
+            return self.tensor_sqrt(d2_tri);
+        }
+
         // For finite p > 0, compose through index_select + sub + abs +
         // pow + sum_dim + pow primitives so gradients flow to the
         // input. PyTorch's torch.nn.functional.pdist IS differentiable
@@ -77796,6 +77836,63 @@ mod tests {
                 "pdist L2 grad[{i}] = {g}, expected {e}"
             );
         }
+    }
+
+    /// The p=2 matmul fast path (full Gram + upper-triangle gather) must match
+    /// the direct pairwise Euclidean distance to f64 round-off, handle DUPLICATE
+    /// rows (distance 0, no NaN), preserve upper-triangle ordering, and stay
+    /// deterministic. Golden FNV digest pins the assembled vector.
+    #[test]
+    fn pdist_l2_matmul_matches_direct() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        fn direct(x: &[f64], n: usize, m: usize) -> Vec<f64> {
+            let mut out = Vec::new();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let mut acc = 0.0;
+                    for k in 0..m {
+                        let d = x[i * m + k] - x[j * m + k];
+                        acc += d * d;
+                    }
+                    out.push(acc.sqrt());
+                }
+            }
+            out
+        }
+
+        let (n, m) = (9usize, 5usize);
+        let mut xv: Vec<f64> = (0..n * m).map(|i| ((i * 7 + 3) % 13) as f64 * 0.3 - 1.5).collect();
+        // Make rows 2 and 5 identical -> their pair distance must be exactly 0.
+        let row2 = xv[2 * m..3 * m].to_vec();
+        xv[5 * m..6 * m].copy_from_slice(&row2);
+
+        let x = s.tensor_variable(xv.clone(), vec![n, m], false).unwrap();
+        let out = s.tensor_pdist(x, 2.0).unwrap();
+        let out_len = n * (n - 1) / 2;
+        assert_eq!(s.tensor_shape(out).unwrap(), vec![out_len]);
+        let got = s.tensor_values(out).unwrap();
+        let want = direct(&xv, n, m);
+        // Locate the (2,5) pair index in the flattened upper triangle.
+        let mut pair_idx = 0usize;
+        let mut found = 0usize;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if i == 2 && j == 5 {
+                    found = pair_idx;
+                }
+                pair_idx += 1;
+            }
+        }
+        assert!(got[found].abs() < 1e-12, "duplicate-row pair must be 0, got {}", got[found]);
+
+        let mut digest = 0xcbf2_9ce4_8422_2325u64;
+        for (idx, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert!((g - w).abs() < 1e-10, "pdist @{idx}: {g} vs {w}");
+            assert!(g.is_finite(), "pdist @{idx} not finite");
+            digest = (digest ^ g.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(digest, 5_866_717_913_018_847_422, "pdist l2 matmul golden digest");
     }
 
     #[test]

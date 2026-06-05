@@ -44,5 +44,41 @@ fn bench_cdist(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_cdist);
+fn bench_pdist(c: &mut Criterion) {
+    for &(n, m) in &[(256usize, 128usize), (512, 64)] {
+        let out_len = n * (n - 1) / 2;
+        let xv: Vec<f64> = (0..n * m).map(|i| (i as f64 * 0.013).sin()).collect();
+        // Pre-change broadcasted path: gather i<j row pairs, then sub+abs+pow+sum_dim+pow.
+        let mut ri = Vec::with_capacity(out_len);
+        let mut rj = Vec::with_capacity(out_len);
+        for i in 0..n {
+            for j in (i + 1)..n {
+                ri.push(i as f64);
+                rj.push(j as f64);
+            }
+        }
+        c.bench_function(&format!("pdist_broadcast/{n}x{m}"), |b| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(xv.clone(), vec![n, m], false).unwrap();
+            let ri_t = s.tensor_variable(ri.clone(), vec![out_len], false).unwrap();
+            let rj_t = s.tensor_variable(rj.clone(), vec![out_len], false).unwrap();
+            b.iter(|| {
+                let left = s.tensor_index_select(x, 0, ri_t).unwrap();
+                let right = s.tensor_index_select(x, 0, rj_t).unwrap();
+                let diff = s.tensor_sub(left, right).unwrap();
+                let abs = s.tensor_abs(diff).unwrap();
+                let pw = s.tensor_pow(abs, 2.0).unwrap();
+                let sum = s.tensor_sum_dim(pw, 1).unwrap();
+                black_box(s.tensor_pow(sum, 0.5).unwrap());
+            });
+        });
+        c.bench_function(&format!("pdist_mm/{n}x{m}"), |b| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(xv.clone(), vec![n, m], false).unwrap();
+            b.iter(|| black_box(s.tensor_pdist(black_box(x), 2.0).unwrap()));
+        });
+    }
+}
+
+criterion_group!(benches, bench_cdist, bench_pdist);
 criterion_main!(benches);
