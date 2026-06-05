@@ -857,12 +857,17 @@ fn write_native_f32_values<W: Write>(
     values: &[f32],
     io_path: &str,
 ) -> Result<(), TensorIOError> {
-    let values_per_chunk = FT_NATIVE_F32_VALUE_CHUNK_BYTES / std::mem::size_of::<f32>();
+    let values_per_chunk = FT_NATIVE_F32_VALUE_CHUNK_BYTES / std::mem::size_of::<u32>();
     let mut bytes = Vec::with_capacity(FT_NATIVE_F32_VALUE_CHUNK_BYTES);
     for chunk in values.chunks(values_per_chunk) {
         bytes.clear();
-        for &value in chunk {
-            bytes.extend_from_slice(&value.to_le_bytes());
+        let mut lanes = chunk.chunks_exact(2);
+        for lane in &mut lanes {
+            let packed = u64::from(lane[0].to_bits()) | (u64::from(lane[1].to_bits()) << 32);
+            bytes.extend_from_slice(&packed.to_le_bytes());
+        }
+        for &value in lanes.remainder() {
+            bytes.extend_from_slice(&value.to_bits().to_le_bytes());
         }
         write_native_bytes(writer, &bytes, io_path)?;
     }
