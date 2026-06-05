@@ -48277,6 +48277,84 @@ impl FrankenTorchSession {
         Self::dft_inplace_1d_with_stage_twiddles(re, im, inverse, None);
     }
 
+    /// Below this length the naive O(N^2) DFT is cheaper than Bluestein's three
+    /// padded power-of-two FFTs (and is kept so small non-power-of-two sizes stay
+    /// bit-for-bit unchanged). At/above it, Bluestein wins by O(N/log N).
+    const BLUESTEIN_MIN_LEN: usize = 64;
+
+    /// Bluestein's chirp-z transform: compute the (UN-normalized) length-`n` DFT
+    /// of `re`/`im` in place for ARBITRARY `n` — including primes — in
+    /// `O(N log N)` instead of the naive `O(N^2)` sum. The caller's shared
+    /// `1/N` inverse normalization still runs afterwards (this returns the raw
+    /// transform sum, exactly like the naive fallback it replaces).
+    ///
+    /// Identity `k·j = (k² + j² − (k−j)²)/2` rewrites the DFT as a convolution:
+    /// with chirp `b[j] = exp(s·π·i·j²/N)` (`s = −1` forward, `+1` inverse),
+    /// `X[k] = b[k] · Σ_j (x[j]·b[j]) · conj(b[k−j])`. That linear convolution is
+    /// evaluated as a length-`M` cyclic convolution (`M = next_pow2(2N−1)`,
+    /// chosen so the wrap-around cannot alias) via three power-of-two FFTs
+    /// (the existing radix-2 butterfly path). `j²` is reduced mod `2N` before the
+    /// trig call so the chirp stays accurate for large `j`.
+    fn bluestein_dft(re: &mut [f64], im: &mut [f64], inverse: bool) {
+        let n = re.len();
+        let sign = if inverse { 1.0 } else { -1.0 };
+        let pi = std::f64::consts::PI;
+
+        // Chirp b[j] = exp(s·π·i·j²/N); reduce j² mod 2N for trig accuracy.
+        let mut b_re = vec![0.0_f64; n];
+        let mut b_im = vec![0.0_f64; n];
+        let two_n = 2 * n as u128;
+        for j in 0..n {
+            let jj = ((j as u128 * j as u128) % two_n) as f64;
+            let angle = sign * pi * jj / n as f64;
+            b_re[j] = angle.cos();
+            b_im[j] = angle.sin();
+        }
+
+        let m = (2 * n - 1).next_power_of_two();
+        // a[j] = x[j] · b[j], zero-padded to length M.
+        let mut a_re = vec![0.0_f64; m];
+        let mut a_im = vec![0.0_f64; m];
+        for j in 0..n {
+            a_re[j] = re[j] * b_re[j] - im[j] * b_im[j];
+            a_im[j] = re[j] * b_im[j] + im[j] * b_re[j];
+        }
+        // Convolution kernel h[d] = conj(b[d]) at +d and the wrapped −d ≡ M−d.
+        let mut h_re = vec![0.0_f64; m];
+        let mut h_im = vec![0.0_f64; m];
+        h_re[0] = b_re[0];
+        h_im[0] = -b_im[0];
+        for d in 1..n {
+            let cr = b_re[d];
+            let ci = -b_im[d];
+            h_re[d] = cr;
+            h_im[d] = ci;
+            h_re[m - d] = cr;
+            h_im[m - d] = ci;
+        }
+
+        // Cyclic convolution via FFT: conv = IFFT(FFT(a) · FFT(h)). The internal
+        // FFTs are power-of-two, so they take the fast butterfly path (no
+        // recursion back into Bluestein); the inverse supplies the 1/M factor.
+        Self::dft_inplace_1d(&mut a_re, &mut a_im, false);
+        Self::dft_inplace_1d(&mut h_re, &mut h_im, false);
+        for j in 0..m {
+            let pr = a_re[j] * h_re[j] - a_im[j] * h_im[j];
+            let pii = a_re[j] * h_im[j] + a_im[j] * h_re[j];
+            a_re[j] = pr;
+            a_im[j] = pii;
+        }
+        Self::dft_inplace_1d(&mut a_re, &mut a_im, true);
+
+        // X[k] = b[k] · conv[k].
+        for k in 0..n {
+            let cr = a_re[k];
+            let ci = a_im[k];
+            re[k] = b_re[k] * cr - b_im[k] * ci;
+            im[k] = b_re[k] * ci + b_im[k] * cr;
+        }
+    }
+
     /// Forward FFT of a REAL signal `x` (length `n`, even) returning only the
     /// non-redundant `n/2 + 1` frequencies as `(re, im)`.
     ///
@@ -48468,8 +48546,11 @@ impl FrankenTorchSession {
                 }
                 stage *= 2;
             }
+        } else if n >= Self::BLUESTEIN_MIN_LEN {
+            // Non-power-of-two: Bluestein's chirp-z transform, O(N log N).
+            Self::bluestein_dft(re, im, inverse);
         } else {
-            // Non-power-of-two fallback: naive O(N^2) DFT.
+            // Small non-power-of-two: naive O(N^2) DFT (cheap at this size).
             let mut out_re = vec![0.0_f64; n];
             let mut out_im = vec![0.0_f64; n];
             let sign = if inverse { 1.0 } else { -1.0 };
@@ -78352,6 +78433,91 @@ mod tests {
             digest = (digest ^ got.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
         }
         assert_eq!(digest, 0x8216_e8d6_06eb_37d0);
+    }
+
+    /// frankentorch-fft-bluestein: the non-power-of-two DFT path (now Bluestein's
+    /// chirp-z, O(N log N)) must match the naive O(N^2) DFT it replaced, to FFT
+    /// round-off, for arbitrary N — including primes (127, 257) where no
+    /// small-radix factorization exists. Also checks forward→inverse round-trip
+    /// recovery and bit-for-bit determinism. A golden FNV digest of the N=1000
+    /// forward transform pins the output against future drift.
+    #[test]
+    fn bluestein_nonpow2_dft_matches_naive_and_roundtrips() {
+        use super::FrankenTorchSession;
+
+        // Un-normalized naive DFT (forward); inverse adds the 1/N the shared tail
+        // applies in the production path.
+        fn naive_dft(re: &[f64], im: &[f64], inverse: bool) -> (Vec<f64>, Vec<f64>) {
+            let n = re.len();
+            let sign = if inverse { 1.0 } else { -1.0 };
+            let two_pi = 2.0 * std::f64::consts::PI;
+            let nrm = if inverse { 1.0 / n as f64 } else { 1.0 };
+            let mut out_re = vec![0.0_f64; n];
+            let mut out_im = vec![0.0_f64; n];
+            for k in 0..n {
+                let mut ar = 0.0_f64;
+                let mut ai = 0.0_f64;
+                for j in 0..n {
+                    let ang = sign * two_pi * k as f64 * j as f64 / n as f64;
+                    let c = ang.cos();
+                    let sn = ang.sin();
+                    ar += re[j] * c - im[j] * sn;
+                    ai += re[j] * sn + im[j] * c;
+                }
+                out_re[k] = ar * nrm;
+                out_im[k] = ai * nrm;
+            }
+            (out_re, out_im)
+        }
+
+        // All sizes >= BLUESTEIN_MIN_LEN (64) so they exercise the chirp-z path;
+        // 127 and 257 are prime (worst case for mixed-radix).
+        let mut digest = 0xcbf2_9ce4_8422_2325u64;
+        for &n in &[65usize, 96, 100, 127, 257, 1000] {
+            let re: Vec<f64> = (0..n).map(|i| ((i * 7 + 3) % 17) as f64 * 0.1 - 0.5).collect();
+            let im: Vec<f64> = (0..n).map(|i| ((i * 5 + 1) % 13) as f64 * 0.07 - 0.3).collect();
+
+            for inverse in [false, true] {
+                let (want_re, want_im) = naive_dft(&re, &im, inverse);
+                let mut got_re = re.clone();
+                let mut got_im = im.clone();
+                FrankenTorchSession::dft_inplace_1d(&mut got_re, &mut got_im, inverse);
+                // Determinism: a second run is bit-for-bit identical.
+                let mut got_re2 = re.clone();
+                let mut got_im2 = im.clone();
+                FrankenTorchSession::dft_inplace_1d(&mut got_re2, &mut got_im2, inverse);
+                for k in 0..n {
+                    assert_eq!(got_re[k].to_bits(), got_re2[k].to_bits(), "nondeterministic re n={n} @{k}");
+                    assert_eq!(got_im[k].to_bits(), got_im2[k].to_bits(), "nondeterministic im n={n} @{k}");
+                    let dr = (got_re[k] - want_re[k]).abs();
+                    let di = (got_im[k] - want_im[k]).abs();
+                    let bound = (n as f64).log2() * 64.0 * f64::EPSILON + 1e-10;
+                    assert!(
+                        dr <= bound && di <= bound,
+                        "bluestein n={n} inverse={inverse} @{k}: ({},{}) vs naive ({},{}) d=({dr:e},{di:e})",
+                        got_re[k], got_im[k], want_re[k], want_im[k]
+                    );
+                    if n == 1000 && !inverse {
+                        digest = (digest ^ got_re[k].to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+                        digest = (digest ^ got_im[k].to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                }
+            }
+
+            // Forward then inverse recovers the input (1/N applied by inverse tail).
+            let mut rr = re.clone();
+            let mut ri = im.clone();
+            FrankenTorchSession::dft_inplace_1d(&mut rr, &mut ri, false);
+            FrankenTorchSession::dft_inplace_1d(&mut rr, &mut ri, true);
+            for k in 0..n {
+                assert!(
+                    (rr[k] - re[k]).abs() < 1e-9 && (ri[k] - im[k]).abs() < 1e-9,
+                    "roundtrip n={n} @{k}: ({},{}) vs ({},{})",
+                    rr[k], ri[k], re[k], im[k]
+                );
+            }
+        }
+        assert_eq!(digest, 7_944_665_914_262_458_937, "golden digest (capture-and-pin)");
     }
 
     #[test]
