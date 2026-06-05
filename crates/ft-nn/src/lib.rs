@@ -11310,6 +11310,92 @@ impl GRUCell {
         session.tensor_add(term1, term2)
     }
 
+    /// Transpose of the input-hidden weight `W_ih` (constant across timesteps).
+    fn w_ih_transposed(
+        &self,
+        session: &mut FrankenTorchSession,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_transpose(self.w_ih, 0, 1)
+    }
+
+    /// Transpose of the hidden-hidden weight `W_hh` (constant across timesteps).
+    fn w_hh_transposed(
+        &self,
+        session: &mut FrankenTorchSession,
+    ) -> Result<TensorNodeId, AutogradError> {
+        session.tensor_transpose(self.w_hh, 0, 1)
+    }
+
+    /// Non-recurrent input-gate projection `stacked @ W_ih^T + b_ih` for a
+    /// pre-stacked `[rows, input]` input, given `w_ih_t` (= `W_ih^T`). The runner
+    /// stacks all timesteps so this single GEMM + bias add replaces the per-step
+    /// matmul. Both the matmul (row-independent reduction) and the elementwise
+    /// bias add are bit-for-bit identical to the per-step `forward_cell` result.
+    fn project_inputs(
+        &self,
+        session: &mut FrankenTorchSession,
+        stacked: TensorNodeId,
+        w_ih_t: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let x_proj = session.tensor_matmul(stacked, w_ih_t)?;
+        let shape = {
+            let (_, meta) = session.tensor_values_meta(x_proj)?;
+            meta.shape().to_vec()
+        };
+        let b_ih_exp = RNNCell::expand_bias(session, self.b_ih, shape)?;
+        session.tensor_add(x_proj, b_ih_exp)
+    }
+
+    /// One GRU step given the precomputed, bias-added input-gate projection
+    /// `x_gates` (= `input @ W_ih^T + b_ih`, shape `[batch, 3*hidden]`) and the
+    /// pre-transposed recurrent weight `w_hh_t` (= `W_hh^T`). Bit-for-bit
+    /// identical to `forward_cell` (same ops, same add order); only the
+    /// non-recurrent input projection arrives precomputed and `W_hh` arrives
+    /// pre-transposed.
+    fn forward_cell_projected(
+        &self,
+        session: &mut FrankenTorchSession,
+        x_gates: TensorNodeId,
+        hx: TensorNodeId,
+        w_hh_t: TensorNodeId,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let batch_size = {
+            let (_, meta) = session.tensor_values_meta(x_gates)?;
+            meta.shape()[0]
+        };
+
+        let h_gates = session.tensor_matmul(hx, w_hh_t)?;
+        let h_gates_shape = {
+            let (_, meta) = session.tensor_values_meta(h_gates)?;
+            meta.shape().to_vec()
+        };
+        let b_hh_exp = RNNCell::expand_bias(session, self.b_hh, h_gates_shape)?;
+        let h_gates = session.tensor_add(h_gates, b_hh_exp)?;
+
+        let x_chunks = session.tensor_chunk(x_gates, 3, 1)?;
+        let h_chunks = session.tensor_chunk(h_gates, 3, 1)?;
+
+        // r = sigmoid(x_r + h_r) — reset gate
+        let r_sum = session.tensor_add(x_chunks[0], h_chunks[0])?;
+        let r = session.tensor_sigmoid(r_sum)?;
+
+        // z = sigmoid(x_z + h_z) — update gate
+        let z_sum = session.tensor_add(x_chunks[1], h_chunks[1])?;
+        let z = session.tensor_sigmoid(z_sum)?;
+
+        // n = tanh(x_n + r * h_n) — new gate
+        let r_h_n = session.tensor_mul(r, h_chunks[2])?;
+        let n_sum = session.tensor_add(x_chunks[2], r_h_n)?;
+        let n = session.tensor_tanh(n_sum)?;
+
+        // h' = (1 - z) * n + z * h
+        let ones = session.full(vec![batch_size, self.hidden_size], 1.0, false)?;
+        let one_minus_z = session.tensor_sub(ones, z)?;
+        let term1 = session.tensor_mul(one_minus_z, n)?;
+        let term2 = session.tensor_mul(z, hx)?;
+        session.tensor_add(term1, term2)
+    }
+
     /// Get the hidden size.
     #[must_use]
     pub fn hidden_size(&self) -> usize {
@@ -11962,16 +12048,36 @@ impl GRU {
         let mut h = h_0;
         let mut outputs = Vec::with_capacity(seq_len);
 
+        if inputs.is_empty() {
+            return Ok((outputs, h));
+        }
+
+        // Hoist the constant weight transposes out of the time loop and batch the
+        // non-recurrent input-gate projection (x @ W_ih^T + b_ih) across ALL
+        // timesteps in a single GEMM (matmul + elementwise bias are both
+        // row-independent, so a narrow() slice equals the per-step result). Each
+        // step then only runs its recurrent matmul plus the elementwise gates.
+        let w_ih_t = cell.w_ih_transposed(session)?;
+        let w_hh_t = cell.w_hh_transposed(session)?;
+        let batch_size = {
+            let (_, meta) = session.tensor_values_meta(inputs[0])?;
+            meta.shape()[0]
+        };
+        let stacked = session.tensor_cat(inputs, 0)?;
+        let x_gates_all = cell.project_inputs(session, stacked, w_ih_t)?;
+
         if reverse {
-            for &input in inputs.iter().rev() {
-                let h_new = cell.forward_cell(session, input, h)?;
+            for t in (0..seq_len).rev() {
+                let x_gates = session.tensor_narrow(x_gates_all, 0, t * batch_size, batch_size)?;
+                let h_new = cell.forward_cell_projected(session, x_gates, h, w_hh_t)?;
                 outputs.push(h_new);
                 h = h_new;
             }
             outputs.reverse();
         } else {
-            for &input in inputs {
-                let h_new = cell.forward_cell(session, input, h)?;
+            for t in 0..seq_len {
+                let x_gates = session.tensor_narrow(x_gates_all, 0, t * batch_size, batch_size)?;
+                let h_new = cell.forward_cell_projected(session, x_gates, h, w_hh_t)?;
                 outputs.push(h_new);
                 h = h_new;
             }

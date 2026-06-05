@@ -1,7 +1,7 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
-use ft_nn::{LSTM, Module, MultiheadAttention};
+use ft_nn::{GRU, LSTM, Module, MultiheadAttention};
 
 fn make_mha_case(
     batch_size: usize,
@@ -185,10 +185,76 @@ fn bench_lstm_forward(c: &mut Criterion) {
     group.finish();
 }
 
+fn make_gru_case(
+    seq_len: usize,
+    batch_size: usize,
+    input_size: usize,
+    hidden_size: usize,
+) -> (FrankenTorchSession, GRU, ft_autograd::TensorNodeId) {
+    let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+    let gru = GRU::new(
+        &mut session,
+        input_size,
+        hidden_size,
+        1,
+        false,
+        0.0,
+        false,
+    )
+    .expect("gru");
+    let values = (0..(seq_len * batch_size * input_size))
+        .map(|idx| (idx % 251) as f64 * 0.001)
+        .collect::<Vec<_>>();
+    let input = session
+        .tensor_variable(values, vec![seq_len, batch_size, input_size], true)
+        .expect("input");
+    (session, gru, input)
+}
+
+fn bench_gru_forward(c: &mut Criterion) {
+    let mut group = c.benchmark_group("gru");
+    group.bench_function("forward_seq128_b16_in128_h256", |b| {
+        b.iter_batched(
+            || make_gru_case(128, 16, 128, 256),
+            |(mut session, gru, input)| {
+                let output = gru.forward(&mut session, input).expect("forward");
+                let first = session
+                    .tensor_values(output)
+                    .expect("values")
+                    .first()
+                    .copied()
+                    .expect("nonempty output");
+                black_box(first)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.bench_function("forward_seq128_b16_in128_h256_nograd", |b| {
+        b.iter_batched(
+            || make_gru_case(128, 16, 128, 256),
+            |(mut session, gru, input)| {
+                session.no_grad_enter();
+                let output = gru.forward(&mut session, input).expect("forward");
+                let first = session
+                    .tensor_values(output)
+                    .expect("values")
+                    .first()
+                    .copied()
+                    .expect("nonempty output");
+                session.no_grad_exit();
+                black_box(first)
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_multihead_attention,
     bench_multihead_attention_nograd,
-    bench_lstm_forward
+    bench_lstm_forward,
+    bench_gru_forward
 );
 criterion_main!(benches);
