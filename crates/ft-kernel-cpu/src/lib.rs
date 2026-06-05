@@ -7958,14 +7958,12 @@ fn eigh_tred2_values_only(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64])
     }
 }
 
-/// QL algorithm with implicit shifts on a symmetric tridiagonal matrix.
-/// `d` (diagonal) becomes the eigenvalues, `z` (the `tred2` transform) becomes
-/// the eigenvectors as columns. EISPACK `tql2` lineage. Each eigenvalue
-/// converges in O(1) shifted QL steps, so the whole solve is O(n^3) with a far
-/// smaller constant than cyclic Jacobi. Gives up gracefully (leaving the
-/// best-so-far estimate) after a generous iteration cap, mirroring Jacobi's
-/// bounded-sweep behavior rather than erroring.
-fn eigh_tql2(n: usize, d: &mut [f64], e: &mut [f64], z: &mut [f64]) {
+/// Implicit-shift QL iteration on a symmetric tridiagonal matrix while `zt`
+/// stores the eigenvector matrix transposed:
+/// `zt[col * n + row] == z[row * n + col]`. The rotation stream and per-entry
+/// arithmetic order match the row-major formulation; the vector updates become
+/// contiguous slices instead of strided column walks.
+fn eigh_tql2_transposed(n: usize, d: &mut [f64], e: &mut [f64], zt: &mut [f64]) {
     if n == 0 {
         return;
     }
@@ -8019,11 +8017,14 @@ fn eigh_tql2(n: usize, d: &mut [f64], e: &mut [f64], z: &mut [f64]) {
                 p = s * r;
                 d[i + 1] = g + p;
                 g = c * r - b;
-                // Accumulate the rotation into the eigenvector columns.
+                let col_i = i * n;
+                let col_next = (i + 1) * n;
+                // Accumulate the rotation into the transposed eigenvector rows.
                 for k in 0..n {
-                    f = z[k * n + i + 1];
-                    z[k * n + i + 1] = s * z[k * n + i] + c * f;
-                    z[k * n + i] = c * z[k * n + i] - s * f;
+                    f = zt[col_next + k];
+                    let left = zt[col_i + k];
+                    zt[col_next + k] = s * left + c * f;
+                    zt[col_i + k] = c * left - s * f;
                 }
             }
             if bailed {
@@ -8139,7 +8140,14 @@ pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult
     let mut d = vec![0.0f64; n];
     let mut e = vec![0.0f64; n];
     eigh_tred2(n, &mut z, &mut d, &mut e);
-    eigh_tql2(n, &mut d, &mut e, &mut z);
+    let mut zt = vec![0.0f64; n * n];
+    for row in 0..n {
+        let row_start = row * n;
+        for col in 0..n {
+            zt[col * n + row] = z[row_start + col];
+        }
+    }
+    eigh_tql2_transposed(n, &mut d, &mut e, &mut zt);
 
     // Sort eigenvalues ascending, permuting eigenvector columns to match.
     let mut eigen_pairs: Vec<(f64, usize)> = (0..n).map(|i| (d[i], i)).collect();
@@ -8148,8 +8156,9 @@ pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult
     let eigenvalues: Vec<f64> = eigen_pairs.iter().map(|(val, _)| *val).collect();
     let mut eigenvectors = vec![0.0f64; n * n];
     for (new_col, &(_, old_col)) in eigen_pairs.iter().enumerate() {
+        let old_col_start = old_col * n;
         for row in 0..n {
-            eigenvectors[row * n + new_col] = z[row * n + old_col];
+            eigenvectors[row * n + new_col] = zt[old_col_start + row];
         }
     }
 
