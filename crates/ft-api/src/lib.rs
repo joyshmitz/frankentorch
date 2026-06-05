@@ -52420,13 +52420,19 @@ impl FrankenTorchSession {
         let fan_in: usize = shape[1..].iter().product();
         let flat = self.tensor_reshape(weight, vec![c_out, fan_in])?;
         let mean = self.tensor_mean_dim(flat, 1)?;
-        let mean_expanded = self.tensor_unsqueeze(mean, 1)?;
+        // Expand the keepdim mean/std [c_out, 1] up to [c_out, fan_in] before the
+        // elementwise sub/div — tensor_sub/div do NOT broadcast a size-1 axis in
+        // this codebase, so the bare unsqueeze made this fail with a
+        // ShapeMismatch for every input. frankentorch-3pvd.
+        let mean_unsq = self.tensor_unsqueeze(mean, 1)?;
+        let mean_expanded = self.tensor_expand(mean_unsq, vec![c_out, fan_in])?;
         let centered = self.tensor_sub(flat, mean_expanded)?;
         let var = self.tensor_var_dim(centered, 1, 0)?;
         let eps = self.full(vec![c_out], 1e-5, false)?;
         let var_eps = self.tensor_add(var, eps)?;
         let std = self.tensor_sqrt(var_eps)?;
-        let std_expanded = self.tensor_unsqueeze(std, 1)?;
+        let std_unsq = self.tensor_unsqueeze(std, 1)?;
+        let std_expanded = self.tensor_expand(std_unsq, vec![c_out, fan_in])?;
         let normalized = self.tensor_div(centered, std_expanded)?;
         self.tensor_reshape(normalized, shape)
     }
@@ -52761,7 +52767,10 @@ impl FrankenTorchSession {
         let eps_tensor = self.full(vec![n, c], eps, false)?;
         let nu2_eps = self.tensor_add(nu2, eps_tensor)?;
         let denom = self.tensor_sqrt(nu2_eps)?;
-        let denom_expanded = self.tensor_unsqueeze(denom, 2)?;
+        // Expand [n, c, 1] -> [n, c, h*w] before the divide; tensor_div does not
+        // broadcast a size-1 axis here. frankentorch-3pvd.
+        let denom_unsq = self.tensor_unsqueeze(denom, 2)?;
+        let denom_expanded = self.tensor_expand(denom_unsq, vec![n, c, h * w])?;
         let x_norm = self.tensor_div(x_flat, denom_expanded)?;
         self.tensor_reshape(x_norm, vec![n, c, h, w])
     }
@@ -54249,10 +54258,16 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         eps: f64,
     ) -> Result<TensorNodeId, AutogradError> {
+        let shape = self.tensor_shape(input)?;
         let norm = self.frobenius_norm(input)?;
         let eps_tensor = self.full(vec![1], eps, false)?;
         let safe_norm = self.tensor_add(norm, eps_tensor)?;
-        self.tensor_div(input, safe_norm)
+        // safe_norm is a scalar [1]; broadcast it to the input shape before the
+        // divide (tensor_div does not broadcast a size-1 axis). frankentorch-3pvd.
+        let ones = vec![1usize; shape.len()];
+        let norm_r = self.tensor_reshape(safe_norm, ones)?;
+        let norm_b = self.tensor_expand(norm_r, shape)?;
+        self.tensor_div(input, norm_b)
     }
 
     // ── Reduction Utilities ──────────────────────────────────────────────
@@ -54641,10 +54656,15 @@ impl FrankenTorchSession {
         let last_dim = shape.len() - 1;
         let sq = self.tensor_mul(input, input)?;
         let sum_sq = self.tensor_sum_dim(sq, last_dim)?;
-        let eps_t = self.full(vec![1], eps, false)?;
+        // eps must match the reduced shape (sum_sq), and the keepdim norm must be
+        // expanded to the input shape before the divide — tensor_add/div do not
+        // broadcast a size-1 axis here. frankentorch-3pvd.
+        let reduced_shape = self.tensor_shape(sum_sq)?;
+        let eps_t = self.full(reduced_shape, eps, false)?;
         let sum_with_eps = self.tensor_add(sum_sq, eps_t)?;
         let norm = self.tensor_sqrt(sum_with_eps)?;
-        let norm_expanded = self.tensor_unsqueeze(norm, last_dim)?;
+        let norm_unsq = self.tensor_unsqueeze(norm, last_dim)?;
+        let norm_expanded = self.tensor_expand(norm_unsq, shape)?;
         self.tensor_div(input, norm_expanded)
     }
 
@@ -54654,15 +54674,23 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         eps: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let _shape = self.tensor_shape(input)?;
+        let shape = self.tensor_shape(input)?;
         let flat = self.flatten_all(input)?;
         let min_val = self.tensor_amin(flat, 0)?;
         let max_val = self.tensor_amax(flat, 0)?;
-        let shifted = self.tensor_sub(input, min_val)?;
         let range = self.tensor_sub(max_val, min_val)?;
         let eps_t = self.full(vec![1], eps, false)?;
         let safe_range = self.tensor_add(range, eps_t)?;
-        self.tensor_div(shifted, safe_range)
+        // min_val / safe_range are scalars [1]; broadcast them to the input shape
+        // (reshape to ndim ones, then expand) before sub/div, which do not
+        // broadcast a size-1 axis here. frankentorch-3pvd.
+        let ones = vec![1usize; shape.len()];
+        let min_r = self.tensor_reshape(min_val, ones.clone())?;
+        let min_b = self.tensor_expand(min_r, shape.clone())?;
+        let range_r = self.tensor_reshape(safe_range, ones)?;
+        let range_b = self.tensor_expand(range_r, shape)?;
+        let shifted = self.tensor_sub(input, min_b)?;
+        self.tensor_div(shifted, range_b)
     }
 
     // ── Index Utilities ──────────────────────────────────────────────────
@@ -100431,5 +100459,64 @@ mod tests {
         let report = s.tensor_backward(loss).unwrap();
         let grad = s.tensor_gradient(&report, gt).expect("normalize must propagate gradient");
         assert!(grad.iter().any(|x| x.abs() > 1e-9), "gradient must be non-trivial");
+    }
+
+    /// frankentorch-3pvd: weight_standardization / filter_response_norm /
+    /// normalize_l2 / normalize_minmax / normalize_to_unit all fed a reduced
+    /// (keepdim or scalar) operand into an elementwise sub/div without expanding
+    /// it, so the non-broadcasting tensor_div/sub rejected EVERY real input with
+    /// a ShapeMismatch. They were untested. Verify each now produces the correct
+    /// values and propagates gradient.
+    #[test]
+    fn broadcast_normalization_ops_fixed() {
+        use super::FrankenTorchSession;
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // normalize_l2: each row has unit L2 norm.
+        let v: Vec<f64> = vec![3.0, 4.0, 5.0, 12.0, 6.0, 8.0];
+        let t = s.tensor_variable(v, vec![3, 2], false).unwrap();
+        let nl2 = s.normalize_l2(t, 1e-12).unwrap();
+        let g = s.tensor_values(nl2).unwrap();
+        for r in 0..3 {
+            let nrm = (g[r * 2].powi(2) + g[r * 2 + 1].powi(2)).sqrt();
+            assert!((nrm - 1.0).abs() < 1e-9, "normalize_l2 row {r} norm {nrm}");
+        }
+        assert!((g[0] - 0.6).abs() < 1e-9 && (g[1] - 0.8).abs() < 1e-9);
+
+        // normalize_minmax: min -> 0, max -> 1, all in [0,1].
+        let v2 = vec![2.0, 4.0, 8.0, 6.0];
+        let t2 = s.tensor_variable(v2, vec![2, 2], false).unwrap();
+        let nmm = s.normalize_minmax(t2, 0.0).unwrap();
+        let g2 = s.tensor_values(nmm).unwrap();
+        assert!((g2[0] - 0.0).abs() < 1e-9, "min->0 got {}", g2[0]); // 2 is min
+        assert!((g2[2] - 1.0).abs() < 1e-9, "max->1 got {}", g2[2]); // 8 is max
+        assert!((g2[1] - (4.0 - 2.0) / 6.0).abs() < 1e-9);
+
+        // normalize_to_unit: whole tensor has unit Frobenius norm.
+        let v3 = vec![3.0, 0.0, 0.0, 4.0];
+        let t3 = s.tensor_variable(v3, vec![2, 2], false).unwrap();
+        let ntu = s.normalize_to_unit(t3, 0.0).unwrap();
+        let g3 = s.tensor_values(ntu).unwrap();
+        let fro = g3.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((fro - 1.0).abs() < 1e-9, "normalize_to_unit frobenius {fro}");
+
+        // weight_standardization: each output channel (flattened) has ~zero mean.
+        let w = s.tensor_variable((0..2 * 4).map(|i| (i as f64) * 0.5 + 1.0).collect(), vec![2, 4], true).unwrap();
+        let ws = s.weight_standardization(w).unwrap();
+        let gw = s.tensor_values(ws).unwrap();
+        for co in 0..2 {
+            let m = (0..4).map(|j| gw[co * 4 + j]).sum::<f64>() / 4.0;
+            assert!(m.abs() < 1e-9, "weight_standardization channel {co} mean {m}");
+        }
+        // Gradient flows (was impossible — the op errored before backward).
+        let loss = s.tensor_sum(ws).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, w).expect("weight_standardization gradient");
+        assert_eq!(grad.len(), 8);
+
+        // filter_response_norm: runs and preserves shape on [N,C,H,W].
+        let x = s.tensor_variable((0..1 * 2 * 2 * 2).map(|i| (i + 1) as f64).collect(), vec![1, 2, 2, 2], false).unwrap();
+        let fr = s.filter_response_norm(x, 1e-6).unwrap();
+        assert_eq!(s.tensor_shape(fr).unwrap(), vec![1, 2, 2, 2]);
     }
 }
