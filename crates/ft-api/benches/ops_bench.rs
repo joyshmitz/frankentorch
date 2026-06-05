@@ -94,6 +94,25 @@ fn bench_conv2d(c: &mut Criterion) {
             });
         });
     }
+    // Training (forward + backward): exercises the fused conv2d grad custom op.
+    for hw in [32, 64].iter() {
+        let h = *hw;
+        let (batch, in_ch, out_ch, kh, kw) = (4, 64, 64, 3, 3);
+        group.bench_with_input(BenchmarkId::new("grad_hw", h), &h, |b, &h| {
+            b.iter(|| {
+                let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+                let input = session.tensor_randn(vec![batch, in_ch, h, h], true).unwrap();
+                let weight = session
+                    .tensor_randn(vec![out_ch, in_ch, kh, kw], true)
+                    .unwrap();
+                let out = session
+                    .tensor_conv2d(input, weight, None, (1, 1), (1, 1))
+                    .unwrap();
+                let loss = session.tensor_sum(out).unwrap();
+                black_box(session.tensor_backward(loss).unwrap())
+            });
+        });
+    }
     group.finish();
 }
 

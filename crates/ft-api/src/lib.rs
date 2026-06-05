@@ -16168,6 +16168,50 @@ impl FrankenTorchSession {
             };
         }
 
+        // Fused GRAD fast path (f64): a custom autograd op (conv2d_forward_f64 /
+        // conv2d_backward_f64) operating on the PADDED input — col2im for dinput,
+        // no unfold/permute/transpose materialisations. tensor_pad's own backward
+        // turns dpadded into dinput. Non-f64 falls through to the composed path.
+        if self.tensor_dtype(input)? == DType::F64
+            && self.tensor_dtype(weight)? == DType::F64
+            && bias.map_or(Ok(true), |b| self.tensor_dtype(b).map(|d| d == DType::F64))?
+        {
+            let has_bias = bias.is_some();
+            let (b_, ic, ph, pw) = (batch_size, in_channels, padded_h, padded_w);
+            let (kh, kw, oh, ow) = (kernel_h, kernel_w, output_h, output_w);
+            let (sh, sw, oc, pwidth) = (stride_h, stride_w, out_channels, patch_width);
+            let mut inputs = vec![padded, weight];
+            if let Some(b) = bias {
+                inputs.push(b);
+            }
+            return self.tensor_apply_function(
+                &inputs,
+                move |ctx, ins| {
+                    let (pv, _) = ins[0];
+                    let (wv, _) = ins[1];
+                    let bv = if has_bias { Some(ins[2].0) } else { None };
+                    let out = ft_kernel_cpu::conv2d_forward_f64(
+                        pv, wv, bv, b_, ic, ph, pw, kh, kw, oh, ow, sh, sw, oc,
+                    );
+                    ctx.save_for_backward(pv.to_vec(), vec![b_, ic, ph, pw]);
+                    ctx.save_for_backward(wv.to_vec(), vec![oc, pwidth]);
+                    Ok((out, vec![b_, oc, oh, ow]))
+                },
+                move |ctx, grad_outputs| {
+                    let dout = grad_outputs[0];
+                    let s = ctx.saved_tensors();
+                    let (dpadded, dweight, dbias) = ft_kernel_cpu::conv2d_backward_f64(
+                        dout, &s[0], &s[1], b_, ic, ph, pw, kh, kw, oh, ow, sh, sw, oc, has_bias,
+                    );
+                    let mut g = vec![Some(dpadded), Some(dweight)];
+                    if has_bias {
+                        g.push(Some(dbias.unwrap()));
+                    }
+                    Ok(g)
+                },
+            );
+        }
+
         // Use unfold to extract all patches in O(1) tensor operations instead
         // of O(output_h * output_w) narrow+reshape calls.
         // unfold(dim=2) → [batch, in_ch, out_h, padded_w, kernel_h]
@@ -82697,6 +82741,66 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(shape, vec![1, 1, 1, 1]);
         assert_eq!(vals, vec![6.0]);
+    }
+
+    #[test]
+    fn functional_conv2d_grad_matches_finite_diff() {
+        // The fused conv2d grad path (custom op: conv2d_forward/backward + col2im)
+        // must compute the true gradients dinput/dweight/dbias. Validate against
+        // central finite differences with stride 1 and padding 1 (overlapping
+        // patches exercise the col2im accumulation).
+        let (n, ic, oc, h, w, kh, kw) = (2usize, 2usize, 3usize, 4usize, 4usize, 3usize, 3usize);
+        let nin = n * ic * h * w;
+        let nwt = oc * ic * kh * kw;
+        let xv: Vec<f64> = (0..nin).map(|i| ((i % 7) as f64 - 3.0) * 0.2).collect();
+        let wv: Vec<f64> = (0..nwt).map(|i| ((i % 5) as f64 - 2.0) * 0.15).collect();
+        let bv: Vec<f64> = (0..oc).map(|c| 0.1 * c as f64 - 0.1).collect();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(xv.clone(), vec![n, ic, h, w], true).unwrap();
+        let wt = s.tensor_variable(wv.clone(), vec![oc, ic, kh, kw], true).unwrap();
+        let bt = s.tensor_variable(bv.clone(), vec![oc], true).unwrap();
+        let out = s
+            .functional_conv2d(x, wt, Some(bt), (1, 1), (1, 1))
+            .unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        s.tensor_backward(loss).unwrap();
+        let gx = s.tensor_grad(x).unwrap().unwrap();
+        let gw = s.tensor_grad(wt).unwrap().unwrap();
+        let gb = s.tensor_grad(bt).unwrap().unwrap();
+
+        let loss_fn = |xs: &[f64], ws: &[f64], bs: &[f64]| -> f64 {
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xi = s2.tensor_variable(xs.to_vec(), vec![n, ic, h, w], false).unwrap();
+            let wi = s2.tensor_variable(ws.to_vec(), vec![oc, ic, kh, kw], false).unwrap();
+            let bi = s2.tensor_variable(bs.to_vec(), vec![oc], false).unwrap();
+            let o = s2.functional_conv2d(xi, wi, Some(bi), (1, 1), (1, 1)).unwrap();
+            s2.tensor_values(o).unwrap().iter().sum()
+        };
+        let hh = 1e-6;
+        let chk = |g: f64, fd: f64, what: &str, i: usize| {
+            assert!(
+                (g - fd).abs() <= 1e-5 + 1e-4 * fd.abs(),
+                "{what}[{i}]: analytic {g} vs finite-diff {fd}"
+            );
+        };
+        for i in 0..nin {
+            let (mut p, mut m) = (xv.clone(), xv.clone());
+            p[i] += hh;
+            m[i] -= hh;
+            chk(gx[i], (loss_fn(&p, &wv, &bv) - loss_fn(&m, &wv, &bv)) / (2.0 * hh), "dx", i);
+        }
+        for i in 0..nwt {
+            let (mut p, mut m) = (wv.clone(), wv.clone());
+            p[i] += hh;
+            m[i] -= hh;
+            chk(gw[i], (loss_fn(&xv, &p, &bv) - loss_fn(&xv, &m, &bv)) / (2.0 * hh), "dw", i);
+        }
+        for i in 0..oc {
+            let (mut p, mut m) = (bv.clone(), bv.clone());
+            p[i] += hh;
+            m[i] -= hh;
+            chk(gb[i], (loss_fn(&xv, &wv, &p) - loss_fn(&xv, &wv, &m)) / (2.0 * hh), "db", i);
+        }
     }
 
     #[test]
