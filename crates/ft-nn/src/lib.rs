@@ -21410,13 +21410,68 @@ mod tests {
         output
     }
 
+    /// Parse a `[a, b, c]`-formatted line body into `f64`s.
+    fn parse_golden_f64_list(body: &str) -> Vec<f64> {
+        body.trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| t.trim().parse::<f64>().expect("parse golden f64"))
+            .collect()
+    }
+
+    /// Compare a produced golden summary against a fixture line-by-line.
+    ///
+    /// Non-numeric lines (`shape=...`, `backward_err=...`) must match exactly.
+    /// Numeric lines (`values`, `loss`, `x_grad`, `param_grad_*`) are compared
+    /// within an absolute tolerance: backward gradients flow through fused
+    /// SDPA-/Linear-grad kernels whose rayon parallel reductions accumulate in a
+    /// nondeterministic order, so the last ULP (~1e-16) is not reproducible
+    /// across workers/thread-counts. A 1e-12 bound is ~10000x above that noise
+    /// floor yet still catches any real divergence.
+    fn assert_golden_within_tol(produced: &str, golden: &str, tol: f64) {
+        let p_lines: Vec<&str> = produced.lines().collect();
+        let g_lines: Vec<&str> = golden.lines().collect();
+        assert_eq!(
+            p_lines.len(),
+            g_lines.len(),
+            "golden line count mismatch:\n--- produced ---\n{produced}\n--- golden ---\n{golden}"
+        );
+        for (pl, gl) in p_lines.iter().zip(g_lines.iter()) {
+            let (pk, pv) = pl.split_once('=').expect("produced line has '='");
+            let (gk, gv) = gl.split_once('=').expect("golden line has '='");
+            assert_eq!(pk, gk, "golden key mismatch: {pk:?} vs {gk:?}");
+            if pk == "shape" || pk == "backward_err" {
+                assert_eq!(pv, gv, "golden {pk} mismatch: {pv:?} vs {gv:?}");
+                continue;
+            }
+            let pnums = parse_golden_f64_list(pv);
+            let gnums = parse_golden_f64_list(gv);
+            assert_eq!(
+                pnums.len(),
+                gnums.len(),
+                "golden {pk} length mismatch: {} vs {}",
+                pnums.len(),
+                gnums.len()
+            );
+            for (i, (a, b)) in pnums.iter().zip(gnums.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() <= tol,
+                    "golden {pk}[{i}] differs beyond tol {tol}: produced {a:.17?} vs golden {b:.17?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn mha_self_flat_reuse_golden_output_matches_fixture() {
-        assert_eq!(
-            mha_self_flat_reuse_golden_summary(),
+        assert_golden_within_tol(
+            &mha_self_flat_reuse_golden_summary(),
             include_str!(
                 "../../../artifacts/optimization/golden_outputs/ft_nn_mha_self_flat_reuse_frankentorch-l3mm.txt"
-            )
+            ),
+            1e-12,
         );
     }
 
