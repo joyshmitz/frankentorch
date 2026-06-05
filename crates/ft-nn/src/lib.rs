@@ -4768,17 +4768,23 @@ impl MultiheadAttention {
         let v_heads =
             session.tensor_reshape(v_heads, vec![batch_heads, seq_len_k, self.head_dim])?;
 
-        let q_scaled = session.tensor_mul_scalar(q_heads, self.scale)?;
-
-        // Attention scores: Q_h @ K_h^T -> [N * heads, S_q, S_k]
-        let k_t = session.tensor_transpose(k_heads, 1, 2)?;
-        let scores = session.tensor_bmm(q_scaled, k_t)?;
-
-        // Softmax over key dimension
-        let attn_weights = session.tensor_softmax(scores, 2)?;
-
-        // Weighted sum and restore row-major head concatenation: [N, S_q, E]
-        let head_out = session.tensor_bmm(attn_weights, v_heads)?;
+        // Attention via the fused (autograd-aware) scaled-dot-product-attention:
+        // softmax(Q_h @ K_h^T * scale) @ V_h -> [N * heads, S_q, head_dim]. The
+        // grad-f64 fast path is block-row flash attention that NEVER materialises
+        // the [N*heads, S_q, S_k] score / softmax tensors on the tape (the manual
+        // bmm + softmax + bmm built two of them, each a full-size node + alloc +
+        // backward). Forward matches the bmm+softmax+bmm path bit-for-bit (proven
+        // by mha_no_grad_self_attention_fast_path_matches_forward_qkv_bits, same
+        // sdpa_forward_f64 kernel); the fused backward matches the op-graph
+        // gradients to f64 round-off (MHA parity is tolerance).
+        let head_out = session.tensor_scaled_dot_product_attention(
+            q_heads,
+            k_heads,
+            v_heads,
+            None,
+            false,
+            Some(self.scale),
+        )?;
         let head_out = session.tensor_reshape(
             head_out,
             vec![batch_size, self.num_heads, seq_len_q, self.head_dim],

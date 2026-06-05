@@ -356,10 +356,29 @@ fn bench_attention_core(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_multihead_attention_train(c: &mut Criterion) {
+    let mut group = c.benchmark_group("multihead_attention");
+    for &(b_, s_, e_, h_) in &[(8usize, 64usize, 128usize, 8usize), (1, 512, 128, 8)] {
+        group.bench_function(&format!("train_{b_}x{s_}x{e_}_h{h_}"), |bch| {
+            bch.iter_batched(
+                || make_mha_case(b_, s_, e_, h_),
+                |(mut session, attention, input)| {
+                    let out = attention.forward(&mut session, input).expect("forward");
+                    let loss = session.tensor_sum(out).expect("sum");
+                    black_box(session.tensor_backward(loss).expect("backward"))
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_multihead_attention,
     bench_multihead_attention_nograd,
+    bench_multihead_attention_train,
     bench_attention_core,
     bench_lstm_forward,
     bench_gru_forward,
