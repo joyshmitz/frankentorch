@@ -270,6 +270,54 @@ fn bench_batch_norm(c: &mut Criterion) {
             });
         });
     }
+    // BatchNorm1d [N,C] (MLP, spatial=1) no-grad + grad.
+    {
+        let (bn, bc) = (8192usize, 1024usize);
+        group.bench_function("nograd_1d_8192x1024", |b| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_randn(vec![bn, bc], false).unwrap();
+            let rm = s.tensor_randn(vec![bc], false).unwrap();
+            let rv = s.tensor_variable(vec![1.0; bc], vec![bc], false).unwrap();
+            let wt = s.tensor_randn(vec![bc], false).unwrap();
+            let bias = s.tensor_randn(vec![bc], false).unwrap();
+            b.iter(|| {
+                black_box(
+                    s.functional_batch_norm1d(x, Some(rm), Some(rv), Some(wt), Some(bias), true, 0.1, 1e-5)
+                        .unwrap(),
+                )
+            });
+        });
+        group.bench_function("grad_1d_8192x1024", |b| {
+            b.iter(|| {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_randn(vec![bn, bc], true).unwrap();
+                let rm = s.tensor_randn(vec![bc], false).unwrap();
+                let rv = s.tensor_variable(vec![1.0; bc], vec![bc], false).unwrap();
+                let wt = s.tensor_randn(vec![bc], true).unwrap();
+                let bias = s.tensor_randn(vec![bc], true).unwrap();
+                let (out, _, _) = s
+                    .functional_batch_norm1d(x, Some(rm), Some(rv), Some(wt), Some(bias), true, 0.1, 1e-5)
+                    .unwrap();
+                let loss = s.tensor_sum(out).unwrap();
+                black_box(s.tensor_backward(loss).unwrap())
+            });
+        });
+    }
+    // BatchNorm3d [N,C,D,H,W] (3D CNN) no-grad train.
+    group.bench_function("nograd_3d_8x64x8x16x16", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_randn(vec![8, 64, 8, 16, 16], false).unwrap();
+        let rm = s.tensor_randn(vec![64], false).unwrap();
+        let rv = s.tensor_variable(vec![1.0; 64], vec![64], false).unwrap();
+        let wt = s.tensor_randn(vec![64], false).unwrap();
+        let bias = s.tensor_randn(vec![64], false).unwrap();
+        b.iter(|| {
+            black_box(
+                s.functional_batch_norm3d(x, Some(rm), Some(rv), Some(wt), Some(bias), true, 0.1, 1e-5)
+                    .unwrap(),
+            )
+        });
+    });
     // Training forward + backward.
     group.bench_function("grad_train_32x256x28x28", |b| {
         b.iter(|| {

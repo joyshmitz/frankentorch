@@ -3104,17 +3104,24 @@ pub fn batch_norm_apply_f64(
     eps: f64,
 ) -> Vec<f64> {
     let _ = batch;
+    // Precompute per-channel scale/shift once (C sqrts) so the streaming pass is a
+    // single fused multiply-add even when spatial == 1 (BatchNorm1d).
+    let mut scale = vec![0.0f64; channels];
+    let mut shift = vec![0.0f64; channels];
+    for c in 0..channels {
+        let rstd = 1.0 / (var[c] + eps).sqrt();
+        scale[c] = rstd * weight.map_or(1.0, |w| w[c]);
+        shift[c] = bias.map_or(0.0, |b| b[c]) - mean[c] * scale[c];
+    }
     let mut out = vec![0.0f64; x.len()];
     out.par_chunks_mut(spatial)
         .enumerate()
         .for_each(|(idx, orow)| {
             let c = idx % channels;
             let base = idx * spatial;
-            let rstd = 1.0 / (var[c] + eps).sqrt();
-            let scale = rstd * weight.map_or(1.0, |w| w[c]);
-            let shift = bias.map_or(0.0, |b| b[c]) - mean[c] * scale;
+            let (sc, sh) = (scale[c], shift[c]);
             for s in 0..spatial {
-                orow[s] = x[base + s] * scale + shift;
+                orow[s] = x[base + s] * sc + sh;
             }
         });
     out
