@@ -8336,134 +8336,238 @@ fn eig_impl(
         }
     }
 
-    // Step 2: QR iteration with shifts on Hessenberg matrix
-    let max_iter = 200 * n;
-    let tol = 1e-14;
-    let mut iter = 0;
-    let mut p = n;
+    // Step 2: Francis double-shift implicit QR on the upper-Hessenberg `h`
+    // (EISPACK `hqr2` lineage), accumulating the orthogonal transforms into
+    // `q_acc` (real-Schur vectors) when requested. The IMPLICIT DOUBLE SHIFT
+    // converges trailing 2x2 blocks with COMPLEX-conjugate eigenvalues in real
+    // arithmetic — the previous single-Wilkinson-shift Givens QR could not, so
+    // it returned WRONG eigenvalues for any complex spectrum (frankentorch-09zy).
+    // Eigenvalues are written directly as interleaved (re, im) pairs.
+    let mut eigenvalues = vec![0.0f64; 2 * n];
+    {
+        // Frobenius-ish norm over the Hessenberg band for convergence tests.
+        let mut anorm = 0.0f64;
+        for i in 0..n {
+            for j in i.saturating_sub(1)..n {
+                anorm += h[i * n + j].abs();
+            }
+        }
+        let eps = f64::EPSILON;
+        let mut t = 0.0f64; // accumulated shift
+        let mut en: isize = n as isize - 1; // bottom of the active block (0-based)
+        let mut total_iter = 0usize;
+        let max_total = 60 * n + 100;
 
-    while p > 1 && iter < max_iter {
-        // Check for convergence of subdiagonal elements
-        for i in (1..p).rev() {
-            if h[i * n + (i - 1)].abs()
-                <= tol * (h[(i - 1) * n + (i - 1)].abs() + h[i * n + i].abs())
-            {
-                h[i * n + (i - 1)] = 0.0;
-                if i == p - 1 {
-                    p -= 1;
+        while en >= 0 {
+            let en_u = en as usize;
+            let mut its = 0usize;
+            loop {
+                // Find `l`: top of the unreduced block ending at `en`.
+                let mut l = en_u;
+                while l > 0 {
+                    let mut s = h[(l - 1) * n + (l - 1)].abs() + h[l * n + l].abs();
+                    if s == 0.0 {
+                        s = anorm;
+                    }
+                    if h[l * n + (l - 1)].abs() <= eps * s {
+                        break;
+                    }
+                    l -= 1;
+                }
+
+                let mut x = h[en_u * n + en_u];
+                if l == en_u {
+                    // One real root.
+                    h[en_u * n + en_u] = x + t;
+                    eigenvalues[2 * en_u] = x + t;
+                    eigenvalues[2 * en_u + 1] = 0.0;
+                    en -= 1;
+                    break;
+                }
+
+                let na = en_u - 1;
+                let mut y = h[na * n + na];
+                let mut w = h[en_u * n + na] * h[na * n + en_u];
+                if l == na {
+                    // Two roots (real pair or complex-conjugate pair).
+                    let pp = (y - x) / 2.0;
+                    let q = pp * pp + w;
+                    let zz = q.abs().sqrt();
+                    let xx = x + t;
+                    h[en_u * n + en_u] = xx;
+                    h[na * n + na] = y + t;
+                    if q >= 0.0 {
+                        let zz2 = if pp >= 0.0 { pp + zz } else { pp - zz };
+                        let r1 = xx + zz2;
+                        let r2 = if zz2 != 0.0 { xx - w / zz2 } else { r1 };
+                        eigenvalues[2 * na] = r1;
+                        eigenvalues[2 * na + 1] = 0.0;
+                        eigenvalues[2 * en_u] = r2;
+                        eigenvalues[2 * en_u + 1] = 0.0;
+                        if want_vectors {
+                            // Standardize the 2x2 (Givens rotation) for the Schur vectors.
+                            let xr = h[en_u * n + na];
+                            let s = xr.abs() + zz2.abs();
+                            if s != 0.0 {
+                                let mut cp = xr / s;
+                                let mut cq = zz2 / s;
+                                let r = (cp * cp + cq * cq).sqrt();
+                                cp /= r;
+                                cq /= r;
+                                for j in na..n {
+                                    let z1 = h[na * n + j];
+                                    h[na * n + j] = cq * z1 + cp * h[en_u * n + j];
+                                    h[en_u * n + j] = cq * h[en_u * n + j] - cp * z1;
+                                }
+                                for i in 0..=en_u {
+                                    let z1 = h[i * n + na];
+                                    h[i * n + na] = cq * z1 + cp * h[i * n + en_u];
+                                    h[i * n + en_u] = cq * h[i * n + en_u] - cp * z1;
+                                }
+                                for i in 0..n {
+                                    let z1 = q_acc[i * n + na];
+                                    q_acc[i * n + na] = cq * z1 + cp * q_acc[i * n + en_u];
+                                    q_acc[i * n + en_u] = cq * q_acc[i * n + en_u] - cp * z1;
+                                }
+                            }
+                        }
+                    } else {
+                        eigenvalues[2 * na] = xx + pp;
+                        eigenvalues[2 * na + 1] = zz;
+                        eigenvalues[2 * en_u] = xx + pp;
+                        eigenvalues[2 * en_u + 1] = -zz;
+                    }
+                    en -= 2;
+                    break;
+                }
+
+                if its >= 30 || total_iter >= max_total {
+                    // No convergence — record the diagonal estimate and deflate.
+                    h[en_u * n + en_u] = x + t;
+                    eigenvalues[2 * en_u] = x + t;
+                    eigenvalues[2 * en_u + 1] = 0.0;
+                    en -= 1;
+                    break;
+                }
+
+                // Form the (double) shift.
+                if its == 10 || its == 20 {
+                    // Exceptional shift to break stagnation.
+                    t += x;
+                    for i in 0..=en_u {
+                        h[i * n + i] -= x;
+                    }
+                    let s = h[en_u * n + na].abs() + h[na * n + (na - 1)].abs();
+                    x = 0.75 * s;
+                    y = x;
+                    w = -0.4375 * s * s;
+                }
+                its += 1;
+                total_iter += 1;
+
+                // Find `m`: two consecutive small sub-diagonals (start of the bulge).
+                let mut m = en_u - 2;
+                let (mut p_s, mut q_s, mut r_s);
+                loop {
+                    let zz = h[m * n + m];
+                    let r = x - zz;
+                    let s = y - zz;
+                    p_s = (r * s - w) / h[(m + 1) * n + m] + h[m * n + (m + 1)];
+                    q_s = h[(m + 1) * n + (m + 1)] - zz - r - s;
+                    r_s = h[(m + 2) * n + (m + 1)];
+                    let norm = p_s.abs() + q_s.abs() + r_s.abs();
+                    p_s /= norm;
+                    q_s /= norm;
+                    r_s /= norm;
+                    if m == l {
+                        break;
+                    }
+                    let test1 = p_s.abs()
+                        * (h[(m - 1) * n + (m - 1)].abs() + zz.abs() + h[(m + 1) * n + (m + 1)].abs());
+                    let test2 = h[m * n + (m - 1)].abs() * (q_s.abs() + r_s.abs());
+                    if test2 <= eps * test1 {
+                        break;
+                    }
+                    m -= 1;
+                }
+                // Clear the sub-sub-diagonal spike left of the bulge.
+                for i in (m + 2)..=en_u {
+                    h[i * n + (i - 2)] = 0.0;
+                    if i != m + 2 {
+                        h[i * n + (i - 3)] = 0.0;
+                    }
+                }
+
+                // Double QR (bulge-chase) step on rows [m, en].
+                let mut k = m;
+                while k <= na {
+                    let notlast = k != na;
+                    if k != m {
+                        p_s = h[k * n + (k - 1)];
+                        q_s = h[(k + 1) * n + (k - 1)];
+                        r_s = if notlast { h[(k + 2) * n + (k - 1)] } else { 0.0 };
+                        x = p_s.abs() + q_s.abs() + r_s.abs();
+                        if x == 0.0 {
+                            k += 1;
+                            continue;
+                        }
+                        p_s /= x;
+                        q_s /= x;
+                        r_s /= x;
+                    }
+                    let s = (p_s * p_s + q_s * q_s + r_s * r_s).sqrt().copysign(p_s);
+                    if k == m {
+                        if l != m {
+                            h[k * n + (k - 1)] = -h[k * n + (k - 1)];
+                        }
+                    } else {
+                        h[k * n + (k - 1)] = -s * x;
+                    }
+                    p_s += s;
+                    let xr = p_s / s;
+                    let yr = q_s / s;
+                    let zr = r_s / s;
+                    q_s /= p_s;
+                    r_s /= p_s;
+                    // Row modification: columns [k, n).
+                    for j in k..n {
+                        let mut p2 = h[k * n + j] + q_s * h[(k + 1) * n + j];
+                        if notlast {
+                            p2 += r_s * h[(k + 2) * n + j];
+                            h[(k + 2) * n + j] -= p2 * zr;
+                        }
+                        h[(k + 1) * n + j] -= p2 * yr;
+                        h[k * n + j] -= p2 * xr;
+                    }
+                    // Column modification: rows [0, min(en, k+3)].
+                    let jmax = (k + 3).min(en_u);
+                    for i in 0..=jmax {
+                        let mut p2 = xr * h[i * n + k] + yr * h[i * n + (k + 1)];
+                        if notlast {
+                            p2 += zr * h[i * n + (k + 2)];
+                            h[i * n + (k + 2)] -= p2 * r_s;
+                        }
+                        h[i * n + (k + 1)] -= p2 * q_s;
+                        h[i * n + k] -= p2;
+                    }
+                    if want_vectors {
+                        for i in 0..n {
+                            let mut p2 = xr * q_acc[i * n + k] + yr * q_acc[i * n + (k + 1)];
+                            if notlast {
+                                p2 += zr * q_acc[i * n + (k + 2)];
+                                q_acc[i * n + (k + 2)] -= p2 * r_s;
+                            }
+                            q_acc[i * n + (k + 1)] -= p2 * q_s;
+                            q_acc[i * n + k] -= p2;
+                        }
+                    }
+                    k += 1;
                 }
             }
         }
-        if p <= 1 {
-            break;
-        }
-
-        // Wilkinson shift
-        let a11 = h[(p - 2) * n + (p - 2)];
-        let a12 = h[(p - 2) * n + (p - 1)];
-        let a21 = h[(p - 1) * n + (p - 2)];
-        let a22 = h[(p - 1) * n + (p - 1)];
-        let trace = a11 + a22;
-        let det = a11 * a22 - a12 * a21;
-        let disc = trace * trace - 4.0 * det;
-        let shift = if disc >= 0.0 {
-            let sqrt_disc = disc.sqrt();
-            let e1 = (trace + sqrt_disc) / 2.0;
-            let e2 = (trace - sqrt_disc) / 2.0;
-            if (e1 - a22).abs() < (e2 - a22).abs() {
-                e1
-            } else {
-                e2
-            }
-        } else {
-            trace / 2.0
-        };
-
-        // Apply shift: H - shift * I
-        for i in 0..p {
-            h[i * n + i] -= shift;
-        }
-
-        // QR step on top-left p x p block using Givens rotations
-        for i in 0..(p - 1) {
-            let a = h[i * n + i];
-            let b = h[(i + 1) * n + i];
-            let r = (a * a + b * b).sqrt();
-            if r < 1e-30 {
-                continue;
-            }
-            let c = a / r;
-            let s = -b / r;
-
-            // Apply Givens rotation from left to rows i and i+1
-            for j in 0..n {
-                let t1 = h[i * n + j];
-                let t2 = h[(i + 1) * n + j];
-                h[i * n + j] = c * t1 - s * t2;
-                h[(i + 1) * n + j] = s * t1 + c * t2;
-            }
-
-            // Apply Givens rotation from right to columns i and i+1
-            for j in 0..n {
-                let t1 = h[j * n + i];
-                let t2 = h[j * n + (i + 1)];
-                h[j * n + i] = c * t1 - s * t2;
-                h[j * n + (i + 1)] = s * t1 + c * t2;
-            }
-
-            // Accumulate the Givens rotation in Q — eigenvector-only work,
-            // skipped when only eigenvalues are requested.
-            if want_vectors {
-                for j in 0..n {
-                    let t1 = q_acc[j * n + i];
-                    let t2 = q_acc[j * n + (i + 1)];
-                    q_acc[j * n + i] = c * t1 - s * t2;
-                    q_acc[j * n + (i + 1)] = s * t1 + c * t2;
-                }
-            }
-        }
-
-        // Undo shift
-        for i in 0..p {
-            h[i * n + i] += shift;
-        }
-
-        iter += 1;
     }
 
-    // Step 3: Extract eigenvalues from quasi-upper triangular H
-    let mut eigenvalues = vec![0.0f64; 2 * n]; // (re, im) pairs
-    let mut i = 0;
-    while i < n {
-        if i == n - 1 || h[(i + 1) * n + i].abs() < tol * (h[i * n + i].abs() + 1.0) {
-            // Real eigenvalue
-            eigenvalues[2 * i] = h[i * n + i];
-            eigenvalues[2 * i + 1] = 0.0;
-            i += 1;
-        } else {
-            // Complex conjugate pair from 2x2 block
-            let a11 = h[i * n + i];
-            let a12 = h[i * n + (i + 1)];
-            let a21 = h[(i + 1) * n + i];
-            let a22 = h[(i + 1) * n + (i + 1)];
-            let trace = a11 + a22;
-            let det = a11 * a22 - a12 * a21;
-            let disc = trace * trace - 4.0 * det;
-            let re = trace / 2.0;
-            let im = if disc < 0.0 {
-                (-disc).sqrt() / 2.0
-            } else {
-                0.0
-            };
-            eigenvalues[2 * i] = re;
-            eigenvalues[2 * i + 1] = im;
-            eigenvalues[2 * (i + 1)] = re;
-            eigenvalues[2 * (i + 1) + 1] = -im;
-            i += 2;
-        }
-    }
-
-    // Step 4: Eigenvectors - for now, return the accumulated Q
+    // Step 3: Eigenvectors - for now, return the accumulated Q
     // (Full eigenvector computation via inverse iteration is complex)
     // The columns of Q are approximate eigenvectors for real eigenvalues
     Ok(EigResult {
@@ -17433,10 +17537,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "KNOWN BUG (frankentorch-09zy): eig's single-shift QR returns WRONG \
-                eigenvalues for matrices with complex-conjugate pairs — it cannot \
-                converge them to real-Schur form. The Francis double-shift implicit \
-                QR is the fix; this test is its validation target (un-ignore then)."]
     fn eigvals_companion_complex_roots() {
         // Companion matrix (upper-Hessenberg) of a degree-6 real polynomial with
         // KNOWN roots including complex-conjugate pairs. This pins the correct
@@ -17469,9 +17569,8 @@ mod tests {
         }
         let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
         let vals = super::eigvals_contiguous_f64(&c, &meta).unwrap();
-        let mut got: Vec<(f64, f64)> = (0..n).map(|k| (vals[2 * k], vals[2 * k + 1])).collect();
-        got.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-        let mut want: Vec<(f64, f64)> = vec![
+        let got: Vec<(f64, f64)> = (0..n).map(|k| (vals[2 * k], vals[2 * k + 1])).collect();
+        let want: Vec<(f64, f64)> = vec![
             (1.0, 0.0),
             (2.0, 0.0),
             (0.0, 1.0),
@@ -17479,12 +17578,19 @@ mod tests {
             (1.0, 1.0),
             (1.0, -1.0),
         ];
-        want.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-        for (g, w) in got.iter().zip(want.iter()) {
-            assert!(
-                (g.0 - w.0).abs() < 1e-6 && (g.1 - w.1).abs() < 1e-6,
-                "eigenvalue mismatch: got {g:?} want {w:?}"
-            );
+        // Eigenvalues are an unordered SET — match each expected one to a
+        // distinct computed one within tolerance (a positional sort tie-breaks
+        // unstably at the last ULP between a real root and a complex pair that
+        // share a real part).
+        let mut used = vec![false; got.len()];
+        for w in &want {
+            let hit = got.iter().enumerate().position(|(gi, g)| {
+                !used[gi] && (g.0 - w.0).abs() < 1e-6 && (g.1 - w.1).abs() < 1e-6
+            });
+            match hit {
+                Some(gi) => used[gi] = true,
+                None => panic!("missing eigenvalue {w:?} in {got:?}"),
+            }
         }
     }
 
