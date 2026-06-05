@@ -12280,6 +12280,11 @@ impl GRU {
             return Ok((outputs, h));
         }
 
+        // Inference fast path: raw f64 sweep, no per-timestep op-graph/tape.
+        if !session.is_grad_enabled() {
+            return self.run_direction_no_grad(session, cell, inputs, h_0, reverse);
+        }
+
         // Hoist the constant weight transposes out of the time loop and batch the
         // non-recurrent input-gate projection (x @ W_ih^T + b_ih) across ALL
         // timesteps in a single GEMM (matmul + elementwise bias are both
@@ -12312,6 +12317,94 @@ impl GRU {
         }
 
         Ok((outputs, h))
+    }
+
+    /// Inference (no-grad) fast path for one direction of one GRU layer.
+    ///
+    /// Raw `f64` sweep: the input-gate projection `x @ W_ih^T + b_ih` is one
+    /// batched GEMM over all timesteps; each step does a single recurrent GEMM
+    /// `h @ W_hh^T + b_hh` plus the inline reset/update/new gates. No per-timestep
+    /// op-graph nodes, intermediates, or tape. Both GEMMs go through
+    /// `ft_kernel_cpu::linear_tensor_f64` (the same `dgemm_bt` the op-graph uses),
+    /// and the gate math reuses the exact kernel formulas and add order
+    /// (`r=σ(x_r+h_r)`, `z=σ(x_z+h_z)`, `n=tanh(x_n+r*h_n)`, `h'=(1-z)*n + z*h`),
+    /// so the output is bit-for-bit identical to the grad path's forward.
+    fn run_direction_no_grad(
+        &self,
+        session: &mut FrankenTorchSession,
+        cell: &GRUCell,
+        inputs: &[TensorNodeId],
+        h_0: TensorNodeId,
+        reverse: bool,
+    ) -> Result<(Vec<TensorNodeId>, TensorNodeId), AutogradError> {
+        let seq_len = inputs.len();
+        let h_size = self.hidden_size;
+        let three_h = 3 * h_size;
+        let (in_features, batch) = {
+            let (_, meta) = session.tensor_values_meta(inputs[0])?;
+            (meta.shape()[1], meta.shape()[0])
+        };
+
+        let stacked = session.tensor_cat(inputs, 0)?;
+        let stacked_vals = session.tensor_values(stacked)?;
+        let w_ih = session.tensor_values(cell.w_ih)?;
+        let w_hh = session.tensor_values(cell.w_hh)?;
+        let b_ih = session.tensor_values(cell.b_ih)?;
+        let b_hh = session.tensor_values(cell.b_hh)?;
+        let mut h = session.tensor_values(h_0)?;
+
+        // Batched input-gate projection (matmul + b_ih) over all timesteps.
+        let xg_all = ft_kernel_cpu::linear_tensor_f64(
+            &stacked_vals,
+            &w_ih,
+            Some(&b_ih),
+            seq_len * batch,
+            in_features,
+            three_h,
+        );
+
+        let mut outputs_raw: Vec<Vec<f64>> = vec![Vec::new(); seq_len];
+        let step = |t: usize, h: &mut Vec<f64>, outputs_raw: &mut Vec<Vec<f64>>| {
+            // Recurrent gate projection h @ W_hh^T + b_hh.
+            let hg =
+                ft_kernel_cpu::linear_tensor_f64(h, &w_hh, Some(&b_hh), batch, h_size, three_h);
+            let mut h_new = vec![0.0f64; batch * h_size];
+            for b in 0..batch {
+                let xg_base = (t * batch + b) * three_h;
+                let hg_base = b * three_h;
+                for j in 0..h_size {
+                    let x_r = xg_all[xg_base + j];
+                    let x_z = xg_all[xg_base + h_size + j];
+                    let x_n = xg_all[xg_base + 2 * h_size + j];
+                    let h_r = hg[hg_base + j];
+                    let h_z = hg[hg_base + h_size + j];
+                    let h_n = hg[hg_base + 2 * h_size + j];
+                    let r = 1.0 / (1.0 + (-(x_r + h_r)).exp());
+                    let z = 1.0 / (1.0 + (-(x_z + h_z)).exp());
+                    let n = (x_n + r * h_n).tanh();
+                    h_new[b * h_size + j] = (1.0 - z) * n + z * h[b * h_size + j];
+                }
+            }
+            outputs_raw[t] = h_new.clone();
+            *h = h_new;
+        };
+
+        if reverse {
+            for t in (0..seq_len).rev() {
+                step(t, &mut h, &mut outputs_raw);
+            }
+        } else {
+            for t in 0..seq_len {
+                step(t, &mut h, &mut outputs_raw);
+            }
+        }
+
+        let mut outputs = Vec::with_capacity(seq_len);
+        for out in outputs_raw {
+            outputs.push(session.tensor_variable(out, vec![batch, h_size], false)?);
+        }
+        let h_n = session.tensor_variable(h, vec![batch, h_size], false)?;
+        Ok((outputs, h_n))
     }
 
     /// Get the input size.
@@ -27570,6 +27663,43 @@ mod tests {
                 a.to_bits(),
                 b.to_bits(),
                 "raw no-grad differs from op-graph at {i}: {a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn gru_no_grad_raw_matches_op_graph() {
+        // GRU raw inference path must be BIT-FOR-BIT identical to the op-graph
+        // forward, across a multi-layer BIDIRECTIONAL GRU.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let gru = GRU::new(&mut session, 4, 5, 2, true, 0.0, false).expect("gru");
+        let seq = 3;
+        let batch = 2;
+        let in_sz = 4;
+        let vals: Vec<f64> = (0..seq * batch * in_sz)
+            .map(|i| (i as f64 * 0.137).sin() * 0.5)
+            .collect();
+
+        let x_grad = session
+            .tensor_variable(vals.clone(), vec![seq, batch, in_sz], true)
+            .expect("x_grad");
+        let out_grad = gru.forward(&mut session, x_grad).expect("grad forward");
+        let grad_vals = session.tensor_values(out_grad).expect("grad values");
+
+        let x_ng = session
+            .tensor_variable(vals, vec![seq, batch, in_sz], false)
+            .expect("x_ng");
+        let out_ng = session
+            .with_no_grad(|s| gru.forward(s, x_ng))
+            .expect("no-grad forward");
+        let ng_vals = session.tensor_values(out_ng).expect("no-grad values");
+
+        assert_eq!(grad_vals.len(), ng_vals.len(), "output length");
+        for (i, (a, b)) in grad_vals.iter().zip(ng_vals.iter()).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "GRU raw no-grad differs from op-graph at {i}: {a} vs {b}"
             );
         }
     }
