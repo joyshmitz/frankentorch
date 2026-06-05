@@ -2235,30 +2235,47 @@ fn simd_binary_f64<F, S>(
     simd_op: S,
 ) -> Vec<f64>
 where
-    F: Fn(f64, f64) -> f64,
-    S: Fn(f64x4, f64x4) -> f64x4,
+    F: Fn(f64, f64) -> f64 + Sync,
+    S: Fn(f64x4, f64x4) -> f64x4 + Sync,
 {
     let numel = lhs_window.len();
-    let simd_len = numel / SIMD_WIDTH * SIMD_WIDTH;
     let mut output = vec![0.0; numel];
 
-    for ((out, lhs), rhs) in output[..simd_len]
-        .chunks_exact_mut(SIMD_WIDTH)
-        .zip(lhs_window[..simd_len].chunks_exact(SIMD_WIDTH))
-        .zip(rhs_window[..simd_len].chunks_exact(SIMD_WIDTH))
-    {
-        let a = f64x4::new([lhs[0], lhs[1], lhs[2], lhs[3]]);
-        let b = f64x4::new([rhs[0], rhs[1], rhs[2], rhs[3]]);
-        let result = simd_op(a, b);
-        out.copy_from_slice(result.as_array_ref());
-    }
+    // One contiguous block: SIMD over the SIMD_WIDTH-aligned bulk, scalar tail.
+    let block = |out: &mut [f64], lw: &[f64], rw: &[f64]| {
+        let simd_len = out.len() / SIMD_WIDTH * SIMD_WIDTH;
+        for ((o, lc), rc) in out[..simd_len]
+            .chunks_exact_mut(SIMD_WIDTH)
+            .zip(lw[..simd_len].chunks_exact(SIMD_WIDTH))
+            .zip(rw[..simd_len].chunks_exact(SIMD_WIDTH))
+        {
+            let a = f64x4::new([lc[0], lc[1], lc[2], lc[3]]);
+            let b = f64x4::new([rc[0], rc[1], rc[2], rc[3]]);
+            o.copy_from_slice(simd_op(a, b).as_array_ref());
+        }
+        for ((o, &lv), &rv) in out[simd_len..]
+            .iter_mut()
+            .zip(&lw[simd_len..])
+            .zip(&rw[simd_len..])
+        {
+            *o = scalar_op(lv, rv);
+        }
+    };
 
-    for ((out, &lhs), &rhs) in output[simd_len..]
-        .iter_mut()
-        .zip(&lhs_window[simd_len..])
-        .zip(&rhs_window[simd_len..])
-    {
-        *out = scalar_op(lhs, rhs);
+    // add/sub/mul/div were SERIAL while the scalar-map binary path parallelises,
+    // so a 1M-element add ran ~54x slower than torch. Parallelise over
+    // SIMD_WIDTH-aligned grains (every grain but the last is a whole number of
+    // SIMD lanes -> SIMD/scalar split identical to serial -> bit-for-bit equal).
+    if numel >= SIMD_UNARY_PARALLEL_THRESHOLD {
+        let threads = rayon::current_num_threads().max(1);
+        let grain = numel.div_ceil(4 * threads).max(SIMD_WIDTH).div_ceil(SIMD_WIDTH) * SIMD_WIDTH;
+        output
+            .par_chunks_mut(grain)
+            .zip(lhs_window.par_chunks(grain))
+            .zip(rhs_window.par_chunks(grain))
+            .for_each(|((out, lw), rw)| block(out, lw, rw));
+    } else {
+        block(&mut output, lhs_window, rhs_window);
     }
 
     output
@@ -2273,8 +2290,8 @@ fn simd_elementwise_f64<F, S>(
     _simd_op: S,
 ) -> Result<Vec<f64>, KernelError>
 where
-    F: Fn(f64, f64) -> f64,
-    S: Fn(f64x4, f64x4) -> f64x4,
+    F: Fn(f64, f64) -> f64 + Sync,
+    S: Fn(f64x4, f64x4) -> f64x4 + Sync,
 {
     ensure_meta_shape_and_dtype(lhs_meta, rhs_meta)?;
 
@@ -13431,6 +13448,23 @@ mod tests {
         let so = sqrt_tensor_contiguous_f64(&pos, &meta).expect("parallel sqrt");
         for (i, (&o, &x)) in so.iter().zip(pos.iter()).enumerate() {
             assert_eq!(o.to_bits(), x.sqrt().to_bits(), "sqrt @{i}");
+        }
+    }
+
+    #[test]
+    fn simd_binary_parallel_path_matches_serial_bit_exact() {
+        // numel above SIMD_UNARY_PARALLEL_THRESHOLD exercises the parallel,
+        // SIMD-grain binary path; bit-for-bit identical to scalar a+b/a*b
+        // (includes a non-multiple-of-4 tail).
+        let numel = (1 << 19) + 5;
+        let lhs: Vec<f64> = (0..numel).map(|i| ((i * 13 + 1) % 101) as f64 * 0.1 - 5.0).collect();
+        let rhs: Vec<f64> = (0..numel).map(|i| ((i * 7 + 3) % 89) as f64 * 0.2 - 4.0).collect();
+        let meta = TensorMeta::from_shape(vec![numel], DType::F64, Device::Cpu);
+        let add = add_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("parallel add");
+        let mul = mul_tensor_contiguous_f64(&lhs, &rhs, &meta, &meta).expect("parallel mul");
+        for i in 0..numel {
+            assert_eq!(add[i].to_bits(), (lhs[i] + rhs[i]).to_bits(), "add @{i}");
+            assert_eq!(mul[i].to_bits(), (lhs[i] * rhs[i]).to_bits(), "mul @{i}");
         }
     }
 
