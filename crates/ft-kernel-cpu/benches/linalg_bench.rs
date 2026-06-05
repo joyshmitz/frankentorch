@@ -6,7 +6,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
-    cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64, inv_tensor_contiguous_f64,
+    cholesky_contiguous_f64, det_contiguous_f64, eigh_contiguous_f64, eigvalsh_contiguous_f64,
+    inv_tensor_contiguous_f64,
     matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64, svdvals_contiguous_f64,
 };
 
@@ -113,6 +114,9 @@ fn bench_eigh(c: &mut Criterion) {
         let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
         c.bench_function(&format!("eigh_f64_{n}x{n}"), |bch| {
             bch.iter(|| black_box(eigh_contiguous_f64(black_box(&a), &meta).unwrap()))
+        });
+        c.bench_function(&format!("eigvalsh_f64_{n}x{n}"), |bch| {
+            bch.iter(|| black_box(eigvalsh_contiguous_f64(black_box(&a), &meta).unwrap()))
         });
     }
 }

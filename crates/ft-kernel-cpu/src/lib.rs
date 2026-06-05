@@ -7868,7 +7868,12 @@ fn eigh_pythag(a: f64, b: f64) -> f64 {
 /// dispatches per i). The real lever is BLOCKED tridiagonalization (LAPACK
 /// dsytrd: panel + symmetric rank-2k trailing update via gemm::dgemm), the same
 /// BLAS-3 family that won blocked-cholesky/QR — a multi-turn rewrite.
-fn eigh_tred2(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
+/// Householder reduction of a real-symmetric matrix to tridiagonal form
+/// (EISPACK `tred2`, first half). On return `d`/`e` carry the tridiagonal
+/// diagonal-h / sub-diagonal and `z` holds the accumulated reflectors (lower
+/// triangle) plus the tridiagonal diagonal on its own diagonal. The eigenvector
+/// back-transform is split out so the eigenvalues-only path can skip it.
+fn eigh_tred2_reduce(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
     for i in (1..n).rev() {
         let l = i - 1;
         let mut h = 0.0;
@@ -7919,6 +7924,12 @@ fn eigh_tred2(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
     }
     d[0] = 0.0;
     e[0] = 0.0;
+}
+
+fn eigh_tred2(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
+    eigh_tred2_reduce(n, z, d, e);
+    // Eigenvector back-transform: accumulate the stored reflectors into `z` so
+    // it becomes the orthonormal transform whose columns `tql2` then rotates.
     for i in 0..n {
         if d[i] != 0.0 {
             for j in 0..i {
@@ -7937,6 +7948,17 @@ fn eigh_tred2(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
             z[j * n + i] = 0.0;
             z[i * n + j] = 0.0;
         }
+    }
+}
+
+/// Eigenvalues-only tridiagonalization: the same Householder reduction, but the
+/// O(n^3) eigenvector back-transform is skipped — only the tridiagonal
+/// diagonal `d[i] = z[i][i]` and sub-diagonal `e` are needed. `d`/`e` are
+/// bit-for-bit identical to `eigh_tred2`'s, so the eigenvalues are identical.
+fn eigh_tred2_values_only(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
+    eigh_tred2_reduce(n, z, d, e);
+    for i in 0..n {
+        d[i] = z[i * n + i];
     }
 }
 
@@ -8018,6 +8040,74 @@ fn eigh_tql2(n: usize, d: &mut [f64], e: &mut [f64], z: &mut [f64]) {
     }
 }
 
+/// Eigenvalues-only QL iteration: identical implicit-shift QL sweep as
+/// `eigh_tql2`, but WITHOUT accumulating the rotations into an eigenvector
+/// matrix (the inner `O(n)` per-rotation `z` update, which is the O(n^3) bulk).
+/// The `d`/`e` updates are untouched, so the eigenvalues are bit-for-bit
+/// identical to the full path's — only the discarded eigenvectors are skipped.
+fn eigh_tql2_values_only(n: usize, d: &mut [f64], e: &mut [f64]) {
+    if n == 0 {
+        return;
+    }
+    for i in 1..n {
+        e[i - 1] = e[i];
+    }
+    e[n - 1] = 0.0;
+    for l in 0..n {
+        let mut iter = 0;
+        loop {
+            let mut m = l;
+            while m < n - 1 {
+                let dd = d[m].abs() + d[m + 1].abs();
+                if e[m].abs() <= f64::EPSILON * dd {
+                    break;
+                }
+                m += 1;
+            }
+            if m == l {
+                break;
+            }
+            if iter >= 50 {
+                break;
+            }
+            iter += 1;
+            let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+            let mut r = eigh_pythag(g, 1.0);
+            let sr = if g >= 0.0 { r.abs() } else { -r.abs() };
+            g = d[m] - d[l] + e[l] / (g + sr);
+            let mut s = 1.0;
+            let mut c = 1.0;
+            let mut p = 0.0;
+            let mut bailed = false;
+            for i in (l..m).rev() {
+                let f = s * e[i];
+                let b = c * e[i];
+                r = eigh_pythag(f, g);
+                e[i + 1] = r;
+                if r == 0.0 {
+                    d[i + 1] -= p;
+                    e[m] = 0.0;
+                    bailed = true;
+                    break;
+                }
+                s = f / r;
+                c = g / r;
+                g = d[i + 1] - p;
+                r = (d[i] - g) * s + 2.0 * c * b;
+                p = s * r;
+                d[i + 1] = g + p;
+                g = c * r - b;
+            }
+            if bailed {
+                continue;
+            }
+            d[l] -= p;
+            e[l] = g;
+            e[m] = 0.0;
+        }
+    }
+}
+
 pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult, KernelError> {
     ensure_unary_layout_and_storage(data, meta)?;
     let shape = meta.shape();
@@ -8076,8 +8166,39 @@ pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult
 
 /// Compute just the eigenvalues of a symmetric matrix (sorted ascending).
 pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64>, KernelError> {
-    let result = eigh_contiguous_f64(data, meta)?;
-    Ok(result.eigenvalues)
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 || shape[0] != shape[1] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![2],
+        });
+    }
+    let n = shape[0];
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let offset = meta.storage_offset();
+
+    // Eigenvalues-only: run the SAME Householder reduction + implicit-shift QL
+    // as `eigh_contiguous_f64`, but skip BOTH O(n^3) eigenvector accumulations
+    // (tred2's back-transform and tql2's rotation-into-z) since the vectors are
+    // discarded. The tridiagonal `d`/`e` and the QL eigenvalue iteration are
+    // untouched, so the returned eigenvalues are bit-for-bit identical to
+    // `eigh_contiguous_f64(...).eigenvalues` — proven by `eigvalsh_matches_eigh`.
+    let mut z = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            z[i * n + j] = data[offset + i * n + j];
+        }
+    }
+    let mut d = vec![0.0f64; n];
+    let mut e = vec![0.0f64; n];
+    eigh_tred2_values_only(n, &mut z, &mut d, &mut e);
+    eigh_tql2_values_only(n, &mut d, &mut e);
+
+    d.sort_by(f64::total_cmp);
+    Ok(d)
 }
 
 /// Result of general (non-symmetric) eigendecomposition.
@@ -17160,6 +17281,7 @@ mod tests {
         }
     }
 
+    #[test]
     #[test]
     fn eigh_tred2_tql2_orthonormal_and_reconstructs_24x24() {
         // Exercises the Householder/QL eigensolver at a size where the
