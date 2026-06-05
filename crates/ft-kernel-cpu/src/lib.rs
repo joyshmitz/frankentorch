@@ -8280,14 +8280,80 @@ fn eigh_tred2(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
     }
 }
 
-/// Eigenvalues-only tridiagonalization: the same Householder reduction, but the
-/// O(n^3) eigenvector back-transform is skipped — only the tridiagonal
-/// diagonal `d[i] = z[i][i]` and sub-diagonal `e` are needed. `d`/`e` are
-/// bit-for-bit identical to `eigh_tred2`'s, so the eigenvalues are identical.
-fn eigh_tred2_values_only(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
-    eigh_tred2_reduce(n, z, d, e);
+#[inline]
+fn lower_packed_index(row: usize, col: usize) -> usize {
+    row * (row + 1) / 2 + col
+}
+
+/// Eigenvalues-only tridiagonalization over a packed lower triangle.
+///
+/// This is the same Householder reduction loop as `eigh_tred2_reduce`, but the
+/// values-only path does not need the upper-triangle/reflector-column storage
+/// consumed by the full eigenvector back-transform. Keeping only the packed
+/// lower triangle halves the working set while preserving every scale, dot, and
+/// trailing-update operation in the same order over the same matrix entries.
+#[allow(clippy::needless_range_loop)]
+fn eigh_tred2_values_only(n: usize, lower: &mut [f64], d: &mut [f64], e: &mut [f64]) {
+    for i in (1..n).rev() {
+        let l = i - 1;
+        let row_i_start = lower_packed_index(i, 0);
+        let mut h = 0.0;
+        let mut scale = 0.0;
+        if l > 0 {
+            let (previous_rows, current_and_after) = lower.split_at_mut(row_i_start);
+            let row_i = &mut current_and_after[..=i];
+            for &value in &row_i[..=l] {
+                scale += value.abs();
+            }
+            if scale == 0.0 {
+                e[i] = row_i[l];
+            } else {
+                for value in &mut row_i[..=l] {
+                    *value /= scale;
+                    h += *value * *value;
+                }
+                let mut f = row_i[l];
+                let g = if f >= 0.0 { -h.sqrt() } else { h.sqrt() };
+                e[i] = scale * g;
+                h -= f * g;
+                row_i[l] = f - g;
+                f = 0.0;
+                for j in 0..=l {
+                    let mut gg = 0.0;
+                    let row_j_start = lower_packed_index(j, 0);
+                    let row_j = &previous_rows[row_j_start..=row_j_start + j];
+                    for k in 0..=j {
+                        gg += row_j[k] * row_i[k];
+                    }
+                    let mut lower_col_offset = lower_packed_index(j + 1, j);
+                    for k in (j + 1)..=l {
+                        gg += previous_rows[lower_col_offset] * row_i[k];
+                        lower_col_offset += k + 1;
+                    }
+                    e[j] = gg / h;
+                    f += e[j] * row_i[j];
+                }
+                let hh = f / (h + h);
+                for j in 0..=l {
+                    f = row_i[j];
+                    let gg = e[j] - hh * f;
+                    e[j] = gg;
+                    let row_j_start = lower_packed_index(j, 0);
+                    let row_j = &mut previous_rows[row_j_start..=row_j_start + j];
+                    for k in 0..=j {
+                        row_j[k] -= f * e[k] + gg * row_i[k];
+                    }
+                }
+            }
+        } else {
+            e[i] = lower[row_i_start + l];
+        }
+        d[i] = h;
+    }
+    d[0] = 0.0;
+    e[0] = 0.0;
     for i in 0..n {
-        d[i] = z[i * n + i];
+        d[i] = lower[lower_packed_index(i, i)];
     }
 }
 
@@ -8524,15 +8590,15 @@ pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f6
     // discarded. The tridiagonal `d`/`e` and the QL eigenvalue iteration are
     // untouched, so the returned eigenvalues are bit-for-bit identical to
     // `eigh_contiguous_f64(...).eigenvalues` — proven by `eigvalsh_matches_eigh`.
-    let mut z = vec![0.0f64; n * n];
+    let mut lower = vec![0.0f64; n * (n + 1) / 2];
     for i in 0..n {
-        for j in 0..n {
-            z[i * n + j] = data[offset + i * n + j];
-        }
+        let dst = lower_packed_index(i, 0);
+        let src = offset + i * n;
+        lower[dst..=dst + i].copy_from_slice(&data[src..=src + i]);
     }
     let mut d = vec![0.0f64; n];
     let mut e = vec![0.0f64; n];
-    eigh_tred2_values_only(n, &mut z, &mut d, &mut e);
+    eigh_tred2_values_only(n, &mut lower, &mut d, &mut e);
     eigh_tql2_values_only(n, &mut d, &mut e);
 
     d.sort_by(f64::total_cmp);

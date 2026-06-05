@@ -5,7 +5,7 @@
 //!   rch exec -- cargo run -p ft-kernel-cpu --example eigh_golden
 
 use ft_core::{DType, Device, TensorMeta};
-use ft_kernel_cpu::eigh_contiguous_f64;
+use ft_kernel_cpu::{eigh_contiguous_f64, eigvalsh_contiguous_f64};
 
 fn main() {
     let n = 8usize;
@@ -20,6 +20,24 @@ fn main() {
     }
 
     let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+    if std::env::var_os("FT_EIGVALSH_GOLDEN").is_some() {
+        let r = match eigvalsh_contiguous_f64(&a, &meta) {
+            Ok(r) => r,
+            Err(err) => {
+                eprintln!("eigvalsh_golden failed: {err}");
+                std::process::exit(1);
+            }
+        };
+
+        println!("frankentorch-a9ry eigvalsh_golden");
+        println!("n={n}");
+        println!("eigenvalue_bits:");
+        for (idx, v) in r.iter().enumerate() {
+            println!("{idx}: {:#018x}", v.to_bits());
+        }
+        return;
+    }
+
     let r = match eigh_contiguous_f64(&a, &meta) {
         Ok(r) => r,
         Err(err) => {
