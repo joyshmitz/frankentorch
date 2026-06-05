@@ -3044,6 +3044,58 @@ pub fn group_norm_backward_f64(
     (dx, dweight, dbias)
 }
 
+/// Fused per-element smooth-L1 (Huber-beta) loss: for `d = x − t`,
+/// `0.5·d²/beta` when `|d| < beta`, else `|d| − 0.5·beta`. One pass, parallel —
+/// none of the op-graph's ~13 full-size intermediates (incl. 4 constant `full()`
+/// tensors). Returns the per-element loss (the caller applies the reduction).
+#[must_use]
+pub fn smooth_l1_forward_f64(x: &[f64], t: &[f64], beta: f64) -> Vec<f64> {
+    let hb = 0.5 * beta;
+    let mut out = vec![0.0f64; x.len()];
+    out.par_iter_mut().enumerate().for_each(|(i, o)| {
+        let d = x[i] - t[i];
+        let ad = d.abs();
+        *o = if ad < beta {
+            0.5 * d * d / beta
+        } else {
+            ad - hb
+        };
+    });
+    out
+}
+
+/// Backward of [`smooth_l1_forward_f64`]. `g = d/beta` when `|d| < beta`, else
+/// `sign(d)`; returns `(dinput, dtarget) = (dloss·g, −dloss·g)`. Parallel.
+#[must_use]
+pub fn smooth_l1_backward_f64(
+    dloss: &[f64],
+    x: &[f64],
+    t: &[f64],
+    beta: f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut di = vec![0.0f64; x.len()];
+    let mut dt = vec![0.0f64; x.len()];
+    di.par_iter_mut()
+        .zip(dt.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, (dii, dti))| {
+            let d = x[i] - t[i];
+            let g = if d.abs() < beta {
+                d / beta
+            } else if d > 0.0 {
+                1.0
+            } else if d < 0.0 {
+                -1.0
+            } else {
+                0.0
+            };
+            let v = dloss[i] * g;
+            *dii = v;
+            *dti = -v;
+        });
+    (di, dt)
+}
+
 /// Per-channel batch statistics for BatchNorm over `[batch, channels, spatial]`
 /// (NCHW with `spatial = H·W`): `mean[c]`, `var[c]` over all `batch·spatial`
 /// elements of channel `c`. Works directly on the NCHW layout (channel `c` is

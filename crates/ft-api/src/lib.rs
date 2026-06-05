@@ -8417,6 +8417,50 @@ impl FrankenTorchSession {
         reduction: &str,
         beta: f64,
     ) -> Result<TensorNodeId, AutogradError> {
+        // Fused fast path (f64, same-shape input/target): per-element smooth-L1 in
+        // one pass, then the reduction — never the ~13 op-graph intermediates (incl.
+        // 4 constant full() tensors). Broadcast / non-f64 fall through.
+        let in_shape = self.tensor_shape(input)?;
+        if matches!(reduction, "none" | "mean" | "sum")
+            && self.tensor_dtype(input)? == DType::F64
+            && self.tensor_dtype(target)? == DType::F64
+            && self.tensor_shape(target)? == in_shape
+        {
+            let per = if self.tensor_tape.tensor_requires_grad(input)?
+                || self.tensor_tape.tensor_requires_grad(target)?
+            {
+                let bc = beta;
+                self.tensor_apply_function(
+                    &[input, target],
+                    move |ctx, ins| {
+                        let (xv, xs) = ins[0];
+                        let (tv, _) = ins[1];
+                        let out = ft_kernel_cpu::smooth_l1_forward_f64(xv, tv, bc);
+                        ctx.save_for_backward(xv.to_vec(), xs.to_vec());
+                        ctx.save_for_backward(tv.to_vec(), xs.to_vec());
+                        Ok((out, xs.to_vec()))
+                    },
+                    move |ctx, grad_outputs| {
+                        let dl = grad_outputs[0];
+                        let saved = ctx.saved_tensors();
+                        let (di, dt) =
+                            ft_kernel_cpu::smooth_l1_backward_f64(dl, &saved[0], &saved[1], bc);
+                        Ok(vec![Some(di), Some(dt)])
+                    },
+                )?
+            } else {
+                let xv = self.tensor_values(input)?;
+                let tv = self.tensor_values(target)?;
+                let out = ft_kernel_cpu::smooth_l1_forward_f64(&xv, &tv, beta);
+                self.tensor_variable(out, in_shape.clone(), false)?
+            };
+            return match reduction {
+                "none" => Ok(per),
+                "mean" => self.tensor_mean(per),
+                _ => self.tensor_sum(per),
+            };
+        }
+
         let diff = self.tensor_sub(input, target)?;
         let abs_diff = self.tensor_abs(diff)?;
         let shape = self.tensor_shape(abs_diff)?;
@@ -67697,6 +67741,64 @@ mod tests {
             vals1[0],
             vals2[0]
         );
+    }
+
+    #[test]
+    fn smooth_l1_loss_fused_matches_op_graph_and_finite_diff() {
+        // Fused smooth-L1 must match the op-graph (built manually with where/abs)
+        // to tolerance across quadratic/linear/boundary regions and all reductions,
+        // and its grad must match central finite differences.
+        let n = 24usize;
+        let beta = 1.0;
+        // Span both regions and the boundary.
+        let xv: Vec<f64> = (0..n).map(|i| (i as f64 - 12.0) * 0.25).collect();
+        let tv: Vec<f64> = (0..n).map(|i| ((i % 5) as f64 - 2.0) * 0.3).collect();
+        for red in ["none", "mean", "sum"] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(xv.clone(), vec![n], false).unwrap();
+            let t = s.tensor_variable(tv.clone(), vec![n], false).unwrap();
+            let out = s.tensor_smooth_l1_loss(x, t, red, beta).unwrap();
+            let fused = s.tensor_values(out).unwrap();
+            // Op-graph reference: requires_grad routes around the fast path.
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x2 = s2.tensor_variable(xv.clone(), vec![n], true).unwrap();
+            let t2 = s2.tensor_variable(tv.clone(), vec![n], false).unwrap();
+            let out2 = s2.tensor_smooth_l1_loss(x2, t2, red, beta).unwrap();
+            let reference = s2.tensor_values(out2).unwrap();
+            assert_eq!(fused.len(), reference.len());
+            for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-12 + 1e-10 * b.abs(),
+                    "red={red} [{i}]: fused {a} vs op-graph {b}"
+                );
+            }
+        }
+        // Grad vs finite differences (mean reduction).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(xv.clone(), vec![n], true).unwrap();
+        let t = s.tensor_variable(tv.clone(), vec![n], true).unwrap();
+        let out = s.tensor_smooth_l1_loss(x, t, "mean", beta).unwrap();
+        s.tensor_backward(out).unwrap();
+        let gx = s.tensor_grad(x).unwrap().unwrap();
+        let loss_fn = |xs: &[f64]| -> f64 {
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xi = s2.tensor_variable(xs.to_vec(), vec![n], false).unwrap();
+            let ti = s2.tensor_variable(tv.clone(), vec![n], false).unwrap();
+            let o = s2.tensor_smooth_l1_loss(xi, ti, "mean", beta).unwrap();
+            s2.tensor_values(o).unwrap()[0]
+        };
+        let h = 1e-7;
+        for i in 0..n {
+            // Skip points within ~h of the |d|=beta kink (grad discontinuous there).
+            if ((xv[i] - tv[i]).abs() - beta).abs() < 1e-3 {
+                continue;
+            }
+            let (mut xp, mut xm) = (xv.clone(), xv.clone());
+            xp[i] += h;
+            xm[i] -= h;
+            let fd = (loss_fn(&xp) - loss_fn(&xm)) / (2.0 * h);
+            assert!((gx[i] - fd).abs() <= 1e-5 + 1e-4 * fd.abs(), "dx[{i}]: {} vs {fd}", gx[i]);
+        }
     }
 
     #[test]

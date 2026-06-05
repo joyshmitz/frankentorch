@@ -373,6 +373,29 @@ fn bench_group_norm(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_smooth_l1(c: &mut Criterion) {
+    // smooth-L1 / Huber loss (detection, RL), no-grad + grad f64. The op-graph
+    // builds ~13 full [rows*cols] intermediates incl. 4 constant full() tensors.
+    let mut group = c.benchmark_group("smooth_l1");
+    let n = 4096 * 2048usize;
+    group.bench_function("nograd_8m", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_randn(vec![n], false).unwrap();
+        let t = s.tensor_randn(vec![n], false).unwrap();
+        b.iter(|| black_box(s.tensor_smooth_l1_loss(x, t, "mean", 1.0).unwrap()));
+    });
+    group.bench_function("grad_8m", |b| {
+        b.iter(|| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_randn(vec![n], true).unwrap();
+            let t = s.tensor_randn(vec![n], false).unwrap();
+            let loss = s.tensor_smooth_l1_loss(x, t, "mean", 1.0).unwrap();
+            black_box(s.tensor_backward(loss).unwrap())
+        });
+    });
+    group.finish();
+}
+
 fn bench_cross_entropy(c: &mut Criterion) {
     // Softmax-cross-entropy, no-grad and grad f64. [batch, classes] = [4096, 8192]
     // (LLM-vocab scale) — the op-graph materialises a 256MB log-softmax tensor.
@@ -933,6 +956,7 @@ criterion_group!(
     bench_cross_entropy,
     bench_group_norm,
     bench_batch_norm,
+    bench_smooth_l1,
     bench_linear_forward,
     bench_interpolate_bicubic,
     bench_interpolate_trilinear,
