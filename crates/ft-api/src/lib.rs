@@ -8436,6 +8436,7 @@ impl FrankenTorchSession {
         eps: f64,
     ) -> Result<TensorNodeId, AutogradError> {
         // norm = ||input||_p along dim
+        let input_shape = self.tensor_shape(input)?;
         let norm = self.tensor_norm_dim(input, p, dim)?;
         // unsqueeze norm back to original dim for broadcasting
         let norm_unsq = self.tensor_unsqueeze(norm, dim)?;
@@ -8443,7 +8444,14 @@ impl FrankenTorchSession {
         let eps_shape = self.tensor_shape(norm_unsq)?;
         let eps_t = self.full(eps_shape, eps, false)?;
         let denom = self.tensor_maximum(norm_unsq, eps_t)?;
-        self.tensor_div(input, denom)
+        // Broadcast the keepdim norm [.., 1, ..] up to the input shape before
+        // dividing: the elementwise tensor_div does NOT itself broadcast a
+        // size-1 axis in this codebase, so dividing [N, D] by [N, 1] failed with
+        // a ShapeMismatch — silently breaking tensor_normalize for every
+        // [N, D]-along-dim-1 input (cosine_similarity, info_nce_loss, SVD power
+        // iteration). frankentorch-c5g4.
+        let denom_b = self.tensor_expand(denom, input_shape)?;
+        self.tensor_div(input, denom_b)
     }
 
     // ── Loss Functions ───────────────────────────────────────────────────
@@ -35722,8 +35730,10 @@ impl FrankenTorchSession {
         let normalized = self.tensor_normalize(embeddings, 2.0, 1, 1e-12)?;
         let transposed = self.tensor_transpose(normalized, 0, 1)?;
         let sim_matrix = self.tensor_matmul(normalized, transposed)?;
-        let tau = self.full(vec![1], temperature, false)?;
-        let scaled_sim = self.tensor_div(sim_matrix, tau)?;
+        // Scale by 1/temperature via a scalar op — dividing the [N,N] matrix by a
+        // full([1]) tensor hits the same non-broadcasting tensor_div that broke
+        // tensor_normalize (ShapeMismatch [N,N] vs [1]). frankentorch-c5g4.
+        let scaled_sim = self.tensor_mul_scalar(sim_matrix, 1.0 / temperature)?;
         let n_half = n / 2;
         let mut losses = Vec::with_capacity(n);
         for i in 0..n {
@@ -89425,6 +89435,50 @@ mod tests {
         }
     }
 
+    /// info_nce_loss was completely non-functional (it called the broken
+    /// tensor_normalize → ShapeMismatch on every [N,D] input) and had ZERO
+    /// tests. After the tensor_normalize fix (frankentorch-c5g4) it runs; verify
+    /// the forward against a direct reference and that the gradient flows.
+    #[test]
+    fn info_nce_loss_forward_and_gradient() {
+        use super::FrankenTorchSession;
+        let (n, d, temperature) = (4usize, 3usize, 0.1_f64);
+        let emb: Vec<f64> = (0..n * d).map(|i| ((i * 5 + 1) % 7) as f64 * 0.3 - 0.7).collect();
+
+        // Direct reference: row-normalize, sim=(x·xᵀ)/τ, loss_i =
+        // logsumexp(sim[i,:]) − sim[i, positive], positive = (i±n/2).
+        let nh = n / 2;
+        let mut norm = vec![0.0; n * d];
+        for i in 0..n {
+            let nrm = (0..d).map(|k| emb[i * d + k].powi(2)).sum::<f64>().sqrt().max(1e-12);
+            for k in 0..d {
+                norm[i * d + k] = emb[i * d + k] / nrm;
+            }
+        }
+        let mut want = 0.0;
+        for i in 0..n {
+            let mut row = vec![0.0; n];
+            for j in 0..n {
+                row[j] = (0..d).map(|k| norm[i * d + k] * norm[j * d + k]).sum::<f64>() / temperature;
+            }
+            let m = row.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let lse = m + row.iter().map(|&x| (x - m).exp()).sum::<f64>().ln();
+            let pos = if i < nh { i + nh } else { i - nh };
+            want += lse - row[pos];
+        }
+        want /= n as f64;
+
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let e = s.tensor_variable(emb.clone(), vec![n, d], true).unwrap();
+        let out = s.info_nce_loss(e, temperature).unwrap();
+        let got = s.tensor_values(out).unwrap();
+        assert!((got[0] - want).abs() < 1e-9, "info_nce forward {} vs {want}", got[0]);
+
+        let report = s.tensor_backward(out).unwrap();
+        let grad = s.tensor_gradient(&report, e).expect("info_nce must propagate gradient");
+        assert!(grad.iter().any(|g| g.abs() > 1e-6), "info_nce gradient must be non-trivial");
+    }
+
     #[test]
     fn matrix_nms_parallel_match_serial_bit_exact() {
         // k*k >= PARALLEL_ELEMENTWISE_MIN so the rayon IoU-matrix path runs; the
@@ -100345,5 +100399,37 @@ mod tests {
         assert_eq!(s.tensor_shape(output).unwrap(), vec![2, 3, 5]);
         assert_eq!(s.tensor_shape(h_n).unwrap(), vec![1, 2, 5]);
         assert_eq!(s.tensor_shape(c_n).unwrap(), vec![1, 2, 5]);
+    }
+
+    /// Regression for frankentorch-c5g4: tensor_normalize (the eps-parameterized
+    /// F.normalize) divided [N,D] by an un-expanded [N,1] keepdim norm, which the
+    /// non-broadcasting tensor_div rejected — so it failed for EVERY [N,D]
+    /// along-dim-1 input (it had no test). Verify it now L2-normalizes rows
+    /// correctly across sizes, along dim 0, and propagates gradient.
+    #[test]
+    fn tensor_normalize_l2_rows_and_gradient() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        // [3,4] rows normalized along dim=1.
+        let v = vec![3.0, 4.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 6.0, 8.0, 0.0, 0.0];
+        let t = s.tensor_variable(v, vec![3, 4], false).unwrap();
+        let out = s.tensor_normalize(t, 2.0, 1, 1e-12).unwrap();
+        let g = s.tensor_values(out).unwrap();
+        // Row0 ||(3,4,0,0)||=5 -> (0.6,0.8,0,0); Row1 unit; Row2 ||(6,8)||=10 -> (0.6,0.8).
+        for (a, b) in g.iter().zip([0.6, 0.8, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.6, 0.8, 0.0, 0.0]) {
+            assert!((a - b).abs() < 1e-12, "normalize {a} vs {b}");
+        }
+        // dim=0 (columns) on a larger tensor must also work.
+        let big: Vec<f64> = (0..256 * 128).map(|i| (i % 97) as f64 + 0.5).collect();
+        let bt = s.tensor_variable(big, vec![256, 128], false).unwrap();
+        let bo = s.tensor_normalize(bt, 2.0, 0, 1e-12).unwrap();
+        assert_eq!(s.tensor_shape(bo).unwrap(), vec![256, 128]);
+
+        // Gradient flows (was severed/broken before).
+        let gt = s.tensor_variable(vec![3.0, 4.0], vec![1, 2], true).unwrap();
+        let go = s.tensor_normalize(gt, 2.0, 1, 1e-12).unwrap();
+        let loss = s.tensor_sum(go).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s.tensor_gradient(&report, gt).expect("normalize must propagate gradient");
+        assert!(grad.iter().any(|x| x.abs() > 1e-9), "gradient must be non-trivial");
     }
 }
