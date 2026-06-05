@@ -3290,6 +3290,57 @@ pub fn group_norm_forward_f64(
     out
 }
 
+/// f32 mirror of [`group_norm_forward_f64`]: per-(sample,group) mean/rstd
+/// normalize + per-channel affine, one streaming pass, parallel over groups.
+/// Replaces the f32 op-graph (reshape/mean/var/expand/affine, ~15 nodes) the f32
+/// no-grad path fell through to.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn group_norm_forward_f32(
+    x: &[f32],
+    weight: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    batch: usize,
+    num_groups: usize,
+    cpg: usize,
+    spatial: usize,
+    eps: f32,
+) -> Vec<f32> {
+    let group_numel = cpg * spatial;
+    let inv_m = 1.0 / group_numel as f32;
+    let mut out = vec![0.0f32; batch * num_groups * group_numel];
+    out.par_chunks_mut(group_numel)
+        .enumerate()
+        .for_each(|(grp, orow)| {
+            let g = grp % num_groups;
+            let base = grp * group_numel;
+            let xb = &x[base..base + group_numel];
+            let mut sum = 0.0f32;
+            for &v in xb {
+                sum += v;
+            }
+            let mean = sum * inv_m;
+            let mut vsum = 0.0f32;
+            for &v in xb {
+                let d = v - mean;
+                vsum += d * d;
+            }
+            let rstd = 1.0 / (vsum * inv_m + eps).sqrt();
+            for i in 0..group_numel {
+                let c = g * cpg + i / spatial;
+                let mut y = (xb[i] - mean) * rstd;
+                if let Some(w) = weight {
+                    y *= w[c];
+                }
+                if let Some(b) = bias {
+                    y += b[c];
+                }
+                orow[i] = y;
+            }
+        });
+    out
+}
+
 /// Backward of [`group_norm_forward_f64`] with per-channel affine. Returns
 /// `(dx, dweight?, dbias?)`. `dx` is parallel over groups (same normalisation
 /// Jacobian as LayerNorm, over `cpg·spatial` per group); `dweight`/`dbias` are a
