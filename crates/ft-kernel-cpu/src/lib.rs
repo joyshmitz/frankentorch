@@ -8567,14 +8567,197 @@ fn eig_impl(
         }
     }
 
-    // Step 3: Eigenvectors - for now, return the accumulated Q
-    // (Full eigenvector computation via inverse iteration is complex)
-    // The columns of Q are approximate eigenvectors for real eigenvalues
+    // Step 3: eigenvectors. Back-substitute the eigenvectors of the
+    // quasi-triangular real-Schur form `h` in place, then transform by the
+    // accumulated Schur vectors `q_acc` to get eigenvectors of the original
+    // matrix. Complex eigenvalues yield complex eigenvectors stored as
+    // consecutive (re, im) column pairs (the `EigResult.eigenvectors` convention).
+    if want_vectors {
+        eig_backsub_eigenvectors(&mut h, &mut q_acc, &eigenvalues, n);
+    }
     Ok(EigResult {
         eigenvalues,
         eigenvectors: q_acc,
         n,
     })
+}
+
+/// Complex division `(ar + ai·i) / (br + bi·i)` (EISPACK `cdiv`).
+fn eig_cdiv(ar: f64, ai: f64, br: f64, bi: f64) -> (f64, f64) {
+    if br.abs() >= bi.abs() {
+        let r = bi / br;
+        let d = br + bi * r;
+        ((ar + ai * r) / d, (ai - ar * r) / d)
+    } else {
+        let r = br / bi;
+        let d = br * r + bi;
+        ((ar * r + ai) / d, (ai * r - ar) / d)
+    }
+}
+
+/// Eigenvector back-substitution for a real upper-quasi-triangular Schur form
+/// `h` (EISPACK `hqr2` lineage). Computes eigenvectors of `h` into its own
+/// columns, then overwrites `z` (the accumulated Schur vectors) with the
+/// eigenvectors of the original matrix `z·(vectors of h)`. `evals` holds the
+/// interleaved (re, im) eigenvalues. Complex eigenvalue pairs are stored as a
+/// (real-part column, imag-part column) pair.
+fn eig_backsub_eigenvectors(h: &mut [f64], z: &mut [f64], evals: &[f64], n: usize) {
+    if n == 0 {
+        return;
+    }
+    let mut norm = 0.0f64;
+    for i in 0..n {
+        for j in i..n {
+            norm += h[i * n + j].abs();
+        }
+    }
+    if norm == 0.0 {
+        return;
+    }
+    let eps = f64::EPSILON;
+    let wr = |i: usize| evals[2 * i];
+    let wi = |i: usize| evals[2 * i + 1];
+
+    let mut en_i: isize = n as isize - 1;
+    while en_i >= 0 {
+        let en = en_i as usize;
+        let p = wr(en);
+        let q = wi(en);
+        if q == 0.0 {
+            // Real eigenvalue.
+            let mut m = en;
+            h[en * n + en] = 1.0;
+            if en > 0 {
+                let (mut zz_c, mut s_c) = (0.0f64, 0.0f64);
+                let mut i_i = en as isize - 1;
+                while i_i >= 0 {
+                    let i = i_i as usize;
+                    let w = h[i * n + i] - p;
+                    let mut r = 0.0;
+                    for j in m..=en {
+                        r += h[i * n + j] * h[j * n + en];
+                    }
+                    if wi(i) < 0.0 {
+                        zz_c = w;
+                        s_c = r;
+                        i_i -= 1;
+                        continue;
+                    }
+                    m = i;
+                    if wi(i) == 0.0 {
+                        let mut t = w;
+                        if t == 0.0 {
+                            t = eps * norm;
+                        }
+                        h[i * n + en] = -r / t;
+                    } else {
+                        let x = h[i * n + (i + 1)];
+                        let y = h[(i + 1) * n + i];
+                        let q2 = (wr(i) - p) * (wr(i) - p) + wi(i) * wi(i);
+                        let t = (x * s_c - zz_c * r) / q2;
+                        h[i * n + en] = t;
+                        if x.abs() > zz_c.abs() {
+                            h[(i + 1) * n + en] = (-r - w * t) / x;
+                        } else {
+                            h[(i + 1) * n + en] = (-s_c - y * t) / zz_c;
+                        }
+                    }
+                    i_i -= 1;
+                }
+            }
+            en_i -= 1;
+        } else if q < 0.0 {
+            // Complex pair: `en` is the conjugate (wi<0) root, `na = en-1` its mate.
+            let na = en - 1;
+            let mut m = na;
+            if h[en * n + na].abs() > h[na * n + en].abs() {
+                h[na * n + na] = q / h[en * n + na];
+                h[na * n + en] = -(h[en * n + en] - p) / h[en * n + na];
+            } else {
+                let (cr, ci) = eig_cdiv(0.0, -h[na * n + en], h[na * n + na] - p, q);
+                h[na * n + na] = cr;
+                h[na * n + en] = ci;
+            }
+            h[en * n + na] = 0.0;
+            h[en * n + en] = 1.0;
+            if na > 0 {
+                let (mut zz_c, mut r_c, mut s_c) = (0.0f64, 0.0f64, 0.0f64);
+                let mut i_i = na as isize - 1;
+                while i_i >= 0 {
+                    let i = i_i as usize;
+                    let w = h[i * n + i] - p;
+                    let mut ra = 0.0;
+                    let mut sa = 0.0;
+                    for j in m..=en {
+                        ra += h[i * n + j] * h[j * n + na];
+                        sa += h[i * n + j] * h[j * n + en];
+                    }
+                    if wi(i) < 0.0 {
+                        zz_c = w;
+                        r_c = ra;
+                        s_c = sa;
+                        i_i -= 1;
+                        continue;
+                    }
+                    m = i;
+                    if wi(i) == 0.0 {
+                        let (cr, ci) = eig_cdiv(-ra, -sa, w, q);
+                        h[i * n + na] = cr;
+                        h[i * n + en] = ci;
+                    } else {
+                        let x = h[i * n + (i + 1)];
+                        let y = h[(i + 1) * n + i];
+                        let mut vr = (wr(i) - p) * (wr(i) - p) + wi(i) * wi(i) - q * q;
+                        let vi = (wr(i) - p) * 2.0 * q;
+                        if vr == 0.0 && vi == 0.0 {
+                            vr = eps
+                                * norm
+                                * (w.abs() + q.abs() + x.abs() + y.abs() + zz_c.abs());
+                        }
+                        let (cr, ci) = eig_cdiv(
+                            x * r_c - zz_c * ra + q * sa,
+                            x * s_c - zz_c * sa - q * ra,
+                            vr,
+                            vi,
+                        );
+                        h[i * n + na] = cr;
+                        h[i * n + en] = ci;
+                        if x.abs() > zz_c.abs() + q.abs() {
+                            h[(i + 1) * n + na] =
+                                (-ra - w * h[i * n + na] + q * h[i * n + en]) / x;
+                            h[(i + 1) * n + en] =
+                                (-sa - w * h[i * n + en] - q * h[i * n + na]) / x;
+                        } else {
+                            let (cr2, ci2) = eig_cdiv(
+                                -r_c - y * h[i * n + na],
+                                -s_c - y * h[i * n + en],
+                                zz_c,
+                                q,
+                            );
+                            h[(i + 1) * n + na] = cr2;
+                            h[(i + 1) * n + en] = ci2;
+                        }
+                    }
+                    i_i -= 1;
+                }
+            }
+            en_i -= 2;
+        } else {
+            // q > 0: upper root of a pair, handled with its conjugate below it.
+            en_i -= 1;
+        }
+    }
+
+    // Eigenvectors of the original matrix: z[:, j] = z[:, 0..=j] · h[0..=j, j].
+    for j in (0..n).rev() {
+        for i in 0..n {
+            let mut acc = 0.0;
+            for k in 0..=j {
+                acc += z[i * n + k] * h[k * n + j];
+            }
+            z[i * n + j] = acc;
+        }
+    }
 }
 
 /// Compute just the eigenvalues of a general matrix (as complex pairs).
@@ -17523,6 +17706,66 @@ mod tests {
         assert!((im1.abs() - 1.0).abs() < 1e-8, "imag part should be ±1");
         // Conjugate pair: im0 = -im1
         assert!((im0 + im1).abs() < 1e-8, "should be conjugate pair");
+    }
+
+    #[test]
+    fn eig_eigenvectors_satisfy_av_lambda_v() {
+        // A general non-symmetric matrix (a mix of real and complex eigenvalues).
+        // For each returned eigenpair, the eigenvectors must satisfy A·v = λ·v —
+        // the back-substitution step, NOT just the Schur vectors.
+        let n = 5usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = (((i * 7 + j * 3 + 1) % 11) as f64 - 5.0)
+                    + if i == j { 3.0 } else { 0.0 };
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let r = super::eig_contiguous_f64(&a, &meta).unwrap();
+        let mut saw_complex = false;
+        let mut k = 0usize;
+        while k < n {
+            let re = r.eigenvalues[2 * k];
+            let im = r.eigenvalues[2 * k + 1];
+            if im == 0.0 {
+                for row in 0..n {
+                    let mut av = 0.0;
+                    for col in 0..n {
+                        av += a[row * n + col] * r.eigenvectors[col * n + k];
+                    }
+                    let lv = re * r.eigenvectors[row * n + k];
+                    assert!(
+                        (av - lv).abs() < 1e-6,
+                        "real eig k={k}: (A v - λ v)[{row}] = {}",
+                        av - lv
+                    );
+                }
+                k += 1;
+            } else {
+                saw_complex = true;
+                // λ = re + i·im (im>0); eigenvector = col k + i·col (k+1).
+                for row in 0..n {
+                    let (mut avr, mut avi) = (0.0, 0.0);
+                    for col in 0..n {
+                        avr += a[row * n + col] * r.eigenvectors[col * n + k];
+                        avi += a[row * n + col] * r.eigenvectors[col * n + (k + 1)];
+                    }
+                    let vr = r.eigenvectors[row * n + k];
+                    let vi = r.eigenvectors[row * n + (k + 1)];
+                    assert!(
+                        (avr - (re * vr - im * vi)).abs() < 1e-6,
+                        "cplx eig k={k} re-part[{row}]"
+                    );
+                    assert!(
+                        (avi - (re * vi + im * vr)).abs() < 1e-6,
+                        "cplx eig k={k} im-part[{row}]"
+                    );
+                }
+                k += 2;
+            }
+        }
+        assert!(saw_complex, "test matrix should exercise a complex pair");
     }
 
     #[test]
