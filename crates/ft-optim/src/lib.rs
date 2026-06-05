@@ -474,56 +474,55 @@ impl Optimizer for Adam {
             let t =
                 advance_param_step_count(&mut self.step_counts, i, "adam step counter overflow")?;
 
-            let param_values = session.tensor_values(param)?;
+            // Single fused in-place pass: load the parameter buffer once, fold the
+            // weight-decayed gradient into the m/v moment updates and the parameter
+            // step in one traversal, then write the mutated buffer straight back.
+            // This avoids the second full param clone + the `update`/`new_values`
+            // scratch Vecs that the per-pass `apply_param_update` path allocated.
+            // Bit-for-bit identical per element to the prior multi-pass form (same
+            // ops, same order): the prior code computed `effective_grad`, then
+            // `m`, then `v`, then `update = lr*m_hat/(sqrt(v_hat)+eps)`, then
+            // `param -= update`; each element here applies exactly those steps.
+            let mut param_values = session.tensor_values(param)?;
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
-            let _param_shape = session.tensor_values_meta(param)?.1.shape().to_vec();
-            let mut effective_grad = grad;
 
-            // Apply weight decay
-            if self.weight_decay != 0.0 {
-                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
-                    *g += self.weight_decay * p;
-                }
-            }
-
-            // Update biased first moment estimate: m = beta1 * m + (1 - beta1) * grad
-            let m = self.m[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
-            ensure_state_len(
-                effective_grad.len(),
-                m.len(),
-                "adam first-moment state length mismatch with gradient length",
-            )?;
-            for (m_val, g) in m.iter_mut().zip(effective_grad.iter()) {
-                *m_val = self.beta1 * *m_val + (1.0 - self.beta1) * g;
-            }
-
-            // Update biased second raw moment estimate: v = beta2 * v + (1 - beta2) * grad^2
-            let v = self.v[i].get_or_insert_with(|| vec![0.0; effective_grad.len()]);
-            ensure_state_len(
-                effective_grad.len(),
-                v.len(),
-                "adam second-moment state length mismatch with gradient length",
-            )?;
-            for (v_val, g) in v.iter_mut().zip(effective_grad.iter()) {
-                *v_val = self.beta2 * *v_val + (1.0 - self.beta2) * g * g;
-            }
-
-            // Bias-corrected estimates
             let bias_correction1 = adam_bias_correction(self.beta1, t);
             let bias_correction2 = adam_bias_correction(self.beta2, t);
 
-            // Compute update: lr * m_hat / (sqrt(v_hat) + eps)
-            let update: Vec<f64> = m
-                .iter()
-                .zip(v.iter())
-                .map(|(m_val, v_val)| {
-                    let m_hat = m_val / bias_correction1;
-                    let v_hat = v_val / bias_correction2;
-                    self.lr * m_hat / (v_hat.sqrt() + self.eps)
-                })
-                .collect();
+            let m = self.m[i].get_or_insert_with(|| vec![0.0; grad.len()]);
+            ensure_state_len(
+                grad.len(),
+                m.len(),
+                "adam first-moment state length mismatch with gradient length",
+            )?;
+            let v = self.v[i].get_or_insert_with(|| vec![0.0; grad.len()]);
+            ensure_state_len(
+                grad.len(),
+                v.len(),
+                "adam second-moment state length mismatch with gradient length",
+            )?;
 
-            apply_param_update(session, param, &update)?;
+            let weight_decay = self.weight_decay;
+            for (((p, g), m_val), v_val) in param_values
+                .iter_mut()
+                .zip(grad.iter())
+                .zip(m.iter_mut())
+                .zip(v.iter_mut())
+            {
+                // Weight decay (L2): grad += weight_decay * param (original param).
+                let g_eff = if weight_decay != 0.0 {
+                    g + weight_decay * *p
+                } else {
+                    *g
+                };
+                *m_val = self.beta1 * *m_val + (1.0 - self.beta1) * g_eff;
+                *v_val = self.beta2 * *v_val + (1.0 - self.beta2) * g_eff * g_eff;
+                let m_hat = *m_val / bias_correction1;
+                let v_hat = *v_val / bias_correction2;
+                *p -= self.lr * m_hat / (v_hat.sqrt() + self.eps);
+            }
+
+            session.tensor_update_param_values(param, param_values)?;
         }
         Ok(())
     }
