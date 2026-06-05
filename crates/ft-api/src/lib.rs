@@ -16313,6 +16313,44 @@ impl FrankenTorchSession {
         };
 
         if !input_requires_grad && !weight_requires_grad && !bias_requires_grad {
+            // F64 no-grad: route through the SAME fused conv2d_forward_f64 kernel
+            // the grad path uses (parallel im2col + dgemm_bt + parallel reorg)
+            // instead of the SERIAL 6-deep manual im2col gather + tensor_matmul
+            // (which materialises weight^T) below. Bit-identical to the grad
+            // path's forward; the old serial gather made no-grad conv2d ~5-8x
+            // slower than the GEMM alone. frankentorch-conv2d-nograd.
+            if self.tensor_dtype(input)? == DType::F64
+                && self.tensor_dtype(weight)? == DType::F64
+                && bias.map_or(Ok(true), |b| self.tensor_dtype(b).map(|d| d == DType::F64))?
+            {
+                let pv = self.tensor_values(padded)?;
+                let wv = self.tensor_values(weight)?;
+                let bv = match bias {
+                    Some(b) => Some(self.tensor_values(b)?),
+                    None => None,
+                };
+                let out = ft_kernel_cpu::conv2d_forward_f64(
+                    &pv,
+                    &wv,
+                    bv.as_deref(),
+                    batch_size,
+                    in_channels,
+                    padded_h,
+                    padded_w,
+                    kernel_h,
+                    kernel_w,
+                    output_h,
+                    output_w,
+                    stride_h,
+                    stride_w,
+                    out_channels,
+                );
+                return self.tensor_variable(
+                    out,
+                    vec![batch_size, out_channels, output_h, output_w],
+                    false,
+                );
+            }
             let panel_len =
                 Self::checked_mul(flat_patch_count, patch_width, "conv2d im2col size overflow")?;
             let padded_data = self.tensor_values(padded)?;
