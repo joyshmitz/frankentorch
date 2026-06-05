@@ -7591,6 +7591,226 @@ pub fn winograd_conv2d_3x3_s1_f64(
     output
 }
 
+/// Winograd F(2x2, 3x3) filter transform `U = G g G^T` (4x4), f32, `g` row-major 3x3.
+#[inline]
+fn winograd_filter_transform_f32(g: &[f32]) -> [f32; 16] {
+    let grow = |r: usize, c: [f32; 3]| -> f32 {
+        match r {
+            0 => c[0],
+            1 => 0.5 * (c[0] + c[1] + c[2]),
+            2 => 0.5 * (c[0] - c[1] + c[2]),
+            _ => c[2],
+        }
+    };
+    let mut gg = [[0.0f32; 3]; 4];
+    for j in 0..3 {
+        let col = [g[j], g[3 + j], g[6 + j]];
+        for (i, row) in gg.iter_mut().enumerate() {
+            row[j] = grow(i, col);
+        }
+    }
+    let mut u = [0.0f32; 16];
+    for (i, row) in gg.iter().enumerate() {
+        let row = *row;
+        for j in 0..4 {
+            u[i * 4 + j] = grow(j, row);
+        }
+    }
+    u
+}
+
+/// Winograd F(2,3) input transform `V = B^T d B` (4x4), f32, `d` row-major 4x4.
+#[inline]
+fn winograd_input_transform_f32(d: &[f32]) -> [f32; 16] {
+    let bt = |r: usize, c: [f32; 4]| -> f32 {
+        match r {
+            0 => c[0] - c[2],
+            1 => c[1] + c[2],
+            2 => c[2] - c[1],
+            _ => c[1] - c[3],
+        }
+    };
+    let mut td = [[0.0f32; 4]; 4];
+    for j in 0..4 {
+        let col = [d[j], d[4 + j], d[8 + j], d[12 + j]];
+        for (i, row) in td.iter_mut().enumerate() {
+            row[j] = bt(i, col);
+        }
+    }
+    let mut v = [0.0f32; 16];
+    for (i, row) in td.iter().enumerate() {
+        let row = *row;
+        for j in 0..4 {
+            v[i * 4 + j] = bt(j, row);
+        }
+    }
+    v
+}
+
+/// Winograd F(2,3) output transform `Y = A^T m A` (2x2), f32, `m` row-major 4x4.
+#[inline]
+fn winograd_output_transform_f32(m: &[f32]) -> [f32; 4] {
+    let at = |r: usize, c: [f32; 4]| -> f32 {
+        match r {
+            0 => c[0] + c[1] + c[2],
+            _ => c[1] - c[2] - c[3],
+        }
+    };
+    let mut tm = [[0.0f32; 4]; 2];
+    for j in 0..4 {
+        let col = [m[j], m[4 + j], m[8 + j], m[12 + j]];
+        for (i, row) in tm.iter_mut().enumerate() {
+            row[j] = at(i, col);
+        }
+    }
+    let mut y = [0.0f32; 4];
+    for (i, row) in tm.iter().enumerate() {
+        let row = *row;
+        for j in 0..2 {
+            y[i * 2 + j] = at(j, row);
+        }
+    }
+    y
+}
+
+/// Winograd F(2x2, 3x3) convolution for a 3x3, stride-1 conv (no dilation), f32.
+///
+/// f32 mirror of [`winograd_conv2d_3x3_s1_f64`], validated within tolerance by
+/// `winograd_conv2d_f32_matches_direct_within_tolerance`.
+///
+/// NON-WIRED FOUNDATION — MEASURED REGRESSION, kept as a reference + scaffold.
+/// `benches/winograd_bench.rs` A/B's this against an im2col + `sgemm` baseline on a
+/// 64-core worker (same binary, same worker): this materialized F(2,3) path is
+/// **1.3–2.7x SLOWER** at every representative 3x3-s1 shape (e.g. b8/ic64/oc64/hw32:
+/// 25.6 ms vs 9.4 ms). Two compounding causes, both fundamental to this formulation:
+///   1. F(2,3) splits one big-`k` GEMM (`k = in_ch*9`) into 16 small-`k` GEMMs
+///      (`k = in_ch`), collapsing arithmetic intensity — matrixmultiply's microkernel
+///      cannot amortize A/B packing over the short reduction, so the ~2.25x fewer
+///      multiplies are dwarfed by per-GEMM packing overhead.
+///   2. The serial input/output transforms scatter ~4x the output volume with poor
+///      locality (memory-bound), exactly as the f64 doc warned.
+/// A real CPU win needs a genuinely FUSED transform+GEMM kernel (no materialised
+/// `v`/`m`) AND a larger tile (F(4,3)/F(6,3)) to restore GEMM `k`-depth — a large,
+/// correctness-critical build. Do NOT wire this materialized path: it regresses.
+///
+/// `input` is `[batch, in_ch, padded_h, padded_w]` (already padded), `weight` is
+/// `[out_ch, in_ch, 3, 3]`. Returns `[batch, out_ch, out_h, out_w]` with
+/// `out_h = padded_h - 2`, `out_w = padded_w - 2`. The transforms reassociate, so
+/// the result matches direct convolution to tolerance, not bit-for-bit.
+#[allow(clippy::too_many_arguments)]
+pub fn winograd_conv2d_3x3_s1_f32(
+    input: &[f32],
+    weight: &[f32],
+    batch: usize,
+    in_ch: usize,
+    out_ch: usize,
+    padded_h: usize,
+    padded_w: usize,
+) -> Vec<f32> {
+    let out_h = padded_h - 2;
+    let out_w = padded_w - 2;
+    let tiles_h = out_h.div_ceil(2);
+    let tiles_w = out_w.div_ceil(2);
+    let num_tiles = batch * tiles_h * tiles_w;
+    let oc_ic = out_ch * in_ch;
+
+    // 1. Filter transform -> u[p][oc][ic].
+    let mut u = vec![0.0f32; 16 * oc_ic];
+    for oc in 0..out_ch {
+        for ic in 0..in_ch {
+            let g = &weight[(oc * in_ch + ic) * 9..(oc * in_ch + ic) * 9 + 9];
+            let uu = winograd_filter_transform_f32(g);
+            for (p, &val) in uu.iter().enumerate() {
+                u[p * oc_ic + oc * in_ch + ic] = val;
+            }
+        }
+    }
+
+    // 2. Input transform -> v[p][ic][tile].
+    let ic_t = in_ch * num_tiles;
+    let mut v = vec![0.0f32; 16 * ic_t];
+    for b in 0..batch {
+        for th in 0..tiles_h {
+            for tw in 0..tiles_w {
+                let tile = (b * tiles_h + th) * tiles_w + tw;
+                let r0 = th * 2;
+                let c0 = tw * 2;
+                for ic in 0..in_ch {
+                    let base = (b * in_ch + ic) * padded_h * padded_w;
+                    let mut d = [0.0f32; 16];
+                    for i in 0..4 {
+                        let rr = r0 + i;
+                        if rr >= padded_h {
+                            continue;
+                        }
+                        for j in 0..4 {
+                            let cc = c0 + j;
+                            if cc < padded_w {
+                                d[i * 4 + j] = input[base + rr * padded_w + cc];
+                            }
+                        }
+                    }
+                    let vv = winograd_input_transform_f32(&d);
+                    for (p, &val) in vv.iter().enumerate() {
+                        v[p * ic_t + ic * num_tiles + tile] = val;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. 16 GEMMs: m[p] = U[p] (out_ch x in_ch) @ V[p] (in_ch x num_tiles).
+    // Each is a WIDE GEMM (num_tiles >> out_ch), so run them SERIALLY and let
+    // gemm::sgemm parallelize each across all cores (col-parallel). Fanning out
+    // over the 16 positions instead caps parallelism at 16-way and idles a
+    // many-core worker.
+    let oc_t = out_ch * num_tiles;
+    let mut m = vec![0.0f32; 16 * oc_t];
+    for (p, mp) in m.chunks_mut(oc_t).enumerate() {
+        gemm::sgemm(
+            out_ch,
+            in_ch,
+            num_tiles,
+            &u[p * oc_ic..(p + 1) * oc_ic],
+            &v[p * ic_t..(p + 1) * ic_t],
+            mp,
+        );
+    }
+
+    // 4. Output transform + scatter.
+    let mut output = vec![0.0f32; batch * out_ch * out_h * out_w];
+    for b in 0..batch {
+        for th in 0..tiles_h {
+            for tw in 0..tiles_w {
+                let tile = (b * tiles_h + th) * tiles_w + tw;
+                let r0 = th * 2;
+                let c0 = tw * 2;
+                for oc in 0..out_ch {
+                    let mut mm = [0.0f32; 16];
+                    for (p, slot) in mm.iter_mut().enumerate() {
+                        *slot = m[p * oc_t + oc * num_tiles + tile];
+                    }
+                    let y = winograd_output_transform_f32(&mm);
+                    let obase = (b * out_ch + oc) * out_h * out_w;
+                    for i in 0..2 {
+                        let rr = r0 + i;
+                        if rr >= out_h {
+                            continue;
+                        }
+                        for j in 0..2 {
+                            let cc = c0 + j;
+                            if cc < out_w {
+                                output[obase + rr * out_w + cc] = y[i * 2 + j];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    output
+}
+
 pub fn cholesky_contiguous_f64(
     data: &[f64],
     meta: &TensorMeta,
@@ -19031,6 +19251,57 @@ mod tests {
             assert!(
                 (g - w).abs() < 1e-9,
                 "winograd[{idx}]={g} vs direct {w} (diff {:e})",
+                (g - w).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn winograd_conv2d_f32_matches_direct_within_tolerance() {
+        // Isomorphism proof for the f32 Winograd F(2,3) path: matches a direct
+        // 3x3 stride-1 conv to f32 tolerance (it reassociates, not bit-exact).
+        let (batch, in_ch, out_ch) = (2usize, 3usize, 4usize);
+        let (padded_h, padded_w) = (9usize, 9usize); // out = 7x7
+        let out_h = padded_h - 2;
+        let out_w = padded_w - 2;
+        let input: Vec<f32> = (0..batch * in_ch * padded_h * padded_w)
+            .map(|i| (((i * 2654435761usize) % 211) as f32 - 105.0) * 0.013)
+            .collect();
+        let weight: Vec<f32> = (0..out_ch * in_ch * 9)
+            .map(|i| (((i * 40503usize) % 97) as f32 - 48.0) * 0.021)
+            .collect();
+
+        let got = super::winograd_conv2d_3x3_s1_f32(
+            &input, &weight, batch, in_ch, out_ch, padded_h, padded_w,
+        );
+
+        let mut want = vec![0.0f32; batch * out_ch * out_h * out_w];
+        for b in 0..batch {
+            for oc in 0..out_ch {
+                for oh in 0..out_h {
+                    for ow in 0..out_w {
+                        let mut acc = 0.0f32;
+                        for ic in 0..in_ch {
+                            let ibase = (b * in_ch + ic) * padded_h * padded_w;
+                            let wbase = (oc * in_ch + ic) * 9;
+                            for kh in 0..3 {
+                                for kw in 0..3 {
+                                    acc += input[ibase + (oh + kh) * padded_w + (ow + kw)]
+                                        * weight[wbase + kh * 3 + kw];
+                                }
+                            }
+                        }
+                        want[((b * out_ch + oc) * out_h + oh) * out_w + ow] = acc;
+                    }
+                }
+            }
+        }
+        assert_eq!(got.len(), want.len());
+        for (idx, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+            let tol = 1e-4 + 1e-4 * w.abs();
+            assert!(
+                (g - w).abs() < tol,
+                "winograd_f32[{idx}]={g} vs direct {w} (diff {:e})",
                 (g - w).abs()
             );
         }
