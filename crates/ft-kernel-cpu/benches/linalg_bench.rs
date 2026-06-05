@@ -8,9 +8,33 @@ use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
     cholesky_contiguous_f64, det_contiguous_f64, eig_contiguous_f64, eigh_contiguous_f64,
     eigvals_contiguous_f64, eigvalsh_contiguous_f64, inv_tensor_contiguous_f64,
-    matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64, svd_lowrank_contiguous_f64,
-    svdvals_contiguous_f64,
+    lobpcg_contiguous_f64, matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64,
+    svd_lowrank_contiguous_f64, svdvals_contiguous_f64,
 };
+
+fn bench_lobpcg(c: &mut Criterion) {
+    for &n in &[256usize, 512usize] {
+        // Symmetric, well-separated spectrum (distinct diagonal + small off-diag).
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = (((i * 7 + j * 3 + 1) % 13) as f64) * 0.02;
+            }
+        }
+        for i in 0..n {
+            for j in 0..i {
+                let s = 0.5 * (a[i * n + j] + a[j * n + i]);
+                a[i * n + j] = s;
+                a[j * n + i] = s;
+            }
+            a[i * n + i] += i as f64;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        c.bench_function(&format!("lobpcg_f64_{n}x{n}_k8"), |bch| {
+            bch.iter(|| black_box(lobpcg_contiguous_f64(black_box(&a), &meta, 8, true, 100, 1e-9).unwrap()))
+        });
+    }
+}
 
 fn bench_svd_lowrank(c: &mut Criterion) {
     for &n in &[256usize, 512usize] {
@@ -227,6 +251,7 @@ criterion_group!(
     bench_lu,
     bench_cholesky,
     bench_eigh,
+    bench_lobpcg,
     bench_eig_general,
     bench_svd,
     bench_svd_lowrank,

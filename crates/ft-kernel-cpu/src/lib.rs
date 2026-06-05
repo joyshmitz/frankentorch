@@ -9690,6 +9690,181 @@ pub fn pca_lowrank_contiguous_f64(
     svd_lowrank_contiguous_f64(&a, &a_meta, q, niter)
 }
 
+/// Modified Gram-Schmidt over the columns of `m` (n x c, row-major). The
+/// orthonormal columns are packed into the first `rank` positions (returned);
+/// columns whose residual norm falls below the threshold are dropped (rank
+/// deficiency). Used by [`lobpcg_contiguous_f64`].
+fn mgs_orthonormalize_cols(m: &mut [f64], n: usize, c: usize) -> usize {
+    let mut rank = 0usize;
+    for j in 0..c {
+        let mut col = vec![0.0f64; n];
+        for i in 0..n {
+            col[i] = m[i * c + j];
+        }
+        for p in 0..rank {
+            let mut dot = 0.0;
+            for i in 0..n {
+                dot += col[i] * m[i * c + p];
+            }
+            for i in 0..n {
+                col[i] -= dot * m[i * c + p];
+            }
+        }
+        let norm: f64 = col.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm > 1e-10 {
+            let inv = 1.0 / norm;
+            for i in 0..n {
+                m[i * c + rank] = col[i] * inv;
+            }
+            rank += 1;
+        }
+    }
+    rank
+}
+
+/// Top/bottom-`k` eigenpairs of a real-symmetric matrix via a block
+/// steepest-descent Rayleigh-Ritz iteration (LOBPCG family, torch.lobpcg). Each
+/// step expands the orthonormal subspace `[X | R]` (R = the X residuals,
+/// orthonormalized against X), does a SMALL `eigh` of `S^T A S`, and keeps the k
+/// extreme Ritz pairs — converging to the k largest (`largest=true`) or smallest
+/// eigenpairs in `O(n^2 k)` per iteration vs the full eigh's `O(n^3)`. Returns
+/// `(eigenvalues[k], eigenvectors[n*k]` row-major, columns = vectors`)`.
+pub fn lobpcg_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+    k: usize,
+    largest: bool,
+    niter: usize,
+    tol: f64,
+) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 || shape[0] != shape[1] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![2],
+        });
+    }
+    let n = shape[0];
+    let k = k.clamp(1, n);
+    let offset = meta.storage_offset();
+    let a = data[offset..offset + n * n].to_vec();
+
+    let dev = meta.device();
+    let dty = meta.dtype();
+    // A @ M  for M: n x c  -> n x c.
+    let amul = |x: &[f64], c: usize| -> Vec<f64> {
+        let mut out = vec![0.0f64; n * c];
+        gemm::dgemm(n, n, c, &a, x, &mut out);
+        out
+    };
+    // Small dense eigh of an `s x s` symmetric matrix; selects the k extreme
+    // Ritz pairs. Returns (theta[k], coeff[s*k] row-major) where coeff column t
+    // is the eigenvector of the t-th selected Ritz value.
+    let select_ritz = |sym: &[f64], s: usize| -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+        let m = TensorMeta::from_shape(vec![s, s], dty, dev);
+        let e = eigh_contiguous_f64(sym, &m)?; // eigenvalues ascending, evecs s x s cols
+        let mut theta = vec![0.0f64; k];
+        let mut coeff = vec![0.0f64; s * k];
+        for t in 0..k {
+            let idx = if largest { s - 1 - t } else { t };
+            theta[t] = e.eigenvalues[idx];
+            for i in 0..s {
+                coeff[i * k + t] = e.eigenvectors[i * s + idx];
+            }
+        }
+        Ok((theta, coeff))
+    };
+
+    // Initial X: random n x k, orthonormalized.
+    let mut rng = 0x853C_49E6_748F_EA9Bu64 ^ ((n as u64) << 24) ^ (k as u64).wrapping_mul(0x2545F4914F6CDD1D);
+    let mut x = vec![0.0f64; n * k];
+    let mut idx = 0;
+    while idx < x.len() {
+        let u1 = splitmix_uniform(&mut rng);
+        let u2 = splitmix_uniform(&mut rng);
+        let r = (-2.0 * u1.ln()).sqrt();
+        let ang = std::f64::consts::TAU * u2;
+        x[idx] = r * ang.cos();
+        idx += 1;
+        if idx < x.len() {
+            x[idx] = r * ang.sin();
+            idx += 1;
+        }
+    }
+    mgs_orthonormalize_cols(&mut x, n, k);
+
+    let mut ax = amul(&x, k);
+    // Initial Rayleigh-Ritz on X.
+    let mut gram = vec![0.0f64; k * k];
+    mat_at_b(&x, n, k, &ax, k, &mut gram); // X^T A X
+    let (mut theta, c0) = select_ritz(&gram, k)?;
+    {
+        let mut nx = vec![0.0f64; n * k];
+        gemm::dgemm(n, k, k, &x, &c0, &mut nx);
+        x = nx;
+        let mut nax = vec![0.0f64; n * k];
+        gemm::dgemm(n, k, k, &ax, &c0, &mut nax);
+        ax = nax;
+    }
+
+    for _ in 0..niter.max(1) {
+        // Residuals R = AX - X diag(theta).
+        let mut r = ax.clone();
+        let mut maxres = 0.0f64;
+        for i in 0..k {
+            let mut nr = 0.0;
+            for j in 0..n {
+                let v = ax[j * k + i] - theta[i] * x[j * k + i];
+                r[j * k + i] = v;
+                nr += v * v;
+            }
+            maxres = maxres.max(nr.sqrt());
+        }
+        if maxres < tol {
+            break;
+        }
+        // Orthogonalize R against X, then orthonormalize R's own columns.
+        let mut xtr = vec![0.0f64; k * k];
+        mat_at_b(&x, n, k, &r, k, &mut xtr); // X^T R  (k x k)
+        let mut xxtr = vec![0.0f64; n * k];
+        gemm::dgemm(n, k, k, &x, &xtr, &mut xxtr); // X (X^T R)
+        for v in 0..n * k {
+            r[v] -= xxtr[v];
+        }
+        let rr = mgs_orthonormalize_cols(&mut r, n, k);
+        if rr == 0 {
+            break;
+        }
+        // Subspace S = [X | R[:, :rr]]  (n x sc), orthonormal by construction.
+        let sc = k + rr;
+        let mut s = vec![0.0f64; n * sc];
+        for i in 0..n {
+            for j in 0..k {
+                s[i * sc + j] = x[i * k + j];
+            }
+            for j in 0..rr {
+                s[i * sc + (k + j)] = r[i * k + j];
+            }
+        }
+        let as_ = amul(&s, sc);
+        // M = S^T A S  (sc x sc, symmetric).
+        let mut msym = vec![0.0f64; sc * sc];
+        mat_at_b(&s, n, sc, &as_, sc, &mut msym);
+        let (theta_new, coeff) = select_ritz(&msym, sc)?; // coeff: sc x k
+        // X = S @ coeff ;  AX = AS @ coeff.
+        let mut nx = vec![0.0f64; n * k];
+        gemm::dgemm(n, sc, k, &s, &coeff, &mut nx);
+        let mut nax = vec![0.0f64; n * k];
+        gemm::dgemm(n, sc, k, &as_, &coeff, &mut nax);
+        x = nx;
+        ax = nax;
+        theta = theta_new;
+    }
+
+    Ok((theta, x))
+}
+
 /// Result of QR decomposition.
 #[derive(Debug, Clone)]
 pub struct QrResult {
@@ -17765,6 +17940,58 @@ mod tests {
         let result = super::eigh_contiguous_f64(&a, &meta).unwrap();
         assert!((result.eigenvalues[0] - (-2.0)).abs() < 1e-10);
         assert!((result.eigenvalues[1] - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn lobpcg_top_k_matches_eigh() {
+        // 48x48 symmetric with a well-separated spectrum. LOBPCG's top-4
+        // eigenvalues must match the full eigh's top-4, and each returned pair
+        // must satisfy A·v = λ·v.
+        let n = 48usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = (((i * 7 + j * 3 + 1) % 13) as f64) * 0.05;
+            }
+        }
+        for i in 0..n {
+            for j in 0..i {
+                let s = 0.5 * (a[i * n + j] + a[j * n + i]);
+                a[i * n + j] = s;
+                a[j * n + i] = s;
+            }
+            a[i * n + i] += i as f64;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let k = 4usize;
+        let (evals, evecs) = super::lobpcg_contiguous_f64(&a, &meta, k, true, 300, 1e-10).unwrap();
+        let full = super::eigh_contiguous_f64(&a, &meta).unwrap();
+        let mut full_top: Vec<f64> = (0..k).map(|t| full.eigenvalues[n - 1 - t]).collect();
+        let mut got = evals.clone();
+        got.sort_by(|x, y| y.total_cmp(x));
+        full_top.sort_by(|x, y| y.total_cmp(x));
+        for t in 0..k {
+            assert!(
+                (got[t] - full_top[t]).abs() < 1e-6,
+                "eval {t}: lobpcg {} vs eigh {}",
+                got[t],
+                full_top[t]
+            );
+        }
+        for t in 0..k {
+            let lam = evals[t];
+            for row in 0..n {
+                let mut av = 0.0;
+                for col in 0..n {
+                    av += a[row * n + col] * evecs[col * k + t];
+                }
+                let lv = lam * evecs[row * k + t];
+                assert!(
+                    (av - lv).abs() < 1e-5,
+                    "A·v != λ·v at pair {t} row {row}: {av} vs {lv}"
+                );
+            }
+        }
     }
 
     #[test]
