@@ -35936,6 +35936,29 @@ impl FrankenTorchSession {
         // Avoid div-by-zero for invalid anchors; their term is zeroed by `valid`.
         let pos_count_safe: Vec<f64> = pos_count.iter().map(|&c| c.max(1.0)).collect();
 
+        // No-grad fused fast path. The autograd op-graph below L2-normalizes,
+        // forms the [N,N] cosine gram (one matmul), materialises TWO [N,N] label
+        // masks as leaves, and streams ~6 more [N,N] passes (mul_scalar/add/
+        // logsumexp/mul/sum_dim) plus tape nodes for a scalar loss. With no grad
+        // needed, ft_kernel_cpu::supcon_loss_forward_f64 keeps only the gram GEMM
+        // and fuses every reduction into one pass over the gram rows (masks read
+        // inline from labels), matching the op-graph arithmetic/order to f64
+        // round-off. The grad path (training) is unchanged below.
+        if !self.tensor_tape.tensor_requires_grad(embeddings)? {
+            let emb_vals = self.tensor_values(embeddings)?;
+            let loss = ft_kernel_cpu::supcon_loss_forward_f64(
+                &emb_vals,
+                &labels_i,
+                &pos_count_safe,
+                &valid,
+                count,
+                temperature,
+                n,
+                d,
+            );
+            return self.tensor_variable(vec![loss], vec![1], false);
+        }
+
         // L2-normalize each row (autograd-aware), then the [N,N] cosine
         // similarity matrix is ONE GEMM-routed matmul — replacing the old naive
         // O(N^2*D) dot-product sweep that ALSO rebuilt a requires_grad=false leaf
@@ -89620,6 +89643,44 @@ mod tests {
         let got = s.tensor_values(loss).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].to_bits(), want.to_bits(), "supcon_loss scalar");
+    }
+
+    #[test]
+    fn supcon_loss_fused_nograd_matches_opgraph_bit_exact() {
+        // Isomorphism proof for the no-grad fused supcon kernel
+        // (ft_kernel_cpu::supcon_loss_forward_f64): it must equal the autograd
+        // op-graph (forced via requires_grad=true) BIT-FOR-BIT — same normalize,
+        // same gram (dgemm_bt == matmul-on-transpose), same masked log-sum-exp and
+        // reduction order. (The serial-reference test above is an independent
+        // cross-check; this pins fused == the exact path it replaces.)
+        use super::FrankenTorchSession;
+        let (n, d, temperature) = (96usize, 40usize, 0.07_f64);
+        let emb: Vec<f64> = (0..n * d)
+            .map(|i| ((i * 2654435761usize) % 211) as f64 * 0.011 - 1.1)
+            .collect();
+        let labels: Vec<f64> = (0..n).map(|i| (i % 7) as f64).collect();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let e_g = s.tensor_variable(emb.clone(), vec![n, d], true).unwrap();
+        let l_g = s.tensor_variable(labels.clone(), vec![n], false).unwrap();
+        let ref_loss = {
+            let o = s.supcon_loss(e_g, l_g, temperature).unwrap();
+            s.tensor_values(o).unwrap()
+        };
+        let e_f = s.tensor_variable(emb.clone(), vec![n, d], false).unwrap();
+        let l_f = s.tensor_variable(labels.clone(), vec![n], false).unwrap();
+        let fused_loss = {
+            let o = s.supcon_loss(e_f, l_f, temperature).unwrap();
+            s.tensor_values(o).unwrap()
+        };
+        assert_eq!(ref_loss.len(), 1);
+        assert_eq!(fused_loss.len(), 1);
+        assert_eq!(
+            fused_loss[0].to_bits(),
+            ref_loss[0].to_bits(),
+            "fused {} vs opgraph {}",
+            fused_loss[0],
+            ref_loss[0]
+        );
     }
 
     /// frankentorch-qd4p: supcon_loss is now autograd-aware (GEMM-routed cosine

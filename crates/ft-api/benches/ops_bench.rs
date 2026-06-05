@@ -941,6 +941,65 @@ fn bench_supcon_loss(c: &mut Criterion) {
         let labels = session.tensor_variable(labels_v, vec![n], false).unwrap();
         b.iter(|| black_box(session.supcon_loss(black_box(emb), black_box(labels), 0.07).unwrap()));
     });
+    // Same-binary A/B baseline: the pre-fusion op-graph (L2-normalize + gram
+    // matmul + two [N,N] mask leaves + masked log-sum-exp + masked positive-mean
+    // + reduction), reproduced inline with requires_grad=false inputs so the only
+    // difference from "512x512" is the fused no-grad kernel.
+    group.bench_function("512x512_opgraph", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let emb = session.tensor_randn(vec![n, d], false).unwrap();
+        let labels_v: Vec<f64> = (0..n).map(|i| (i % 8) as f64).collect();
+        let temperature = 0.07_f64;
+        b.iter(|| {
+            let labels_i: Vec<i64> = labels_v.iter().map(|&x| x as i64).collect();
+            let mut pos_mask = vec![0.0f64; n * n];
+            let mut diag_mask = vec![0.0f64; n * n];
+            let mut pos_count = vec![0.0f64; n];
+            let mut valid = vec![0.0f64; n];
+            let mut count = 0usize;
+            for i in 0..n {
+                diag_mask[i * n + i] = -1e30;
+                let mut cc = 0.0;
+                for j in 0..n {
+                    if i != j && labels_i[i] == labels_i[j] {
+                        pos_mask[i * n + j] = 1.0;
+                        cc += 1.0;
+                    }
+                }
+                pos_count[i] = cc;
+                if cc > 0.0 {
+                    valid[i] = 1.0;
+                    count += 1;
+                }
+            }
+            let pos_count_safe: Vec<f64> = pos_count.iter().map(|&c| c.max(1.0)).collect();
+            let s = &mut session;
+            let sq = s.tensor_mul(emb, emb).unwrap();
+            let sumsq = s.tensor_sum_dim(sq, 1).unwrap();
+            let norm = s.tensor_sqrt(sumsq).unwrap();
+            let norm_safe = s.tensor_clamp_min(norm, 1e-12).unwrap();
+            let norm_col = s.tensor_unsqueeze(norm_safe, 1).unwrap();
+            let norm_exp = s.tensor_expand(norm_col, vec![n, d]).unwrap();
+            let normalized = s.tensor_div(emb, norm_exp).unwrap();
+            let normalized_t = s.tensor_transpose(normalized, 0, 1).unwrap();
+            let gram = s.tensor_matmul(normalized, normalized_t).unwrap();
+            let sim = s.tensor_mul_scalar(gram, 1.0 / temperature).unwrap();
+            let diag_t = s.tensor_variable(diag_mask, vec![n, n], false).unwrap();
+            let sim_masked = s.tensor_add(sim, diag_t).unwrap();
+            let log_denom = s.tensor_logsumexp(sim_masked, 1).unwrap();
+            let pos_t = s.tensor_variable(pos_mask, vec![n, n], false).unwrap();
+            let masked_sim = s.tensor_mul(sim, pos_t).unwrap();
+            let num = s.tensor_sum_dim(masked_sim, 1).unwrap();
+            let pos_count_t = s.tensor_variable(pos_count_safe, vec![n], false).unwrap();
+            let mean_pos = s.tensor_div(num, pos_count_t).unwrap();
+            let term = s.tensor_sub(mean_pos, log_denom).unwrap();
+            let valid_t = s.tensor_variable(valid, vec![n], false).unwrap();
+            let masked_term = s.tensor_mul(term, valid_t).unwrap();
+            let summed = s.tensor_sum(masked_term).unwrap();
+            let scaled = s.tensor_mul_scalar(summed, -1.0 / count as f64).unwrap();
+            black_box(s.tensor_reshape(scaled, vec![1]).unwrap());
+        });
+    });
     group.finish();
 }
 

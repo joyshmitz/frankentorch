@@ -3562,6 +3562,108 @@ pub fn pdist_forward_f64(input: &[f64], n: usize, m: usize, p: f64) -> Vec<f64> 
     result
 }
 
+/// Fused Supervised-Contrastive (SupCon) loss forward (f64), no-grad.
+///
+/// Replaces the ~16-op op-graph (L2-normalize + [N,N] cosine gram + two
+/// materialised [N,N] label-mask leaves + masked log-sum-exp + masked
+/// positive-mean + reduction) with: one L2-normalize pass, ONE gram GEMM
+/// (`gemm::dgemm_bt`, the only heavy compute, kept), and a single fused pass over
+/// the gram rows that computes the masked log-sum-exp denominator and the
+/// positive-mean numerator inline from `labels` — no [N,N] sim/mask intermediates,
+/// no tape. Each step mirrors the op-graph's exact arithmetic and reduction order
+/// (sequential per-`d` normalize sum, `tensor_logsumexp`'s max-subtract pass,
+/// sequential per-`j` masked sum, sequential per-`i` final sum), so the scalar
+/// loss matches the op-graph to f64 round-off.
+///
+/// `labels[i]` is the class of row `i`; `pos_count_safe[i] = max(|P(i)|, 1)`;
+/// `valid[i]` is 1.0 iff row `i` has >=1 positive; `count` is the number of valid
+/// anchors (caller guarantees `count > 0`). Returns the scalar SupCon loss.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn supcon_loss_forward_f64(
+    embeddings: &[f64],
+    labels: &[i64],
+    pos_count_safe: &[f64],
+    valid: &[f64],
+    count: usize,
+    temperature: f64,
+    n: usize,
+    d: usize,
+) -> f64 {
+    // 1. L2-normalize each row (sumsq sequential over d, then clamp >= 1e-12).
+    let mut normalized = vec![0.0f64; n * d];
+    normalized
+        .par_chunks_mut(d)
+        .enumerate()
+        .for_each(|(i, out)| {
+            let base = i * d;
+            let mut sumsq = 0.0f64;
+            for k in 0..d {
+                let v = embeddings[base + k];
+                sumsq += v * v;
+            }
+            let norm = sumsq.sqrt().max(1e-12);
+            for (k, slot) in out.iter_mut().enumerate() {
+                *slot = embeddings[base + k] / norm;
+            }
+        });
+
+    // 2. Cosine gram [N,N] = normalized @ normalized^T (the one heavy GEMM).
+    let mut gram = vec![0.0f64; n * n];
+    gemm::dgemm_bt(n, d, n, &normalized, &normalized, &mut gram);
+
+    // 3. Fused per-row masked log-sum-exp denominator + positive-mean numerator,
+    //    streaming the gram row once. `inv_temp` scales the cosine to logits; the
+    //    diagonal is pushed to -1e30 (matches `sim + diag_mask`) so it underflows
+    //    out of the denominator. Parallel over rows; the final sum over i is done
+    //    sequentially afterwards to preserve the op-graph's reduction order.
+    let inv_temp = 1.0 / temperature;
+    let masked_term: Vec<f64> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let row = i * n;
+            // Denominator: max-subtract pass exactly like tensor_logsumexp.
+            let mut max_val = f64::NEG_INFINITY;
+            for j in 0..n {
+                let mut s = gram[row + j] * inv_temp;
+                if j == i {
+                    s -= 1e30;
+                }
+                if s > max_val {
+                    max_val = s;
+                }
+            }
+            let mut sum_exp = 0.0f64;
+            for j in 0..n {
+                let mut s = gram[row + j] * inv_temp;
+                if j == i {
+                    s -= 1e30;
+                }
+                sum_exp += (s - max_val).exp();
+            }
+            let log_denom = max_val + sum_exp.ln();
+            // Numerator: sum of sim over same-label j != i (masked-sum order j=0..n).
+            let mut num = 0.0f64;
+            for j in 0..n {
+                if i != j && labels[i] == labels[j] {
+                    num += gram[row + j] * inv_temp;
+                }
+            }
+            let mean_pos = num / pos_count_safe[i];
+            (mean_pos - log_denom) * valid[i]
+        })
+        .collect();
+
+    let mut summed = 0.0f64;
+    for &t in &masked_term {
+        summed += t;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    {
+        summed * (-1.0 / count as f64)
+    }
+}
+
 /// Fused max-pool3d forward (f64): per output, the max over its `kd×kh×kw`
 /// window of `[batch, ch, id, ih, iw]`. Parallel over `(batch,ch)` volumes.
 #[allow(clippy::too_many_arguments)]
