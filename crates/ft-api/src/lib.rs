@@ -19353,6 +19353,32 @@ impl FrankenTorchSession {
             );
             return self.tensor_variable(out, input_shape, false);
         }
+        // F32 no-grad fused fast path (dominant ML dtype): same streaming kernel
+        // via rms_norm_forward_f32. The f32 op-graph also upcast to f64.
+        let w_f32 = match weight {
+            Some(w) => self.tensor_dtype(w)? == DType::F32,
+            None => true,
+        };
+        if !self.tensor_tape.tensor_requires_grad(input)?
+            && !w_grad
+            && self.tensor_dtype(input)? == DType::F32
+            && w_f32
+        {
+            let x = self.tensor_values_f32(input)?;
+            let wv = match weight {
+                Some(w) => Some(self.tensor_values_f32(w)?),
+                None => None,
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let out = ft_kernel_cpu::rms_norm_forward_f32(
+                &x,
+                wv.as_deref(),
+                batch_numel,
+                normalized_numel,
+                eps as f32,
+            );
+            return self.tensor_variable_f32(out, input_shape, false);
+        }
         if (self.tensor_tape.tensor_requires_grad(input)? || w_grad) && input_f64 && w_f64 {
             let (bn, nn, eps_c) = (batch_numel, normalized_numel, eps);
             let ishape = input_shape.clone();
@@ -84816,6 +84842,37 @@ mod tests {
             assert!(
                 (a - b).abs() <= 1e-12 + 1e-10 * b.abs(),
                 "[{i}]: fused {a} vs reference {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn functional_rms_norm_f32_fused_matches_op_graph_within_tolerance() {
+        // Isomorphism for the f32 no-grad fused RMSNorm
+        // (ft_kernel_cpu::rms_norm_forward_f32) vs the f32 op-graph (which upcasts
+        // to f64, so read it as f64), within f32 tolerance.
+        let (batch, n) = (6usize, 16usize);
+        let xv: Vec<f32> = (0..batch * n)
+            .map(|i| ((i % 11) as f32 - 5.0) * 0.4 + (i as f32) * 0.01)
+            .collect();
+        let wv: Vec<f32> = (0..n).map(|j| 0.8 + (j as f32) * 0.05).collect();
+        let eps = 1e-6;
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable_f32(xv.clone(), vec![batch, n], false).unwrap();
+        let w = s.tensor_variable_f32(wv.clone(), vec![n], false).unwrap();
+        let out = s.functional_rms_norm(x, vec![n], Some(w), eps).unwrap();
+        let fused = s.tensor_values_f32(out).unwrap();
+
+        let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x2 = s2.tensor_variable_f32(xv, vec![batch, n], true).unwrap();
+        let w2 = s2.tensor_variable_f32(wv, vec![n], true).unwrap();
+        let out2 = s2.functional_rms_norm(x2, vec![n], Some(w2), eps).unwrap();
+        let reference = s2.tensor_values(out2).unwrap();
+        assert_eq!(fused.len(), reference.len());
+        for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+            assert!(
+                (f64::from(*a) - b).abs() <= 1e-5 + 1e-4 * b.abs(),
+                "[{i}]: f32 fused {a} vs op-graph {b}"
             );
         }
     }

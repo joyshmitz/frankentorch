@@ -3078,6 +3078,39 @@ pub fn rms_norm_forward_f64(
     out
 }
 
+/// f32 mirror of [`rms_norm_forward_f64`]: per-row RMS normalize + optional
+/// weight, one streaming pass, parallel over rows. Replaces the f32 op-graph
+/// (square/mean/rsqrt/mul) the f32 no-grad path fell through to.
+#[must_use]
+pub fn rms_norm_forward_f32(
+    x: &[f32],
+    weight: Option<&[f32]>,
+    batch: usize,
+    norm_size: usize,
+    eps: f32,
+) -> Vec<f32> {
+    let inv_n = 1.0 / norm_size as f32;
+    let mut out = vec![0.0f32; batch * norm_size];
+    out.par_chunks_mut(norm_size)
+        .enumerate()
+        .for_each(|(r, orow)| {
+            let xrow = &x[r * norm_size..r * norm_size + norm_size];
+            let mut ss = 0.0f32;
+            for &v in xrow {
+                ss += v * v;
+            }
+            let rstd = 1.0 / (ss * inv_n + eps).sqrt();
+            for j in 0..norm_size {
+                let mut y = xrow[j] * rstd;
+                if let Some(w) = weight {
+                    y *= w[j];
+                }
+                orow[j] = y;
+            }
+        });
+    out
+}
+
 /// Backward of [`rms_norm_forward_f64`]. Given `dy`, the saved `x` and optional
 /// `weight`, returns `(dx, dweight?)`. With `g[j] = dy[j]·w[j]`,
 /// `rstd = 1/sqrt(mean(x²)+eps)`, `c = Σ_j g[j]·x[j]`:
@@ -8706,12 +8739,9 @@ fn eigh_tred2_reduce_packed_full(
 }
 
 fn eigh_tred2_backtransform(n: usize, z: &mut [f64], d: &mut [f64]) {
-    let mut reflector_col = Vec::with_capacity(n);
     let mut projections = Vec::with_capacity(n);
     for i in 0..n {
         if d[i] != 0.0 {
-            reflector_col.clear();
-            reflector_col.extend((0..i).map(|k| z[k * n + i]));
             projections.clear();
             let row_i_start = i * n;
             let (previous_rows, current_and_after) = z.split_at_mut(row_i_start);
@@ -8725,7 +8755,7 @@ fn eigh_tred2_backtransform(n: usize, z: &mut [f64], d: &mut [f64]) {
                 }
             }
             for k in 0..i {
-                let reflector = reflector_col[k];
+                let reflector = previous_rows[k * n + i];
                 let row = &mut previous_rows[k * n..k * n + i];
                 for j in 0..i {
                     row[j] -= projections[j] * reflector;
