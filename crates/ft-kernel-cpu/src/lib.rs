@@ -3508,6 +3508,60 @@ pub fn cdist_forward_f64(
     result
 }
 
+/// Fused pdist forward (f64): pairwise `p`-norm distances between every i<j pair
+/// of rows of `input` `[n, m]`, returning the flattened strict upper triangle
+/// `[n·(n-1)/2]` in `(i, then j)` order — the same layout torch's `pdist` and the
+/// op-graph (index_select+sub+abs+pow+sum_dim+pow) produce. Each pair streams its
+/// `m` feature differences in ONE pass with no `O(out_len·m)` pair-difference
+/// tensor materialised. Parallel over the `i` rows; the per-`k` accumulation order
+/// matches the op-graph, so the result is bit-identical to the broadcast path.
+///
+/// `p == +inf` reduces by max-abs; finite `p > 0` accumulates `Σ|Δ|^p` then takes
+/// the `1/p` power. (`p == 0` / `p == 2` are handled by their own paths.)
+#[must_use]
+pub fn pdist_forward_f64(input: &[f64], n: usize, m: usize, p: f64) -> Vec<f64> {
+    let out_len = n * (n - 1) / 2;
+    if out_len == 0 {
+        return Vec::new();
+    }
+    let is_inf = p == f64::INFINITY;
+    let inv_p = 1.0 / p;
+    // Row i owns the (n-1-i) outputs for j in (i+1)..n; build per-row then flatten
+    // (the concat is O(out_len), negligible vs the O(n^2·m) reduction).
+    let rows: Vec<Vec<f64>> = (0..n - 1)
+        .into_par_iter()
+        .map(|i| {
+            let i_base = i * m;
+            let mut row = Vec::with_capacity(n - 1 - i);
+            for j in (i + 1)..n {
+                let j_base = j * m;
+                let mut dist = 0.0f64;
+                if is_inf {
+                    for k in 0..m {
+                        let diff = (input[i_base + k] - input[j_base + k]).abs();
+                        if diff > dist {
+                            dist = diff;
+                        }
+                    }
+                } else {
+                    for k in 0..m {
+                        let diff = (input[i_base + k] - input[j_base + k]).abs();
+                        dist += diff.powf(p);
+                    }
+                    dist = dist.powf(inv_p);
+                }
+                row.push(dist);
+            }
+            row
+        })
+        .collect();
+    let mut result = Vec::with_capacity(out_len);
+    for row in &rows {
+        result.extend_from_slice(row);
+    }
+    result
+}
+
 /// Fused max-pool3d forward (f64): per output, the max over its `kd×kh×kw`
 /// window of `[batch, ch, id, ih, iw]`. Parallel over `(batch,ch)` volumes.
 #[allow(clippy::too_many_arguments)]

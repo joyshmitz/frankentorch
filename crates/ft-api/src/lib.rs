@@ -7993,6 +7993,24 @@ impl FrankenTorchSession {
             return self.tensor_sqrt(d2_tri);
         }
 
+        // No-grad fused fast path for finite p>0 (p≠2) or p=+inf. The autograd
+        // path below gathers left/right row pairs and materialises the
+        // [out_len, M] pair-difference tensor (out_len = N·(N-1)/2) through
+        // index_select+sub+abs+pow+sum_dim+pow; with no gradient needed,
+        // ft_kernel_cpu::pdist_forward_f64 streams each pair in ONE pass with no
+        // O(out_len·M) intermediate. Same per-k order -> bit-exact. (p=2 used the
+        // matmul identity above.)
+        let needs_grad = self.tensor_tape.tensor_requires_grad(input)?;
+        if !needs_grad
+            && m > 0
+            && out_len > 0
+            && (p == f64::INFINITY || (p.is_finite() && p > 0.0))
+        {
+            let vals = self.tensor_values(input)?;
+            let result = ft_kernel_cpu::pdist_forward_f64(&vals, n, m, p);
+            return self.tensor_variable(result, vec![out_len], false);
+        }
+
         // For finite p > 0, compose through index_select + sub + abs +
         // pow + sum_dim + pow primitives so gradients flow to the
         // input. PyTorch's torch.nn.functional.pdist IS differentiable
@@ -77818,6 +77836,39 @@ mod tests {
         let b = s.tensor_variable(vec![4.0, 1.0, 5.0], vec![1, 3], false).unwrap();
         let d = s.tensor_cdist(a, b, 1.0).unwrap();
         assert_eq!(s.tensor_values(d).unwrap()[0].to_bits(), 6.0f64.to_bits());
+    }
+
+    #[test]
+    fn pdist_p_neq2_fused_nograd_matches_broadcast_bit_exact() {
+        // Isomorphism proof for the no-grad fused pdist fast path
+        // (ft_kernel_cpu::pdist_forward_f64): bit-for-bit vs the materialised
+        // index_select+sub+abs+pow+sum_dim+pow broadcast op-graph (forced by
+        // requires_grad=true). Same i<j ordering and per-k accumulation.
+        for &(n, m) in &[(37usize, 19usize), (8, 5)] {
+            let xv: Vec<f64> = (0..n * m).map(|i| (i as f64 * 0.011).sin() - 0.2).collect();
+            for &pp in &[1.0f64, 3.0, 0.5, f64::INFINITY] {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let g = s.tensor_variable(xv.clone(), vec![n, m], true).unwrap();
+                let ref_v = {
+                    let o = s.tensor_pdist(g, pp).unwrap();
+                    s.tensor_values(o).unwrap()
+                };
+                let f = s.tensor_variable(xv.clone(), vec![n, m], false).unwrap();
+                let fused_v = {
+                    let o = s.tensor_pdist(f, pp).unwrap();
+                    s.tensor_values(o).unwrap()
+                };
+                assert_eq!(ref_v.len(), fused_v.len());
+                for (idx, (a, b)) in ref_v.iter().zip(fused_v.iter()).enumerate() {
+                    assert_eq!(a.to_bits(), b.to_bits(), "p={pp} idx={idx}: {a} vs {b}");
+                }
+            }
+        }
+        // Absolute guard: p=1 pdist of [[0,0],[3,4]] = |3|+|4| = 7.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![0.0, 0.0, 3.0, 4.0], vec![2, 2], false).unwrap();
+        let d = s.tensor_pdist(x, 1.0).unwrap();
+        assert_eq!(s.tensor_values(d).unwrap()[0].to_bits(), 7.0f64.to_bits());
     }
 
     #[test]
