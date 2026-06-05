@@ -65,6 +65,32 @@ fn bench_bmm(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_conv1d(c: &mut Criterion) {
+    // conv1d (audio/sequence): [N,C,L]=[8,64,L], k=3 stride1 pad1, no-grad + grad.
+    let mut group = c.benchmark_group("conv1d");
+    let (n, ic, oc, k) = (8usize, 64usize, 64usize, 3usize);
+    for l in [1024usize, 4096].iter() {
+        let l = *l;
+        group.bench_with_input(BenchmarkId::new("nograd_L", l), &l, |b, &l| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_randn(vec![n, ic, l], false).unwrap();
+            let w = s.tensor_randn(vec![oc, ic, k], false).unwrap();
+            b.iter(|| black_box(s.tensor_conv1d(x, w, None, 1, 1).unwrap()));
+        });
+        group.bench_with_input(BenchmarkId::new("grad_L", l), &l, |b, &l| {
+            b.iter(|| {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_randn(vec![n, ic, l], true).unwrap();
+                let w = s.tensor_randn(vec![oc, ic, k], true).unwrap();
+                let out = s.tensor_conv1d(x, w, None, 1, 1).unwrap();
+                let loss = s.tensor_sum(out).unwrap();
+                black_box(s.tensor_backward(loss).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_conv2d(c: &mut Criterion) {
     let mut group = c.benchmark_group("conv2d");
 
@@ -984,6 +1010,7 @@ criterion_group!(
     benches,
     bench_matmul,
     bench_bmm,
+    bench_conv1d,
     bench_conv2d,
     bench_sum,
     bench_softmax,

@@ -15964,45 +15964,23 @@ impl FrankenTorchSession {
             }
         }
 
-        let padded = if padding > 0 {
-            self.tensor_pad(input, &[padding, padding], 0.0)?
-        } else {
-            input
-        };
         let padded_len = input_len + 2 * padding;
         if padded_len < kernel_size {
             return Err(Self::incompatible_tensor_args(
                 "conv1d: input too short for kernel size and padding",
             ));
         }
-
         let output_len = (padded_len - kernel_size) / stride + 1;
-        let patch_width = in_channels * kernel_size;
-        let mut patches = Vec::with_capacity(output_len);
-        for out_index in 0..output_len {
-            let start = out_index * stride;
-            let patch = self.tensor_narrow(padded, 2, start, kernel_size)?;
-            let flat = self.tensor_reshape(patch, vec![batch_size, 1, patch_width])?;
-            patches.push(flat);
-        }
 
-        let unfolded = self.tensor_cat(&patches, 1)?;
-        let weight_flat = self.tensor_reshape(weight, vec![out_channels, patch_width])?;
-        let weight_t = self.tensor_transpose(weight_flat, 0, 1)?;
-        let weight_us = self.tensor_unsqueeze(weight_t, 0)?;
-        let weight_expanded =
-            self.tensor_expand(weight_us, vec![batch_size, patch_width, out_channels])?;
-        let output = self.tensor_bmm(unfolded, weight_expanded)?;
-        let output = self.tensor_transpose(output, 1, 2)?;
-
-        match bias {
-            Some(bias) => {
-                let bias = self.tensor_reshape(bias, vec![1, out_channels, 1])?;
-                let bias = self.tensor_expand(bias, vec![batch_size, out_channels, output_len])?;
-                self.tensor_add(output, bias)
-            }
-            None => Ok(output),
-        }
+        // conv1d [N, C, L] is conv2d [N, C, 1, L] with a height-1 kernel. Route
+        // through the fully-fused conv2d path (no-grad im2col + grad col2im) instead
+        // of the per-output narrow/cat/bmm composed path — inheriting both wins.
+        let input_4d = self.tensor_reshape(input, vec![batch_size, in_channels, 1, input_len])?;
+        let weight_4d =
+            self.tensor_reshape(weight, vec![out_channels, in_channels, 1, kernel_size])?;
+        let output_4d =
+            self.functional_conv2d(input_4d, weight_4d, bias, (1, stride), (0, padding))?;
+        self.tensor_reshape(output_4d, vec![batch_size, out_channels, output_len])
     }
 
     /// Apply a 2D convolution.
