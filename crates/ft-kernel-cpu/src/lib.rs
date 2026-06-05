@@ -7912,15 +7912,21 @@ fn eigh_tred2(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
     eigh_tred2_reduce(n, z, d, e);
     // Eigenvector back-transform: accumulate the stored reflectors into `z` so
     // it becomes the orthonormal transform whose columns `tql2` then rotates.
+    let mut reflector_col = Vec::with_capacity(n);
     for i in 0..n {
         if d[i] != 0.0 {
+            reflector_col.clear();
+            reflector_col.extend((0..i).map(|k| z[k * n + i]));
+            let row_i_start = i * n;
+            let (previous_rows, current_and_after) = z.split_at_mut(row_i_start);
+            let row_i = &current_and_after[..i];
             for j in 0..i {
                 let mut g = 0.0;
                 for k in 0..i {
-                    g += z[i * n + k] * z[k * n + j];
+                    g += row_i[k] * previous_rows[k * n + j];
                 }
                 for k in 0..i {
-                    z[k * n + j] -= g * z[k * n + i];
+                    previous_rows[k * n + j] -= g * reflector_col[k];
                 }
             }
         }
@@ -14458,7 +14464,7 @@ mod tests {
             .collect();
         // Explicit common points (0 and ±1 must be very accurate).
         xs.extend_from_slice(&[0.0, -0.0, 1.0, -1.0, 50.0, -50.0, 1e-9, -1e-9]);
-        while xs.len() % 4 != 0 {
+        while !xs.len().is_multiple_of(4) {
             xs.push(0.0);
         }
         for chunk in xs.chunks_exact(4) {
@@ -18035,7 +18041,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn eigh_tred2_tql2_orthonormal_and_reconstructs_24x24() {
         // Exercises the Householder/QL eigensolver at a size where the
         // tridiagonalization + shifted-QL machinery is fully engaged (small
@@ -18273,9 +18278,9 @@ mod tests {
             let hit = got.iter().enumerate().position(|(gi, g)| {
                 !used[gi] && (g.0 - w.0).abs() < 1e-6 && (g.1 - w.1).abs() < 1e-6
             });
-            match hit {
-                Some(gi) => used[gi] = true,
-                None => panic!("missing eigenvalue {w:?} in {got:?}"),
+            assert!(hit.is_some(), "missing eigenvalue {w:?} in {got:?}");
+            if let Some(gi) = hit {
+                used[gi] = true;
             }
         }
     }
