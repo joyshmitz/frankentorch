@@ -51,7 +51,15 @@ sampler/weighted_4096_positive_4096x262k
 time: [8.5344 ms 8.5718 ms 8.5982 ms]
 ```
 
-Delta by p50: `10.072 ms -> 8.5718 ms`, about `14.9%` faster (`1.17x`).
+Pinned confirmation on worker ts2:
+
+```text
+sampler/weighted_4096_positive_4096x262k
+time: [8.6181 ms 8.6684 ms 8.7169 ms]
+```
+
+Delta by p50: `10.072 ms -> 8.6684 ms`, about `13.9%` faster (`1.16x`) on
+the confirmation run.
 
 Score: Impact `3` x Confidence `2` / Effort `1` = `6.0`, above the required
 `2.0` threshold. Confidence is based on a same-worker RCH A/B plus the golden
