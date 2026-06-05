@@ -35764,82 +35764,79 @@ impl FrankenTorchSession {
             ));
         }
         let n = shape[0];
-        let label_data = self.tensor_values(labels)?;
-        let emb_data = self.tensor_values(embeddings)?;
         let d = shape[1];
-        let normalized: Vec<f64> = (0..n)
-            .flat_map(|i| {
-                let start = i * d;
-                let end = start + d;
-                let norm: f64 = emb_data[start..end]
-                    .iter()
-                    .map(|x| x * x)
-                    .sum::<f64>()
-                    .sqrt()
-                    .max(1e-12);
-                emb_data[start..end].iter().map(move |&x| x / norm)
-            })
-            .collect();
-        // The N x N similarity matrix is a naive O(N^2 * D) dot-product sweep
-        // (compute-bound). Each row i is independent and owns a contiguous
-        // N-length block, so distribute the rows across Rayon workers. The
-        // per-(i,j) dot keeps its k-summation order and the linear write position
-        // (i*N + j), so the result is bit-for-bit identical to the serial loop.
-        // (A GEMM would reassociate the k-sum and is therefore not used here.)
-        let mut sim_matrix = vec![0.0; n * n];
-        let compute_row = |i: usize, row: &mut [f64]| {
-            for (j, slot) in row.iter_mut().enumerate() {
-                let mut dot = 0.0;
-                for k in 0..d {
-                    dot += normalized[i * d + k] * normalized[j * d + k];
-                }
-                *slot = dot / temperature;
-            }
-        };
-        if n >= 2 && n * n >= PARALLEL_ELEMENTWISE_MIN {
-            use rayon::prelude::*;
-            sim_matrix
-                .par_chunks_mut(n)
-                .enumerate()
-                .for_each(|(i, row)| compute_row(i, row));
-        } else {
-            sim_matrix
-                .chunks_mut(n)
-                .enumerate()
-                .for_each(|(i, row)| compute_row(i, row));
-        }
-        let mut total_loss = 0.0;
-        let mut count = 0;
+        let label_data = self.tensor_values(labels)?;
+        #[allow(clippy::cast_possible_truncation)]
+        let labels_i: Vec<i64> = label_data.iter().map(|&x| x as i64).collect();
+
+        // Label-derived CONSTANT masks (non-grad). pos_mask[i,j]=1 for a positive
+        // pair (same label, i≠j); diag_mask pushes the self entry to -1e30 so it
+        // underflows out of the log-sum-exp denominator; pos_count is |P(i)|;
+        // valid marks anchors that have at least one positive.
+        let mut pos_mask = vec![0.0f64; n * n];
+        let mut diag_mask = vec![0.0f64; n * n];
+        let mut pos_count = vec![0.0f64; n];
+        let mut valid = vec![0.0f64; n];
+        let mut count = 0usize;
         for i in 0..n {
-            let label_i = label_data[i] as i64;
-            let positives: Vec<usize> = (0..n)
-                .filter(|&j| j != i && label_data[j] as i64 == label_i)
-                .collect();
-            if positives.is_empty() {
-                continue;
+            diag_mask[i * n + i] = -1e30;
+            let mut c = 0.0;
+            for j in 0..n {
+                if i != j && labels_i[i] == labels_i[j] {
+                    pos_mask[i * n + j] = 1.0;
+                    c += 1.0;
+                }
             }
-            let max_sim = sim_matrix[i * n..(i + 1) * n]
-                .iter()
-                .cloned()
-                .fold(f64::NEG_INFINITY, f64::max);
-            let exp_sum: f64 = (0..n)
-                .filter(|&j| j != i)
-                .map(|j| (sim_matrix[i * n + j] - max_sim).exp())
-                .sum();
-            let log_denom = max_sim + exp_sum.ln();
-            let mut pos_loss = 0.0;
-            for &p in &positives {
-                pos_loss += sim_matrix[i * n + p] - log_denom;
+            pos_count[i] = c;
+            if c > 0.0 {
+                valid[i] = 1.0;
+                count += 1;
             }
-            total_loss -= pos_loss / positives.len() as f64;
-            count += 1;
         }
-        let mean_loss = if count > 0 {
-            total_loss / count as f64
-        } else {
-            0.0
-        };
-        self.tensor_variable(vec![mean_loss], vec![1], false)
+        if count == 0 {
+            // No anchor has a positive — loss is a constant 0 (matches the prior
+            // behaviour and torch when no positive pairs exist).
+            return self.tensor_variable(vec![0.0], vec![1], false);
+        }
+        // Avoid div-by-zero for invalid anchors; their term is zeroed by `valid`.
+        let pos_count_safe: Vec<f64> = pos_count.iter().map(|&c| c.max(1.0)).collect();
+
+        // L2-normalize each row (autograd-aware), then the [N,N] cosine
+        // similarity matrix is ONE GEMM-routed matmul — replacing the old naive
+        // O(N^2*D) dot-product sweep that ALSO rebuilt a requires_grad=false leaf
+        // and severed the tape (supcon could not train). frankentorch-qd4p.
+        let sq = self.tensor_mul(embeddings, embeddings)?;
+        let sumsq = self.tensor_sum_dim(sq, 1)?; // [N]
+        let norm = self.tensor_sqrt(sumsq)?; // [N]
+        let norm_safe = self.tensor_clamp_min(norm, 1e-12)?;
+        let norm_col = self.tensor_unsqueeze(norm_safe, 1)?; // [N,1]
+        let norm_exp = self.tensor_expand(norm_col, vec![n, d])?;
+        let normalized = self.tensor_div(embeddings, norm_exp)?; // [N,D]
+        let normalized_t = self.tensor_transpose(normalized, 0, 1)?; // [D,N]
+        let gram = self.tensor_matmul(normalized, normalized_t)?; // [N,N]
+        let sim = self.tensor_mul_scalar(gram, 1.0 / temperature)?; // [N,N]
+
+        // Denominator: log Σ_{j≠i} exp(sim[i,j]) via a masked log-sum-exp.
+        let diag_t = self.tensor_variable(diag_mask, vec![n, n], false)?;
+        let sim_masked = self.tensor_add(sim, diag_t)?;
+        let log_denom = self.tensor_logsumexp(sim_masked, 1)?; // [N]
+
+        // Numerator: mean over positives of sim[i,p] = (Σ_j posmask·sim)/|P(i)|.
+        let pos_t = self.tensor_variable(pos_mask, vec![n, n], false)?;
+        let masked_sim = self.tensor_mul(sim, pos_t)?;
+        let num = self.tensor_sum_dim(masked_sim, 1)?; // [N]
+        let pos_count_t = self.tensor_variable(pos_count_safe, vec![n], false)?;
+        let mean_pos = self.tensor_div(num, pos_count_t)?; // [N]
+
+        // term_i = mean_pos_i − log_denom_i; zero out anchors with no positives,
+        // sum, and scale by −1/count to form the SupCon (out) mean loss.
+        let term = self.tensor_sub(mean_pos, log_denom)?; // [N]
+        let valid_t = self.tensor_variable(valid, vec![n], false)?;
+        let masked_term = self.tensor_mul(term, valid_t)?; // [N]
+        let summed = self.tensor_sum(masked_term)?;
+        #[allow(clippy::cast_precision_loss)]
+        let scaled = self.tensor_mul_scalar(summed, -1.0 / count as f64)?;
+        self.tensor_reshape(scaled, vec![1])
     }
 
     /// Barlow Twins loss for self-supervised learning.
@@ -89378,6 +89375,54 @@ mod tests {
         let got = s.tensor_values(loss).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].to_bits(), want.to_bits(), "supcon_loss scalar");
+    }
+
+    /// frankentorch-qd4p: supcon_loss is now autograd-aware (GEMM-routed cosine
+    /// similarity + masked log-sum-exp through the tape), where it previously
+    /// rebuilt a non-grad leaf and could not train. Verify the analytic gradient
+    /// matches central finite differences, and that the forward still matches a
+    /// direct reference to f64 round-off.
+    #[test]
+    fn supcon_loss_gradient_matches_finite_difference() {
+        use super::FrankenTorchSession;
+        let (n, d, temperature) = (6usize, 4usize, 0.2_f64);
+        let emb: Vec<f64> = (0..n * d).map(|i| ((i * 7 + 3) % 11) as f64 * 0.2 - 1.0).collect();
+        // Two classes with multiple members each so several anchors have positives.
+        let labels: Vec<f64> = vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0];
+
+        let eval = |emb: &[f64]| -> f64 {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let e = s.tensor_variable(emb.to_vec(), vec![n, d], false).unwrap();
+            let l = s.tensor_variable(labels.clone(), vec![n], false).unwrap();
+            let out = s.supcon_loss(e, l, temperature).unwrap();
+            s.tensor_values(out).unwrap()[0]
+        };
+
+        // Analytic gradient via the tape.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let e = s.tensor_variable(emb.clone(), vec![n, d], true).unwrap();
+        let l = s.tensor_variable(labels.clone(), vec![n], false).unwrap();
+        let out = s.supcon_loss(e, l, temperature).unwrap();
+        let report = s.tensor_backward(out).unwrap();
+        let grad = s
+            .tensor_gradient(&report, e)
+            .expect("supcon_loss must propagate gradient to embeddings");
+        assert_eq!(grad.len(), n * d);
+        assert!(grad.iter().any(|g| g.abs() > 1e-6), "gradient must be non-trivial");
+
+        let eps = 1e-6;
+        for idx in 0..n * d {
+            let mut up = emb.clone();
+            let mut dn = emb.clone();
+            up[idx] += eps;
+            dn[idx] -= eps;
+            let fd = (eval(&up) - eval(&dn)) / (2.0 * eps);
+            assert!(
+                (grad[idx] - fd).abs() < 1e-5,
+                "supcon grad[{idx}] = {} vs finite-diff {fd}",
+                grad[idx]
+            );
+        }
     }
 
     #[test]
