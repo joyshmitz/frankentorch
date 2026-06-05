@@ -16537,52 +16537,21 @@ impl FrankenTorchSession {
             },
         )?;
 
-        // Compose via tensor_narrow + tensor_matmul + tensor_pad +
-        // tensor_add so gradients flow back to input and weight.
-        // Tracked under frankentorch-zjf6. Previously the body ran
-        // the transposed convolution in plain f64 and rebuilt a
-        // non-grad leaf, severing autograd through every F.conv_t1d
-        // call (U-Net decoders, GANs, segmentation upsamplers).
-        //
-        // Mirrors the ConvTranspose1d nn.Module composition:
-        // for each kernel position k, for each input position i,
-        // contribute x[:, :, i] @ w[:, :, k] at output position
-        // i*stride + k - padding. Implemented via narrow + matmul
-        // + pad + accumulating add.
-        let result_shape = vec![batch_size, out_channels, output_l];
-        let mut result = if self.tensor_dtype(input)? == DType::F32 {
-            self.zeros_f32(result_shape, false)?
-        } else {
-            self.zeros(result_shape, false)?
-        };
-        for k in 0..kernel_l {
-            let w_k = self.tensor_narrow(weight, 2, k, 1)?;
-            let w_k = self.tensor_squeeze(w_k, 2)?; // [in_channels, out_channels]
-            for il in 0..input_l {
-                let out_pos_raw = il * stride + k;
-                if out_pos_raw < padding || out_pos_raw - padding >= output_l {
-                    continue;
-                }
-                let out_pos = out_pos_raw - padding;
-                let x_i = self.tensor_narrow(input, 2, il, 1)?;
-                let x_i = self.tensor_squeeze(x_i, 2)?; // [batch, in_channels]
-                let contrib = self.tensor_matmul(x_i, w_k)?; // [batch, out_channels]
-                let contrib = self.tensor_unsqueeze(contrib, 2)?; // [batch, out_channels, 1]
-                let pad_left = out_pos;
-                let pad_right = output_l - out_pos - 1;
-                let contrib_padded = self.tensor_pad(contrib, &[pad_left, pad_right], 0.0)?;
-                result = self.tensor_add(result, contrib_padded)?;
-            }
-        }
-
-        match bias {
-            Some(bias) => {
-                let bias = self.tensor_reshape(bias, vec![1, out_channels, 1])?;
-                let bias = self.tensor_expand(bias, vec![batch_size, out_channels, output_l])?;
-                self.tensor_add(result, bias)
-            }
-            None => Ok(result),
-        }
+        // conv_transpose1d [N,C,L] is conv_transpose2d [N,C,1,L] with a height-1
+        // kernel. Route through the fully-fused conv_transpose2d (direct kernel,
+        // no-grad + grad) instead of the per-(k,i) narrow/matmul/pad(full)/add loop.
+        let input_4d = self.tensor_reshape(input, vec![batch_size, in_channels, 1, input_l])?;
+        let weight_4d =
+            self.tensor_reshape(weight, vec![in_channels, out_channels, 1, kernel_l])?;
+        let output_4d = self.functional_conv_transpose2d(
+            input_4d,
+            weight_4d,
+            bias,
+            (1, stride),
+            (0, padding),
+            (0, output_padding),
+        )?;
+        self.tensor_reshape(output_4d, vec![batch_size, out_channels, output_l])
     }
 
     /// Apply 2D transposed convolution. Alias for `functional_conv_transpose2d`.
@@ -16890,15 +16859,19 @@ impl FrankenTorchSession {
         let output_len =
             Self::validate_pool1d_output_len(input_shape[2], kernel_size, stride, "avg_pool1d")?;
 
-        let mut slices = Vec::with_capacity(output_len);
-        for out_index in 0..output_len {
-            let start = out_index * stride;
-            let patch = self.tensor_narrow(input, 2, start, kernel_size)?;
-            let avg = self.tensor_mean_dim(patch, 2)?;
-            let avg = self.tensor_unsqueeze(avg, 2)?;
-            slices.push(avg);
-        }
-        self.tensor_cat(&slices, 2)
+        // avg_pool1d [N,C,L] is avg_pool2d [N,C,1,L] (height-1 window). Route through
+        // the fused avg_pool2d (windowed-mean kernel) instead of the narrow/mean/cat loop.
+        let (n, ch, l) = (input_shape[0], input_shape[1], input_shape[2]);
+        let input_4d = self.tensor_reshape(input, vec![n, ch, 1, l])?;
+        let out_4d = self.functional_avg_pool2d(
+            input_4d,
+            (1, kernel_size),
+            (1, stride),
+            (0, 0),
+            false,
+            true,
+        )?;
+        self.tensor_reshape(out_4d, vec![n, ch, output_len])
     }
 
     /// Apply 1D max pooling over `[N, C, L]`.
@@ -16924,15 +16897,12 @@ impl FrankenTorchSession {
         let output_len =
             Self::validate_pool1d_output_len(input_shape[2], kernel_size, stride, "max_pool1d")?;
 
-        let mut slices = Vec::with_capacity(output_len);
-        for out_index in 0..output_len {
-            let start = out_index * stride;
-            let patch = self.tensor_narrow(input, 2, start, kernel_size)?;
-            let (max_vals, _) = self.tensor_max_dim(patch, 2)?;
-            let max_vals = self.tensor_unsqueeze(max_vals, 2)?;
-            slices.push(max_vals);
-        }
-        self.tensor_cat(&slices, 2)
+        // max_pool1d [N,C,L] is max_pool2d [N,C,1,L] (height-1 window). Route through
+        // the fused max_pool2d (windowed-max kernel) instead of the narrow/max/cat loop.
+        let (n, ch, l) = (input_shape[0], input_shape[1], input_shape[2]);
+        let input_4d = self.tensor_reshape(input, vec![n, ch, 1, l])?;
+        let out_4d = self.functional_max_pool2d(input_4d, (1, kernel_size), (1, stride))?;
+        self.tensor_reshape(out_4d, vec![n, ch, output_len])
     }
 
     /// Apply 2D max pooling over `[N, C, H, W]`.

@@ -65,6 +65,42 @@ fn bench_bmm(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_pool1d_ct1d(c: &mut Criterion) {
+    // 1D sliding-window ops now routed through their fused 2D kernels (H=1).
+    let mut group = c.benchmark_group("conv1d_family");
+    // conv_transpose1d (audio upsampling): [N,C,L]=[4,64,256], k=4 stride 2.
+    group.bench_function("conv_transpose1d_grad", |b| {
+        b.iter(|| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_randn(vec![4, 64, 256], true).unwrap();
+            let w = s.tensor_randn(vec![64, 64, 4], true).unwrap();
+            let out = s.tensor_conv_transpose1d(x, w, None, 2, 1, 0).unwrap();
+            let loss = s.tensor_sum(out).unwrap();
+            black_box(s.tensor_backward(loss).unwrap())
+        });
+    });
+    // max/avg_pool1d: [N,C,L]=[8,64,8192], k=2 stride 2.
+    group.bench_function("max_pool1d_grad", |b| {
+        b.iter(|| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_randn(vec![8, 64, 8192], true).unwrap();
+            let out = s.functional_max_pool1d(x, 2, 2).unwrap();
+            let loss = s.tensor_sum(out).unwrap();
+            black_box(s.tensor_backward(loss).unwrap())
+        });
+    });
+    group.bench_function("avg_pool1d_grad", |b| {
+        b.iter(|| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_randn(vec![8, 64, 8192], true).unwrap();
+            let out = s.functional_avg_pool1d(x, 2, 2).unwrap();
+            let loss = s.tensor_sum(out).unwrap();
+            black_box(s.tensor_backward(loss).unwrap())
+        });
+    });
+    group.finish();
+}
+
 fn bench_avg_pool2d(c: &mut Criterion) {
     // avg_pool2d (every CNN): [N,C,H,W]=[8,64,64,64], 2x2 stride 2. no-grad + grad.
     let mut group = c.benchmark_group("avg_pool2d");
@@ -1112,6 +1148,7 @@ criterion_group!(
     bench_conv_transpose2d,
     bench_max_pool2d,
     bench_avg_pool2d,
+    bench_pool1d_ct1d,
     bench_sum,
     bench_softmax,
     bench_relu,
