@@ -7966,49 +7966,54 @@ fn eigh_pythag(a: f64, b: f64) -> f64 {
 fn eigh_tred2_reduce(n: usize, z: &mut [f64], d: &mut [f64], e: &mut [f64]) {
     for i in (1..n).rev() {
         let l = i - 1;
+        let row_i_start = i * n;
         let mut h = 0.0;
         let mut scale = 0.0;
         if l > 0 {
-            for k in 0..=l {
-                scale += z[i * n + k].abs();
+            let (previous_rows, current_and_after) = z.split_at_mut(row_i_start);
+            let row_i = &mut current_and_after[..n];
+            for &value in &row_i[..=l] {
+                scale += value.abs();
             }
             if scale == 0.0 {
-                e[i] = z[i * n + l];
+                e[i] = row_i[l];
             } else {
-                for k in 0..=l {
-                    z[i * n + k] /= scale;
-                    h += z[i * n + k] * z[i * n + k];
+                for value in &mut row_i[..=l] {
+                    *value /= scale;
+                    h += *value * *value;
                 }
-                let mut f = z[i * n + l];
+                let mut f = row_i[l];
                 let g = if f >= 0.0 { -h.sqrt() } else { h.sqrt() };
                 e[i] = scale * g;
                 h -= f * g;
-                z[i * n + l] = f - g;
+                row_i[l] = f - g;
                 f = 0.0;
                 for j in 0..=l {
-                    z[j * n + i] = z[i * n + j] / h;
+                    previous_rows[j * n + i] = row_i[j] / h;
                     let mut gg = 0.0;
+                    let row_j = &previous_rows[j * n..j * n + n];
                     for k in 0..=j {
-                        gg += z[j * n + k] * z[i * n + k];
+                        gg += row_j[k] * row_i[k];
                     }
                     for k in (j + 1)..=l {
-                        gg += z[k * n + j] * z[i * n + k];
+                        gg += previous_rows[k * n + j] * row_i[k];
                     }
                     e[j] = gg / h;
-                    f += e[j] * z[i * n + j];
+                    f += e[j] * row_i[j];
                 }
                 let hh = f / (h + h);
                 for j in 0..=l {
-                    f = z[i * n + j];
+                    f = row_i[j];
                     let gg = e[j] - hh * f;
                     e[j] = gg;
+                    let row_j = &mut previous_rows[j * n..j * n + n];
                     for k in 0..=j {
-                        z[j * n + k] -= f * e[k] + gg * z[i * n + k];
+                        row_j[k] -= f * e[k] + gg * row_i[k];
                     }
                 }
             }
         } else {
-            e[i] = z[i * n + l];
+            e[i] = z[row_i_start + l];
         }
         d[i] = h;
     }
