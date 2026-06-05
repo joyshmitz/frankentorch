@@ -11810,6 +11810,13 @@ impl LSTM {
             return Ok((outputs, h, c));
         }
 
+        // Inference fast path: when gradients are off, run the whole direction in
+        // raw f64 — no per-timestep op-graph nodes, intermediates, or tape. See
+        // `run_direction_no_grad`.
+        if !session.is_grad_enabled() {
+            return self.run_direction_no_grad(session, cell, inputs, h_0, c_0, reverse);
+        }
+
         // Hoist the two constant weight transposes out of the time loop (they
         // were recomputed every timestep inside `forward_cell`) and batch the
         // non-recurrent input projection `X @ W_ih^T` across ALL timesteps in a
@@ -11847,6 +11854,117 @@ impl LSTM {
         }
 
         Ok((outputs, h, c))
+    }
+
+    /// Inference (no-grad) fast path for one direction of one layer.
+    ///
+    /// Runs the entire recurrent sweep in raw `f64`: the input projection
+    /// `X @ W_ih^T` is one batched GEMM over all timesteps, and each step does a
+    /// single recurrent GEMM `h @ W_hh^T` plus the inline gate soup — with NO
+    /// per-timestep op-graph nodes, intermediates, or tape. Both GEMMs go through
+    /// `ft_kernel_cpu::linear_tensor_f64` (the same `dgemm_bt` the op-graph matmul
+    /// uses), and the gate math reuses the exact kernel formulas
+    /// (`sigmoid = 1/(1+exp(-x))`, libm `tanh`) and add order
+    /// (`((xw + hw) + b_ih) + b_hh`, then `c' = f*cx + i*g`, `h' = o*tanh(c')`),
+    /// so the output is bit-for-bit identical to the grad path's forward.
+    fn run_direction_no_grad(
+        &self,
+        session: &mut FrankenTorchSession,
+        cell: &LSTMCell,
+        inputs: &[TensorNodeId],
+        h_0: TensorNodeId,
+        c_0: TensorNodeId,
+        reverse: bool,
+    ) -> Result<(Vec<TensorNodeId>, TensorNodeId, TensorNodeId), AutogradError> {
+        let seq_len = inputs.len();
+        let h_size = self.hidden_size;
+        let four_h = 4 * h_size;
+        let in_features = {
+            let (_, meta) = session.tensor_values_meta(inputs[0])?;
+            meta.shape()[1]
+        };
+        let batch = {
+            let (_, meta) = session.tensor_values_meta(inputs[0])?;
+            meta.shape()[0]
+        };
+
+        // Raw weight/bias/state buffers (fetched once).
+        let stacked = session.tensor_cat(inputs, 0)?;
+        let stacked_vals = session.tensor_values(stacked)?;
+        let w_ih = session.tensor_values(cell.w_ih)?;
+        let w_hh = session.tensor_values(cell.w_hh)?;
+        let b_ih = session.tensor_values(cell.b_ih)?;
+        let b_hh = session.tensor_values(cell.b_hh)?;
+        let mut h = session.tensor_values(h_0)?;
+        let mut c = session.tensor_values(c_0)?;
+
+        // Batched input projection across ALL timesteps: [seq*batch, 4*hidden].
+        let xw_all = ft_kernel_cpu::linear_tensor_f64(
+            &stacked_vals,
+            &w_ih,
+            None,
+            seq_len * batch,
+            in_features,
+            four_h,
+        );
+
+        let mut outputs_raw: Vec<Vec<f64>> = vec![Vec::new(); seq_len];
+        let step = |t: usize,
+                    h: &mut Vec<f64>,
+                    c: &mut Vec<f64>,
+                    outputs_raw: &mut Vec<Vec<f64>>| {
+            let hw =
+                ft_kernel_cpu::linear_tensor_f64(h, &w_hh, None, batch, h_size, four_h);
+            let mut h_new = vec![0.0f64; batch * h_size];
+            let mut c_new = vec![0.0f64; batch * h_size];
+            for b in 0..batch {
+                let xw_base = (t * batch + b) * four_h;
+                let hw_base = b * four_h;
+                for j in 0..h_size {
+                    let gi = xw_all[xw_base + j] + hw[hw_base + j] + b_ih[j] + b_hh[j];
+                    let gf = xw_all[xw_base + h_size + j]
+                        + hw[hw_base + h_size + j]
+                        + b_ih[h_size + j]
+                        + b_hh[h_size + j];
+                    let gg = xw_all[xw_base + 2 * h_size + j]
+                        + hw[hw_base + 2 * h_size + j]
+                        + b_ih[2 * h_size + j]
+                        + b_hh[2 * h_size + j];
+                    let go = xw_all[xw_base + 3 * h_size + j]
+                        + hw[hw_base + 3 * h_size + j]
+                        + b_ih[3 * h_size + j]
+                        + b_hh[3 * h_size + j];
+                    let i_g = 1.0 / (1.0 + (-gi).exp());
+                    let f_g = 1.0 / (1.0 + (-gf).exp());
+                    let g_g = gg.tanh();
+                    let o_g = 1.0 / (1.0 + (-go).exp());
+                    let c_val = f_g * c[b * h_size + j] + i_g * g_g;
+                    c_new[b * h_size + j] = c_val;
+                    h_new[b * h_size + j] = o_g * c_val.tanh();
+                }
+            }
+            outputs_raw[t] = h_new.clone();
+            *h = h_new;
+            *c = c_new;
+        };
+
+        if reverse {
+            for t in (0..seq_len).rev() {
+                step(t, &mut h, &mut c, &mut outputs_raw);
+            }
+        } else {
+            for t in 0..seq_len {
+                step(t, &mut h, &mut c, &mut outputs_raw);
+            }
+        }
+
+        let mut outputs = Vec::with_capacity(seq_len);
+        for out in outputs_raw {
+            outputs.push(session.tensor_variable(out, vec![batch, h_size], false)?);
+        }
+        let h_n = session.tensor_variable(h, vec![batch, h_size], false)?;
+        let c_n = session.tensor_variable(c, vec![batch, h_size], false)?;
+        Ok((outputs, h_n, c_n))
     }
 
     /// Get the input size.
@@ -27415,6 +27533,43 @@ mod tests {
                 "x_grad[{k}]: analytic {} vs finite-diff {}",
                 x_grad[k],
                 numeric
+            );
+        }
+    }
+
+    #[test]
+    fn lstm_no_grad_raw_matches_op_graph() {
+        // The raw inference path (run_direction_no_grad) must be BIT-FOR-BIT
+        // identical to the op-graph forward. Exercise multi-layer + bidirectional.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let lstm = LSTM::new(&mut session, 4, 5, 2, true, 0.0, false).expect("lstm");
+        let seq = 3;
+        let batch = 2;
+        let in_sz = 4;
+        let vals: Vec<f64> = (0..seq * batch * in_sz)
+            .map(|i| (i as f64 * 0.137).sin() * 0.5)
+            .collect();
+
+        let x_grad = session
+            .tensor_variable(vals.clone(), vec![seq, batch, in_sz], true)
+            .expect("x_grad");
+        let out_grad = lstm.forward(&mut session, x_grad).expect("grad forward");
+        let grad_vals = session.tensor_values(out_grad).expect("grad values");
+
+        let x_ng = session
+            .tensor_variable(vals, vec![seq, batch, in_sz], false)
+            .expect("x_ng");
+        let out_ng = session
+            .with_no_grad(|s| lstm.forward(s, x_ng))
+            .expect("no-grad forward");
+        let ng_vals = session.tensor_values(out_ng).expect("no-grad values");
+
+        assert_eq!(grad_vals.len(), ng_vals.len(), "output length");
+        for (i, (a, b)) in grad_vals.iter().zip(ng_vals.iter()).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "raw no-grad differs from op-graph at {i}: {a} vs {b}"
             );
         }
     }
