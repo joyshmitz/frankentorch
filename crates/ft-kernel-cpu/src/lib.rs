@@ -3450,6 +3450,64 @@ pub fn conv2d_backward_f64(
     (dpadded, dweight, dbias)
 }
 
+/// Fused cdist forward (f64): pairwise `p`-norm distances between rows of `x1`
+/// `[batch, p_dim, m]` and `x2` `[batch, r_dim, m]`, returning `[batch, p_dim,
+/// r_dim]`. For each output `(b, i, j)` it streams the `m` feature differences
+/// and reduces them in ONE pass — no `O(P·R·M)` broadcasted-difference tensor is
+/// ever materialised (the op-graph path builds ~4 of them). Parallel over the
+/// `batch·p_dim` output rows; the per-`k` accumulation order is identical to the
+/// serial reference, so the result matches the broadcast path to f64 round-off.
+///
+/// `p == +inf` reduces by max-abs; finite `p > 0` accumulates `Σ|Δ|^p` then takes
+/// the `1/p` power. (`p == 0` / `p == 2` are handled by their own paths.)
+#[must_use]
+pub fn cdist_forward_f64(
+    x1: &[f64],
+    x2: &[f64],
+    batch: usize,
+    p_dim: usize,
+    r_dim: usize,
+    m: usize,
+    p: f64,
+) -> Vec<f64> {
+    let mut result = vec![0.0f64; batch * p_dim * r_dim];
+    if batch * p_dim * r_dim == 0 {
+        return result;
+    }
+    let inv_p = 1.0 / p;
+    let is_inf = p == f64::INFINITY;
+    // One output row = one (b, i) pair owning a contiguous r_dim slice.
+    result
+        .par_chunks_mut(r_dim)
+        .enumerate()
+        .for_each(|(row, out)| {
+            let b = row / p_dim;
+            let i = row % p_dim;
+            let x1_base = b * p_dim * m + i * m;
+            let x2_base = b * r_dim * m;
+            for (j, slot) in out.iter_mut().enumerate() {
+                let x2_row = x2_base + j * m;
+                let mut dist = 0.0f64;
+                if is_inf {
+                    for k in 0..m {
+                        let diff = (x1[x1_base + k] - x2[x2_row + k]).abs();
+                        if diff > dist {
+                            dist = diff;
+                        }
+                    }
+                } else {
+                    for k in 0..m {
+                        let diff = (x1[x1_base + k] - x2[x2_row + k]).abs();
+                        dist += diff.powf(p);
+                    }
+                    dist = dist.powf(inv_p);
+                }
+                *slot = dist;
+            }
+        });
+    result
+}
+
 /// Fused max-pool3d forward (f64): per output, the max over its `kd×kh×kw`
 /// window of `[batch, ch, id, ih, iw]`. Parallel over `(batch,ch)` volumes.
 #[allow(clippy::too_many_arguments)]
@@ -7689,6 +7747,7 @@ fn winograd_output_transform_f32(m: &[f32]) -> [f32; 4] {
 ///      multiplies are dwarfed by per-GEMM packing overhead.
 ///   2. The serial input/output transforms scatter ~4x the output volume with poor
 ///      locality (memory-bound), exactly as the f64 doc warned.
+///
 /// A real CPU win needs a genuinely FUSED transform+GEMM kernel (no materialised
 /// `v`/`m`) AND a larger tile (F(4,3)/F(6,3)) to restore GEMM `k`-depth — a large,
 /// correctness-critical build. Do NOT wire this materialized path: it regresses.

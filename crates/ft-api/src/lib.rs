@@ -7798,6 +7798,33 @@ impl FrankenTorchSession {
             return self.tensor_reshape(dist, out_shape);
         }
 
+        // No-grad fused fast path for finite p>0 (p≠2) or p=+inf. The autograd
+        // path below materialises the broadcasted [P,R,M] (or [B,P,R,M])
+        // difference and streams ~4 full-size passes (expand/sub/abs/pow/sum)
+        // over it; when no gradient is needed, ft_kernel_cpu::cdist_forward_f64
+        // reduces each (i,j) in ONE pass with no O(P·R·M) intermediate. Same
+        // per-k accumulation order as the broadcast path -> matches to f64
+        // round-off. p=2 already returned via the matmul identity above.
+        let needs_grad = self.tensor_tape.tensor_requires_grad(x1)?
+            || self.tensor_tape.tensor_requires_grad(x2)?;
+        if !needs_grad
+            && m > 0
+            && batch * p_dim * r_dim > 0
+            && (p == f64::INFINITY || (p.is_finite() && p > 0.0))
+        {
+            let x1_vals = self.tensor_values(x1)?;
+            let x2_vals = self.tensor_values(x2)?;
+            let result = ft_kernel_cpu::cdist_forward_f64(
+                &x1_vals, &x2_vals, batch, p_dim, r_dim, m, p,
+            );
+            let out_shape = if batched {
+                vec![batch, p_dim, r_dim]
+            } else {
+                vec![p_dim, r_dim]
+            };
+            return self.tensor_variable(result, out_shape, false);
+        }
+
         // Autograd path for finite p > 0 composes through broadcasted
         // sub + abs + pow + sum_dim + pow. p == +inf uses the same
         // broadcasted difference and reduces through tensor_amax so
@@ -77742,6 +77769,55 @@ mod tests {
         for p in [-1.0, f64::NEG_INFINITY, f64::NAN] {
             assert!(s.tensor_cdist(x1, x2, p).is_err(), "accepted p={p}");
         }
+    }
+
+    #[test]
+    fn cdist_p_neq2_fused_nograd_matches_broadcast_bit_exact() {
+        // Isomorphism proof for the no-grad fused cdist fast path
+        // (ft_kernel_cpu::cdist_forward_f64). The reference is the materialised
+        // broadcast op-graph, forced by building inputs with requires_grad=true;
+        // the fused path uses requires_grad=false. Same per-k accumulation order
+        // -> bit-for-bit identical. Covers 2-D and batched, finite p and p=inf.
+        let cases: &[(usize, usize, usize, usize)] = &[(40, 24, 17, 1), (3, 11, 9, 5)];
+        for &(p_dim, r_dim, m, batch) in cases {
+            let n1 = batch * p_dim * m;
+            let n2 = batch * r_dim * m;
+            let x1v: Vec<f64> = (0..n1).map(|i| (i as f64 * 0.013).sin()).collect();
+            let x2v: Vec<f64> = (0..n2).map(|i| (i as f64 * 0.017).cos() - 0.3).collect();
+            let (s1, s2) = if batch == 1 {
+                (vec![p_dim, m], vec![r_dim, m])
+            } else {
+                (vec![batch, p_dim, m], vec![batch, r_dim, m])
+            };
+            for &pp in &[1.0f64, 3.0, 0.5, f64::INFINITY] {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                // Reference: requires_grad=true -> materialised broadcast path.
+                let g1 = s.tensor_variable(x1v.clone(), s1.clone(), true).unwrap();
+                let g2 = s.tensor_variable(x2v.clone(), s2.clone(), true).unwrap();
+                let ref_out = s.tensor_cdist(g1, g2, pp).unwrap();
+                let ref_v = s.tensor_values(ref_out).unwrap();
+                // Fused: requires_grad=false -> cdist_forward_f64.
+                let f1 = s.tensor_variable(x1v.clone(), s1.clone(), false).unwrap();
+                let f2 = s.tensor_variable(x2v.clone(), s2.clone(), false).unwrap();
+                let fused_out = s.tensor_cdist(f1, f2, pp).unwrap();
+                let fused_v = s.tensor_values(fused_out).unwrap();
+                assert_eq!(ref_v.len(), fused_v.len());
+                for (idx, (a, b)) in ref_v.iter().zip(fused_v.iter()).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "p={pp} batch={batch} idx={idx}: ref {a} vs fused {b}"
+                    );
+                }
+            }
+        }
+        // Absolute guard so the test can't pass if BOTH paths regress identically:
+        // p=1 Manhattan distance between [1,2,3] and [4,1,5] = 3+1+2 = 6.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![1, 3], false).unwrap();
+        let b = s.tensor_variable(vec![4.0, 1.0, 5.0], vec![1, 3], false).unwrap();
+        let d = s.tensor_cdist(a, b, 1.0).unwrap();
+        assert_eq!(s.tensor_values(d).unwrap()[0].to_bits(), 6.0f64.to_bits());
     }
 
     #[test]
