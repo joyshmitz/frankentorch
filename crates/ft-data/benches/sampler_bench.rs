@@ -51,6 +51,17 @@ fn bench_random_sampler(c: &mut Criterion) {
         );
     });
 
+    group.bench_function("weighted_4096_positive_4096x262k", |b| {
+        b.iter_batched(
+            || {
+                let weights: Vec<f64> = (1..=4096).map(|i| f64::from((i % 17) + 1)).collect();
+                WeightedRandomSampler::new(weights, 262_144).with_seed(0x5151_4096)
+            },
+            |sampler| black_box(sampler.indices().expect("weighted samples")),
+            BatchSize::SmallInput,
+        );
+    });
+
     group.finish();
 }
 

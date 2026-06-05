@@ -241,6 +241,17 @@ fn threshold_index_4(
         + usize::from(u > third_threshold)
 }
 
+#[inline]
+fn finite_threshold_cmp(threshold: f64, sample: f64) -> std::cmp::Ordering {
+    if threshold < sample {
+        std::cmp::Ordering::Less
+    } else if threshold > sample {
+        std::cmp::Ordering::Greater
+    } else {
+        std::cmp::Ordering::Equal
+    }
+}
+
 /// Yields sample indices sequentially: 0, 1, 2, ..., n-1.
 pub struct SequentialSampler {
     size: usize,
@@ -542,7 +553,7 @@ impl WeightedRandomSampler {
             // Generate uniform [0, 1) using the RNG
             let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
             // Binary search for the index
-            let idx = match cumulative.binary_search_by(|c| c.total_cmp(&u)) {
+            let idx = match cumulative.binary_search_by(|c| finite_threshold_cmp(*c, u)) {
                 Ok(i) => i,
                 Err(i) => i.min(self.weights.len() - 1),
             };
@@ -2188,6 +2199,29 @@ mod tests {
         );
     }
 
+    fn weighted_sampler_large_cardinality_golden_summary() -> String {
+        let weights: Vec<f64> = (1..=4096).map(|i| f64::from((i % 17) + 1)).collect();
+        let samples = WeightedRandomSampler::new(weights, 32)
+            .with_seed(0x5151_4096)
+            .indices()
+            .expect("large-cardinality weighted samples");
+
+        format!(
+            "weighted_sampler_large_cardinality_frankentorch-j54u\n\
+             seed=0x51514096 weights=(1..=4096).map((i % 17) + 1) samples={samples:?}\n"
+        )
+    }
+
+    #[test]
+    fn weighted_sampler_large_cardinality_golden_output_matches_fixture() {
+        assert_eq!(
+            weighted_sampler_large_cardinality_golden_summary(),
+            include_str!(
+                "../../../artifacts/optimization/golden_outputs/ft_data_weighted_large_cardinality_frankentorch-j54u.txt"
+            )
+        );
+    }
+
     #[test]
     fn weighted_sampler_four_threshold_helper_matches_branch_chain_edges() {
         let first = 0.25;
@@ -2206,6 +2240,19 @@ mod tests {
                 3
             };
             assert_eq!(threshold_index_4(u, first, second, third), expected);
+        }
+    }
+
+    #[test]
+    fn weighted_sampler_finite_threshold_cmp_matches_total_cmp_edges() {
+        let thresholds: [f64; 6] = [0.0, 0.25, 0.25, 0.5, 0.875, 1.0];
+        let samples: [f64; 7] = [0.0, 0.25, 0.375, 0.5, 0.625, 0.875, 0.999_999];
+
+        for sample in samples {
+            let expected = thresholds.binary_search_by(|threshold| threshold.total_cmp(&sample));
+            let actual =
+                thresholds.binary_search_by(|threshold| finite_threshold_cmp(*threshold, sample));
+            assert_eq!(actual, expected, "sample={sample}");
         }
     }
 
