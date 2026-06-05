@@ -100581,4 +100581,64 @@ mod tests {
             assert!((gb[j] - fd).abs() < 1e-6, "broadcast grad b[{j}]={} vs fd {fd}", gb[j]);
         }
     }
+
+    /// Coverage for the segmentation/detection losses dice/tversky/iou/focal,
+    /// which had NO tests. Verify each against an in-Rust reference of its
+    /// documented formula and that the gradient flows to the input.
+    #[test]
+    fn segmentation_losses_match_reference_and_propagate_gradient() {
+        use super::FrankenTorchSession;
+        let inp = vec![0.8_f64, 0.3, 0.6, 0.1];
+        let tgt = vec![1.0_f64, 0.0, 1.0, 0.0];
+        let shape = vec![1usize, 4];
+        let sum = |f: &dyn Fn(usize) -> f64| (0..4).map(f).sum::<f64>();
+
+        // dice: 1 - (2*TP + smooth)/(sum(i)+sum(t)+smooth)
+        let smooth = 1.0;
+        let tp = sum(&|k| inp[k] * tgt[k]);
+        let si: f64 = inp.iter().sum();
+        let st: f64 = tgt.iter().sum();
+        let dice_ref = 1.0 - (2.0 * tp + smooth) / (si + st + smooth);
+
+        // tversky(alpha,beta)
+        let (a, b) = (0.3, 0.7);
+        let fp = sum(&|k| inp[k] * (1.0 - tgt[k]));
+        let fnn = sum(&|k| (1.0 - inp[k]) * tgt[k]);
+        let tversky_ref = 1.0 - (tp + smooth) / (tp + a * fp + b * fnn + smooth);
+
+        // iou: 1 - (TP + smooth)/(union + smooth), union = si + st - TP
+        let iou_ref = 1.0 - (tp + smooth) / (si + st - tp + smooth);
+
+        // focal(alpha,gamma): mean(-alpha_t * (1-p_t)^g * log(p_t)), p = sigmoid(i)
+        let (al, g) = (0.25, 2.0);
+        let focal_ref = sum(&|k| {
+            let p = 1.0 / (1.0 + (-inp[k]).exp());
+            let p_t = tgt[k] * p + (1.0 - tgt[k]) * (1.0 - p);
+            let alpha_t = tgt[k] * al + (1.0 - tgt[k]) * (1.0 - al);
+            -alpha_t * (1.0 - p_t).powf(g) * p_t.max(1e-15).ln()
+        }) / 4.0;
+
+        let cases: [(&str, f64); 4] = [
+            ("dice", dice_ref),
+            ("tversky", tversky_ref),
+            ("iou", iou_ref),
+            ("focal", focal_ref),
+        ];
+        for (name, want) in cases {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let i = s.tensor_variable(inp.clone(), shape.clone(), true).unwrap();
+            let t = s.tensor_variable(tgt.clone(), shape.clone(), false).unwrap();
+            let out = match name {
+                "dice" => s.dice_loss(i, t, smooth).unwrap(),
+                "tversky" => s.tversky_loss(i, t, a, b, smooth).unwrap(),
+                "iou" => s.iou_loss(i, t, smooth).unwrap(),
+                _ => s.focal_loss(i, t, al, g).unwrap(),
+            };
+            let got = s.tensor_values(out).unwrap()[0];
+            assert!((got - want).abs() < 1e-10, "{name}_loss {got} vs ref {want}");
+            let report = s.tensor_backward(out).unwrap();
+            let grad = s.tensor_gradient(&report, i).unwrap_or_else(|| panic!("{name} gradient"));
+            assert!(grad.iter().any(|x| x.abs() > 1e-9), "{name} gradient must be non-trivial");
+        }
+    }
 }
