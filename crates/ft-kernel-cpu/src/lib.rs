@@ -3247,6 +3247,228 @@ pub fn conv2d_backward_f64(
     (dpadded, dweight, dbias)
 }
 
+/// 3-D im2col gather for conv3d over a PADDED `[batch, in_ch, pd, ph, pw]` input.
+/// Panel `[batch·od·oh·ow, in_ch·kd·kh·kw]`, patch-major, `(in_ch,kd,kh,kw)`-minor.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn conv3d_im2col_f64(
+    padded: &[f64],
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f64> {
+    let patch_width = in_ch * kd * kh * kw;
+    let patch_count = od * oh * ow;
+    let mut panel = vec![0.0f64; batch * patch_count * patch_width];
+    panel
+        .par_chunks_mut(patch_width)
+        .enumerate()
+        .for_each(|(row, prow)| {
+            let b = row / patch_count;
+            let pc = row % patch_count;
+            let base_d = (pc / (oh * ow)) * sd;
+            let rem = pc % (oh * ow);
+            let base_h = (rem / ow) * sh;
+            let base_w = (rem % ow) * sw;
+            let batch_off = b * in_ch * pd * ph * pw;
+            for c in 0..in_ch {
+                let ch_off = batch_off + c * pd * ph * pw;
+                let pch = c * kd * kh * kw;
+                for kdd in 0..kd {
+                    let d_off = ch_off + (base_d + kdd) * ph * pw;
+                    let pkd = pch + kdd * kh * kw;
+                    for kr in 0..kh {
+                        let irow = d_off + (base_h + kr) * pw + base_w;
+                        let prow_off = pkd + kr * kw;
+                        for kc in 0..kw {
+                            prow[prow_off + kc] = padded[irow + kc];
+                        }
+                    }
+                }
+            }
+        });
+    panel
+}
+
+/// 3-D col2im: transpose-scatter of [`conv3d_im2col_f64`] (overlaps summed).
+/// Parallel over batch, deterministic within each batch.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn conv3d_col2im_f64(
+    dpanel: &[f64],
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f64> {
+    let patch_width = in_ch * kd * kh * kw;
+    let patch_count = od * oh * ow;
+    let mut dpadded = vec![0.0f64; batch * in_ch * pd * ph * pw];
+    dpadded
+        .par_chunks_mut(in_ch * pd * ph * pw)
+        .enumerate()
+        .for_each(|(b, dpb)| {
+            for pc in 0..patch_count {
+                let base_d = (pc / (oh * ow)) * sd;
+                let rem = pc % (oh * ow);
+                let base_h = (rem / ow) * sh;
+                let base_w = (rem % ow) * sw;
+                let prow = (b * patch_count + pc) * patch_width;
+                for c in 0..in_ch {
+                    let ch_off = c * pd * ph * pw;
+                    let pch = c * kd * kh * kw;
+                    for kdd in 0..kd {
+                        let d_off = ch_off + (base_d + kdd) * ph * pw;
+                        let pkd = pch + kdd * kh * kw;
+                        for kr in 0..kh {
+                            let irow = d_off + (base_h + kr) * pw + base_w;
+                            let prow_off = prow + pkd + kr * kw;
+                            for kc in 0..kw {
+                                dpb[irow + kc] += dpanel[prow_off + kc];
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    dpadded
+}
+
+/// Fused conv3d forward (f64) on a PADDED input: 3-D im2col + `panel @
+/// weight_flat^T` (dgemm_bt) straight to NCDHW, plus optional per-channel bias.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn conv3d_forward_f64(
+    padded: &[f64],
+    weight_flat: &[f64],
+    bias: Option<&[f64]>,
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+    out_ch: usize,
+) -> Vec<f64> {
+    let patch_width = in_ch * kd * kh * kw;
+    let patch_count = od * oh * ow;
+    let flat = batch * patch_count;
+    let panel = conv3d_im2col_f64(padded, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw);
+    let mut out_flat = vec![0.0f64; flat * out_ch];
+    gemm::dgemm_bt(flat, patch_width, out_ch, &panel, weight_flat, &mut out_flat);
+    let mut out = vec![0.0f64; batch * out_ch * patch_count];
+    out.par_chunks_mut(patch_count)
+        .enumerate()
+        .for_each(|(idx, orow)| {
+            let n = idx / out_ch;
+            let oc = idx % out_ch;
+            let bo = bias.map_or(0.0, |bb| bb[oc]);
+            for p in 0..patch_count {
+                orow[p] = out_flat[(n * patch_count + p) * out_ch + oc] + bo;
+            }
+        });
+    out
+}
+
+/// Backward of [`conv3d_forward_f64`]. Returns `(dpadded, dweight_flat, dbias?)`.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn conv3d_backward_f64(
+    dout: &[f64],
+    padded: &[f64],
+    weight_flat: &[f64],
+    batch: usize,
+    in_ch: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+    out_ch: usize,
+    has_bias: bool,
+) -> (Vec<f64>, Vec<f64>, Option<Vec<f64>>) {
+    let patch_width = in_ch * kd * kh * kw;
+    let patch_count = od * oh * ow;
+    let flat = batch * patch_count;
+    let mut dout_flat = vec![0.0f64; flat * out_ch];
+    dout_flat
+        .par_chunks_mut(out_ch)
+        .enumerate()
+        .for_each(|(row, dr)| {
+            let n = row / patch_count;
+            let p = row % patch_count;
+            for (oc, d) in dr.iter_mut().enumerate() {
+                *d = dout[(n * out_ch + oc) * patch_count + p];
+            }
+        });
+    let panel = conv3d_im2col_f64(padded, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw);
+    let mut dout_t = vec![0.0f64; out_ch * flat];
+    for r in 0..flat {
+        for oc in 0..out_ch {
+            dout_t[oc * flat + r] = dout_flat[r * out_ch + oc];
+        }
+    }
+    let mut dweight = vec![0.0f64; out_ch * patch_width];
+    gemm::dgemm(out_ch, flat, patch_width, &dout_t, &panel, &mut dweight);
+    let mut dpanel = vec![0.0f64; flat * patch_width];
+    gemm::dgemm(flat, out_ch, patch_width, &dout_flat, weight_flat, &mut dpanel);
+    let dpadded =
+        conv3d_col2im_f64(&dpanel, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw);
+    let dbias = if has_bias {
+        let mut db = vec![0.0f64; out_ch];
+        for (oc, dbo) in db.iter_mut().enumerate() {
+            let mut s = 0.0f64;
+            for n in 0..batch {
+                let base = (n * out_ch + oc) * patch_count;
+                for p in 0..patch_count {
+                    s += dout[base + p];
+                }
+            }
+            *dbo = s;
+        }
+        Some(db)
+    } else {
+        None
+    };
+    (dpadded, dweight, dbias)
+}
+
 /// Fused per-element Gaussian NLL loss:
 /// `0.5·(log(var) + (target − input)²/var [+ log(2π) if full])`. One pass,
 /// parallel — none of the ~7 full-size op-graph intermediates.

@@ -16343,6 +16343,75 @@ impl FrankenTorchSession {
         let hw_out = Self::checked_mul(output_h, output_w, "conv3d patch count overflow")?;
         let patch_count = Self::checked_mul(output_d, hw_out, "conv3d patch count overflow")?;
 
+        // Fused fast paths (f64): native-layout 3-D im2col/col2im instead of the
+        // output_d*output_h*output_w narrow/cat/bmm composed path. No-grad returns
+        // a leaf; grad routes a custom autograd op on the PADDED input (tensor_pad's
+        // backward un-pads dpadded -> dinput). Non-f64 falls through.
+        let in_grad = self.tensor_tape.tensor_requires_grad(input)?;
+        let w_grad = self.tensor_tape.tensor_requires_grad(weight)?;
+        let b_grad = match bias {
+            Some(b) => self.tensor_tape.tensor_requires_grad(b)?,
+            None => false,
+        };
+        let all_f64 = self.tensor_dtype(input)? == DType::F64
+            && self.tensor_dtype(weight)? == DType::F64
+            && bias.map_or(Ok(true), |b| self.tensor_dtype(b).map(|d| d == DType::F64))?;
+        if all_f64 {
+            let out_shape = vec![batch_size, out_channels, output_d, output_h, output_w];
+            if !in_grad && !w_grad && !b_grad {
+                let pv = self.tensor_values(padded)?;
+                let wv = self.tensor_values(weight)?;
+                let bv = match bias {
+                    Some(b) => Some(self.tensor_values(b)?),
+                    None => None,
+                };
+                let out = ft_kernel_cpu::conv3d_forward_f64(
+                    &pv, &wv, bv.as_deref(), batch_size, in_channels, padded_d, padded_h, padded_w,
+                    kernel_d, kernel_h, kernel_w, output_d, output_h, output_w, stride_d, stride_h,
+                    stride_w, out_channels,
+                );
+                return self.tensor_variable(out, out_shape, false);
+            }
+            let has_bias = bias.is_some();
+            let (b_, ic, pd_, ph_, pw_) = (batch_size, in_channels, padded_d, padded_h, padded_w);
+            let (kd_, kh_, kw_) = (kernel_d, kernel_h, kernel_w);
+            let (od_, oh_, ow_) = (output_d, output_h, output_w);
+            let (sd_, sh_, sw_, oc, pwid) =
+                (stride_d, stride_h, stride_w, out_channels, patch_width);
+            let mut inputs = vec![padded, weight];
+            if let Some(b) = bias {
+                inputs.push(b);
+            }
+            return self.tensor_apply_function(
+                &inputs,
+                move |ctx, ins| {
+                    let (pv, _) = ins[0];
+                    let (wv, _) = ins[1];
+                    let bv = if has_bias { Some(ins[2].0) } else { None };
+                    let out = ft_kernel_cpu::conv3d_forward_f64(
+                        pv, wv, bv, b_, ic, pd_, ph_, pw_, kd_, kh_, kw_, od_, oh_, ow_, sd_, sh_,
+                        sw_, oc,
+                    );
+                    ctx.save_for_backward(pv.to_vec(), vec![b_, ic, pd_, ph_, pw_]);
+                    ctx.save_for_backward(wv.to_vec(), vec![oc, pwid]);
+                    Ok((out, vec![b_, oc, od_, oh_, ow_]))
+                },
+                move |ctx, grad_outputs| {
+                    let dout = grad_outputs[0];
+                    let s = ctx.saved_tensors();
+                    let (dpadded, dweight, dbias) = ft_kernel_cpu::conv3d_backward_f64(
+                        dout, &s[0], &s[1], b_, ic, pd_, ph_, pw_, kd_, kh_, kw_, od_, oh_, ow_, sd_,
+                        sh_, sw_, oc, has_bias,
+                    );
+                    let mut g = vec![Some(dpadded), Some(dweight)];
+                    if has_bias {
+                        g.push(Some(dbias.unwrap()));
+                    }
+                    Ok(g)
+                },
+            );
+        }
+
         let mut patches = Vec::with_capacity(patch_count);
         for out_d in 0..output_d {
             let depth_start = Self::checked_mul(out_d, stride_d, "conv3d depth start overflow")?;
@@ -80072,6 +80141,65 @@ mod tests {
     }
 
     // ── conv3d and conv_transpose tests ────────────────────────────────
+
+    #[test]
+    fn conv3d_grad_matches_finite_diff() {
+        // Fused conv3d grad (custom op: conv3d_forward/backward + 3-D col2im) must
+        // compute the true dinput/dweight/dbias, validated against central finite
+        // differences with stride 1 / padding 1 (overlapping patches exercise col2im).
+        let (n, ic, oc, d, h, w, kd, kh, kw) =
+            (2usize, 2, 3, 3, 3, 3, 2, 2, 2);
+        let nin = n * ic * d * h * w;
+        let nwt = oc * ic * kd * kh * kw;
+        let xv: Vec<f64> = (0..nin).map(|i| ((i % 7) as f64 - 3.0) * 0.2).collect();
+        let wv: Vec<f64> = (0..nwt).map(|i| ((i % 5) as f64 - 2.0) * 0.15).collect();
+        let bv: Vec<f64> = (0..oc).map(|c| 0.1 * c as f64 - 0.1).collect();
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(xv.clone(), vec![n, ic, d, h, w], true).unwrap();
+        let wt = s.tensor_variable(wv.clone(), vec![oc, ic, kd, kh, kw], true).unwrap();
+        let bt = s.tensor_variable(bv.clone(), vec![oc], true).unwrap();
+        let out = s
+            .functional_conv3d(x, wt, Some(bt), (1, 1, 1), (1, 1, 1))
+            .unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        s.tensor_backward(loss).unwrap();
+        let gx = s.tensor_grad(x).unwrap().unwrap();
+        let gw = s.tensor_grad(wt).unwrap().unwrap();
+        let gb = s.tensor_grad(bt).unwrap().unwrap();
+        let loss_fn = |xs: &[f64], ws: &[f64], bs: &[f64]| -> f64 {
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xi = s2.tensor_variable(xs.to_vec(), vec![n, ic, d, h, w], false).unwrap();
+            let wi = s2.tensor_variable(ws.to_vec(), vec![oc, ic, kd, kh, kw], false).unwrap();
+            let bi = s2.tensor_variable(bs.to_vec(), vec![oc], false).unwrap();
+            let o = s2.functional_conv3d(xi, wi, Some(bi), (1, 1, 1), (1, 1, 1)).unwrap();
+            s2.tensor_values(o).unwrap().iter().sum()
+        };
+        let hh = 1e-6;
+        let chk = |g: f64, fd: f64, what: &str, i: usize| {
+            assert!(
+                (g - fd).abs() <= 1e-5 + 1e-4 * fd.abs(),
+                "{what}[{i}]: analytic {g} vs finite-diff {fd}"
+            );
+        };
+        for i in 0..nin {
+            let (mut p, mut m) = (xv.clone(), xv.clone());
+            p[i] += hh;
+            m[i] -= hh;
+            chk(gx[i], (loss_fn(&p, &wv, &bv) - loss_fn(&m, &wv, &bv)) / (2.0 * hh), "dx", i);
+        }
+        for i in 0..nwt {
+            let (mut p, mut m) = (wv.clone(), wv.clone());
+            p[i] += hh;
+            m[i] -= hh;
+            chk(gw[i], (loss_fn(&xv, &p, &bv) - loss_fn(&xv, &m, &bv)) / (2.0 * hh), "dw", i);
+        }
+        for i in 0..oc {
+            let (mut p, mut m) = (bv.clone(), bv.clone());
+            p[i] += hh;
+            m[i] -= hh;
+            chk(gb[i], (loss_fn(&xv, &wv, &p) - loss_fn(&xv, &wv, &m)) / (2.0 * hh), "db", i);
+        }
+    }
 
     #[test]
     fn conv3d_identity_kernel() {
