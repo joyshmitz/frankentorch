@@ -4436,6 +4436,10 @@ impl TensorTape {
         Ok(self.node(node)?.tensor.contiguous_values()?.to_vec())
     }
 
+    pub fn values_len(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        Ok(self.node(node)?.tensor.contiguous_values()?.len())
+    }
+
     pub fn tensor(&self, node: TensorNodeId) -> Result<&DenseTensor, AutogradError> {
         Ok(&self.node(node)?.tensor)
     }
@@ -17461,6 +17465,21 @@ impl TensorTape {
         let node = self.node_mut(id)?;
         node.tensor
             .update_contiguous_values(&new_values)
+            .map_err(AutogradError::DenseTensor)
+    }
+
+    /// Mutate the storage values of a tensor node in-place (version is bumped).
+    pub fn update_tensor_values_with<F>(
+        &mut self,
+        id: TensorNodeId,
+        update: F,
+    ) -> Result<(), AutogradError>
+    where
+        F: FnOnce(&mut [f64]),
+    {
+        let node = self.node_mut(id)?;
+        node.tensor
+            .update_contiguous_values_with(update)
             .map_err(AutogradError::DenseTensor)
     }
 

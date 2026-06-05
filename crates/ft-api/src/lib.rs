@@ -28781,6 +28781,10 @@ impl FrankenTorchSession {
         self.tensor_tape.values(node)
     }
 
+    pub fn tensor_values_len(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
+        self.tensor_tape.values_len(node)
+    }
+
     /// Return both the contiguous values and metadata for a tensor node.
     pub fn tensor_values_meta(
         &self,
@@ -31165,6 +31169,21 @@ impl FrankenTorchSession {
         new_values: Vec<f64>,
     ) -> Result<(), AutogradError> {
         self.update_tensor_values_for_float(param, new_values, PARAM_UPDATE_FLOAT_REASON)
+    }
+
+    /// Mutate a parameter's f64 values directly, bypassing the leaf-grad in-place guard.
+    ///
+    /// The closure cannot fail, so callers must perform all validation before
+    /// mutating the parameter slice.
+    pub fn tensor_update_param_values_f64_with<F>(
+        &mut self,
+        param: TensorNodeId,
+        update: F,
+    ) -> Result<(), AutogradError>
+    where
+        F: FnOnce(&mut [f64]),
+    {
+        self.tensor_tape.update_tensor_values_with(param, update)
     }
 
     // ── Gradient Clipping Utilities ────────────────────────────────────
