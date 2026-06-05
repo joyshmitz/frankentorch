@@ -8,8 +8,43 @@ use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
     cholesky_contiguous_f64, det_contiguous_f64, eig_contiguous_f64, eigh_contiguous_f64,
     eigvals_contiguous_f64, eigvalsh_contiguous_f64, inv_tensor_contiguous_f64,
-    matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64, svdvals_contiguous_f64,
+    matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64, svd_lowrank_contiguous_f64,
+    svdvals_contiguous_f64,
 };
+
+fn bench_svd_lowrank(c: &mut Criterion) {
+    for &n in &[256usize, 512usize] {
+        // Low-rank-plus-tiny-noise n x n (effective rank ~16): the regime where
+        // randomized SVD (O(n^2 k)) dwarfs the full O(n^3) SVD.
+        let r = 16usize;
+        let mut b = vec![0.0_f64; n * r];
+        let mut cm = vec![0.0_f64; r * n];
+        for i in 0..n {
+            for j in 0..r {
+                b[i * r + j] = ((i * 7 + j * 3 + 1) % 23) as f64 * 0.01 - 0.11;
+            }
+        }
+        for i in 0..r {
+            for j in 0..n {
+                cm[i * n + j] = ((i * 5 + j * 2 + 4) % 19) as f64 * 0.01 - 0.09;
+            }
+        }
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0;
+                for k in 0..r {
+                    s += b[i * r + k] * cm[k * n + j];
+                }
+                a[i * n + j] = s + (((i + j) % 7) as f64) * 1e-6;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        c.bench_function(&format!("svd_lowrank_f64_{n}x{n}_q16"), |bch| {
+            bch.iter(|| black_box(svd_lowrank_contiguous_f64(black_box(&a), &meta, 16, 2).unwrap()))
+        });
+    }
+}
 
 fn bench_eig_general(c: &mut Criterion) {
     for &n in &[128usize, 256usize] {
@@ -194,6 +229,7 @@ criterion_group!(
     bench_eigh,
     bench_eig_general,
     bench_svd,
+    bench_svd_lowrank,
     bench_svdvals,
     bench_matrix_exp,
     bench_inv,

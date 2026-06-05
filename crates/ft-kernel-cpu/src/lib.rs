@@ -9510,6 +9510,136 @@ pub fn svdvals_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f64
     Ok(s)
 }
 
+/// One draw from a deterministic SplitMix64 stream, mapped to a uniform in (0,1).
+fn splitmix_uniform(state: &mut u64) -> f64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // 53-bit mantissa -> (0, 1).
+    ((z >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+}
+
+/// `out` (= ca x cb) = `A^T · B`, where `A` is `ra x ca` and `B` is `ra x cb`
+/// (both row-major). Materialises `A^T` then routes through the cache-blocked GEMM.
+fn mat_at_b(a: &[f64], ra: usize, ca: usize, b: &[f64], cb: usize, out: &mut [f64]) {
+    let mut at = vec![0.0f64; ca * ra];
+    for i in 0..ra {
+        for j in 0..ca {
+            at[j * ra + i] = a[i * ca + j];
+        }
+    }
+    gemm::dgemm(ca, ra, cb, &at, b, out);
+}
+
+/// Randomized truncated SVD (Halko-Martinsson-Tropp). Returns an approximate
+/// rank-`q` factorisation `A ≈ U·diag(s)·Vh` in `O(m·n·l)` (l = q + oversampling)
+/// instead of the full SVD's `O(m·n²)` — a large win when `q << min(m,n)`
+/// (PCA / low-rank approximation). `niter` subspace power iterations sharpen the
+/// estimate for slowly-decaying spectra. The Gaussian sketch is seeded
+/// deterministically from the shape so results are reproducible. For a matrix of
+/// exact rank ≤ q the factorisation is accurate to working precision.
+pub fn svd_lowrank_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+    q: usize,
+    niter: usize,
+) -> Result<SvdResult, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![2],
+        });
+    }
+    let m = shape[0];
+    let n = shape[1];
+    if m == 0 || n == 0 {
+        return Ok(SvdResult {
+            u: Vec::new(),
+            s: Vec::new(),
+            vh: Vec::new(),
+            m,
+            n,
+            k: 0,
+        });
+    }
+    let offset = meta.storage_offset();
+    let a = data[offset..offset + m * n].to_vec();
+
+    let max_rank = m.min(n);
+    let q = q.clamp(1, max_rank);
+    // Sketch width: target rank + oversampling, capped at the smaller dimension.
+    let l = (q + 6).min(max_rank);
+
+    // Gaussian sketch Omega (n x l) via SplitMix64 + Box-Muller.
+    let mut rng = 0x243F_6A88_85A3_08D3u64 ^ ((m as u64) << 32) ^ (n as u64).wrapping_mul(2_654_435_761);
+    let mut omega = vec![0.0f64; n * l];
+    let mut idx = 0;
+    while idx < omega.len() {
+        let u1 = splitmix_uniform(&mut rng);
+        let u2 = splitmix_uniform(&mut rng);
+        let r = (-2.0 * u1.ln()).sqrt();
+        let ang = std::f64::consts::TAU * u2;
+        omega[idx] = r * ang.cos();
+        idx += 1;
+        if idx < omega.len() {
+            omega[idx] = r * ang.sin();
+            idx += 1;
+        }
+    }
+
+    // Y = A · Omega  (m x l).
+    let mut y = vec![0.0f64; m * l];
+    gemm::dgemm(m, n, l, &a, &omega, &mut y);
+
+    // Subspace power iterations: Y <- A·(A^T·Y).
+    for _ in 0..niter {
+        let mut z = vec![0.0f64; n * l]; // z = A^T · Y
+        mat_at_b(&a, m, n, &y, l, &mut z);
+        gemm::dgemm(m, n, l, &a, &z, &mut y); // y = A · z
+    }
+
+    // Orthonormal basis Q (m x l) of range(Y) via reduced QR.
+    let y_meta = TensorMeta::from_shape(vec![m, l], meta.dtype(), meta.device());
+    let qr = qr_contiguous_f64(&y, &y_meta, true)?;
+    let qmat = qr.q; // m x l
+    let lq = qr.n;
+
+    // B = Q^T · A  (lq x n), then its (small) full SVD.
+    let mut b = vec![0.0f64; lq * n];
+    mat_at_b(&qmat, m, lq, &a, n, &mut b);
+    let b_meta = TensorMeta::from_shape(vec![lq, n], meta.dtype(), meta.device());
+    let bsvd = svd_contiguous_f64(&b, &b_meta, false)?;
+    let kb = bsvd.k;
+
+    // U = Q · Ub  (m x kb).
+    let mut u_full = vec![0.0f64; m * kb];
+    gemm::dgemm(m, lq, kb, &qmat, &bsvd.u, &mut u_full);
+
+    // Truncate to the top-q components.
+    let out_k = q.min(kb);
+    let mut u = vec![0.0f64; m * out_k];
+    for i in 0..m {
+        for j in 0..out_k {
+            u[i * out_k + j] = u_full[i * kb + j];
+        }
+    }
+    let s = bsvd.s[..out_k].to_vec();
+    let vh = bsvd.vh[..out_k * n].to_vec();
+
+    Ok(SvdResult {
+        u,
+        s,
+        vh,
+        m,
+        n,
+        k: out_k,
+    })
+}
+
 /// Result of QR decomposition.
 #[derive(Debug, Clone)]
 pub struct QrResult {
@@ -17961,6 +18091,68 @@ mod tests {
                     a[i * n + j]
                 );
             }
+        }
+    }
+
+    #[test]
+    fn svd_lowrank_recovers_exact_low_rank() {
+        // A = B·C has exact rank 3. Randomized SVD with target q>=3 must recover
+        // it to working precision, and its top-3 singular values must match the
+        // full SVD's. Validates the Halko-Martinsson-Tropp range finder + the
+        // Q^T·A small-SVD step against the exact factorization.
+        let (m, n, r) = (10usize, 7usize, 3usize);
+        let mut b = vec![0.0f64; m * r];
+        for i in 0..m {
+            for j in 0..r {
+                b[i * r + j] = ((i * 5 + j * 3 + 1) % 13) as f64 * 0.1 - 0.6;
+            }
+        }
+        let mut c = vec![0.0f64; r * n];
+        for i in 0..r {
+            for j in 0..n {
+                c[i * n + j] = ((i * 7 + j * 2 + 4) % 11) as f64 * 0.1 - 0.5;
+            }
+        }
+        let mut a = vec![0.0f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0.0;
+                for k in 0..r {
+                    s += b[i * r + k] * c[k * n + j];
+                }
+                a[i * n + j] = s;
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        let lr = super::svd_lowrank_contiguous_f64(&a, &meta, 4, 2).unwrap();
+        let k = lr.k;
+        // reconstruction U·diag(s)·Vh ≈ A
+        for i in 0..m {
+            for j in 0..n {
+                let mut val = 0.0;
+                for c2 in 0..k {
+                    val += lr.u[i * k + c2] * lr.s[c2] * lr.vh[c2 * n + j];
+                }
+                assert!(
+                    (val - a[i * n + j]).abs() < 1e-7,
+                    "lowrank recon[{i},{j}] = {val} vs {}",
+                    a[i * n + j]
+                );
+            }
+        }
+        // top-3 singular values match the full SVD's.
+        let full = super::svd_contiguous_f64(&a, &meta, false).unwrap();
+        for t in 0..r {
+            assert!(
+                (lr.s[t] - full.s[t]).abs() < 1e-7,
+                "singular value {t}: lowrank {} vs full {}",
+                lr.s[t],
+                full.s[t]
+            );
+        }
+        // descending, non-negative
+        for w in lr.s.windows(2) {
+            assert!(w[0] >= w[1] - 1e-12 && w[1] >= -1e-12);
         }
     }
 
