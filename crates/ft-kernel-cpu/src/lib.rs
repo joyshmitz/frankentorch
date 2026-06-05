@@ -3247,6 +3247,114 @@ pub fn conv2d_backward_f64(
     (dpadded, dweight, dbias)
 }
 
+/// Fused avg-pool2d forward (f64) over a PADDED `[batch, ch, ph, pw]` input.
+/// Per output: sum over its (clamped) `kh×kw` window divided by the divisor —
+/// `count_include_pad` ? window size : in-bounds (non-pad) element count. Padded
+/// zeros sum to 0 so the sum is identical either way; only the divisor differs.
+/// `ceil_mode` is handled by the window clamp (`row_end = min(start+kh, ph)`).
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn avg_pool2d_forward_f64(
+    padded: &[f64],
+    batch: usize,
+    ch: usize,
+    ph: usize,
+    pw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+    pad_h: usize,
+    pad_w: usize,
+    ih: usize,
+    iw: usize,
+    count_include_pad: bool,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; batch * ch * oh * ow];
+    out.par_chunks_mut(oh * ow).enumerate().for_each(|(plane, orow)| {
+        let pbase = plane * ph * pw;
+        for oy in 0..oh {
+            let rs = oy * sh;
+            let re = (rs + kh).min(ph);
+            let vrlen = re.min(pad_h + ih).saturating_sub(rs.max(pad_h));
+            for ox in 0..ow {
+                let cs = ox * sw;
+                let ce = (cs + kw).min(pw);
+                let vclen = ce.min(pad_w + iw).saturating_sub(cs.max(pad_w));
+                let mut sum = 0.0f64;
+                for r in rs..re {
+                    let irow = pbase + r * pw;
+                    for c in cs..ce {
+                        sum += padded[irow + c];
+                    }
+                }
+                let div = if count_include_pad {
+                    ((re - rs) * (ce - cs)) as f64
+                } else {
+                    (vrlen * vclen) as f64
+                };
+                orow[oy * ow + ox] = sum / div;
+            }
+        }
+    });
+    out
+}
+
+/// Backward of [`avg_pool2d_forward_f64`]: distributes each output gradient
+/// equally (`dout/divisor`) to every position in its window of `dpadded`
+/// (pad-position grads are later dropped by `tensor_pad`'s backward). Parallel
+/// over `(batch,ch)` planes; overlapping windows accumulate deterministically.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn avg_pool2d_backward_f64(
+    dout: &[f64],
+    batch: usize,
+    ch: usize,
+    ph: usize,
+    pw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+    pad_h: usize,
+    pad_w: usize,
+    ih: usize,
+    iw: usize,
+    count_include_pad: bool,
+) -> Vec<f64> {
+    let mut dp = vec![0.0f64; batch * ch * ph * pw];
+    dp.par_chunks_mut(ph * pw).enumerate().for_each(|(plane, dprow)| {
+        let dbase = plane * oh * ow;
+        for oy in 0..oh {
+            let rs = oy * sh;
+            let re = (rs + kh).min(ph);
+            let vrlen = re.min(pad_h + ih).saturating_sub(rs.max(pad_h));
+            for ox in 0..ow {
+                let cs = ox * sw;
+                let ce = (cs + kw).min(pw);
+                let vclen = ce.min(pad_w + iw).saturating_sub(cs.max(pad_w));
+                let div = if count_include_pad {
+                    ((re - rs) * (ce - cs)) as f64
+                } else {
+                    (vrlen * vclen) as f64
+                };
+                let g = dout[dbase + oy * ow + ox] / div;
+                for r in rs..re {
+                    let irow = r * pw;
+                    for c in cs..ce {
+                        dprow[irow + c] += g;
+                    }
+                }
+            }
+        }
+    });
+    dp
+}
+
 /// Fused max-pool2d forward (f64): per output `[n,c,oy,ox]`, the max over its
 /// `kh×kw` window of `[batch, ch, ih, iw]`. One pass, parallel over `(batch,ch)`
 /// planes.

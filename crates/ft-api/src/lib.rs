@@ -17120,6 +17120,45 @@ impl FrankenTorchSession {
             "avg_pool2d flattened channels overflow",
         )?;
         let patch_count = Self::checked_mul(output_h, output_w, "avg_pool2d patch count overflow")?;
+
+        // Fused fast paths (f64): one windowed-mean pass over the padded input
+        // instead of the output_h*output_w narrow/sum/div/cat composed path. The
+        // backward distributes dout/divisor (geometry-only — no saved input). The
+        // custom op operates on the PADDED input; tensor_pad's backward un-pads.
+        if self.tensor_dtype(input)? == DType::F64 {
+            let out_shape = vec![batch_size, channels, output_h, output_w];
+            let cip = count_include_pad;
+            let (b_, ch_, ph_, pw_) = (batch_size, channels, padded_h, padded_w);
+            let (kh_, kw_, oh_, ow_, sh_, sw_) =
+                (kernel_h, kernel_w, output_h, output_w, stride_h, stride_w);
+            let (pdh, pdw, ih_, iw_) = (padding_h, padding_w, input_h, input_w);
+            if !self.tensor_tape.tensor_requires_grad(input)? {
+                let pv = self.tensor_values(padded)?;
+                let out = ft_kernel_cpu::avg_pool2d_forward_f64(
+                    &pv, b_, ch_, ph_, pw_, kh_, kw_, oh_, ow_, sh_, sw_, pdh, pdw, ih_, iw_, cip,
+                );
+                return self.tensor_variable(out, out_shape, false);
+            }
+            return self.tensor_apply_function(
+                &[padded],
+                move |_ctx, ins| {
+                    let (pv, _) = ins[0];
+                    let out = ft_kernel_cpu::avg_pool2d_forward_f64(
+                        pv, b_, ch_, ph_, pw_, kh_, kw_, oh_, ow_, sh_, sw_, pdh, pdw, ih_, iw_, cip,
+                    );
+                    Ok((out, vec![b_, ch_, oh_, ow_]))
+                },
+                move |_ctx, grad_outputs| {
+                    let dout = grad_outputs[0];
+                    let dp = ft_kernel_cpu::avg_pool2d_backward_f64(
+                        dout, b_, ch_, ph_, pw_, kh_, kw_, oh_, ow_, sh_, sw_, pdh, pdw, ih_, iw_,
+                        cip,
+                    );
+                    Ok(vec![Some(dp)])
+                },
+            );
+        }
+
         let mut patches = Vec::with_capacity(patch_count);
         for out_h in 0..output_h {
             let row_start = Self::checked_mul(out_h, stride_h, "avg_pool2d row start overflow")?;
@@ -83161,6 +83200,45 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(shape, vec![1, 1, 2]);
         assert_eq!(vals, vec![2.0, 6.0]);
+    }
+
+    #[test]
+    fn functional_avg_pool2d_grad_matches_finite_diff() {
+        // Fused avg_pool2d grad must match central finite differences across the
+        // padding / count_include_pad combinations (the divisor varies).
+        let (n, c, h, w) = (2usize, 2usize, 5usize, 5usize);
+        let nin = n * c * h * w;
+        let xv: Vec<f64> = (0..nin).map(|i| ((i % 9) as f64 - 4.0) * 0.2 + 0.01 * i as f64).collect();
+        for &(pad, cip) in &[(0usize, true), (1usize, true), (1usize, false)] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(xv.clone(), vec![n, c, h, w], true).unwrap();
+            let out = s
+                .functional_avg_pool2d(x, (3, 3), (2, 2), (pad, pad), false, cip)
+                .unwrap();
+            let loss = s.tensor_sum(out).unwrap();
+            s.tensor_backward(loss).unwrap();
+            let gx = s.tensor_grad(x).unwrap().unwrap();
+            let loss_fn = |xs: &[f64]| -> f64 {
+                let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+                let xi = s2.tensor_variable(xs.to_vec(), vec![n, c, h, w], false).unwrap();
+                let o = s2
+                    .functional_avg_pool2d(xi, (3, 3), (2, 2), (pad, pad), false, cip)
+                    .unwrap();
+                s2.tensor_values(o).unwrap().iter().sum()
+            };
+            let hh = 1e-6;
+            for i in 0..nin {
+                let (mut p, mut m) = (xv.clone(), xv.clone());
+                p[i] += hh;
+                m[i] -= hh;
+                let fd = (loss_fn(&p) - loss_fn(&m)) / (2.0 * hh);
+                assert!(
+                    (gx[i] - fd).abs() <= 1e-5 + 1e-4 * fd.abs(),
+                    "pad={pad} cip={cip} dx[{i}]: {} vs {fd}",
+                    gx[i]
+                );
+            }
+        }
     }
 
     #[test]
