@@ -42844,6 +42844,45 @@ impl FrankenTorchSession {
         self.tensor_svd_lowrank(input, q, niter)
     }
 
+    /// Randomized PCA (`torch.pca_lowrank`). With `center = true` the columns are
+    /// mean-centered (rows = samples, columns = features) before the randomized
+    /// truncated SVD. Returns `(U[m,k], S[k], V[n,k])` — note `V`, not `Vh`,
+    /// matching `torch.pca_lowrank`. O(m·n·q); forward / no-grad.
+    pub fn tensor_pca_lowrank(
+        &mut self,
+        input: TensorNodeId,
+        q: usize,
+        center: bool,
+        niter: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let result = ft_kernel_cpu::pca_lowrank_contiguous_f64(&values, &meta, q, center, niter)
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let (m, n, k) = (result.m, result.n, result.k);
+        // torch.pca_lowrank returns V (n x k) = Vh^T.
+        let mut v = vec![0.0_f64; n * k];
+        for i in 0..k {
+            for j in 0..n {
+                v[j * k + i] = result.vh[i * n + j];
+            }
+        }
+        let u_node = self.tensor_variable(result.u, vec![m, k], false)?;
+        let s_node = self.tensor_variable(result.s, vec![k], false)?;
+        let v_node = self.tensor_variable(v, vec![n, k], false)?;
+        Ok((u_node, s_node, v_node))
+    }
+
+    /// Alias for [`tensor_pca_lowrank`]. Equivalent to `torch.pca_lowrank`.
+    pub fn functional_pca_lowrank(
+        &mut self,
+        input: TensorNodeId,
+        q: usize,
+        center: bool,
+        niter: usize,
+    ) -> Result<(TensorNodeId, TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_pca_lowrank(input, q, center, niter)
+    }
+
     /// Alias for `tensor_linalg_svd`. Equivalent to deprecated `torch.svd`.
     ///
     /// Note: PyTorch's deprecated torch.svd returns (U, S, V) where V is
@@ -78687,6 +78726,55 @@ mod tests {
                     (val - a_data[i * n + j]).abs() < 1e-7,
                     "lowrank recon[{i},{j}] = {val}, expected {}",
                     a_data[i * n + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pca_lowrank_op_centers_and_recovers() {
+        // Rank-2 latent structure + a per-column offset. tensor_pca_lowrank with
+        // center=true must remove the offset and recover the CENTERED data via
+        // U·diag(S)·V^T (V is n x k, the torch.pca_lowrank convention).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let (m, n) = (8usize, 4usize);
+        let mut a = vec![0.0f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let f1 = (i as f64) * 0.1;
+                let f2 = ((i * i) as f64) * 0.01;
+                a[i * n + j] =
+                    f1 * ((j + 1) as f64) + f2 * ((j as f64) - 1.5) + 3.0 * ((j + 1) as f64);
+            }
+        }
+        let at = s.tensor_variable(a.clone(), vec![m, n], false).unwrap();
+        let (u, sv, v) = s.tensor_pca_lowrank(at, 3, true, 2).unwrap();
+        let uv = s.tensor_values(u).unwrap();
+        let svv = s.tensor_values(sv).unwrap();
+        let vv = s.tensor_values(v).unwrap(); // n x k
+        let k = svv.len();
+        // centered reference
+        let mut ac = a.clone();
+        for j in 0..n {
+            let mut mean = 0.0;
+            for i in 0..m {
+                mean += a[i * n + j];
+            }
+            mean /= m as f64;
+            for i in 0..m {
+                ac[i * n + j] -= mean;
+            }
+        }
+        for i in 0..m {
+            for j in 0..n {
+                let mut val = 0.0;
+                for l in 0..k {
+                    val += uv[i * k + l] * svv[l] * vv[j * k + l];
+                }
+                assert!(
+                    (val - ac[i * n + j]).abs() < 1e-6,
+                    "pca recon[{i},{j}] = {val}, centered = {}",
+                    ac[i * n + j]
                 );
             }
         }

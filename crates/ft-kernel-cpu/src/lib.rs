@@ -9640,6 +9640,56 @@ pub fn svd_lowrank_contiguous_f64(
     })
 }
 
+/// Randomized PCA (`torch.pca_lowrank`). Optionally centers the columns
+/// (subtract each column's mean, treating rows as samples / columns as
+/// features), then runs the randomized truncated SVD. Returns the reduced
+/// `(U, S, Vh)`; the caller transposes `Vh` to the `V` that `torch.pca_lowrank`
+/// reports. O(m·n·q) via [`svd_lowrank_contiguous_f64`].
+pub fn pca_lowrank_contiguous_f64(
+    data: &[f64],
+    meta: &TensorMeta,
+    q: usize,
+    center: bool,
+    niter: usize,
+) -> Result<SvdResult, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![2],
+        });
+    }
+    let m = shape[0];
+    let n = shape[1];
+    if m == 0 || n == 0 {
+        return Ok(SvdResult {
+            u: Vec::new(),
+            s: Vec::new(),
+            vh: Vec::new(),
+            m,
+            n,
+            k: 0,
+        });
+    }
+    let offset = meta.storage_offset();
+    let mut a = data[offset..offset + m * n].to_vec();
+    if center {
+        for j in 0..n {
+            let mut mean = 0.0;
+            for i in 0..m {
+                mean += a[i * n + j];
+            }
+            mean /= m as f64;
+            for i in 0..m {
+                a[i * n + j] -= mean;
+            }
+        }
+    }
+    let a_meta = TensorMeta::from_shape(vec![m, n], meta.dtype(), meta.device());
+    svd_lowrank_contiguous_f64(&a, &a_meta, q, niter)
+}
+
 /// Result of QR decomposition.
 #[derive(Debug, Clone)]
 pub struct QrResult {
