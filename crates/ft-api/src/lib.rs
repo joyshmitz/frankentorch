@@ -42883,6 +42883,43 @@ impl FrankenTorchSession {
         self.tensor_pca_lowrank(input, q, center, niter)
     }
 
+    /// Top-`k` (or bottom-`k` if `largest = false`) eigenpairs of a real-symmetric
+    /// matrix via LOBPCG (`torch.lobpcg`). Returns `(eigenvalues[k],
+    /// eigenvectors[n, k])`, with eigenvector columns, in `O(n^2 k)` per
+    /// iteration -- far cheaper than the full eigh's `O(n^3)` when `k << n`.
+    /// Iterative/approximate (converges to `tol` residual within `niter` steps);
+    /// forward / no-grad.
+    pub fn tensor_lobpcg(
+        &mut self,
+        input: TensorNodeId,
+        k: usize,
+        largest: bool,
+        niter: usize,
+        tol: f64,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let (values, meta) = self.tensor_values_meta(input)?;
+        let n = meta.shape().first().copied().unwrap_or(0);
+        let (evals, evecs) =
+            ft_kernel_cpu::lobpcg_contiguous_f64(&values, &meta, k, largest, niter, tol)
+                .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+        let kk = evals.len();
+        let evals_node = self.tensor_variable(evals, vec![kk], false)?;
+        let evecs_node = self.tensor_variable(evecs, vec![n, kk], false)?;
+        Ok((evals_node, evecs_node))
+    }
+
+    /// Alias for [`tensor_lobpcg`]. Equivalent to `torch.lobpcg`.
+    pub fn functional_lobpcg(
+        &mut self,
+        input: TensorNodeId,
+        k: usize,
+        largest: bool,
+        niter: usize,
+        tol: f64,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        self.tensor_lobpcg(input, k, largest, niter, tol)
+    }
+
     /// Alias for `tensor_linalg_svd`. Equivalent to deprecated `torch.svd`.
     ///
     /// Note: PyTorch's deprecated torch.svd returns (U, S, V) where V is
@@ -48311,6 +48348,7 @@ impl FrankenTorchSession {
     /// Half the inverse-FFT work of the current full-`n` complex transform.
     /// Equals the dense path up to FFT round-off (~ULP), matching PyTorch.
     /// Validated by `irfft_1d_matches_full_complex_within_tolerance`.
+    #[cfg(test)]
     #[must_use]
     fn irfft_1d_f64(in_re: &[f64], in_im: &[f64], n: usize) -> Vec<f64> {
         debug_assert!(n.is_multiple_of(2), "irfft_1d_f64 requires even n");
@@ -78776,6 +78814,69 @@ mod tests {
                     "pca recon[{i},{j}] = {val}, centered = {}",
                     ac[i * n + j]
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn lobpcg_api_matches_eigh_extreme_pairs() {
+        let n = 32usize;
+        let k = 3usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = (((i * 7 + j * 3 + 1) % 13) as f64) * 0.05;
+            }
+        }
+        for i in 0..n {
+            for j in 0..i {
+                let s = 0.5 * (a[i * n + j] + a[j * n + i]);
+                a[i * n + j] = s;
+                a[j * n + i] = s;
+            }
+            a[i * n + i] += i as f64;
+        }
+
+        for &largest in &[true, false] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s.tensor_variable(a.clone(), vec![n, n], false).unwrap();
+            let (evals, evecs) = if largest {
+                s.tensor_lobpcg(input, k, true, 300, 1e-10).unwrap()
+            } else {
+                s.functional_lobpcg(input, k, false, 300, 1e-10).unwrap()
+            };
+            assert_eq!(s.tensor_shape(evals).unwrap(), vec![k]);
+            assert_eq!(s.tensor_shape(evecs).unwrap(), vec![n, k]);
+
+            let eval_vals = s.tensor_values(evals).unwrap();
+            let evec_vals = s.tensor_values(evecs).unwrap();
+            let input_full = s.tensor_variable(a.clone(), vec![n, n], false).unwrap();
+            let (full_evals, _) = s.tensor_linalg_eigh(input_full).unwrap();
+            let full_vals = s.tensor_values(full_evals).unwrap();
+
+            for t in 0..k {
+                let expected = if largest { full_vals[n - 1 - t] } else { full_vals[t] };
+                assert!(
+                    (eval_vals[t] - expected).abs() < 1e-6,
+                    "lobpcg eval {t} largest={largest}: got {}, expected {}",
+                    eval_vals[t],
+                    expected
+                );
+            }
+
+            for t in 0..k {
+                let lam = eval_vals[t];
+                for row in 0..n {
+                    let mut av = 0.0;
+                    for col in 0..n {
+                        av += a[row * n + col] * evec_vals[col * k + t];
+                    }
+                    let lv = lam * evec_vals[row * k + t];
+                    assert!(
+                        (av - lv).abs() < 1e-5,
+                        "A*v != lambda*v at pair {t} row {row}, largest={largest}: {av} vs {lv}"
+                    );
+                }
             }
         }
     }
