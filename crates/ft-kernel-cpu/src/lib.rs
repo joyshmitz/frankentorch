@@ -7771,30 +7771,12 @@ pub fn matrix_exp_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<
         *v *= scale;
     }
 
-    // Padé [6/6] coefficients (from Higham's "The Scaling and Squaring Method")
-    let _b: [f64; 7] = [
-        1.0,
-        1.0 / 2.0,
-        1.0 / 9.0, // b2 = 1/(2*3*3) actually let me use proper coefficients
-        1.0 / 72.0,
-        1.0 / 1008.0,
-        1.0 / 30240.0,
-        1.0 / 1209600.0,
-    ];
-
-    // Actually, use the standard Padé coefficients for [6/6]:
-    // p6 = b0*I + b1*A + b2*A^2 + b3*A^3 + b4*A^4 + b5*A^5 + b6*A^6
-    // q6 = b0*I - b1*A + b2*A^2 - b3*A^3 + b4*A^4 - b5*A^5 + b6*A^6
-    // exp(A) ≈ q6^-1 * p6
-    //
-    // But the standard coefficients for Padé[p/p] of exp(x) centered at 0 are:
-    // b_k = (2p - k)! * p! / ((2p)! * k! * (p-k)!)
-    // For p=6: b_k = (12-k)! * 6! / (12! * k! * (6-k)!)
-
-    // Instead, let's use a simpler approach: Taylor series with enough terms
-    // exp(A) ≈ I + A + A^2/2! + A^3/3! + ... + A^12/12!
-    // Since we've scaled ||A|| <= 0.5, 12 terms gives machine precision
-
+    // Scaling-and-squaring with a Taylor approximant: since the scaling above
+    // guarantees ||A/2^s||_1 <= 0.5, the 13-term Taylor polynomial
+    //   exp(B) ≈ I + B + B^2/2! + ... + B^12/12!
+    // is accurate to ~machine precision; `exp(A) = (exp(A/2^s))^(2^s)` recovers it
+    // by `s` squarings. Validated by `matrix_exp_defining_properties` (diag,
+    // nilpotent, and exp(A)·exp(-A) = I).
     let mut identity = vec![0.0f64; n * n];
     for i in 0..n {
         identity[i * n + i] = 1.0;
@@ -17203,6 +17185,60 @@ mod tests {
     }
 
     #[test]
+    fn matrix_exp_defining_properties() {
+        // (1) expm of a diagonal matrix = diag(exp(diagonal)).
+        let meta3 = TensorMeta::from_shape(vec![3, 3], DType::F64, Device::Cpu);
+        #[rustfmt::skip]
+        let diag = vec![
+            1.0, 0.0, 0.0,
+            0.0, -1.0, 0.0,
+            0.0, 0.0, 2.0,
+        ];
+        let e = super::matrix_exp_contiguous_f64(&diag, &meta3).unwrap();
+        #[rustfmt::skip]
+        let want = vec![
+            1.0_f64.exp(), 0.0, 0.0,
+            0.0, (-1.0_f64).exp(), 0.0,
+            0.0, 0.0, 2.0_f64.exp(),
+        ];
+        assert_mat_approx_eq(&e, &want, 1e-9, "expm(diag) = diag(exp)");
+
+        // (2) expm of a nilpotent N=[[0,1],[0,0]] is exactly I + N = [[1,1],[0,1]].
+        let meta2 = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
+        let nil = vec![0.0, 1.0, 0.0, 0.0];
+        let en = super::matrix_exp_contiguous_f64(&nil, &meta2).unwrap();
+        assert_mat_approx_eq(&en, &[1.0, 1.0, 0.0, 1.0], 1e-12, "expm(nilpotent)");
+
+        // (3) expm(A)·expm(-A) = I — exercises scaling-and-squaring on a larger-norm,
+        //     non-normal matrix.
+        let n = 3;
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 2.0, 0.0,
+            0.0, 1.0, 3.0,
+            1.0, 0.0, 1.0,
+        ];
+        let neg: Vec<f64> = a.iter().map(|x| -x).collect();
+        let ea = super::matrix_exp_contiguous_f64(&a, &meta3).unwrap();
+        let ena = super::matrix_exp_contiguous_f64(&neg, &meta3).unwrap();
+        let mut prod = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0;
+                for k in 0..n {
+                    s += ea[i * n + k] * ena[k * n + j];
+                }
+                prod[i * n + j] = s;
+            }
+        }
+        let mut ident = vec![0.0f64; n * n];
+        for i in 0..n {
+            ident[i * n + i] = 1.0;
+        }
+        assert_mat_approx_eq(&prod, &ident, 1e-9, "expm(A)·expm(-A) = I");
+    }
+
+    #[test]
     fn lu_solve_simple_system() {
         // Solve A * x = b where A = [[2, 1], [5, 3]], b = [4, 7]
         // Expected: x = [5, -6]
@@ -17885,6 +17921,45 @@ mod tests {
                 }
                 assert!(
                     (val - a[i * n + j]).abs() < 1e-10,
+                    "reconstructed[{i},{j}] = {val}, expected {}",
+                    a[i * n + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn svd_rank_deficient_reconstructs() {
+        // Row 2 = 2·row 1 -> rank 3 (one exactly-zero singular value). SVD must
+        // still reconstruct A = U·diag(s)·Vh and produce a near-zero singular value.
+        let (m, n) = (4usize, 4usize);
+        #[rustfmt::skip]
+        let a = vec![
+            1.0, 2.0, 3.0, 4.0,
+            2.0, 4.0, 6.0, 8.0,
+            1.0, 0.0, 1.0, 0.0,
+            0.0, 1.0, 0.0, 1.0,
+        ];
+        let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        let r = super::svd_contiguous_f64(&a, &meta, false).unwrap();
+        let k = r.k;
+        // smallest singular value ~ 0 (rank deficiency)
+        let smin = r.s.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!(smin < 1e-9, "rank-deficient matrix should have a ~0 singular value, got {smin}");
+        // singular values non-negative and descending
+        for w in r.s.windows(2) {
+            assert!(w[0] >= w[1] - 1e-12, "singular values must be descending");
+            assert!(w[1] >= -1e-12, "singular values must be non-negative");
+        }
+        // reconstruction U·diag(s)·Vh = A
+        for i in 0..m {
+            for j in 0..n {
+                let mut val = 0.0;
+                for l in 0..k {
+                    val += r.u[i * k + l] * r.s[l] * r.vh[l * n + j];
+                }
+                assert!(
+                    (val - a[i * n + j]).abs() < 1e-9,
                     "reconstructed[{i},{j}] = {val}, expected {}",
                     a[i * n + j]
                 );
