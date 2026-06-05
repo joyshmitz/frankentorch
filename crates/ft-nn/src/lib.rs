@@ -12747,6 +12747,11 @@ impl RNN {
             return Ok((outputs, h));
         }
 
+        // Inference fast path: raw f64 sweep, no per-timestep op-graph/tape.
+        if !session.is_grad_enabled() {
+            return self.run_direction_no_grad(session, cell, inputs, h_0, reverse);
+        }
+
         // Hoist the two constant weight transposes out of the time loop and batch
         // the non-recurrent input projection X@W_ih^T across ALL timesteps in a
         // single GEMM; each step then runs only its recurrent matmul + bias +
@@ -12779,6 +12784,81 @@ impl RNN {
         }
 
         Ok((outputs, h))
+    }
+
+    /// Inference (no-grad) fast path for one direction of one vanilla-RNN layer.
+    ///
+    /// Raw `f64` sweep: the input projection `X @ W_ih^T` is one batched GEMM over
+    /// all timesteps; each step does a single recurrent GEMM `h @ W_hh^T` plus the
+    /// inline `tanh`/`relu(((xw+hw)+b_ih)+b_hh)`. No per-timestep op-graph nodes,
+    /// intermediates, or tape. Both GEMMs go through
+    /// `ft_kernel_cpu::linear_tensor_f64` (the same `dgemm_bt` the op-graph uses),
+    /// matching the op-graph forward bit-for-bit.
+    fn run_direction_no_grad(
+        &self,
+        session: &mut FrankenTorchSession,
+        cell: &RNNCell,
+        inputs: &[TensorNodeId],
+        h_0: TensorNodeId,
+        reverse: bool,
+    ) -> Result<(Vec<TensorNodeId>, TensorNodeId), AutogradError> {
+        let seq_len = inputs.len();
+        let h_size = self.hidden_size;
+        let use_tanh = cell.use_tanh;
+        let (in_features, batch) = {
+            let (_, meta) = session.tensor_values_meta(inputs[0])?;
+            (meta.shape()[1], meta.shape()[0])
+        };
+
+        let stacked = session.tensor_cat(inputs, 0)?;
+        let stacked_vals = session.tensor_values(stacked)?;
+        let w_ih = session.tensor_values(cell.w_ih)?;
+        let w_hh = session.tensor_values(cell.w_hh)?;
+        let b_ih = session.tensor_values(cell.b_ih)?;
+        let b_hh = session.tensor_values(cell.b_hh)?;
+        let mut h = session.tensor_values(h_0)?;
+
+        let xw_all = ft_kernel_cpu::linear_tensor_f64(
+            &stacked_vals,
+            &w_ih,
+            None,
+            seq_len * batch,
+            in_features,
+            h_size,
+        );
+
+        let mut outputs_raw: Vec<Vec<f64>> = vec![Vec::new(); seq_len];
+        let step = |t: usize, h: &mut Vec<f64>, outputs_raw: &mut Vec<Vec<f64>>| {
+            let hw = ft_kernel_cpu::linear_tensor_f64(h, &w_hh, None, batch, h_size, h_size);
+            let mut h_new = vec![0.0f64; batch * h_size];
+            for b in 0..batch {
+                let base = b * h_size;
+                let xw_base = (t * batch + b) * h_size;
+                for j in 0..h_size {
+                    let s = xw_all[xw_base + j] + hw[base + j] + b_ih[j] + b_hh[j];
+                    h_new[base + j] = if use_tanh { s.tanh() } else { s.max(0.0) };
+                }
+            }
+            outputs_raw[t] = h_new.clone();
+            *h = h_new;
+        };
+
+        if reverse {
+            for t in (0..seq_len).rev() {
+                step(t, &mut h, &mut outputs_raw);
+            }
+        } else {
+            for t in 0..seq_len {
+                step(t, &mut h, &mut outputs_raw);
+            }
+        }
+
+        let mut outputs = Vec::with_capacity(seq_len);
+        for out in outputs_raw {
+            outputs.push(session.tensor_variable(out, vec![batch, h_size], false)?);
+        }
+        let h_n = session.tensor_variable(h, vec![batch, h_size], false)?;
+        Ok((outputs, h_n))
     }
 
     /// Get the input size.
@@ -27701,6 +27781,52 @@ mod tests {
                 b.to_bits(),
                 "GRU raw no-grad differs from op-graph at {i}: {a} vs {b}"
             );
+        }
+    }
+
+    #[test]
+    fn rnn_no_grad_raw_matches_op_graph() {
+        // Vanilla-RNN raw inference path must be BIT-FOR-BIT identical to the
+        // op-graph forward, for both tanh and relu nonlinearities.
+        for use_tanh in [true, false] {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let cfg = RNNConfig {
+                num_layers: 2,
+                use_tanh,
+                bidirectional: true,
+                dropout: 0.0,
+                batch_first: false,
+            };
+            let rnn = RNN::new(&mut session, 4, 5, cfg).expect("rnn");
+            let seq = 3;
+            let batch = 2;
+            let in_sz = 4;
+            let vals: Vec<f64> = (0..seq * batch * in_sz)
+                .map(|i| (i as f64 * 0.137).sin() * 0.5)
+                .collect();
+
+            let x_grad = session
+                .tensor_variable(vals.clone(), vec![seq, batch, in_sz], true)
+                .expect("x_grad");
+            let out_grad = rnn.forward(&mut session, x_grad).expect("grad forward");
+            let grad_vals = session.tensor_values(out_grad).expect("grad values");
+
+            let x_ng = session
+                .tensor_variable(vals, vec![seq, batch, in_sz], false)
+                .expect("x_ng");
+            let out_ng = session
+                .with_no_grad(|s| rnn.forward(s, x_ng))
+                .expect("no-grad forward");
+            let ng_vals = session.tensor_values(out_ng).expect("no-grad values");
+
+            assert_eq!(grad_vals.len(), ng_vals.len(), "output length");
+            for (i, (a, b)) in grad_vals.iter().zip(ng_vals.iter()).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "RNN(use_tanh={use_tanh}) raw no-grad differs at {i}: {a} vs {b}"
+                );
+            }
         }
     }
 
