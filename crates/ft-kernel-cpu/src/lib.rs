@@ -17929,6 +17929,42 @@ mod tests {
     }
 
     #[test]
+    fn svd_ill_conditioned_hilbert() {
+        // Hilbert matrix H[i][j] = 1/(i+j+1): SPD but extremely ill-conditioned.
+        // The implicit-QR SVD must NOT spuriously return SingularMatrix and must
+        // still reconstruct A = U·diag(s)·Vh (a torch-parity robustness check).
+        let n = 16usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = 1.0 / ((i + j + 1) as f64);
+            }
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let r =
+            super::svd_contiguous_f64(&a, &meta, false).expect("SVD must converge on a Hilbert matrix");
+        let k = r.k;
+        // descending, non-negative
+        for w in r.s.windows(2) {
+            assert!(w[0] >= w[1] - 1e-12 && w[1] >= -1e-12);
+        }
+        // reconstruction (loose tol due to conditioning)
+        for i in 0..n {
+            for j in 0..n {
+                let mut val = 0.0;
+                for l in 0..k {
+                    val += r.u[i * k + l] * r.s[l] * r.vh[l * n + j];
+                }
+                assert!(
+                    (val - a[i * n + j]).abs() < 1e-9,
+                    "Hilbert recon[{i},{j}] = {val} vs {}",
+                    a[i * n + j]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn svd_rank_deficient_reconstructs() {
         // Row 2 = 2·row 1 -> rank 3 (one exactly-zero singular value). SVD must
         // still reconstruct A = U·diag(s)·Vh and produce a near-zero singular value.
