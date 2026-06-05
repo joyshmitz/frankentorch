@@ -17432,6 +17432,62 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "KNOWN BUG (frankentorch-09zy): eig's single-shift QR returns WRONG \
+                eigenvalues for matrices with complex-conjugate pairs — it cannot \
+                converge them to real-Schur form. The Francis double-shift implicit \
+                QR is the fix; this test is its validation target (un-ignore then)."]
+    fn eigvals_companion_complex_roots() {
+        // Companion matrix (upper-Hessenberg) of a degree-6 real polynomial with
+        // KNOWN roots including complex-conjugate pairs. This pins the correct
+        // spectrum so the Francis-QR fix can be validated.
+        // Roots: 1, 2, ±i, 1±i.
+        let factors: Vec<Vec<f64>> = vec![
+            vec![1.0, -1.0],      // x - 1
+            vec![1.0, -2.0],      // x - 2
+            vec![1.0, 0.0, 1.0],  // x^2 + 1      -> ±i
+            vec![1.0, -2.0, 2.0], // x^2 - 2x + 2 -> 1±i
+        ];
+        let mut poly = vec![1.0f64];
+        for f in &factors {
+            let mut next = vec![0.0f64; poly.len() + f.len() - 1];
+            for (i, &a) in poly.iter().enumerate() {
+                for (j, &b) in f.iter().enumerate() {
+                    next[i + j] += a * b;
+                }
+            }
+            poly = next;
+        }
+        let n = poly.len() - 1; // 6
+        // Companion: subdiagonal 1s, last column = -a_i where a_i = poly[n - i].
+        let mut c = vec![0.0f64; n * n];
+        for i in 1..n {
+            c[i * n + (i - 1)] = 1.0;
+        }
+        for i in 0..n {
+            c[i * n + (n - 1)] = -poly[n - i];
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let vals = super::eigvals_contiguous_f64(&c, &meta).unwrap();
+        let mut got: Vec<(f64, f64)> = (0..n).map(|k| (vals[2 * k], vals[2 * k + 1])).collect();
+        got.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let mut want: Vec<(f64, f64)> = vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (1.0, 1.0),
+            (1.0, -1.0),
+        ];
+        want.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!(
+                (g.0 - w.0).abs() < 1e-6 && (g.1 - w.1).abs() < 1e-6,
+                "eigenvalue mismatch: got {g:?} want {w:?}"
+            );
+        }
+    }
+
     // ---- SVD tests (bd-2drq.3) ----
 
     #[test]
