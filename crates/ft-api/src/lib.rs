@@ -31349,6 +31349,13 @@ impl FrankenTorchSession {
         self.tensor_tape.tensor_accumulated_gradient_values(node)
     }
 
+    pub fn tensor_accumulated_gradient_len(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<Option<usize>, AutogradError> {
+        self.tensor_tape.tensor_accumulated_gradient_len(node)
+    }
+
     pub fn tensor_grad(&self, node: TensorNodeId) -> Result<Option<Vec<f64>>, AutogradError> {
         self.tensor_accumulated_gradient(node)
     }
@@ -31736,6 +31743,21 @@ impl FrankenTorchSession {
         F: FnOnce(&mut [f64]),
     {
         self.tensor_tape.update_tensor_values_with(param, update)
+    }
+
+    /// Mutate a parameter while borrowing its persistent gradient from the tape.
+    ///
+    /// Returns `Ok(false)` when the parameter has no accumulated gradient.
+    pub fn tensor_update_param_values_f64_with_accumulated_gradient<F>(
+        &mut self,
+        param: TensorNodeId,
+        update: F,
+    ) -> Result<bool, AutogradError>
+    where
+        F: FnOnce(&[f64], &mut [f64]),
+    {
+        self.tensor_tape
+            .update_tensor_values_with_accumulated_gradient(param, update)
     }
 
     // ── Gradient Clipping Utilities ────────────────────────────────────
@@ -43952,28 +43974,6 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        // Fast path: for an overdetermined full-rank A (m >= n) with no grad
-        // required, solve via QR (A = Q·R; R·X = Qᵀ·B) instead of the SVD
-        // pseudo-inverse. Same unique least-squares solution, but it replaces
-        // the BLAS-1 Golub–Reinsch SVD with the parallel Householder QR. The
-        // kernel returns None for the underdetermined / (near-)rank-deficient
-        // cases, which fall through to the SVD pinv path (minimum-norm solution,
-        // matching torch). Tracked under frankentorch.
-        if a_shape[0] >= a_shape[1]
-            && !self.tensor_requires_grad(a)?
-            && !self.tensor_requires_grad(b)?
-        {
-            let (a_vals, a_meta) = self.tensor_values_meta(a)?;
-            let (b_vals, b_meta) = self.tensor_values_meta(b)?;
-            if let Some(x) = ft_kernel_cpu::lstsq_qr_contiguous_f64(&a_vals, &a_meta, &b_vals, &b_meta)
-                .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?
-            {
-                let n = a_shape[1];
-                let k = b_shape[1];
-                return self.tensor_variable(x, vec![n, k], false);
-            }
-        }
-
         let a_pinv = self.tensor_pinv(a)?;
         self.tensor_matmul(a_pinv, b)
     }
@@ -79061,45 +79061,6 @@ mod tests {
                 "i={i}: pinverse={x}, linalg_pinv={y}"
             );
         }
-    }
-
-    #[test]
-    fn lstsq_qr_fast_path_matches_svd_pinv() {
-        // tensor_lstsq routes a full-rank overdetermined (m>=n) no-grad system
-        // through QR; it must match the SVD pseudo-inverse solution it replaces.
-        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
-        let m = 40usize;
-        let n = 5usize;
-        // Deterministic, well-conditioned overdetermined A and a 2-column b.
-        let mut a_vals = vec![0.0f64; m * n];
-        for i in 0..m {
-            for j in 0..n {
-                a_vals[i * n + j] =
-                    (((i * 31 + j * 17) % 41) as f64 - 20.0) * 0.05 + if i == j { 2.5 } else { 0.0 };
-            }
-        }
-        let b_vals: Vec<f64> = (0..m * 2).map(|t| ((t * 13 + 7) % 23) as f64 * 0.1 - 1.0).collect();
-        let a = s.tensor_variable(a_vals, vec![m, n], false).unwrap();
-        let b = s.tensor_variable(b_vals, vec![m, 2], false).unwrap();
-
-        let x_fast = s.tensor_lstsq(a, b).unwrap();
-        assert_eq!(s.tensor_shape(x_fast).unwrap(), vec![n, 2]);
-
-        // Reference: the SVD pseudo-inverse path (pinv(A) @ b).
-        let p = s.tensor_pinv(a).unwrap();
-        let x_ref = s.tensor_matmul(p, b).unwrap();
-
-        let vf = s.tensor_values(x_fast).unwrap();
-        let vr = s.tensor_values(x_ref).unwrap();
-        assert_eq!(vf.len(), vr.len());
-        let mut max_diff = 0.0f64;
-        for (x, y) in vf.iter().zip(vr.iter()) {
-            max_diff = max_diff.max((x - y).abs());
-        }
-        assert!(
-            max_diff < 1e-8,
-            "QR lstsq diverges from SVD pinv lstsq: max_diff={max_diff}"
-        );
     }
 
     #[test]

@@ -4461,6 +4461,14 @@ impl TensorTape {
             .map(|gradient| gradient.to_vec()))
     }
 
+    pub fn tensor_accumulated_gradient_len(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<Option<usize>, AutogradError> {
+        self.node(node)?;
+        Ok(self.persistent_grads.get(&node.0).map(Vec::len))
+    }
+
     pub fn zero_tensor_accumulated_gradient(
         &mut self,
         node: TensorNodeId,
@@ -17570,6 +17578,34 @@ impl TensorTape {
             .map_err(AutogradError::DenseTensor)
     }
 
+    /// Mutate a tensor while borrowing its persistent gradient without cloning it.
+    ///
+    /// Returns `Ok(false)` when the tensor has no accumulated gradient, matching
+    /// optimizer "skip parameter" behavior without materialising an empty buffer.
+    pub fn update_tensor_values_with_accumulated_gradient<F>(
+        &mut self,
+        id: TensorNodeId,
+        update: F,
+    ) -> Result<bool, AutogradError>
+    where
+        F: FnOnce(&[f64], &mut [f64]),
+    {
+        self.node(id)?;
+        let Some(gradient) = self.persistent_grads.get(&id.0) else {
+            return Ok(false);
+        };
+        let node = self
+            .nodes
+            .get_mut(id.0)
+            .ok_or(AutogradError::UnknownTensorNode(id))?;
+        let param_len = node.tensor.contiguous_values()?.len();
+        Self::ensure_tensor_len(id, param_len, gradient.len())?;
+        node.tensor
+            .update_contiguous_values_with(|values| update(gradient, values))
+            .map_err(AutogradError::DenseTensor)?;
+        Ok(true)
+    }
+
     /// Replace the storage values of a float32 tensor node in-place (version is bumped).
     pub fn update_tensor_values_f32(
         &mut self,
@@ -21703,6 +21739,48 @@ mod tests {
             .update_tensor_values(bogus, vec![1.0, 2.0])
             .expect_err("update_tensor_values with unknown node must fail");
         assert!(matches!(err, AutogradError::UnknownTensorNode(id) if id == bogus));
+    }
+
+    #[test]
+    fn borrowed_accumulated_gradient_update_preserves_gradient_storage() {
+        let mut tape = TensorTape::new();
+        let node = tape
+            .leaf(vec![10.0, 20.0, 30.0], vec![3], true)
+            .expect("leaf");
+        tape.set_tensor_accumulated_gradient(node, vec![1.0, 2.0, 3.0])
+            .expect("set gradient");
+
+        let updated = tape
+            .update_tensor_values_with_accumulated_gradient(node, |grad, values| {
+                for (value, gradient) in values.iter_mut().zip(grad.iter()) {
+                    *value -= *gradient;
+                }
+            })
+            .expect("borrowed gradient update");
+
+        assert!(updated);
+        assert_eq!(tape.values(node).unwrap(), vec![9.0, 18.0, 27.0]);
+        assert_eq!(
+            tape.tensor_accumulated_gradient_values(node)
+                .expect("read gradient"),
+            Some(vec![1.0, 2.0, 3.0])
+        );
+        assert_eq!(
+            tape.tensor_accumulated_gradient_len(node)
+                .expect("gradient len"),
+            Some(3)
+        );
+
+        let no_grad = tape
+            .leaf(vec![1.0, 2.0, 3.0], vec![3], false)
+            .expect("leaf without grad");
+        let skipped = tape
+            .update_tensor_values_with_accumulated_gradient(no_grad, |_grad, values| {
+                values.fill(0.0);
+            })
+            .expect("missing gradient skips update");
+        assert!(!skipped);
+        assert_eq!(tape.values(no_grad).unwrap(), vec![1.0, 2.0, 3.0]);
     }
 
     #[test]

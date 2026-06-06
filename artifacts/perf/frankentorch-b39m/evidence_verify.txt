@@ -1,0 +1,16 @@
+artifacts/perf/frankentorch-b39m/after_adam_only_borrowed_gradient_optimizer_bench.txt: OK
+artifacts/perf/frankentorch-b39m/after_borrowed_gradient_optimizer_bench.txt: OK
+artifacts/perf/frankentorch-b39m/baseline_optimizer_bench.txt: OK
+artifacts/perf/frankentorch-b39m/check_adam_only_borrowed_gradient.txt: OK
+artifacts/perf/frankentorch-b39m/check_borrowed_gradient.txt: OK
+artifacts/perf/frankentorch-b39m/clippy_ft_optim.txt: OK
+artifacts/perf/frankentorch-b39m/fmt_check.txt: OK
+artifacts/perf/frankentorch-b39m/golden_sha256_check.txt: OK
+artifacts/perf/frankentorch-b39m/report.md: OK
+artifacts/perf/frankentorch-b39m/source_diff_adam_only.txt: OK
+artifacts/perf/frankentorch-b39m/test_adam.txt: OK
+artifacts/perf/frankentorch-b39m/test_adam_only_adam.txt: OK
+artifacts/perf/frankentorch-b39m/test_adam_only_borrowed_gradient_tape.txt: OK
+artifacts/perf/frankentorch-b39m/test_adamw.txt: OK
+artifacts/perf/frankentorch-b39m/test_borrowed_gradient_tape.txt: OK
+artifacts/perf/frankentorch-b39m/ubs_touched_files.txt: OK
