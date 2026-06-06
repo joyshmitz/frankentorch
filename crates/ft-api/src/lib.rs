@@ -6806,7 +6806,7 @@ impl FrankenTorchSession {
         weights: Option<TensorNodeId>,
         minlength: usize,
     ) -> Result<TensorNodeId, AutogradError> {
-        let vals = self.tensor_values(input)?;
+        let vals = self.tensor_values_lossy_f64(input)?;
         let input_shape = self.tensor_shape(input)?;
         if input_shape.len() != 1 {
             // Surface the actual rank so callers see 'expected 1-D
@@ -6900,16 +6900,25 @@ impl FrankenTorchSession {
         if vals.is_empty() {
             return self.tensor_variable(vec![0.0; out_len], vec![out_len], false);
         }
-        let zeros = self.full(vec![out_len], 0.0, false)?;
-        // input itself is the index tensor; reshape pass-through to
-        // make the autograd contract clear (and so we can pass the
-        // original requires_grad=false integer tensor as the index).
         if let Some(weights) = weights {
-            self.tensor_scatter_add(zeros, 0, input, weights)
+            // Weighted: compose via tensor_scatter_add so gradients flow back to
+            // the weights tensor (frankentorch-9r3c). The index must be an f64
+            // tensor — the raw `input` may be f32, which scatter_add rejects, so
+            // build an f64 index leaf from the validated integer bin values
+            // (the index is non-differentiable). frankentorch-dh5f.
+            let zeros = self.full(vec![out_len], 0.0, false)?;
+            let index = self.tensor_variable(vals.clone(), input_shape.clone(), false)?;
+            self.tensor_scatter_add(zeros, 0, index, weights)
         } else {
-            // Unweighted case: src = ones of same shape as input.
-            let ones = self.full(vec![vals.len()], 1.0, false)?;
-            self.tensor_scatter_add(zeros, 0, input, ones)
+            // Unweighted: counts are non-differentiable, so build them directly
+            // from the (f64-converted) values. This is f32-safe (no scatter on
+            // the possibly-f32 input) and avoids the scatter op entirely. Values
+            // are already validated finite, non-negative, integer, < out_len.
+            let mut counts = vec![0.0f64; out_len];
+            for &v in &vals {
+                counts[v as usize] += 1.0;
+            }
+            self.tensor_variable(counts, vec![out_len], false)
         }
     }
 
@@ -77708,6 +77717,35 @@ mod tests {
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals.len(), 5);
         assert_eq!(vals, vec![1.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn bincount_supports_f32_input() {
+        // bincount used a f64-only value read AND fed the f32 input to
+        // tensor_scatter_add as an index tensor -> errored on f32. Now it reads
+        // via tensor_values_lossy_f64, builds unweighted counts directly, and
+        // uses an f64 index leaf for the weighted scatter. frankentorch-dh5f.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // Unweighted f32 -> same counts as f64.
+        let tf32 = s
+            .tensor_variable_f32(vec![0.0f32, 1.0, 1.0, 3.0, 2.0, 1.0], vec![6], false)
+            .unwrap();
+        let out = s.tensor_bincount(tf32, None, 0).unwrap();
+        assert_eq!(s.tensor_values_lossy_f64(out).unwrap(), vec![1.0, 3.0, 1.0, 1.0]);
+
+        // Weighted: f32 index input + f64 weights -> weighted counts.
+        let if32 = s
+            .tensor_variable_f32(vec![0.0f32, 1.0, 1.0, 2.0], vec![4], false)
+            .unwrap();
+        let w = s
+            .tensor_variable(vec![0.5, 1.0, 0.25, 2.0], vec![4], false)
+            .unwrap();
+        let wout = s.tensor_bincount(if32, Some(w), 0).unwrap();
+        let wv = s.tensor_values_lossy_f64(wout).unwrap();
+        assert!((wv[0] - 0.5).abs() < 1e-12);
+        assert!((wv[1] - 1.25).abs() < 1e-12);
+        assert!((wv[2] - 2.0).abs() < 1e-12);
     }
 
     #[test]
