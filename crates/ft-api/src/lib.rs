@@ -11479,9 +11479,9 @@ impl FrankenTorchSession {
         // tensor_sub / tensor_add only READ their operands, so one
         // full(shape, lambd) suffices for all three. -2 full() +
         // -2 tape nodes per call.
-        let zeros = self.full(shape.clone(), 0.0, false)?;
-        let lambd_t = self.full(shape.clone(), lambd, false)?;
-        let neg_lambd_t = self.full(shape, -lambd, false)?;
+        let zeros = self.const_tensor_like(input, shape.clone(), 0.0)?;
+        let lambd_t = self.const_tensor_like(input, shape.clone(), lambd)?;
+        let neg_lambd_t = self.const_tensor_like(input, shape, -lambd)?;
 
         let pos_mask = self.tensor_gt(input, lambd_t)?;
         let neg_mask = self.tensor_lt(input, neg_lambd_t)?;
@@ -11520,8 +11520,8 @@ impl FrankenTorchSession {
             )));
         }
         let shape = self.tensor_shape(input)?;
-        let zeros = self.full(shape.clone(), 0.0, false)?;
-        let lambd_t = self.full(shape, lambd, false)?;
+        let zeros = self.const_tensor_like(input, shape.clone(), 0.0)?;
+        let lambd_t = self.const_tensor_like(input, shape, lambd)?;
         let abs_x = self.tensor_abs(input)?;
         let mask = self.tensor_gt(abs_x, lambd_t)?;
         self.tensor_where(mask, input, zeros)
@@ -12719,9 +12719,9 @@ impl FrankenTorchSession {
         // but the current upstream behavior propagates NaN through
         // threshold). frankentorch-w9kc.
         let shape = self.tensor_shape(input)?;
-        let threshold_t = self.full(shape.clone(), threshold, false)?;
-        let value_t = self.full(shape.clone(), value, false)?;
-        let nan_t = self.full(shape, f64::NAN, false)?;
+        let threshold_t = self.const_tensor_like(input, shape.clone(), threshold)?;
+        let value_t = self.const_tensor_like(input, shape.clone(), value)?;
+        let nan_t = self.const_tensor_like(input, shape, f64::NAN)?;
         let nan_mask = self.tensor_isnan(input)?;
         let above_mask = self.tensor_gt(input, threshold_t)?;
         let above_or_value = self.tensor_where(above_mask, input, value_t)?;
@@ -54988,6 +54988,27 @@ impl FrankenTorchSession {
         }
     }
 
+    /// Build a full-`shape` constant whose dtype matches `input`.
+    ///
+    /// Like [`scalar_leaf_matching_dtype`] but materializes the constant at the
+    /// input's shape (for ops that compose a const through `tensor_where`/
+    /// `tensor_sub` with the input). `full` always makes an F64 leaf, which
+    /// would promote an f32 input to F64; casting the const to the input dtype
+    /// keeps activations dtype-preserving (PyTorch keeps `float32` activations
+    /// `float32`). F64 and non-float inputs keep the original F64 const.
+    fn const_tensor_like(
+        &mut self,
+        input: TensorNodeId,
+        shape: Vec<usize>,
+        value: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let t = self.full(shape, value, false)?;
+        match self.tensor_dtype(input)? {
+            dt @ (DType::F32 | DType::F16 | DType::BF16) => self.tensor_tape.to_dtype(t, dt),
+            _ => Ok(t),
+        }
+    }
+
     /// Add scalar to tensor.
     pub fn add_scalar(
         &mut self,
@@ -74480,6 +74501,36 @@ mod tests {
         let yp = s.pow_scalar(y, 3.0).unwrap();
         assert_eq!(s.tensor_dtype(yp).unwrap(), DType::F64);
         assert_eq!(s.tensor_values(yp).unwrap(), vec![8.0f64, 27.0]);
+    }
+
+    #[test]
+    fn f32_shrink_threshold_activations_preserve_f32_dtype() {
+        // Weak-scalar parity for activations whose threshold/lambda is a Python
+        // scalar: softshrink/hardshrink/threshold built F64 `full(shape, const)`
+        // tensors and composed them with the f32 input via tensor_where/sub/add,
+        // which promote f32+f64 -> f64. Result: f32 activations silently returned
+        // F64. The const_tensor_like helper casts the const to the input dtype.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let data = vec![-3.0f32, -0.5, 0.5, 3.0];
+        let x = s.tensor_variable_f32(data.clone(), vec![4], false).unwrap();
+
+        let ss = s.tensor_softshrink(x, 1.0).unwrap();
+        assert_eq!(s.tensor_dtype(ss).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(ss).unwrap(), vec![-2.0f32, 0.0, 0.0, 2.0]);
+
+        let hs = s.tensor_hardshrink(x, 1.0).unwrap();
+        assert_eq!(s.tensor_dtype(hs).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(hs).unwrap(), vec![-3.0f32, 0.0, 0.0, 3.0]);
+
+        let th = s.tensor_threshold(x, 0.0, -1.0).unwrap();
+        assert_eq!(s.tensor_dtype(th).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(th).unwrap(), vec![-1.0f32, -1.0, 0.5, 3.0]);
+
+        // F64 inputs unchanged (no regression): one spot-check per op.
+        let y = s.tensor_variable(data.iter().map(|&v| v as f64).collect(), vec![4], false).unwrap();
+        let y_ss = s.tensor_softshrink(y, 1.0).unwrap();
+        assert_eq!(s.tensor_dtype(y_ss).unwrap(), DType::F64);
+        assert_eq!(s.tensor_values(y_ss).unwrap(), vec![-2.0f64, 0.0, 0.0, 2.0]);
     }
 
     #[test]
