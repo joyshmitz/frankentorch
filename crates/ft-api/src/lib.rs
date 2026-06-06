@@ -54963,13 +54963,33 @@ impl FrankenTorchSession {
         self.tensor_mul(sq, input)
     }
 
+    /// Build a 1-element scalar leaf whose dtype matches `input`.
+    ///
+    /// `full` always materializes an F64 leaf, and the elementwise binary ops
+    /// promote `f32 + f64 -> f64`. PyTorch treats a Python scalar as a *weak*
+    /// operand (`float32_tensor + 2.0 -> float32`), so a scalar op must not
+    /// upcast its input. Casting the scalar to the input dtype restores parity;
+    /// F64 and non-float inputs keep the original F64 scalar unchanged, so those
+    /// paths are bit-identical to before.
+    fn scalar_leaf_matching_dtype(
+        &mut self,
+        input: TensorNodeId,
+        scalar: f64,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let s = self.full(vec![1], scalar, false)?;
+        match self.tensor_dtype(input)? {
+            dt @ (DType::F32 | DType::F16 | DType::BF16) => self.tensor_tape.to_dtype(s, dt),
+            _ => Ok(s),
+        }
+    }
+
     /// Add scalar to tensor.
     pub fn add_scalar(
         &mut self,
         input: TensorNodeId,
         scalar: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let s = self.full(vec![1], scalar, false)?;
+        let s = self.scalar_leaf_matching_dtype(input, scalar)?;
         self.tensor_add(input, s)
     }
 
@@ -54979,7 +54999,7 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         scalar: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let s = self.full(vec![1], scalar, false)?;
+        let s = self.scalar_leaf_matching_dtype(input, scalar)?;
         self.tensor_sub(input, s)
     }
 
@@ -54989,7 +55009,7 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         scalar: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let s = self.full(vec![1], scalar, false)?;
+        let s = self.scalar_leaf_matching_dtype(input, scalar)?;
         self.tensor_mul(input, s)
     }
 
@@ -54999,7 +55019,7 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         scalar: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let s = self.full(vec![1], scalar, false)?;
+        let s = self.scalar_leaf_matching_dtype(input, scalar)?;
         self.tensor_div(input, s)
     }
 
@@ -74402,6 +74422,40 @@ mod tests {
         let c = session.tensor_to_f64(b).unwrap();
         assert_eq!(session.tensor_dtype(c).unwrap(), DType::F64);
         assert_eq!(session.tensor_values(c).unwrap(), vec![1.5, 2.5]);
+    }
+
+    #[test]
+    fn f32_scalar_arithmetic_preserves_f32_dtype() {
+        // PyTorch weak-scalar parity: a Python scalar must not upcast the
+        // tensor's dtype (`float32_tensor + 2.0 -> float32`). The scalar
+        // wrappers used to materialize an F64 scalar leaf, which promoted the
+        // f32 input to F64. See bead frankentorch-cijv.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![1.0f32, 2.0, 4.0], vec![3], false)
+            .unwrap();
+
+        let add = s.add_scalar(x, 10.0).unwrap();
+        assert_eq!(s.tensor_dtype(add).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(add).unwrap(), vec![11.0f32, 12.0, 14.0]);
+
+        let sub = s.sub_scalar(x, 1.0).unwrap();
+        assert_eq!(s.tensor_dtype(sub).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(sub).unwrap(), vec![0.0f32, 1.0, 3.0]);
+
+        let mul = s.mul_scalar(x, 3.0).unwrap();
+        assert_eq!(s.tensor_dtype(mul).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(mul).unwrap(), vec![3.0f32, 6.0, 12.0]);
+
+        let div = s.div_scalar(x, 2.0).unwrap();
+        assert_eq!(s.tensor_dtype(div).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(div).unwrap(), vec![0.5f32, 1.0, 2.0]);
+
+        // F64 inputs are unchanged (no regression): the scalar stays F64.
+        let y = s.tensor_variable(vec![1.0f64, 2.0], vec![2], false).unwrap();
+        let y_add = s.add_scalar(y, 5.0).unwrap();
+        assert_eq!(s.tensor_dtype(y_add).unwrap(), DType::F64);
+        assert_eq!(s.tensor_values(y_add).unwrap(), vec![6.0f64, 7.0]);
     }
 
     #[test]
