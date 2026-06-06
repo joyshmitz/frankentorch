@@ -1,0 +1,9 @@
+artifacts/perf/frankentorch-e82f/after_det_batched.txt: OK
+artifacts/perf/frankentorch-e82f/baseline_det_loop.txt: OK
+artifacts/perf/frankentorch-e82f/candidate_source_diff_rejected.txt: OK
+artifacts/perf/frankentorch-e82f/check_batched_det.txt: OK
+artifacts/perf/frankentorch-e82f/final_source_diff.txt: OK
+artifacts/perf/frankentorch-e82f/git_diff_check.txt: OK
+artifacts/perf/frankentorch-e82f/golden_sha256_check.txt: OK
+artifacts/perf/frankentorch-e82f/report.md: OK
+artifacts/perf/frankentorch-e82f/test_det_batched.txt: OK

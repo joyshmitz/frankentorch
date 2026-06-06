@@ -1,0 +1,260 @@
+diff --git a/crates/ft-api/benches/ops_bench.rs b/crates/ft-api/benches/ops_bench.rs
+index 41366593..49e889f9 100644
+--- a/crates/ft-api/benches/ops_bench.rs
++++ b/crates/ft-api/benches/ops_bench.rs
+@@ -1520,8 +1520,53 @@ fn bench_multi_dot(c: &mut Criterion) {
+     group.finish();
+ }
+ 
++fn bench_batched_linalg(c: &mut Criterion) {
++    // Current workaround for torch-style batched det support: loop over the
++    // independent 2-D matrices. The optimization target is a single batched
++    // tensor_linalg_det call that keeps matrix order and math identical.
++    let mut group = c.benchmark_group("batched_linalg");
++    let (batch, n) = (256usize, 16usize);
++    group.bench_function("det_loop_256x16x16", |bch| {
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        let mut mats = Vec::with_capacity(batch);
++        for idx in 0..batch {
++            let mut values = vec![0.0_f64; n * n];
++            for i in 0..n {
++                for j in 0..n {
++                    let base = (((idx * 17 + i * 13 + j * 7) % 41) as f64 - 20.0) * 0.01;
++                    values[i * n + j] = base + if i == j { 2.0 } else { 0.0 };
++                }
++            }
++            mats.push(s.tensor_variable(values, vec![n, n], false).unwrap());
++        }
++        bch.iter(|| {
++            let mut out = Vec::with_capacity(batch);
++            for &mat in &mats {
++                out.push(s.tensor_linalg_det(black_box(mat)).unwrap());
++            }
++            black_box(out)
++        });
++    });
++    group.bench_function("det_batched_256x16x16", |bch| {
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        let mut values = vec![0.0_f64; batch * n * n];
++        for idx in 0..batch {
++            for i in 0..n {
++                for j in 0..n {
++                    let base = (((idx * 17 + i * 13 + j * 7) % 41) as f64 - 20.0) * 0.01;
++                    values[idx * n * n + i * n + j] = base + if i == j { 2.0 } else { 0.0 };
++                }
++            }
++        }
++        let batched = s.tensor_variable(values, vec![batch, n, n], false).unwrap();
++        bch.iter(|| black_box(s.tensor_linalg_det(black_box(batched)).unwrap()));
++    });
++    group.finish();
++}
++
+ criterion_group!(
+     benches,
++    bench_batched_linalg,
+     bench_multi_dot,
+     bench_lstsq,
+     bench_matmul,
+diff --git a/crates/ft-api/src/lib.rs b/crates/ft-api/src/lib.rs
+index 7aca93d3..9396c254 100644
+--- a/crates/ft-api/src/lib.rs
++++ b/crates/ft-api/src/lib.rs
+@@ -43746,7 +43746,7 @@ impl FrankenTorchSession {
+         input: TensorNodeId,
+     ) -> Result<TensorNodeId, AutogradError> {
+         let shape = self.tensor_shape(input)?;
+-        if shape.len() != 2 || shape[0] != shape[1] {
++        if shape.len() < 2 || shape[shape.len() - 2] != shape[shape.len() - 1] {
+             return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(
+                 ft_kernel_cpu::KernelError::ShapeMismatch {
+                     lhs: shape.clone(),
+@@ -43754,7 +43754,124 @@ impl FrankenTorchSession {
+                 },
+             )));
+         }
+-        let n = shape[0];
++        let n = shape[shape.len() - 1];
++        if shape.len() > 2 {
++            let batch_shape = shape[..shape.len() - 2].to_vec();
++            let batch = batch_shape.iter().product::<usize>();
++            let matrix_len = n * n;
++            if !self.tensor_requires_grad(input)? {
++                let (values, _) = self.tensor_values_meta(input)?;
++                let meta = ft_core::TensorMeta::from_shape(
++                    vec![n, n],
++                    DType::F64,
++                    ft_core::Device::Cpu,
++                );
++                let dets = if batch == 0 {
++                    Vec::new()
++                } else if matrix_len == 0 {
++                    vec![1.0; batch]
++                } else {
++                    use rayon::prelude::*;
++                    values
++                        .par_chunks(matrix_len)
++                        .map(|chunk| {
++                            ft_kernel_cpu::det_contiguous_f64(chunk, &meta).map(|result| result.det)
++                        })
++                        .collect::<Result<Vec<_>, _>>()
++                        .map_err(|e| {
++                            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
++                        })?
++                };
++                return self.tensor_variable(dets, batch_shape, false);
++            }
++
++            let out_shape = batch_shape.clone();
++            return self.tensor_apply_function(
++                &[input],
++                move |ctx, inputs| {
++                    let (vals, in_shape) = inputs[0];
++                    let meta = ft_core::TensorMeta::from_shape(
++                        vec![n, n],
++                        DType::F64,
++                        ft_core::Device::Cpu,
++                    );
++                    let dets = if batch == 0 {
++                        Vec::new()
++                    } else if matrix_len == 0 {
++                        vec![1.0; batch]
++                    } else {
++                        use rayon::prelude::*;
++                        vals.par_chunks(matrix_len)
++                            .map(|chunk| {
++                                ft_kernel_cpu::det_contiguous_f64(chunk, &meta)
++                                    .map(|result| result.det)
++                            })
++                            .collect::<Result<Vec<_>, _>>()
++                            .map_err(|e| {
++                                AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
++                            })?
++                    };
++                    ctx.save_for_backward(vals.to_vec(), in_shape.to_vec());
++                    Ok((dets, out_shape.clone()))
++                },
++                move |ctx, grad_outputs| {
++                    let grad = grad_outputs[0];
++                    if grad.len() != batch {
++                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
++                            ft_dispatch::DispatchKeyError::IncompatibleSet {
++                                reason: "linalg_det backward: batched upstream gradient shape mismatch",
++                            },
++                        )));
++                    }
++                    let saved = ctx.saved_tensors();
++                    let values = &saved[0];
++                    if values.len() != batch * matrix_len {
++                        return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
++                            ft_dispatch::DispatchKeyError::IncompatibleSet {
++                                reason: "linalg_det backward: saved batched A shape mismatch",
++                            },
++                        )));
++                    }
++                    let meta = ft_core::TensorMeta::from_shape(
++                        vec![n, n],
++                        DType::F64,
++                        ft_core::Device::Cpu,
++                    );
++                    let mut grad_a = vec![0.0_f64; values.len()];
++                    if batch != 0 {
++                        use rayon::prelude::*;
++                        grad_a
++                            .par_chunks_mut(matrix_len)
++                            .enumerate()
++                            .try_for_each(|(b, out)| {
++                                let matrix = &values[b * matrix_len..(b + 1) * matrix_len];
++                                let det_result =
++                                    ft_kernel_cpu::det_contiguous_f64(matrix, &meta).map_err(
++                                        |e| {
++                                            AutogradError::Dispatch(
++                                                ft_dispatch::DispatchError::Kernel(e),
++                                            )
++                                        },
++                                    )?;
++                                let inv_a =
++                                    match ft_kernel_cpu::inv_tensor_contiguous_f64(matrix, &meta) {
++                                        Ok(inv) => inv,
++                                        Err(_) => return Ok(()),
++                                    };
++                                let scale = grad[b] * det_result.det;
++                                for i in 0..n {
++                                    for j in 0..n {
++                                        out[i * n + j] = scale * inv_a[j * n + i];
++                                    }
++                                }
++                                Ok::<(), AutogradError>(())
++                            })?;
++                    }
++                    Ok(vec![Some(grad_a)])
++                },
++            );
++        }
++
+         self.tensor_apply_function(
+             &[input],
+             move |ctx, inputs| {
+@@ -75253,6 +75370,62 @@ mod tests {
+         assert!((det - 7.5).abs() < 1e-12);
+     }
+ 
++    #[test]
++    fn det_batched_matches_independent_2d_results() {
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        let batched = s
++            .tensor_variable(
++                vec![
++                    2.0, 0.0, 0.0, 3.0, // det 6
++                    4.0, 0.0, 0.0, 5.0, // det 20
++                    1.0, 2.0, 3.0, 4.0, // det -2
++                ],
++                vec![3, 2, 2],
++                false,
++            )
++            .unwrap();
++        let det_id = s.tensor_linalg_det(batched).unwrap();
++        assert_eq!(s.tensor_shape(det_id).unwrap(), vec![3]);
++        let got = s.tensor_values(det_id).unwrap();
++        let expected = [6.0, 20.0, -2.0];
++        for (actual, expected) in got.iter().zip(expected) {
++            assert!((actual - expected).abs() < 1e-12);
++        }
++    }
++
++    #[test]
++    fn det_batched_backward_matches_per_matrix_jacobi_formula() {
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        let input = s
++            .tensor_variable(
++                vec![
++                    2.0, 0.0, 0.0, 3.0, // grad diag [3, 2]
++                    4.0, 0.0, 0.0, 5.0, // grad diag [5, 4]
++                ],
++                vec![2, 2, 2],
++                true,
++            )
++            .unwrap();
++        let det = s.tensor_linalg_det(input).unwrap();
++        assert_eq!(s.tensor_shape(det).unwrap(), vec![2]);
++        let loss = s.tensor_sum(det).unwrap();
++        let report = s.tensor_backward(loss).unwrap();
++        let grad = s.tensor_gradient(&report, input).unwrap();
++        let expected = [3.0, 0.0, 0.0, 2.0, 5.0, 0.0, 0.0, 4.0];
++        for (actual, expected) in grad.iter().zip(expected) {
++            assert!((actual - expected).abs() < 1e-12);
++        }
++    }
++
++    #[test]
++    fn det_batched_rejects_non_square_trailing_dims() {
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        let input = s
++            .tensor_variable(vec![0.0; 12], vec![2, 2, 3], false)
++            .unwrap();
++        assert!(s.tensor_linalg_det(input).is_err());
++    }
++
+     #[test]
+     fn slogdet_matches_det() {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
