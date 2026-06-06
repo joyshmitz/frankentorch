@@ -4672,12 +4672,15 @@ impl TensorTape {
                 TensorStorage::F64(values) => TensorStorage::F64(Arc::new(
                     values.iter().map(|&value| value * scalar).collect(),
                 )),
-                TensorStorage::F32(values) => TensorStorage::F64(Arc::new(
-                    values
-                        .iter()
-                        .map(|&value| f64::from(value) * scalar)
-                        .collect(),
-                )),
+                TensorStorage::F32(values) => {
+                    // Preserve f32 dtype (torch: `f32_tensor * scalar` stays f32).
+                    // Previously upcast to F64 — a silent parity bug that made f32
+                    // scalar-scaling (attention scale, norm/affine, loss scaling, …)
+                    // return an F64 tensor.
+                    #[allow(clippy::cast_possible_truncation)]
+                    let s = scalar as f32;
+                    TensorStorage::F32(Arc::new(values.iter().map(|&value| value * s).collect()))
+                }
                 other => {
                     let scalar = scalar as f32;
                     TensorStorage::F32(Arc::new(
@@ -15248,11 +15251,8 @@ impl TensorTape {
                                 input_shape.clone(),
                             )?;
                             let numerator = self.cg_mul(inc_exp, input)?;
-                            let norm_exp = self.cg_expand(
-                                node_id,
-                                vec![norm_val; input_numel],
-                                input_shape,
-                            )?;
+                            let norm_exp =
+                                self.cg_expand(node_id, vec![norm_val; input_numel], input_shape)?;
                             self.cg_div(numerator, norm_exp)?
                         };
                         self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
@@ -15270,8 +15270,7 @@ impl TensorTape {
                             .tensor
                             .contiguous_values_as_f64()
                             .map_err(AutogradError::DenseTensor)?;
-                        let signs: Vec<f64> =
-                            input_values.iter().map(|v| v.signum()).collect();
+                        let signs: Vec<f64> = input_values.iter().map(|v| v.signum()).collect();
                         let inc_exp = self.cg_expand(
                             incoming_id,
                             vec![incoming_val; input_numel],
@@ -15372,8 +15371,7 @@ impl TensorTape {
                             .tensor
                             .contiguous_values_as_f64()
                             .map_err(AutogradError::DenseTensor)?;
-                        let signs: Vec<f64> =
-                            input_values.iter().map(|v| v.signum()).collect();
+                        let signs: Vec<f64> = input_values.iter().map(|v| v.signum()).collect();
                         let sign_leaf = self.leaf(signs, input_shape.clone(), false)?;
                         let grad_in = self.cg_mul(inc_full, sign_leaf)?;
                         self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
@@ -15466,9 +15464,9 @@ impl TensorTape {
                             let sv = std_vals[outer * inner_size + inner];
                             let safe = if sv == 0.0 { 1.0 } else { sv };
                             for r in 0..reduce_size {
-                                std_expanded[outer * reduce_size * inner_size
-                                    + r * inner_size
-                                    + inner] = safe;
+                                std_expanded
+                                    [outer * reduce_size * inner_size + r * inner_size + inner] =
+                                    safe;
                             }
                         }
                     }
@@ -18162,7 +18160,9 @@ mod tests {
             vec![0.5, 1.0, 1.5]
         );
 
-        let direct_report = direct.backward(out).expect("direct backward should succeed");
+        let direct_report = direct
+            .backward(out)
+            .expect("direct backward should succeed");
         assert_eq!(
             direct_report.gradient(x).expect("direct grad should exist"),
             &[0.5, 0.5, 0.5]
@@ -18179,8 +18179,12 @@ mod tests {
             .mul(x_ref, scale, ExecutionMode::Strict)
             .expect("full tensor multiply should succeed");
         assert_eq!(
-            reference.values(out_ref).expect("reference values should resolve"),
-            direct.values(out).expect("direct values should still resolve")
+            reference
+                .values(out_ref)
+                .expect("reference values should resolve"),
+            direct
+                .values(out)
+                .expect("direct values should still resolve")
         );
         let reference_report = reference
             .backward(out_ref)
@@ -18189,12 +18193,18 @@ mod tests {
             reference_report
                 .gradient(x_ref)
                 .expect("reference grad should exist"),
-            direct_report.gradient(x).expect("direct grad should still exist")
+            direct_report
+                .gradient(x)
+                .expect("direct grad should still exist")
         );
     }
 
     #[test]
-    fn tensor_mul_scalar_promotes_f32_like_full_f64_scale_tensor() {
+    fn tensor_mul_scalar_preserves_f32_dtype() {
+        // torch parity: `f32_tensor * scalar` stays f32 (a Python-float scalar is a
+        // weak scalar that does NOT promote the tensor's dtype — unlike multiplying
+        // by an explicit f64 tensor). This previously upcast to F64, a silent
+        // parity bug for all f32 scalar-scaling (attention scale, norm affine, …).
         let mut tape = TensorTape::new();
         let input = DenseTensor::from_storage_f32(
             TensorMeta::from_shape(vec![2], DType::F32, Device::Cpu),
@@ -18206,11 +18216,11 @@ mod tests {
         let (out, event) = tape
             .mul_scalar(input, 0.25)
             .expect("scalar multiply should succeed");
-        assert_eq!(event.output_dtype, DType::F64);
-        assert_eq!(tape.dtype(out).expect("dtype should resolve"), DType::F64);
+        assert_eq!(event.output_dtype, DType::F32);
+        assert_eq!(tape.dtype(out).expect("dtype should resolve"), DType::F32);
         assert_eq!(
-            tape.values(out).expect("values should resolve"),
-            vec![0.25, 0.5]
+            tape.values_f32(out).expect("values should resolve"),
+            vec![0.25f32, 0.5]
         );
     }
 
@@ -25972,16 +25982,40 @@ mod tests {
             )
             .expect("first backward");
         let gx = report1.gradient(x).expect("gx");
-        assert!((gx[0] - 20.0).abs() < 1e-9, "gx[0] expected 20.0, got {}", gx[0]);
-        assert!((gx[1] - 18.0).abs() < 1e-9, "gx[1] expected 18.0, got {}", gx[1]);
-        assert!((gx[2] - 12.0).abs() < 1e-9, "gx[2] expected 12.0, got {}", gx[2]);
+        assert!(
+            (gx[0] - 20.0).abs() < 1e-9,
+            "gx[0] expected 20.0, got {}",
+            gx[0]
+        );
+        assert!(
+            (gx[1] - 18.0).abs() < 1e-9,
+            "gx[1] expected 18.0, got {}",
+            gx[1]
+        );
+        assert!(
+            (gx[2] - 12.0).abs() < 1e-9,
+            "gx[2] expected 12.0, got {}",
+            gx[2]
+        );
         // Second derivative: column sums of H = [12, 10, 6].
         let dx_node = report1.gradient_node(x).expect("gradient node for x");
         let report2 = tape.backward(dx_node).expect("second backward");
         let g2 = report2.gradient(x).expect("second gradient");
-        assert!((g2[0] - 12.0).abs() < 1e-9, "d2[0] expected 12.0, got {}", g2[0]);
-        assert!((g2[1] - 10.0).abs() < 1e-9, "d2[1] expected 10.0, got {}", g2[1]);
-        assert!((g2[2] - 6.0).abs() < 1e-9, "d2[2] expected 6.0, got {}", g2[2]);
+        assert!(
+            (g2[0] - 12.0).abs() < 1e-9,
+            "d2[0] expected 12.0, got {}",
+            g2[0]
+        );
+        assert!(
+            (g2[1] - 10.0).abs() < 1e-9,
+            "d2[1] expected 10.0, got {}",
+            g2[1]
+        );
+        assert!(
+            (g2[2] - 6.0).abs() < 1e-9,
+            "d2[2] expected 6.0, got {}",
+            g2[2]
+        );
     }
 
     #[test]
@@ -26004,12 +26038,24 @@ mod tests {
             )
             .expect("first backward");
         let gx = report1.gradient(x).expect("gx");
-        assert!((gx[0] - 0.6).abs() < 1e-9, "gx[0] expected 0.6, got {}", gx[0]);
-        assert!((gx[1] - 0.8).abs() < 1e-9, "gx[1] expected 0.8, got {}", gx[1]);
+        assert!(
+            (gx[0] - 0.6).abs() < 1e-9,
+            "gx[0] expected 0.6, got {}",
+            gx[0]
+        );
+        assert!(
+            (gx[1] - 0.8).abs() < 1e-9,
+            "gx[1] expected 0.8, got {}",
+            gx[1]
+        );
         let dx_node = report1.gradient_node(x).expect("gradient node for x");
         let report2 = tape.backward(dx_node).expect("second backward");
         let g2 = report2.gradient(x).expect("second gradient");
-        assert!((g2[0] - 0.032).abs() < 1e-9, "d2[0] expected 0.032, got {}", g2[0]);
+        assert!(
+            (g2[0] - 0.032).abs() < 1e-9,
+            "d2[0] expected 0.032, got {}",
+            g2[0]
+        );
         assert!(
             (g2[1] - (-0.024)).abs() < 1e-9,
             "d2[1] expected -0.024, got {}",
@@ -26046,7 +26092,9 @@ mod tests {
         let x = tape
             .leaf(vec![3.0, 4.0, 6.0, 8.0], vec![2, 2], true)
             .expect("x");
-        let (n, _) = tape.norm_dim(x, 2.0, 1, ExecutionMode::Strict).expect("norm_dim");
+        let (n, _) = tape
+            .norm_dim(x, 2.0, 1, ExecutionMode::Strict)
+            .expect("norm_dim");
         let (s, _) = tape.sum(n, ExecutionMode::Strict).expect("sum");
         let report1 = tape
             .backward_with_options(
@@ -26059,13 +26107,21 @@ mod tests {
             .expect("first backward");
         let gx = report1.gradient(x).expect("gx");
         for (i, &e) in [0.6, 0.8, 0.6, 0.8].iter().enumerate() {
-            assert!((gx[i] - e).abs() < 1e-9, "gx[{i}] expected {e}, got {}", gx[i]);
+            assert!(
+                (gx[i] - e).abs() < 1e-9,
+                "gx[{i}] expected {e}, got {}",
+                gx[i]
+            );
         }
         let dx_node = report1.gradient_node(x).expect("gradient node for x");
         let report2 = tape.backward(dx_node).expect("second backward");
         let g2 = report2.gradient(x).expect("second gradient");
         for (i, &e) in [0.032, -0.024, 0.016, -0.012].iter().enumerate() {
-            assert!((g2[i] - e).abs() < 1e-9, "d2[{i}] expected {e}, got {}", g2[i]);
+            assert!(
+                (g2[i] - e).abs() < 1e-9,
+                "d2[{i}] expected {e}, got {}",
+                g2[i]
+            );
         }
     }
 
@@ -26076,7 +26132,9 @@ mod tests {
         let x = tape
             .leaf(vec![3.0, -4.0, -1.0, 2.0], vec![2, 2], true)
             .expect("x");
-        let (n, _) = tape.norm_dim(x, 1.0, 1, ExecutionMode::Strict).expect("norm_dim");
+        let (n, _) = tape
+            .norm_dim(x, 1.0, 1, ExecutionMode::Strict)
+            .expect("norm_dim");
         let (s, _) = tape.sum(n, ExecutionMode::Strict).expect("sum");
         let report = tape
             .backward_with_options(
