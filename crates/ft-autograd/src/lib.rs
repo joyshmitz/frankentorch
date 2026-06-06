@@ -8445,13 +8445,11 @@ impl TensorTape {
                 ft_core::TensorMeta::from_shape(output_shape.clone(), output_dtype, output_device);
             let values = where_tensor_contiguous_f64(&cond_values, &x_values, &y_values, &meta)
                 .map_err(|e| AutogradError::Dispatch(e.into()))?;
-            let storage = match output_dtype {
-                DType::F32 => {
-                    TensorStorage::F32(Arc::new(values.into_iter().map(|v| v as f32).collect()))
-                }
-                DType::F64 => TensorStorage::F64(Arc::new(values)),
-                _ => TensorStorage::F64(Arc::new(values)),
-            };
+            // where is a pure selection (picks x or y elementwise), so narrowing
+            // the f64 result back to the input dtype is lossless. This preserves
+            // f16/bf16 (torch where(f16) -> f16) in addition to f32/f64, which the
+            // old match upcast to f64 via its catch-all. frankentorch-u78p.
+            let storage = Self::reduction_values_storage(output_dtype, values);
             let output_dtype = storage.dtype();
             (
                 storage,
