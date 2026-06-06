@@ -1,0 +1,2835 @@
+  [2m2026-06-06T17:50:41.688937Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: ts1 at ubuntu@192.168.1.107 (26 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:514 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:41.934124Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mStarting remote compilation pipeline for frankentorch (hash: 2f1a79f9f27aec5f)[0m
+    [2;3mat[0m rch/src/hook.rs:5987 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:41.934195Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook.rs:6009 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:42.330455Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSyncing project to worker ts1...[0m
+    [2;3mat[0m rch/src/hook.rs:6039 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:42.330514Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch -> /data/projects/frankentorch on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:43.504019Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1173ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:43.504089Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-api -> /data/projects/frankentorch/crates/ft-api on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:43.726899Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 222ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:43.726973Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-autograd -> /data/projects/frankentorch/crates/ft-autograd on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:43.944766Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 217ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:43.944837Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-conformance -> /data/projects/frankentorch/crates/ft-conformance on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:44.169701Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 224ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:44.169792Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-core -> /data/projects/frankentorch/crates/ft-core on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:44.397007Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 227ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:44.397088Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-data -> /data/projects/frankentorch/crates/ft-data on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:44.621011Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 223ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:44.621081Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-device -> /data/projects/frankentorch/crates/ft-device on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:44.853561Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 232ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:44.853643Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-dispatch -> /data/projects/frankentorch/crates/ft-dispatch on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.084792Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 231ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.084875Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-kernel-cpu -> /data/projects/frankentorch/crates/ft-kernel-cpu on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.313553Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 228ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.313643Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-nn -> /data/projects/frankentorch/crates/ft-nn on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.544015Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 230ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.544090Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-optim -> /data/projects/frankentorch/crates/ft-optim on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.768893Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 224ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.768972Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-runtime -> /data/projects/frankentorch/crates/ft-runtime on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.994793Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 225ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:45.994929Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/frankentorch/crates/ft-serialize -> /data/projects/frankentorch/crates/ft-serialize on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:46.223508Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 228ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:46.223547Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSync complete: 50671 files, 1798009 bytes in 3884ms[0m
+    [2;3mat[0m rch/src/hook.rs:6202 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:46.808936Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mExecuting command remotely: cargo clippy -p ft-api --all-targets -- -D warnings[0m
+    [2;3mat[0m rch/src/hook.rs:6240 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T17:50:46.808976Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/tmp/cargo-target -> /data/projects/frankentorch/.rch-target-ts1-job-29872254800113161-1780768242330448432-0[0m
+    [2;3mat[0m rch/src/transfer.rs:712 [2;3mon[0m ThreadId(1)
+
+Warning: Identity file /home/ubuntu/.ssh/id_rsa not accessible: No such file or directory.
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded cast v0.3.0
+  Downloaded ciborium-io v0.2.2
+  Downloaded bytemuck_derive v1.10.2
+  Downloaded cfg-if v1.0.4
+  Downloaded anes v0.1.6
+  Downloaded anstyle v1.0.14
+  Downloaded aho-corasick v1.1.4
+  Downloaded clap_lex v1.1.0
+  Downloaded plotters-svg v0.3.7
+  Downloaded itoa v1.0.18
+  Downloaded autocfg v1.5.0
+  Downloaded ciborium-ll v0.2.2
+  Downloaded is-terminal v0.4.17
+  Downloaded rawpointer v0.2.1
+  Downloaded plotters-backend v0.3.7
+  Downloaded ciborium v0.2.2
+  Downloaded criterion-plot v0.5.0
+  Downloaded oorandom v11.1.5
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded either v1.15.0
+  Downloaded quote v1.0.45
+  Downloaded same-file v1.0.6
+  Downloaded num-complex v0.4.6
+  Downloaded walkdir v2.5.0
+  Downloaded bytemuck v1.25.0
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded tinytemplate v1.2.1
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded clap v4.6.1
+  Downloaded once_cell v1.21.4
+  Downloaded half v2.7.1
+  Downloaded serde_derive v1.0.228
+  Downloaded proc-macro2 v1.0.106
+  Downloaded zmij v1.0.21
+  Downloaded serde_core v1.0.228
+  Downloaded matrixmultiply v0.3.10
+  Downloaded num-traits v0.2.19
+  Downloaded safe_arch v0.7.4
+  Downloaded unicode-ident v1.0.24
+  Downloaded memchr v2.8.0
+  Downloaded rayon-core v1.13.0
+  Downloaded zerocopy-derive v0.8.48
+  Downloaded serde v1.0.228
+  Downloaded wide v0.7.33
+  Downloaded itertools v0.10.5
+  Downloaded criterion v0.5.1
+  Downloaded regex v1.12.3
+  Downloaded serde_json v1.0.149
+  Downloaded plotters v0.3.7
+  Downloaded clap_builder v4.6.0
+  Downloaded rayon v1.12.0
+  Downloaded libm v0.2.16
+  Downloaded zerocopy v0.8.48
+  Downloaded syn v2.0.117
+  Downloaded regex-syntax v0.8.10
+  Downloaded libc v0.2.185
+  Downloaded regex-automata v0.4.14
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling crossbeam-utils v0.8.21
+    Checking cfg-if v1.0.4
+    Checking either v1.15.0
+   Compiling rayon-core v1.13.0
+   Compiling serde_core v1.0.228
+   Compiling libm v0.2.16
+   Compiling serde v1.0.228
+   Compiling zmij v1.0.21
+    Checking rawpointer v0.2.1
+   Compiling libc v0.2.185
+   Compiling serde_json v1.0.149
+    Checking plotters-backend v0.3.7
+    Checking memchr v2.8.0
+    Checking clap_lex v1.1.0
+    Checking anstyle v1.0.14
+    Checking itoa v1.0.18
+    Checking ciborium-io v0.2.2
+    Checking regex-syntax v0.8.10
+    Checking cast v0.3.0
+    Checking same-file v1.0.6
+    Checking once_cell v1.21.4
+    Checking oorandom v11.1.5
+    Checking anes v0.1.6
+    Checking itertools v0.10.5
+    Checking walkdir v2.5.0
+    Checking clap_builder v4.6.0
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+    Checking plotters-svg v0.3.7
+    Checking crossbeam-epoch v0.9.18
+    Checking crossbeam-deque v0.8.6
+   Compiling syn v2.0.117
+    Checking regex-automata v0.4.14
+    Checking num-complex v0.4.6
+    Checking plotters v0.3.7
+    Checking criterion-plot v0.5.0
+    Checking rayon v1.12.0
+    Checking is-terminal v0.4.17
+    Checking clap v4.6.1
+    Checking regex v1.12.3
+   Compiling bytemuck_derive v1.10.2
+   Compiling zerocopy-derive v0.8.48
+   Compiling serde_derive v1.0.228
+    Checking bytemuck v1.25.0
+    Checking safe_arch v0.7.4
+    Checking wide v0.7.33
+    Checking tinytemplate v1.2.1
+    Checking half v2.7.1
+    Checking ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+    Checking ciborium-ll v0.2.2
+    Checking ciborium v0.2.2
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Checking ft-runtime v0.1.0 (/data/projects/frankentorch/crates/ft-runtime)
+    Checking criterion v0.5.1
+    Checking ft-dispatch v0.1.0 (/data/projects/frankentorch/crates/ft-dispatch)
+    Checking ft-autograd v0.1.0 (/data/projects/frankentorch/crates/ft-autograd)
+    Checking ft-api v0.1.0 (/data/projects/frankentorch/crates/ft-api)
+error: the loop variable `n` is only used to index `dct_matrix`
+    --> crates/ft-api/src/lib.rs:2217:22
+     |
+2217 |             for n in 0..n_mels {
+     |                      ^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+     = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator
+     |
+2217 -             for n in 0..n_mels {
+2217 +             for <item> in dct_matrix.iter_mut().take(n_mels) {
+     |
+
+error: manual implementation of `.is_multiple_of()`
+    --> crates/ft-api/src/lib.rs:5217:12
+     |
+5217 |         if head_dim % 2 != 0 {
+     |            ^^^^^^^^^^^^^^^^^ help: replace with: `!head_dim.is_multiple_of(2)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: the loop variable `i` is used to index `freqs`
+    --> crates/ft-api/src/lib.rs:5226:18
+     |
+5226 |         for i in 0..half_dim {
+     |                  ^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+     |
+5226 -         for i in 0..half_dim {
+5226 +         for (i, <item>) in freqs.iter_mut().enumerate().take(half_dim) {
+     |
+
+error: manual implementation of `.is_multiple_of()`
+    --> crates/ft-api/src/lib.rs:5384:12
+     |
+5384 |         if num_q_heads % num_kv_heads != 0 {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!num_q_heads.is_multiple_of(num_kv_heads)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: the loop variable `ui` is only used to index `unique_indices`
+    --> crates/ft-api/src/lib.rs:6856:23
+     |
+6856 |             for ui in 0..unique_count {
+     |                       ^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+     |
+6856 -             for ui in 0..unique_count {
+6856 +             for <item> in unique_indices.iter().take(unique_count) {
+     |
+
+error: this `if` statement can be collapsed
+    --> crates/ft-api/src/lib.rs:7304:9
+     |
+7304 | /         if let Some(r) = ranges {
+7305 | |             if r.len() != n_dims {
+7306 | |                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+7307 | |                     ft_dispatch::DispatchKeyError::IncompatibleSet {
+...    |
+7312 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+7304 ~         if let Some(r) = ranges
+7305 ~             && r.len() != n_dims {
+7306 |                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
+ ...
+7310 |                 )));
+7311 ~             }
+     |
+
+error: the loop variable `i` is used to index `input_vals`
+    --> crates/ft-api/src/lib.rs:8454:30
+     |
+8454 |                     for i in start..end.min(input_len) {
+     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+     |
+8454 -                     for i in start..end.min(input_len) {
+8454 +                     for (i, <item>) in input_vals.iter().enumerate().take(end.min(input_len)).skip(start) {
+     |
+
+error: this `if` can be collapsed into the outer `match`
+    --> crates/ft-api/src/lib.rs:8469:37
+     |
+8469 | / ...                   if i == start || val > agg[j] {
+8470 | | ...                       agg[j] = val;
+8471 | | ...                   }
+     | |_______________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_match
+     = note: `-D clippy::collapsible-match` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_match)]`
+help: collapse nested if block
+     |
+8468 ~                                 "max"
+8469 ~                                     if (i == start || val > agg[j]) => {
+8470 |                                         agg[j] = val;
+8471 ~                                     }
+     |
+
+error: the loop variable `i` is only used to index `input_for_backward`
+    --> crates/ft-api/src/lib.rs:8503:38
+     |
+8503 | ...                   for i in start..end.min(input_len) {
+     |                                ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+     |
+8503 -                             for i in start..end.min(input_len) {
+8503 +                             for <item> in input_for_backward.iter().take(end.min(input_len)).skip(start) {
+     |
+
+error: the loop variable `i` is only used to index `input_for_backward`
+    --> crates/ft-api/src/lib.rs:8513:42
+     |
+8513 | ...                   for i in start..end.min(input_len) {
+     |                                ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+     |
+8513 -                                 for i in start..end.min(input_len) {
+8513 +                                 for <item> in input_for_backward.iter().take(end.min(input_len)).skip(start) {
+     |
+
+error: the loop variable `i` is used to index `input_for_backward`
+    --> crates/ft-api/src/lib.rs:8527:42
+     |
+8527 | ...                   for i in start..end.min(input_len) {
+     |                                ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+     |
+8527 -                                 for i in start..end.min(input_len) {
+8527 +                                 for (i, <item>) in input_for_backward.iter().enumerate().take(end.min(input_len)).skip(start) {
+     |
+
+error: using `clone` on type `TensorNodeId` which implements the `Copy` trait
+    --> crates/ft-api/src/lib.rs:9290:39
+     |
+9290 |         let diff_sq = self.tensor_mul(diff.clone(), diff)?;
+     |                                       ^^^^^^^^^^^^ help: try removing the `clone` call: `diff`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#clone_on_copy
+     = note: `-D clippy::clone-on-copy` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::clone_on_copy)]`
+
+error: this function has too many arguments (8/7)
+    --> crates/ft-api/src/lib.rs:9495:5
+     |
+9495 | /     pub fn tensor_ctc_loss(
+9496 | |         &mut self,
+9497 | |         log_probs: TensorNodeId,
+9498 | |         targets: TensorNodeId,
+...    |
+9503 | |         zero_infinity: bool,
+9504 | |     ) -> Result<TensorNodeId, AutogradError> {
+     | |____________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+     = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: manual implementation of `.is_multiple_of()`
+    --> crates/ft-api/src/lib.rs:9577:50
+     |
+9577 |                         |s: usize| -> usize { if s % 2 == 0 { blank } else { target_seq[s / 2] } };
+     |                                                  ^^^^^^^^^^ help: replace with: `s.is_multiple_of(2)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+    --> crates/ft-api/src/lib.rs:9632:50
+     |
+9632 |                         |s: usize| -> usize { if s % 2 == 0 { blank } else { target_seq[s / 2] } };
+     |                                                  ^^^^^^^^^^ help: replace with: `s.is_multiple_of(2)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: the loop variable `i` is used to index `g`
+    --> crates/ft-api/src/lib.rs:9951:26
+     |
+9951 |                 for i in 0..n {
+     |                          ^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+     |
+9951 -                 for i in 0..n {
+9951 +                 for (i, <item>) in g.iter().enumerate().take(n) {
+     |
+
+error: the loop variable `i` is used to index `g`
+     --> crates/ft-api/src/lib.rs:10073:26
+      |
+10073 |                 for i in 0..n {
+      |                          ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+10073 -                 for i in 0..n {
+10073 +                 for (i, <item>) in g.iter().enumerate().take(n) {
+      |
+
+error: this `repeat().take()` can be written more concisely
+     --> crates/ft-api/src/lib.rs:15752:20
+      |
+15752 |             .chain(std::iter::repeat(1).take(shape.len() - 1))
+      |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `repeat_n()` instead: `std::iter::repeat_n(1, shape.len() - 1)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_repeat_n
+      = note: `-D clippy::manual-repeat-n` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::manual_repeat_n)]`
+
+error: this `repeat().take()` can be written more concisely
+     --> crates/ft-api/src/lib.rs:15817:24
+      |
+15817 |                 .chain(std::iter::repeat(1).take(shape.len() - 1))
+      |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `repeat_n()` instead: `std::iter::repeat_n(1, shape.len() - 1)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_repeat_n
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:18762:13
+      |
+18762 |             (l_in + stride - 1) / stride
+      |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `l_in.div_ceil(stride)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+      = note: `-D clippy::manual-div-ceil` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::manual_div_ceil)]`
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:18833:13
+      |
+18833 |             (h_in + sh - 1) / sh
+      |             ^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `h_in.div_ceil(sh)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:18838:13
+      |
+18838 |             (w_in + sw - 1) / sw
+      |             ^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `w_in.div_ceil(sw)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:18942:13
+      |
+18942 |             (d_in + sd - 1) / sd
+      |             ^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `d_in.div_ceil(sd)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:18947:13
+      |
+18947 |             (h_in + sh - 1) / sh
+      |             ^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `h_in.div_ceil(sh)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:18952:13
+      |
+18952 |             (w_in + sw - 1) / sw
+      |             ^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `w_in.div_ceil(sw)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: manual implementation of `.is_multiple_of()`
+     --> crates/ft-api/src/lib.rs:19749:25
+      |
+19749 |         if size == 0 || size % 2 == 0 {
+      |                         ^^^^^^^^^^^^^ help: replace with: `size.is_multiple_of(2)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: the loop variable `c` is only used to index `r`
+     --> crates/ft-api/src/lib.rs:19824:42
+      |
+19824 | ...                   for c in m_start..m_end {
+      |                                ^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+19824 -                                 for c in m_start..m_end {
+19824 +                                 for <item> in r.iter().take(m_end).skip(m_start) {
+      |
+
+error: this `if` statement can be collapsed
+     --> crates/ft-api/src/lib.rs:20031:9
+      |
+20031 | /         if let (Some(w), Some(bs)) = (weight, bias) {
+20032 | |             if (self.tensor_tape.tensor_requires_grad(input)? || w_grad || b_grad)
+20033 | |                 && input_f64
+20034 | |                 && self.tensor_dtype(w)? == DType::F64
+...     |
+20080 | |         }
+      | |_________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+help: collapse nested if block
+      |
+20031 ~         if let (Some(w), Some(bs)) = (weight, bias)
+20032 ~             && (self.tensor_tape.tensor_requires_grad(input)? || w_grad || b_grad)
+20033 |                 && input_f64
+  ...
+20078 |                 );
+20079 ~             }
+      |
+
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/ft-api/src/lib.rs:20266:10
+      |
+20266 |     ) -> Result<Option<(TensorNodeId, Option<TensorNodeId>, Option<TensorNodeId>)>, AutogradError>
+      |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+      = note: `-D clippy::type-complexity` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: this `if` statement can be collapsed
+     --> crates/ft-api/src/lib.rs:20416:9
+      |
+20416 | /         if training {
+20417 | |             if let (Some(w), Some(bs)) = (weight, bias) {
+20418 | |                 if bn_grad
+20419 | |                     && self.tensor_dtype(input)? == DType::F64
+...     |
+20484 | |         }
+      | |_________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+help: collapse nested if block
+      |
+20416 ~         if training
+20417 ~             && let (Some(w), Some(bs)) = (weight, bias) {
+20418 |                 if bn_grad
+  ...
+20482 |                 }
+20483 ~             }
+      |
+
+error: this `if` statement can be collapsed
+     --> crates/ft-api/src/lib.rs:20417:13
+      |
+20417 | /             if let (Some(w), Some(bs)) = (weight, bias) {
+20418 | |                 if bn_grad
+20419 | |                     && self.tensor_dtype(input)? == DType::F64
+20420 | |                     && self.tensor_dtype(w)? == DType::F64
+...     |
+20483 | |             }
+      | |_____________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+help: collapse nested if block
+      |
+20417 ~             if let (Some(w), Some(bs)) = (weight, bias)
+20418 ~                 && bn_grad
+20419 |                     && self.tensor_dtype(input)? == DType::F64
+  ...
+20481 |                     return Ok(Some((out_t, updated_mean, updated_var)));
+20482 ~                 }
+      |
+
+error: this function has too many arguments (8/7)
+     --> crates/ft-api/src/lib.rs:21265:5
+      |
+21265 | /     pub fn functional_ctc_loss(
+21266 | |         &mut self,
+21267 | |         log_probs: TensorNodeId,
+21268 | |         targets: TensorNodeId,
+...     |
+21273 | |         zero_infinity: bool,
+21274 | |     ) -> Result<TensorNodeId, AutogradError> {
+      | |____________________________________________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: this `if` statement can be collapsed
+     --> crates/ft-api/src/lib.rs:31557:9
+      |
+31557 | /         if let Some(go) = grad_outputs {
+31558 | |             if go.len() != outputs.len() {
+31559 | |                 return Err(Self::incompatible_tensor_args(
+31560 | |                     "autograd_grad: grad_outputs length must match outputs length",
+...     |
+31563 | |         }
+      | |_________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+help: collapse nested if block
+      |
+31557 ~         if let Some(go) = grad_outputs
+31558 ~             && go.len() != outputs.len() {
+31559 |                 return Err(Self::incompatible_tensor_args(
+31560 |                     "autograd_grad: grad_outputs length must match outputs length",
+31561 |                 ));
+31562 ~             }
+      |
+
+error: the loop variable `i` is only used to index `u_data`
+     --> crates/ft-api/src/lib.rs:32248:18
+      |
+32248 |         for i in 0..out_features {
+      |                  ^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+32248 -         for i in 0..out_features {
+32248 +         for <item> in u_data.iter_mut().take(out_features) {
+      |
+
+error: this function has too many arguments (8/7)
+     --> crates/ft-api/src/lib.rs:32367:5
+      |
+32367 | /     pub fn fuse_conv_bn_weights(
+32368 | |         &mut self,
+32369 | |         conv_weight: TensorNodeId,
+32370 | |         conv_bias: Option<TensorNodeId>,
+...     |
+32375 | |         eps: f64,
+32376 | |     ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+      | |____________________________________________________________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: this `if` has identical blocks
+     --> crates/ft-api/src/lib.rs:32529:42
+      |
+32529 |           let total_numel = if batch_first {
+      |  __________________________________________^
+32530 | |             batch_size * max_len * trailing_numel
+32531 | |         } else {
+      | |_________^
+      |
+note: same as this
+     --> crates/ft-api/src/lib.rs:32531:16
+      |
+32531 |           } else {
+      |  ________________^
+32532 | |             max_len * batch_size * trailing_numel
+32533 | |         };
+      | |_________^
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#if_same_then_else
+      = note: `-D clippy::if-same-then-else` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::if_same_then_else)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/ft-api/src/lib.rs:32581:10
+      |
+32581 |     ) -> Result<(TensorNodeId, Vec<usize>, Vec<usize>, Vec<usize>), AutogradError> {
+      |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/ft-api/src/lib.rs:32665:10
+      |
+32665 |     ) -> Result<(TensorNodeId, Vec<usize>, Vec<usize>, Vec<usize>), AutogradError> {
+      |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: this `if` has identical blocks
+     --> crates/ft-api/src/lib.rs:32770:42
+      |
+32770 |           let total_numel = if batch_first {
+      |  __________________________________________^
+32771 | |             batch_size * max_len * trailing_numel
+32772 | |         } else {
+      | |_________^
+      |
+note: same as this
+     --> crates/ft-api/src/lib.rs:32772:16
+      |
+32772 |           } else {
+      |  ________________^
+32773 | |             max_len * batch_size * trailing_numel
+32774 | |         };
+      | |_________^
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#if_same_then_else
+
+error: the loop variable `b` is only used to index `lengths`
+     --> crates/ft-api/src/lib.rs:32780:22
+      |
+32780 |             for b in 0..bs {
+      |                      ^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+32780 -             for b in 0..bs {
+32780 +             for <item> in lengths.iter_mut().take(bs) {
+      |
+
+error: this `if` has identical blocks
+     --> crates/ft-api/src/lib.rs:33054:41
+      |
+33054 |           let input_size = if batch_first {
+      |  _________________________________________^
+33055 | |             input_shape[2]
+33056 | |         } else {
+      | |_________^
+      |
+note: same as this
+     --> crates/ft-api/src/lib.rs:33056:16
+      |
+33056 |           } else {
+      |  ________________^
+33057 | |             input_shape[2]
+33058 | |         };
+      | |_________^
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#if_same_then_else
+
+error: the loop variable `layer` is used to index `weights`
+     --> crates/ft-api/src/lib.rs:33082:22
+      |
+33082 |         for layer in 0..num_layers {
+      |                      ^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+33082 -         for layer in 0..num_layers {
+33082 +         for (layer, <item>) in weights.iter().enumerate().take(num_layers) {
+      |
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-api/src/lib.rs:33113:17
+      |
+33113 | /                 for i in 0..batch_size * hidden_size {
+33114 | |                     outputs[t][i] = h[i];
+33115 | |                 }
+      | |_________________^ help: try replacing the loop by: `outputs[t][..(batch_size * hidden_size)].copy_from_slice(&h[..(batch_size * hidden_size)]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+      = note: `-D clippy::manual-memcpy` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::manual_memcpy)]`
+
+error: the loop variable `t` is only used to index `outputs`
+     --> crates/ft-api/src/lib.rs:33169:18
+      |
+33169 |         for t in 0..seq_len {
+      |                  ^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+33169 -         for t in 0..seq_len {
+33169 +         for <item> in outputs.iter().take(seq_len) {
+      |
+
+error: this `if` has identical blocks
+     --> crates/ft-api/src/lib.rs:33240:41
+      |
+33240 |           let input_size = if batch_first {
+      |  _________________________________________^
+33241 | |             input_shape[2]
+33242 | |         } else {
+      | |_________^
+      |
+note: same as this
+     --> crates/ft-api/src/lib.rs:33242:16
+      |
+33242 |           } else {
+      |  ________________^
+33243 | |             input_shape[2]
+33244 | |         };
+      | |_________^
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#if_same_then_else
+
+error: the loop variable `layer` is used to index `weights`
+     --> crates/ft-api/src/lib.rs:33265:22
+      |
+33265 |         for layer in 0..num_layers {
+      |                      ^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+33265 -         for layer in 0..num_layers {
+33265 +         for (layer, <item>) in weights.iter().enumerate().take(num_layers) {
+      |
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-api/src/lib.rs:33291:17
+      |
+33291 | /                 for i in 0..batch_size * hidden_size {
+33292 | |                     outputs[t][i] = h[i];
+33293 | |                 }
+      | |_________________^ help: try replacing the loop by: `outputs[t][..(batch_size * hidden_size)].copy_from_slice(&h[..(batch_size * hidden_size)]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+
+error: the loop variable `t` is only used to index `outputs`
+     --> crates/ft-api/src/lib.rs:33336:18
+      |
+33336 |         for t in 0..seq_len {
+      |                  ^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+33336 -         for t in 0..seq_len {
+33336 +         for <item> in outputs.iter().take(seq_len) {
+      |
+
+error: this `if` has identical blocks
+     --> crates/ft-api/src/lib.rs:33402:41
+      |
+33402 |           let input_size = if batch_first {
+      |  _________________________________________^
+33403 | |             input_shape[2]
+33404 | |         } else {
+      | |_________^
+      |
+note: same as this
+     --> crates/ft-api/src/lib.rs:33404:16
+      |
+33404 |           } else {
+      |  ________________^
+33405 | |             input_shape[2]
+33406 | |         };
+      | |_________^
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#if_same_then_else
+
+error: the loop variable `layer` is used to index `weights`
+     --> crates/ft-api/src/lib.rs:33429:22
+      |
+33429 |         for layer in 0..num_layers {
+      |                      ^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+33429 -         for layer in 0..num_layers {
+33429 +         for (layer, <item>) in weights.iter().enumerate().take(num_layers) {
+      |
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-api/src/lib.rs:33459:17
+      |
+33459 | /                 for i in 0..batch_size * hidden_size {
+33460 | |                     outputs[t][i] = h[i];
+33461 | |                 }
+      | |_________________^ help: try replacing the loop by: `outputs[t][..(batch_size * hidden_size)].copy_from_slice(&h[..(batch_size * hidden_size)]);`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+
+error: the loop variable `t` is only used to index `outputs`
+     --> crates/ft-api/src/lib.rs:33508:18
+      |
+33508 |         for t in 0..seq_len {
+      |                  ^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+33508 -         for t in 0..seq_len {
+33508 +         for <item> in outputs.iter().take(seq_len) {
+      |
+
+error: the loop variable `local_q` is used to index `bests`
+     --> crates/ft-api/src/lib.rs:36872:32
+      |
+36872 |                 for local_q in 0..tile_len {
+      |                                ^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+36872 -                 for local_q in 0..tile_len {
+36872 +                 for (local_q, <item>) in bests.iter().enumerate().take(tile_len) {
+      |
+
+error: the loop variable `i` is used to index `trend`
+     --> crates/ft-api/src/lib.rs:37394:18
+      |
+37394 |         for i in half..(seq_len - half) {
+      |                  ^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+37394 -         for i in half..(seq_len - half) {
+37394 +         for (i, <item>) in trend.iter_mut().enumerate().take((seq_len - half)).skip(half) {
+      |
+
+error: the loop variable `i` is only used to index `data`
+     --> crates/ft-api/src/lib.rs:37599:18
+      |
+37599 |         for i in 0..e {
+      |                  ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+37599 -         for i in 0..e {
+37599 +         for <item> in data.iter().take(e) {
+      |
+
+error: wildcard pattern covers any other pattern as it will match anyway
+     --> crates/ft-api/src/lib.rs:37652:13
+      |
+37652 |             "both" | _ => {
+      |             ^^^^^^^^^^
+      |
+      = help: consider handling `_` separately
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#wildcard_in_or_patterns
+      = note: `-D clippy::wildcard-in-or-patterns` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::wildcard_in_or_patterns)]`
+
+error: the loop variable `i` is only used to index `data`
+     --> crates/ft-api/src/lib.rs:37637:26
+      |
+37637 |                 for i in 0..e {
+      |                          ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+37637 -                 for i in 0..e {
+37637 +                 for <item> in data.iter().take(e) {
+      |
+
+error: the loop variable `i` is only used to index `features`
+     --> crates/ft-api/src/lib.rs:37976:18
+      |
+37976 |         for i in 0..n {
+      |                  ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+37976 -         for i in 0..n {
+37976 +         for <item> in features.iter_mut().take(n) {
+      |
+
+error: the loop variable `j` is used to index `mask_areas`
+     --> crates/ft-api/src/lib.rs:38809:22
+      |
+38809 |             for j in 0..i {
+      |                      ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+38809 -             for j in 0..i {
+38809 +             for (j, <item>) in mask_areas.iter().enumerate().take(i) {
+      |
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:44885:27
+      |
+44885 |             let shift = -(((shape[d] + 1) / 2) as i64);
+      |                           ^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `shape[d].div_ceil(2)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:44905:20
+      |
+44905 |         let half = (n + 1) / 2;
+      |                    ^^^^^^^^^^^ help: consider using `.div_ceil()`: `n.div_ceil(2)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: this function has too many arguments (9/7)
+     --> crates/ft-api/src/lib.rs:49580:9
+      |
+49580 | /         fn copy_recursive(
+49581 | |             src: &[f64],
+49582 | |             dst: &mut [f64],
+49583 | |             src_shape: &[usize],
+...     |
+49589 | |             _dst_stride: usize,
+49590 | |         ) {
+      | |_________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: called `iter().copied().collect()` on a slice to create a `Vec`. Calling `to_vec()` is both faster and more readable
+     --> crates/ft-api/src/lib.rs:50414:25
+      |
+50414 |             Some(d) => d.iter().copied().collect(),
+      |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `.to_vec()`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#iter_cloned_collect
+      = note: `-D clippy::iter-cloned-collect` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::iter_cloned_collect)]`
+
+error: called `iter().copied().collect()` on a slice to create a `Vec`. Calling `to_vec()` is both faster and more readable
+     --> crates/ft-api/src/lib.rs:50481:25
+      |
+50481 |             Some(d) => d.iter().copied().collect(),
+      |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `.to_vec()`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#iter_cloned_collect
+
+error: called `iter().copied().collect()` on a slice to create a `Vec`. Calling `to_vec()` is both faster and more readable
+     --> crates/ft-api/src/lib.rs:50538:25
+      |
+50538 |             Some(d) => d.iter().copied().collect(),
+      |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `.to_vec()`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#iter_cloned_collect
+
+error: called `iter().copied().collect()` on a slice to create a `Vec`. Calling `to_vec()` is both faster and more readable
+     --> crates/ft-api/src/lib.rs:50587:25
+      |
+50587 |             Some(d) => d.iter().copied().collect(),
+      |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `.to_vec()`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#iter_cloned_collect
+
+error: it looks like the same item is being pushed into this `Vec`
+     --> crates/ft-api/src/lib.rs:53420:13
+      |
+53420 |             new_shape.push(1);
+      |             ^^^^^^^^^
+      |
+      = help: consider using `vec![1;SIZE]`
+      = help: or `new_shape.extend(std::iter::repeat_n(1, SIZE))`
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#same_item_push
+      = note: `-D clippy::same-item-push` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::same_item_push)]`
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:54390:27
+      |
+54390 |         let num_batches = (n + batch_size - 1) / batch_size;
+      |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `n.div_ceil(batch_size)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:56908:26
+      |
+56908 |             repeats.push((target_dim + src_dim - 1) / src_dim);
+      |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `target_dim.div_ceil(src_dim)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: manually reimplementing `div_ceil`
+     --> crates/ft-api/src/lib.rs:57174:26
+      |
+57174 |         let num_chunks = (batch_size + chunk_size - 1) / chunk_size;
+      |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `batch_size.div_ceil(chunk_size)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_div_ceil
+
+error: this function has too many arguments (8/7)
+     --> crates/ft-api/src/lib.rs:60958:5
+      |
+60958 | /     pub fn ctc_loss_tensor(
+60959 | |         &mut self,
+60960 | |         log_probs: TensorNodeId,
+60961 | |         targets: TensorNodeId,
+...     |
+60966 | |         zero_infinity: bool,
+60967 | |     ) -> Result<TensorNodeId, AutogradError> {
+      | |____________________________________________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64072:6
+      |
+64072 |     -4.41534164647933937950e-18, 3.33079451882223809783e-17, -2.43127984654795469359e-16,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+      = note: `-D clippy::excessive-precision` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::excessive_precision)]`
+help: consider changing the type or truncating it to
+      |
+64072 -     -4.41534164647933937950e-18, 3.33079451882223809783e-17, -2.43127984654795469359e-16,
+64072 +     -4.415_341_646_479_339_5e-18, 3.33079451882223809783e-17, -2.43127984654795469359e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64072:34
+      |
+64072 |     -4.41534164647933937950e-18, 3.33079451882223809783e-17, -2.43127984654795469359e-16,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64072 -     -4.41534164647933937950e-18, 3.33079451882223809783e-17, -2.43127984654795469359e-16,
+64072 +     -4.41534164647933937950e-18, 3.330_794_518_822_238_4e-17, -2.43127984654795469359e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64072:63
+      |
+64072 |     -4.41534164647933937950e-18, 3.33079451882223809783e-17, -2.43127984654795469359e-16,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64072 -     -4.41534164647933937950e-18, 3.33079451882223809783e-17, -2.43127984654795469359e-16,
+64072 +     -4.41534164647933937950e-18, 3.33079451882223809783e-17, -2.431_279_846_547_955e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64073:5
+      |
+64073 |     1.71539128555513303061e-15, -1.16853328779934516808e-14, 7.67618549860493561688e-14,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64073 -     1.71539128555513303061e-15, -1.16853328779934516808e-14, 7.67618549860493561688e-14,
+64073 +     1.715_391_285_555_133e-15, -1.16853328779934516808e-14, 7.67618549860493561688e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64073:34
+      |
+64073 |     1.71539128555513303061e-15, -1.16853328779934516808e-14, 7.67618549860493561688e-14,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64073 -     1.71539128555513303061e-15, -1.16853328779934516808e-14, 7.67618549860493561688e-14,
+64073 +     1.71539128555513303061e-15, -1.168_533_287_799_345_1e-14, 7.67618549860493561688e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64073:62
+      |
+64073 |     1.71539128555513303061e-15, -1.16853328779934516808e-14, 7.67618549860493561688e-14,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64073 -     1.71539128555513303061e-15, -1.16853328779934516808e-14, 7.67618549860493561688e-14,
+64073 +     1.71539128555513303061e-15, -1.16853328779934516808e-14, 7.676_185_498_604_936e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64074:6
+      |
+64074 |     -4.85644678311192946090e-13, 2.95505266312963983461e-12, -1.72682629144155570723e-11,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64074 -     -4.85644678311192946090e-13, 2.95505266312963983461e-12, -1.72682629144155570723e-11,
+64074 +     -4.856_446_783_111_929e-13, 2.95505266312963983461e-12, -1.72682629144155570723e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64074:34
+      |
+64074 |     -4.85644678311192946090e-13, 2.95505266312963983461e-12, -1.72682629144155570723e-11,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64074 -     -4.85644678311192946090e-13, 2.95505266312963983461e-12, -1.72682629144155570723e-11,
+64074 +     -4.85644678311192946090e-13, 2.955_052_663_129_64e-12, -1.72682629144155570723e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64074:63
+      |
+64074 |     -4.85644678311192946090e-13, 2.95505266312963983461e-12, -1.72682629144155570723e-11,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64074 -     -4.85644678311192946090e-13, 2.95505266312963983461e-12, -1.72682629144155570723e-11,
+64074 +     -4.85644678311192946090e-13, 2.95505266312963983461e-12, -1.726_826_291_441_556e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64075:5
+      |
+64075 |     9.67580903537323691224e-11, -5.18979560163526290666e-10, 2.65982372468238665035e-9,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64075 -     9.67580903537323691224e-11, -5.18979560163526290666e-10, 2.65982372468238665035e-9,
+64075 +     9.675_809_035_373_237e-11, -5.18979560163526290666e-10, 2.65982372468238665035e-9,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64075:34
+      |
+64075 |     9.67580903537323691224e-11, -5.18979560163526290666e-10, 2.65982372468238665035e-9,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64075 -     9.67580903537323691224e-11, -5.18979560163526290666e-10, 2.65982372468238665035e-9,
+64075 +     9.67580903537323691224e-11, -5.189_795_601_635_263e-10, 2.65982372468238665035e-9,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64075:62
+      |
+64075 |     9.67580903537323691224e-11, -5.18979560163526290666e-10, 2.65982372468238665035e-9,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64075 -     9.67580903537323691224e-11, -5.18979560163526290666e-10, 2.65982372468238665035e-9,
+64075 +     9.67580903537323691224e-11, -5.18979560163526290666e-10, 2.659_823_724_682_386_6e-9,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64076:6
+      |
+64076 |     -1.30002500998624804212e-8, 6.04699502254191894932e-8, -2.67079385394061173391e-7,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64076 -     -1.30002500998624804212e-8, 6.04699502254191894932e-8, -2.67079385394061173391e-7,
+64076 +     -1.300_025_009_986_248e-8, 6.04699502254191894932e-8, -2.67079385394061173391e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64076:33
+      |
+64076 |     -1.30002500998624804212e-8, 6.04699502254191894932e-8, -2.67079385394061173391e-7,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64076 -     -1.30002500998624804212e-8, 6.04699502254191894932e-8, -2.67079385394061173391e-7,
+64076 +     -1.30002500998624804212e-8, 6.046_995_022_541_919e-8, -2.67079385394061173391e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64076:61
+      |
+64076 |     -1.30002500998624804212e-8, 6.04699502254191894932e-8, -2.67079385394061173391e-7,
+      |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64076 -     -1.30002500998624804212e-8, 6.04699502254191894932e-8, -2.67079385394061173391e-7,
+64076 +     -1.30002500998624804212e-8, 6.04699502254191894932e-8, -2.670_793_853_940_612e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64077:5
+      |
+64077 |     1.11738753912010371815e-6, -4.41673835845875056359e-6, 1.64484480707288970893e-5,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64077 -     1.11738753912010371815e-6, -4.41673835845875056359e-6, 1.64484480707288970893e-5,
+64077 +     1.117_387_539_120_103_7e-6, -4.41673835845875056359e-6, 1.64484480707288970893e-5,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64077:33
+      |
+64077 |     1.11738753912010371815e-6, -4.41673835845875056359e-6, 1.64484480707288970893e-5,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64077 -     1.11738753912010371815e-6, -4.41673835845875056359e-6, 1.64484480707288970893e-5,
+64077 +     1.11738753912010371815e-6, -4.416_738_358_458_750_5e-6, 1.64484480707288970893e-5,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64077:60
+      |
+64077 |     1.11738753912010371815e-6, -4.41673835845875056359e-6, 1.64484480707288970893e-5,
+      |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64077 -     1.11738753912010371815e-6, -4.41673835845875056359e-6, 1.64484480707288970893e-5,
+64077 +     1.11738753912010371815e-6, -4.41673835845875056359e-6, 1.644_844_807_072_889_6e-5,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64078:6
+      |
+64078 |     -5.75419501008210370398e-5, 1.88502885095841655729e-4, -5.76375574538582365885e-4,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64078 -     -5.75419501008210370398e-5, 1.88502885095841655729e-4, -5.76375574538582365885e-4,
+64078 +     -5.754_195_010_082_104e-5, 1.88502885095841655729e-4, -5.76375574538582365885e-4,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64078:33
+      |
+64078 |     -5.75419501008210370398e-5, 1.88502885095841655729e-4, -5.76375574538582365885e-4,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64078 -     -5.75419501008210370398e-5, 1.88502885095841655729e-4, -5.76375574538582365885e-4,
+64078 +     -5.75419501008210370398e-5, 1.885_028_850_958_416_5e-4, -5.76375574538582365885e-4,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64078:61
+      |
+64078 |     -5.75419501008210370398e-5, 1.88502885095841655729e-4, -5.76375574538582365885e-4,
+      |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64078 -     -5.75419501008210370398e-5, 1.88502885095841655729e-4, -5.76375574538582365885e-4,
+64078 +     -5.75419501008210370398e-5, 1.88502885095841655729e-4, -5.763_755_745_385_824e-4,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64079:5
+      |
+64079 |     1.63947561694133579842e-3, -4.32430999505057594430e-3, 1.05464603945949983183e-2,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64079 -     1.63947561694133579842e-3, -4.32430999505057594430e-3, 1.05464603945949983183e-2,
+64079 +     1.639_475_616_941_335_7e-3, -4.32430999505057594430e-3, 1.05464603945949983183e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64079:33
+      |
+64079 |     1.63947561694133579842e-3, -4.32430999505057594430e-3, 1.05464603945949983183e-2,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64079 -     1.63947561694133579842e-3, -4.32430999505057594430e-3, 1.05464603945949983183e-2,
+64079 +     1.63947561694133579842e-3, -4.324_309_995_050_576e-3, 1.05464603945949983183e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64079:60
+      |
+64079 |     1.63947561694133579842e-3, -4.32430999505057594430e-3, 1.05464603945949983183e-2,
+      |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64079 -     1.63947561694133579842e-3, -4.32430999505057594430e-3, 1.05464603945949983183e-2,
+64079 +     1.63947561694133579842e-3, -4.32430999505057594430e-3, 1.054_646_039_459_499_8e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64080:6
+      |
+64080 |     -2.37374148058994688156e-2, 4.93052842396707084878e-2, -9.49010970480476444210e-2,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64080 -     -2.37374148058994688156e-2, 4.93052842396707084878e-2, -9.49010970480476444210e-2,
+64080 +     -2.373_741_480_589_947e-2, 4.93052842396707084878e-2, -9.49010970480476444210e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64080:33
+      |
+64080 |     -2.37374148058994688156e-2, 4.93052842396707084878e-2, -9.49010970480476444210e-2,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64080 -     -2.37374148058994688156e-2, 4.93052842396707084878e-2, -9.49010970480476444210e-2,
+64080 +     -2.37374148058994688156e-2, 4.930_528_423_967_071e-2, -9.49010970480476444210e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64080:61
+      |
+64080 |     -2.37374148058994688156e-2, 4.93052842396707084878e-2, -9.49010970480476444210e-2,
+      |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64080 -     -2.37374148058994688156e-2, 4.93052842396707084878e-2, -9.49010970480476444210e-2,
+64080 +     -2.37374148058994688156e-2, 4.93052842396707084878e-2, -9.490_109_704_804_764e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64081:5
+      |
+64081 |     1.71620901522208775349e-1, -3.04682672343198398683e-1, 6.76795274409476084995e-1,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64081 -     1.71620901522208775349e-1, -3.04682672343198398683e-1, 6.76795274409476084995e-1,
+64081 +     1.716_209_015_222_087_7e-1, -3.04682672343198398683e-1, 6.76795274409476084995e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64081:33
+      |
+64081 |     1.71620901522208775349e-1, -3.04682672343198398683e-1, 6.76795274409476084995e-1,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64081 -     1.71620901522208775349e-1, -3.04682672343198398683e-1, 6.76795274409476084995e-1,
+64081 +     1.71620901522208775349e-1, -3.046_826_723_431_984e-1, 6.76795274409476084995e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64081:60
+      |
+64081 |     1.71620901522208775349e-1, -3.04682672343198398683e-1, 6.76795274409476084995e-1,
+      |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64081 -     1.71620901522208775349e-1, -3.04682672343198398683e-1, 6.76795274409476084995e-1,
+64081 +     1.71620901522208775349e-1, -3.04682672343198398683e-1, 6.767_952_744_094_761e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64086:6
+      |
+64086 |     -7.23318048787475395456e-18, -4.83050448594418207126e-18, 4.46562142029675999901e-17,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64086 -     -7.23318048787475395456e-18, -4.83050448594418207126e-18, 4.46562142029675999901e-17,
+64086 +     -7.233_180_487_874_754e-18, -4.83050448594418207126e-18, 4.46562142029675999901e-17,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64086:35
+      |
+64086 |     -7.23318048787475395456e-18, -4.83050448594418207126e-18, 4.46562142029675999901e-17,
+      |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64086 -     -7.23318048787475395456e-18, -4.83050448594418207126e-18, 4.46562142029675999901e-17,
+64086 +     -7.23318048787475395456e-18, -4.830_504_485_944_182e-18, 4.46562142029675999901e-17,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64086:63
+      |
+64086 |     -7.23318048787475395456e-18, -4.83050448594418207126e-18, 4.46562142029675999901e-17,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64086 -     -7.23318048787475395456e-18, -4.83050448594418207126e-18, 4.46562142029675999901e-17,
+64086 +     -7.23318048787475395456e-18, -4.83050448594418207126e-18, 4.465_621_420_296_76e-17,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64087:5
+      |
+64087 |     3.46122286769746109310e-17, -2.82762398051658348494e-16, -3.42548561967721913462e-16,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64087 -     3.46122286769746109310e-17, -2.82762398051658348494e-16, -3.42548561967721913462e-16,
+64087 +     3.461_222_867_697_461e-17, -2.82762398051658348494e-16, -3.42548561967721913462e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64087:34
+      |
+64087 |     3.46122286769746109310e-17, -2.82762398051658348494e-16, -3.42548561967721913462e-16,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64087 -     3.46122286769746109310e-17, -2.82762398051658348494e-16, -3.42548561967721913462e-16,
+64087 +     3.46122286769746109310e-17, -2.827_623_980_516_583_6e-16, -3.42548561967721913462e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64087:63
+      |
+64087 |     3.46122286769746109310e-17, -2.82762398051658348494e-16, -3.42548561967721913462e-16,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64087 -     3.46122286769746109310e-17, -2.82762398051658348494e-16, -3.42548561967721913462e-16,
+64087 +     3.46122286769746109310e-17, -2.82762398051658348494e-16, -3.425_485_619_677_219e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64088:5
+      |
+64088 |     1.77256013305652638360e-15, 3.81168066935262242075e-15, -9.55484669882830764870e-15,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64088 -     1.77256013305652638360e-15, 3.81168066935262242075e-15, -9.55484669882830764870e-15,
+64088 +     1.772_560_133_056_526_3e-15, 3.81168066935262242075e-15, -9.55484669882830764870e-15,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64088:33
+      |
+64088 |     1.77256013305652638360e-15, 3.81168066935262242075e-15, -9.55484669882830764870e-15,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64088 -     1.77256013305652638360e-15, 3.81168066935262242075e-15, -9.55484669882830764870e-15,
+64088 +     1.77256013305652638360e-15, 3.811_680_669_352_622_4e-15, -9.55484669882830764870e-15,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64088:62
+      |
+64088 |     1.77256013305652638360e-15, 3.81168066935262242075e-15, -9.55484669882830764870e-15,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64088 -     1.77256013305652638360e-15, 3.81168066935262242075e-15, -9.55484669882830764870e-15,
+64088 +     1.77256013305652638360e-15, 3.81168066935262242075e-15, -9.554_846_698_828_307e-15,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64089:6
+      |
+64089 |     -4.15056934728722208663e-14, 1.54008621752140982691e-14, 3.85277838274214270114e-13,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64089 -     -4.15056934728722208663e-14, 1.54008621752140982691e-14, 3.85277838274214270114e-13,
+64089 +     -4.150_569_347_287_222e-14, 1.54008621752140982691e-14, 3.85277838274214270114e-13,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64089:34
+      |
+64089 |     -4.15056934728722208663e-14, 1.54008621752140982691e-14, 3.85277838274214270114e-13,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64089 -     -4.15056934728722208663e-14, 1.54008621752140982691e-14, 3.85277838274214270114e-13,
+64089 +     -4.15056934728722208663e-14, 1.540_086_217_521_41e-14, 3.85277838274214270114e-13,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64089:62
+      |
+64089 |     -4.15056934728722208663e-14, 1.54008621752140982691e-14, 3.85277838274214270114e-13,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64089 -     -4.15056934728722208663e-14, 1.54008621752140982691e-14, 3.85277838274214270114e-13,
+64089 +     -4.15056934728722208663e-14, 1.54008621752140982691e-14, 3.852_778_382_742_142_6e-13,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64090:5
+      |
+64090 |     7.18012445138366623367e-13, -1.79417853150680611778e-12, -1.32158118404477131188e-11,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64090 -     7.18012445138366623367e-13, -1.79417853150680611778e-12, -1.32158118404477131188e-11,
+64090 +     7.180_124_451_383_666e-13, -1.79417853150680611778e-12, -1.32158118404477131188e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64090:34
+      |
+64090 |     7.18012445138366623367e-13, -1.79417853150680611778e-12, -1.32158118404477131188e-11,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64090 -     7.18012445138366623367e-13, -1.79417853150680611778e-12, -1.32158118404477131188e-11,
+64090 +     7.18012445138366623367e-13, -1.794_178_531_506_806_2e-12, -1.32158118404477131188e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64090:63
+      |
+64090 |     7.18012445138366623367e-13, -1.79417853150680611778e-12, -1.32158118404477131188e-11,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64090 -     7.18012445138366623367e-13, -1.79417853150680611778e-12, -1.32158118404477131188e-11,
+64090 +     7.18012445138366623367e-13, -1.79417853150680611778e-12, -1.321_581_184_044_771_3e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64091:6
+      |
+64091 |     -3.14991652796324136454e-11, 1.18891471078464383424e-11, 4.94060238822496958910e-10,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64091 -     -3.14991652796324136454e-11, 1.18891471078464383424e-11, 4.94060238822496958910e-10,
+64091 +     -3.149_916_527_963_241_6e-11, 1.18891471078464383424e-11, 4.94060238822496958910e-10,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64091:34
+      |
+64091 |     -3.14991652796324136454e-11, 1.18891471078464383424e-11, 4.94060238822496958910e-10,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64091 -     -3.14991652796324136454e-11, 1.18891471078464383424e-11, 4.94060238822496958910e-10,
+64091 +     -3.14991652796324136454e-11, 1.188_914_710_784_643_9e-11, 4.94060238822496958910e-10,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64091:62
+      |
+64091 |     -3.14991652796324136454e-11, 1.18891471078464383424e-11, 4.94060238822496958910e-10,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64091 -     -3.14991652796324136454e-11, 1.18891471078464383424e-11, 4.94060238822496958910e-10,
+64091 +     -3.14991652796324136454e-11, 1.18891471078464383424e-11, 4.940_602_388_224_97e-10,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64092:5
+      |
+64092 |     3.39623202570838634515e-9, 2.26666899049817806459e-8, 2.04891858946906374183e-7,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64092 -     3.39623202570838634515e-9, 2.26666899049817806459e-8, 2.04891858946906374183e-7,
+64092 +     3.396_232_025_708_386_5e-9, 2.26666899049817806459e-8, 2.04891858946906374183e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64092:32
+      |
+64092 |     3.39623202570838634515e-9, 2.26666899049817806459e-8, 2.04891858946906374183e-7,
+      |                                ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64092 -     3.39623202570838634515e-9, 2.26666899049817806459e-8, 2.04891858946906374183e-7,
+64092 +     3.39623202570838634515e-9, 2.266_668_990_498_178e-8, 2.04891858946906374183e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64092:59
+      |
+64092 |     3.39623202570838634515e-9, 2.26666899049817806459e-8, 2.04891858946906374183e-7,
+      |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64092 -     3.39623202570838634515e-9, 2.26666899049817806459e-8, 2.04891858946906374183e-7,
+64092 +     3.39623202570838634515e-9, 2.26666899049817806459e-8, 2.048_918_589_469_063_8e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64093:5
+      |
+64093 |     2.89137052083475648297e-6, 6.88975834691682398426e-5, 3.36911647825569408990e-3,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64093 -     2.89137052083475648297e-6, 6.88975834691682398426e-5, 3.36911647825569408990e-3,
+64093 +     2.891_370_520_834_756_7e-6, 6.88975834691682398426e-5, 3.36911647825569408990e-3,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64093:32
+      |
+64093 |     2.89137052083475648297e-6, 6.88975834691682398426e-5, 3.36911647825569408990e-3,
+      |                                ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64093 -     2.89137052083475648297e-6, 6.88975834691682398426e-5, 3.36911647825569408990e-3,
+64093 +     2.89137052083475648297e-6, 6.889_758_346_916_825e-5, 3.36911647825569408990e-3,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64093:59
+      |
+64093 |     2.89137052083475648297e-6, 6.88975834691682398426e-5, 3.36911647825569408990e-3,
+      |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64093 -     2.89137052083475648297e-6, 6.88975834691682398426e-5, 3.36911647825569408990e-3,
+64093 +     2.89137052083475648297e-6, 6.88975834691682398426e-5, 3.369_116_478_255_694_3e-3,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64094:5
+      |
+64094 |     8.04490411014108831608e-1,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64094 -     8.04490411014108831608e-1,
+64094 +     8.044_904_110_141_088e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64099:5
+      |
+64099 |     2.77791411276104639959e-18, -2.11142121435816608115e-17, 1.55363195773620046921e-16,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64099 -     2.77791411276104639959e-18, -2.11142121435816608115e-17, 1.55363195773620046921e-16,
+64099 +     2.777_914_112_761_046_4e-18, -2.11142121435816608115e-17, 1.55363195773620046921e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64099:34
+      |
+64099 |     2.77791411276104639959e-18, -2.11142121435816608115e-17, 1.55363195773620046921e-16,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64099 -     2.77791411276104639959e-18, -2.11142121435816608115e-17, 1.55363195773620046921e-16,
+64099 +     2.77791411276104639959e-18, -2.111_421_214_358_166e-17, 1.55363195773620046921e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64099:62
+      |
+64099 |     2.77791411276104639959e-18, -2.11142121435816608115e-17, 1.55363195773620046921e-16,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64099 -     2.77791411276104639959e-18, -2.11142121435816608115e-17, 1.55363195773620046921e-16,
+64099 +     2.77791411276104639959e-18, -2.11142121435816608115e-17, 1.553_631_957_736_200_5e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64100:6
+      |
+64100 |     -1.10559694773538630805e-15, 7.60068429473540693410e-15, -5.04218550472791168711e-14,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64100 -     -1.10559694773538630805e-15, 7.60068429473540693410e-15, -5.04218550472791168711e-14,
+64100 +     -1.105_596_947_735_386_2e-15, 7.60068429473540693410e-15, -5.04218550472791168711e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64100:34
+      |
+64100 |     -1.10559694773538630805e-15, 7.60068429473540693410e-15, -5.04218550472791168711e-14,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64100 -     -1.10559694773538630805e-15, 7.60068429473540693410e-15, -5.04218550472791168711e-14,
+64100 +     -1.10559694773538630805e-15, 7.600_684_294_735_408e-15, -5.04218550472791168711e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64100:63
+      |
+64100 |     -1.10559694773538630805e-15, 7.60068429473540693410e-15, -5.04218550472791168711e-14,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64100 -     -1.10559694773538630805e-15, 7.60068429473540693410e-15, -5.04218550472791168711e-14,
+64100 +     -1.10559694773538630805e-15, 7.60068429473540693410e-15, -5.042_185_504_727_912e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64101:5
+      |
+64101 |     3.22379336594557470981e-13, -1.98397439776494371520e-12, 1.17361862988909016308e-11,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64101 -     3.22379336594557470981e-13, -1.98397439776494371520e-12, 1.17361862988909016308e-11,
+64101 +     3.223_793_365_945_575e-13, -1.98397439776494371520e-12, 1.17361862988909016308e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64101:34
+      |
+64101 |     3.22379336594557470981e-13, -1.98397439776494371520e-12, 1.17361862988909016308e-11,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64101 -     3.22379336594557470981e-13, -1.98397439776494371520e-12, 1.17361862988909016308e-11,
+64101 +     3.22379336594557470981e-13, -1.983_974_397_764_943_6e-12, 1.17361862988909016308e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64101:62
+      |
+64101 |     3.22379336594557470981e-13, -1.98397439776494371520e-12, 1.17361862988909016308e-11,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64101 -     3.22379336594557470981e-13, -1.98397439776494371520e-12, 1.17361862988909016308e-11,
+64101 +     3.22379336594557470981e-13, -1.98397439776494371520e-12, 1.173_618_629_889_090_1e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64102:6
+      |
+64102 |     -6.66348972350202774223e-11, 3.62559028155211703701e-10, -1.88724975172282928790e-9,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64102 -     -6.66348972350202774223e-11, 3.62559028155211703701e-10, -1.88724975172282928790e-9,
+64102 +     -6.663_489_723_502_027e-11, 3.62559028155211703701e-10, -1.88724975172282928790e-9,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64102:34
+      |
+64102 |     -6.66348972350202774223e-11, 3.62559028155211703701e-10, -1.88724975172282928790e-9,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64102 -     -6.66348972350202774223e-11, 3.62559028155211703701e-10, -1.88724975172282928790e-9,
+64102 +     -6.66348972350202774223e-11, 3.625_590_281_552_117e-10, -1.88724975172282928790e-9,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64102:63
+      |
+64102 |     -6.66348972350202774223e-11, 3.62559028155211703701e-10, -1.88724975172282928790e-9,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64102 -     -6.66348972350202774223e-11, 3.62559028155211703701e-10, -1.88724975172282928790e-9,
+64102 +     -6.66348972350202774223e-11, 3.62559028155211703701e-10, -1.887_249_751_722_829_4e-9,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64103:5
+      |
+64103 |     9.38153738649577178388e-9, -4.44505912879632808065e-8, 2.00329475355213526229e-7,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64103 -     9.38153738649577178388e-9, -4.44505912879632808065e-8, 2.00329475355213526229e-7,
+64103 +     9.381_537_386_495_773e-9, -4.44505912879632808065e-8, 2.00329475355213526229e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64103:33
+      |
+64103 |     9.38153738649577178388e-9, -4.44505912879632808065e-8, 2.00329475355213526229e-7,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64103 -     9.38153738649577178388e-9, -4.44505912879632808065e-8, 2.00329475355213526229e-7,
+64103 +     9.38153738649577178388e-9, -4.445_059_128_796_328e-8, 2.00329475355213526229e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64103:60
+      |
+64103 |     9.38153738649577178388e-9, -4.44505912879632808065e-8, 2.00329475355213526229e-7,
+      |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64103 -     9.38153738649577178388e-9, -4.44505912879632808065e-8, 2.00329475355213526229e-7,
+64103 +     9.38153738649577178388e-9, -4.44505912879632808065e-8, 2.003_294_753_552_135_3e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64104:6
+      |
+64104 |     -8.56872026469545474066e-7, 3.47025130813767847674e-6, -1.32731636560394358279e-5,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64104 -     -8.56872026469545474066e-7, 3.47025130813767847674e-6, -1.32731636560394358279e-5,
+64104 +     -8.568_720_264_695_455e-7, 3.47025130813767847674e-6, -1.32731636560394358279e-5,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64104:33
+      |
+64104 |     -8.56872026469545474066e-7, 3.47025130813767847674e-6, -1.32731636560394358279e-5,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64104 -     -8.56872026469545474066e-7, 3.47025130813767847674e-6, -1.32731636560394358279e-5,
+64104 +     -8.56872026469545474066e-7, 3.470_251_308_137_678_5e-6, -1.32731636560394358279e-5,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64104:61
+      |
+64104 |     -8.56872026469545474066e-7, 3.47025130813767847674e-6, -1.32731636560394358279e-5,
+      |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64104 -     -8.56872026469545474066e-7, 3.47025130813767847674e-6, -1.32731636560394358279e-5,
+64104 +     -8.56872026469545474066e-7, 3.47025130813767847674e-6, -1.327_316_365_603_943_6e-5,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64105:5
+      |
+64105 |     4.78156510755005422638e-5, -1.61760815825896745588e-4, 5.12285956168575772895e-4,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64105 -     4.78156510755005422638e-5, -1.61760815825896745588e-4, 5.12285956168575772895e-4,
+64105 +     4.781_565_107_550_054e-5, -1.61760815825896745588e-4, 5.12285956168575772895e-4,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64105:33
+      |
+64105 |     4.78156510755005422638e-5, -1.61760815825896745588e-4, 5.12285956168575772895e-4,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64105 -     4.78156510755005422638e-5, -1.61760815825896745588e-4, 5.12285956168575772895e-4,
+64105 +     4.78156510755005422638e-5, -1.617_608_158_258_967_4e-4, 5.12285956168575772895e-4,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64105:60
+      |
+64105 |     4.78156510755005422638e-5, -1.61760815825896745588e-4, 5.12285956168575772895e-4,
+      |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64105 -     4.78156510755005422638e-5, -1.61760815825896745588e-4, 5.12285956168575772895e-4,
+64105 +     4.78156510755005422638e-5, -1.61760815825896745588e-4, 5.122_859_561_685_758e-4,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64106:6
+      |
+64106 |     -1.51357245063125314899e-3, 4.15642294431288815669e-3, -1.05640848946261981558e-2,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64106 -     -1.51357245063125314899e-3, 4.15642294431288815669e-3, -1.05640848946261981558e-2,
+64106 +     -1.513_572_450_631_253_2e-3, 4.15642294431288815669e-3, -1.05640848946261981558e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64106:33
+      |
+64106 |     -1.51357245063125314899e-3, 4.15642294431288815669e-3, -1.05640848946261981558e-2,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64106 -     -1.51357245063125314899e-3, 4.15642294431288815669e-3, -1.05640848946261981558e-2,
+64106 +     -1.51357245063125314899e-3, 4.156_422_944_312_888e-3, -1.05640848946261981558e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64106:61
+      |
+64106 |     -1.51357245063125314899e-3, 4.15642294431288815669e-3, -1.05640848946261981558e-2,
+      |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64106 -     -1.51357245063125314899e-3, 4.15642294431288815669e-3, -1.05640848946261981558e-2,
+64106 +     -1.51357245063125314899e-3, 4.15642294431288815669e-3, -1.056_408_489_462_619_7e-2,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64107:5
+      |
+64107 |     2.47264490306265168283e-2, -5.29459812080949914269e-2, 1.02643658689847095384e-1,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64107 -     2.47264490306265168283e-2, -5.29459812080949914269e-2, 1.02643658689847095384e-1,
+64107 +     2.472_644_903_062_651_6e-2, -5.29459812080949914269e-2, 1.02643658689847095384e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64107:33
+      |
+64107 |     2.47264490306265168283e-2, -5.29459812080949914269e-2, 1.02643658689847095384e-1,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64107 -     2.47264490306265168283e-2, -5.29459812080949914269e-2, 1.02643658689847095384e-1,
+64107 +     2.47264490306265168283e-2, -5.294_598_120_809_499e-2, 1.02643658689847095384e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64107:60
+      |
+64107 |     2.47264490306265168283e-2, -5.29459812080949914269e-2, 1.02643658689847095384e-1,
+      |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64107 -     2.47264490306265168283e-2, -5.29459812080949914269e-2, 1.02643658689847095384e-1,
+64107 +     2.47264490306265168283e-2, -5.29459812080949914269e-2, 1.026_436_586_898_471e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64108:6
+      |
+64108 |     -1.76416518357834055153e-1, 2.52587186443633654823e-1,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64108 -     -1.76416518357834055153e-1, 2.52587186443633654823e-1,
+64108 +     -1.764_165_183_578_340_6e-1, 2.52587186443633654823e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64108:33
+      |
+64108 |     -1.76416518357834055153e-1, 2.52587186443633654823e-1,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64108 -     -1.76416518357834055153e-1, 2.52587186443633654823e-1,
+64108 +     -1.76416518357834055153e-1, 2.525_871_864_436_336_5e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64113:5
+      |
+64113 |     7.51729631084210481353e-18, 4.41434832307170791151e-18, -4.65030536848935832153e-17,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64113 -     7.51729631084210481353e-18, 4.41434832307170791151e-18, -4.65030536848935832153e-17,
+64113 +     7.517_296_310_842_105e-18, 4.41434832307170791151e-18, -4.65030536848935832153e-17,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64113:33
+      |
+64113 |     7.51729631084210481353e-18, 4.41434832307170791151e-18, -4.65030536848935832153e-17,
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64113 -     7.51729631084210481353e-18, 4.41434832307170791151e-18, -4.65030536848935832153e-17,
+64113 +     7.51729631084210481353e-18, 4.414_348_323_071_708e-18, -4.65030536848935832153e-17,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64113:62
+      |
+64113 |     7.51729631084210481353e-18, 4.41434832307170791151e-18, -4.65030536848935832153e-17,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64113 -     7.51729631084210481353e-18, 4.41434832307170791151e-18, -4.65030536848935832153e-17,
+64113 +     7.51729631084210481353e-18, 4.41434832307170791151e-18, -4.650_305_368_489_358_6e-17,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64114:6
+      |
+64114 |     -3.20952592199342395980e-17, 2.96262899764595013876e-16, 3.30820231092092828324e-16,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64114 -     -3.20952592199342395980e-17, 2.96262899764595013876e-16, 3.30820231092092828324e-16,
+64114 +     -3.209_525_921_993_424e-17, 2.96262899764595013876e-16, 3.30820231092092828324e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64114:34
+      |
+64114 |     -3.20952592199342395980e-17, 2.96262899764595013876e-16, 3.30820231092092828324e-16,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64114 -     -3.20952592199342395980e-17, 2.96262899764595013876e-16, 3.30820231092092828324e-16,
+64114 +     -3.20952592199342395980e-17, 2.962_628_997_645_95e-16, 3.30820231092092828324e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64114:62
+      |
+64114 |     -3.20952592199342395980e-17, 2.96262899764595013876e-16, 3.30820231092092828324e-16,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64114 -     -3.20952592199342395980e-17, 2.96262899764595013876e-16, 3.30820231092092828324e-16,
+64114 +     -3.20952592199342395980e-17, 2.96262899764595013876e-16, 3.308_202_310_920_928_5e-16,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64115:6
+      |
+64115 |     -1.88035477551078244854e-15, -3.81440307243700780478e-15, 1.04202769841288027642e-14,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64115 -     -1.88035477551078244854e-15, -3.81440307243700780478e-15, 1.04202769841288027642e-14,
+64115 +     -1.880_354_775_510_782_5e-15, -3.81440307243700780478e-15, 1.04202769841288027642e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64115:35
+      |
+64115 |     -1.88035477551078244854e-15, -3.81440307243700780478e-15, 1.04202769841288027642e-14,
+      |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64115 -     -1.88035477551078244854e-15, -3.81440307243700780478e-15, 1.04202769841288027642e-14,
+64115 +     -1.88035477551078244854e-15, -3.814_403_072_437_007_5e-15, 1.04202769841288027642e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64115:63
+      |
+64115 |     -1.88035477551078244854e-15, -3.81440307243700780478e-15, 1.04202769841288027642e-14,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64115 -     -1.88035477551078244854e-15, -3.81440307243700780478e-15, 1.04202769841288027642e-14,
+64115 +     -1.88035477551078244854e-15, -3.81440307243700780478e-15, 1.042_027_698_412_880_2e-14,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64116:5
+      |
+64116 |     4.27244001671195135429e-14, -2.10154184277266431302e-14, -4.08355111109219731823e-13,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64116 -     4.27244001671195135429e-14, -2.10154184277266431302e-14, -4.08355111109219731823e-13,
+64116 +     4.272_440_016_711_951e-14, -2.10154184277266431302e-14, -4.08355111109219731823e-13,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64116:34
+      |
+64116 |     4.27244001671195135429e-14, -2.10154184277266431302e-14, -4.08355111109219731823e-13,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64116 -     4.27244001671195135429e-14, -2.10154184277266431302e-14, -4.08355111109219731823e-13,
+64116 +     4.27244001671195135429e-14, -2.101_541_842_772_664_3e-14, -4.08355111109219731823e-13,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64116:63
+      |
+64116 |     4.27244001671195135429e-14, -2.10154184277266431302e-14, -4.08355111109219731823e-13,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64116 -     4.27244001671195135429e-14, -2.10154184277266431302e-14, -4.08355111109219731823e-13,
+64116 +     4.27244001671195135429e-14, -2.10154184277266431302e-14, -4.083_551_111_092_197_4e-13,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64117:6
+      |
+64117 |     -7.19855177624590851209e-13, 2.03562854414708950722e-12, 1.41258074366137813316e-11,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64117 -     -7.19855177624590851209e-13, 2.03562854414708950722e-12, 1.41258074366137813316e-11,
+64117 +     -7.198_551_776_245_908e-13, 2.03562854414708950722e-12, 1.41258074366137813316e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64117:34
+      |
+64117 |     -7.19855177624590851209e-13, 2.03562854414708950722e-12, 1.41258074366137813316e-11,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64117 -     -7.19855177624590851209e-13, 2.03562854414708950722e-12, 1.41258074366137813316e-11,
+64117 +     -7.19855177624590851209e-13, 2.035_628_544_147_089_6e-12, 1.41258074366137813316e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64117:62
+      |
+64117 |     -7.19855177624590851209e-13, 2.03562854414708950722e-12, 1.41258074366137813316e-11,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64117 -     -7.19855177624590851209e-13, 2.03562854414708950722e-12, 1.41258074366137813316e-11,
+64117 +     -7.19855177624590851209e-13, 2.03562854414708950722e-12, 1.412_580_743_661_378_2e-11,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64118:5
+      |
+64118 |     3.25260358301548823856e-11, -1.89749581235054123450e-11, -5.58974346219658380687e-10,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64118 -     3.25260358301548823856e-11, -1.89749581235054123450e-11, -5.58974346219658380687e-10,
+64118 +     3.252_603_583_015_488_4e-11, -1.89749581235054123450e-11, -5.58974346219658380687e-10,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64118:34
+      |
+64118 |     3.25260358301548823856e-11, -1.89749581235054123450e-11, -5.58974346219658380687e-10,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64118 -     3.25260358301548823856e-11, -1.89749581235054123450e-11, -5.58974346219658380687e-10,
+64118 +     3.25260358301548823856e-11, -1.897_495_812_350_541_3e-11, -5.58974346219658380687e-10,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64118:63
+      |
+64118 |     3.25260358301548823856e-11, -1.89749581235054123450e-11, -5.58974346219658380687e-10,
+      |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64118 -     3.25260358301548823856e-11, -1.89749581235054123450e-11, -5.58974346219658380687e-10,
+64118 +     3.25260358301548823856e-11, -1.89749581235054123450e-11, -5.589_743_462_196_584e-10,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64119:6
+      |
+64119 |     -3.83538038596423702205e-9, -2.63146884688951950684e-8, -2.51223623787020892529e-7,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64119 -     -3.83538038596423702205e-9, -2.63146884688951950684e-8, -2.51223623787020892529e-7,
+64119 +     -3.835_380_385_964_237e-9, -2.63146884688951950684e-8, -2.51223623787020892529e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64119:34
+      |
+64119 |     -3.83538038596423702205e-9, -2.63146884688951950684e-8, -2.51223623787020892529e-7,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64119 -     -3.83538038596423702205e-9, -2.63146884688951950684e-8, -2.51223623787020892529e-7,
+64119 +     -3.83538038596423702205e-9, -2.631_468_846_889_519_6e-8, -2.51223623787020892529e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64119:62
+      |
+64119 |     -3.83538038596423702205e-9, -2.63146884688951950684e-8, -2.51223623787020892529e-7,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64119 -     -3.83538038596423702205e-9, -2.63146884688951950684e-8, -2.51223623787020892529e-7,
+64119 +     -3.83538038596423702205e-9, -2.63146884688951950684e-8, -2.512_236_237_870_209e-7,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64120:6
+      |
+64120 |     -3.88256480887769039346e-6, -1.10588938762623716291e-4, -9.76109749136146840777e-3,
+      |      ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64120 -     -3.88256480887769039346e-6, -1.10588938762623716291e-4, -9.76109749136146840777e-3,
+64120 +     -3.882_564_808_877_691e-6, -1.10588938762623716291e-4, -9.76109749136146840777e-3,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64120:34
+      |
+64120 |     -3.88256480887769039346e-6, -1.10588938762623716291e-4, -9.76109749136146840777e-3,
+      |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64120 -     -3.88256480887769039346e-6, -1.10588938762623716291e-4, -9.76109749136146840777e-3,
+64120 +     -3.88256480887769039346e-6, -1.105_889_387_626_237_1e-4, -9.76109749136146840777e-3,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64120:62
+      |
+64120 |     -3.88256480887769039346e-6, -1.10588938762623716291e-4, -9.76109749136146840777e-3,
+      |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64120 -     -3.88256480887769039346e-6, -1.10588938762623716291e-4, -9.76109749136146840777e-3,
+64120 +     -3.88256480887769039346e-6, -1.10588938762623716291e-4, -9.761_097_491_361_469e-3,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64121:5
+      |
+64121 |     7.78576235018280120474e-1,
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64121 -     7.78576235018280120474e-1,
+64121 +     7.785_762_350_182_801e-1,
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64265:26
+      |
+64265 | const EULER_GAMMA: f64 = 0.577_215_664_901_532_86;
+      |                          ^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64265 - const EULER_GAMMA: f64 = 0.577_215_664_901_532_86;
+64265 + const EULER_GAMMA: f64 = 0.577_215_664_901_532_9;
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64617:21
+      |
+64617 |     const C1: f64 = 0.355_028_053_887_817_24; // Ai(0)  = 1/(3^{2/3} Γ(2/3))
+      |                     ^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64617 -     const C1: f64 = 0.355_028_053_887_817_24; // Ai(0)  = 1/(3^{2/3} Γ(2/3))
+64617 +     const C1: f64 = 0.355_028_053_887_817_2; // Ai(0)  = 1/(3^{2/3} Γ(2/3))
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:64618:21
+      |
+64618 |     const C2: f64 = 0.258_819_403_792_806_80; // -Ai'(0) = 1/(3^{1/3} Γ(1/3))
+      |                     ^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+64618 -     const C2: f64 = 0.258_819_403_792_806_80; // -Ai'(0) = 1/(3^{1/3} Γ(1/3))
+64618 +     const C2: f64 = 0.258_819_403_792_806_8; // -Ai'(0) = 1/(3^{1/3} Γ(1/3))
+      |
+
+error: could not compile `ft-api` (lib) due to 183 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: redundant closure
+     --> crates/ft-api/src/lib.rs:72074:63
+      |
+72074 |         let handle = session.register_module_forward_pre_hook(|input| Ok(input));
+      |                                                               ^^^^^^^^^^^^^^^^^ help: replace the closure with the tuple variant itself: `Ok`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure
+      = note: `-D clippy::redundant-closure` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::redundant_closure)]`
+
+error: redundant closure
+     --> crates/ft-api/src/lib.rs:72098:58
+      |
+72098 |             session_ref.register_module_forward_pre_hook(move |inp| Ok(inp))
+      |                                                          ^^^^^^^^^^^^^^^^^^ help: replace the closure with the tuple variant itself: `Ok`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure
+
+error: redundant closure
+     --> crates/ft-api/src/lib.rs:72134:63
+      |
+72134 |         let handle = session.register_module_forward_pre_hook(|input| Ok(input));
+      |                                                               ^^^^^^^^^^^^^^^^^ help: replace the closure with the tuple variant itself: `Ok`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure
+
+error: manual `RangeInclusive::contains` implementation
+     --> crates/ft-api/src/lib.rs:72337:21
+      |
+72337 |             assert!(g >= 0.0 && g <= 0.25 + 1e-10, "sigmoid grad in [0, 0.25]");
+      |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `(0.0..=0.25 + 1e-10).contains(&g)`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+      = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: the loop variable `ox` is used to index `vals`
+     --> crates/ft-api/src/lib.rs:81177:19
+      |
+81177 |         for ox in 0..ow {
+      |                   ^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+81177 -         for ox in 0..ow {
+81177 +         for (ox, <item>) in vals.iter().enumerate().take(ow) {
+      |
+
+error: the loop variable `i` is used to index `g`
+     --> crates/ft-api/src/lib.rs:81765:22
+      |
+81765 |             for i in 0..n {
+      |                      ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+81765 -             for i in 0..n {
+81765 +             for (i, <item>) in g.iter().enumerate().take(n) {
+      |
+
+error: the loop variable `o` is only used to index `gb`
+     --> crates/ft-api/src/lib.rs:85083:18
+      |
+85083 |         for o in 0..out_f {
+      |                  ^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator
+      |
+85083 -         for o in 0..out_f {
+85083 +         for <item> in gb.iter().take(out_f) {
+      |
+
+error: the loop variable `i` is used to index `g`
+     --> crates/ft-api/src/lib.rs:86683:22
+      |
+86683 |             for i in 0..n {
+      |                      ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+86683 -             for i in 0..n {
+86683 +             for (i, <item>) in g.iter().enumerate().take(n) {
+      |
+
+error: the loop variable `i` is used to index `c`
+     --> crates/ft-api/src/lib.rs:87549:26
+      |
+87549 |                 for i in 0..n {
+      |                          ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+87549 -                 for i in 0..n {
+87549 +                 for (i, <item>) in c.iter().enumerate().take(n) {
+      |
+
+error: the loop variable `i` is used to index `c`
+     --> crates/ft-api/src/lib.rs:87646:26
+      |
+87646 |                 for i in 0..m {
+      |                          ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+87646 -                 for i in 0..m {
+87646 +                 for (i, <item>) in c.iter().enumerate().take(m) {
+      |
+
+error: the loop variable `q` is used to index `dd`
+     --> crates/ft-api/src/lib.rs:87688:26
+      |
+87688 |                 for q in 0..n {
+      |                          ^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+87688 -                 for q in 0..n {
+87688 +                 for (q, <item>) in dd.iter().enumerate().take(n) {
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:88935:51
+      |
+88935 |         assert!(rel(super::bessel_i1_scalar(2.0), 1.5906368546373291));
+      |                                                   ^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+88935 -         assert!(rel(super::bessel_i1_scalar(2.0), 1.5906368546373291));
+88935 +         assert!(rel(super::bessel_i1_scalar(2.0), 1.590_636_854_637_329));
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:88938:53
+      |
+88938 |         assert!(rel(super::bessel_i1_scalar(-2.0), -1.5906368546373291)); // odd
+      |                                                     ^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+88938 -         assert!(rel(super::bessel_i1_scalar(-2.0), -1.5906368546373291)); // odd
+88938 +         assert!(rel(super::bessel_i1_scalar(-2.0), -1.590_636_854_637_329)); // odd
+      |
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:89020:52
+      |
+89020 |         assert!(close(super::airy_ai_scalar(-2.0), 0.22740742820168561, 1e-12), "Ai(-2)");
+      |                                                    ^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+89020 -         assert!(close(super::airy_ai_scalar(-2.0), 0.22740742820168561, 1e-12), "Ai(-2)");
+89020 +         assert!(close(super::airy_ai_scalar(-2.0), 0.227_407_428_201_685_6, 1e-12), "Ai(-2)");
+      |
+
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/ft-api/src/lib.rs:89619:20
+      |
+89619 |         let cases: &[(&str, TensorNodeId, fn(f64) -> f64)] = &[
+      |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/ft-api/src/lib.rs:89662:20
+      |
+89662 |         let cases: &[(&str, ApiFn, fn(f64) -> f64)] = &[
+      |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/ft-api/src/lib.rs:89788:18
+      |
+89788 |         let fwd: &[(&str, TensorNodeId, fn(f64) -> f64)] = &[
+      |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: float has excessive precision
+     --> crates/ft-api/src/lib.rs:89911:51
+      |
+89911 |         assert!(rel(super::zeta_approx(6.0, 1.0), 1.0173430619844491)); // π⁶/945
+      |                                                   ^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#excessive_precision
+help: consider changing the type or truncating it to
+      |
+89911 -         assert!(rel(super::zeta_approx(6.0, 1.0), 1.0173430619844491)); // π⁶/945
+89911 +         assert!(rel(super::zeta_approx(6.0, 1.0), 1.017_343_061_984_449)); // π⁶/945
+      |
+
+error: it looks like you're manually copying between slices
+     --> crates/ft-api/src/lib.rs:90300:13
+      |
+90300 | /             for k in 0..=m {
+90301 | |                 fr[k] = xr[k];
+90302 | |                 fi[k] = xi[k];
+90303 | |             }
+      | |_____________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_memcpy
+help: try replacing the loop by
+      |
+90300 ~             fr[..(m + 1)].copy_from_slice(&xr[..(m + 1)]);
+90301 +     fi[..(m + 1)].copy_from_slice(&xi[..(m + 1)]);
+      |
+
+error: the loop variable `i` is used to index `freqs`
+     --> crates/ft-api/src/lib.rs:90800:18
+      |
+90800 |         for i in 0..half_dim {
+      |                  ^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+      |
+90800 -         for i in 0..half_dim {
+90800 +         for (i, <item>) in freqs.iter_mut().enumerate().take(half_dim) {
+      |
+
+error: this operation has no effect
+      --> crates/ft-api/src/lib.rs:102255:39
+       |
+102255 |         let x = s.tensor_variable((0..1 * 2 * 2 * 2).map(|i| (i + 1) as f64).collect(), vec![1, 2, 2, 2], false).unwrap();
+       |                                       ^^^^^ help: consider reducing it to: `2`
+       |
+       = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#identity_op
+       = note: `-D clippy::identity-op` implied by `-D warnings`
+       = help: to override `-D warnings` add `#[allow(clippy::identity_op)]`
+
+error: useless use of `vec!`
+     --> crates/ft-api/src/lib.rs:85636:19
+      |
+85636 |         let dir = vec![0.3, -0.2, 0.5, 0.1, -0.4, 0.25];
+      |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: you can use an array directly: `[0.3, -0.2, 0.5, 0.1, -0.4, 0.25]`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+      = note: `-D clippy::useless-vec` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::useless_vec)]`
+
+error: useless use of `vec!`
+     --> crates/ft-api/src/lib.rs:99431:19
+      |
+99431 |         let dir = vec![0.3, -0.2, 0.0, 0.5, -0.4, 0.0, 0.1];
+      |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: you can use an array directly: `[0.3, -0.2, 0.0, 0.5, -0.4, 0.0, 0.1]`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+
+error: could not compile `ft-api` (lib test) due to 206 previous errors
+  [2m2026-06-06T17:51:12.374708Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mRemote command finished: exit=101 in 25565ms[0m
+    [2;3mat[0m rch/src/hook.rs:6364 [2;3mon[0m ThreadId(1)
+
+[RCH] remote ts1 failed (exit 101)
