@@ -33453,68 +33453,125 @@ impl FrankenTorchSession {
         let mut outputs: Vec<Vec<f64>> =
             vec![vec![0.0; batch_size * hidden_size * num_directions]; seq_len];
 
+        // Raw no-grad forward (frankentorch-3k4v) — same scheme as tensor_lstm:
+        // ZERO per-timestep session ops / tape nodes / allocations. GRU keeps the
+        // input projection gi and the recurrent projection gh SEPARATE (the new
+        // gate uses r * gh_n, so gi and gh cannot be summed), so the batched
+        // gi = x @ W_ih^T (+ b_ih, broadcast once) is hoisted out of the loop and
+        // only gh = h @ W_hh^T (+ b_hh) runs per step. Matmuls route through the
+        // same dgemm_bt kernel tensor_mm uses; the gate math/add order replicate
+        // gru_cell exactly, so results are bit-identical (guarded by
+        // gru_raw_forward_golden_isomorphism).
+        let three_h = 3 * hidden_size;
+        let bh = batch_size * hidden_size;
+        let kernel_err = |e: ft_kernel_cpu::KernelError| {
+            AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+        };
+
         for layer in 0..num_layers {
             let (w_ih, w_hh, b_ih, b_hh) = &weights[layer];
-            let layer_base = layer * num_directions * batch_size * hidden_size;
-            let mut h = h_all[layer_base..layer_base + batch_size * hidden_size].to_vec();
+            let in_sz = if layer == 0 {
+                input_size
+            } else {
+                hidden_size * num_directions
+            };
 
-            let w_ih_t = self.tensor_transpose(*w_ih, 0, 1)?;
-            let w_hh_t = self.tensor_transpose(*w_hh, 0, 1)?;
+            let w_ih_vals = self.tensor_values(*w_ih)?; // [3h, in_sz]
+            let w_hh_vals = self.tensor_values(*w_hh)?; // [3h, hidden]
+            let b_ih_vals = match b_ih {
+                Some(b) => Some(self.tensor_values(*b)?),
+                None => None,
+            };
+            let b_hh_vals = match b_hh {
+                Some(b) => Some(self.tensor_values(*b)?),
+                None => None,
+            };
 
-            for t in 0..seq_len {
-                let x = self.tensor_variable(
-                    layer_input[t].clone(),
-                    vec![
-                        batch_size,
-                        if layer == 0 {
-                            input_size
-                        } else {
-                            hidden_size * num_directions
-                        },
-                    ],
-                    false,
-                )?;
-                let h_t = self.tensor_variable(h.clone(), vec![batch_size, hidden_size], false)?;
-
-                let new_h = self.gru_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?;
-                h = self.tensor_values(new_h)?;
-
-                for i in 0..batch_size * hidden_size {
-                    outputs[t][i] = h[i];
+            // Batched input projection gi = x_all @ W_ih^T, with b_ih added once
+            // per row (matches gru_cell's add(gi, b_ih) elementwise).
+            let mut x_all = Vec::with_capacity(seq_len * batch_size * in_sz);
+            for seq_data in layer_input.iter().take(seq_len) {
+                x_all.extend_from_slice(seq_data);
+            }
+            let mut gi_all = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
+                seq_len * batch_size,
+                in_sz,
+                three_h,
+                &x_all,
+                &w_ih_vals,
+            )
+            .map_err(kernel_err)?;
+            if let Some(bih) = &b_ih_vals {
+                for row in gi_all.chunks_mut(three_h) {
+                    for (j, slot) in row.iter_mut().enumerate() {
+                        *slot += bih[j];
+                    }
                 }
             }
 
-            h_all[layer_base..layer_base + batch_size * hidden_size].copy_from_slice(&h);
-
-            if bidirectional {
-                let rev_base = layer_base + batch_size * hidden_size;
-                let mut h_rev = h_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
-
-                for t in (0..seq_len).rev() {
-                    let x = self.tensor_variable(
-                        layer_input[t].clone(),
-                        vec![
-                            batch_size,
-                            if layer == 0 {
-                                input_size
-                            } else {
-                                hidden_size * num_directions
-                            },
-                        ],
-                        false,
-                    )?;
-                    let h_t =
-                        self.tensor_variable(h_rev.clone(), vec![batch_size, hidden_size], false)?;
-
-                    let new_h = self.gru_cell(x, h_t, w_ih_t, w_hh_t, *b_ih, *b_hh)?;
-                    h_rev = self.tensor_values(new_h)?;
-
-                    for i in 0..batch_size * hidden_size {
-                        outputs[t][batch_size * hidden_size + i] = h_rev[i];
+            // One GRU step: gh = h @ W_hh^T (+ b_hh), then the gate soup, writing
+            // into h_out. gh reuses the persistent buffer (no per-step alloc).
+            let step = |h: &[f64],
+                        gi_row: &[f64],
+                        gh: &mut Vec<f64>,
+                        h_out: &mut [f64]|
+             -> Result<(), AutogradError> {
+                ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64_into(
+                    gh, batch_size, hidden_size, three_h, h, &w_hh_vals,
+                )
+                .map_err(kernel_err)?;
+                for b in 0..batch_size {
+                    let gate_base = b * three_h;
+                    for i in 0..hidden_size {
+                        let gh_at = |off: usize| {
+                            let mut v = gh[gate_base + off];
+                            if let Some(bhh) = &b_hh_vals {
+                                v += bhh[off];
+                            }
+                            v
+                        };
+                        let r = 1.0 / (1.0 + (-(gi_row[gate_base + i] + gh_at(i))).exp());
+                        let z = 1.0
+                            / (1.0
+                                + (-(gi_row[gate_base + hidden_size + i]
+                                    + gh_at(hidden_size + i)))
+                                    .exp());
+                        let n = (gi_row[gate_base + 2 * hidden_size + i]
+                            + r * gh_at(2 * hidden_size + i))
+                            .tanh();
+                        let h_idx = b * hidden_size + i;
+                        h_out[h_idx] = (1.0 - z) * n + z * h[h_idx];
                     }
                 }
+                Ok(())
+            };
 
-                h_all[rev_base..rev_base + batch_size * hidden_size].copy_from_slice(&h_rev);
+            let row_len = batch_size * three_h;
+            let layer_base = layer * num_directions * batch_size * hidden_size;
+            let mut gh: Vec<f64> = Vec::with_capacity(row_len);
+            let mut h_next = vec![0.0_f64; bh];
+
+            // Forward direction.
+            let mut h = h_all[layer_base..layer_base + bh].to_vec();
+            for t in 0..seq_len {
+                let gi_row = &gi_all[t * row_len..t * row_len + row_len];
+                step(&h, gi_row, &mut gh, &mut h_next)?;
+                outputs[t][..bh].copy_from_slice(&h_next);
+                std::mem::swap(&mut h, &mut h_next);
+            }
+            h_all[layer_base..layer_base + bh].copy_from_slice(&h);
+
+            // Bidirectional: backward direction reuses the SAME weights/gi.
+            if bidirectional {
+                let rev_base = layer_base + bh;
+                let mut h_rev = h_all[rev_base..rev_base + bh].to_vec();
+                for t in (0..seq_len).rev() {
+                    let gi_row = &gi_all[t * row_len..t * row_len + row_len];
+                    step(&h_rev, gi_row, &mut gh, &mut h_next)?;
+                    outputs[t][bh..].copy_from_slice(&h_next);
+                    std::mem::swap(&mut h_rev, &mut h_next);
+                }
+                h_all[rev_base..rev_base + bh].copy_from_slice(&h_rev);
             }
 
             if layer < num_layers - 1 {
@@ -103037,6 +103094,96 @@ mod tests {
         // Golden checksum captured from the pre-rewrite session-op LSTM forward.
         // The raw forward must reproduce it bit-for-bit.
         assert_eq!(acc, 0xdd62_5bd8_61aa_b1cc_u64, "LSTM golden checksum drift");
+    }
+
+    #[test]
+    fn gru_raw_forward_golden_isomorphism() {
+        // Golden bit-exactness guard for the raw no-grad GRU forward
+        // (frankentorch-3k4v), same scheme as the LSTM guard. Expected value is
+        // the checksum of the pre-rewrite session-op GRU forward.
+        fn fold(acc: &mut u64, v: f64) {
+            *acc = acc.rotate_left(7) ^ v.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+        fn deterministic(n: usize, scale: f64, shift: f64) -> Vec<f64> {
+            (0..n).map(|i| (((i as f64) * 0.123 + shift).sin()) * scale).collect()
+        }
+        let mut acc: u64 = 0xCBF2_9CE4_8422_2325;
+        let mut run = |s: &mut FrankenTorchSession, output: TensorNodeId, h_n: TensorNodeId, acc: &mut u64| {
+            for t in [output, h_n] {
+                for sz in s.tensor_shape(t).unwrap() {
+                    fold(acc, sz as f64);
+                }
+                for v in s.tensor_values(t).unwrap() {
+                    fold(acc, v);
+                }
+            }
+        };
+        // 3*hidden gates: hidden=5 -> w_ih [15,in], w_hh [15,5], bias [15].
+        // Config 1: 1-layer, no bias.
+        {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s.tensor_variable(deterministic(24, 0.5, 0.0), vec![3, 2, 4], false).unwrap();
+            let w_ih = s.tensor_variable(deterministic(60, 0.3, 1.0), vec![15, 4], false).unwrap();
+            let w_hh = s.tensor_variable(deterministic(75, 0.3, 2.0), vec![15, 5], false).unwrap();
+            let (o, hn) = s.tensor_gru(input, None, &[(w_ih, w_hh, None, None)], false, false).unwrap();
+            run(&mut s, o, hn, &mut acc);
+        }
+        // Config 2: 1-layer WITH biases.
+        {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s.tensor_variable(deterministic(24, 0.5, 0.5), vec![3, 2, 4], false).unwrap();
+            let w_ih = s.tensor_variable(deterministic(60, 0.3, 1.5), vec![15, 4], false).unwrap();
+            let w_hh = s.tensor_variable(deterministic(75, 0.3, 2.5), vec![15, 5], false).unwrap();
+            let b_ih = s.tensor_variable(deterministic(15, 0.2, 3.0), vec![15], false).unwrap();
+            let b_hh = s.tensor_variable(deterministic(15, 0.2, 4.0), vec![15], false).unwrap();
+            let (o, hn) = s.tensor_gru(input, None, &[(w_ih, w_hh, Some(b_ih), Some(b_hh))], false, false).unwrap();
+            run(&mut s, o, hn, &mut acc);
+        }
+        // Config 3: bidirectional, biases.
+        {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s.tensor_variable(deterministic(24, 0.5, 0.7), vec![3, 2, 4], false).unwrap();
+            let w_ih = s.tensor_variable(deterministic(60, 0.3, 1.1), vec![15, 4], false).unwrap();
+            let w_hh = s.tensor_variable(deterministic(75, 0.3, 2.1), vec![15, 5], false).unwrap();
+            let b_ih = s.tensor_variable(deterministic(15, 0.2, 3.1), vec![15], false).unwrap();
+            let b_hh = s.tensor_variable(deterministic(15, 0.2, 4.1), vec![15], false).unwrap();
+            let (o, hn) = s.tensor_gru(input, None, &[(w_ih, w_hh, Some(b_ih), Some(b_hh))], false, true).unwrap();
+            run(&mut s, o, hn, &mut acc);
+        }
+        // Config 4: 2-layer.
+        {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s.tensor_variable(deterministic(24, 0.5, 0.9), vec![3, 2, 4], false).unwrap();
+            let w_ih0 = s.tensor_variable(deterministic(60, 0.3, 1.2), vec![15, 4], false).unwrap();
+            let w_hh0 = s.tensor_variable(deterministic(75, 0.3, 2.2), vec![15, 5], false).unwrap();
+            let w_ih1 = s.tensor_variable(deterministic(75, 0.3, 1.3), vec![15, 5], false).unwrap();
+            let w_hh1 = s.tensor_variable(deterministic(75, 0.3, 2.3), vec![15, 5], false).unwrap();
+            let weights = vec![(w_ih0, w_hh0, None, None), (w_ih1, w_hh1, None, None)];
+            let (o, hn) = s.tensor_gru(input, None, &weights, false, false).unwrap();
+            run(&mut s, o, hn, &mut acc);
+        }
+        // Config 5: batch_first.
+        {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s.tensor_variable(deterministic(24, 0.5, 1.7), vec![2, 3, 4], false).unwrap();
+            let w_ih = s.tensor_variable(deterministic(60, 0.3, 1.4), vec![15, 4], false).unwrap();
+            let w_hh = s.tensor_variable(deterministic(75, 0.3, 2.4), vec![15, 5], false).unwrap();
+            let (o, hn) = s.tensor_gru(input, None, &[(w_ih, w_hh, None, None)], true, false).unwrap();
+            run(&mut s, o, hn, &mut acc);
+        }
+        // Config 6: supplied hx.
+        {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let input = s.tensor_variable(deterministic(24, 0.5, 2.7), vec![3, 2, 4], false).unwrap();
+            let w_ih = s.tensor_variable(deterministic(60, 0.3, 1.6), vec![15, 4], false).unwrap();
+            let w_hh = s.tensor_variable(deterministic(75, 0.3, 2.6), vec![15, 5], false).unwrap();
+            let h0 = s.tensor_variable(deterministic(10, 0.1, 5.0), vec![1, 2, 5], false).unwrap();
+            let (o, hn) = s.tensor_gru(input, Some(h0), &[(w_ih, w_hh, None, None)], false, false).unwrap();
+            run(&mut s, o, hn, &mut acc);
+        }
+        // Checksum of the pre-rewrite session-op GRU forward; the raw forward
+        // must reproduce it bit-for-bit.
+        assert_eq!(acc, 0xea84_9200_7136_ec60_u64, "GRU golden checksum drift");
     }
 
     #[test]
