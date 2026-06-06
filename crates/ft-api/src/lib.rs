@@ -77823,6 +77823,66 @@ mod tests {
     }
 
     #[test]
+    fn empty_tensor_op_semantics_match_torch() {
+        // Regression guard for empty-input (numel=0) op semantics, which match
+        // PyTorch: full reductions over no elements use the identity (sum=0,
+        // prod=1) or NaN (mean/var/std), logsumexp=-inf, argmax errors, and
+        // element-wise / dim-preserving ops return empty. These edges had no
+        // explicit coverage; a refactor silently breaking any of them would be a
+        // parity regression.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let empty = |s: &mut FrankenTorchSession| {
+            s.tensor_variable(Vec::<f64>::new(), vec![0], false).unwrap()
+        };
+        let vals = |s: &mut FrankenTorchSession, n: TensorNodeId| s.tensor_values(n).unwrap();
+
+        let t = empty(&mut s);
+        let n = s.tensor_sum(t).unwrap();
+        assert_eq!(vals(&mut s, n), vec![0.0], "sum of empty = 0");
+        let t = empty(&mut s);
+        let n = s.tensor_prod(t).unwrap();
+        assert_eq!(vals(&mut s, n), vec![1.0], "prod of empty = 1");
+        let t = empty(&mut s);
+        let n = s.tensor_mean(t).unwrap();
+        assert!(vals(&mut s, n)[0].is_nan(), "mean of empty = NaN");
+        let t = empty(&mut s);
+        let n = s.tensor_var(t, 1).unwrap();
+        assert!(vals(&mut s, n)[0].is_nan(), "var of empty = NaN");
+        let t = empty(&mut s);
+        let n = s.tensor_std(t, 1).unwrap();
+        assert!(vals(&mut s, n)[0].is_nan(), "std of empty = NaN");
+        let t = empty(&mut s);
+        let n = s.tensor_logsumexp(t, 0).unwrap();
+        assert_eq!(vals(&mut s, n)[0], f64::NEG_INFINITY, "logsumexp of empty = -inf");
+
+        // Dim-preserving / element-wise ops keep the empty shape.
+        let t = empty(&mut s);
+        let n = s.tensor_cumsum(t, 0).unwrap();
+        assert_eq!(vals(&mut s, n).len(), 0, "cumsum of empty stays empty");
+        let t = empty(&mut s);
+        let n = s.tensor_cumprod(t, 0).unwrap();
+        assert_eq!(vals(&mut s, n).len(), 0, "cumprod of empty stays empty");
+        let t = empty(&mut s);
+        let n = s.tensor_softmax(t, 0).unwrap();
+        assert_eq!(vals(&mut s, n).len(), 0, "softmax of empty stays empty");
+        let t = empty(&mut s);
+        let n = s.tensor_exp(t).unwrap();
+        assert_eq!(vals(&mut s, n).len(), 0, "exp of empty stays empty");
+        let t = empty(&mut s);
+        let n = s.tensor_relu(t).unwrap();
+        assert_eq!(vals(&mut s, n).len(), 0, "relu of empty stays empty");
+
+        // argmax over an empty reduction dim errors (matches torch).
+        let t = empty(&mut s);
+        assert!(s.tensor_argmax(t, 0).is_err(), "argmax of empty must error");
+
+        // histc of an empty tensor returns zero counts.
+        let t = empty(&mut s);
+        let n = s.tensor_histc(t, 4, 0.0, 1.0).unwrap();
+        assert_eq!(vals(&mut s, n), vec![0.0, 0.0, 0.0, 0.0], "histc of empty = zeros");
+    }
+
+    #[test]
     fn bincount_supports_f32_input() {
         // bincount used a f64-only value read AND fed the f32 input to
         // tensor_scatter_add as an index tensor -> errored on f32. Now it reads
