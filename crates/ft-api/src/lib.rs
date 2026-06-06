@@ -33265,15 +33265,23 @@ impl FrankenTorchSession {
             .map_err(kernel_err)?; // [seq*batch, 4h], row (t*batch+b)
 
             // One recurrent step: gates = ((xw_row + h @ W_hh^T) + b_ih) + b_hh,
-            // then the LSTM gate soup. Add order matches the old tensor_add chain
-            // exactly so the result is bit-identical.
-            let step = |h: &[f64], c: &[f64], xw_row: &[f64]| -> Result<(Vec<f64>, Vec<f64>), AutogradError> {
-                let hg = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
-                    batch_size, hidden_size, four_h, h, &w_hh_vals,
+            // then the LSTM gate soup, written into caller-owned buffers. The
+            // recurrent matmul reuses `hg` (via the _into kernel) and the cell
+            // writes into h_out/c_out, so the whole timestep loop allocates
+            // NOTHING per step. Add order matches the old tensor_add chain exactly
+            // so the result is bit-identical (frankentorch-3k4v).
+            let bh = batch_size * hidden_size;
+            let step = |h: &[f64],
+                        c: &[f64],
+                        xw_row: &[f64],
+                        hg: &mut Vec<f64>,
+                        h_out: &mut [f64],
+                        c_out: &mut [f64]|
+             -> Result<(), AutogradError> {
+                ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64_into(
+                    hg, batch_size, hidden_size, four_h, h, &w_hh_vals,
                 )
                 .map_err(kernel_err)?;
-                let mut new_h = Vec::with_capacity(batch_size * hidden_size);
-                let mut new_c = Vec::with_capacity(batch_size * hidden_size);
                 for b in 0..batch_size {
                     let gate_base = b * four_h;
                     for i in 0..hidden_size {
@@ -33293,46 +33301,51 @@ impl FrankenTorchSession {
                         let o_gate = 1.0 / (1.0 + (-gate(3 * hidden_size + i)).exp());
                         let c_idx = b * hidden_size + i;
                         let c_val = f_gate * c[c_idx] + i_gate * g_gate;
-                        let h_val = o_gate * c_val.tanh();
-                        new_c.push(c_val);
-                        new_h.push(h_val);
+                        c_out[c_idx] = c_val;
+                        h_out[c_idx] = o_gate * c_val.tanh();
                     }
                 }
-                Ok((new_h, new_c))
+                Ok(())
             };
 
             let row_len = batch_size * four_h;
             let layer_base = layer * num_directions * batch_size * hidden_size;
 
+            // Persistent scratch reused across every timestep (and both
+            // directions): the recurrent-matmul output and the double-buffered
+            // next h/c. mem::swap rotates current<->next with no allocation.
+            let mut hg: Vec<f64> = Vec::with_capacity(batch_size * four_h);
+            let mut h_next = vec![0.0_f64; bh];
+            let mut c_next = vec![0.0_f64; bh];
+
             // Forward direction.
-            let mut h = h_all[layer_base..layer_base + batch_size * hidden_size].to_vec();
-            let mut c = c_all[layer_base..layer_base + batch_size * hidden_size].to_vec();
+            let mut h = h_all[layer_base..layer_base + bh].to_vec();
+            let mut c = c_all[layer_base..layer_base + bh].to_vec();
             for t in 0..seq_len {
                 let xw_row = &xw_all[t * row_len..t * row_len + row_len];
-                let (new_h, new_c) = step(&h, &c, xw_row)?;
-                outputs[t][..batch_size * hidden_size].copy_from_slice(&new_h);
-                h = new_h;
-                c = new_c;
+                step(&h, &c, xw_row, &mut hg, &mut h_next, &mut c_next)?;
+                outputs[t][..bh].copy_from_slice(&h_next);
+                std::mem::swap(&mut h, &mut h_next);
+                std::mem::swap(&mut c, &mut c_next);
             }
-            h_all[layer_base..layer_base + batch_size * hidden_size].copy_from_slice(&h);
-            c_all[layer_base..layer_base + batch_size * hidden_size].copy_from_slice(&c);
+            h_all[layer_base..layer_base + bh].copy_from_slice(&h);
+            c_all[layer_base..layer_base + bh].copy_from_slice(&c);
 
             // Bidirectional: backward direction reuses the SAME weights and the
             // SAME batched input projection (matching the original).
             if bidirectional {
-                let rev_base = layer_base + batch_size * hidden_size;
-                let mut h_rev = h_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
-                let mut c_rev = c_all[rev_base..rev_base + batch_size * hidden_size].to_vec();
+                let rev_base = layer_base + bh;
+                let mut h_rev = h_all[rev_base..rev_base + bh].to_vec();
+                let mut c_rev = c_all[rev_base..rev_base + bh].to_vec();
                 for t in (0..seq_len).rev() {
                     let xw_row = &xw_all[t * row_len..t * row_len + row_len];
-                    let (new_h, new_c) = step(&h_rev, &c_rev, xw_row)?;
-                    outputs[t][batch_size * hidden_size..]
-                        .copy_from_slice(&new_h);
-                    h_rev = new_h;
-                    c_rev = new_c;
+                    step(&h_rev, &c_rev, xw_row, &mut hg, &mut h_next, &mut c_next)?;
+                    outputs[t][bh..].copy_from_slice(&h_next);
+                    std::mem::swap(&mut h_rev, &mut h_next);
+                    std::mem::swap(&mut c_rev, &mut c_next);
                 }
-                h_all[rev_base..rev_base + batch_size * hidden_size].copy_from_slice(&h_rev);
-                c_all[rev_base..rev_base + batch_size * hidden_size].copy_from_slice(&c_rev);
+                h_all[rev_base..rev_base + bh].copy_from_slice(&h_rev);
+                c_all[rev_base..rev_base + bh].copy_from_slice(&c_rev);
             }
 
             // Prepare input for next layer.

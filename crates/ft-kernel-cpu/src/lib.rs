@@ -5502,6 +5502,47 @@ pub fn matmul_rhs_transposed_contiguous_f64(
     Ok(out)
 }
 
+/// `out = lhs[m,k] @ rhs_nk[n,k]^T` reusing the caller's `out` buffer (sister to
+/// [`matmul_rhs_transposed_contiguous_f64`]). Lets hot sequential loops (e.g. the
+/// LSTM recurrent `h @ W_hh^T` step) avoid a fresh allocation per call.
+///
+/// `out` is resized to exactly `m*n` WITHOUT re-zeroing retained cells (`resize`
+/// only fills a grown tail; a reused same-length buffer is a no-op). `dgemm_bt`
+/// runs with beta = 0, overwriting every one of the `m*n` cells regardless of
+/// prior contents, so the result is BIT-FOR-BIT identical to the allocating
+/// variant — see the f32 `matmul_tensor_contiguous_f32_into` note.
+pub fn matmul_rhs_transposed_contiguous_f64_into(
+    out: &mut Vec<f64>,
+    m: usize,
+    k: usize,
+    n: usize,
+    lhs: &[f64],
+    rhs_nk: &[f64],
+) -> Result<(), KernelError> {
+    let lhs_len = checked_mul(m, k, "matmul_rhs_transposed_into lhs overflow")?;
+    let rhs_len = checked_mul(n, k, "matmul_rhs_transposed_into rhs overflow")?;
+    let out_len = checked_mul(m, n, "matmul_rhs_transposed_into output overflow")?;
+    if lhs.len() < lhs_len {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![lhs_len],
+            rhs: vec![lhs.len()],
+        });
+    }
+    if rhs_nk.len() < rhs_len {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![rhs_len],
+            rhs: vec![rhs_nk.len()],
+        });
+    }
+    if out.len() > out_len {
+        out.truncate(out_len);
+    } else if out.len() < out_len {
+        out.resize(out_len, 0.0_f64);
+    }
+    gemm::dgemm_bt(m, k, n, &lhs[..lhs_len], &rhs_nk[..rhs_len], out);
+    Ok(())
+}
+
 pub fn lerp_tensor_contiguous_f64(
     start: &[f64],
     end: &[f64],
