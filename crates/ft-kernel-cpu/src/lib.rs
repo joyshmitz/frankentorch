@@ -5077,22 +5077,87 @@ pub fn gaussian_nll_backward_f64(
     (di, dt, dv)
 }
 
+#[inline]
+fn smooth_l1_value_f64(x: f64, t: f64, beta: f64, half_beta: f64) -> f64 {
+    let d = x - t;
+    let ad = d.abs();
+    if ad < beta {
+        0.5 * d * d / beta
+    } else {
+        ad - half_beta
+    }
+}
+
+fn smooth_l1_sum_pairwise_f64(x: &[f64], t: &[f64], beta: f64, half_beta: f64) -> f64 {
+    const BLOCK: usize = 128;
+    if x.len() <= BLOCK {
+        return x
+            .iter()
+            .copied()
+            .zip(t.iter().copied())
+            .map(|(xi, ti)| smooth_l1_value_f64(xi, ti, beta, half_beta))
+            .sum();
+    }
+    let mid = x.len() / 2;
+    smooth_l1_sum_pairwise_f64(&x[..mid], &t[..mid], beta, half_beta)
+        + smooth_l1_sum_pairwise_f64(&x[mid..], &t[mid..], beta, half_beta)
+}
+
+fn smooth_l1_sum_pairwise_f64_par(x: &[f64], t: &[f64], beta: f64, half_beta: f64) -> f64 {
+    const PAR_BLOCK: usize = 1 << 14;
+    if x.len() <= PAR_BLOCK {
+        return smooth_l1_sum_pairwise_f64(x, t, beta, half_beta);
+    }
+    let mid = x.len() / 2;
+    let (xl, xr) = x.split_at(mid);
+    let (tl, tr) = t.split_at(mid);
+    let (ls, rs) = rayon::join(
+        || smooth_l1_sum_pairwise_f64_par(xl, tl, beta, half_beta),
+        || smooth_l1_sum_pairwise_f64_par(xr, tr, beta, half_beta),
+    );
+    ls + rs
+}
+
+/// Fused smooth-L1 sum with the same pairwise reduction tree used by
+/// [`sum_tensor_contiguous_f64`] after [`smooth_l1_forward_f64`] materializes the
+/// per-element vector.
+#[must_use]
+pub fn smooth_l1_sum_f64(x: &[f64], t: &[f64], beta: f64) -> f64 {
+    assert_eq!(
+        x.len(),
+        t.len(),
+        "smooth_l1_sum_f64 requires same-length slices"
+    );
+    let half_beta = 0.5 * beta;
+    if x.len() >= SUM_PARALLEL_THRESHOLD {
+        smooth_l1_sum_pairwise_f64_par(x, t, beta, half_beta)
+    } else {
+        smooth_l1_sum_pairwise_f64(x, t, beta, half_beta)
+    }
+}
+
+/// Fused smooth-L1 mean with bit-identical sum order to the materialized
+/// per-element vector followed by [`mean_tensor_contiguous_f64`].
+#[must_use]
+pub fn smooth_l1_mean_f64(x: &[f64], t: &[f64], beta: f64) -> f64 {
+    if x.is_empty() {
+        return f64::NAN;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = x.len() as f64;
+    smooth_l1_sum_f64(x, t, beta) / n
+}
+
 /// Fused per-element smooth-L1 (Huber-beta) loss: for `d = x − t`,
 /// `0.5·d²/beta` when `|d| < beta`, else `|d| − 0.5·beta`. One pass, parallel —
 /// none of the op-graph's ~13 full-size intermediates (incl. 4 constant `full()`
 /// tensors). Returns the per-element loss (the caller applies the reduction).
 #[must_use]
 pub fn smooth_l1_forward_f64(x: &[f64], t: &[f64], beta: f64) -> Vec<f64> {
-    let hb = 0.5 * beta;
+    let half_beta = 0.5 * beta;
     let mut out = vec![0.0f64; x.len()];
     out.par_iter_mut().enumerate().for_each(|(i, o)| {
-        let d = x[i] - t[i];
-        let ad = d.abs();
-        *o = if ad < beta {
-            0.5 * d * d / beta
-        } else {
-            ad - hb
-        };
+        *o = smooth_l1_value_f64(x[i], t[i], beta, half_beta);
     });
     out
 }
@@ -22458,6 +22523,39 @@ mod tests {
         let result = mean_tensor_contiguous_f64(&vals, &meta).unwrap();
 
         assert!(result.is_nan(), "mean of empty tensor should be NaN (0/0)");
+    }
+
+    #[test]
+    fn smooth_l1_reduced_f64_matches_materialized_pairwise_bits() {
+        let n = super::SUM_PARALLEL_THRESHOLD + 257;
+        let beta = 0.75;
+        let x: Vec<f64> = (0..n)
+            .map(|i| ((i % 1021) as f64 - 510.0) * 0.003)
+            .collect();
+        let t: Vec<f64> = (0..n)
+            .map(|i| ((i % 607) as f64 - 303.0) * -0.0025)
+            .collect();
+        let per = super::smooth_l1_forward_f64(&x, &t, beta);
+        let meta = TensorMeta::from_shape(vec![n], DType::F64, Device::Cpu);
+        let expected_sum = sum_tensor_contiguous_f64(&per, &meta).unwrap();
+        let expected_mean = mean_tensor_contiguous_f64(&per, &meta).unwrap();
+
+        assert_eq!(
+            super::smooth_l1_sum_f64(&x, &t, beta).to_bits(),
+            expected_sum.to_bits()
+        );
+        assert_eq!(
+            super::smooth_l1_mean_f64(&x, &t, beta).to_bits(),
+            expected_mean.to_bits()
+        );
+    }
+
+    #[test]
+    fn smooth_l1_reduced_f64_empty_matches_tensor_reductions() {
+        let x = [];
+        let t = [];
+        assert_eq!(super::smooth_l1_sum_f64(&x, &t, 1.0), 0.0);
+        assert!(super::smooth_l1_mean_f64(&x, &t, 1.0).is_nan());
     }
 
     #[test]
