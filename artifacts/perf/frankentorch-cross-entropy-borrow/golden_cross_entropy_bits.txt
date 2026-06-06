@@ -1,0 +1,28 @@
+frankentorch-ib63 cross_entropy borrowed-logits backward golden bits
+
+Fixture:
+- batch = 2
+- classes = 4
+- logits = [0.0; 8]
+- targets = [1.0, 3.0]
+- reduction = "mean"
+
+Expected loss bits:
+- 0x3ff62e42fefa39ef
+
+Expected gradient bits, row-major [batch, classes]:
+- 0x3fc0000000000000
+- 0xbfd8000000000000
+- 0x3fc0000000000000
+- 0x3fc0000000000000
+- 0x3fc0000000000000
+- 0x3fc0000000000000
+- 0x3fc0000000000000
+- 0xbfd8000000000000
+
+Proof command:
+- rch exec -- cargo test -p ft-api cross_entropy -- --nocapture
+
+Observed result:
+- cross_entropy_borrowed_grad_zero_logits_golden_bits passed.
+- Full focused cross_entropy filter passed: 12 passed, 0 failed.

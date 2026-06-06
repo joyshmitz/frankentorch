@@ -1,0 +1,15 @@
+artifacts/perf/frankentorch-cross-entropy-borrow/baseline_samepath_cross_entropy_grad.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/after_734_cross_entropy_grad.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/after_samepath_confirm_cross_entropy_grad.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/test_cross_entropy.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/post_rebase_test_cross_entropy.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/check_ft_api.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/post_rebase_check_ft_api.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/clippy_ft_api.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/fmt_ft_api.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/diff_check.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/ubs_ft_api.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/ubs_commit_hook_timeout.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/golden_cross_entropy_bits.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/source_diff.txt: OK
+artifacts/perf/frankentorch-cross-entropy-borrow/report.md: OK

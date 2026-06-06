@@ -1,0 +1,99 @@
+diff --git a/.beads/issues.jsonl b/.beads/issues.jsonl
+index 07fb4faf..878a1ca0 100644
+--- a/.beads/issues.jsonl
++++ b/.beads/issues.jsonl
+@@ -434,6 +434,7 @@
+ {"id":"frankentorch-i75f","title":"ft-api: add pow_ and square_ in-place ops","status":"closed","priority":2,"issue_type":"feature","created_at":"2026-05-22T15:41:32.986462745Z","created_by":"ubuntu","updated_at":"2026-05-22T15:43:08.686325597Z","closed_at":"2026-05-22T15:43:08.685987056Z","close_reason":"done","source_repo":".","compaction_level":0,"original_size":0}
+ {"id":"frankentorch-i7v","title":"Restore ft-optim rustfmt compliance","status":"closed","priority":1,"issue_type":"bug","created_at":"2026-03-31T03:32:23.707770910Z","created_by":"ubuntu","updated_at":"2026-03-31T03:34:06.440692399Z","closed_at":"2026-03-31T03:34:06.440430122Z","close_reason":"Completed: restored ft-optim rustfmt compliance","source_repo":".","compaction_level":0,"original_size":0}
+ {"id":"frankentorch-i83g","title":"ft-api: add tensor_reciprocal_ in-place operation","status":"closed","priority":2,"issue_type":"feature","created_at":"2026-05-22T15:21:10.447836298Z","created_by":"ubuntu","updated_at":"2026-05-22T15:23:08.211117523Z","closed_at":"2026-05-22T15:23:08.210817966Z","close_reason":"done","source_repo":".","compaction_level":0,"original_size":0}
++{"id":"frankentorch-ib63","title":"[perf][no-gaps] ft-api: borrow cross_entropy custom-op logits in backward","description":"Profile-backed fallback target after br ready --json had no unclaimed perf beads. Baseline via RCH Criterion on ts1: cargo bench -p ft-api --bench ops_bench -- cross_entropy/grad_4096x8192 --warm-up-time 1 --measurement-time 5 --sample-size 10 => [642.48 ms 667.71 ms 695.81 ms]. Current fused f64 cross_entropy grad path saves the full logits tensor with ctx.save_for_backward(logits.to_vec(), vec![b,c]) before backward, adding a full [batch,classes] copy per training step. One lever: route only the f64 fused grad cross_entropy custom op through tensor_apply_function_f64_borrowed_inputs so backward reborrows logits from the tape. Preserve forward formula/order, target order, reduction behavior, floating-point log-sum-exp/softmax order, RNG-free behavior, and gradient values. Proof: focused finite-diff/golden output sha256 plus RCH tests; keep only if same-worker rebench Score >= 2.0.","status":"closed","priority":2,"issue_type":"perf","assignee":"RubyLotus","created_at":"2026-06-06T22:16:50.970424550Z","created_by":"ubuntu","updated_at":"2026-06-06T22:47:12.483865434Z","closed_at":"2026-06-06T22:47:12.483702646Z","close_reason":"Completed: same-worker ts1 cross_entropy/grad_4096x8192 improved 618.58 ms -> 560.08 ms (1.105x); golden bits and focused tests passed; score 2.25","source_repo":"frankentorch-perf-origin-20260606T2055","source_repo_path":"/data/projects/.scratch/frankentorch-perf-origin-20260606T2055","compaction_level":0,"original_size":0,"labels":["ft-api","no-gaps","optimization","perf"]}
+ {"id":"frankentorch-ic84","title":"[parity-gap] ft-kernel-cpu var_dim/std_dim hard-code Bessel correction (no correction= parameter)","description":"EmeraldPine audit (2026-05-20). var_dim/std_dim divide by reduce_size-1 unconditionally (crates/ft-kernel-cpu/src/lib.rs:~1952; ft-api tensor_var_dim/tensor_std_dim ~7625/7635). PyTorch torch.var/std take correction= (default 1; correction=0 = population variance /N). Population variance is unreachable today. Threading a correction param spans kernel -> dispatch -> api -> autograd backward (the var/std backward scale also depends on it).","status":"closed","priority":3,"issue_type":"feature","created_at":"2026-05-20T06:32:44.059672225Z","created_by":"ubuntu","updated_at":"2026-05-20T09:20:41.333727676Z","closed_at":"2026-05-20T09:20:41.333493592Z","close_reason":"tensor_var_dim/tensor_std_dim take correction param (torch.var/std correction=). Autograd-composable rescale of the /(N-1) kernel result. Verified vs torch 2.12. Commit ad7d07b.","source_repo":".","compaction_level":0,"original_size":0}
+ {"id":"frankentorch-icld","title":"porting: add tensor_ravel + tensor_squeeze_all for torch parity","description":"Two missing shape ops:\\n  - tensor_ravel(x): alias for flatten — returns 1-D view of all elements. torch.ravel(x) == x.view(-1).\\n  - tensor_squeeze_all(x): no-dim variant of squeeze — removes ALL size-1 dimensions. torch.squeeze(x) without a dim argument.\\nBoth thin wrappers; autograd-aware via existing primitives.","status":"closed","priority":3,"issue_type":"task","created_at":"2026-05-03T02:17:37.774860352Z","created_by":"ubuntu","updated_at":"2026-05-03T02:20:30.133779236Z","closed_at":"2026-05-03T02:20:30.131839926Z","close_reason":"Added tensor_ravel and tensor_squeeze_all in ft-api. ravel: returns 1-D view of all elements (composes via tensor_flatten over the full rank, with rank-0 → [1] reshape special case). squeeze_all: removes all size-1 dims via tensor_reshape with the filtered shape, returns input id unchanged when there are no size-1 dims. Both autograd-aware. 7 unit tests cover 2D/3D ravel, scalar ravel, ravel gradient, squeeze removing multiple size-1 dims (1,3,1,2,1 → 3,2), squeeze no-op on already-squeezed input, squeeze [1,1,1] → [] rank-0 case, and squeeze gradient propagation. ft-api now at 1328 lib tests.","source_repo":".","compaction_level":0,"original_size":0}
+ {"id":"frankentorch-icyn","title":"ft-api missing scaled_dot_product_attention","status":"closed","priority":2,"issue_type":"task","created_at":"2026-05-22T22:32:41.188984731Z","created_by":"ubuntu","updated_at":"2026-05-22T22:34:24.572035840Z","closed_at":"2026-05-22T22:34:24.571685647Z","close_reason":"done","source_repo":".","compaction_level":0,"original_size":0}
+diff --git a/.skill-loop-progress.md b/.skill-loop-progress.md
+index e78ad2db..ce3f8b1d 100644
+--- a/.skill-loop-progress.md
++++ b/.skill-loop-progress.md
+@@ -238,3 +238,12 @@
+    - Score: `Impact 3.0 x Confidence 0.90 / Effort 1.0 = 2.70`, keep.
+    - Commit: this commit.
+    - Verdict: PRODUCTIVE. Next primitive: profile-backed borrowed-input migration for another large-input custom op with a proven mutation contract, or a deeper conv2d backward kernel primitive if re-profile shows compute still dominates.
++24. Pass 24 - Borrowed-input cross_entropy custom autograd - 2026-06-06T22:45Z
++   - Files changed: `crates/ft-api/src/lib.rs`, `artifacts/perf/frankentorch-cross-entropy-borrow/report.md`, `artifacts/perf/frankentorch-cross-entropy-borrow/evidence.sha256`, `.beads/issues.jsonl`.
++   - Changes: routed only the f64 fused `functional_cross_entropy(..., "mean")` grad path through `tensor_apply_function_f64_borrowed_inputs`, removing the full logits `to_vec()` saved-input copy while preserving the same forward/backward kernels.
++   - Baseline: same-path same-worker `ts1` `cross_entropy/grad_4096x8192` `[612.65 ms 618.58 ms 624.49 ms]`.
++   - After: same-worker `ts1` confirmation `[542.14 ms 560.08 ms 582.05 ms]`; earlier patched run `[531.57 ms 539.49 ms 546.36 ms]`.
++   - Golden SHA-256: zero-logits mean loss bits `0x3ff62e42fefa39ef` and exact gradient bits recorded in `artifacts/perf/frankentorch-cross-entropy-borrow/golden_cross_entropy_bits.txt`; focused cross-entropy tests passed.
++   - Score: `Impact 2.5 x Confidence 0.90 / Effort 1.0 = 2.25`, keep.
++   - Commit: this commit.
++   - Verdict: PRODUCTIVE. Next primitive: re-profile ready perf beads; if borrowed-input copies remain hot, migrate the next large-input custom op with a mutation-contract golden, otherwise pivot to the next deeper BLAS/LAPACK-class or kernel primitive.
+diff --git a/crates/ft-api/src/lib.rs b/crates/ft-api/src/lib.rs
+index 2ea1c11a..01da2b1a 100644
+--- a/crates/ft-api/src/lib.rs
++++ b/crates/ft-api/src/lib.rs
+@@ -9119,20 +9119,19 @@ impl FrankenTorchSession {
+                     let (b, c) = (batch, classes);
+                     let ti_fwd = target_idx.clone();
+                     let ti_bwd = target_idx;
+-                    self.tensor_apply_function(
++                    self.tensor_apply_function_f64_borrowed_inputs(
+                         &[input],
+-                        move |ctx, ins| {
++                        move |_ctx, ins| {
+                             let (logits, _) = ins[0];
+                             let loss =
+                                 ft_kernel_cpu::cross_entropy_forward_f64(logits, &ti_fwd, b, c);
+-                            ctx.save_for_backward(logits.to_vec(), vec![b, c]);
+                             Ok((loss, vec![b]))
+                         },
+-                        move |ctx, grad_outputs| {
++                        move |_ctx, grad_outputs, borrowed_inputs| {
+                             let dloss = grad_outputs[0];
+-                            let saved = ctx.saved_tensors();
++                            let logits = borrowed_inputs[0].0;
+                             let dlogits = ft_kernel_cpu::cross_entropy_backward_f64(
+-                                &saved[0], &ti_bwd, dloss, b, c,
++                                logits, &ti_bwd, dloss, b, c,
+                             );
+                             Ok(vec![Some(dlogits)])
+                         },
+@@ -71358,6 +71357,39 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn cross_entropy_borrowed_grad_zero_logits_golden_bits() {
++        let (batch, classes) = (2usize, 4usize);
++        let logits = vec![0.0; batch * classes];
++        let targets = vec![1.0, 3.0];
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        let x = s
++            .tensor_variable(logits, vec![batch, classes], true)
++            .unwrap();
++        let t = s.tensor_variable(targets, vec![batch], false).unwrap();
++        let out = s.functional_cross_entropy(x, t, "mean").unwrap();
++        let loss = s.tensor_values(out).unwrap();
++        assert_eq!(loss.len(), 1);
++        assert_eq!(loss[0].to_bits(), 0x3ff62e42fefa39ef);
++
++        s.tensor_backward(out).unwrap();
++        let grad = s.tensor_grad(x).unwrap().unwrap();
++        let expected_bits = [
++            0x3fc0000000000000,
++            0xbfd8000000000000,
++            0x3fc0000000000000,
++            0x3fc0000000000000,
++            0x3fc0000000000000,
++            0x3fc0000000000000,
++            0x3fc0000000000000,
++            0xbfd8000000000000,
++        ];
++        assert_eq!(grad.len(), expected_bits.len());
++        for (idx, (got, want)) in grad.iter().zip(expected_bits.iter()).enumerate() {
++            assert_eq!(got.to_bits(), *want, "grad bit mismatch at {idx}");
++        }
++    }
++
+     #[test]
+     fn session_cross_entropy_loss_wrong_class_is_higher() {
+         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);

@@ -1,0 +1,12 @@
+Commit hook UBS result:
+
+```text
+ubs: timeout on large file scan
+ubs: run manually: ubs --only=rust crates/ft-api/src/lib.rs
+ubs: or commit with: UBS_SKIP=1 git commit ...
+```
+
+Manual focused UBS attempt:
+- `timeout 120s ubs crates/ft-api/src/lib.rs`
+- Captured in `ubs_ft_api.txt`.
+- The log contains the scanner banner and rust-scan start only, with no finding lines before the cap/no-result exit.
