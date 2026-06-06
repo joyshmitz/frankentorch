@@ -54953,8 +54953,13 @@ impl FrankenTorchSession {
         input: TensorNodeId,
         exponent: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let exp_tensor = self.full(vec![1], exponent, false)?;
-        self.tensor_pow_tensor(input, exp_tensor)
+        // Delegate to the canonical scalar-pow (dispatch_scalar_pow). The old
+        // body built a [1] exponent leaf and went through tensor_pow_tensor,
+        // which REQUIRES equal shapes — so pow_scalar errored for any non-[1]
+        // input — and materialized an F64 exponent that upcast f32 bases to F64.
+        // tensor_pow applies the scalar directly to the input tensor, preserving
+        // both shape and dtype (weak-scalar parity, cf. bead frankentorch-cijv).
+        self.tensor_pow(input, exponent)
     }
 
     /// Compute cube of each element.
@@ -74456,6 +74461,25 @@ mod tests {
         let y_add = s.add_scalar(y, 5.0).unwrap();
         assert_eq!(s.tensor_dtype(y_add).unwrap(), DType::F64);
         assert_eq!(s.tensor_values(y_add).unwrap(), vec![6.0f64, 7.0]);
+    }
+
+    #[test]
+    fn f32_pow_scalar_preserves_f32_dtype() {
+        // Weak-scalar parity: `float32_tensor ** 2.0 -> float32`. The f64
+        // exponent leaf used to promote the f32 base to F64. Bead cijv sibling.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable_f32(vec![2.0f32, 3.0, 4.0], vec![3], false)
+            .unwrap();
+        let p = s.pow_scalar(x, 2.0).unwrap();
+        assert_eq!(s.tensor_dtype(p).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(p).unwrap(), vec![4.0f32, 9.0, 16.0]);
+
+        // F64 base unchanged (no regression).
+        let y = s.tensor_variable(vec![2.0f64, 3.0], vec![2], false).unwrap();
+        let yp = s.pow_scalar(y, 3.0).unwrap();
+        assert_eq!(s.tensor_dtype(yp).unwrap(), DType::F64);
+        assert_eq!(s.tensor_values(yp).unwrap(), vec![8.0f64, 27.0]);
     }
 
     #[test]
