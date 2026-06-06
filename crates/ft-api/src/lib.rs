@@ -17466,6 +17466,36 @@ impl FrankenTorchSession {
             );
         }
 
+        // F32 no-grad fused fast path (dominant ML dtype): same windowed-mean
+        // kernel via avg_pool2d_forward_f32, replacing the f32 op-graph
+        // (narrow/sum/div/cat) which also upcast to f64.
+        if self.tensor_dtype(input)? == DType::F32 && !self.tensor_tape.tensor_requires_grad(input)? {
+            let pv = self.tensor_values_f32(padded)?;
+            let out = ft_kernel_cpu::avg_pool2d_forward_f32(
+                &pv,
+                batch_size,
+                channels,
+                padded_h,
+                padded_w,
+                kernel_h,
+                kernel_w,
+                output_h,
+                output_w,
+                stride_h,
+                stride_w,
+                padding_h,
+                padding_w,
+                input_h,
+                input_w,
+                count_include_pad,
+            );
+            return self.tensor_variable_f32(
+                out,
+                vec![batch_size, channels, output_h, output_w],
+                false,
+            );
+        }
+
         let mut patches = Vec::with_capacity(patch_count);
         for out_h in 0..output_h {
             let row_start = Self::checked_mul(out_h, stride_h, "avg_pool2d row start overflow")?;
@@ -84565,6 +84595,40 @@ mod tests {
                     (gx[i] - fd).abs() <= 1e-5 + 1e-4 * fd.abs(),
                     "pad={pad} cip={cip} dx[{i}]: {} vs {fd}",
                     gx[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn functional_avg_pool2d_f32_fused_matches_op_graph_within_tolerance() {
+        // Isomorphism for the f32 no-grad fused avg_pool2d
+        // (ft_kernel_cpu::avg_pool2d_forward_f32) vs the f32 op-graph (which
+        // upcasts to f64, read via tensor_values), within f32 tol. Several
+        // padding / count_include_pad combos.
+        let (n, c, h, w) = (2usize, 3usize, 7usize, 8usize);
+        let xv: Vec<f32> = (0..n * c * h * w)
+            .map(|i| ((i % 17) as f32 - 8.0) * 0.2 + (i as f32) * 0.01)
+            .collect();
+        for (pad, cip) in [(0usize, true), (1, true), (1, false)] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable_f32(xv.clone(), vec![n, c, h, w], false).unwrap();
+            let out = s
+                .functional_avg_pool2d(x, (3, 3), (2, 2), (pad, pad), false, cip)
+                .unwrap();
+            let fused = s.tensor_values_f32(out).unwrap();
+
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x2 = s2.tensor_variable_f32(xv.clone(), vec![n, c, h, w], true).unwrap();
+            let out2 = s2
+                .functional_avg_pool2d(x2, (3, 3), (2, 2), (pad, pad), false, cip)
+                .unwrap();
+            let reference = s2.tensor_values(out2).unwrap();
+            assert_eq!(fused.len(), reference.len());
+            for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (f64::from(*a) - b).abs() <= 1e-5 + 1e-4 * b.abs(),
+                    "pad={pad} cip={cip} [{i}]: f32 fused {a} vs op-graph {b}"
                 );
             }
         }

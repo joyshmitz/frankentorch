@@ -4115,6 +4115,61 @@ pub fn avg_pool2d_forward_f64(
     out
 }
 
+/// f32 mirror of [`avg_pool2d_forward_f64`]: one windowed-mean pass over the
+/// padded input, parallel over `(batch,ch)` planes. Replaces the f32 op-graph
+/// (narrow/sum/div/cat) the f32 no-grad path fell through to.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn avg_pool2d_forward_f32(
+    padded: &[f32],
+    batch: usize,
+    ch: usize,
+    ph: usize,
+    pw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+    pad_h: usize,
+    pad_w: usize,
+    ih: usize,
+    iw: usize,
+    count_include_pad: bool,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * ch * oh * ow];
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let pbase = plane * ph * pw;
+            for oy in 0..oh {
+                let rs = oy * sh;
+                let re = (rs + kh).min(ph);
+                let vrlen = re.min(pad_h + ih).saturating_sub(rs.max(pad_h));
+                for ox in 0..ow {
+                    let cs = ox * sw;
+                    let ce = (cs + kw).min(pw);
+                    let vclen = ce.min(pad_w + iw).saturating_sub(cs.max(pad_w));
+                    let mut sum = 0.0f32;
+                    for r in rs..re {
+                        let irow = pbase + r * pw;
+                        for c in cs..ce {
+                            sum += padded[irow + c];
+                        }
+                    }
+                    let div = if count_include_pad {
+                        ((re - rs) * (ce - cs)) as f32
+                    } else {
+                        (vrlen * vclen) as f32
+                    };
+                    orow[oy * ow + ox] = sum / div;
+                }
+            }
+        });
+    out
+}
+
 /// Backward of [`avg_pool2d_forward_f64`]: distributes each output gradient
 /// equally (`dout/divisor`) to every position in its window of `dpadded`
 /// (pad-position grads are later dropped by `tensor_pad`'s backward). Parallel
