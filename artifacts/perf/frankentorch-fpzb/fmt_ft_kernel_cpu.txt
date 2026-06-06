@@ -1,0 +1,99 @@
+Diff in /data/projects/.scratch/frankentorch-0qwa-baseline2-20260606T1710/crates/ft-kernel-cpu/src/lib.rs:4930:
+         padded, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw,
+     );
+     let mut out_flat = vec![0.0f32; flat * out_ch];
+-    gemm::sgemm_bt(flat, patch_width, out_ch, &panel, weight_flat, &mut out_flat);
++    gemm::sgemm_bt(
++        flat,
++        patch_width,
++        out_ch,
++        &panel,
++        weight_flat,
++        &mut out_flat,
++    );
+     let mut out = vec![0.0f32; batch * out_ch * patch_count];
+     out.par_chunks_mut(patch_count)
+         .enumerate()
+Diff in /data/projects/.scratch/frankentorch-0qwa-baseline2-20260606T1710/crates/ft-kernel-cpu/src/lib.rs:12248:
+     let mut pinv = vec![0.0_f64; n * m];
+     for i in (0..n).rev() {
+         let row_offset = i * m;
+-        pinv[row_offset..row_offset + m]
+-            .copy_from_slice(&q_t_rows[row_offset..row_offset + m]);
++        pinv[row_offset..row_offset + m].copy_from_slice(&q_t_rows[row_offset..row_offset + m]);
+
+         for jj in (i + 1)..n {
+             let coeff = r[i * n + jj];
+Diff in /data/projects/.scratch/frankentorch-0qwa-baseline2-20260606T1710/crates/ft-kernel-cpu/src/lib.rs:19055:
+             }
+             assert_eq!(got.len(), want.len());
+             for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+-                assert_eq!(g.to_bits(), w.to_bits(), "shape={shape:?} dim={dim} idx={i}");
++                assert_eq!(
++                    g.to_bits(),
++                    w.to_bits(),
++                    "shape={shape:?} dim={dim} idx={i}"
++                );
+             }
+
+             // f32 path too.
+Diff in /data/projects/.scratch/frankentorch-0qwa-baseline2-20260606T1710/crates/ft-kernel-cpu/src/lib.rs:19075:
+                 }
+             }
+             for (i, (&g, &w)) in got32.iter().zip(want32.iter()).enumerate() {
+-                assert_eq!(g.to_bits(), w.to_bits(), "f32 shape={shape:?} dim={dim} idx={i}");
++                assert_eq!(
++                    g.to_bits(),
++                    w.to_bits(),
++                    "f32 shape={shape:?} dim={dim} idx={i}"
++                );
+             }
+         }
+     }
+Diff in /data/projects/.scratch/frankentorch-0qwa-baseline2-20260606T1710/crates/ft-kernel-cpu/src/lib.rs:21377:
+         for idx in 0..n * kk {
+             max_diff = max_diff.max((x[idx] - x_true[idx]).abs());
+         }
+-        assert!(max_diff < 1e-9, "lstsq_qr solution diverges: max_diff={max_diff}");
++        assert!(
++            max_diff < 1e-9,
++            "lstsq_qr solution diverges: max_diff={max_diff}"
++        );
+
+         // Rank-deficient (duplicate column) -> defer to SVD via None.
+         let mut a_rd = a.clone();
+Diff in /data/projects/.scratch/frankentorch-0qwa-baseline2-20260606T1710/crates/ft-kernel-cpu/src/lib.rs:21386:
+         }
+         let deferred = super::lstsq_qr_contiguous_f64(&a_rd, &a_meta, &b, &b_meta)
+             .expect("lstsq_qr should not error on rank-deficient input");
+-        assert!(deferred.is_none(), "rank-deficient input must defer to SVD (None)");
++        assert!(
++            deferred.is_none(),
++            "rank-deficient input must defer to SVD (None)"
++        );
+
+         // Underdetermined (m < n) -> defer.
+         let a_wide_meta = TensorMeta::from_shape(vec![2usize, 3usize], DType::F64, Device::Cpu);
+Diff in /data/projects/.scratch/frankentorch-0qwa-baseline2-20260606T1710/crates/ft-kernel-cpu/src/lib.rs:21411:
+         assert_eq!(tall_pinv.len(), 6);
+         let tall_expected = [0.5, 0.0, 0.0, 0.0, 0.25, 0.0];
+         for (got, want) in tall_pinv.iter().zip(tall_expected) {
+-            assert!((got - want).abs() < 1e-12, "tall pinv mismatch {got} vs {want}");
++            assert!(
++                (got - want).abs() < 1e-12,
++                "tall pinv mismatch {got} vs {want}"
++            );
+         }
+
+         let wide = vec![2.0, 0.0, 0.0, 0.0, 4.0, 0.0];
+Diff in /data/projects/.scratch/frankentorch-0qwa-baseline2-20260606T1710/crates/ft-kernel-cpu/src/lib.rs:21422:
+         assert_eq!(wide_pinv.len(), 6);
+         let wide_expected = [0.5, 0.0, 0.0, 0.25, 0.0, 0.0];
+         for (got, want) in wide_pinv.iter().zip(wide_expected) {
+-            assert!((got - want).abs() < 1e-12, "wide pinv mismatch {got} vs {want}");
++            assert!(
++                (got - want).abs() < 1e-12,
++                "wide pinv mismatch {got} vs {want}"
++            );
+         }
+     }

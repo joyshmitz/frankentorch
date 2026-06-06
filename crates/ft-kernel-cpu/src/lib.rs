@@ -12246,13 +12246,25 @@ fn pinv_qr_full_column_rank_f64(a: &[f64], m: usize, n: usize) -> Option<Vec<f64
     }
 
     let mut pinv = vec![0.0_f64; n * m];
-    for c in 0..m {
-        for i in (0..n).rev() {
-            let mut acc = q_t_rows[i * m + c];
-            for jj in (i + 1)..n {
-                acc -= r[i * n + jj] * pinv[jj * m + c];
+    for i in (0..n).rev() {
+        let row_offset = i * m;
+        pinv[row_offset..row_offset + m].copy_from_slice(&q_t_rows[row_offset..row_offset + m]);
+
+        for jj in (i + 1)..n {
+            let coeff = r[i * n + jj];
+            if coeff == 0.0 {
+                continue;
             }
-            pinv[i * m + c] = acc / diag[i];
+            let solved_offset = jj * m;
+            for c in 0..m {
+                let solved = pinv[solved_offset + c];
+                pinv[row_offset + c] -= coeff * solved;
+            }
+        }
+
+        let inv_diag = 1.0 / diag[i];
+        for c in 0..m {
+            pinv[row_offset + c] *= inv_diag;
         }
     }
 
