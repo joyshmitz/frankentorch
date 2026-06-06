@@ -5916,10 +5916,24 @@ pub fn dispatch_tensor_join_contiguous_typed(
         let refs: Vec<(&[f32], &TensorMeta)> =
             f32_inputs.iter().map(|(d, m)| (d.as_slice(), *m)).collect();
         let outcome = dispatch_tensor_join_contiguous_f32(op, mode, &refs, dim, requires_grad)?;
+        let values: Vec<f32> = outcome.values.iter().map(|&v| v as f32).collect();
+        // Preserve a shared half dtype: cat/stack of all-f16 (or all-bf16) inputs
+        // stays f16/bf16 (torch parity), matching the binary/lerp half-narrowing.
+        // join is a pure copy, so the f16->f32->f16 round-trip is lossless. Mixed
+        // or f32 inputs stay f32. frankentorch-u78p.
+        let all_f16 = inputs
+            .iter()
+            .all(|(s, _)| matches!(s, TensorStorage::F16(_)));
+        let all_bf16 = inputs
+            .iter()
+            .all(|(s, _)| matches!(s, TensorStorage::BF16(_)));
+        let storage = if all_f16 || all_bf16 {
+            narrow_f32_to_storage_dtype(inputs[0].0, values)
+        } else {
+            TensorStorage::F32(Arc::new(values))
+        };
         Ok(TypedJoinOutcome {
-            storage: TensorStorage::F32(Arc::new(
-                outcome.values.iter().map(|&v| v as f32).collect(),
-            )),
+            storage,
             decision: outcome.decision,
         })
     }
