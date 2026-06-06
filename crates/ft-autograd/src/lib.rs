@@ -4436,6 +4436,13 @@ impl TensorTape {
         Ok(self.node(node)?.tensor.contiguous_values()?.to_vec())
     }
 
+    /// Like `values`, but converts any float dtype (F32/F16/BF16) to f64 rather
+    /// than requiring F64 storage. For non-grad ops that only read the values
+    /// numerically (histc/bincount/mode) so they work on f32 inputs too.
+    pub fn values_lossy_f64(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
+        Ok(self.node(node)?.tensor.contiguous_values_as_f64()?)
+    }
+
     pub fn values_len(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
         Ok(self.node(node)?.tensor.contiguous_values()?.len())
     }

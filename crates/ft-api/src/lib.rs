@@ -6960,7 +6960,7 @@ impl FrankenTorchSession {
             )));
         }
 
-        let vals = self.tensor_values(input)?;
+        let vals = self.tensor_values_lossy_f64(input)?;
         for &v in &vals {
             if !v.is_finite() {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -29394,6 +29394,16 @@ impl FrankenTorchSession {
 
     pub fn tensor_values(&self, node: TensorNodeId) -> Result<Vec<f64>, AutogradError> {
         self.tensor_tape.values(node)
+    }
+
+    /// Read a tensor's values as f64 regardless of its float dtype (F32/F16/BF16
+    /// are converted). Unlike `tensor_values` (which requires F64 storage), this
+    /// lets non-grad value-reading ops accept f32 inputs.
+    pub fn tensor_values_lossy_f64(
+        &self,
+        node: TensorNodeId,
+    ) -> Result<Vec<f64>, AutogradError> {
+        self.tensor_tape.values_lossy_f64(node)
     }
 
     pub fn tensor_values_len(&self, node: TensorNodeId) -> Result<usize, AutogradError> {
@@ -52774,7 +52784,7 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let vals = self.tensor_values(input)?;
+        let vals = self.tensor_values_lossy_f64(input)?;
         let outer: usize = vals.len() / last_dim;
 
         // Compute the mode position in each outer slice. The position
@@ -77646,6 +77656,37 @@ mod tests {
     }
 
     // ── bincount tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn histc_mode_support_f32_inputs() {
+        // These non-grad value-reading ops used tensor_values (F64-only) and so
+        // ERRORED on f32 input; routing them through tensor_values_lossy_f64
+        // makes f32 work identically to f64 (torch supports f32 for both).
+        // (bincount also reads f64-only but additionally feeds the f32 input to
+        // tensor_scatter_add as an index tensor -> separate fix, frankentorch-dh5f.)
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // histc: f32 result must match the f64 result.
+        let hf32 = s
+            .tensor_variable_f32(vec![0.0f32, 0.5, 1.0, 1.5, 2.0], vec![5], false)
+            .unwrap();
+        let hc32 = s.tensor_histc(hf32, 4, 0.0, 2.0).unwrap();
+        let hf64 = s
+            .tensor_variable(vec![0.0, 0.5, 1.0, 1.5, 2.0], vec![5], false)
+            .unwrap();
+        let hc64 = s.tensor_histc(hf64, 4, 0.0, 2.0).unwrap();
+        assert_eq!(
+            s.tensor_values_lossy_f64(hc32).unwrap(),
+            s.tensor_values_lossy_f64(hc64).unwrap()
+        );
+
+        // mode: f32 input must work and pick the most frequent value (2.0).
+        let mf32 = s
+            .tensor_variable_f32(vec![1.0f32, 2.0, 2.0, 3.0], vec![4], false)
+            .unwrap();
+        let (mv, _mi) = s.tensor_mode(mf32).unwrap();
+        assert_eq!(s.tensor_values_lossy_f64(mv).unwrap(), vec![2.0]);
+    }
 
     #[test]
     fn bincount_basic() {
