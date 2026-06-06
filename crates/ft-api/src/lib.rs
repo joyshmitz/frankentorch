@@ -54749,21 +54749,23 @@ impl FrankenTorchSession {
         self.tensor_div(input, denom)
     }
 
-    /// Threshold activation: replaces values <= threshold with value.
+    /// Threshold activation: `x` where `x > threshold`, else `value`
+    /// (`torch.nn.functional.threshold`).
+    ///
+    /// Delegates to the canonical `tensor_threshold`. The previous body
+    /// reimplemented it by pulling `tensor_values` (F64-only -> errored on f32
+    /// input), mapping in scalar f64, then building a FRESH `tensor_variable`
+    /// detached from `input` (so backward produced NO gradient — a silent
+    /// grad-breaking bug), and used the old `NaN -> value` rule. tensor_threshold
+    /// composes autograd-aware ops (gradient flows), preserves the input dtype,
+    /// and propagates NaN like current PyTorch.
     pub fn threshold_activation(
         &mut self,
         input: TensorNodeId,
         thresh: f64,
         value: f64,
     ) -> Result<TensorNodeId, AutogradError> {
-        let shape = self.tensor_shape(input)?;
-        let data = self.tensor_values(input)?;
-        let requires_grad = self.tensor_tape.tensor_requires_grad(input)?;
-        let result: Vec<f64> = data
-            .iter()
-            .map(|&x| if x > thresh { x } else { value })
-            .collect();
-        self.tensor_variable(result, shape, requires_grad)
+        self.tensor_threshold(input, thresh, value)
     }
 
     // ── Batch Utilities ──────────────────────────────────────────────────
@@ -74670,6 +74672,47 @@ mod tests {
         let yp = s.pow_scalar(y, 3.0).unwrap();
         assert_eq!(s.tensor_dtype(yp).unwrap(), DType::F64);
         assert_eq!(s.tensor_values(yp).unwrap(), vec![8.0f64, 27.0]);
+    }
+
+    #[test]
+    fn threshold_activation_delegates_grad_f32_and_nan() {
+        // threshold_activation used to (1) error on f32, (2) detach -> break
+        // gradient flow, (3) use the old NaN->value rule. Delegating to
+        // tensor_threshold fixes all three and matches it exactly.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // (a) matches tensor_threshold on f64 + NaN propagates.
+        let x = s
+            .tensor_variable(vec![-1.0, 0.5, f64::NAN, 3.0], vec![4], false)
+            .unwrap();
+        let act = s.threshold_activation(x, 0.0, -9.0).unwrap();
+        let canon = s.tensor_threshold(x, 0.0, -9.0).unwrap();
+        let va = s.tensor_values(act).unwrap();
+        let vc = s.tensor_values(canon).unwrap();
+        assert_eq!(va.len(), vc.len());
+        for (a, b) in va.iter().zip(vc.iter()) {
+            assert!((a.is_nan() && b.is_nan()) || a == b, "act={a} canon={b}");
+        }
+        assert!(va[2].is_nan(), "NaN must propagate (got {})", va[2]);
+        assert_eq!(va[0], -9.0); // -1 <= 0 -> value
+        assert_eq!(va[3], 3.0); // 3 > 0 -> x
+
+        // (b) f32 input no longer errors and stays F32.
+        let xf = s.tensor_variable_f32(vec![-2.0f32, 1.5, 4.0], vec![3], false).unwrap();
+        let af = s.threshold_activation(xf, 0.0, -1.0).unwrap();
+        assert_eq!(s.tensor_dtype(af).unwrap(), DType::F32);
+        assert_eq!(s.tensor_values_f32(af).unwrap(), vec![-1.0f32, 1.5, 4.0]);
+
+        // (c) gradient now flows to the input (1 where x > thresh, else 0).
+        let xg = s
+            .tensor_variable(vec![-1.0, 2.0, 0.5, 5.0], vec![4], true)
+            .unwrap();
+        let out = s.threshold_activation(xg, 1.0, 0.0).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let g = s.tensor_gradient(&report, xg).expect("input gradient must exist");
+        // x > 1.0 at indices 1 and 3 -> grad 1; else 0.
+        assert_eq!(g, vec![0.0, 1.0, 0.0, 1.0]);
     }
 
     #[test]
