@@ -805,9 +805,7 @@ fn write_state_dict_to_writer<W: Write>(
                 let values = tensor
                     .contiguous_values()
                     .map_err(TensorIOError::TensorError)?;
-                for &v in values {
-                    write_native_bytes(writer, &v.to_le_bytes(), io_path)?;
-                }
+                write_native_f64_values(writer, values, io_path)?;
             }
             DType::F32 => {
                 let values = tensor
@@ -850,6 +848,25 @@ fn write_native_bytes<W: Write>(
     io_path: &str,
 ) -> Result<(), TensorIOError> {
     writer.write_all(bytes).map_err(|e| io_err(io_path, e))
+}
+
+fn write_native_f64_values<W: Write>(
+    writer: &mut W,
+    values: &[f64],
+    io_path: &str,
+) -> Result<(), TensorIOError> {
+    #[cfg(target_endian = "little")]
+    {
+        write_native_bytes(writer, bytemuck::cast_slice(values), io_path)
+    }
+
+    #[cfg(not(target_endian = "little"))]
+    {
+        for &value in values {
+            write_native_bytes(writer, &value.to_le_bytes(), io_path)?;
+        }
+        Ok(())
+    }
 }
 
 fn write_native_f32_values<W: Write>(
