@@ -74917,6 +74917,39 @@ mod tests {
     }
 
     #[test]
+    fn f16_binary_lerp_preserve_shared_half_dtype() {
+        // Multi-input ops (binary add/mul, lerp) promote both operands to f32 to
+        // compute; when both share a half dtype the result must narrow back to it
+        // (torch: f16+f16 -> f16, bf16+bf16 -> bf16), while mixed half/f32 stays
+        // f32. frankentorch-b4bl.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_variable(vec![1.0, 2.0, 3.0], vec![3], false).unwrap();
+        let b = s.tensor_variable(vec![4.0, 5.0, 6.0], vec![3], false).unwrap();
+
+        // f16 + f16 -> f16
+        let af16 = s.tensor_half(a).unwrap();
+        let bf16 = s.tensor_half(b).unwrap();
+        let sum = s.tensor_add(af16, bf16).unwrap();
+        assert_eq!(s.tensor_dtype(sum).unwrap(), DType::F16, "f16+f16 -> f16");
+        assert_eq!(s.tensor_values_lossy_f64(sum).unwrap(), vec![5.0, 7.0, 9.0]);
+
+        // bf16 * bf16 -> bf16
+        let abf = s.tensor_bfloat16(a).unwrap();
+        let bbf = s.tensor_bfloat16(b).unwrap();
+        let mul = s.tensor_mul(abf, bbf).unwrap();
+        assert_eq!(s.tensor_dtype(mul).unwrap(), DType::BF16, "bf16*bf16 -> bf16");
+
+        // lerp(f16, f16, w) -> f16
+        let lp = s.tensor_lerp(af16, bf16, 0.5).unwrap();
+        assert_eq!(s.tensor_dtype(lp).unwrap(), DType::F16, "lerp(f16) -> f16");
+
+        // mixed: f16 + f32 -> f32 (torch promotion, unchanged)
+        let bf32 = s.tensor_to_f32(b).unwrap();
+        let mixed = s.tensor_add(af16, bf32).unwrap();
+        assert_eq!(s.tensor_dtype(mixed).unwrap(), DType::F32, "f16+f32 -> f32");
+    }
+
+    #[test]
     fn f32_cast_roundtrip() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = session

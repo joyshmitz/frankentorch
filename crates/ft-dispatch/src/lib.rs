@@ -4170,7 +4170,7 @@ pub fn dispatch_tensor_binary_contiguous_typed(
             let promoted_rhs = TensorStorage::F32(Arc::new(rhs_storage.to_f32_vec()));
             let promoted_lhs_meta = lhs_meta.clone().with_dtype(DType::F32);
             let promoted_rhs_meta = rhs_meta.clone().with_dtype(DType::F32);
-            dispatch_tensor_binary_contiguous_typed(
+            let outcome = dispatch_tensor_binary_contiguous_typed(
                 op,
                 mode,
                 &promoted_lhs,
@@ -4178,7 +4178,21 @@ pub fn dispatch_tensor_binary_contiguous_typed(
                 &promoted_lhs_meta,
                 &promoted_rhs_meta,
                 requires_grad,
-            )
+            )?;
+            // Preserve a SHARED half dtype (torch: f16+f16 -> f16, bf16+bf16 ->
+            // bf16). Mixed half / f32 / f64 promotes to f32 (the value already
+            // computed), matching torch type promotion.
+            let storage = match (lhs_storage, rhs_storage) {
+                (TensorStorage::F16(_), TensorStorage::F16(_))
+                | (TensorStorage::BF16(_), TensorStorage::BF16(_)) => {
+                    narrow_f32_to_storage_dtype(lhs_storage, outcome.storage.to_f32_vec())
+                }
+                _ => outcome.storage,
+            };
+            Ok(TypedBinaryOutcome {
+                storage,
+                decision: outcome.decision,
+            })
         }
     }
 }
@@ -5974,14 +5988,27 @@ pub fn dispatch_tensor_lerp_contiguous_typed(
             let promoted_start = TensorStorage::F32(Arc::new(start_storage.to_f32_vec()));
             let promoted_end = TensorStorage::F32(Arc::new(end_storage.to_f32_vec()));
             let promoted_meta = meta.clone().with_dtype(DType::F32);
-            dispatch_tensor_lerp_contiguous_typed(
+            let outcome = dispatch_tensor_lerp_contiguous_typed(
                 mode,
                 &promoted_start,
                 &promoted_end,
                 weight,
                 &promoted_meta,
                 requires_grad,
-            )
+            )?;
+            // Preserve a SHARED half dtype (torch: f16+f16 -> f16, bf16+bf16 ->
+            // bf16); mixed half / f32 / f64 stays f32.
+            let storage = match (start_storage, end_storage) {
+                (TensorStorage::F16(_), TensorStorage::F16(_))
+                | (TensorStorage::BF16(_), TensorStorage::BF16(_)) => {
+                    narrow_f32_to_storage_dtype(start_storage, outcome.storage.to_f32_vec())
+                }
+                _ => outcome.storage,
+            };
+            Ok(TypedLerpOutcome {
+                storage,
+                decision: outcome.decision,
+            })
         }
     }
 }
