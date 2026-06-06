@@ -1,0 +1,1 @@
+artifacts/optimization/golden_outputs/ft_serialize_decode_pass19.txt: OK
