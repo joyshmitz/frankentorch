@@ -12259,7 +12259,12 @@ fn pinv_qr_full_column_rank_f64(a: &[f64], m: usize, n: usize) -> Option<Vec<f64
         let v = &reflectors[j];
         let inv = reflector_scales[j];
         let col_len = m - j;
-        for row in 0..n {
+        let first_active_row = if inv.is_finite() && v.iter().all(|value| value.is_finite()) {
+            j
+        } else {
+            0
+        };
+        for row in first_active_row..n {
             let row_offset = row * m;
             let mut dot = 0.0;
             for i in 0..col_len {
