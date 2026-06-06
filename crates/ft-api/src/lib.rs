@@ -51482,13 +51482,23 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let elem_vals = self.tensor_values(elements)?;
-        let test_vals = self.tensor_values(test_elements)?;
+        // Lossy reads so f32/f16/bf16 inputs work (tensor_values is F64-only).
+        let elem_vals = self.tensor_values_lossy_f64(elements)?;
+        let test_vals = self.tensor_values_lossy_f64(test_elements)?;
         let shape = self.tensor_shape(elements)?;
+
+        // EXACT membership (`e == t`), matching torch.isin. The previous
+        // `(e - t).abs() < EPSILON` silently treated near-but-distinct values as
+        // members — the same fuzzy-match bug fixed for tensor_unique. `==` gives
+        // the correct f64 semantics for free: +0.0 == -0.0 (members), NaN never
+        // equal (never a member). The per-element scan stays — it auto-vectorizes
+        // and (measured) beats a hash set at realistic sizes, since the hash
+        // set's per-element hashing + cache misses outweigh the O(n*m) -> O(n+m)
+        // reduction until both n and m are very large.
         let result: Vec<f64> = elem_vals
             .iter()
             .map(|&e| {
-                if test_vals.iter().any(|&t| (e - t).abs() < f64::EPSILON) {
+                if test_vals.iter().any(|&t| e == t) {
                     1.0
                 } else {
                     0.0
@@ -98619,6 +98629,34 @@ mod tests {
         let test = s.tensor_variable(vec![2.0, 4.0], vec![2], false).unwrap();
         let out = s.tensor_isin(elements, test).unwrap();
         assert_eq!(s.tensor_values(out).unwrap(), &[0.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn isin_exact_match_and_f32_support() {
+        // The hash-set isin must (1) accept f32 inputs (was f64-only -> errored),
+        // and (2) use EXACT equality, not the old fuzzy `< EPSILON` (which would
+        // mark a value within machine-epsilon of a test value as a member).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // f32 inputs (previously UnsupportedDType(F32)).
+        let ef32 = s.tensor_variable_f32(vec![1.0f32, 2.0, 3.0, 4.0], vec![4], false).unwrap();
+        let tf32 = s.tensor_variable_f32(vec![2.0f32, 4.0], vec![2], false).unwrap();
+        let out = s.tensor_isin(ef32, tf32).unwrap();
+        assert_eq!(s.tensor_values_lossy_f64(out).unwrap(), vec![0.0, 1.0, 0.0, 1.0]);
+
+        // Exact: 1.0 + 1 ULP is NOT a member of {1.0} (old fuzzy match would
+        // wrongly include it).
+        let near = 1.0_f64 + f64::EPSILON;
+        let e = s.tensor_variable(vec![near, 1.0], vec![2], false).unwrap();
+        let t = s.tensor_variable(vec![1.0], vec![1], false).unwrap();
+        let out2 = s.tensor_isin(e, t).unwrap();
+        assert_eq!(s.tensor_values(out2).unwrap(), vec![0.0, 1.0], "exact membership: 1.0+eps not in {{1.0}}");
+
+        // +0.0 and -0.0 are equal members.
+        let e0 = s.tensor_variable(vec![-0.0, 0.0], vec![2], false).unwrap();
+        let t0 = s.tensor_variable(vec![0.0], vec![1], false).unwrap();
+        let out3 = s.tensor_isin(e0, t0).unwrap();
+        assert_eq!(s.tensor_values(out3).unwrap(), vec![1.0, 1.0], "-0.0 and 0.0 are members of {{0.0}}");
     }
 
     #[test]
