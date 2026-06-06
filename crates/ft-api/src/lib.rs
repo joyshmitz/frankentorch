@@ -20074,6 +20074,83 @@ impl FrankenTorchSession {
             return Ok(Some((out_t, None, None)));
         }
 
+        // F32 no-grad fused fast path (dominant ML dtype): same stats+apply kernels
+        // and momentum running-stat updates as the f64 block above, in f32. The f32
+        // op-graph path also upcast to f64.
+        let wf32 = weight.map_or(Ok(true), |t| self.tensor_dtype(t).map(|d| d == DType::F32))?;
+        let bf32 = bias.map_or(Ok(true), |t| self.tensor_dtype(t).map(|d| d == DType::F32))?;
+        let rm_f32 = running_mean.map_or(Ok(true), |t| self.tensor_dtype(t).map(|d| d == DType::F32))?;
+        let rv_f32 = running_var.map_or(Ok(true), |t| self.tensor_dtype(t).map(|d| d == DType::F32))?;
+        if !bn_grad
+            && self.tensor_dtype(input)? == DType::F32
+            && wf32
+            && bf32
+            && rm_f32
+            && rv_f32
+            && (training || (running_mean.is_some() && running_var.is_some()))
+        {
+            #[allow(clippy::cast_possible_truncation)]
+            let eps32 = eps as f32;
+            let x = self.tensor_values_f32(input)?;
+            let wv = match weight {
+                Some(w) => Some(self.tensor_values_f32(w)?),
+                None => None,
+            };
+            let bv = match bias {
+                Some(b) => Some(self.tensor_values_f32(b)?),
+                None => None,
+            };
+            if training {
+                let (mean, var) =
+                    ft_kernel_cpu::batch_norm_stats_f32(&x, batch_size, channels, spatial);
+                let out = ft_kernel_cpu::batch_norm_apply_f32(
+                    &x, &mean, &var, wv.as_deref(), bv.as_deref(), batch_size, channels, spatial,
+                    eps32,
+                );
+                let out_t = self.tensor_variable_f32(out, input_shape.to_vec(), false)?;
+                #[allow(clippy::cast_possible_truncation)]
+                let momentum32 = momentum as f32;
+                let updated_mean = match running_mean {
+                    Some(rm) => {
+                        let rmv = self.tensor_values_f32(rm)?;
+                        let um: Vec<f32> = rmv
+                            .iter()
+                            .zip(mean.iter())
+                            .map(|(&r, &m)| (1.0 - momentum32) * r + momentum32 * m)
+                            .collect();
+                        Some(self.tensor_variable_f32(um, vec![channels], false)?)
+                    }
+                    None => None,
+                };
+                let updated_var = match running_var {
+                    Some(rv) => {
+                        #[allow(clippy::cast_precision_loss)]
+                        let bessel = if sample_count > 1 {
+                            sample_count as f32 / (sample_count as f32 - 1.0)
+                        } else {
+                            1.0
+                        };
+                        let rvv = self.tensor_values_f32(rv)?;
+                        let uv: Vec<f32> = rvv
+                            .iter()
+                            .zip(var.iter())
+                            .map(|(&r, &v)| (1.0 - momentum32) * r + momentum32 * v * bessel)
+                            .collect();
+                        Some(self.tensor_variable_f32(uv, vec![channels], false)?)
+                    }
+                    None => None,
+                };
+                return Ok(Some((out_t, updated_mean, updated_var)));
+            }
+            let rmv = self.tensor_values_f32(running_mean.unwrap())?;
+            let rvv = self.tensor_values_f32(running_var.unwrap())?;
+            let out = ft_kernel_cpu::batch_norm_apply_f32(
+                &x, &rmv, &rvv, wv.as_deref(), bv.as_deref(), batch_size, channels, spatial, eps32,
+            );
+            let out_t = self.tensor_variable_f32(out, input_shape.to_vec(), false)?;
+            return Ok(Some((out_t, None, None)));
+        }
+
         if training {
             if let (Some(w), Some(bs)) = (weight, bias) {
                 if bn_grad
@@ -85255,6 +85332,67 @@ mod tests {
                 );
                 close(
                     &s.tensor_values(uv.unwrap()).unwrap(),
+                    &s2.tensor_values(uv2.unwrap()).unwrap(),
+                    "running_var",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn functional_batch_norm2d_f32_fused_matches_op_graph_within_tolerance() {
+        // Isomorphism for the f32 no-grad fused BatchNorm2d (stats+apply in f32 +
+        // f32 momentum running-stat updates) vs the f32 op-graph (which upcasts to
+        // f64, read via tensor_values), within f32 tol. Covers training + eval and
+        // the updated running_mean/var.
+        let (n, ch, h, w) = (3usize, 4usize, 2usize, 3usize);
+        let xv: Vec<f32> = (0..n * ch * h * w)
+            .map(|i| ((i % 13) as f32 - 6.0) * 0.3 + (i as f32) * 0.01)
+            .collect();
+        let rm: Vec<f32> = (0..ch).map(|c| 0.1 * c as f32).collect();
+        let rv: Vec<f32> = (0..ch).map(|c| 1.0 + 0.2 * c as f32).collect();
+        let wv: Vec<f32> = (0..ch).map(|c| 0.7 + 0.1 * c as f32).collect();
+        let bv: Vec<f32> = (0..ch).map(|c| 0.05 * c as f32 - 0.1).collect();
+        let (mom, eps) = (0.1, 1e-5);
+        let close = |a: &[f32], b: &[f64], what: &str| {
+            assert_eq!(a.len(), b.len(), "{what} len");
+            for (i, (p, q)) in a.iter().zip(b.iter()).enumerate() {
+                assert!(
+                    (f64::from(*p) - q).abs() <= 1e-5 + 1e-4 * q.abs(),
+                    "{what}[{i}]: f32 fused {p} vs op-graph {q}"
+                );
+            }
+        };
+        for training in [true, false] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable_f32(xv.clone(), vec![n, ch, h, w], false).unwrap();
+            let rmt = s.tensor_variable_f32(rm.clone(), vec![ch], false).unwrap();
+            let rvt = s.tensor_variable_f32(rv.clone(), vec![ch], false).unwrap();
+            let wt = s.tensor_variable_f32(wv.clone(), vec![ch], false).unwrap();
+            let bt = s.tensor_variable_f32(bv.clone(), vec![ch], false).unwrap();
+            let (out, um, uv) = s
+                .functional_batch_norm2d(x, Some(rmt), Some(rvt), Some(wt), Some(bt), training, mom, eps)
+                .unwrap();
+            let fout = s.tensor_values_f32(out).unwrap();
+
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x2 = s2.tensor_variable_f32(xv.clone(), vec![n, ch, h, w], true).unwrap();
+            let rmt2 = s2.tensor_variable_f32(rm.clone(), vec![ch], false).unwrap();
+            let rvt2 = s2.tensor_variable_f32(rv.clone(), vec![ch], false).unwrap();
+            let wt2 = s2.tensor_variable_f32(wv.clone(), vec![ch], true).unwrap();
+            let bt2 = s2.tensor_variable_f32(bv.clone(), vec![ch], true).unwrap();
+            let (out2, um2, uv2) = s2
+                .functional_batch_norm2d(x2, Some(rmt2), Some(rvt2), Some(wt2), Some(bt2), training, mom, eps)
+                .unwrap();
+            close(&fout, &s2.tensor_values(out2).unwrap(), "output");
+            if training {
+                close(
+                    &s.tensor_values_f32(um.unwrap()).unwrap(),
+                    &s2.tensor_values(um2.unwrap()).unwrap(),
+                    "running_mean",
+                );
+                close(
+                    &s.tensor_values_f32(uv.unwrap()).unwrap(),
                     &s2.tensor_values(uv2.unwrap()).unwrap(),
                     "running_var",
                 );

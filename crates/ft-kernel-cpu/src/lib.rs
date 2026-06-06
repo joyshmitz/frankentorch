@@ -4884,6 +4884,82 @@ pub fn batch_norm_apply_f64(
     out
 }
 
+/// f32 mirror of [`batch_norm_stats_f64`]: per-channel mean/var over the
+/// `(batch, spatial)` window, parallel over channels.
+#[must_use]
+pub fn batch_norm_stats_f32(
+    x: &[f32],
+    batch: usize,
+    channels: usize,
+    spatial: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let inv_n = 1.0 / (batch * spatial) as f32;
+    let cs = channels * spatial;
+    let mut mean = vec![0.0f32; channels];
+    let mut var = vec![0.0f32; channels];
+    mean.par_iter_mut()
+        .zip(var.par_iter_mut())
+        .enumerate()
+        .for_each(|(c, (mc, vc))| {
+            let mut sum = 0.0f32;
+            for n in 0..batch {
+                let base = n * cs + c * spatial;
+                for s in 0..spatial {
+                    sum += x[base + s];
+                }
+            }
+            let m = sum * inv_n;
+            let mut vs = 0.0f32;
+            for n in 0..batch {
+                let base = n * cs + c * spatial;
+                for s in 0..spatial {
+                    let d = x[base + s] - m;
+                    vs += d * d;
+                }
+            }
+            *mc = m;
+            *vc = vs * inv_n;
+        });
+    (mean, var)
+}
+
+/// f32 mirror of [`batch_norm_apply_f64`]: per-channel affine normalize via a
+/// precomputed scale/shift, one streaming pass parallel over `(batch·channel)` rows.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn batch_norm_apply_f32(
+    x: &[f32],
+    mean: &[f32],
+    var: &[f32],
+    weight: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    batch: usize,
+    channels: usize,
+    spatial: usize,
+    eps: f32,
+) -> Vec<f32> {
+    let _ = batch;
+    let mut scale = vec![0.0f32; channels];
+    let mut shift = vec![0.0f32; channels];
+    for c in 0..channels {
+        let rstd = 1.0 / (var[c] + eps).sqrt();
+        scale[c] = rstd * weight.map_or(1.0, |w| w[c]);
+        shift[c] = bias.map_or(0.0, |b| b[c]) - mean[c] * scale[c];
+    }
+    let mut out = vec![0.0f32; x.len()];
+    out.par_chunks_mut(spatial)
+        .enumerate()
+        .for_each(|(idx, orow)| {
+            let c = idx % channels;
+            let base = idx * spatial;
+            let (sc, sh) = (scale[c], shift[c]);
+            for s in 0..spatial {
+                orow[s] = x[base + s] * sc + sh;
+            }
+        });
+    out
+}
+
 /// Training backward of BatchNorm (NCHW) given the batch `mean`/`var` used in the
 /// forward and the affine `weight`. Returns `(dx, dweight, dbias)`.
 ///

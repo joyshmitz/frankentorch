@@ -530,6 +530,38 @@ fn bench_batch_norm(c: &mut Criterion) {
             });
         });
     }
+    // F32 no-grad (dominant ML dtype): fused batch_norm_stats_f32 + apply_f32 vs
+    // the f32 op-graph (two permutes + ~10 nodes, also upcast to f64).
+    for (label, training) in [("train", true), ("eval", false)] {
+        group.bench_function(format!("nograd_f32_{label}_32x256x28x28"), |b| {
+            let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+            let xv: Vec<f32> = (0..n * ch * h * w)
+                .map(|i| (i % 251) as f32 * 0.001 - 0.12)
+                .collect();
+            let x = session.tensor_variable_f32(xv, vec![n, ch, h, w], false).unwrap();
+            let rm = session
+                .tensor_variable_f32(vec![0.0f32; ch], vec![ch], false)
+                .unwrap();
+            let rv = session
+                .tensor_variable_f32(vec![1.0f32; ch], vec![ch], false)
+                .unwrap();
+            let wt = session
+                .tensor_variable_f32((0..ch).map(|j| 0.8 + (j % 17) as f32 * 0.01).collect(), vec![ch], false)
+                .unwrap();
+            let bias = session
+                .tensor_variable_f32(vec![0.0f32; ch], vec![ch], false)
+                .unwrap();
+            b.iter(|| {
+                black_box(
+                    session
+                        .functional_batch_norm2d(
+                            x, Some(rm), Some(rv), Some(wt), Some(bias), training, 0.1, 1e-5,
+                        )
+                        .unwrap(),
+                )
+            });
+        });
+    }
     // BatchNorm1d [N,C] (MLP, spatial=1) no-grad + grad.
     {
         let (bn, bc) = (8192usize, 1024usize);
