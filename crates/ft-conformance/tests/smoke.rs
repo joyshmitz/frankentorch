@@ -59,14 +59,38 @@ fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn strip_strings_and_line_comments(line: &str) -> String {
+/// Strip string literals, char literals, line comments and block comments from a
+/// line, leaving only "code" (used solely for brace counting + `starts_with`
+/// checks). `in_block_comment` carries `/* ... */` state across lines.
+///
+/// Two subtleties that previously corrupted brace counting (frankentorch-sel7):
+///   * A lifetime (`'a`, `'_`, `'static`) is NOT a char literal — treating it as
+///     one made the scanner enter "inside char" state and swallow the rest of
+///     the line, including any `{`/`}`. A line like `struct S<'a> {` then had its
+///     opening brace uncounted, unbalancing the `#[cfg(test)]` skip and exposing
+///     test-only `panic!`s as if they were production code.
+///   * Block comments (`/* ... */`, possibly multi-line) can contain unbalanced
+///     braces; they must be skipped, not counted.
+fn strip_strings_and_line_comments(line: &str, in_block_comment: &mut bool) -> String {
     let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
     let mut in_string = false;
-    let mut in_char = false;
     let mut escaped = false;
 
-    while let Some(ch) = chars.next() {
+    while i < chars.len() {
+        let ch = chars[i];
+
+        if *in_block_comment {
+            if ch == '*' && chars.get(i + 1) == Some(&'/') {
+                *in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
         if in_string {
             if escaped {
                 escaped = false;
@@ -75,32 +99,50 @@ fn strip_strings_and_line_comments(line: &str) -> String {
             } else if ch == '"' {
                 in_string = false;
             }
+            i += 1;
             continue;
         }
 
-        if in_char {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '\'' {
-                in_char = false;
-            }
-            continue;
-        }
-
-        if ch == '/' && chars.peek() == Some(&'/') {
+        if ch == '/' && chars.get(i + 1) == Some(&'/') {
             break;
+        }
+        if ch == '/' && chars.get(i + 1) == Some(&'*') {
+            *in_block_comment = true;
+            i += 2;
+            continue;
         }
         if ch == '"' {
             in_string = true;
+            i += 1;
             continue;
         }
         if ch == '\'' {
-            in_char = true;
+            // Char literal iff the next char is an escape (`'\n'`) or the char
+            // after next closes it (`'x'`); otherwise it's a lifetime — skip just
+            // the apostrophe (lifetimes contain no braces) and keep counting.
+            let is_escape = chars.get(i + 1) == Some(&'\\');
+            let is_simple_char = chars.get(i + 1).is_some() && chars.get(i + 2) == Some(&'\'');
+            if is_escape || is_simple_char {
+                i += 1; // past opening '
+                let mut esc = false;
+                while i < chars.len() {
+                    let c = chars[i];
+                    i += 1;
+                    if esc {
+                        esc = false;
+                    } else if c == '\\' {
+                        esc = true;
+                    } else if c == '\'' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            i += 1; // lifetime apostrophe — ignore
             continue;
         }
         out.push(ch);
+        i += 1;
     }
 
     out
@@ -116,10 +158,11 @@ fn scan_forbidden_macros(path: &Path) -> Vec<ForbiddenMacroUse> {
     let mut brace_depth = 0usize;
     let mut cfg_test_pending = false;
     let mut skipped_block_depth: Option<usize> = None;
+    let mut in_block_comment = false;
 
     for (index, raw_line) in content.lines().enumerate() {
         let line_number = index + 1;
-        let code = strip_strings_and_line_comments(raw_line);
+        let code = strip_strings_and_line_comments(raw_line, &mut in_block_comment);
         let trimmed = code.trim();
         let opens = count_char(&code, '{');
         let closes = count_char(&code, '}');
