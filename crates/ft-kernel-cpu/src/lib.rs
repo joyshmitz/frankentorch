@@ -4002,6 +4002,60 @@ pub fn max_pool3d_forward_f64(
     out
 }
 
+/// f32 mirror of [`max_pool3d_forward_f64`]: per output, the max over its
+/// `kd×kh×kw` window, one pass parallel over `(batch,ch)` volumes. Replaces the
+/// f32 op-graph (narrow/amax/cat) the f32 no-grad path fell through to.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn max_pool3d_forward_f32(
+    input: &[f32],
+    batch: usize,
+    ch: usize,
+    id: usize,
+    ih: usize,
+    iw: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    od: usize,
+    oh: usize,
+    ow: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * ch * od * oh * ow];
+    out.par_chunks_mut(od * oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let ibase = plane * id * ih * iw;
+            for oz in 0..od {
+                let bd = oz * sd;
+                for oy in 0..oh {
+                    let bh = oy * sh;
+                    for ox in 0..ow {
+                        let bw = ox * sw;
+                        let mut m = f32::NEG_INFINITY;
+                        for kdd in 0..kd {
+                            let dz = ibase + (bd + kdd) * ih * iw;
+                            for kr in 0..kh {
+                                let irow = dz + (bh + kr) * iw + bw;
+                                for kc in 0..kw {
+                                    let v = input[irow + kc];
+                                    if v > m {
+                                        m = v;
+                                    }
+                                }
+                            }
+                        }
+                        orow[(oz * oh + oy) * ow + ox] = m;
+                    }
+                }
+            }
+        });
+    out
+}
+
 /// Backward of [`max_pool3d_forward_f64`]: routes each output gradient to its
 /// window's (first) argmax. Parallel over `(batch,ch)`; overlaps accumulate.
 #[allow(clippy::too_many_arguments)]
