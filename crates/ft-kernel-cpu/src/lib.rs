@@ -412,8 +412,8 @@ mod gemm {
 }
 
 use ft_core::{
-    Complex128, ScalarTensor, SparseCOOTensor, SparseTensorError, TensorCompatError, TensorMeta,
-    ensure_compatible,
+    Complex128, DType, Device, ScalarTensor, SparseCOOTensor, SparseTensorError, TensorCompatError,
+    TensorMeta, ensure_compatible,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4496,7 +4496,7 @@ pub fn conv_transpose2d_forward_f64(
 /// transposed-conv stencil, parallel over `(batch,out_ch)` planes. Replaces the
 /// f32 op-graph scatter (`O(kh·kw·ih)` narrow/matmul/pad/add tensor ops) the f32
 /// no-grad path fell through to.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::manual_is_multiple_of, clippy::too_many_arguments)]
 #[must_use]
 pub fn conv_transpose2d_forward_f32(
     input: &[f32],
@@ -7836,6 +7836,13 @@ pub struct LuFactorResult {
     pub n: usize,
 }
 
+#[derive(Debug, Clone)]
+struct LuFactorF32 {
+    lu: Vec<f32>,
+    pivots: Vec<usize>,
+    n: usize,
+}
+
 /// Result of full LU decomposition: P, L, U as separate matrices.
 #[derive(Debug, Clone)]
 pub struct LuResult {
@@ -8006,6 +8013,119 @@ pub fn lu_factor_contiguous_f64(
     Ok(LuFactorResult { lu, pivots, n })
 }
 
+fn lu_factor_f32_from_f64(data: &[f64], meta: &TensorMeta) -> Result<LuFactorF32, KernelError> {
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![shape.len()],
+        });
+    }
+    let n = shape[0];
+    if n != shape[1] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![n],
+            rhs: vec![shape[1]],
+        });
+    }
+    if n == 0 {
+        return Ok(LuFactorF32 {
+            lu: Vec::new(),
+            pivots: Vec::new(),
+            n: 0,
+        });
+    }
+
+    let offset = meta.storage_offset();
+    let mut lu = data[offset..offset + n * n]
+        .iter()
+        .map(|&v| v as f32)
+        .collect::<Vec<_>>();
+    let mut pivots = (0..n).collect::<Vec<_>>();
+    const NB: usize = 64;
+    let singular_tol = f32::EPSILON * 1e3;
+
+    let mut k0 = 0;
+    while k0 < n {
+        let pe = (k0 + NB).min(n);
+        for k in k0..pe {
+            let mut max_val = lu[k * n + k].abs();
+            let mut max_row = k;
+            for i in (k + 1)..n {
+                let val = lu[i * n + k].abs();
+                if val > max_val {
+                    max_val = val;
+                    max_row = i;
+                }
+            }
+            if max_row != k {
+                pivots.swap(k, max_row);
+                for j in 0..n {
+                    lu.swap(k * n + j, max_row * n + j);
+                }
+            }
+            let diag = lu[k * n + k];
+            if diag.abs() < singular_tol {
+                for i in (k + 1)..n {
+                    lu[i * n + k] = 0.0;
+                }
+                continue;
+            }
+            for i in (k + 1)..n {
+                let m = lu[i * n + k] / diag;
+                lu[i * n + k] = m;
+                for j in (k + 1)..pe {
+                    lu[i * n + j] -= m * lu[k * n + j];
+                }
+            }
+        }
+
+        let kb = pe - k0;
+        let tcols = n - pe;
+        if tcols == 0 {
+            break;
+        }
+
+        for i in k0..pe {
+            for t in k0..i {
+                let lit = lu[i * n + t];
+                if lit != 0.0 {
+                    for j in pe..n {
+                        lu[i * n + j] -= lit * lu[t * n + j];
+                    }
+                }
+            }
+        }
+
+        let trows = n - pe;
+        let mut l21 = vec![0.0f32; trows * kb];
+        for ii in 0..trows {
+            let src = (pe + ii) * n + k0;
+            l21[ii * kb..ii * kb + kb].copy_from_slice(&lu[src..src + kb]);
+        }
+        let mut u12 = vec![0.0f32; kb * tcols];
+        for ii in 0..kb {
+            let src = (k0 + ii) * n + pe;
+            u12[ii * tcols..ii * tcols + tcols].copy_from_slice(&lu[src..src + tcols]);
+        }
+        let l_meta = TensorMeta::from_shape(vec![trows, kb], DType::F32, Device::Cpu);
+        let u_meta = TensorMeta::from_shape(vec![kb, tcols], DType::F32, Device::Cpu);
+        let prod = matmul_tensor_contiguous_f32(&l21, &u12, &l_meta, &u_meta)?;
+        for ii in 0..trows {
+            let dst = (pe + ii) * n + pe;
+            let prow = &prod[ii * tcols..ii * tcols + tcols];
+            for jj in 0..tcols {
+                lu[dst + jj] -= prow[jj];
+            }
+        }
+
+        k0 = pe;
+    }
+
+    Ok(LuFactorF32 { lu, pivots, n })
+}
+
 /// Unpack a compact LU factorization into separate P, L, U matrices.
 pub fn lu_unpack(factor: &LuFactorResult) -> LuResult {
     let n = factor.n;
@@ -8143,6 +8263,208 @@ pub fn lu_solve_contiguous_f64(
                 x[i * num_rhs + rhs] -= u_ik * x[k * num_rhs + rhs];
             }
         }
+    }
+
+    Ok(x)
+}
+
+fn lu_solve_f32_factor_to_f64(
+    factor: &LuFactorF32,
+    b_data: &[f64],
+    b_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(b_data, b_meta)?;
+    let b_shape = b_meta.shape();
+    let n = factor.n;
+    let (b_rows, num_rhs) = match b_shape.len() {
+        1 => (b_shape[0], 1usize),
+        2 => (b_shape[0], b_shape[1]),
+        _ => {
+            return Err(KernelError::ShapeMismatch {
+                lhs: vec![n],
+                rhs: b_shape.to_vec(),
+            });
+        }
+    };
+    if b_rows != n {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![n],
+            rhs: vec![b_rows],
+        });
+    }
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    let offset = b_meta.storage_offset();
+    let mut x = b_data[offset..offset + n * num_rhs].to_vec();
+    for rhs in 0..num_rhs {
+        let mut permuted = vec![0.0; n];
+        for i in 0..n {
+            permuted[i] = x[factor.pivots[i] * num_rhs + rhs];
+        }
+        for i in 0..n {
+            x[i * num_rhs + rhs] = permuted[i];
+        }
+    }
+
+    for k in 0..n {
+        for i in (k + 1)..n {
+            let l_ik = factor.lu[i * n + k] as f64;
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] -= l_ik * x[k * num_rhs + rhs];
+            }
+        }
+    }
+
+    for k in (0..n).rev() {
+        let diag = factor.lu[k * n + k] as f64;
+        if diag.abs() < f64::EPSILON * 1e3 {
+            for rhs in 0..num_rhs {
+                x[k * num_rhs + rhs] = 0.0;
+            }
+            continue;
+        }
+        for rhs in 0..num_rhs {
+            x[k * num_rhs + rhs] /= diag;
+        }
+        for i in 0..k {
+            let u_ik = factor.lu[i * n + k] as f64;
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] -= u_ik * x[k * num_rhs + rhs];
+            }
+        }
+    }
+
+    Ok(x)
+}
+
+fn residual_for_solve_f64(
+    a_data: &[f64],
+    a_offset: usize,
+    b_data: &[f64],
+    b_offset: usize,
+    x: &[f64],
+    n: usize,
+    num_rhs: usize,
+) -> (Vec<f64>, f64, f64) {
+    let mut residual = vec![0.0; n * num_rhs];
+    let mut max_residual = 0.0_f64;
+    let mut max_b = 0.0_f64;
+    for i in 0..n {
+        for rhs in 0..num_rhs {
+            let mut ax = 0.0;
+            for j in 0..n {
+                ax += a_data[a_offset + i * n + j] * x[j * num_rhs + rhs];
+            }
+            let b = b_data[b_offset + i * num_rhs + rhs];
+            let r = b - ax;
+            residual[i * num_rhs + rhs] = r;
+            max_residual = max_residual.max(r.abs());
+            max_b = max_b.max(b.abs());
+        }
+    }
+    (residual, max_residual, max_b)
+}
+
+fn direct_lu_solve_contiguous_f64(
+    a_data: &[f64],
+    a_meta: &TensorMeta,
+    b_data: &[f64],
+    b_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    let factor = lu_factor_contiguous_f64(a_data, a_meta)?;
+    if (0..factor.n).any(|i| factor.lu[i * factor.n + i].abs() < f64::EPSILON * 1e3) {
+        return Err(KernelError::SingularMatrix { size: factor.n });
+    }
+    lu_solve_contiguous_f64(&factor, b_data, b_meta)
+}
+
+/// Solve `A * X = B` using f32 LU factors plus f64 iterative refinement.
+///
+/// This is a safe-Rust mixed-precision refinement path for large,
+/// well-conditioned f64 systems. It falls back to the existing f64 LU solve for
+/// small matrices, near-singular f32 factors, or residuals that do not satisfy
+/// the f64 contract after refinement.
+pub fn lu_solve_mixed_refine_contiguous_f64(
+    a_data: &[f64],
+    a_meta: &TensorMeta,
+    b_data: &[f64],
+    b_meta: &TensorMeta,
+) -> Result<Vec<f64>, KernelError> {
+    ensure_unary_layout_and_storage(a_data, a_meta)?;
+    ensure_unary_layout_and_storage(b_data, b_meta)?;
+    let a_shape = a_meta.shape();
+    if a_shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: a_shape.to_vec(),
+            rhs: vec![a_shape.len()],
+        });
+    }
+    let n = a_shape[0];
+    if n != a_shape[1] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![n],
+            rhs: vec![a_shape[1]],
+        });
+    }
+    let b_shape = b_meta.shape();
+    let (b_rows, num_rhs) = match b_shape.len() {
+        1 => (b_shape[0], 1usize),
+        2 => (b_shape[0], b_shape[1]),
+        _ => {
+            return Err(KernelError::ShapeMismatch {
+                lhs: vec![n],
+                rhs: b_shape.to_vec(),
+            });
+        }
+    };
+    if b_rows != n {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![n],
+            rhs: vec![b_rows],
+        });
+    }
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    const MIXED_REFINE_MIN_N: usize = 128;
+    if n < MIXED_REFINE_MIN_N {
+        return direct_lu_solve_contiguous_f64(a_data, a_meta, b_data, b_meta);
+    }
+
+    let factor = lu_factor_f32_from_f64(a_data, a_meta)?;
+    if factor
+        .lu
+        .chunks_exact(n)
+        .enumerate()
+        .any(|(i, row)| row[i].abs() < f32::EPSILON * 1e3)
+    {
+        return direct_lu_solve_contiguous_f64(a_data, a_meta, b_data, b_meta);
+    }
+
+    let mut x = lu_solve_f32_factor_to_f64(&factor, b_data, b_meta)?;
+    let a_offset = a_meta.storage_offset();
+    let b_offset = b_meta.storage_offset();
+    let mut max_b = 0.0_f64;
+    for _ in 0..2 {
+        let (residual, _, b_norm) =
+            residual_for_solve_f64(a_data, a_offset, b_data, b_offset, &x, n, num_rhs);
+        max_b = max_b.max(b_norm);
+        let residual_meta = TensorMeta::from_shape(b_shape.to_vec(), DType::F64, Device::Cpu);
+        let dx = lu_solve_f32_factor_to_f64(&factor, &residual, &residual_meta)?;
+        for (xv, dv) in x.iter_mut().zip(dx) {
+            *xv += dv;
+        }
+    }
+
+    let (_, final_residual, final_b) =
+        residual_for_solve_f64(a_data, a_offset, b_data, b_offset, &x, n, num_rhs);
+    max_b = max_b.max(final_b);
+    let tolerance = (max_b.max(1.0)) * 1.0e-9;
+    if final_residual > tolerance {
+        return direct_lu_solve_contiguous_f64(a_data, a_meta, b_data, b_meta);
     }
 
     Ok(x)
@@ -19356,6 +19678,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn lu_solve_mixed_refine_matches_f64_reference_and_residual() {
+        let (n, rhs) = (128usize, 4usize);
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = ((i * 31 + j * 17) % 97) as f64 * 0.013 - 0.5;
+            }
+            a[i * n + i] += n as f64;
+        }
+        let b: Vec<f64> = (0..n * rhs)
+            .map(|idx| ((idx * 19 + 11) % 101) as f64 * 0.007 - 0.33)
+            .collect();
+        let meta_a = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let meta_b = TensorMeta::from_shape(vec![n, rhs], DType::F64, Device::Cpu);
+        let factor = super::lu_factor_contiguous_f64(&a, &meta_a).expect("lu_factor");
+        let reference = super::lu_solve_contiguous_f64(&factor, &b, &meta_b).expect("f64 solve");
+        let mixed = super::lu_solve_mixed_refine_contiguous_f64(&a, &meta_a, &b, &meta_b)
+            .expect("mixed refine solve");
+
+        let max_diff = reference
+            .iter()
+            .zip(&mixed)
+            .map(|(r, m)| (r - m).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_diff < 1.0e-8, "mixed vs f64 max diff {max_diff:e}");
+
+        let mut max_residual = 0.0_f64;
+        for i in 0..n {
+            for rhs_idx in 0..rhs {
+                let mut ax = 0.0_f64;
+                for j in 0..n {
+                    ax += a[i * n + j] * mixed[j * rhs + rhs_idx];
+                }
+                max_residual = max_residual.max((b[i * rhs + rhs_idx] - ax).abs());
+            }
+        }
+        assert!(max_residual < 1.0e-9, "mixed residual max {max_residual:e}");
     }
 
     #[test]

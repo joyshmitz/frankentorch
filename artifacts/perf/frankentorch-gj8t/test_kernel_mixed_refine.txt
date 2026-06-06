@@ -1,0 +1,336 @@
+  [2m2026-06-06T04:00:38.539914Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: ts1 at ubuntu@192.168.1.107 (24 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:514 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:38.783889Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mStarting remote compilation pipeline for frankentorch-gj8t-after-rch-20260606T040011Z (hash: 3797262b7b0d2f32)[0m
+    [2;3mat[0m rch/src/hook.rs:5987 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:38.783936Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook.rs:6009 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:39.013220Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSyncing project to worker ts1...[0m
+    [2;3mat[0m rch/src/hook.rs:6039 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:39.013293Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:40.163909Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 1150ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:40.163995Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-api -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-api on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:40.386660Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 222ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:40.386732Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-autograd -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-autograd on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:40.612699Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 225ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:40.612803Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-conformance -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-conformance on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:40.832467Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 219ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:40.832545Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-core -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-core on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.059161Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 226ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.059236Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-data -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-data on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.288228Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 228ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.288314Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-device -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-device on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.514809Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 226ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.514893Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-dispatch -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-dispatch on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.746432Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 231ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.746526Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-kernel-cpu -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-kernel-cpu on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.973625Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 227ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:41.973705Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-nn -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-nn on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:42.200210Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 226ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:42.200285Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-optim -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-optim on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:42.423774Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 223ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:42.423858Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-runtime -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-runtime on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:42.641843Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 217ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:42.641929Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSyncing /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-serialize -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-serialize on ts1[0m
+    [2;3mat[0m rch/src/transfer.rs:1400 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:42.869532Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mSync completed in 227ms[0m
+    [2;3mat[0m rch/src/transfer.rs:1469 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:42.869567Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSync complete: 50527 files, 1792442 bytes in 3847ms[0m
+    [2;3mat[0m rch/src/hook.rs:6202 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:43.451227Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mExecuting command remotely: cargo test -p ft-kernel-cpu lu_solve_mixed_refine_matches_f64_reference_and_residual -- --nocapture[0m
+    [2;3mat[0m rch/src/hook.rs:6240 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-06T04:00:43.451282Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/tmp/cargo-target -> /data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/.rch-target-ts1-job-29872254800112519-1780718439013213815-0[0m
+    [2;3mat[0m rch/src/transfer.rs:712 [2;3mon[0m ThreadId(1)
+
+Warning: Identity file /home/ubuntu/.ssh/id_rsa not accessible: No such file or directory.
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded bit-set v0.8.0
+  Downloaded plotters-svg v0.3.7
+  Downloaded rand_xorshift v0.4.0
+  Downloaded is-terminal v0.4.17
+  Downloaded ciborium-ll v0.2.2
+  Downloaded cast v0.3.0
+  Downloaded bit-vec v0.8.0
+  Downloaded ciborium-io v0.2.2
+  Downloaded clap_lex v1.1.0
+  Downloaded cfg-if v1.0.4
+  Downloaded autocfg v1.5.0
+  Downloaded bytemuck_derive v1.10.2
+  Downloaded anes v0.1.6
+  Downloaded anstyle v1.0.14
+  Downloaded either v1.15.0
+  Downloaded fnv v1.0.7
+  Downloaded errno v0.3.14
+  Downloaded itoa v1.0.18
+  Downloaded rawpointer v0.2.1
+  Downloaded quick-error v1.2.3
+  Downloaded criterion-plot v0.5.0
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded fastrand v2.4.1
+  Downloaded zmij v1.0.21
+  Downloaded plotters-backend v0.3.7
+  Downloaded same-file v1.0.6
+  Downloaded unarray v0.1.4
+  Downloaded wait-timeout v0.2.1
+  Downloaded ciborium v0.2.2
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded walkdir v2.5.0
+  Downloaded quote v1.0.45
+  Downloaded oorandom v11.1.5
+  Downloaded tinytemplate v1.2.1
+  Downloaded rusty-fork v0.3.1
+  Downloaded tempfile v3.27.0
+  Downloaded console v0.16.3
+  Downloaded bitflags v2.11.1
+  Downloaded num-complex v0.4.6
+  Downloaded unicode-ident v1.0.24
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded rand_core v0.9.5
+  Downloaded once_cell v1.21.4
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded rand_chacha v0.9.0
+  Downloaded num-traits v0.2.19
+  Downloaded matrixmultiply v0.3.10
+  Downloaded bytemuck v1.25.0
+  Downloaded getrandom v0.4.2
+  Downloaded clap v4.6.1
+  Downloaded half v2.7.1
+  Downloaded serde_derive v1.0.228
+  Downloaded rayon-core v1.13.0
+  Downloaded serde_core v1.0.228
+  Downloaded proc-macro2 v1.0.106
+  Downloaded similar v2.7.0
+  Downloaded aho-corasick v1.1.4
+  Downloaded wide v0.7.33
+  Downloaded criterion v0.5.1
+  Downloaded memchr v2.8.0
+  Downloaded getrandom v0.3.4
+  Downloaded zerocopy-derive v0.8.48
+  Downloaded serde v1.0.228
+  Downloaded safe_arch v0.7.4
+  Downloaded rand v0.9.4
+  Downloaded insta v1.47.2
+  Downloaded itertools v0.10.5
+  Downloaded plotters v0.3.7
+  Downloaded regex v1.12.3
+  Downloaded serde_json v1.0.149
+  Downloaded clap_builder v4.6.0
+  Downloaded libm v0.2.16
+  Downloaded rayon v1.12.0
+  Downloaded proptest v1.11.0
+  Downloaded zerocopy v0.8.48
+  Downloaded syn v2.0.117
+  Downloaded regex-syntax v0.8.10
+  Downloaded rustix v1.1.4
+  Downloaded regex-automata v0.4.14
+  Downloaded libc v0.2.185
+  Downloaded linux-raw-sys v0.12.1
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling libc v0.2.185
+   Compiling cfg-if v1.0.4
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling crossbeam-utils v0.8.21
+   Compiling getrandom v0.3.4
+   Compiling serde_core v1.0.228
+   Compiling getrandom v0.4.2
+   Compiling rustix v1.1.4
+   Compiling linux-raw-sys v0.12.1
+   Compiling bitflags v2.11.1
+   Compiling once_cell v1.21.4
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+   Compiling rayon-core v1.13.0
+   Compiling fastrand v2.4.1
+   Compiling serde_json v1.0.149
+   Compiling either v1.15.0
+   Compiling regex-syntax v0.8.10
+   Compiling clap_lex v1.1.0
+   Compiling memchr v2.8.0
+   Compiling ciborium-io v0.2.2
+   Compiling plotters-backend v0.3.7
+   Compiling itoa v1.0.18
+   Compiling anstyle v1.0.14
+   Compiling same-file v1.0.6
+   Compiling bit-vec v0.8.0
+   Compiling cast v0.3.0
+   Compiling libm v0.2.16
+   Compiling fnv v1.0.7
+   Compiling quick-error v1.2.3
+   Compiling unarray v0.1.4
+   Compiling anes v0.1.6
+   Compiling rawpointer v0.2.1
+   Compiling oorandom v11.1.5
+   Compiling similar v2.7.0
+   Compiling itertools v0.10.5
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+   Compiling walkdir v2.5.0
+   Compiling plotters-svg v0.3.7
+   Compiling clap_builder v4.6.0
+   Compiling bit-set v0.8.0
+   Compiling crossbeam-epoch v0.9.18
+   Compiling syn v2.0.117
+   Compiling crossbeam-deque v0.8.6
+   Compiling plotters v0.3.7
+   Compiling num-complex v0.4.6
+   Compiling wait-timeout v0.2.1
+   Compiling is-terminal v0.4.17
+   Compiling console v0.16.3
+   Compiling criterion-plot v0.5.0
+   Compiling rand_core v0.9.5
+   Compiling rayon v1.12.0
+   Compiling rand_xorshift v0.4.0
+   Compiling rand v0.9.4
+   Compiling tempfile v3.27.0
+   Compiling regex-automata v0.4.14
+   Compiling clap v4.6.1
+   Compiling rusty-fork v0.3.1
+   Compiling insta v1.47.2
+   Compiling regex v1.12.3
+   Compiling zerocopy-derive v0.8.48
+   Compiling bytemuck_derive v1.10.2
+   Compiling serde_derive v1.0.228
+   Compiling bytemuck v1.25.0
+   Compiling safe_arch v0.7.4
+   Compiling wide v0.7.33
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling ciborium-ll v0.2.2
+   Compiling ft-core v0.1.0 (/data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-core)
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.11.0
+   Compiling criterion v0.5.1
+   Compiling ft-kernel-cpu v0.1.0 (/data/projects/.scratch/frankentorch-gj8t-after-rch-20260606T040011Z/crates/ft-kernel-cpu)
+error[E0433]: cannot find type `DType` in this scope
+    --> crates/ft-kernel-cpu/src/lib.rs:8112:62
+     |
+8112 |         let l_meta = TensorMeta::from_shape(vec![trows, kb], DType::F32, Device::Cpu);
+     |                                                              ^^^^^ use of undeclared type `DType`
+     |
+help: consider importing this enum
+     |
+   3 + use ft_core::DType;
+     |
+
+error[E0433]: cannot find type `Device` in this scope
+    --> crates/ft-kernel-cpu/src/lib.rs:8112:74
+     |
+8112 |         let l_meta = TensorMeta::from_shape(vec![trows, kb], DType::F32, Device::Cpu);
+     |                                                                          ^^^^^^ use of undeclared type `Device`
+     |
+help: consider importing this enum
+     |
+   3 + use ft_core::Device;
+     |
+
+error[E0433]: cannot find type `DType` in this scope
+    --> crates/ft-kernel-cpu/src/lib.rs:8113:62
+     |
+8113 |         let u_meta = TensorMeta::from_shape(vec![kb, tcols], DType::F32, Device::Cpu);
+     |                                                              ^^^^^ use of undeclared type `DType`
+     |
+help: consider importing this enum
+     |
+   3 + use ft_core::DType;
+     |
+
+error[E0433]: cannot find type `Device` in this scope
+    --> crates/ft-kernel-cpu/src/lib.rs:8113:74
+     |
+8113 |         let u_meta = TensorMeta::from_shape(vec![kb, tcols], DType::F32, Device::Cpu);
+     |                                                                          ^^^^^^ use of undeclared type `Device`
+     |
+help: consider importing this enum
+     |
+   3 + use ft_core::Device;
+     |
+
+error[E0433]: cannot find type `DType` in this scope
+    --> crates/ft-kernel-cpu/src/lib.rs:8452:70
+     |
+8452 |         let residual_meta = TensorMeta::from_shape(b_shape.to_vec(), DType::F64, Device::Cpu);
+     |                                                                      ^^^^^ use of undeclared type `DType`
+     |
+help: consider importing this enum
+     |
+   3 + use ft_core::DType;
+     |
+
+error[E0433]: cannot find type `Device` in this scope
+    --> crates/ft-kernel-cpu/src/lib.rs:8452:82
+     |
+8452 |         let residual_meta = TensorMeta::from_shape(b_shape.to_vec(), DType::F64, Device::Cpu);
+     |                                                                                  ^^^^^^ use of undeclared type `Device`
+     |
+help: consider importing this enum
+     |
+   3 + use ft_core::Device;
+     |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `ft-kernel-cpu` (lib test) due to 6 previous errors
+  [2m2026-06-06T04:00:55.551982Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mRemote command finished: exit=101 in 12100ms[0m
+    [2;3mat[0m rch/src/hook.rs:6364 [2;3mon[0m ThreadId(1)
+
+[RCH] remote ts1 failed (exit 101)

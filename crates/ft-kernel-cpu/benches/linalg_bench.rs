@@ -8,8 +8,10 @@ use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
     cholesky_contiguous_f64, det_contiguous_f64, eig_contiguous_f64, eigh_contiguous_f64,
     eigvals_contiguous_f64, eigvalsh_contiguous_f64, inv_tensor_contiguous_f64,
-    lobpcg_contiguous_f64, matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64,
-    svd_lowrank_contiguous_f64, svdvals_contiguous_f64, symmetric_rank2k_lower_update_f64,
+    lobpcg_contiguous_f64, lu_factor_contiguous_f64, lu_solve_contiguous_f64,
+    lu_solve_mixed_refine_contiguous_f64, matrix_exp_contiguous_f64, qr_contiguous_f64,
+    svd_contiguous_f64, svd_lowrank_contiguous_f64, svdvals_contiguous_f64,
+    symmetric_rank2k_lower_update_f64,
 };
 
 fn symmetric_rank2k_lower_update_scalar(n: usize, k: usize, v: &[f64], w: &[f64], a: &mut [f64]) {
@@ -142,6 +144,43 @@ fn bench_inv(c: &mut Criterion) {
             bch.iter(|| black_box(inv_tensor_contiguous_f64(black_box(&a), &meta).unwrap()))
         });
     }
+}
+
+fn bench_lu_solve(c: &mut Criterion) {
+    let (n, rhs) = (512usize, 32usize);
+    let mut a = vec![0.0_f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            a[i * n + j] = ((i * 31 + j * 17) % 97) as f64 * 0.013 - 0.5;
+        }
+        a[i * n + i] += n as f64;
+    }
+    let b: Vec<f64> = (0..n * rhs)
+        .map(|idx| ((idx * 19 + 11) % 101) as f64 * 0.007 - 0.33)
+        .collect();
+    let meta_a = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+    let meta_b = TensorMeta::from_shape(vec![n, rhs], DType::F64, Device::Cpu);
+
+    c.bench_function("lu_solve_f64_512x512_rhs32", |bch| {
+        bch.iter(|| {
+            let factor = lu_factor_contiguous_f64(black_box(&a), &meta_a).unwrap();
+            black_box(lu_solve_contiguous_f64(&factor, black_box(&b), &meta_b).unwrap())
+        })
+    });
+
+    c.bench_function("lu_solve_mixed_refine_512x512_rhs32", |bch| {
+        bch.iter(|| {
+            black_box(
+                lu_solve_mixed_refine_contiguous_f64(
+                    black_box(&a),
+                    &meta_a,
+                    black_box(&b),
+                    &meta_b,
+                )
+                .unwrap(),
+            )
+        })
+    });
 }
 
 fn bench_matrix_exp(c: &mut Criterion) {
@@ -297,6 +336,7 @@ fn bench_cholesky(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_lu,
+    bench_lu_solve,
     bench_cholesky,
     bench_eigh,
     bench_symmetric_rank2k_update,

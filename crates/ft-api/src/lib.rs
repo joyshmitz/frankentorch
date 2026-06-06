@@ -41536,6 +41536,17 @@ impl FrankenTorchSession {
         a: TensorNodeId,
         b: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        if !self.tensor_requires_grad(a)? && !self.tensor_requires_grad(b)? {
+            let (a_values, a_meta) = self.tensor_values_meta(a)?;
+            let (b_values, b_meta) = self.tensor_values_meta(b)?;
+            let b_shape = b_meta.shape().to_vec();
+            let solution = ft_kernel_cpu::lu_solve_mixed_refine_contiguous_f64(
+                &a_values, &a_meta, &b_values, &b_meta,
+            )
+            .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
+            return self.tensor_variable(solution, b_shape, false);
+        }
+
         // Compose via tensor_linalg_inv + tensor_matmul so gradients
         // flow back to both A and B. Tracked under frankentorch-dlht.
         // Previous body called LU factor/solve kernels directly and
