@@ -12210,6 +12210,35 @@ pub fn matmul_tensor_contiguous_f32(
     lhs_meta: &TensorMeta,
     rhs_meta: &TensorMeta,
 ) -> Result<Vec<f32>, KernelError> {
+    let mut out = Vec::new();
+    matmul_tensor_contiguous_f32_into(&mut out, lhs, rhs, lhs_meta, rhs_meta)?;
+    Ok(out)
+}
+
+/// Buffer-reusing variant of [`matmul_tensor_contiguous_f32`].
+///
+/// Writes the `[m, n]` product into `out`, resizing it to `m * n` and
+/// overwriting every element. A caller that runs the same shape repeatedly
+/// (e.g. the per-layer projections of a transformer encoder window) can hand
+/// the same `out` back each call to skip the per-call heap allocation and the
+/// zero-initialization of a fresh `vec![0.0; m * n]`.
+///
+/// The result is **bit-for-bit identical** to `matmul_tensor_contiguous_f32`:
+/// the GEMM runs with `beta = 0`, so it overwrites the full `m * n` output
+/// region regardless of `out`'s prior contents — no element of the previous
+/// call survives, and the k-accumulation order is unchanged.
+///
+/// # Errors
+/// Same contract as [`matmul_tensor_contiguous_f32`]: dtype/device/layout
+/// mismatch, inner-dimension mismatch, or an output-shape overflow. On any
+/// error `out` is left empty (cleared before validation can fail late).
+pub fn matmul_tensor_contiguous_f32_into(
+    out: &mut Vec<f32>,
+    lhs: &[f32],
+    rhs: &[f32],
+    lhs_meta: &TensorMeta,
+    rhs_meta: &TensorMeta,
+) -> Result<(), KernelError> {
     ensure_dtype_device_and_layout_f32(lhs_meta, rhs_meta)?;
     let (m, k, n) = matmul_dims(lhs_meta, rhs_meta)?;
     checked_mul(m, k, "matmul_f32 lhs overflow")?;
@@ -12219,12 +12248,26 @@ pub fn matmul_tensor_contiguous_f32(
     ensure_storage_len_f32(rhs, rhs_meta, "rhs")?;
     let lhs_start = lhs_meta.storage_offset();
     let rhs_start = rhs_meta.storage_offset();
-    let mut out = vec![0.0f32; out_numel];
+
+    // Size `out` to exactly out_numel WITHOUT re-zeroing the region that is
+    // already there. `resize` only writes the fill value into newly-added tail
+    // elements, so when `out` is reused at the same length this is a no-op (no
+    // realloc, no memset); a shorter buffer only zeros its grown tail; a longer
+    // one is truncated. The GEMM (beta = 0) overwrites every one of the
+    // out_numel cells below regardless of prior contents, so neither the
+    // retained values nor the tail fill affect the result — see the
+    // bit-exactness note above. (We deliberately avoid `clear()` + `resize`,
+    // which would re-zero the whole buffer every call and lose the win.)
+    if out.len() > out_numel {
+        out.truncate(out_numel);
+    } else if out.len() < out_numel {
+        out.resize(out_numel, 0.0f32);
+    }
 
     // Use optimized GEMM via matrixmultiply crate
-    gemm::sgemm(m, k, n, &lhs[lhs_start..], &rhs[rhs_start..], &mut out);
+    gemm::sgemm(m, k, n, &lhs[lhs_start..], &rhs[rhs_start..], out);
 
-    Ok(out)
+    Ok(())
 }
 
 pub fn dot_tensor_contiguous_f32(
