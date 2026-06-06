@@ -4438,6 +4438,82 @@ pub fn conv_transpose2d_forward_f64(
     out
 }
 
+/// f32 mirror of [`conv_transpose2d_forward_f64`]: per-output gather over the
+/// transposed-conv stencil, parallel over `(batch,out_ch)` planes. Replaces the
+/// f32 op-graph scatter (`O(kh·kw·ih)` narrow/matmul/pad/add tensor ops) the f32
+/// no-grad path fell through to.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn conv_transpose2d_forward_f32(
+    input: &[f32],
+    weight: &[f32],
+    bias: Option<&[f32]>,
+    batch: usize,
+    in_ch: usize,
+    ih: usize,
+    iw: usize,
+    out_ch: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * out_ch * oh * ow];
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(idx, orow)| {
+            let n = idx / out_ch;
+            let oc = idx % out_ch;
+            let b0 = bias.map_or(0.0, |b| b[oc]);
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let mut acc = b0;
+                    for kr in 0..kh {
+                        let y_num = oy + ph;
+                        if y_num < kr {
+                            continue;
+                        }
+                        let yd = y_num - kr;
+                        if yd % sh != 0 {
+                            continue;
+                        }
+                        let iy = yd / sh;
+                        if iy >= ih {
+                            continue;
+                        }
+                        for kc in 0..kw {
+                            let x_num = ox + pw;
+                            if x_num < kc {
+                                continue;
+                            }
+                            let xd = x_num - kc;
+                            if xd % sw != 0 {
+                                continue;
+                            }
+                            let ix = xd / sw;
+                            if ix >= iw {
+                                continue;
+                            }
+                            let mut s = 0.0f32;
+                            for ic in 0..in_ch {
+                                let iv = input[((n * in_ch + ic) * ih + iy) * iw + ix];
+                                let wv = weight[(((ic * out_ch + oc) * kh + kr) * kw) + kc];
+                                s += iv * wv;
+                            }
+                            acc += s;
+                        }
+                    }
+                    orow[oy * ow + ox] = acc;
+                }
+            }
+        });
+    out
+}
+
 /// Backward of [`conv_transpose2d_forward_f64`]. Returns `(dinput, dweight,
 /// dbias?)`. `dinput` parallel over `(batch, in_ch)` (gather), `dweight` parallel
 /// over the weight elements (each a deterministic reduction), `dbias = Σ dout`.

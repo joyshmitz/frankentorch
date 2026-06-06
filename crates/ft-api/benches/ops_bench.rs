@@ -200,6 +200,25 @@ fn bench_conv_transpose2d(c: &mut Criterion) {
             )
         });
     });
+    // F32 no-grad (dominant ML dtype): fused conv_transpose2d_forward_f32 vs the
+    // O(kh*kw*ih) op-graph scatter (narrow/matmul/pad/add) it fell through to.
+    group.bench_function("nograd_f32", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xv: Vec<f32> = (0..n * ic * h * w)
+            .map(|i| (i % 251) as f32 * 0.001 - 0.12)
+            .collect();
+        let wv: Vec<f32> = (0..ic * oc * k * k)
+            .map(|i| (i % 97) as f32 * 0.002 - 0.1)
+            .collect();
+        let x = s.tensor_variable_f32(xv, vec![n, ic, h, w], false).unwrap();
+        let wt = s.tensor_variable_f32(wv, vec![ic, oc, k, k], false).unwrap();
+        b.iter(|| {
+            black_box(
+                s.tensor_conv_transpose2d(x, wt, None, (2, 2), (1, 1), (1, 1))
+                    .unwrap(),
+            )
+        });
+    });
     group.bench_function("grad", |b| {
         b.iter(|| {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);

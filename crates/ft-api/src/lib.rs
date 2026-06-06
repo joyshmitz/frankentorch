@@ -17058,6 +17058,30 @@ impl FrankenTorchSession {
             );
         }
 
+        // F32 no-grad fused fast path (dominant ML dtype; every GAN/U-Net decoder):
+        // the per-output gather kernel via conv_transpose2d_forward_f32, replacing
+        // the O(kh*kw*ih) narrow/matmul/pad/add op-graph scatter below.
+        let ct_f32 = self.tensor_dtype(input)? == DType::F32
+            && self.tensor_dtype(weight)? == DType::F32
+            && bias.map_or(Ok(true), |b| self.tensor_dtype(b).map(|d| d == DType::F32))?;
+        if ct_f32 && !ct_in_grad && !ct_w_grad && !ct_b_grad {
+            let iv = self.tensor_values_f32(input)?;
+            let wv = self.tensor_values_f32(weight)?;
+            let bv = match bias {
+                Some(b) => Some(self.tensor_values_f32(b)?),
+                None => None,
+            };
+            let out = ft_kernel_cpu::conv_transpose2d_forward_f32(
+                &iv, &wv, bv.as_deref(), batch_size, in_channels, input_h, input_w, out_channels,
+                kernel_h, kernel_w, output_h, output_w, stride_h, stride_w, padding_h, padding_w,
+            );
+            return self.tensor_variable_f32(
+                out,
+                vec![batch_size, out_channels, output_h, output_w],
+                false,
+            );
+        }
+
         // Compose via tensor_narrow + tensor_matmul + tensor_pad +
         // tensor_add so gradients flow back to input and weight.
         // Tracked under frankentorch-zjf6. Same scatter-and-accumulate
@@ -81902,6 +81926,47 @@ mod tests {
         assert_eq!(shape, vec![1, 1, 2, 2]);
         let vals = s.tensor_values(out).unwrap();
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn conv_transpose2d_f32_fused_matches_op_graph_within_tolerance() {
+        // Isomorphism for the f32 no-grad fused conv_transpose2d
+        // (ft_kernel_cpu::conv_transpose2d_forward_f32) vs the f32 op-graph scatter
+        // (forced via requires_grad=true), within f32 tol. A few stride/padding combos.
+        let (n, ic, oc, ih, iw, kh, kw) = (2usize, 3usize, 4usize, 6usize, 5usize, 3usize, 3usize);
+        let xv: Vec<f32> = (0..n * ic * ih * iw)
+            .map(|i| ((i % 17) as f32 - 8.0) * 0.2 + (i as f32) * 0.01)
+            .collect();
+        let wv: Vec<f32> = (0..ic * oc * kh * kw)
+            .map(|i| ((i % 11) as f32 - 5.0) * 0.1)
+            .collect();
+        let bv: Vec<f32> = (0..oc).map(|c| 0.05 * c as f32 - 0.1).collect();
+        for &(s_, p_) in &[(1usize, 0usize), (2, 1)] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable_f32(xv.clone(), vec![n, ic, ih, iw], false).unwrap();
+            let w = s.tensor_variable_f32(wv.clone(), vec![ic, oc, kh, kw], false).unwrap();
+            let b = s.tensor_variable_f32(bv.clone(), vec![oc], false).unwrap();
+            let out = s
+                .functional_conv_transpose2d(x, w, Some(b), (s_, s_), (p_, p_), (0, 0))
+                .unwrap();
+            let fused = s.tensor_values_f32(out).unwrap();
+
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x2 = s2.tensor_variable_f32(xv.clone(), vec![n, ic, ih, iw], true).unwrap();
+            let w2 = s2.tensor_variable_f32(wv.clone(), vec![ic, oc, kh, kw], false).unwrap();
+            let b2 = s2.tensor_variable_f32(bv.clone(), vec![oc], false).unwrap();
+            let out2 = s2
+                .functional_conv_transpose2d(x2, w2, Some(b2), (s_, s_), (p_, p_), (0, 0))
+                .unwrap();
+            let reference = s2.tensor_values_f32(out2).unwrap();
+            assert_eq!(fused.len(), reference.len());
+            for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-4 + 1e-4 * b.abs(),
+                    "s={s_} p={p_} [{i}]: f32 fused {a} vs op-graph {b}"
+                );
+            }
+        }
     }
 
     #[test]
