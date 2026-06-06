@@ -401,6 +401,20 @@ fn bench_sum(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_cumsum(c: &mut Criterion) {
+    // cumsum along the last dim of [N, D]=[8192, 1024], no-grad. Was a fully serial
+    // nested scan; the N independent row-lanes now fan out over Rayon. A/B with
+    // RAYON_NUM_THREADS=1 (serial) vs default (parallel) in the same binary.
+    let mut group = c.benchmark_group("cumsum");
+    let (n, d) = (8192usize, 1024usize);
+    group.bench_function("nograd_8192x1024_dim1", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_randn(vec![n, d], false).unwrap();
+        b.iter(|| black_box(s.tensor_cumsum(x, 1).unwrap()));
+    });
+    group.finish();
+}
+
 fn bench_norm(c: &mut Criterion) {
     let mut group = c.benchmark_group("norm");
     for size in [100000, 1000000].iter() {
@@ -1426,6 +1440,7 @@ criterion_group!(
     bench_max_pool3d,
     bench_pool1d_ct1d,
     bench_sum,
+    bench_cumsum,
     bench_norm,
     bench_softmax,
     bench_relu,

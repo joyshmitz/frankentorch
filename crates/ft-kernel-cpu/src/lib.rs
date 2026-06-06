@@ -7299,13 +7299,34 @@ pub fn cumsum_tensor_contiguous_f64(
     let mut output = vec![0.0; numel];
     let data = &input[offset..];
 
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut acc = 0.0;
-            for d in 0..dim_size {
-                let idx = outer * dim_size * inner_size + d * inner_size + inner;
-                acc += data[idx];
-                output[idx] = acc;
+    // The `outer` blocks are independent and own contiguous `dim_size*inner_size`
+    // output slices, so fan them out over Rayon. Each lane's accumulation order is
+    // unchanged, so the result is bit-for-bit identical to the serial scan.
+    let lane = dim_size * inner_size;
+    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+        output
+            .par_chunks_mut(lane)
+            .enumerate()
+            .for_each(|(outer, out_chunk)| {
+                let base = outer * lane;
+                for inner in 0..inner_size {
+                    let mut acc = 0.0;
+                    for d in 0..dim_size {
+                        let idx = d * inner_size + inner;
+                        acc += data[base + idx];
+                        out_chunk[idx] = acc;
+                    }
+                }
+            });
+    } else {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut acc = 0.0;
+                for d in 0..dim_size {
+                    let idx = outer * lane + d * inner_size + inner;
+                    acc += data[idx];
+                    output[idx] = acc;
+                }
             }
         }
     }
@@ -13522,13 +13543,32 @@ pub fn cumsum_tensor_contiguous_f32(
     let offset = meta.storage_offset();
     let mut output = vec![0.0f32; numel];
     let data = &input[offset..];
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let mut acc = 0.0f32;
-            for d in 0..dim_size {
-                let idx = outer * dim_size * inner_size + d * inner_size + inner;
-                acc += data[idx];
-                output[idx] = acc;
+    // f32 mirror: fan independent `outer` blocks over Rayon, bit-exact per lane.
+    let lane = dim_size * inner_size;
+    if numel >= PARALLEL_THRESHOLD && outer_size >= 2 {
+        output
+            .par_chunks_mut(lane)
+            .enumerate()
+            .for_each(|(outer, out_chunk)| {
+                let base = outer * lane;
+                for inner in 0..inner_size {
+                    let mut acc = 0.0f32;
+                    for d in 0..dim_size {
+                        let idx = d * inner_size + inner;
+                        acc += data[base + idx];
+                        out_chunk[idx] = acc;
+                    }
+                }
+            });
+    } else {
+        for outer in 0..outer_size {
+            for inner in 0..inner_size {
+                let mut acc = 0.0f32;
+                for d in 0..dim_size {
+                    let idx = outer * lane + d * inner_size + inner;
+                    acc += data[idx];
+                    output[idx] = acc;
+                }
             }
         }
     }
@@ -18316,6 +18356,66 @@ mod tests {
     }
 
     // ---- cumsum ----
+
+    #[test]
+    fn cumsum_parallel_matches_serial_bit_exact() {
+        // Sizes above PARALLEL_THRESHOLD (>=8192) with outer_size>=2 exercise the
+        // Rayon outer-block path; the result must equal a serial scan BIT-FOR-BIT
+        // (per-lane accumulation order is unchanged). Cover dim=last (inner=1) and
+        // a middle dim (inner>1, strided lanes).
+        for (shape, dim) in [
+            (vec![256usize, 256usize], 1usize), // 65536, inner=1
+            (vec![64, 32, 48], 1),              // 98304, inner=48
+            (vec![512, 200], 1),                // 102400, inner=1
+        ] {
+            let numel: usize = shape.iter().product();
+            let input: Vec<f64> = (0..numel)
+                .map(|i| ((i % 97) as f64) * 0.013 - 0.6)
+                .collect();
+            let meta = TensorMeta::from_shape(shape.clone(), DType::F64, Device::Cpu);
+            let got = super::cumsum_tensor_contiguous_f64(&input, &meta, dim).expect("cumsum");
+
+            // Serial reference.
+            let dim_size = shape[dim];
+            let inner: usize = shape[dim + 1..].iter().product();
+            let outer: usize = shape[..dim].iter().product();
+            let mut want = vec![0.0f64; numel];
+            for o in 0..outer {
+                for inn in 0..inner {
+                    let mut acc = 0.0;
+                    for d in 0..dim_size {
+                        let idx = o * dim_size * inner + d * inner + inn;
+                        acc += input[idx];
+                        want[idx] = acc;
+                    }
+                }
+            }
+            assert_eq!(got.len(), want.len());
+            for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+                assert_eq!(g.to_bits(), w.to_bits(), "shape={shape:?} dim={dim} idx={i}");
+            }
+
+            // f32 path too.
+            let input32: Vec<f32> = input.iter().map(|&v| v as f32).collect();
+            let meta32 = TensorMeta::from_shape(shape.clone(), DType::F32, Device::Cpu);
+            let got32 =
+                super::cumsum_tensor_contiguous_f32(&input32, &meta32, dim).expect("cumsum f32");
+            let mut want32 = vec![0.0f32; numel];
+            for o in 0..outer {
+                for inn in 0..inner {
+                    let mut acc = 0.0f32;
+                    for d in 0..dim_size {
+                        let idx = o * dim_size * inner + d * inner + inn;
+                        acc += input32[idx];
+                        want32[idx] = acc;
+                    }
+                }
+            }
+            for (i, (&g, &w)) in got32.iter().zip(want32.iter()).enumerate() {
+                assert_eq!(g.to_bits(), w.to_bits(), "f32 shape={shape:?} dim={dim} idx={i}");
+            }
+        }
+    }
 
     #[test]
     fn cumsum_1d() {
