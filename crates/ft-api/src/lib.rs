@@ -6744,7 +6744,7 @@ impl FrankenTorchSession {
                 },
             )));
         }
-        let vals = self.tensor_values(input)?;
+        let vals = self.tensor_values_lossy_f64(input)?;
 
         let mut unique_vals: Vec<f64> = Vec::new();
         let mut inverse_indices: Vec<usize> = Vec::with_capacity(vals.len());
@@ -7201,7 +7201,7 @@ impl FrankenTorchSession {
             )));
         }
 
-        let vals = self.tensor_values(input)?;
+        let vals = self.tensor_values_lossy_f64(input)?;
         for &v in &vals {
             if !v.is_finite() {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
@@ -7213,7 +7213,7 @@ impl FrankenTorchSession {
         }
 
         let weight_vals = if let Some(weight_id) = weight {
-            let weights = self.tensor_values(weight_id)?;
+            let weights = self.tensor_values_lossy_f64(weight_id)?;
             if weights.len() != vals.len() {
                 return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
                     ft_dispatch::DispatchKeyError::IncompatibleSet {
@@ -7355,7 +7355,7 @@ impl FrankenTorchSession {
             }
         }
 
-        let vals = self.tensor_values(input)?;
+        let vals = self.tensor_values_lossy_f64(input)?;
 
         // Compute ranges per dimension
         let dim_ranges: Vec<(f64, f64)> = if let Some(r) = ranges {
@@ -77756,6 +77756,41 @@ mod tests {
         // The two finite entries are 1.0 and 2.0.
         let finite: Vec<f64> = vals.iter().copied().filter(|v| !v.is_nan()).collect();
         assert_eq!(finite, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn histogram_histogramdd_unique_consecutive_support_f32() {
+        // These non-grad value-reading ops used f64-only tensor_values and so
+        // errored on f32; routing them through tensor_values_lossy_f64 makes f32
+        // work like f64 (torch supports f32 for all three).
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // histogram(f32) matches the f64 counts.
+        let hf32 = s
+            .tensor_variable_f32(vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0], vec![6], false)
+            .unwrap();
+        let (hist, _edges) = s.tensor_histogram(hf32, 5, 0.0, 5.0, None, false).unwrap();
+        assert_eq!(
+            s.tensor_values_lossy_f64(hist).unwrap(),
+            vec![1.0, 1.0, 1.0, 1.0, 2.0]
+        );
+
+        // histogramdd(f32): all 3 points counted across the 2x2 bins.
+        let ddf32 = s
+            .tensor_variable_f32(vec![0.1f32, 0.1, 0.9, 0.9, 0.4, 0.6], vec![3, 2], false)
+            .unwrap();
+        let (counts, _e) = s
+            .tensor_histogramdd(ddf32, &[2, 2], Some(&[(0.0, 1.0), (0.0, 1.0)]), false)
+            .unwrap();
+        let total: f64 = s.tensor_values_lossy_f64(counts).unwrap().iter().sum();
+        assert_eq!(total, 3.0, "histogramdd f32 must count all 3 points");
+
+        // unique_consecutive(f32) dedups adjacent runs.
+        let uf32 = s
+            .tensor_variable_f32(vec![1.0f32, 1.0, 2.0, 3.0, 3.0], vec![5], false)
+            .unwrap();
+        let (u, _i, _c) = s.tensor_unique_consecutive(uf32, false, false).unwrap();
+        assert_eq!(s.tensor_values_lossy_f64(u).unwrap(), vec![1.0, 2.0, 3.0]);
     }
 
     #[test]
