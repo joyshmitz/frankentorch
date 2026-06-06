@@ -74885,6 +74885,38 @@ mod tests {
     }
 
     #[test]
+    fn f16_reduction_pow_clamp_scan_preserve_dtype() {
+        // Beyond unary: reduction / reduction_dim / pow / clamp / scan typed
+        // dispatch arms also promote half -> f32 to compute and must narrow back
+        // to f16/bf16 (was returning f32). frankentorch-f48g.
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], false)
+            .unwrap();
+        let xf16 = s.tensor_half(x).unwrap();
+
+        let sum = s.tensor_sum(xf16).unwrap();
+        assert_eq!(s.tensor_dtype(sum).unwrap(), DType::F16, "sum(f16) -> f16");
+
+        let pw = s.tensor_pow(xf16, 2.0).unwrap();
+        assert_eq!(s.tensor_dtype(pw).unwrap(), DType::F16, "pow(f16) -> f16");
+
+        let cl = s.tensor_clamp(xf16, 1.5, 3.5).unwrap();
+        assert_eq!(s.tensor_dtype(cl).unwrap(), DType::F16, "clamp(f16) -> f16");
+
+        let cs = s.tensor_cumsum(xf16, 0).unwrap();
+        assert_eq!(s.tensor_dtype(cs).unwrap(), DType::F16, "cumsum(f16) -> f16");
+
+        // bf16 reduction_dim path too.
+        let m2 = s
+            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], false)
+            .unwrap();
+        let mbf16 = s.tensor_bfloat16(m2).unwrap();
+        let sd = s.tensor_sum_dim(mbf16, 1).unwrap();
+        assert_eq!(s.tensor_dtype(sd).unwrap(), DType::BF16, "sum_dim(bf16) -> bf16");
+    }
+
+    #[test]
     fn f32_cast_roundtrip() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let a = session
