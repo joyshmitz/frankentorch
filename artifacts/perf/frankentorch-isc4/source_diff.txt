@@ -1,0 +1,192 @@
+diff --git a/crates/ft-api/benches/ops_bench.rs b/crates/ft-api/benches/ops_bench.rs
+index 41366593..bd8aafde 100644
+--- a/crates/ft-api/benches/ops_bench.rs
++++ b/crates/ft-api/benches/ops_bench.rs
+@@ -1520,8 +1520,21 @@ fn bench_multi_dot(c: &mut Criterion) {
+     group.finish();
+ }
+ 
++fn bench_einsum(c: &mut Criterion) {
++    let mut group = c.benchmark_group("einsum");
++    let (m, k, n) = (8usize, 2048usize, 2048usize);
++    group.bench_function("rhs_transpose_8x2048x2048", |bch| {
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        let a = s.tensor_randn(vec![m, k], false).unwrap();
++        let b = s.tensor_randn(vec![n, k], false).unwrap();
++        bch.iter(|| black_box(s.tensor_einsum("ik,jk->ij", black_box(&[a, b])).unwrap()));
++    });
++    group.finish();
++}
++
+ criterion_group!(
+     benches,
++    bench_einsum,
+     bench_multi_dot,
+     bench_lstsq,
+     bench_matmul,
+diff --git a/crates/ft-api/src/lib.rs b/crates/ft-api/src/lib.rs
+index 469f2a1f..ea8d2c0b 100644
+--- a/crates/ft-api/src/lib.rs
++++ b/crates/ft-api/src/lib.rs
+@@ -6138,6 +6138,69 @@ impl FrankenTorchSession {
+                 .ok_or_else(|| make_err("einsum: free rhs size overflow"))?;
+         }
+ 
++        if batch_chars.is_empty()
++            && !contract_chars.is_empty()
++            && !self.tensor_requires_grad(lhs)?
++            && !self.tensor_requires_grad(rhs)?
++            && self.tensor_dtype(lhs)? == DType::F64
++            && self.tensor_dtype(rhs)? == DType::F64
++        {
++            let expected_lhs: Vec<char> = free_lhs_chars
++                .iter()
++                .chain(contract_chars.iter())
++                .copied()
++                .collect();
++            let expected_rhs: Vec<char> = free_rhs_chars
++                .iter()
++                .chain(contract_chars.iter())
++                .copied()
++                .collect();
++            let expected_out: Vec<char> = free_lhs_chars
++                .iter()
++                .chain(free_rhs_chars.iter())
++                .copied()
++                .collect();
++            if lhs_idx == expected_lhs.as_slice()
++                && rhs_idx == expected_rhs.as_slice()
++                && output_idx == expected_out.as_slice()
++            {
++                let (lhs_values, lhs_meta) = self.tensor_values_meta(lhs)?;
++                let (rhs_values, rhs_meta) = self.tensor_values_meta(rhs)?;
++                let lhs_contiguous = lhs_meta.strides() == contiguous_strides(lhs_meta.shape());
++                let rhs_contiguous = rhs_meta.strides() == contiguous_strides(rhs_meta.shape());
++                let m = free_lhs_size.max(1);
++                let k = contract_size.max(1);
++                let n = free_rhs_size.max(1);
++                let lhs_start = lhs_meta.storage_offset();
++                let rhs_start = rhs_meta.storage_offset();
++                if lhs_contiguous
++                    && rhs_contiguous
++                    && lhs_values.len() >= lhs_start + m * k
++                    && rhs_values.len() >= rhs_start + n * k
++                {
++                    let out = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
++                        m,
++                        k,
++                        n,
++                        &lhs_values[lhs_start..lhs_start + m * k],
++                        &rhs_values[rhs_start..rhs_start + n * k],
++                    )
++                    .map_err(|e| AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e)))?;
++                    let mut out_shape: Vec<usize> = Vec::new();
++                    for ch in &free_lhs_chars {
++                        out_shape.push(lhs_shape[lhs_pos(ch)?]);
++                    }
++                    for ch in &free_rhs_chars {
++                        out_shape.push(rhs_shape[rhs_pos(ch)?]);
++                    }
++                    if out_shape.is_empty() {
++                        out_shape.push(1);
++                    }
++                    return self.tensor_variable(out, out_shape, false);
++                }
++            }
++        }
++
+         // Permute tensors
+         let mut lhs_p = lhs;
+         if !lhs_perm.iter().enumerate().all(|(i, &v)| v == i) {
+@@ -92556,6 +92619,53 @@ mod tests {
+         assert_eq!(vals, direct_vals);
+     }
+ 
++    #[test]
++    fn einsum_rhs_transpose_no_grad_matches_materialized_transpose_bit_exact() {
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        #[rustfmt::skip]
++        let a = s.tensor_variable(vec![
++            1.0, -2.0, 3.0, 4.0,
++            -1.5, 0.25, 2.0, -3.0,
++            0.5, 1.25, -0.75, 2.5,
++        ], vec![3, 4], false).unwrap();
++        #[rustfmt::skip]
++        let b = s.tensor_variable(vec![
++            2.0, -1.0, 0.5, 3.0,
++            -0.5, 4.0, 1.5, -2.0,
++        ], vec![2, 4], false).unwrap();
++        let fast = s.tensor_einsum("ik,jk->ij", &[a, b]).unwrap();
++        let bt = s.tensor_transpose(b, 0, 1).unwrap();
++        let reference = s.tensor_matmul(a, bt).unwrap();
++        assert_eq!(s.tensor_shape(fast).unwrap(), vec![3, 2]);
++        let fast_values = s.tensor_values(fast).unwrap();
++        let reference_values = s.tensor_values(reference).unwrap();
++        for (idx, (got, expected)) in fast_values.iter().zip(reference_values.iter()).enumerate() {
++            assert_eq!(
++                got.to_bits(),
++                expected.to_bits(),
++                "rhs-transpose einsum diverged at {idx}: {got} vs {expected}"
++            );
++        }
++    }
++
++    #[test]
++    fn einsum_rhs_transpose_requires_grad_uses_autograd_path() {
++        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
++        let a = s
++            .tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2], true)
++            .unwrap();
++        let b = s
++            .tensor_variable(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2], false)
++            .unwrap();
++        let out = s.tensor_einsum("ik,jk->ij", &[a, b]).unwrap();
++        let loss = s.tensor_sum(out).unwrap();
++        let report = s.tensor_backward(loss).unwrap();
++        let grad = s
++            .tensor_gradient(&report, a)
++            .expect("requires-grad einsum must stay on the autograd path");
++        assert_eq!(grad, vec![12.0, 14.0, 12.0, 14.0]);
++    }
++
+     #[test]
+     fn einsum_trace() {
+         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+diff --git a/crates/ft-kernel-cpu/src/lib.rs b/crates/ft-kernel-cpu/src/lib.rs
+index ef2f617c..193cf780 100644
+--- a/crates/ft-kernel-cpu/src/lib.rs
++++ b/crates/ft-kernel-cpu/src/lib.rs
+@@ -5475,6 +5475,33 @@ pub fn matmul_tensor_contiguous_f64(
+     Ok(out)
+ }
+ 
++pub fn matmul_rhs_transposed_contiguous_f64(
++    m: usize,
++    k: usize,
++    n: usize,
++    lhs: &[f64],
++    rhs_nk: &[f64],
++) -> Result<Vec<f64>, KernelError> {
++    let lhs_len = checked_mul(m, k, "matmul_rhs_transposed lhs overflow")?;
++    let rhs_len = checked_mul(n, k, "matmul_rhs_transposed rhs overflow")?;
++    let out_len = checked_mul(m, n, "matmul_rhs_transposed output overflow")?;
++    if lhs.len() < lhs_len {
++        return Err(KernelError::ShapeMismatch {
++            lhs: vec![lhs_len],
++            rhs: vec![lhs.len()],
++        });
++    }
++    if rhs_nk.len() < rhs_len {
++        return Err(KernelError::ShapeMismatch {
++            lhs: vec![rhs_len],
++            rhs: vec![rhs_nk.len()],
++        });
++    }
++    let mut out = vec![0.0_f64; out_len];
++    gemm::dgemm_bt(m, k, n, &lhs[..lhs_len], &rhs_nk[..rhs_len], &mut out);
++    Ok(out)
++}
++
+ pub fn lerp_tensor_contiguous_f64(
+     start: &[f64],
+     end: &[f64],

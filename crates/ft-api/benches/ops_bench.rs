@@ -1520,8 +1520,21 @@ fn bench_multi_dot(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_einsum(c: &mut Criterion) {
+    let mut group = c.benchmark_group("einsum");
+    let (m, k, n) = (8usize, 2048usize, 2048usize);
+    group.bench_function("rhs_transpose_8x2048x2048", |bch| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_randn(vec![m, k], false).unwrap();
+        let b = s.tensor_randn(vec![n, k], false).unwrap();
+        bch.iter(|| black_box(s.tensor_einsum("ik,jk->ij", black_box(&[a, b])).unwrap()));
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_einsum,
     bench_multi_dot,
     bench_lstsq,
     bench_matmul,

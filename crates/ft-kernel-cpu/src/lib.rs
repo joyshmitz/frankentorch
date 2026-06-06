@@ -5475,6 +5475,33 @@ pub fn matmul_tensor_contiguous_f64(
     Ok(out)
 }
 
+pub fn matmul_rhs_transposed_contiguous_f64(
+    m: usize,
+    k: usize,
+    n: usize,
+    lhs: &[f64],
+    rhs_nk: &[f64],
+) -> Result<Vec<f64>, KernelError> {
+    let lhs_len = checked_mul(m, k, "matmul_rhs_transposed lhs overflow")?;
+    let rhs_len = checked_mul(n, k, "matmul_rhs_transposed rhs overflow")?;
+    let out_len = checked_mul(m, n, "matmul_rhs_transposed output overflow")?;
+    if lhs.len() < lhs_len {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![lhs_len],
+            rhs: vec![lhs.len()],
+        });
+    }
+    if rhs_nk.len() < rhs_len {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![rhs_len],
+            rhs: vec![rhs_nk.len()],
+        });
+    }
+    let mut out = vec![0.0_f64; out_len];
+    gemm::dgemm_bt(m, k, n, &lhs[..lhs_len], &rhs_nk[..rhs_len], &mut out);
+    Ok(out)
+}
+
 pub fn lerp_tensor_contiguous_f64(
     start: &[f64],
     end: &[f64],

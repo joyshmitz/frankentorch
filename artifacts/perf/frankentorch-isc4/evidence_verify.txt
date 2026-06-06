@@ -1,0 +1,15 @@
+artifacts/perf/frankentorch-isc4/after_rhs_transpose_dgemm_bt.txt: OK
+artifacts/perf/frankentorch-isc4/baseline_rhs_transpose.txt: OK
+artifacts/perf/frankentorch-isc4/check_einsum_dgemm_bt.txt: OK
+artifacts/perf/frankentorch-isc4/clippy_ft_api_lib.txt: OK
+artifacts/perf/frankentorch-isc4/clippy_ft_kernel_cpu.txt: OK
+artifacts/perf/frankentorch-isc4/git_diff_check.txt: OK
+artifacts/perf/frankentorch-isc4/golden_sha256_check.txt: OK
+artifacts/perf/frankentorch-isc4/post_rebase_after_rhs_transpose_dgemm_bt.txt: OK
+artifacts/perf/frankentorch-isc4/post_rebase_check_einsum_dgemm_bt.txt: OK
+artifacts/perf/frankentorch-isc4/post_rebase_test_einsum_rhs_transpose.txt: OK
+artifacts/perf/frankentorch-isc4/report.md: OK
+artifacts/perf/frankentorch-isc4/source_diff.txt: OK
+artifacts/perf/frankentorch-isc4/test_einsum_rhs_transpose.txt: OK
+artifacts/perf/frankentorch-isc4/ubs_changed_surface.txt: OK
+artifacts/perf/frankentorch-isc4/ubs_status.txt: OK
