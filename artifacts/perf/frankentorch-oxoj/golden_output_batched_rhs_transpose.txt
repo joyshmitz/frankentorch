@@ -1,0 +1,26 @@
+bead: frankentorch-oxoj
+equation: bik,bjk->bij
+lhs_shape: [2, 2, 3]
+rhs_shape: [2, 4, 3]
+output_shape: [2, 2, 4]
+expected_no_grad_output_f64:
+  [5.5, 16.0, 12.25, -1.75,
+   9.625, 13.75, 9.5625, -13.875,
+   -5.125, 7.0, 4.25, -0.4375,
+   42.25, -31.75, -18.125, 21.625]
+expected_requires_grad_lhs_f64:
+  [22.0, 26.0, 30.0, 22.0, 26.0, 30.0,
+   70.0, 74.0, 78.0, 70.0, 74.0, 78.0]
+ordering_contract:
+  Batch order is preserved by enumerating output batch chunks in increasing batch index.
+  Within each batch, dgemm_bt computes the same m-by-n rows as materialized transpose plus bmm.
+floating_point_contract:
+  For positive-size no-grad f64 contiguous inputs, RHS values are read through the same k-order
+  matrixmultiply accumulation as materialized transpose plus dgemm. The focused test compares
+  every result with to_bits against tensor_permute(rhs, [0, 2, 1]) plus tensor_bmm.
+rng_contract:
+  The runtime fast path uses no RNG. Benchmark inputs are created once before Criterion iterates,
+  matching the baseline benchmark shape and seed behavior.
+fallback_contract:
+  Requires-grad, non-f64, non-contiguous, reordered, broadcasted, and zero-size cases fall back
+  to the existing general einsum path.

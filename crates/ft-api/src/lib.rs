@@ -6201,6 +6201,109 @@ impl FrankenTorchSession {
             }
         }
 
+        if !batch_chars.is_empty()
+            && !contract_chars.is_empty()
+            && !self.tensor_requires_grad(lhs)?
+            && !self.tensor_requires_grad(rhs)?
+            && self.tensor_dtype(lhs)? == DType::F64
+            && self.tensor_dtype(rhs)? == DType::F64
+        {
+            let expected_lhs: Vec<char> = batch_chars
+                .iter()
+                .chain(free_lhs_chars.iter())
+                .chain(contract_chars.iter())
+                .copied()
+                .collect();
+            let expected_rhs: Vec<char> = batch_chars
+                .iter()
+                .chain(free_rhs_chars.iter())
+                .chain(contract_chars.iter())
+                .copied()
+                .collect();
+            let expected_out: Vec<char> = batch_chars
+                .iter()
+                .chain(free_lhs_chars.iter())
+                .chain(free_rhs_chars.iter())
+                .copied()
+                .collect();
+            if lhs_idx == expected_lhs.as_slice()
+                && rhs_idx == expected_rhs.as_slice()
+                && output_idx == expected_out.as_slice()
+            {
+                let (lhs_values, lhs_meta) = self.tensor_values_meta(lhs)?;
+                let (rhs_values, rhs_meta) = self.tensor_values_meta(rhs)?;
+                let lhs_contiguous = lhs_meta.strides() == contiguous_strides(lhs_meta.shape());
+                let rhs_contiguous = rhs_meta.strides() == contiguous_strides(rhs_meta.shape());
+                let b = batch_size;
+                let m = free_lhs_size;
+                let k = contract_size;
+                let n = free_rhs_size;
+                let lhs_batch_stride = m
+                    .checked_mul(k)
+                    .ok_or_else(|| make_err("einsum: lhs batch stride overflow"))?;
+                let rhs_batch_stride = n
+                    .checked_mul(k)
+                    .ok_or_else(|| make_err("einsum: rhs batch stride overflow"))?;
+                let out_batch_stride = m
+                    .checked_mul(n)
+                    .ok_or_else(|| make_err("einsum: output batch stride overflow"))?;
+                let lhs_start = lhs_meta.storage_offset();
+                let rhs_start = rhs_meta.storage_offset();
+                let lhs_required = b
+                    .checked_mul(lhs_batch_stride)
+                    .and_then(|len| lhs_start.checked_add(len))
+                    .ok_or_else(|| make_err("einsum: lhs storage length overflow"))?;
+                let rhs_required = b
+                    .checked_mul(rhs_batch_stride)
+                    .and_then(|len| rhs_start.checked_add(len))
+                    .ok_or_else(|| make_err("einsum: rhs storage length overflow"))?;
+                if lhs_contiguous
+                    && rhs_contiguous
+                    && b > 0
+                    && m > 0
+                    && k > 0
+                    && n > 0
+                    && lhs_values.len() >= lhs_required
+                    && rhs_values.len() >= rhs_required
+                {
+                    let mut out = vec![0.0_f64; b * out_batch_stride];
+                    use rayon::prelude::*;
+                    out.par_chunks_mut(out_batch_stride)
+                        .enumerate()
+                        .try_for_each(|(batch_idx, out_chunk)| {
+                            let lhs_offset = lhs_start + batch_idx * lhs_batch_stride;
+                            let rhs_offset = rhs_start + batch_idx * rhs_batch_stride;
+                            let batch_out = ft_kernel_cpu::matmul_rhs_transposed_contiguous_f64(
+                                m,
+                                k,
+                                n,
+                                &lhs_values[lhs_offset..lhs_offset + lhs_batch_stride],
+                                &rhs_values[rhs_offset..rhs_offset + rhs_batch_stride],
+                            )
+                            .map_err(|e| {
+                                AutogradError::Dispatch(ft_dispatch::DispatchError::Kernel(e))
+                            })?;
+                            out_chunk.copy_from_slice(&batch_out);
+                            Ok::<(), AutogradError>(())
+                        })?;
+                    let mut out_shape: Vec<usize> = Vec::new();
+                    for ch in &batch_chars {
+                        out_shape.push(lhs_shape[lhs_pos(ch)?]);
+                    }
+                    for ch in &free_lhs_chars {
+                        out_shape.push(lhs_shape[lhs_pos(ch)?]);
+                    }
+                    for ch in &free_rhs_chars {
+                        out_shape.push(rhs_shape[rhs_pos(ch)?]);
+                    }
+                    if out_shape.is_empty() {
+                        out_shape.push(1);
+                    }
+                    return self.tensor_variable(out, out_shape, false);
+                }
+            }
+        }
+
         // Permute tensors
         let mut lhs_p = lhs;
         if !lhs_perm.iter().enumerate().all(|(i, &v)| v == i) {
@@ -92743,6 +92846,80 @@ mod tests {
             .tensor_gradient(&report, a)
             .expect("requires-grad einsum must stay on the autograd path");
         assert_eq!(grad, vec![12.0, 14.0, 12.0, 14.0]);
+    }
+
+    #[test]
+    fn einsum_batched_rhs_transpose_no_grad_matches_materialized_transpose_bit_exact() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        #[rustfmt::skip]
+        let a = s.tensor_variable(vec![
+            1.0, -2.0, 3.0,
+            4.0, -1.5, 0.25,
+            0.5, 1.25, -0.75,
+            2.5, -3.5, 4.5,
+        ], vec![2, 2, 3], false).unwrap();
+        #[rustfmt::skip]
+        let b = s.tensor_variable(vec![
+            2.0, -1.0, 0.5,
+            3.0, -0.5, 4.0,
+            1.5, -2.0, 2.25,
+            -3.25, 0.75, 1.0,
+            5.0, -4.0, 3.5,
+            -2.5, 6.0, -1.0,
+            0.25, 1.5, -3.0,
+            4.0, -0.75, 2.0,
+        ], vec![2, 4, 3], false).unwrap();
+
+        let fast = s.tensor_einsum("bik,bjk->bij", &[a, b]).unwrap();
+        let bt = s.tensor_permute(b, vec![0, 2, 1]).unwrap();
+        let reference = s.tensor_bmm(a, bt).unwrap();
+
+        assert_eq!(s.tensor_shape(fast).unwrap(), vec![2, 2, 4]);
+        let fast_values = s.tensor_values(fast).unwrap();
+        let reference_values = s.tensor_values(reference).unwrap();
+        for (idx, (got, expected)) in fast_values.iter().zip(reference_values.iter()).enumerate() {
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "batched rhs-transpose einsum diverged at {idx}: {got} vs {expected}"
+            );
+        }
+        let expected_values: [f64; 16] = [
+            5.5, 16.0, 12.25, -1.75, 9.625, 13.75, 9.5625, -13.875, -5.125, 7.0, 4.25, -0.4375,
+            42.25, -31.75, -18.125, 21.625,
+        ];
+        for (idx, (got, expected)) in fast_values.iter().zip(expected_values.iter()).enumerate() {
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "batched rhs-transpose golden output diverged at {idx}: {got} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn einsum_batched_rhs_transpose_requires_grad_uses_autograd_path() {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s
+            .tensor_variable((1..=12).map(f64::from).collect(), vec![2, 2, 3], true)
+            .unwrap();
+        let b = s
+            .tensor_variable((1..=24).map(f64::from).collect(), vec![2, 4, 3], false)
+            .unwrap();
+
+        let out = s.tensor_einsum("bik,bjk->bij", &[a, b]).unwrap();
+        let loss = s.tensor_sum(out).unwrap();
+        let report = s.tensor_backward(loss).unwrap();
+        let grad = s
+            .tensor_gradient(&report, a)
+            .expect("requires-grad batched einsum must stay on the autograd path");
+
+        assert_eq!(
+            grad,
+            vec![
+                22.0, 26.0, 30.0, 22.0, 26.0, 30.0, 70.0, 74.0, 78.0, 70.0, 74.0, 78.0,
+            ]
+        );
     }
 
     #[test]

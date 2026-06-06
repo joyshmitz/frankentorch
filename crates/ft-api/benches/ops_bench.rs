@@ -1529,6 +1529,13 @@ fn bench_einsum(c: &mut Criterion) {
         let b = s.tensor_randn(vec![n, k], false).unwrap();
         bch.iter(|| black_box(s.tensor_einsum("ik,jk->ij", black_box(&[a, b])).unwrap()));
     });
+    let (batch, bm, bk, bn) = (16usize, 8usize, 512usize, 512usize);
+    group.bench_function("batched_rhs_transpose_16x8x512x512", |bch| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let a = s.tensor_randn(vec![batch, bm, bk], false).unwrap();
+        let b = s.tensor_randn(vec![batch, bn, bk], false).unwrap();
+        bch.iter(|| black_box(s.tensor_einsum("bik,bjk->bij", black_box(&[a, b])).unwrap()));
+    });
     group.finish();
 }
 

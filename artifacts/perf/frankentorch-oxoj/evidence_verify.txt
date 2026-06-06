@@ -1,0 +1,10 @@
+artifacts/perf/frankentorch-oxoj/baseline_batched_rhs_transpose.txt: OK
+artifacts/perf/frankentorch-oxoj/after_batched_rhs_transpose_dgemm_bt_after_guard.txt: OK
+artifacts/perf/frankentorch-oxoj/after_post_rebase.txt: OK
+artifacts/perf/frankentorch-oxoj/check_batched_einsum_dgemm_bt_final.txt: OK
+artifacts/perf/frankentorch-oxoj/check_post_rebase.txt: OK
+artifacts/perf/frankentorch-oxoj/test_batched_einsum_rhs_transpose_final2.txt: OK
+artifacts/perf/frankentorch-oxoj/test_post_rebase.txt: OK
+artifacts/perf/frankentorch-oxoj/clippy_ft_api_final.txt: OK
+artifacts/perf/frankentorch-oxoj/golden_output_batched_rhs_transpose.txt: OK
+artifacts/perf/frankentorch-oxoj/report.md: OK
