@@ -4269,6 +4269,50 @@ pub fn max_pool2d_forward_f64(
     out
 }
 
+/// f32 mirror of [`max_pool2d_forward_f64`]: per output, the max over its `kh×kw`
+/// window, one pass parallel over `(batch,ch)` planes. Replaces the f32 op-graph
+/// (per-output narrow/amax/cat) the f32 no-grad path fell through to.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn max_pool2d_forward_f32(
+    input: &[f32],
+    batch: usize,
+    ch: usize,
+    ih: usize,
+    iw: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+    sh: usize,
+    sw: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; batch * ch * oh * ow];
+    out.par_chunks_mut(oh * ow)
+        .enumerate()
+        .for_each(|(plane, orow)| {
+            let ibase = plane * ih * iw;
+            for oy in 0..oh {
+                let base_h = oy * sh;
+                for ox in 0..ow {
+                    let base_w = ox * sw;
+                    let mut m = f32::NEG_INFINITY;
+                    for kr in 0..kh {
+                        let irow = ibase + (base_h + kr) * iw + base_w;
+                        for kc in 0..kw {
+                            let v = input[irow + kc];
+                            if v > m {
+                                m = v;
+                            }
+                        }
+                    }
+                    orow[oy * ow + ox] = m;
+                }
+            }
+        });
+    out
+}
+
 /// Backward of [`max_pool2d_forward_f64`]: recomputes the (first) argmax of each
 /// window and routes the output gradient there. Parallel over `(batch,ch)`
 /// planes; overlapping windows accumulate deterministically within a plane.

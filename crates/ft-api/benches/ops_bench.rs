@@ -162,6 +162,16 @@ fn bench_max_pool2d(c: &mut Criterion) {
         let x = s.tensor_randn(vec![n, ch, h, w], false).unwrap();
         b.iter(|| black_box(s.functional_max_pool2d(x, (2, 2), (2, 2)).unwrap()));
     });
+    // F32 no-grad (dominant ML dtype): fused max_pool2d_forward_f32 vs the f32
+    // op-graph (narrow/amax/cat, also upcast to f64) it fell through to.
+    group.bench_function("nograd_f32", |b| {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xv: Vec<f32> = (0..n * ch * h * w)
+            .map(|i| (i % 251) as f32 * 0.001 - 0.12)
+            .collect();
+        let x = s.tensor_variable_f32(xv, vec![n, ch, h, w], false).unwrap();
+        b.iter(|| black_box(s.functional_max_pool2d(x, (2, 2), (2, 2)).unwrap()));
+    });
     group.bench_function("grad", |b| {
         b.iter(|| {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);

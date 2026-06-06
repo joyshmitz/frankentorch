@@ -17324,6 +17324,22 @@ impl FrankenTorchSession {
             );
         }
 
+        // F32 no-grad fused fast path (dominant ML dtype): same windowed-max kernel
+        // via max_pool2d_forward_f32, replacing the f32 op-graph (narrow/amax/cat)
+        // which also upcast to f64.
+        if self.tensor_dtype(input)? == DType::F32 && !self.tensor_tape.tensor_requires_grad(input)? {
+            let iv = self.tensor_values_f32(input)?;
+            let out = ft_kernel_cpu::max_pool2d_forward_f32(
+                &iv, batch_size, channels, input_h, input_w, kernel_h, kernel_w, output_h,
+                output_w, stride_h, stride_w,
+            );
+            return self.tensor_variable_f32(
+                out,
+                vec![batch_size, channels, output_h, output_w],
+                false,
+            );
+        }
+
         let mut patches = Vec::with_capacity(patch_count);
         for out_h in 0..output_h {
             let row_start = Self::checked_mul(out_h, stride_h, "max_pool2d row start overflow")?;
@@ -84707,6 +84723,36 @@ mod tests {
             m[i] -= hh;
             let fd = (loss_fn(&p) - loss_fn(&m)) / (2.0 * hh);
             assert!((gx[i] - fd).abs() <= 1e-5 + 1e-4 * fd.abs(), "dx[{i}]: {} vs {fd}", gx[i]);
+        }
+    }
+
+    #[test]
+    fn functional_max_pool2d_f32_fused_matches_op_graph_within_tolerance() {
+        // Isomorphism for the f32 no-grad fused max_pool2d
+        // (ft_kernel_cpu::max_pool2d_forward_f32) vs the f32 op-graph (which
+        // upcasts to f64, read via tensor_values), within f32 tol. (max is
+        // selection, so it should in fact be bit-exact, but assert tol to be safe.)
+        let (n, c, h, w) = (2usize, 3usize, 7usize, 8usize);
+        let xv: Vec<f32> = (0..n * c * h * w)
+            .map(|i| ((i * 2654435761usize) % 211) as f32 * 0.013 - 1.3)
+            .collect();
+        for &(kh, kw, sh, sw) in &[(2usize, 2usize, 2usize, 2usize), (3, 3, 1, 1)] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable_f32(xv.clone(), vec![n, c, h, w], false).unwrap();
+            let out = s.functional_max_pool2d(x, (kh, kw), (sh, sw)).unwrap();
+            let fused = s.tensor_values_f32(out).unwrap();
+
+            let mut s2 = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x2 = s2.tensor_variable_f32(xv.clone(), vec![n, c, h, w], true).unwrap();
+            let out2 = s2.functional_max_pool2d(x2, (kh, kw), (sh, sw)).unwrap();
+            let reference = s2.tensor_values(out2).unwrap();
+            assert_eq!(fused.len(), reference.len());
+            for (i, (a, b)) in fused.iter().zip(reference.iter()).enumerate() {
+                assert!(
+                    (f64::from(*a) - b).abs() <= 1e-5 + 1e-4 * b.abs(),
+                    "k={kh}x{kw} s={sh}x{sw} [{i}]: f32 fused {a} vs op-graph {b}"
+                );
+            }
         }
     }
 
