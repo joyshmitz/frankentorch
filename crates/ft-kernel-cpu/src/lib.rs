@@ -3543,6 +3543,42 @@ pub fn conv2d_forward_f64(
     let patch_width = in_ch * kh * kw;
     let patch_count = oh * ow;
     let flat = batch * patch_count;
+
+    // 1x1 stride-1 fast path: im2col would only TRANSPOSE the (already padded)
+    // input — a cache-unfriendly channels-last gather — and here oh*ow == ph*pw,
+    // so the whole conv is, per batch, the matmul
+    //     out[b] = weight[out_ch, in_ch] @ padded[b][in_ch, patch_count]
+    // written straight into the [batch, out_ch, patch_count] output layout. This
+    // skips BOTH the im2col panel allocation/copy AND the strided output-transpose
+    // pass. dgemm's K (in_ch) accumulation order is identical to the im2col +
+    // dgemm_bt path (matrixmultiply's microkernel order is independent of the M/N
+    // tiling), so the result is bit-for-bit identical. frankentorch-c0nv1x1.
+    if kh == 1 && kw == 1 && sh == 1 && sw == 1 && patch_count > 0 {
+        let mut out = vec![0.0f64; batch * out_ch * patch_count];
+        out.par_chunks_exact_mut(out_ch * patch_count)
+            .enumerate()
+            .for_each(|(b, out_b)| {
+                let in_base = b * in_ch * patch_count;
+                gemm::dgemm(
+                    out_ch,
+                    in_ch,
+                    patch_count,
+                    weight_flat,
+                    &padded[in_base..in_base + in_ch * patch_count],
+                    out_b,
+                );
+                if let Some(bb) = bias {
+                    for (oc, row) in out_b.chunks_exact_mut(patch_count).enumerate() {
+                        let bo = bb[oc];
+                        for v in row {
+                            *v += bo;
+                        }
+                    }
+                }
+            });
+        return out;
+    }
+
     let panel = conv2d_im2col_f64(padded, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
     let mut out_flat = vec![0.0f64; flat * out_ch];
     gemm::dgemm_bt(
@@ -3634,6 +3670,38 @@ pub fn conv2d_forward_f32(
     let patch_width = in_ch * kh * kw;
     let patch_count = oh * ow;
     let flat = batch * patch_count;
+
+    // 1x1 stride-1 fast path — see conv2d_forward_f64 for the rationale. Skips the
+    // im2col transpose + output-transpose by computing, per batch,
+    // weight[out_ch,in_ch] @ padded[b][in_ch,patch_count] directly into the output
+    // layout. sgemm's K-accumulation order matches the im2col + sgemm_bt path, so
+    // the result is bit-for-bit identical. frankentorch-c0nv1x1.
+    if kh == 1 && kw == 1 && sh == 1 && sw == 1 && patch_count > 0 {
+        let mut out = vec![0.0f32; batch * out_ch * patch_count];
+        out.par_chunks_exact_mut(out_ch * patch_count)
+            .enumerate()
+            .for_each(|(b, out_b)| {
+                let in_base = b * in_ch * patch_count;
+                gemm::sgemm(
+                    out_ch,
+                    in_ch,
+                    patch_count,
+                    weight_flat,
+                    &padded[in_base..in_base + in_ch * patch_count],
+                    out_b,
+                );
+                if let Some(bb) = bias {
+                    for (oc, row) in out_b.chunks_exact_mut(patch_count).enumerate() {
+                        let bo = bb[oc];
+                        for v in row {
+                            *v += bo;
+                        }
+                    }
+                }
+            });
+        return out;
+    }
+
     let panel = conv2d_im2col_f32(padded, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
     let mut out_flat = vec![0.0f32; flat * out_ch];
     gemm::sgemm_bt(
@@ -15309,6 +15377,131 @@ pub fn sparse_coo_add(
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+
+    #[test]
+    fn conv2d_1x1_fast_path_matches_im2col_bitexact() {
+        // Golden: the 1x1 stride-1 fast path in conv2d_forward_f64 must be
+        // bit-for-bit identical to the im2col + dgemm_bt + transpose reference.
+        // frankentorch-c0nv1x1.
+        let (batch, in_ch, ph, pw, out_ch) = (3usize, 5usize, 4usize, 6usize, 7usize);
+        let (kh, kw, sh, sw) = (1usize, 1usize, 1usize, 1usize);
+        let (oh, ow) = (ph, pw);
+        let n_in = batch * in_ch * ph * pw;
+        let padded: Vec<f64> = (0..n_in)
+            .map(|i| ((i as f64 * 0.137).sin()) * 1.3 - 0.2)
+            .collect();
+        let weight: Vec<f64> = (0..out_ch * in_ch)
+            .map(|i| ((i as f64 * 0.071 + 1.0).cos()) * 0.9)
+            .collect();
+        let bias: Vec<f64> = (0..out_ch).map(|i| (i as f64) * 0.05 - 0.1).collect();
+
+        let got = super::conv2d_forward_f64(
+            &padded, &weight, Some(&bias), batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw, out_ch,
+        );
+
+        let patch_count = oh * ow;
+        let flat = batch * patch_count;
+        let patch_width = in_ch * kh * kw;
+        let panel =
+            super::conv2d_im2col_f64(&padded, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
+        let mut out_flat = vec![0.0f64; flat * out_ch];
+        super::gemm::dgemm_bt(flat, patch_width, out_ch, &panel, &weight, &mut out_flat);
+        let mut want = vec![0.0f64; batch * out_ch * patch_count];
+        for n in 0..batch {
+            for oc in 0..out_ch {
+                let bo = bias[oc];
+                for p in 0..patch_count {
+                    want[(n * out_ch + oc) * patch_count + p] =
+                        out_flat[(n * patch_count + p) * out_ch + oc] + bo;
+                }
+            }
+        }
+        assert_eq!(got.len(), want.len());
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "1x1 conv mismatch @{i}: {g} vs {w}");
+        }
+
+        // f32 mirror: same bit-exact check against im2col_f32 + sgemm_bt.
+        let padded32: Vec<f32> = padded.iter().map(|&v| v as f32).collect();
+        let weight32: Vec<f32> = weight.iter().map(|&v| v as f32).collect();
+        let bias32: Vec<f32> = bias.iter().map(|&v| v as f32).collect();
+        let got32 = super::conv2d_forward_f32(
+            &padded32, &weight32, Some(&bias32), batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw,
+            out_ch,
+        );
+        let panel32 =
+            super::conv2d_im2col_f32(&padded32, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
+        let mut out_flat32 = vec![0.0f32; flat * out_ch];
+        super::gemm::sgemm_bt(flat, patch_width, out_ch, &panel32, &weight32, &mut out_flat32);
+        let mut want32 = vec![0.0f32; batch * out_ch * patch_count];
+        for n in 0..batch {
+            for oc in 0..out_ch {
+                let bo = bias32[oc];
+                for p in 0..patch_count {
+                    want32[(n * out_ch + oc) * patch_count + p] =
+                        out_flat32[(n * patch_count + p) * out_ch + oc] + bo;
+                }
+            }
+        }
+        for (i, (g, w)) in got32.iter().zip(want32.iter()).enumerate() {
+            assert_eq!(g.to_bits(), w.to_bits(), "1x1 conv f32 mismatch @{i}: {g} vs {w}");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf A/B; run with --ignored --nocapture"]
+    fn bench_conv2d_1x1_fast_vs_im2col() {
+        use std::time::Instant;
+        let (batch, in_ch, ph, pw, out_ch) = (16usize, 64usize, 32usize, 32usize, 64usize);
+        let (kh, kw, sh, sw) = (1usize, 1usize, 1usize, 1usize);
+        let (oh, ow) = (ph, pw);
+        let n_in = batch * in_ch * ph * pw;
+        let padded: Vec<f64> = (0..n_in).map(|i| ((i as f64 * 0.013).sin()) * 0.5).collect();
+        let weight: Vec<f64> = (0..out_ch * in_ch).map(|i| ((i as f64 * 0.017).cos()) * 0.3).collect();
+        let bias: Vec<f64> = (0..out_ch).map(|i| (i as f64) * 0.001).collect();
+        let iters = 60u32;
+
+        // NEW: fast path inside conv2d_forward_f64.
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            let o = super::conv2d_forward_f64(
+                &padded, &weight, Some(&bias), batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw, out_ch,
+            );
+            std::hint::black_box(&o);
+        }
+        let new_ns = t0.elapsed().as_nanos();
+
+        // OLD: im2col + dgemm_bt + transpose.
+        let patch_count = oh * ow;
+        let flat = batch * patch_count;
+        let patch_width = in_ch * kh * kw;
+        let t1 = Instant::now();
+        for _ in 0..iters {
+            let panel =
+                super::conv2d_im2col_f64(&padded, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
+            let mut out_flat = vec![0.0f64; flat * out_ch];
+            super::gemm::dgemm_bt(flat, patch_width, out_ch, &panel, &weight, &mut out_flat);
+            let mut out = vec![0.0f64; batch * out_ch * patch_count];
+            for n in 0..batch {
+                for oc in 0..out_ch {
+                    let bo = bias[oc];
+                    for p in 0..patch_count {
+                        out[(n * out_ch + oc) * patch_count + p] =
+                            out_flat[(n * patch_count + p) * out_ch + oc] + bo;
+                    }
+                }
+            }
+            std::hint::black_box(&out);
+        }
+        let old_ns = t1.elapsed().as_nanos();
+        let ratio = old_ns as f64 / new_ns as f64;
+        println!(
+            "conv1x1 A/B (b={batch} cin={in_ch} {ph}x{pw} cout={out_ch}, {iters} it): old={:.2}ms new={:.2}ms Score={ratio:.2}x",
+            old_ns as f64 / 1e6,
+            new_ns as f64 / 1e6,
+        );
+        assert!(ratio > 0.0);
+    }
 
     use ft_core::{
         Complex128, DType, Device, ScalarTensor, SparseCOOTensor, TensorCompatError, TensorMeta,
