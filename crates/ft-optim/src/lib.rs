@@ -205,6 +205,7 @@ pub struct SGD {
     dampening: f64,
     weight_decay: f64,
     nesterov: bool,
+    maximize: bool,
     velocity: Vec<Option<Vec<f64>>>,
 }
 
@@ -223,6 +224,7 @@ impl SGD {
             dampening: 0.0,
             weight_decay: 0.0,
             nesterov: false,
+            maximize: false,
             velocity: vec![None; n],
         }
     }
@@ -259,6 +261,18 @@ impl SGD {
     #[must_use]
     pub fn nesterov(mut self, nesterov: bool) -> Self {
         self.nesterov = nesterov;
+        self
+    }
+
+    /// Maximize the objective instead of minimizing it (default: false).
+    ///
+    /// Mirrors `torch.optim.SGD(maximize=...)`: the gradient is negated before
+    /// weight decay and the momentum/step logic, so the parameters ascend the
+    /// objective. Weight decay is applied to the negated gradient (matching
+    /// upstream's `grad = -grad; grad += weight_decay * param` order).
+    #[must_use]
+    pub fn maximize(mut self, maximize: bool) -> Self {
+        self.maximize = maximize;
         self
     }
 
@@ -326,6 +340,14 @@ impl Optimizer for SGD {
             ensure_grad_len_matches_param(param, param_values.len(), grad.len())?;
             let mut effective_grad = grad;
 
+            // maximize: ascend the objective by negating the gradient first
+            // (before weight decay), matching torch.
+            if self.maximize {
+                for g in effective_grad.iter_mut() {
+                    *g = -*g;
+                }
+            }
+
             // Apply weight decay: grad += weight_decay * param
             if self.weight_decay != 0.0 {
                 for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
@@ -391,6 +413,7 @@ pub struct Adam {
     eps: f64,
     weight_decay: f64,
     amsgrad: bool,
+    maximize: bool,
     step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
@@ -413,6 +436,7 @@ impl Adam {
             eps: 1e-8,
             weight_decay: 0.0,
             amsgrad: false,
+            maximize: false,
             step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
@@ -426,6 +450,15 @@ impl Adam {
     #[must_use]
     pub fn amsgrad(mut self, amsgrad: bool) -> Self {
         self.amsgrad = amsgrad;
+        self
+    }
+
+    /// Maximize the objective instead of minimizing it (default: false).
+    /// Mirrors `torch.optim.Adam(maximize=...)`: the gradient is negated before
+    /// the weight-decay/moment updates so the parameters ascend the objective.
+    #[must_use]
+    pub fn maximize(mut self, maximize: bool) -> Self {
+        self.maximize = maximize;
         self
     }
 
@@ -533,6 +566,7 @@ impl Optimizer for Adam {
             let eps = self.eps;
             let weight_decay = self.weight_decay;
             let amsgrad = self.amsgrad;
+            let maximize = self.maximize;
             if amsgrad {
                 // AMSGrad path: maintain a per-element running max of the second
                 // moment and use it in the denominator. Kept separate so the
@@ -551,6 +585,8 @@ impl Optimizer for Adam {
                                     m_val: &mut f64,
                                     v_val: &mut f64,
                                     vmax_val: &mut f64| {
+                            // maximize: negate the gradient first (torch parity).
+                            let g = if maximize { -g } else { g };
                             let g_eff = if weight_decay != 0.0 {
                                 g + weight_decay * *p
                             } else {
@@ -601,6 +637,8 @@ impl Optimizer for Adam {
                         // measured rayon break-even for sqrt-class elementwise work on
                         // these workers. frankentorch-optpar.
                         let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
+                            // maximize: negate the gradient first (torch parity).
+                            let g = if maximize { -g } else { g };
                             // Weight decay (L2): grad += weight_decay * param (original param).
                             let g_eff = if weight_decay != 0.0 {
                                 g + weight_decay * *p
@@ -657,6 +695,7 @@ pub struct AdamW {
     eps: f64,
     weight_decay: f64,
     amsgrad: bool,
+    maximize: bool,
     step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
@@ -679,6 +718,7 @@ impl AdamW {
             eps: 1e-8,
             weight_decay: 0.01,
             amsgrad: false,
+            maximize: false,
             step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
@@ -692,6 +732,15 @@ impl AdamW {
     #[must_use]
     pub fn amsgrad(mut self, amsgrad: bool) -> Self {
         self.amsgrad = amsgrad;
+        self
+    }
+
+    /// Maximize the objective instead of minimizing it (default: false).
+    /// Mirrors `torch.optim.AdamW(maximize=...)`: the gradient is negated before
+    /// the moment updates (decoupled weight decay is unaffected).
+    #[must_use]
+    pub fn maximize(mut self, maximize: bool) -> Self {
+        self.maximize = maximize;
         self
     }
 
@@ -796,6 +845,7 @@ impl Optimizer for AdamW {
             let eps = self.eps;
             let weight_decay = self.weight_decay;
             let amsgrad = self.amsgrad;
+            let maximize = self.maximize;
             if amsgrad {
                 if let Some(vm) = self.v_max[i].as_deref() {
                     ensure_state_len(
@@ -817,6 +867,8 @@ impl Optimizer for AdamW {
                                 m_val: &mut f64,
                                 v_val: &mut f64,
                                 vmax_val: &mut f64| {
+                        // maximize: negate the gradient first (torch parity).
+                        let g = if maximize { -g } else { g };
                         *m_val = beta1 * *m_val + (1.0 - beta1) * g;
                         *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
                         if *vmax_val < *v_val {
@@ -865,6 +917,8 @@ impl Optimizer for AdamW {
                     // elements for large tensors (bit-for-bit identical to the serial
                     // loop; same arithmetic/order). frankentorch-optpar.
                     let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
+                        // maximize: negate the gradient first (torch parity).
+                        let g = if maximize { -g } else { g };
                         *m_val = beta1 * *m_val + (1.0 - beta1) * g;
                         *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
                         let m_hat = *m_val / bias_correction1;
@@ -5921,6 +5975,29 @@ mod tests {
             [0.9, 1.9],
             [0.78, 1.78],
             [0.636, 1.636],
+        ]);
+
+        // maximize=True ascends the objective (gradient negated). Goldens from
+        // torch 2.12 (loss=sum(x^2), grad=2x, x0=[1,2]).
+        trial!("sgd_maximize", |x| SGD::new(vec![x], 0.1).maximize(true), [
+            [1.2, 2.4],
+            [1.44, 2.88],
+            [1.728, 3.456],
+        ]);
+        trial!("sgd_maximize_wd", |x| SGD::new(vec![x], 0.1).weight_decay(0.1).maximize(true), [
+            [1.19, 2.38],
+            [1.4161, 2.8322],
+            [1.685159, 3.370318],
+        ]);
+        trial!("adam_maximize", |x| Adam::new(vec![x], 0.1).maximize(true), [
+            [1.0999999995, 2.09999999975],
+            [1.200134775759, 2.200097379532],
+            [1.300490053753, 2.300352395302],
+        ]);
+        trial!("adamw_maximize", |x| AdamW::new(vec![x], 0.1).maximize(true), [
+            [1.0989999995, 2.09799999975],
+            [1.19803556141, 2.195998048517],
+            [1.297192014321, 2.294053534985],
         ]);
 
         let f = fails.borrow();
