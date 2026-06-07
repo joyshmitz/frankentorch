@@ -8080,10 +8080,53 @@ impl TensorTape {
                     .map_err(|e| AutogradError::Dispatch(e.into()))?;
                     TensorStorage::F32(Arc::new(values))
                 }
+                dt @ (DType::F16 | DType::BF16) => {
+                    // torch CPU scatter_add on half accumulates in fp32
+                    // (acc_type<Half> = float) and narrows to half once per output
+                    // element — VERIFIED bit-exact vs torch 2.12 over 200 random
+                    // trials (frankentorch-uv4l). So upcast input+src to f32
+                    // (lossless from half: f16/bf16 are exactly representable in
+                    // f32), accumulate via the f32 kernel, then narrow f32 -> half.
+                    // The accumulator dtype MUST be f32, not f64 — f64 accumulation
+                    // would round differently from torch's per-add fp32 rounding.
+                    // NOTE: index_add and index_put(accumulate=true) use per-add
+                    // HALF rounding instead, so they keep their own dtype gates and
+                    // are deliberately NOT routed through this fp32-accumulate path.
+                    let input_f32: Vec<f32> = input_node
+                        .tensor
+                        .contiguous_values_as_f64()?
+                        .iter()
+                        .map(|&v| v as f32)
+                        .collect();
+                    let src_f32: Vec<f32> = src_values.iter().map(|&v| v as f32).collect();
+                    let f32_meta = ft_core::TensorMeta::from_shape(
+                        meta.shape().to_vec(),
+                        DType::F32,
+                        meta.device(),
+                    );
+                    let f32_idx_meta = ft_core::TensorMeta::from_shape(
+                        index_shape.clone(),
+                        DType::F32,
+                        meta.device(),
+                    );
+                    let values_f32 = scatter_add_tensor_contiguous_f32(
+                        &input_f32,
+                        &f32_meta,
+                        dim,
+                        index,
+                        &f32_idx_meta,
+                        &src_f32,
+                    )
+                    .map_err(|e| AutogradError::Dispatch(e.into()))?;
+                    // f32 -> f64 is exact, then narrow f64 -> half is the same
+                    // round-to-nearest-even torch applies narrowing f32 -> half.
+                    let values_f64: Vec<f64> = values_f32.iter().map(|&v| v as f64).collect();
+                    Self::reduction_values_storage(dt, values_f64)
+                }
                 _ => {
                     return Err(AutogradError::Dispatch(
                         DispatchKeyError::IncompatibleSet {
-                            reason: "scatter_add requires f32 or f64 tensors",
+                            reason: "scatter_add requires f32, f64, f16, or bf16 tensors",
                         }
                         .into(),
                     ));
