@@ -633,6 +633,7 @@ dependencies = [
  "ft-core",
  "ft-dispatch",
  "ft-nn",
+ "rayon",
 ]
 
 [[package]]
