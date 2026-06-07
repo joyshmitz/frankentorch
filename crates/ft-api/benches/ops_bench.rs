@@ -1,6 +1,14 @@
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{
+    BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
+};
 use ft_api::FrankenTorchSession;
 use ft_core::ExecutionMode;
+
+fn deterministic_values(n: usize, shift: f64) -> Vec<f64> {
+    (0..n)
+        .map(|i| (((i as f64) * 0.017 + shift).sin()) * 0.2)
+        .collect()
+}
 
 fn bench_matmul(c: &mut Criterion) {
     let mut group = c.benchmark_group("matmul");
@@ -976,6 +984,151 @@ fn bench_linear_train(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_recurrent_forward(c: &mut Criterion) {
+    let mut group = c.benchmark_group("recurrent_forward");
+    let (seq_len, batch, input_size, hidden) = (64usize, 1usize, 128usize, 128usize);
+
+    group.bench_function("lstm_seq64_batch1_128x128", |bch| {
+        bch.iter_batched(
+            || {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let input = s
+                    .tensor_variable(
+                        deterministic_values(seq_len * batch * input_size, 0.0),
+                        vec![seq_len, batch, input_size],
+                        false,
+                    )
+                    .unwrap();
+                let four_h = 4 * hidden;
+                let w_ih = s
+                    .tensor_variable(
+                        deterministic_values(four_h * input_size, 1.0),
+                        vec![four_h, input_size],
+                        false,
+                    )
+                    .unwrap();
+                let w_hh = s
+                    .tensor_variable(
+                        deterministic_values(four_h * hidden, 2.0),
+                        vec![four_h, hidden],
+                        false,
+                    )
+                    .unwrap();
+                let b_ih = s
+                    .tensor_variable(deterministic_values(four_h, 3.0), vec![four_h], false)
+                    .unwrap();
+                let b_hh = s
+                    .tensor_variable(deterministic_values(four_h, 4.0), vec![four_h], false)
+                    .unwrap();
+                (s, input, vec![(w_ih, w_hh, Some(b_ih), Some(b_hh))])
+            },
+            |(mut s, input, weights)| {
+                black_box(
+                    s.tensor_lstm(black_box(input), None, black_box(&weights), false, false)
+                        .unwrap(),
+                )
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("gru_seq64_batch1_128x128", |bch| {
+        bch.iter_batched(
+            || {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let input = s
+                    .tensor_variable(
+                        deterministic_values(seq_len * batch * input_size, 0.0),
+                        vec![seq_len, batch, input_size],
+                        false,
+                    )
+                    .unwrap();
+                let three_h = 3 * hidden;
+                let w_ih = s
+                    .tensor_variable(
+                        deterministic_values(three_h * input_size, 1.0),
+                        vec![three_h, input_size],
+                        false,
+                    )
+                    .unwrap();
+                let w_hh = s
+                    .tensor_variable(
+                        deterministic_values(three_h * hidden, 2.0),
+                        vec![three_h, hidden],
+                        false,
+                    )
+                    .unwrap();
+                let b_ih = s
+                    .tensor_variable(deterministic_values(three_h, 3.0), vec![three_h], false)
+                    .unwrap();
+                let b_hh = s
+                    .tensor_variable(deterministic_values(three_h, 4.0), vec![three_h], false)
+                    .unwrap();
+                (s, input, vec![(w_ih, w_hh, Some(b_ih), Some(b_hh))])
+            },
+            |(mut s, input, weights)| {
+                black_box(
+                    s.tensor_gru(black_box(input), None, black_box(&weights), false, false)
+                        .unwrap(),
+                )
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("rnn_tanh_seq64_batch1_128x128", |bch| {
+        bch.iter_batched(
+            || {
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let input = s
+                    .tensor_variable(
+                        deterministic_values(seq_len * batch * input_size, 0.0),
+                        vec![seq_len, batch, input_size],
+                        false,
+                    )
+                    .unwrap();
+                let w_ih = s
+                    .tensor_variable(
+                        deterministic_values(hidden * input_size, 1.0),
+                        vec![hidden, input_size],
+                        false,
+                    )
+                    .unwrap();
+                let w_hh = s
+                    .tensor_variable(
+                        deterministic_values(hidden * hidden, 2.0),
+                        vec![hidden, hidden],
+                        false,
+                    )
+                    .unwrap();
+                let b_ih = s
+                    .tensor_variable(deterministic_values(hidden, 3.0), vec![hidden], false)
+                    .unwrap();
+                let b_hh = s
+                    .tensor_variable(deterministic_values(hidden, 4.0), vec![hidden], false)
+                    .unwrap();
+                (s, input, vec![(w_ih, w_hh, Some(b_ih), Some(b_hh))])
+            },
+            |(mut s, input, weights)| {
+                black_box(
+                    s.tensor_rnn(
+                        black_box(input),
+                        None,
+                        black_box(&weights),
+                        false,
+                        false,
+                        "tanh",
+                    )
+                    .unwrap(),
+                )
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
 fn bench_backward_matmul(c: &mut Criterion) {
     let mut group = c.benchmark_group("backward_matmul");
 
@@ -1583,6 +1736,7 @@ criterion_group!(
     bench_add,
     bench_backward_matmul,
     bench_linear_train,
+    bench_recurrent_forward,
     bench_sdpa,
     bench_layer_norm,
     bench_rms_norm,
