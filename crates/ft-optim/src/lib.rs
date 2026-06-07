@@ -656,15 +656,19 @@ pub struct AdamW {
     beta2: f64,
     eps: f64,
     weight_decay: f64,
+    amsgrad: bool,
     step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
     v: Vec<Option<Vec<f64>>>,
+    /// Running max of the second moment, allocated lazily only when `amsgrad`.
+    v_max: Vec<Option<Vec<f64>>>,
 }
 
 impl AdamW {
     /// Create a new AdamW optimizer.
     ///
-    /// Defaults: lr as given, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01
+    /// Defaults: lr as given, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01,
+    /// amsgrad=false
     pub fn new(params: Vec<TensorNodeId>, lr: f64) -> Self {
         let n = params.len();
         Self {
@@ -674,10 +678,21 @@ impl AdamW {
             beta2: 0.999,
             eps: 1e-8,
             weight_decay: 0.01,
+            amsgrad: false,
             step_counts: vec![0; n],
             m: vec![None; n],
             v: vec![None; n],
+            v_max: vec![None; n],
         }
+    }
+
+    /// Enable the AMSGrad variant (default: false): use a running maximum of the
+    /// second moment in the denominator (Reddi et al. 2018). Matches
+    /// `torch.optim.AdamW(amsgrad=True)`.
+    #[must_use]
+    pub fn amsgrad(mut self, amsgrad: bool) -> Self {
+        self.amsgrad = amsgrad;
+        self
     }
 
     /// Set beta coefficients for computing running averages.
@@ -780,46 +795,108 @@ impl Optimizer for AdamW {
             let lr = self.lr;
             let eps = self.eps;
             let weight_decay = self.weight_decay;
-            let m_slot = &mut self.m[i];
-            let v_slot = &mut self.v[i];
-            session.tensor_update_param_values_f64_with(param, |param_values| {
-                let m = m_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
-                let v = v_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
-                // Per-element AdamW update — fully independent, so parallelize over
-                // elements for large tensors (bit-for-bit identical to the serial
-                // loop; same arithmetic/order). frankentorch-optpar.
-                let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
-                    *m_val = beta1 * *m_val + (1.0 - beta1) * g;
-                    *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
-                    let m_hat = *m_val / bias_correction1;
-                    let v_hat = *v_val / bias_correction2;
-                    let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
-                    let decay_delta = if weight_decay == 0.0 {
-                        0.0
-                    } else {
-                        *p * lr * weight_decay
-                    };
-                    *p -= decay_delta + adam_delta;
-                };
-                if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
-                    use rayon::prelude::*;
-                    param_values
-                        .par_iter_mut()
-                        .zip(grad.par_iter())
-                        .zip(m.par_iter_mut())
-                        .zip(v.par_iter_mut())
-                        .for_each(|(((p, g), m_val), v_val)| body(p, *g, m_val, v_val));
-                } else {
-                    for (((p, g), m_val), v_val) in param_values
-                        .iter_mut()
-                        .zip(grad.iter())
-                        .zip(m.iter_mut())
-                        .zip(v.iter_mut())
-                    {
-                        body(p, *g, m_val, v_val);
-                    }
+            let amsgrad = self.amsgrad;
+            if amsgrad {
+                if let Some(vm) = self.v_max[i].as_deref() {
+                    ensure_state_len(
+                        grad.len(),
+                        vm.len(),
+                        "adamw max-second-moment state length mismatch with gradient length",
+                    )?;
                 }
-            })?;
+                let m_slot = &mut self.m[i];
+                let v_slot = &mut self.v[i];
+                let vmax_slot = &mut self.v_max[i];
+                // AMSGrad path (separate so the non-amsgrad fused loop is byte-identical).
+                session.tensor_update_param_values_f64_with(param, |param_values| {
+                    let m = m_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
+                    let v = v_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
+                    let vmax = vmax_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
+                    let body = |p: &mut f64,
+                                g: f64,
+                                m_val: &mut f64,
+                                v_val: &mut f64,
+                                vmax_val: &mut f64| {
+                        *m_val = beta1 * *m_val + (1.0 - beta1) * g;
+                        *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
+                        if *vmax_val < *v_val {
+                            *vmax_val = *v_val;
+                        }
+                        let m_hat = *m_val / bias_correction1;
+                        let v_hat = *vmax_val / bias_correction2;
+                        let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
+                        let decay_delta = if weight_decay == 0.0 {
+                            0.0
+                        } else {
+                            *p * lr * weight_decay
+                        };
+                        *p -= decay_delta + adam_delta;
+                    };
+                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                        use rayon::prelude::*;
+                        param_values
+                            .par_iter_mut()
+                            .zip(grad.par_iter())
+                            .zip(m.par_iter_mut())
+                            .zip(v.par_iter_mut())
+                            .zip(vmax.par_iter_mut())
+                            .for_each(|((((p, g), m_val), v_val), vmax_val)| {
+                                body(p, *g, m_val, v_val, vmax_val);
+                            });
+                    } else {
+                        for ((((p, g), m_val), v_val), vmax_val) in param_values
+                            .iter_mut()
+                            .zip(grad.iter())
+                            .zip(m.iter_mut())
+                            .zip(v.iter_mut())
+                            .zip(vmax.iter_mut())
+                        {
+                            body(p, *g, m_val, v_val, vmax_val);
+                        }
+                    }
+                })?;
+            } else {
+                let m_slot = &mut self.m[i];
+                let v_slot = &mut self.v[i];
+                session.tensor_update_param_values_f64_with(param, |param_values| {
+                    let m = m_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
+                    let v = v_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
+                    // Per-element AdamW update — fully independent, so parallelize over
+                    // elements for large tensors (bit-for-bit identical to the serial
+                    // loop; same arithmetic/order). frankentorch-optpar.
+                    let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
+                        *m_val = beta1 * *m_val + (1.0 - beta1) * g;
+                        *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
+                        let m_hat = *m_val / bias_correction1;
+                        let v_hat = *v_val / bias_correction2;
+                        let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
+                        let decay_delta = if weight_decay == 0.0 {
+                            0.0
+                        } else {
+                            *p * lr * weight_decay
+                        };
+                        *p -= decay_delta + adam_delta;
+                    };
+                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                        use rayon::prelude::*;
+                        param_values
+                            .par_iter_mut()
+                            .zip(grad.par_iter())
+                            .zip(m.par_iter_mut())
+                            .zip(v.par_iter_mut())
+                            .for_each(|(((p, g), m_val), v_val)| body(p, *g, m_val, v_val));
+                    } else {
+                        for (((p, g), m_val), v_val) in param_values
+                            .iter_mut()
+                            .zip(grad.iter())
+                            .zip(m.iter_mut())
+                            .zip(v.iter_mut())
+                        {
+                            body(p, *g, m_val, v_val);
+                        }
+                    }
+                })?;
+            }
 
             self.step_counts[i] = t;
         }
@@ -5856,6 +5933,44 @@ mod tests {
         }
         // amsgrad must actually diverge from plain Adam here.
         assert!((adam[2] - ams[2]).abs() > 1e-6, "amsgrad did not change the trajectory");
+
+        // Same discriminator for AdamW (decoupled weight decay).
+        let run_w = |amsgrad: bool| -> Vec<f64> {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(vec![1.0], vec![1], true).unwrap();
+            let loss = s.tensor_sum(x).unwrap();
+            let report = s.tensor_backward(loss).unwrap();
+            let mut opt = AdamW::new(vec![x], 0.1).amsgrad(amsgrad);
+            let mut out = Vec::new();
+            for &g in &grads {
+                s.tensor_set_accumulated_gradient(x, vec![g]).unwrap();
+                opt.step(&mut s, &report).unwrap();
+                out.push(s.tensor_values(x).unwrap()[0]);
+            }
+            out
+        };
+        let adamw = run_w(false);
+        let adamw_ams = run_w(true);
+        let want_adamw = [0.8990000001, 0.8310951748, 0.7784683824];
+        let want_adamw_ams = [0.8990000001, 0.8311286861, 0.7785536559];
+        for i in 0..3 {
+            assert!(
+                (adamw[i] - want_adamw[i]).abs() < 1e-7,
+                "adamw[{i}]={} want {}",
+                adamw[i],
+                want_adamw[i]
+            );
+            assert!(
+                (adamw_ams[i] - want_adamw_ams[i]).abs() < 1e-7,
+                "adamw_amsgrad[{i}]={} want {}",
+                adamw_ams[i],
+                want_adamw_ams[i]
+            );
+        }
+        assert!(
+            (adamw[2] - adamw_ams[2]).abs() > 1e-6,
+            "adamw amsgrad did not change the trajectory"
+        );
     }
 
     #[test]
