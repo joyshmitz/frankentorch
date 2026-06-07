@@ -3791,8 +3791,11 @@ pub fn conv2d_backward_f64(
     );
     let dpadded = conv2d_col2im_f64(&dpanel, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
     let dbias = if has_bias {
+        // Parallel over out_ch: each channel's bias gradient is an independent
+        // reduction with the same (n outer, p inner) summation order, so the
+        // result is bit-identical to the serial loop. frankentorch-convbwd.
         let mut db = vec![0.0f64; out_ch];
-        for (oc, dbo) in db.iter_mut().enumerate() {
+        db.par_iter_mut().enumerate().for_each(|(oc, dbo)| {
             let mut s = 0.0f64;
             for n in 0..batch {
                 let base = (n * out_ch + oc) * patch_count;
@@ -3801,7 +3804,7 @@ pub fn conv2d_backward_f64(
                 }
             }
             *dbo = s;
-        }
+        });
         Some(db)
     } else {
         None
@@ -4743,8 +4746,10 @@ pub fn conv_transpose2d_backward_f64(
         *dw = acc;
     });
     let dbias = if has_bias {
+        // Parallel over out_ch (bit-identical per-channel reduction; see the conv
+        // backward dbias note). frankentorch-convbwd.
         let mut db = vec![0.0f64; out_ch];
-        for (oc, dbo) in db.iter_mut().enumerate() {
+        db.par_iter_mut().enumerate().for_each(|(oc, dbo)| {
             let mut s = 0.0f64;
             for n in 0..batch {
                 let base = (n * out_ch + oc) * oh * ow;
@@ -4753,7 +4758,7 @@ pub fn conv_transpose2d_backward_f64(
                 }
             }
             *dbo = s;
-        }
+        });
         Some(db)
     } else {
         None
@@ -5060,12 +5065,18 @@ pub fn conv3d_backward_f64(
     let panel = conv3d_im2col_f64(
         padded, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw,
     );
+    // Transpose dout_flat [flat, out_ch] -> dout_t [out_ch, flat] in parallel over
+    // out_ch (independent strided gather — pure copy, bit-identical; was a serial
+    // O(flat*out_ch) pass). Mirrors the conv2d fix. frankentorch-convbwd.
     let mut dout_t = vec![0.0f64; out_ch * flat];
-    for r in 0..flat {
-        for oc in 0..out_ch {
-            dout_t[oc * flat + r] = dout_flat[r * out_ch + oc];
-        }
-    }
+    dout_t
+        .par_chunks_exact_mut(flat)
+        .enumerate()
+        .for_each(|(oc, row)| {
+            for (r, slot) in row.iter_mut().enumerate() {
+                *slot = dout_flat[r * out_ch + oc];
+            }
+        });
     let mut dweight = vec![0.0f64; out_ch * patch_width];
     gemm::dgemm(out_ch, flat, patch_width, &dout_t, &panel, &mut dweight);
     let mut dpanel = vec![0.0f64; flat * patch_width];
@@ -5081,8 +5092,11 @@ pub fn conv3d_backward_f64(
         &dpanel, batch, in_ch, pd, ph, pw, kd, kh, kw, od, oh, ow, sd, sh, sw,
     );
     let dbias = if has_bias {
+        // Parallel over out_ch: each channel's bias gradient is an independent
+        // reduction with the same (n outer, p inner) summation order, so the
+        // result is bit-identical to the serial loop. frankentorch-convbwd.
         let mut db = vec![0.0f64; out_ch];
-        for (oc, dbo) in db.iter_mut().enumerate() {
+        db.par_iter_mut().enumerate().for_each(|(oc, dbo)| {
             let mut s = 0.0f64;
             for n in 0..batch {
                 let base = (n * out_ch + oc) * patch_count;
@@ -5091,7 +5105,7 @@ pub fn conv3d_backward_f64(
                 }
             }
             *dbo = s;
-        }
+        });
         Some(db)
     } else {
         None
