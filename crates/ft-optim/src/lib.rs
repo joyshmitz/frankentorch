@@ -711,14 +711,12 @@ impl Optimizer for AdamW {
             session.tensor_update_param_values_f64_with(param, |param_values| {
                 let m = m_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
                 let v = v_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
-                for (((p, g), m_val), v_val) in param_values
-                    .iter_mut()
-                    .zip(grad.iter())
-                    .zip(m.iter_mut())
-                    .zip(v.iter_mut())
-                {
-                    *m_val = beta1 * *m_val + (1.0 - beta1) * *g;
-                    *v_val = beta2 * *v_val + (1.0 - beta2) * *g * *g;
+                // Per-element AdamW update — fully independent, so parallelize over
+                // elements for large tensors (bit-for-bit identical to the serial
+                // loop; same arithmetic/order). frankentorch-optpar.
+                let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
+                    *m_val = beta1 * *m_val + (1.0 - beta1) * g;
+                    *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
                     let m_hat = *m_val / bias_correction1;
                     let v_hat = *v_val / bias_correction2;
                     let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
@@ -728,6 +726,24 @@ impl Optimizer for AdamW {
                         *p * lr * weight_decay
                     };
                     *p -= decay_delta + adam_delta;
+                };
+                if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                    use rayon::prelude::*;
+                    param_values
+                        .par_iter_mut()
+                        .zip(grad.par_iter())
+                        .zip(m.par_iter_mut())
+                        .zip(v.par_iter_mut())
+                        .for_each(|(((p, g), m_val), v_val)| body(p, *g, m_val, v_val));
+                } else {
+                    for (((p, g), m_val), v_val) in param_values
+                        .iter_mut()
+                        .zip(grad.iter())
+                        .zip(m.iter_mut())
+                        .zip(v.iter_mut())
+                    {
+                        body(p, *g, m_val, v_val);
+                    }
                 }
             })?;
 
@@ -6929,6 +6945,45 @@ mod tests {
     }
 
     // --- AdamW tests ---
+
+    #[test]
+    fn adamw_parallel_path_matches_serial_exact_float_bits() {
+        // Exercise the >= OPTIM_PARALLEL_THRESHOLD parallel branch of AdamW and
+        // assert bit-for-bit equality with the serial decoupled-decay update.
+        // frankentorch-optpar.
+        let n = super::OPTIM_PARALLEL_THRESHOLD + 5;
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let initial: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.0007).cos() * 1.5 + 0.2).collect();
+        let x = session
+            .tensor_variable(initial.clone(), vec![n], true)
+            .expect("variable should succeed");
+        let (lr, b1, b2, eps, wd) = (0.1, 0.9, 0.999, 1e-8, 0.05);
+        let mut optimizer = AdamW::new(vec![x], lr).betas(b1, b2).eps(eps).weight_decay(wd);
+
+        let loss_sum = session.tensor_sum(x).expect("sum should succeed");
+        let report = session.tensor_backward(loss_sum).expect("backward should succeed");
+        optimizer.step(&mut session, &report).expect("step should succeed");
+
+        // Manual serial reference (grad = 1 from sum(); decoupled weight decay).
+        let bc1 = 1.0 - b1.powf(1.0);
+        let bc2 = 1.0 - b2.powf(1.0);
+        let mut expected = initial;
+        for p in &mut expected {
+            let g = 1.0;
+            let m_val = (1.0 - b1) * g;
+            let v_val = (1.0 - b2) * g * g;
+            let m_hat = m_val / bc1;
+            let v_hat = v_val / bc2;
+            let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
+            let decay_delta = *p * lr * wd;
+            *p -= decay_delta + adam_delta;
+        }
+        let actual = session.tensor_values(x).expect("values should resolve");
+        assert_eq!(actual.len(), expected.len());
+        for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(a.to_bits(), e.to_bits(), "param mismatch @{i}: {a} vs {e}");
+        }
+    }
 
     #[test]
     fn adamw_basic_step_reduces_loss() {
