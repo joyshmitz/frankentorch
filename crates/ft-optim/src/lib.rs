@@ -4798,11 +4798,11 @@ impl Optimizer for ASGD {
         let t = checked_next_step_count(self.step_count, "asgd step counter overflow")?;
         self.step_count = t;
 
-        // Update learning rate: eta_t = lr / (1 + lambd * lr * t)^alpha
-        self.eta = self.lr / (1.0 + self.lambd * self.lr * t as f64).powf(self.alpha);
-
-        // Update averaging coefficient: mu_t = 1 / max(1, t - t0)
-        self.mu = 1.0 / f64::max(1.0, t as f64 - self.t0);
+        // torch ASGD applies the CURRENT eta (initialised to lr) and mu for this
+        // step, then decays them for the NEXT step. The previous code decayed eta
+        // one step early AND omitted the (1 - lambd*eta) shrinkage below.
+        let eta = self.eta;
+        let lambd = self.lambd;
 
         for (i, &param) in self.params.iter().enumerate() {
             let grad = match load_param_gradient(session, param)? {
@@ -4820,8 +4820,13 @@ impl Optimizer for ASGD {
                 }
             }
 
-            // SGD step: param -= eta * grad
-            let update: Vec<f64> = effective_grad.iter().map(|g| self.eta * g).collect();
+            // torch ASGD: param = param * (1 - lambd*eta) - eta*grad,
+            // i.e. param -= (lambd*eta)*param + eta*grad.
+            let update: Vec<f64> = param_values
+                .iter()
+                .zip(effective_grad.iter())
+                .map(|(p, g)| lambd * eta * p + eta * g)
+                .collect();
             apply_param_update(session, param, &update)?;
 
             // Update running average: ax = ax + mu * (param - ax)
@@ -4836,6 +4841,12 @@ impl Optimizer for ASGD {
                 *a += self.mu * (p - *a);
             }
         }
+
+        // Decay eta and mu for the NEXT step (torch updates these post-step):
+        //   eta_t = lr / (1 + lambd * lr * t)^alpha
+        //   mu_t  = 1 / max(1, t - t0)
+        self.eta = self.lr / (1.0 + self.lambd * self.lr * t as f64).powf(self.alpha);
+        self.mu = 1.0 / f64::max(1.0, t as f64 - self.t0);
         Ok(())
     }
 
@@ -5884,6 +5895,32 @@ mod tests {
             [0.8, 1.6],
             [0.6210526316, 1.2421052632],
             [0.4623033599, 0.9246067198],
+        ]);
+        trial!("adamax", |x| Adamax::new(vec![x], 0.1), [
+            [0.9000000005, 1.9000000002],
+            [0.8051683272, 1.8025341135],
+            [0.7154994734, 1.7076482356],
+        ]);
+        // Adadelta default lr is 1.0 (rho=0.9, eps=1e-6).
+        trial!("adadelta", |x| Adadelta::new(vec![x], 1.0), [
+            [0.9968377263, 1.9968377233],
+            [0.9935981741, 1.9935957289],
+            [0.9903090457, 1.9903007524],
+        ]);
+        trial!("nadam", |x| NAdam::new(vec![x], 0.1), [
+            [0.8943548214, 1.8943548211],
+            [0.8199730691, 1.8178975293],
+            [0.7527292651, 1.7475085],
+        ]);
+        trial!("asgd", |x| ASGD::new(vec![x], 0.1), [
+            [0.799989997, 1.599979994],
+            [0.6399851994, 1.2799703988],
+            [0.5119836842, 1.0239673685],
+        ]);
+        trial!("rprop", |x| Rprop::new(vec![x], 0.1), [
+            [0.9, 1.9],
+            [0.78, 1.78],
+            [0.636, 1.636],
         ]);
 
         let f = fails.borrow();
