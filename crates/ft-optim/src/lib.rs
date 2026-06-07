@@ -5657,6 +5657,89 @@ mod tests {
     }
 
     #[test]
+    fn optimizer_trajectories_match_torch() {
+        // Differential numeric parity: 3 steps on loss = sum(x^2) (grad = 2x)
+        // starting from x = [1, 2]. Golden trajectories from torch 2.12.0+cpu
+        // (probe_optim.py) — a divergence here is a silent training bug.
+        fn run(
+            session: &mut FrankenTorchSession,
+            x: TensorNodeId,
+            opt: &mut dyn Optimizer,
+            steps: usize,
+        ) -> Vec<Vec<f64>> {
+            let mut out = Vec::new();
+            for _ in 0..steps {
+                opt.zero_grad(session).expect("zero_grad");
+                let sq = session.tensor_mul(x, x).expect("mul");
+                let loss = session.tensor_sum(sq).expect("sum");
+                let report = session.tensor_backward(loss).expect("backward");
+                opt.step(session, &report).expect("step");
+                out.push(session.tensor_values(x).expect("values"));
+            }
+            out
+        }
+        let fails = std::cell::RefCell::new(Vec::<String>::new());
+        let check = |got: &[Vec<f64>], want: &[[f64; 2]], name: &str| {
+            for (st, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+                for j in 0..2 {
+                    if (g[j] - w[j]).abs() >= 1e-6 {
+                        fails.borrow_mut().push(format!("{name} step{st}[{j}]={} want {}", g[j], w[j]));
+                    }
+                }
+            }
+        };
+
+        macro_rules! trial {
+            ($name:literal, $opt:expr, $want:expr) => {{
+                let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+                let x = s.tensor_variable(vec![1.0, 2.0], vec![2], true).unwrap();
+                let mut opt = $opt(x);
+                let traj = run(&mut s, x, &mut opt, 3);
+                check(&traj, &$want, $name);
+            }};
+        }
+
+        trial!("adam", |x| Adam::new(vec![x], 0.1), [
+            [0.9000000005, 1.9000000002],
+            [0.8004122287, 1.8001664861],
+            [0.7015862729, 1.700623392],
+        ]);
+        trial!("adamw", |x| AdamW::new(vec![x], 0.1), [
+            [0.8990000005, 1.8980000002],
+            [0.7985190272, 1.7962725886],
+            [0.6989111832, 1.6949445144],
+        ]);
+        trial!("rmsprop", |x| RMSprop::new(vec![x], 0.1), [
+            [0.00000005, 1.000000025],
+            [-0.0000000003, 0.5509867711],
+            [0.0, 0.3096873876],
+        ]);
+        trial!("rmsprop_centered", |x| RMSprop::new(vec![x], 0.1).centered(true), [
+            [-0.0050377648, 0.99496221],
+            [0.0000503052, 0.5437053136],
+            [-0.0000007558, 0.3023406027],
+        ]);
+        trial!("sgd_nesterov", |x| SGD::new(vec![x], 0.1).momentum(0.9).nesterov(true), [
+            [0.62, 1.24],
+            [0.2224, 0.4448],
+            [-0.108352, -0.216704],
+        ]);
+        trial!("adagrad", |x| Adagrad::new(vec![x], 0.1), [
+            [0.9, 1.9],
+            [0.8331035268, 1.8311250538],
+            [0.7804561814, 1.775821515],
+        ]);
+        trial!("radam", |x| RAdam::new(vec![x], 0.1), [
+            [0.8, 1.6],
+            [0.6210526316, 1.2421052632],
+            [0.4623033599, 0.9246067198],
+        ]);
+
+        let f = fails.borrow();
+        assert!(f.is_empty(), "optimizer divergences ({}): {:?}", f.len(), *f);
+    }
+
+    #[test]
     fn sgd_with_momentum_accumulates_velocity() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
 
