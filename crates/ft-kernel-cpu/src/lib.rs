@@ -3765,12 +3765,18 @@ pub fn conv2d_backward_f64(
         });
     let panel = conv2d_im2col_f64(padded, batch, in_ch, ph, pw, kh, kw, oh, ow, sh, sw);
     // dweight_flat [out_ch, patch_width] = dout_flat^T @ panel.
+    // Transpose dout_flat [flat, out_ch] -> dout_t [out_ch, flat] in parallel over
+    // out_ch (each row is an independent strided gather — pure copy, so the result
+    // is identical; this was a serial O(flat*out_ch) pass). frankentorch-convbwd.
     let mut dout_t = vec![0.0f64; out_ch * flat];
-    for r in 0..flat {
-        for oc in 0..out_ch {
-            dout_t[oc * flat + r] = dout_flat[r * out_ch + oc];
-        }
-    }
+    dout_t
+        .par_chunks_exact_mut(flat)
+        .enumerate()
+        .for_each(|(oc, row)| {
+            for (r, slot) in row.iter_mut().enumerate() {
+                *slot = dout_flat[r * out_ch + oc];
+            }
+        });
     let mut dweight = vec![0.0f64; out_ch * patch_width];
     gemm::dgemm(out_ch, flat, patch_width, &dout_t, &panel, &mut dweight);
     // dpanel [flat, patch_width] = dout_flat @ weight_flat.
