@@ -1,0 +1,116 @@
+diff --git a/crates/ft-api/src/lib.rs b/crates/ft-api/src/lib.rs
+index 3ee1719f..e37cee94 100644
+--- a/crates/ft-api/src/lib.rs
++++ b/crates/ft-api/src/lib.rs
+@@ -37187,26 +37187,47 @@ impl FrankenTorchSession {
+             let dist_t = self.tensor_variable(Vec::<f64>::new(), out_shape, false)?;
+             return Ok((idx_t, dist_t));
+         }
+-        fn consider_knn_candidate(best: &mut Vec<(usize, f64)>, k: usize, pi: usize, d: f64) {
+-            // Early-reject once the top-k buffer is full. `best` is kept
+-            // sorted ascending, so best[k-1] is the worst retained distance.
+-            // The insertion scan only fires when `d` sorts strictly before a
+-            // retained entry, i.e. d < worst; otherwise it is a no-op.
+-            if best.len() == k
+-                && d.partial_cmp(&best[k - 1].1) != Some(std::cmp::Ordering::Less)
++        fn consider_knn_candidate(
++            best_idx: &mut [usize],
++            best_dist: &mut [f64],
++            best_len: &mut usize,
++            k: usize,
++            pi: usize,
++            d: f64,
++        ) {
++            // Early-reject once the top-k buffer is full. The retained prefix is
++            // sorted ascending, so best_dist[k-1] is the worst retained distance.
++            // Strict `<` preserves the prior tie behavior: equal distances keep
++            // their earlier point order and equal-to-worst candidates are ignored.
++            if *best_len == k
++                && d.partial_cmp(&best_dist[k - 1]) != Some(std::cmp::Ordering::Less)
+             {
+                 return;
+             }
+-            let insert_at = best
+-                .iter()
+-                .position(|&(_, best_d)| d.partial_cmp(&best_d) == Some(std::cmp::Ordering::Less));
+-            if let Some(pos) = insert_at {
+-                best.insert(pos, (pi, d));
+-                if best.len() > k {
+-                    best.pop();
++
++            let mut insert_at = *best_len;
++            for (pos, &best_d) in best_dist[..*best_len].iter().enumerate() {
++                if d.partial_cmp(&best_d) == Some(std::cmp::Ordering::Less) {
++                    insert_at = pos;
++                    break;
++                }
++            }
++
++            if insert_at < *best_len {
++                let new_len = (*best_len + 1).min(k);
++                for pos in (insert_at + 1..new_len).rev() {
++                    best_idx[pos] = best_idx[pos - 1];
++                    best_dist[pos] = best_dist[pos - 1];
++                }
++                best_idx[insert_at] = pi;
++                best_dist[insert_at] = d;
++                if *best_len < k {
++                    *best_len += 1;
+                 }
+-            } else if best.len() < k {
+-                best.push((pi, d));
++            } else if *best_len < k {
++                best_idx[*best_len] = pi;
++                best_dist[*best_len] = d;
++                *best_len += 1;
+             }
+         }
+
+@@ -37219,9 +37240,9 @@ impl FrankenTorchSession {
+             let p_off = b * n_points * 3;
+             let q_off = b * n_queries * 3;
+             let out_off = b * n_queries * k;
+-            let mut bests: Vec<Vec<(usize, f64)>> = (0..KNN_QUERY_TILE)
+-                .map(|_| Vec::with_capacity(k))
+-                .collect();
++            let mut best_indices = vec![0usize; KNN_QUERY_TILE * k];
++            let mut best_distances = vec![0.0f64; KNN_QUERY_TILE * k];
++            let mut best_lens = [0usize; KNN_QUERY_TILE];
+             let mut tile_qx = [0.0f64; KNN_QUERY_TILE];
+             let mut tile_qy = [0.0f64; KNN_QUERY_TILE];
+             let mut tile_qz = [0.0f64; KNN_QUERY_TILE];
+@@ -37232,7 +37253,7 @@ impl FrankenTorchSession {
+                     tile_qx[local_q] = q_data[q_off + qi * 3];
+                     tile_qy[local_q] = q_data[q_off + qi * 3 + 1];
+                     tile_qz[local_q] = q_data[q_off + qi * 3 + 2];
+-                    bests[local_q].clear();
++                    best_lens[local_q] = 0;
+                 }
+                 for pi in 0..n_points {
+                     let (px, py, pz) = (
+@@ -37244,12 +37265,23 @@ impl FrankenTorchSession {
+                         let d = (px - tile_qx[local_q]).powi(2)
+                             + (py - tile_qy[local_q]).powi(2)
+                             + (pz - tile_qz[local_q]).powi(2);
+-                        consider_knn_candidate(&mut bests[local_q], k, pi, d);
++                        let best_start = local_q * k;
++                        consider_knn_candidate(
++                            &mut best_indices[best_start..best_start + k],
++                            &mut best_distances[best_start..best_start + k],
++                            &mut best_lens[local_q],
++                            k,
++                            pi,
++                            d,
++                        );
+                     }
+                 }
+                 for local_q in 0..tile_len {
+                     let qi = q_start + local_q;
+-                    for (j, &(pi, d)) in bests[local_q].iter().enumerate() {
++                    let best_start = local_q * k;
++                    for j in 0..best_lens[local_q] {
++                        let pi = best_indices[best_start + j];
++                        let d = best_distances[best_start + j];
+                         indices[out_off + qi * k + j] = pi as f64;
+                         distances[out_off + qi * k + j] = d.sqrt();
+                     }

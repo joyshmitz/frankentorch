@@ -1,0 +1,11 @@
+Command:
+br sync --flush-only
+
+Result:
+- Failed with exit code 7.
+- The tracker refused to export a stale database because the database has 923 issues while .beads/issues.jsonl has 924 unique issues.
+- The refused export would have lost peer issue frankentorch-ib63.
+
+Action:
+- Did not use --force.
+- .beads/issues.jsonl already contains frankentorch-ib63 and the closed frankentorch-tgst record, so the safe JSONL state is being committed as-is.

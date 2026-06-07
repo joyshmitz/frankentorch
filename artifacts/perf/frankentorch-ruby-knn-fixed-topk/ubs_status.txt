@@ -1,0 +1,12 @@
+Command:
+timeout 300s ubs crates/ft-api/src/lib.rs
+
+Result:
+- Timed out after 300 seconds with exit code 124.
+- UBS reached "Scanning rust..." and produced no file findings before timeout.
+- The raw scanner transcript is stored in ubs_ft_api.txt.
+- The git commit hook retried UBS against the staged files, timed out on the large-file scan, emitted no findings, and instructed that the commit may proceed with UBS_SKIP=1.
+
+Gate interpretation:
+- UBS did not clear.
+- No UBS finding is attributed to the KNN fixed-top-k hunk because the scanner did not emit findings before timeout.

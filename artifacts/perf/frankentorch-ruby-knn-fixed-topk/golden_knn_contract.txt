@@ -1,0 +1,31 @@
+frankentorch-tgst KNN fixed-top-k golden contract
+
+Target:
+- ft-api knn_search/8192x512_k8
+- Function under proof: FrankenTorchSession::knn_search
+
+Golden source:
+- RCH focused test command: cargo test -p ft-api knn_search -- --nocapture
+- Passed bit-exact tests:
+  - knn_search_zero_k_returns_empty_outputs
+  - knn_search_streaming_topk_matches_full_sort_reference_bit_exact
+  - knn_search_bench_scale_matches_full_sort_reference_bit_exact
+
+Behavior proof:
+- Candidate distance computation is unchanged:
+  d = (px - qx).powi(2) + (py - qy).powi(2) + (pz - qz).powi(2)
+- Candidate output distance computation is unchanged:
+  output distance = d.sqrt()
+- Candidate ordering is unchanged:
+  retained neighbors stay sorted by ascending squared distance.
+- Candidate tie behavior is unchanged:
+  insertion still requires d < retained_distance; equal distances keep prior point order, and equal-to-worst candidates are ignored when the top-k buffer is full.
+- Candidate floating-point operation order is unchanged for every candidate distance.
+- Candidate RNG behavior is unchanged:
+  knn_search uses no RNG, and the benchmark/test fixtures are deterministic.
+- Candidate shape/dtype behavior is unchanged:
+  indices and distances keep the previous f64 tensor outputs and the previous 2-D / batched output shapes.
+
+Result:
+- Focused RCH tests passed on worker ts1.
+- Baseline and after Criterion runs used the same worker ts1.
