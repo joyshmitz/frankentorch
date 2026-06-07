@@ -8051,8 +8051,16 @@ pub fn topk_tensor_contiguous_f64(
 pub struct LuFactorResult {
     /// Packed LU matrix in row-major order (n x n).
     pub lu: Vec<f64>,
-    /// Pivot indices: row i was swapped with row pivots[i] during elimination.
+    /// Direct row permutation: `pivots[i]` is the original row that ended up at
+    /// position `i` after pivoting. Used internally to build P (lu_unpack) and to
+    /// permute the RHS (lu_solve).
     pub pivots: Vec<usize>,
+    /// LAPACK getrf-style pivot sequence (0-indexed): `ipiv[k]` is the row that
+    /// column step `k` swapped row `k` with (equal to `k` when no swap). This is
+    /// what torch's `lu_factor`/`linalg.lu_factor` returns (as 1-indexed). The
+    /// direct permutation above is recovered by replaying these swaps onto an
+    /// identity permutation.
+    pub ipiv: Vec<usize>,
     /// Matrix dimension (n x n).
     pub n: usize,
 }
@@ -8106,6 +8114,7 @@ pub fn lu_factor_contiguous_f64(
         return Ok(LuFactorResult {
             lu: Vec::new(),
             pivots: Vec::new(),
+            ipiv: Vec::new(),
             n: 0,
         });
     }
@@ -8113,6 +8122,9 @@ pub fn lu_factor_contiguous_f64(
     let offset = meta.storage_offset();
     let mut lu: Vec<f64> = data[offset..offset + n * n].to_vec();
     let mut pivots: Vec<usize> = (0..n).collect();
+    // LAPACK getrf IPIV: ipiv[k] = the row that column step k pivoted into row k
+    // (= k when the diagonal is already the pivot). Recorded for torch parity.
+    let mut ipiv: Vec<usize> = (0..n).collect();
 
     // Blocked right-looking LU with partial pivoting (the LAPACK getrf scheme):
     // factor a column panel, then apply it to the trailing matrix as a single
@@ -8143,6 +8155,7 @@ pub fn lu_factor_contiguous_f64(
                     max_row = i;
                 }
             }
+            ipiv[k] = max_row; // LAPACK getrf pivot for this column (0-indexed)
             if max_row != k {
                 pivots.swap(k, max_row);
                 for j in 0..n {
@@ -8231,7 +8244,12 @@ pub fn lu_factor_contiguous_f64(
         k0 = pe;
     }
 
-    Ok(LuFactorResult { lu, pivots, n })
+    Ok(LuFactorResult {
+        lu,
+        pivots,
+        ipiv,
+        n,
+    })
 }
 
 fn lu_factor_f32_from_f64(data: &[f64], meta: &TensorMeta) -> Result<LuFactorF32, KernelError> {
