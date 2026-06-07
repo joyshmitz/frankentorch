@@ -121,7 +121,7 @@ mod gemm {
                     let mut ct = vec![0.0f64; m * bw];
                     // SAFETY: a is m*k; b[n0*k ..] holds bw rows of k; ct is m*bw.
                     unsafe {
-                        matrixmultiply::dgemm(
+                        dgemm_mm(
                             m,
                             k,
                             bw,
@@ -162,7 +162,7 @@ mod gemm {
     fn dgemm_bt_block(m: usize, k: usize, n: usize, a: &[f64], b: &[f64], c: &mut [f64]) {
         // SAFETY: a is m*k, b is n*k (read as B^T via rsb=1,csb=k), c is m*n.
         unsafe {
-            matrixmultiply::dgemm(
+            dgemm_mm(
                 m,
                 k,
                 n,
@@ -194,7 +194,7 @@ mod gemm {
                 // exact m*bw owned output. matrixmultiply's K order is independent of
                 // the N tiling, so ct[i][j] == the single call's c[i][n0+j] bit-for-bit.
                 unsafe {
-                    matrixmultiply::dgemm(
+                    dgemm_mm(
                         m,
                         k,
                         bw,
@@ -227,7 +227,7 @@ mod gemm {
         // a.len() == m*k, b.len() == k*n, c.len() == m*n (sliced exactly by `dgemm`).
         // Row-major layout: row stride = inner dimension, column stride = 1.
         unsafe {
-            matrixmultiply::dgemm(
+            dgemm_mm(
                 m,
                 k,
                 n,
@@ -282,7 +282,7 @@ mod gemm {
                 // the exact m*bw owned output. K order is independent of N tiling,
                 // so ct[i][j] == the single call's c[i][n0+j] bit-for-bit.
                 unsafe {
-                    matrixmultiply::sgemm(
+                    sgemm_mm(
                         m,
                         k,
                         bw,
@@ -328,7 +328,7 @@ mod gemm {
                     let mut ct = vec![0.0f32; m * bw];
                     // SAFETY: a is m*k; b[n0*k ..] holds bw rows of k; ct is m*bw.
                     unsafe {
-                        matrixmultiply::sgemm(
+                        sgemm_mm(
                             m,
                             k,
                             bw,
@@ -369,7 +369,7 @@ mod gemm {
     fn sgemm_bt_block(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
         // SAFETY: a is m*k, b is n*k (read as B^T via rsb=1,csb=k), c is m*n.
         unsafe {
-            matrixmultiply::sgemm(
+            sgemm_mm(
                 m,
                 k,
                 n,
@@ -391,7 +391,7 @@ mod gemm {
     pub fn sgemm_block(m: usize, k: usize, n: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
         // SAFETY: see `dgemm_block`; slices are sized exactly by `sgemm`.
         unsafe {
-            matrixmultiply::sgemm(
+            sgemm_mm(
                 m,
                 k,
                 n,
@@ -409,6 +409,120 @@ mod gemm {
             );
         }
     }
+
+    /// Read the x86 MXCSR control/status register (SSE rounding mode + FTZ/DAZ
+    /// denormal-flush + sticky exception flags). Diagnostic for
+    /// frankentorch-ft-api-fullsuite-flake: a non-default MXCSR (default 0x1F80)
+    /// changes denormal handling / rounding and would make GEMM-heavy kernels
+    /// drift bit-for-bit. Non-x86 targets report the default.
+    #[must_use]
+    pub fn read_mxcsr() -> u32 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            #[allow(deprecated)]
+            unsafe {
+                core::arch::x86_64::_mm_getcsr()
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            0x1f80
+        }
+    }
+
+    /// Restore MXCSR to its default (0x1F80): round-to-nearest, no FTZ/DAZ, all
+    /// exception masks set, no sticky flags. No-op off x86_64.
+    pub fn set_mxcsr_default() {
+        #[cfg(target_arch = "x86_64")]
+        {
+            #[allow(deprecated)]
+            unsafe {
+                core::arch::x86_64::_mm_setcsr(0x1f80);
+            }
+        }
+    }
+
+    /// `matrixmultiply::dgemm` that restores MXCSR afterwards.
+    ///
+    /// `matrixmultiply`'s SIMD micro-kernel sets the x86 FTZ/DAZ denormal-flush
+    /// bits in MXCSR and does NOT restore them, so the flush-to-zero state LEAKS
+    /// into every later floating-point op on the same thread (and, since libtest
+    /// reuses threads, into later tests). That made GEMM-heavy golden digests
+    /// drift bit-for-bit depending on whether a GEMM had already run — the
+    /// frankentorch-ft-api-fullsuite-flake. Restoring the default immediately
+    /// after the call leaves the matmul result itself untouched (the flush only
+    /// applied during matrixmultiply's own execution) while stopping the leak.
+    ///
+    /// # Safety
+    /// Same contract as `matrixmultiply::dgemm`: pointers valid for the given
+    /// dims/strides; `c` writable.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn dgemm_mm(
+        m: usize,
+        k: usize,
+        n: usize,
+        alpha: f64,
+        a: *const f64,
+        rsa: isize,
+        csa: isize,
+        b: *const f64,
+        rsb: isize,
+        csb: isize,
+        beta: f64,
+        c: *mut f64,
+        rsc: isize,
+        csc: isize,
+    ) {
+        unsafe {
+            matrixmultiply::dgemm(
+                m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
+            );
+        }
+        set_mxcsr_default();
+    }
+
+    /// `matrixmultiply::sgemm` that restores MXCSR afterwards. See [`dgemm_mm`].
+    ///
+    /// # Safety
+    /// Same contract as `matrixmultiply::sgemm`.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn sgemm_mm(
+        m: usize,
+        k: usize,
+        n: usize,
+        alpha: f32,
+        a: *const f32,
+        rsa: isize,
+        csa: isize,
+        b: *const f32,
+        rsb: isize,
+        csb: isize,
+        beta: f32,
+        c: *mut f32,
+        rsc: isize,
+        csc: isize,
+    ) {
+        unsafe {
+            matrixmultiply::sgemm(
+                m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
+            );
+        }
+        set_mxcsr_default();
+    }
+}
+
+/// Read the x86 MXCSR register (SSE rounding + FTZ/DAZ + sticky flags); 0x1F80
+/// is the default. Diagnostic for the full-suite determinism flake.
+#[must_use]
+pub fn read_mxcsr() -> u32 {
+    gemm::read_mxcsr()
+}
+
+/// Restore MXCSR to its 0x1F80 default. See [`read_mxcsr`].
+pub fn set_mxcsr_default() {
+    gemm::set_mxcsr_default();
 }
 
 use ft_core::{
@@ -15415,6 +15529,53 @@ pub fn sparse_coo_add(
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+
+    #[test]
+    fn kernels_do_not_dirty_mxcsr() {
+        // Determinism guard (frankentorch-ft-api-fullsuite-flake): our kernels
+        // must leave the x86 MXCSR FP control register at its 0x1F80 default
+        // (round-to-nearest, no FTZ/DAZ). A kernel that flips FTZ/rounding and
+        // forgets to restore it would make later GEMM-heavy ops drift bit-for-bit
+        // and leak across tests on the same thread. This run established MXCSR is
+        // NOT the cross-test pollution source (it stays default through a GEMM +
+        // transcendental sweep); the guard keeps it that way.
+        super::set_mxcsr_default();
+        assert_eq!(super::read_mxcsr(), 0x1f80, "MXCSR not at default after reset");
+
+        // Only the CONTROL bits matter for determinism: FTZ (bit 15), DAZ
+        // (bit 6) and the rounding mode (bits 13-14). The low 6 bits are sticky
+        // exception flags (set by e.g. denormal/underflow) that do NOT change
+        // results, so mask them (0x3F) out of the comparison.
+        let control = |csr: u32| csr & !0x3F;
+
+        // GEMM (the parallel/serial dgemm path) must NOT leave FTZ/DAZ set —
+        // matrixmultiply sets them and our dgemm_mm/sgemm_mm wrappers restore the
+        // default. This is the core regression guard for the flake.
+        let (m, k, n) = (96usize, 96usize, 96usize);
+        let a: Vec<f64> = (0..m * k).map(|i| (i % 17) as f64 * 0.1 - 0.8).collect();
+        let b: Vec<f64> = (0..k * n).map(|i| (i % 13) as f64 * 0.2 - 1.0).collect();
+        let mut c = vec![0.0f64; m * n];
+        super::gemm::dgemm(m, k, n, &a, &b, &mut c);
+        assert_eq!(
+            control(super::read_mxcsr()),
+            0x1f80,
+            "GEMM leaked FTZ/DAZ/rounding into MXCSR"
+        );
+
+        // Transcendental / arith sweep on denormal-prone inputs — may set sticky
+        // exception flags but must not change the control bits.
+        let mut acc = 0.0f64;
+        for i in 0..4096u64 {
+            let x = (i as f64 + 1.0) * 1e-160;
+            acc += x.exp().ln().tanh().abs().sqrt() / 3.0;
+        }
+        assert!(acc.is_finite());
+        assert_eq!(
+            control(super::read_mxcsr()),
+            0x1f80,
+            "transcendental sweep changed MXCSR control bits"
+        );
+    }
 
     #[test]
     fn conv2d_1x1_fast_path_matches_im2col_bitexact() {
