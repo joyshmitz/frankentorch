@@ -6444,6 +6444,7 @@ pub struct Conv2d {
     stride_w: usize,
     padding_h: usize,
     padding_w: usize,
+    groups: usize,
 }
 
 impl Conv2d {
@@ -6517,6 +6518,98 @@ impl Conv2d {
             stride_w: sw,
             padding_h: ph,
             padding_w: pw,
+            groups: 1,
+        })
+    }
+
+    /// Create a grouped Conv2d, matching `torch.nn.Conv2d(..., groups=g)`.
+    ///
+    /// The weight is shaped `[out_channels, in_channels / groups, kH, kW]`; a
+    /// grouped convolution applies `groups` independent convolutions over disjoint
+    /// channel slices. `groups == in_channels` (with `out_channels` divisible by
+    /// it) is a depthwise convolution. Both channel counts must be divisible by
+    /// `groups`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_grouped(
+        session: &mut FrankenTorchSession,
+        in_channels: usize,
+        out_channels: usize,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+        use_bias: bool,
+        groups: usize,
+    ) -> Result<Self, AutogradError> {
+        let (kh, kw) = kernel_size;
+        let (sh, sw) = stride;
+        let (ph, pw) = padding;
+
+        if in_channels == 0 || out_channels == 0 || kh == 0 || kw == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Conv2d requires positive in_channels, out_channels, kernel_size",
+                },
+            )));
+        }
+        if sh == 0 || sw == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Conv2d requires stride > 0",
+                },
+            )));
+        }
+        if groups == 0 || in_channels % groups != 0 || out_channels % groups != 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Conv2d groups must be > 0 and divide both in_channels and out_channels",
+                },
+            )));
+        }
+
+        // Kaiming uniform: U(-bound, bound), bound = sqrt(1 / fan_in), where the
+        // grouped fan_in is (in_channels / groups) * kernel_area (torch).
+        let in_per_group = in_channels / groups;
+        let kernel_area = checked_mul(kh, kw, "Conv2d kernel size overflow")?;
+        let fan_in = checked_mul(in_per_group, kernel_area, "Conv2d fan_in overflow")?;
+        let bound = 1.0 / (fan_in as f64).sqrt();
+        let numel = checked_mul(out_channels, fan_in, "Conv2d weight size overflow")?;
+
+        let w_rand = session.rand(vec![numel], false)?;
+        let w_scale = session.full(vec![numel], 2.0 * bound, false)?;
+        let w_scaled = session.tensor_mul(w_rand, w_scale)?;
+        let w_shift = session.full(vec![numel], bound, false)?;
+        let w_shifted = session.tensor_sub(w_scaled, w_shift)?;
+        let w_values = session.tensor_values(w_shifted)?;
+        let weight = session.tensor_variable(
+            w_values,
+            vec![out_channels, in_per_group, kh, kw],
+            true,
+        )?;
+
+        let bias = if use_bias {
+            let b_rand = session.rand(vec![out_channels], false)?;
+            let b_scale = session.full(vec![out_channels], 2.0 * bound, false)?;
+            let b_scaled = session.tensor_mul(b_rand, b_scale)?;
+            let b_shift = session.full(vec![out_channels], bound, false)?;
+            let b_shifted = session.tensor_sub(b_scaled, b_shift)?;
+            let b_values = session.tensor_values(b_shifted)?;
+            Some(session.tensor_variable(b_values, vec![out_channels], true)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            weight,
+            bias,
+            in_channels,
+            out_channels,
+            kernel_h: kh,
+            kernel_w: kw,
+            stride_h: sh,
+            stride_w: sw,
+            padding_h: ph,
+            padding_w: pw,
+            groups,
         })
     }
 
@@ -6557,6 +6650,20 @@ impl Module for Conv2d {
                     reason: "Conv2d input channels do not match in_channels",
                 },
             )));
+        }
+
+        // Grouped convolution routes through the fused functional (independent
+        // convs over channel slices, concatenated). groups==1 keeps the composed
+        // path below unchanged.
+        if self.groups > 1 {
+            return session.functional_conv2d_grouped(
+                input,
+                self.weight,
+                self.bias,
+                (self.stride_h, self.stride_w),
+                (self.padding_h, self.padding_w),
+                self.groups,
+            );
         }
 
         let h_in = input_shape[2];
@@ -22524,6 +22631,61 @@ mod tests {
     }
 
     // ── Conv2d tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn conv2d_grouped_module_shape_and_params() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // Depthwise: in=out=4, groups=4 -> weight [4, 1, 3, 3].
+        let conv = Conv2d::new_grouped(&mut session, 4, 4, (3, 3), (1, 1), (1, 1), true, 4)
+            .expect("grouped conv2d");
+        let wshape = session.tensor_shape(conv.weight()).expect("weight shape");
+        assert_eq!(wshape, vec![4, 1, 3, 3], "depthwise weight is [C_out, 1, kH, kW]");
+
+        let x = session
+            .tensor_variable((0..64).map(|i| i as f64 * 0.01).collect(), vec![1, 4, 4, 4], false)
+            .expect("variable");
+        let y = conv.forward(&mut session, x).expect("forward");
+        let meta = session.tensor_shape(y).expect("out shape");
+        // padding=1, kernel=3, stride=1 -> same spatial size.
+        assert_eq!(meta, vec![1, 4, 4, 4]);
+    }
+
+    #[test]
+    fn conv2d_grouped_module_matches_functional() {
+        // The grouped module forward must equal functional_conv2d_grouped applied
+        // to its own weight/bias (i.e. the module wires groups through correctly).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv2d::new_grouped(&mut session, 4, 6, (2, 2), (1, 1), (0, 0), true, 2)
+            .expect("grouped conv2d");
+        let x = session
+            .tensor_variable((1..=32).map(|i| i as f64 * 0.1).collect(), vec![1, 4, 2, 4], false)
+            .expect("variable");
+        let via_module = conv.forward(&mut session, x).expect("module forward");
+        let via_fn = session
+            .functional_conv2d_grouped(
+                x,
+                conv.weight(),
+                conv.bias(),
+                (1, 1),
+                (0, 0),
+                2,
+            )
+            .expect("functional grouped");
+        assert_eq!(
+            session.tensor_values(via_module).expect("m"),
+            session.tensor_values(via_fn).expect("f"),
+            "grouped module must match functional_conv2d_grouped"
+        );
+    }
+
+    #[test]
+    fn conv2d_grouped_module_rejects_indivisible() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        // out_channels=5 not divisible by groups=2.
+        assert!(
+            Conv2d::new_grouped(&mut session, 4, 5, (2, 2), (1, 1), (0, 0), false, 2).is_err()
+        );
+    }
 
     #[test]
     fn conv2d_forward_basic() {
