@@ -6,7 +6,8 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
-    cholesky_contiguous_f64, det_contiguous_f64, eig_contiguous_f64, eigh_contiguous_f64,
+    cholesky_contiguous_f64, cholesky_solve_contiguous_f64, det_contiguous_f64,
+    eig_contiguous_f64, eigh_contiguous_f64,
     eigvals_contiguous_f64, eigvalsh_contiguous_f64, inv_tensor_contiguous_f64,
     lobpcg_contiguous_f64, lu_factor_contiguous_f64, lu_solve_contiguous_f64,
     lu_solve_mixed_refine_contiguous_f64, matrix_exp_contiguous_f64, qr_contiguous_f64,
@@ -359,11 +360,50 @@ fn bench_cholesky(c: &mut Criterion) {
     }
 }
 
+fn bench_cholesky_solve(c: &mut Criterion) {
+    // n-RHS Cholesky solve = the cholesky_inverse workload; the column-parallel
+    // triangular-solve target (matches the lu_solve/inv win, frankentorch-otbok).
+    for &n in &[512usize, 1024usize] {
+        let mut b = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                b[i * n + j] = ((i * 31 + j * 17) % 97) as f64 * 0.013 - 0.5;
+            }
+        }
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0_f64;
+                for k in 0..n {
+                    s += b[k * n + i] * b[k * n + j];
+                }
+                a[i * n + j] = s;
+            }
+            a[i * n + i] += n as f64;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let factor = cholesky_contiguous_f64(&a, &meta, false).unwrap();
+        let mut id = vec![0.0_f64; n * n];
+        for i in 0..n {
+            id[i * n + i] = 1.0;
+        }
+        let id_meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        c.bench_function(&format!("cholesky_solve_f64_{n}x{n}_nrhs"), |bch| {
+            bch.iter(|| {
+                black_box(
+                    cholesky_solve_contiguous_f64(&factor, black_box(&id), &id_meta, false).unwrap(),
+                )
+            })
+        });
+    }
+}
+
 criterion_group!(
     benches,
     bench_lu,
     bench_lu_solve,
     bench_cholesky,
+    bench_cholesky_solve,
     bench_eigh,
     bench_symmetric_rank2k_update,
     bench_lobpcg,

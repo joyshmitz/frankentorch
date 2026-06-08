@@ -9673,6 +9673,66 @@ pub fn cholesky_solve_contiguous_f64(
         }
     }
 
+    // COLUMN-PARALLEL path for large multi-RHS (e.g. the n-RHS cholesky_inverse).
+    // Each RHS column is an INDEPENDENT 2-pass triangular solve, so this is one
+    // barrier-free parallel region (same axis that won 1.6-1.8x for lu_solve,
+    // frankentorch-otbok). Bit-exact: each column reproduces the serial sweep's
+    // per-element arithmetic and order. Transpose to RHS-outer, solve in parallel,
+    // transpose back. frankentorch-chsolve-colpar.
+    let par_gate =
+        num_rhs >= 8 && (n as u128) * (n as u128) * (num_rhs as u128) >= (1u128 << 29);
+    if par_gate {
+        let mut xt = vec![0.0f64; num_rhs * n];
+        for i in 0..n {
+            for rhs in 0..num_rhs {
+                xt[rhs * n + i] = x[i * num_rhs + rhs];
+            }
+        }
+        xt.par_chunks_mut(n).for_each(|col| {
+            if upper {
+                // U^T Y = B (forward), then U X = Y (back). U^T[i][k] = l[k*n+i].
+                for i in 0..n {
+                    let mut acc = col[i];
+                    for k in 0..i {
+                        acc -= l[k * n + i] * col[k];
+                    }
+                    col[i] = acc / l[i * n + i];
+                }
+                for i in (0..n).rev() {
+                    let mut acc = col[i];
+                    let row = i * n;
+                    for k in (i + 1)..n {
+                        acc -= l[row + k] * col[k];
+                    }
+                    col[i] = acc / l[row + i];
+                }
+            } else {
+                // L Y = B (forward), then L^T X = Y (back). L^T[i][k] = l[k*n+i].
+                for i in 0..n {
+                    let mut acc = col[i];
+                    let row = i * n;
+                    for k in 0..i {
+                        acc -= l[row + k] * col[k];
+                    }
+                    col[i] = acc / l[row + i];
+                }
+                for i in (0..n).rev() {
+                    let mut acc = col[i];
+                    for k in (i + 1)..n {
+                        acc -= l[k * n + i] * col[k];
+                    }
+                    col[i] = acc / l[i * n + i];
+                }
+            }
+        });
+        for i in 0..n {
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] = xt[rhs * n + i];
+            }
+        }
+        return Ok(x);
+    }
+
     if upper {
         // A = U^T @ U: solve U^T @ Y = B (forward sub), then U @ X = Y (back sub)
         // Forward substitution with U^T (lower triangular)
