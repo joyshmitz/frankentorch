@@ -6812,6 +6812,36 @@ impl Module for MaxPool1d {
 /// Applies cross-correlation over an input signal of shape `[N, C_in, H, W]`.
 /// Weight shape: `[C_out, C_in, kH, kW]`. Output: `[N, C_out, H_out, W_out]`
 /// where `H_out = (H + 2*padding_h - kH) / stride_h + 1` (similarly for W).
+/// Padding mode for the convolution modules, matching torch's `padding_mode`.
+///
+/// `Zeros` (the default) pads with zeros. The others pad the input by the
+/// module's `padding` before convolving (with zero internal padding), exactly
+/// like `torch.nn.Conv*d(padding_mode=...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaddingMode {
+    /// Zero padding — `torch` default (`'zeros'`).
+    #[default]
+    Zeros,
+    /// Reflect across the border without repeating the edge value (`'reflect'`).
+    Reflect,
+    /// Repeat the edge value (`'replicate'`).
+    Replicate,
+    /// Wrap around (`'circular'`).
+    Circular,
+}
+
+impl PaddingMode {
+    /// The `functional_pad_mode` string for this mode (Zeros -> "constant").
+    fn pad_str(self) -> &'static str {
+        match self {
+            PaddingMode::Zeros => "constant",
+            PaddingMode::Reflect => "reflect",
+            PaddingMode::Replicate => "replicate",
+            PaddingMode::Circular => "circular",
+        }
+    }
+}
+
 pub struct Conv2d {
     weight: TensorNodeId,
     bias: Option<TensorNodeId>,
@@ -6826,6 +6856,7 @@ pub struct Conv2d {
     groups: usize,
     dilation_h: usize,
     dilation_w: usize,
+    padding_mode: PaddingMode,
 }
 
 impl Conv2d {
@@ -6902,6 +6933,7 @@ impl Conv2d {
             groups: 1,
             dilation_h: 1,
             dilation_w: 1,
+            padding_mode: PaddingMode::Zeros,
         })
     }
 
@@ -6995,7 +7027,17 @@ impl Conv2d {
             groups,
             dilation_h: 1,
             dilation_w: 1,
+            padding_mode: PaddingMode::Zeros,
         })
+    }
+
+    /// Set the padding mode, matching `torch.nn.Conv2d(..., padding_mode=...)`.
+    /// Non-`Zeros` modes pad the input by `padding` with the chosen mode and then
+    /// convolve with zero internal padding (default `Zeros`).
+    #[must_use]
+    pub fn padding_mode(mut self, mode: PaddingMode) -> Self {
+        self.padding_mode = mode;
+        self
     }
 
     /// Set the dilation (à-trous spacing) of the kernel, matching
@@ -7053,6 +7095,42 @@ impl Module for Conv2d {
                     reason: "Conv2d input channels do not match in_channels",
                 },
             )));
+        }
+
+        // Non-zero padding_mode (reflect / replicate / circular): pad the input
+        // by `padding` with the chosen mode, then convolve with zero internal
+        // padding — exactly torch's nn.Conv2d(padding_mode=...). Delegating to a
+        // zero-padding copy keeps the dilation / groups / im2col paths unchanged.
+        if self.padding_mode != PaddingMode::Zeros && (self.padding_h > 0 || self.padding_w > 0) {
+            // torch pad order is innermost-first: [W_before, W_after, H_before, H_after].
+            let padded = session.functional_pad_mode(
+                input,
+                &[
+                    self.padding_w,
+                    self.padding_w,
+                    self.padding_h,
+                    self.padding_h,
+                ],
+                self.padding_mode.pad_str(),
+                0.0,
+            )?;
+            let zero_pad_conv = Conv2d {
+                weight: self.weight,
+                bias: self.bias,
+                in_channels: self.in_channels,
+                out_channels: self.out_channels,
+                kernel_h: self.kernel_h,
+                kernel_w: self.kernel_w,
+                stride_h: self.stride_h,
+                stride_w: self.stride_w,
+                padding_h: 0,
+                padding_w: 0,
+                groups: self.groups,
+                dilation_h: self.dilation_h,
+                dilation_w: self.dilation_w,
+                padding_mode: PaddingMode::Zeros,
+            };
+            return zero_pad_conv.forward(session, padded);
         }
 
         // Dilation routes through the dilated functional (zero-stuffed kernel),
@@ -24321,6 +24399,58 @@ mod tests {
             session.tensor_values(via_fn).expect("f"),
             "dilated module must match functional_conv2d_dilated"
         );
+    }
+
+    #[test]
+    fn conv2d_padding_mode_matches_mode_pad_plus_conv() {
+        // torch nn.Conv2d(padding_mode='reflect'|'replicate'|'circular') pads the
+        // input by `padding` with that mode, then convolves with zero internal
+        // padding. The module must equal manual functional_pad_mode + functional
+        // conv applied to its own weight; and each mode must differ from zeros.
+        let data: Vec<f64> = (0..1 * 2 * 5 * 5).map(|i| (i as f64 * 0.31).sin()).collect();
+        let modes = [
+            (PaddingMode::Reflect, "reflect"),
+            (PaddingMode::Replicate, "replicate"),
+            (PaddingMode::Circular, "circular"),
+        ];
+        let mut zeros_out: Option<Vec<f64>> = None;
+        for (mode, pad_str) in modes {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let conv = Conv2d::new(&mut s, 2, 3, (2, 2), (1, 1), (1, 1), true)
+                .expect("conv2d")
+                .padding_mode(mode);
+
+            let x = s.tensor_variable(data.clone(), vec![1, 2, 5, 5], false).unwrap();
+            let via_module = conv.forward(&mut s, x).unwrap();
+
+            // reference: pad with the mode (W,W,H,H), then conv with zero padding.
+            let x2 = s.tensor_variable(data.clone(), vec![1, 2, 5, 5], false).unwrap();
+            let padded = s.functional_pad_mode(x2, &[1, 1, 1, 1], pad_str, 0.0).unwrap();
+            let via_fn = s
+                .functional_conv2d(padded, conv.weight(), conv.bias(), (1, 1), (0, 0))
+                .unwrap();
+            assert_eq!(
+                s.tensor_values(via_module).unwrap(),
+                s.tensor_values(via_fn).unwrap(),
+                "padding_mode {mode:?} must match mode-pad + functional conv"
+            );
+
+            // The same weight with ZERO padding must give a different result,
+            // confirming the mode actually changes the border behavior.
+            let x3 = s.tensor_variable(data.clone(), vec![1, 2, 5, 5], false).unwrap();
+            let zpadded = s.functional_pad_mode(x3, &[1, 1, 1, 1], "constant", 0.0).unwrap();
+            let zout = s
+                .functional_conv2d(zpadded, conv.weight(), conv.bias(), (1, 1), (0, 0))
+                .unwrap();
+            let zvals = s.tensor_values(zout).unwrap();
+            let mvals = s.tensor_values(via_module).unwrap();
+            assert!(
+                zvals.iter().zip(&mvals).any(|(z, m)| (z - m).abs() > 1e-9),
+                "padding_mode {mode:?} must differ from zeros padding"
+            );
+            zeros_out = Some(zvals);
+        }
+        assert!(zeros_out.is_some());
     }
 
     #[test]
