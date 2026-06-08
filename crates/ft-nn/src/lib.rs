@@ -4455,6 +4455,13 @@ impl Module for AvgPool1d {
 
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AvgPool1d accepts an unbatched [C, L] input — unsqueeze ->
+        // pool -> squeeze(0).
+        if input_shape.len() == 2 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -6695,6 +6702,13 @@ impl Module for MaxPool1d {
 
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.MaxPool1d accepts an unbatched [C, L] input — unsqueeze ->
+        // pool -> squeeze(0).
+        if input_shape.len() == 2 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -7207,6 +7221,13 @@ impl Module for MaxPool2d {
 
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.MaxPool2d accepts an unbatched [C, H, W] input — unsqueeze ->
+        // pool -> squeeze(0).
+        if input_shape.len() == 3 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -7344,6 +7365,13 @@ impl Module for AdaptiveAvgPool2d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AdaptiveAvgPool2d accepts an unbatched [C, H, W] input —
+        // unsqueeze -> pool -> squeeze(0).
+        if input_shape.len() == 3 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -7499,6 +7527,13 @@ impl Module for AvgPool2d {
 
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AvgPool2d accepts an unbatched [C, H, W] input — unsqueeze ->
+        // pool -> squeeze(0).
+        if input_shape.len() == 3 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -7686,6 +7721,13 @@ impl Module for AvgPool3d {
 
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AvgPool3d accepts an unbatched [C, D, H, W] input — unsqueeze
+        // -> pool -> squeeze(0).
+        if input_shape.len() == 4 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -7944,6 +7986,13 @@ impl Module for MaxPool3d {
 
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.MaxPool3d accepts an unbatched [C, D, H, W] input — unsqueeze
+        // -> pool -> squeeze(0).
+        if input_shape.len() == 4 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -8041,6 +8090,13 @@ impl Module for AdaptiveAvgPool1d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AdaptiveAvgPool1d accepts an unbatched [C, L] input —
+        // unsqueeze -> pool -> squeeze(0).
+        if input_shape.len() == 2 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -8126,6 +8182,13 @@ impl Module for AdaptiveAvgPool3d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AdaptiveAvgPool3d accepts an unbatched [C, D, H, W] input —
+        // unsqueeze -> pool -> squeeze(0).
+        if input_shape.len() == 4 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -8265,6 +8328,13 @@ impl Module for AdaptiveMaxPool1d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AdaptiveMaxPool1d accepts an unbatched [C, L] input —
+        // unsqueeze -> pool -> squeeze(0).
+        if input_shape.len() == 2 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -8343,6 +8413,13 @@ impl Module for AdaptiveMaxPool2d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AdaptiveMaxPool2d accepts an unbatched [C, H, W] input —
+        // unsqueeze -> pool -> squeeze(0).
+        if input_shape.len() == 3 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -8454,6 +8531,13 @@ impl Module for AdaptiveMaxPool3d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.AdaptiveMaxPool3d accepts an unbatched [C, D, H, W] input —
+        // unsqueeze -> pool -> squeeze(0).
+        if input_shape.len() == 4 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -16403,6 +16487,13 @@ impl Module for LPPool1d {
         )?;
 
         let shape = session.tensor_shape(input)?;
+        // torch nn.LPPool1d accepts an unbatched [C, L] input — unsqueeze ->
+        // pool -> squeeze(0).
+        if shape.len() == 2 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -16484,6 +16575,13 @@ impl Module for LPPool2d {
         )?;
 
         let shape = session.tensor_shape(input)?;
+        // torch nn.LPPool2d accepts an unbatched [C, H, W] input — unsqueeze ->
+        // pool -> squeeze(0).
+        if shape.len() == 3 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -16568,6 +16666,13 @@ impl Module for LPPool3d {
         )?;
 
         let shape = session.tensor_shape(input)?;
+        // torch nn.LPPool3d accepts an unbatched [C, D, H, W] input — unsqueeze
+        // -> pool -> squeeze(0).
+        if shape.len() == 4 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -23104,6 +23209,53 @@ mod tests {
             .tensor_variable(vec![1.0, 2.0], vec![2], false)
             .expect("variable");
         assert!(pool.forward(&mut session, x).is_err());
+    }
+
+    #[test]
+    fn pool_modules_accept_unbatched_input() {
+        // torch nn.{Max,Avg,AdaptiveAvg,AdaptiveMax,LP}Pool{1,2,3}d accept an
+        // unbatched [C, ...] input and return an unbatched [C, ...] output ==
+        // unsqueeze(0) -> pool -> squeeze(0). The batched path is torch-golden-
+        // verified, so this checks each module's new unbatched guard is bit-exact
+        // with batched-then-squeeze.
+        fn iso(
+            s: &mut FrankenTorchSession,
+            pool: &dyn Module,
+            data: Vec<f64>,
+            ushape: Vec<usize>,
+            bshape: Vec<usize>,
+        ) {
+            let xu = s.tensor_variable(data.clone(), ushape.clone(), false).unwrap();
+            let xb = s.tensor_variable(data, bshape, false).unwrap();
+            let yu = pool.forward(s, xu).unwrap();
+            let yb = pool.forward(s, xb).unwrap();
+            // unbatched output rank is one less than batched.
+            assert_eq!(s.tensor_shape(yu).unwrap().len(), ushape.len());
+            let ybs = s.tensor_squeeze(yb, 0).unwrap();
+            assert_eq!(s.tensor_values(yu).unwrap(), s.tensor_values(ybs).unwrap());
+        }
+        let d1: Vec<f64> = (0..12).map(|i| (i as f64 * 0.31).sin()).collect(); // [2,6]
+        let d2: Vec<f64> = (0..32).map(|i| (i as f64 * 0.19).cos()).collect(); // [2,4,4]
+        let d3: Vec<f64> = (0..128).map(|i| (i as f64 * 0.07).sin()).collect(); // [2,4,4,4]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        iso(&mut s, &MaxPool1d::new(2, 2), d1.clone(), vec![2, 6], vec![1, 2, 6]);
+        iso(&mut s, &AvgPool1d::new(2, 2), d1.clone(), vec![2, 6], vec![1, 2, 6]);
+        iso(&mut s, &MaxPool2d::new((2, 2), (2, 2)), d2.clone(), vec![2, 4, 4], vec![1, 2, 4, 4]);
+        iso(&mut s, &AvgPool2d::new((2, 2), (2, 2), (0, 0), false, true), d2.clone(), vec![2, 4, 4], vec![1, 2, 4, 4]);
+        iso(&mut s, &MaxPool3d::new((2, 2, 2), (2, 2, 2)), d3.clone(), vec![2, 4, 4, 4], vec![1, 2, 4, 4, 4]);
+        iso(&mut s, &AvgPool3d::new((2, 2, 2), (2, 2, 2)), d3.clone(), vec![2, 4, 4, 4], vec![1, 2, 4, 4, 4]);
+
+        iso(&mut s, &AdaptiveAvgPool1d::new(3), d1.clone(), vec![2, 6], vec![1, 2, 6]);
+        iso(&mut s, &AdaptiveAvgPool2d::new((2, 2)), d2.clone(), vec![2, 4, 4], vec![1, 2, 4, 4]);
+        iso(&mut s, &AdaptiveAvgPool3d::new((2, 2, 2)), d3.clone(), vec![2, 4, 4, 4], vec![1, 2, 4, 4, 4]);
+        iso(&mut s, &AdaptiveMaxPool1d::new(3), d1.clone(), vec![2, 6], vec![1, 2, 6]);
+        iso(&mut s, &AdaptiveMaxPool2d::new((2, 2)), d2.clone(), vec![2, 4, 4], vec![1, 2, 4, 4]);
+        iso(&mut s, &AdaptiveMaxPool3d::new((2, 2, 2)), d3.clone(), vec![2, 4, 4, 4], vec![1, 2, 4, 4, 4]);
+
+        iso(&mut s, &LPPool1d::new(2.0, 2), d1.clone(), vec![2, 6], vec![1, 2, 6]);
+        iso(&mut s, &LPPool2d::new(2.0, (2, 2)), d2, vec![2, 4, 4], vec![1, 2, 4, 4]);
+        iso(&mut s, &LPPool3d::new(2.0, (2, 2, 2)), d3, vec![2, 4, 4, 4], vec![1, 2, 4, 4, 4]);
     }
 
     // ---- MultiheadAttention tests ----
@@ -31549,9 +31701,11 @@ mod tests {
 
     #[test]
     fn maxpool3d_wrong_dim() {
+        // MaxPool3d accepts 5-D [N,C,D,H,W] and (torch parity) unbatched 4-D
+        // [C,D,H,W]; a 2-D input is neither and must error.
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let input = session
-            .tensor_variable(vec![1.0; 16], vec![1, 1, 4, 4], false)
+            .tensor_variable(vec![1.0; 16], vec![4, 4], false)
             .unwrap();
         let pool = MaxPool3d::new((2, 2, 2), (2, 2, 2));
         assert!(pool.forward(&mut session, input).is_err());
