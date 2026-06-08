@@ -13877,7 +13877,29 @@ impl TransformerEncoderLayer {
         session.tensor_reshape(h, shape)
     }
 
-    /// Forward pass for the encoder layer.
+    /// Self-attention block honoring `src_mask` / `src_key_padding_mask` /
+    /// `is_causal`. `src_mask` is MHA's additive `attn_mask`, `src_key_padding_mask`
+    /// its `[N, S]` key-padding mask. All-`None`/`false` reduces to plain
+    /// self-attention.
+    fn self_attn_block(
+        &self,
+        session: &mut FrankenTorchSession,
+        x: TensorNodeId,
+        src_mask: Option<TensorNodeId>,
+        src_key_padding_mask: Option<TensorNodeId>,
+        is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        match src_key_padding_mask {
+            Some(kpm) => self
+                .self_attn
+                .forward_qkv_key_padding(session, x, x, x, src_mask, kpm, is_causal),
+            None => self
+                .self_attn
+                .forward_qkv_masked(session, x, x, x, src_mask, is_causal),
+        }
+    }
+
+    /// Forward pass for the encoder layer (no masking).
     ///
     /// Input: `[batch, seq_len, d_model]`.
     /// Returns: `[batch, seq_len, d_model]`.
@@ -13886,12 +13908,27 @@ impl TransformerEncoderLayer {
         session: &mut FrankenTorchSession,
         src: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        self.forward_layer_masked(session, src, None, None, false)
+    }
+
+    /// Forward pass with masking, matching
+    /// `torch.nn.TransformerEncoderLayer.forward(src, src_mask,
+    /// src_key_padding_mask, is_causal)`. The masks thread into the self-attention
+    /// (`src_mask` = additive attn_mask, `src_key_padding_mask` = `[N, S]`
+    /// key-padding); the feedforward block is unchanged.
+    pub fn forward_layer_masked(
+        &self,
+        session: &mut FrankenTorchSession,
+        src: TensorNodeId,
+        src_mask: Option<TensorNodeId>,
+        src_key_padding_mask: Option<TensorNodeId>,
+        is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
         if self.norm_first {
             // Pre-norm: x = x + dropout(self_attn(layernorm(x)))
             let normed = self.norm1.forward(session, src)?;
-            let attn_out = self
-                .self_attn
-                .forward_qkv(session, normed, normed, normed)?;
+            let attn_out =
+                self.self_attn_block(session, normed, src_mask, src_key_padding_mask, is_causal)?;
             let attn_out = self.dropout1.forward(session, attn_out)?;
             let x = session.tensor_add(src, attn_out)?;
 
@@ -13902,7 +13939,8 @@ impl TransformerEncoderLayer {
             session.tensor_add(x, ff_out)
         } else {
             // Post-norm: x = layernorm(x + dropout(self_attn(x)))
-            let attn_out = self.self_attn.forward_qkv(session, src, src, src)?;
+            let attn_out =
+                self.self_attn_block(session, src, src_mask, src_key_padding_mask, is_causal)?;
             let attn_out = self.dropout1.forward(session, attn_out)?;
             let x = session.tensor_add(src, attn_out)?;
             let x = self.norm1.forward(session, x)?;
@@ -14017,6 +14055,36 @@ impl TransformerEncoder {
         };
 
         Ok(Self { layers, final_norm })
+    }
+
+    /// Forward pass with masking, matching
+    /// `torch.nn.TransformerEncoder.forward(src, mask, src_key_padding_mask,
+    /// is_causal)`. The masks are threaded into every layer's self-attention
+    /// (`mask` = additive attn_mask, `src_key_padding_mask` = `[N, S]`), then the
+    /// optional final LayerNorm is applied. All-`None`/`false` equals the plain
+    /// `forward`.
+    pub fn forward_masked(
+        &self,
+        session: &mut FrankenTorchSession,
+        src: TensorNodeId,
+        mask: Option<TensorNodeId>,
+        src_key_padding_mask: Option<TensorNodeId>,
+        is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let mut output = src;
+        for layer in &self.layers {
+            output = layer.forward_layer_masked(
+                session,
+                output,
+                mask,
+                src_key_padding_mask,
+                is_causal,
+            )?;
+        }
+        if let Some(ref norm) = self.final_norm {
+            output = norm.forward(session, output)?;
+        }
+        Ok(output)
     }
 }
 
@@ -30130,6 +30198,137 @@ mod tests {
         let output = layer.forward_layer(&mut session, input).expect("forward");
         let shape = session.tensor_shape(output).expect("shape");
         assert_eq!(shape, vec![2, 4, 8]);
+    }
+
+    #[test]
+    fn transformer_encoder_layer_masked_noop_matches_plain() {
+        // forward_layer_masked(None, None, false) must equal forward_layer.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let layer =
+            TransformerEncoderLayer::new(&mut session, 4, 2, 8, 0.0, TransformerActivation::Relu, false)
+                .expect("layer");
+        let data: Vec<f64> = (0..12).map(|i| (i as f64 - 6.0) * 0.1).collect();
+        let x = session.tensor_variable(data, vec![1, 3, 4], false).expect("x");
+        let plain = layer.forward_layer(&mut session, x).expect("plain");
+        let masked = layer
+            .forward_layer_masked(&mut session, x, None, None, false)
+            .expect("masked");
+        let a = session.tensor_values(plain).expect("a");
+        let b = session.tensor_values(masked).expect("b");
+        for (p, m) in a.iter().zip(b.iter()) {
+            assert!((p - m).abs() < 1e-12, "masked no-op differs: {p} vs {m}");
+        }
+    }
+
+    #[test]
+    fn transformer_encoder_layer_causal_output_independent_of_future() {
+        // With is_causal, the layer output at position 0 must not depend on later
+        // input positions (self-attention is causal; residual/FFN/norm are
+        // position-wise). Same layer (weights), two inputs differing only at the
+        // last token.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let layer =
+            TransformerEncoderLayer::new(&mut session, 4, 2, 8, 0.0, TransformerActivation::Relu, false)
+                .expect("layer");
+        let base: Vec<f64> = (0..8).map(|i| i as f64 * 0.1).collect();
+        let mut d1 = base.clone();
+        d1.extend_from_slice(&[0.5, -0.3, 0.2, 0.9]);
+        let x1 = session.tensor_variable(d1, vec![1, 3, 4], false).expect("x1");
+        let o1 = layer
+            .forward_layer_masked(&mut session, x1, None, None, true)
+            .expect("o1");
+        let v1 = session.tensor_values(o1).expect("v1");
+
+        let mut d2 = base;
+        d2.extend_from_slice(&[9.0, -9.0, 4.0, -2.0]);
+        let x2 = session.tensor_variable(d2, vec![1, 3, 4], false).expect("x2");
+        let o2 = layer
+            .forward_layer_masked(&mut session, x2, None, None, true)
+            .expect("o2");
+        let v2 = session.tensor_values(o2).expect("v2");
+
+        for i in 0..4 {
+            assert!(
+                (v1[i] - v2[i]).abs() < 1e-12,
+                "causal layer pos-0 changed with future token: {} vs {}",
+                v1[i],
+                v2[i]
+            );
+        }
+        // Sanity: the last position output DOES change.
+        assert!(
+            (8..12).any(|i| (v1[i] - v2[i]).abs() > 1e-6),
+            "last position output should depend on its input"
+        );
+    }
+
+    #[test]
+    fn transformer_encoder_masked_noop_matches_plain() {
+        // TransformerEncoder::forward_masked(None, None, false) must equal the
+        // plain Module forward.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let encoder = TransformerEncoder::new(
+            &mut session,
+            4,
+            2,
+            2,
+            8,
+            0.0,
+            TransformerActivation::Relu,
+            false,
+            true,
+        )
+        .expect("encoder");
+        let data: Vec<f64> = (0..12).map(|i| (i as f64 - 6.0) * 0.1).collect();
+        let x = session.tensor_variable(data, vec![1, 3, 4], false).expect("x");
+        let plain = encoder.forward(&mut session, x).expect("plain");
+        let masked = encoder
+            .forward_masked(&mut session, x, None, None, false)
+            .expect("masked");
+        let a = session.tensor_values(plain).expect("a");
+        let b = session.tensor_values(masked).expect("b");
+        for (p, m) in a.iter().zip(b.iter()) {
+            assert!((p - m).abs() < 1e-12, "encoder masked no-op differs: {p} vs {m}");
+        }
+    }
+
+    #[test]
+    fn transformer_encoder_causal_output_independent_of_future() {
+        // A 2-layer causal encoder: position-0 output independent of future tokens.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let encoder = TransformerEncoder::new(
+            &mut session,
+            4,
+            2,
+            2,
+            8,
+            0.0,
+            TransformerActivation::Relu,
+            false,
+            false,
+        )
+        .expect("encoder");
+        let base: Vec<f64> = (0..8).map(|i| i as f64 * 0.1).collect();
+        let mut d1 = base.clone();
+        d1.extend_from_slice(&[0.5, -0.3, 0.2, 0.9]);
+        let x1 = session.tensor_variable(d1, vec![1, 3, 4], false).expect("x1");
+        let o1 = encoder
+            .forward_masked(&mut session, x1, None, None, true)
+            .expect("o1");
+        let v1 = session.tensor_values(o1).expect("v1");
+        let mut d2 = base;
+        d2.extend_from_slice(&[9.0, -9.0, 4.0, -2.0]);
+        let x2 = session.tensor_variable(d2, vec![1, 3, 4], false).expect("x2");
+        let o2 = encoder
+            .forward_masked(&mut session, x2, None, None, true)
+            .expect("o2");
+        let v2 = session.tensor_values(o2).expect("v2");
+        for i in 0..4 {
+            assert!(
+                (v1[i] - v2[i]).abs() < 1e-12,
+                "causal encoder pos-0 changed with future token"
+            );
+        }
     }
 
     #[test]
