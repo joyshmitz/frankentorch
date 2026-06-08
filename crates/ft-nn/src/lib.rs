@@ -6515,6 +6515,14 @@ impl Module for InstanceNorm1d {
         session: &mut FrankenTorchSession,
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        // torch nn.InstanceNorm1d accepts an unbatched [C, L] input and returns
+        // [C, L]. The inner GroupNorm treats dim 0 as the batch, so unbatched input
+        // must be unsqueezed first: unsqueeze(0) -> norm -> squeeze(0).
+        if session.tensor_shape(input)?.len() == 2 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.inner.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         self.inner.forward(session, input)
     }
 
@@ -6566,6 +6574,13 @@ impl Module for InstanceNorm2d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.InstanceNorm2d accepts an unbatched [C, H, W] input and returns
+        // [C, H, W] — unsqueeze(0) -> norm -> squeeze(0).
+        if input_shape.len() == 3 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -23971,6 +23986,41 @@ mod tests {
         let y = inorm.forward(&mut session, x).expect("forward");
         let (_, meta) = session.tensor_values_meta(y).expect("meta");
         assert_eq!(meta.shape(), &[2, 4, 3]);
+    }
+
+    #[test]
+    fn instance_norm_modules_accept_unbatched_input() {
+        // torch nn.InstanceNorm{1,2,3}d accept an unbatched [C, ...] input and
+        // return [C, ...] == unsqueeze(0) -> norm -> squeeze(0). Verify each
+        // module's unbatched output equals its batched-then-squeezed output.
+        fn iso(
+            s: &mut FrankenTorchSession,
+            m: &dyn Module,
+            data: Vec<f64>,
+            ushape: Vec<usize>,
+            bshape: Vec<usize>,
+        ) {
+            let xu = s.tensor_variable(data.clone(), ushape.clone(), false).unwrap();
+            let xb = s.tensor_variable(data, bshape, false).unwrap();
+            let yu = m.forward(s, xu).unwrap();
+            let yb = m.forward(s, xb).unwrap();
+            assert_eq!(s.tensor_shape(yu).unwrap(), ushape);
+            let ybs = s.tensor_squeeze(yb, 0).unwrap();
+            assert_eq!(s.tensor_values(yu).unwrap(), s.tensor_values(ybs).unwrap());
+        }
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let d1: Vec<f64> = (0..8).map(|i| (i as f64 * 0.37).sin()).collect(); // [2,4]
+        let m = InstanceNorm1d::new(&mut s, 2, 1e-5, true).unwrap();
+        iso(&mut s, &m, d1, vec![2, 4], vec![1, 2, 4]);
+
+        let d2: Vec<f64> = (0..8).map(|i| (i as f64 * 0.29).cos()).collect(); // [2,2,2]
+        let m = InstanceNorm2d::new(&mut s, 2, 1e-5, true).unwrap();
+        iso(&mut s, &m, d2, vec![2, 2, 2], vec![1, 2, 2, 2]);
+
+        let d3: Vec<f64> = (0..16).map(|i| (i as f64 * 0.17).sin()).collect(); // [2,2,2,2]
+        let m = InstanceNorm3d::new(&mut s, 2, 1e-5, true).unwrap();
+        iso(&mut s, &m, d3, vec![2, 2, 2, 2], vec![1, 2, 2, 2, 2]);
     }
 
     #[test]
