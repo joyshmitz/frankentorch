@@ -1,0 +1,4 @@
+lstm_speedup=1.051461x
+gru_speedup=1.264942x
+rnn_speedup=0.971284x
+geomean_speedup=1.089105x
