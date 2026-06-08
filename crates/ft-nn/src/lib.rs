@@ -9777,6 +9777,9 @@ impl Module for BatchNorm3d {
 pub enum UpsampleMode {
     /// Nearest-neighbor interpolation.
     Nearest,
+    /// Nearest-neighbor with torch's corrected pixel-center sampling
+    /// (`mode='nearest-exact'`); differs from `Nearest` for non-integer ratios.
+    NearestExact,
     /// Linear interpolation for 1D temporal inputs.
     Linear,
     /// Bilinear interpolation for 2D spatial inputs.
@@ -9785,16 +9788,21 @@ pub enum UpsampleMode {
     Bicubic,
     /// Trilinear interpolation for 3D volumetric inputs.
     Trilinear,
+    /// Area (adaptive-average-pool) interpolation (`mode='area'`); works for
+    /// 1D/2D/3D, commonly used for clean downsampling.
+    Area,
 }
 
 impl UpsampleMode {
     fn as_str(self) -> &'static str {
         match self {
             Self::Nearest => "nearest",
+            Self::NearestExact => "nearest-exact",
             Self::Linear => "linear",
             Self::Bilinear => "bilinear",
             Self::Bicubic => "bicubic",
             Self::Trilinear => "trilinear",
+            Self::Area => "area",
         }
     }
 }
@@ -26636,6 +26644,44 @@ mod tests {
                 "actual={actual}, expected={expected}"
             );
         }
+    }
+
+    #[test]
+    fn generic_upsample_nearest_exact_and_area_modes_match_torch() {
+        // nn.Upsample(mode='nearest-exact') and (mode='area') must reach the
+        // matching functional interpolate modes. Goldens from torch 2.12: a 1-D
+        // 5->8 resize where each mode produces a distinct result.
+        let chk = |s: &mut FrankenTorchSession, out, want: &[f64]| {
+            let got = s.tensor_values(out).unwrap();
+            assert_eq!(got.len(), want.len());
+            for (i, (g, w)) in got.iter().zip(want).enumerate() {
+                assert!((g - w).abs() <= 1e-9, "[{i}]: {g} vs torch {w}");
+            }
+        };
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        let x = s.tensor_variable((1..=5).map(|v| v as f64).collect(), vec![1, 1, 5], false).unwrap();
+        let exact = Upsample::with_uniform_size(8)
+            .with_mode(UpsampleMode::NearestExact)
+            .forward(&mut s, x)
+            .unwrap();
+        assert_eq!(s.tensor_shape(exact).unwrap(), vec![1, 1, 8]);
+        chk(&mut s, exact, &[1.0, 1.0, 2.0, 3.0, 3.0, 4.0, 5.0, 5.0]);
+
+        let x = s.tensor_variable((1..=5).map(|v| v as f64).collect(), vec![1, 1, 5], false).unwrap();
+        let area = Upsample::with_uniform_size(8)
+            .with_mode(UpsampleMode::Area)
+            .forward(&mut s, x)
+            .unwrap();
+        chk(&mut s, area, &[1.0, 1.5, 2.0, 2.5, 3.5, 4.0, 4.5, 5.0]);
+
+        // sanity: plain 'nearest' still differs from nearest-exact at 5->8.
+        let x = s.tensor_variable((1..=5).map(|v| v as f64).collect(), vec![1, 1, 5], false).unwrap();
+        let near = Upsample::with_uniform_size(8)
+            .with_mode(UpsampleMode::Nearest)
+            .forward(&mut s, x)
+            .unwrap();
+        chk(&mut s, near, &[1.0, 1.0, 2.0, 2.0, 3.0, 4.0, 4.0, 5.0]);
     }
 
     #[test]
