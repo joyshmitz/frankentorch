@@ -4990,6 +4990,127 @@ impl MultiheadAttention {
         let out = self.out_proj.forward(session, concat_flat)?;
         session.tensor_reshape(out, vec![batch_size, seq_len_q, embed_dim])
     }
+
+    /// Self/cross attention that ALSO returns the attention weights, matching
+    /// `torch.nn.MultiheadAttention(..., need_weights=True)` which returns
+    /// `(attn_output, attn_output_weights)`.
+    ///
+    /// The output is computed by the fused scaled-dot-product attention exactly
+    /// as [`Self::forward_qkv_masked`]; the weights are the
+    /// `softmax(scale * Q_h @ K_h^T + mask)` matrix over the same projected heads,
+    /// reshaped to `[N, num_heads, S_q, S_k]`. When `average_attn_weights` is true
+    /// (torch's default) they are averaged over heads to `[N, S_q, S_k]`.
+    /// `attn_mask` / `is_causal` are honored identically in both the output and
+    /// the returned weights.
+    pub fn forward_qkv_with_weights(
+        &self,
+        session: &mut FrankenTorchSession,
+        query: TensorNodeId,
+        key: TensorNodeId,
+        value: TensorNodeId,
+        attn_mask: Option<TensorNodeId>,
+        is_causal: bool,
+        average_attn_weights: bool,
+    ) -> Result<(TensorNodeId, TensorNodeId), AutogradError> {
+        let q_shape = session.tensor_shape(query)?;
+        let k_shape = session.tensor_shape(key)?;
+        if q_shape.len() != 3 || k_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MultiheadAttention expects 3D input [N, S, E]",
+                },
+            )));
+        }
+        let batch_size = q_shape[0];
+        let seq_len_q = q_shape[1];
+        let embed_dim = q_shape[2];
+        let seq_len_k = k_shape[1];
+        let batch_heads = batch_size * self.num_heads;
+
+        // Project + split into heads (mirrors forward_qkv_masked).
+        let q_flat = session.tensor_reshape(query, vec![batch_size * seq_len_q, embed_dim])?;
+        let q_proj = self.q_proj.forward(session, q_flat)?;
+        let q = session.tensor_reshape(q_proj, vec![batch_size, seq_len_q, embed_dim])?;
+        let self_attention_input = query == key && key == value;
+        let k_flat = if self_attention_input {
+            q_flat
+        } else {
+            session.tensor_reshape(key, vec![batch_size * seq_len_k, embed_dim])?
+        };
+        let k_proj = self.k_proj.forward(session, k_flat)?;
+        let k = session.tensor_reshape(k_proj, vec![batch_size, seq_len_k, embed_dim])?;
+        let v_flat = if self_attention_input {
+            q_flat
+        } else {
+            session.tensor_reshape(value, vec![batch_size * seq_len_k, embed_dim])?
+        };
+        let v_proj = self.v_proj.forward(session, v_flat)?;
+        let v = session.tensor_reshape(v_proj, vec![batch_size, seq_len_k, embed_dim])?;
+
+        let split = |session: &mut FrankenTorchSession,
+                     t: TensorNodeId,
+                     seq: usize|
+         -> Result<TensorNodeId, AutogradError> {
+            let h = session.tensor_reshape(t, vec![batch_size, seq, self.num_heads, self.head_dim])?;
+            let h = session.tensor_permute(h, vec![0, 2, 1, 3])?;
+            session.tensor_reshape(h, vec![batch_heads, seq, self.head_dim])
+        };
+        let q_heads = split(session, q, seq_len_q)?;
+        let k_heads = split(session, k, seq_len_k)?;
+        let v_heads = split(session, v, seq_len_k)?;
+
+        // Output via the fused SDPA (same as forward_qkv_masked).
+        let head_out = session.tensor_scaled_dot_product_attention(
+            q_heads,
+            k_heads,
+            v_heads,
+            attn_mask,
+            is_causal,
+            Some(self.scale),
+        )?;
+        let head_out = session.tensor_reshape(
+            head_out,
+            vec![batch_size, self.num_heads, seq_len_q, self.head_dim],
+        )?;
+        let concat = session.tensor_permute(head_out, vec![0, 2, 1, 3])?;
+        let concat = session.tensor_reshape(concat, vec![batch_size, seq_len_q, embed_dim])?;
+        let concat_flat =
+            session.tensor_reshape(concat, vec![batch_size * seq_len_q, embed_dim])?;
+        let out_proj = self.out_proj.forward(session, concat_flat)?;
+        let output = session.tensor_reshape(out_proj, vec![batch_size, seq_len_q, embed_dim])?;
+
+        // Weights = softmax(scale * Q_h @ K_h^T + mask) over the same heads. The
+        // fused SDPA computes this same softmax internally but does not expose it.
+        let key_t = session.tensor_transpose(k_heads, 1, 2)?; // [bh, head_dim, S_k]
+        let scores = session.tensor_bmm(q_heads, key_t)?; // [bh, S_q, S_k]
+        let scaled = session.tensor_mul_scalar(scores, self.scale)?;
+        let masked = if is_causal {
+            let mut mvals = vec![0.0_f64; seq_len_q * seq_len_k];
+            for i in 0..seq_len_q {
+                for j in 0..seq_len_k {
+                    if j > i {
+                        mvals[i * seq_len_k + j] = f64::NEG_INFINITY;
+                    }
+                }
+            }
+            let m = session.tensor_variable(mvals, vec![seq_len_q, seq_len_k], false)?;
+            let m = session.tensor_expand(m, vec![batch_heads, seq_len_q, seq_len_k])?;
+            session.tensor_add(scaled, m)?
+        } else if let Some(am) = attn_mask {
+            session.tensor_add(scaled, am)?
+        } else {
+            scaled
+        };
+        let weights_bh = session.tensor_softmax(masked, 2)?; // [bh, S_q, S_k]
+        let weights =
+            session.tensor_reshape(weights_bh, vec![batch_size, self.num_heads, seq_len_q, seq_len_k])?;
+        let weights = if average_attn_weights {
+            session.tensor_mean_dim(weights, 1)? // [N, S_q, S_k]
+        } else {
+            weights
+        };
+        Ok((output, weights))
+    }
 }
 
 impl Module for MultiheadAttention {
@@ -22831,6 +22952,77 @@ mod tests {
         for (u, v) in a.iter().zip(b.iter()) {
             assert!((u - v).abs() < 1e-9, "zero kpm changed output: {u} vs {v}");
         }
+    }
+
+    #[test]
+    fn mha_need_weights_output_matches_forward_and_weights_are_softmax() {
+        // forward_qkv_with_weights must return (a) the SAME output as
+        // forward_qkv_masked, and (b) an attention matrix [N, S_q, S_k] (averaged
+        // over heads) whose rows are a valid softmax (sum to 1).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let data: Vec<f64> = (0..12).map(|i| (i as f64 - 6.0) * 0.1).collect();
+        let x = session.tensor_variable(data, vec![1, 3, 4], false).expect("var");
+
+        let (out, weights) = mha
+            .forward_qkv_with_weights(&mut session, x, x, x, None, false, true)
+            .expect("with_weights");
+        let plain = mha.forward_qkv(&mut session, x, x, x).expect("plain");
+
+        let ov = session.tensor_values(out).expect("ov");
+        let pv = session.tensor_values(plain).expect("pv");
+        for (o, p) in ov.iter().zip(pv.iter()) {
+            assert!((o - p).abs() < 1e-12, "need_weights output != forward: {o} vs {p}");
+        }
+
+        assert_eq!(session.tensor_shape(weights).expect("ws"), vec![1, 3, 3]);
+        let wv = session.tensor_values(weights).expect("wv");
+        // Each of the 3 query rows sums to 1 across the 3 key positions.
+        for i in 0..3 {
+            let row_sum: f64 = (0..3).map(|j| wv[i * 3 + j]).sum();
+            assert!((row_sum - 1.0).abs() < 1e-9, "weights row {i} sums to {row_sum}");
+        }
+    }
+
+    #[test]
+    fn mha_need_weights_causal_is_lower_triangular() {
+        // With is_causal, the attention weights must be lower-triangular
+        // (weights[i,j] == 0 for j > i) and each row still sums to 1.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let data: Vec<f64> = (1..=12).map(|i| i as f64 * 0.1).collect();
+        let x = session.tensor_variable(data, vec![1, 3, 4], false).expect("var");
+        let (_out, weights) = mha
+            .forward_qkv_with_weights(&mut session, x, x, x, None, true, true)
+            .expect("causal weights");
+        let wv = session.tensor_values(weights).expect("wv");
+        for i in 0..3 {
+            for j in 0..3 {
+                if j > i {
+                    assert!(
+                        wv[i * 3 + j].abs() < 1e-12,
+                        "causal weights[{i},{j}] should be 0, got {}",
+                        wv[i * 3 + j]
+                    );
+                }
+            }
+            let row_sum: f64 = (0..3).map(|j| wv[i * 3 + j]).sum();
+            assert!((row_sum - 1.0).abs() < 1e-9, "causal row {i} sums to {row_sum}");
+        }
+    }
+
+    #[test]
+    fn mha_need_weights_per_head_shape() {
+        // average_attn_weights=false returns [N, num_heads, S_q, S_k].
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let x = session
+            .tensor_variable((0..12).map(|i| i as f64 * 0.1).collect(), vec![1, 3, 4], false)
+            .expect("var");
+        let (_out, weights) = mha
+            .forward_qkv_with_weights(&mut session, x, x, x, None, false, false)
+            .expect("per-head weights");
+        assert_eq!(session.tensor_shape(weights).expect("ws"), vec![1, 2, 3, 3]);
     }
 
     #[test]
