@@ -3709,25 +3709,39 @@ impl OneCycleLR {
         self.initial_lr() / self.final_div_factor
     }
 
-    fn phase_steps(&self) -> (usize, usize, usize) {
-        if self.total_steps == 0 {
-            return (0, 0, 0);
-        }
-
-        let mut phase1 = ((self.total_steps as f64) * self.pct_start).floor() as usize;
-        if self.pct_start > 0.0 {
-            phase1 = phase1.max(1);
-        }
-        phase1 = phase1.min(self.total_steps);
-
+    /// The piecewise LR/momentum schedule, matching torch's `_schedule_phases`.
+    /// Each entry is `(end_step, start_lr, end_lr, start_momentum, end_momentum)`.
+    ///
+    /// The phase boundary is a FLOAT `pct_start * total_steps - 1` (with the
+    /// 3-phase midpoint `2 * pct_start * total_steps - 2`), and the whole
+    /// schedule spans steps `[0, total_steps - 1]`. This is exactly how PyTorch
+    /// computes it — NOT the integer `floor(pct_start * total_steps)`, which is
+    /// off-by-one and lands the warmup peak a step late. Progress within a phase
+    /// is `(step - start_step) / (end_step - start_step)`.
+    fn schedule_phases(&self) -> Vec<(f64, f64, f64, f64, f64)> {
+        let total = self.total_steps as f64;
+        let initial_lr = self.initial_lr();
+        let min_lr = self.final_lr();
+        let max_lr = self.max_lr;
+        let max_m = self.max_momentum;
+        let base_m = self.base_momentum;
         if self.three_phase {
-            let remaining = self.total_steps.saturating_sub(phase1);
-            let phase2 = remaining / 2;
-            let phase3 = remaining.saturating_sub(phase2);
-            (phase1, phase2, phase3)
+            vec![
+                (self.pct_start * total - 1.0, initial_lr, max_lr, max_m, base_m),
+                (
+                    2.0 * self.pct_start * total - 2.0,
+                    max_lr,
+                    initial_lr,
+                    base_m,
+                    max_m,
+                ),
+                (total - 1.0, initial_lr, min_lr, max_m, max_m),
+            ]
         } else {
-            let phase2 = self.total_steps.saturating_sub(phase1);
-            (phase1, phase2, 0)
+            vec![
+                (self.pct_start * total - 1.0, initial_lr, max_lr, max_m, base_m),
+                (total - 1.0, max_lr, min_lr, base_m, max_m),
+            ]
         }
     }
 
@@ -3742,54 +3756,36 @@ impl OneCycleLR {
     }
 
     fn compute_values_at_step(&self, step: usize) -> (f64, Option<f64>) {
-        let step = step.min(self.total_steps);
-        let (phase1, phase2, phase3) = self.phase_steps();
-        let initial_lr = self.initial_lr();
-        let final_lr = self.final_lr();
-
-        let (lr, momentum) = if step <= phase1 {
-            let progress = if phase1 == 0 {
-                1.0
-            } else {
-                step as f64 / phase1 as f64
-            };
-            (
-                self.anneal(initial_lr, self.max_lr, progress),
-                Some(self.anneal(self.max_momentum, self.base_momentum, progress)),
-            )
-        } else if step <= phase1 + phase2 {
-            let rel_step = step - phase1;
-            let progress = if phase2 == 0 {
-                1.0
-            } else {
-                rel_step as f64 / phase2 as f64
-            };
-            if self.three_phase {
-                (
-                    self.anneal(self.max_lr, initial_lr, progress),
-                    Some(self.anneal(self.base_momentum, self.max_momentum, progress)),
-                )
-            } else {
-                (
-                    self.anneal(self.max_lr, final_lr, progress),
-                    Some(self.anneal(self.base_momentum, self.max_momentum, progress)),
-                )
+        let step_num = step as f64;
+        let phases = self.schedule_phases();
+        let last_idx = phases.len().saturating_sub(1);
+        let mut start_step = 0.0_f64;
+        for (i, &(end_step, start_lr, end_lr, start_m, end_m)) in phases.iter().enumerate() {
+            // The last phase is the fallthrough catch-all, matching torch's loop
+            // (`step_num <= end_step or i == last`). `anneal` clamps progress to
+            // [0, 1], so stepping past `total_steps - 1` pins to the final value
+            // (torch instead raises; clamping is the graceful FT equivalent).
+            if step_num <= end_step || i == last_idx {
+                let denom = end_step - start_step;
+                let progress = if denom == 0.0 {
+                    // Degenerate phase (e.g. pct_start=1.0 makes the down-phase
+                    // zero-width). torch divides by zero here; pin to the phase
+                    // start so the boundary value is well defined.
+                    0.0
+                } else {
+                    (step_num - start_step) / denom
+                };
+                let lr = self.anneal(start_lr, end_lr, progress);
+                let momentum = if self.cycle_momentum {
+                    Some(self.anneal(start_m, end_m, progress))
+                } else {
+                    None
+                };
+                return (lr, momentum);
             }
-        } else {
-            let rel_step = step - phase1 - phase2;
-            let progress = if phase3 == 0 {
-                1.0
-            } else {
-                rel_step as f64 / phase3 as f64
-            };
-            (
-                self.anneal(initial_lr, final_lr, progress),
-                Some(self.max_momentum),
-            )
-        };
-
-        let momentum = if self.cycle_momentum { momentum } else { None };
-        (lr, momentum)
+            start_step = end_step;
+        }
+        (self.initial_lr(), None)
     }
 }
 
@@ -10087,11 +10083,16 @@ mod tests {
             .pct_start(0.3)
             .anneal_strategy_linear();
 
+        // torch end_step = pct_start*total - 1 = 0.3*10 - 1 = 2, so the warmup
+        // peak is at step 2 (not 3). Verified vs torch 2.12: step0=0.04 (initial),
+        // step2=1.0 (max), step3=0.857143 (already descending), step9=4e-6 (final).
         scheduler.step(&mut opt, Some(0));
         assert!((opt.get_lr() - 0.04).abs() < 1e-12);
-        scheduler.step(&mut opt, Some(3));
+        scheduler.step(&mut opt, Some(2));
         assert!((opt.get_lr() - 1.0).abs() < 1e-12);
-        scheduler.step(&mut opt, Some(10));
+        scheduler.step(&mut opt, Some(3));
+        assert!((opt.get_lr() - 0.857143428571).abs() < 1e-9);
+        scheduler.step(&mut opt, Some(9));
         assert!((opt.get_lr() - 4.0e-6).abs() < 1e-12);
     }
 
@@ -10218,9 +10219,12 @@ mod tests {
             .tensor_variable(vec![1.0], vec![1], true)
             .expect("var");
         let mut opt1 = SGD::new(vec![x1], 1.0);
+        // pct_start=0.0: the warmup phase is empty, so step 0 already sits in
+        // the anneal-down phase at its end. torch 2.12 gives min_lr = 4e-6
+        // (initial_lr/final_div_factor = (1.0/25)/1e4), NOT max_lr.
         let mut s1 = OneCycleLR::new(&opt1, 1.0, 1).pct_start(0.0);
         s1.step(&mut opt1, Some(0));
-        assert!((opt1.get_lr() - 1.0).abs() < 1e-12);
+        assert!((opt1.get_lr() - 4.0e-6).abs() < 1e-12);
 
         let x2 = session
             .tensor_variable(vec![1.0], vec![1], true)
@@ -10247,6 +10251,92 @@ mod tests {
         let lr_at_end = opt4.get_lr();
         s4.step(&mut opt4, Some(100));
         assert!((opt4.get_lr() - lr_at_end).abs() < 1e-12);
+    }
+
+    #[test]
+    fn one_cycle_lr_matches_torch_golden() {
+        // Full-trajectory cross-check against torch 2.12 (the technique that
+        // surfaced the phase off-by-one). Driver: step() with epoch=None, read
+        // get_lr/get_momentum AFTER each step. FT's read after step k equals the
+        // value torch reports BEFORE its (k+1)-th step, so FT_read[i] == torch[i].
+        // Config: max_lr=0.1, total=10, pct_start=0.3, div=25, final_div=1e4.
+
+        // --- cosine anneal: lr + inversely-cycled momentum ---
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt = SGD::new(vec![x], 0.1).momentum(0.9);
+        let mut sched = OneCycleLR::new(&opt, 0.1, 10).pct_start(0.3); // cos is default
+        let want_lr_cos = [
+            0.004,
+            0.052,
+            0.1,
+            0.095048463201,
+            0.081174565395,
+            0.061126202194,
+            0.038874197806,
+            0.018825834605,
+            0.004951936799,
+            4e-07,
+        ];
+        let want_mom_cos = [
+            0.95,
+            0.9,
+            0.85,
+            0.854951556605,
+            0.868825509907,
+            0.888873953302,
+            0.911126046698,
+            0.931174490093,
+            0.945048443395,
+            0.95,
+        ];
+        for i in 0..10 {
+            sched.step(&mut opt, None);
+            assert!(
+                (opt.get_lr() - want_lr_cos[i]).abs() < 1e-9,
+                "onecycle cos lr step {i}: got {}, want {}",
+                opt.get_lr(),
+                want_lr_cos[i]
+            );
+            let mom = opt.get_momentum().expect("sgd momentum");
+            assert!(
+                (mom - want_mom_cos[i]).abs() < 1e-9,
+                "onecycle cos momentum step {i}: got {mom}, want {}",
+                want_mom_cos[i]
+            );
+        }
+
+        // --- linear anneal: lr ---
+        let x2 = session
+            .tensor_variable(vec![1.0], vec![1], true)
+            .expect("var");
+        let mut opt2 = SGD::new(vec![x2], 0.1);
+        let mut sched2 = OneCycleLR::new(&opt2, 0.1, 10)
+            .pct_start(0.3)
+            .anneal_strategy_linear();
+        let want_lr_lin = [
+            0.004,
+            0.052,
+            0.1,
+            0.085714342857,
+            0.071428685714,
+            0.057143028571,
+            0.042857371429,
+            0.028571714286,
+            0.014286057143,
+            4e-07,
+        ];
+        for i in 0..10 {
+            sched2.step(&mut opt2, None);
+            assert!(
+                (opt2.get_lr() - want_lr_lin[i]).abs() < 1e-9,
+                "onecycle linear lr step {i}: got {}, want {}",
+                opt2.get_lr(),
+                want_lr_lin[i]
+            );
+        }
     }
 
     // ---- Adamax tests ----
