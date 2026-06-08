@@ -130,7 +130,9 @@ fn bench_qr(c: &mut Criterion) {
 fn bench_inv(c: &mut Criterion) {
     // Matrix inverse = LU factor (already parallel) + solve against the n-column
     // identity; the matrix-RHS triangular solve is the parallelization target.
-    for &n in &[256usize, 512usize] {
+    // 1024 included so the column-parallel lu_solve win (where the RHS panel
+    // spills cache) is visible — small n stays serial (cache-optimal).
+    for &n in &[256usize, 512usize, 1024usize] {
         // Diagonally dominant -> well-conditioned, non-singular.
         let mut a = vec![0.0_f64; n * n];
         for i in 0..n {

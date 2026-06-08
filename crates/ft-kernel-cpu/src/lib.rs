@@ -8569,6 +8569,57 @@ pub fn lu_solve_contiguous_f64(
         }
     }
 
+    // COLUMN-PARALLEL path for large multi-RHS solves (e.g. the n-RHS inverse).
+    // Each RHS column is a fully INDEPENDENT forward+back substitution, so this
+    // is one barrier-free parallel region — distinct from the rejected (a)
+    // per-step row fan-out (which had ~2n join barriers) and (b) blocked TRSM.
+    // Bit-exact: each column reproduces the serial sweep's per-element arithmetic
+    // and order (forward k ascending, back k descending). Transpose to RHS-outer
+    // so each column is contiguous, solve in parallel, transpose back. The
+    // transposes are O(n*num_rhs) vs the O(n^2*num_rhs) solve. frankentorch-l9xod-inv.
+    let par_gate =
+        num_rhs >= 8 && (n as u128) * (n as u128) * (num_rhs as u128) >= (1u128 << 26);
+    if par_gate {
+        let lu = &factor.lu;
+        let mut xt = vec![0.0f64; num_rhs * n];
+        for i in 0..n {
+            for rhs in 0..num_rhs {
+                xt[rhs * n + i] = x[i * num_rhs + rhs];
+            }
+        }
+        xt.par_chunks_mut(n).for_each(|col| {
+            // Forward: unit-lower L y = col (k ascending, matching the serial sweep).
+            for i in 0..n {
+                let mut acc = col[i];
+                let row = i * n;
+                for k in 0..i {
+                    acc -= lu[row + k] * col[k];
+                }
+                col[i] = acc;
+            }
+            // Back: U x = y (k descending, matching the serial sweep).
+            for i in (0..n).rev() {
+                let diag = lu[i * n + i];
+                if diag.abs() < f64::EPSILON * 1e3 {
+                    col[i] = 0.0;
+                    continue;
+                }
+                let mut acc = col[i];
+                let row = i * n;
+                for k in ((i + 1)..n).rev() {
+                    acc -= lu[row + k] * col[k];
+                }
+                col[i] = acc / diag;
+            }
+        });
+        for i in 0..n {
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] = xt[rhs * n + i];
+            }
+        }
+        return Ok(x);
+    }
+
     // Forward substitution: L * y = P * b. The inner `rhs` loop is deliberate:
     // each L coefficient is loaded once and applied across all RHS columns
     // (cache/SIMD-amortized), which beats a per-column solve that re-streams L.
