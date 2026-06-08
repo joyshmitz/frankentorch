@@ -10312,6 +10312,9 @@ pub struct ConvTranspose2d {
     padding_w: usize,
     output_padding_h: usize,
     output_padding_w: usize,
+    groups: usize,
+    dilation_h: usize,
+    dilation_w: usize,
 }
 
 impl ConvTranspose2d {
@@ -10404,7 +10407,124 @@ impl ConvTranspose2d {
             padding_w: pw,
             output_padding_h: oph,
             output_padding_w: opw,
+            groups: 1,
+            dilation_h: 1,
+            dilation_w: 1,
         })
+    }
+
+    /// Create a grouped ConvTranspose2d, matching
+    /// `torch.nn.ConvTranspose2d(..., groups=g)`. The weight is shaped
+    /// `[in_channels, out_channels / groups, kH, kW]`; `in_channels` and
+    /// `out_channels` must both be divisible by `groups`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_grouped(
+        session: &mut FrankenTorchSession,
+        in_channels: usize,
+        out_channels: usize,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
+        use_bias: bool,
+        groups: usize,
+    ) -> Result<Self, AutogradError> {
+        let (kh, kw) = kernel_size;
+        let (sh, sw) = stride;
+        let (ph, pw) = padding;
+        let (oph, opw) = output_padding;
+
+        if in_channels == 0 || out_channels == 0 || kh == 0 || kw == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "ConvTranspose2d requires positive dimensions",
+                },
+            )));
+        }
+        if sh == 0 || sw == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "ConvTranspose2d requires stride > 0",
+                },
+            )));
+        }
+        if oph >= sh || opw >= sw {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "ConvTranspose2d output_padding must be < stride",
+                },
+            )));
+        }
+        if groups == 0 || in_channels % groups != 0 || out_channels % groups != 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason:
+                        "ConvTranspose2d groups must be > 0 and divide both in_channels and out_channels",
+                },
+            )));
+        }
+
+        // Weight shape: [in_channels, out_channels / groups, kH, kW].
+        let out_per_group = out_channels / groups;
+        let fan_in = checked_mul(out_per_group, kh, "ConvTranspose2d fan_in overflow")?;
+        let fan_in = checked_mul(fan_in, kw, "ConvTranspose2d fan_in overflow")?;
+        let bound = 1.0 / (fan_in as f64).sqrt();
+        let numel = checked_mul(
+            in_channels,
+            out_per_group,
+            "ConvTranspose2d weight size overflow",
+        )?;
+        let numel = checked_mul(numel, kh, "ConvTranspose2d weight size overflow")?;
+        let numel = checked_mul(numel, kw, "ConvTranspose2d weight size overflow")?;
+
+        let w_rand = session.rand(vec![numel], false)?;
+        let w_scale = session.full(vec![numel], 2.0 * bound, false)?;
+        let w_scaled = session.tensor_mul(w_rand, w_scale)?;
+        let w_shift = session.full(vec![numel], bound, false)?;
+        let w_shifted = session.tensor_sub(w_scaled, w_shift)?;
+        let w_values = session.tensor_values(w_shifted)?;
+        let weight =
+            session.tensor_variable(w_values, vec![in_channels, out_per_group, kh, kw], true)?;
+
+        let bias = if use_bias {
+            let b_rand = session.rand(vec![out_channels], false)?;
+            let b_scale = session.full(vec![out_channels], 2.0 * bound, false)?;
+            let b_scaled = session.tensor_mul(b_rand, b_scale)?;
+            let b_shift = session.full(vec![out_channels], bound, false)?;
+            let b_shifted = session.tensor_sub(b_scaled, b_shift)?;
+            let b_values = session.tensor_values(b_shifted)?;
+            Some(session.tensor_variable(b_values, vec![out_channels], true)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            weight,
+            bias,
+            in_channels,
+            out_channels,
+            kernel_h: kh,
+            kernel_w: kw,
+            stride_h: sh,
+            stride_w: sw,
+            padding_h: ph,
+            padding_w: pw,
+            output_padding_h: oph,
+            output_padding_w: opw,
+            groups,
+            dilation_h: 1,
+            dilation_w: 1,
+        })
+    }
+
+    /// Set the dilation (à-trous spacing) of the kernel, matching
+    /// `torch.nn.ConvTranspose2d(..., dilation=(dH, dW))` (default `(1, 1)`).
+    /// Composes with `groups`.
+    #[must_use]
+    pub fn dilation(mut self, dilation: (usize, usize)) -> Self {
+        self.dilation_h = dilation.0;
+        self.dilation_w = dilation.1;
+        self
     }
 
     /// Access the weight parameter.
@@ -10449,6 +10569,23 @@ impl Module for ConvTranspose2d {
                 },
             )));
         }
+
+        // Dilation and/or groups route through the fused functional (zero-stuffed
+        // kernel for dilation, channel slicing for groups). The plain case keeps
+        // the composed path below.
+        if self.dilation_h > 1 || self.dilation_w > 1 || self.groups > 1 {
+            return session.functional_conv_transpose2d_dilated(
+                input,
+                self.weight,
+                self.bias,
+                (self.stride_h, self.stride_w),
+                (self.padding_h, self.padding_w),
+                (self.output_padding_h, self.output_padding_w),
+                (self.dilation_h, self.dilation_w),
+                self.groups,
+            );
+        }
+
         let h_in = input_shape[2];
         let w_in = input_shape[3];
 
@@ -25775,6 +25912,71 @@ mod tests {
         let deconv = ConvTranspose2d::new(&mut session, 2, 3, (3, 3), (1, 1), (0, 0), (0, 0), true)
             .expect("new");
         assert_eq!(deconv.parameters().len(), 2);
+    }
+
+    #[test]
+    fn conv_transpose2d_grouped_module_matches_functional() {
+        // Grouped deconv weight is [in_channels, out_channels/groups, kH, kW];
+        // forward must equal the dilated functional on its own weight.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv =
+            ConvTranspose2d::new_grouped(&mut session, 4, 6, (2, 2), (1, 1), (0, 0), (0, 0), true, 2)
+                .expect("grouped deconv");
+        assert_eq!(
+            session.tensor_shape(deconv.weight()).expect("wshape"),
+            vec![4, 3, 2, 2],
+            "grouped deconv weight is [C_in, C_out/groups, kH, kW]"
+        );
+        let x = session
+            .tensor_variable((1..=16).map(|i| i as f64 * 0.1).collect(), vec![1, 4, 2, 2], false)
+            .expect("variable");
+        let via_module = deconv.forward(&mut session, x).expect("module forward");
+        let via_fn = session
+            .functional_conv_transpose2d_dilated(
+                x,
+                deconv.weight(),
+                deconv.bias(),
+                (1, 1),
+                (0, 0),
+                (0, 0),
+                (1, 1),
+                2,
+            )
+            .expect("functional");
+        assert_eq!(
+            session.tensor_values(via_module).expect("m"),
+            session.tensor_values(via_fn).expect("f"),
+        );
+    }
+
+    #[test]
+    fn conv_transpose2d_dilation_module_matches_functional() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv = ConvTranspose2d::new(&mut session, 2, 3, (2, 2), (1, 1), (0, 0), (0, 0), false)
+            .expect("deconv")
+            .dilation((2, 2));
+        let x = session
+            .tensor_variable((1..=8).map(|i| i as f64 * 0.1).collect(), vec![1, 2, 2, 2], false)
+            .expect("variable");
+        let via_module = deconv.forward(&mut session, x).expect("module forward");
+        // input 2, stride 1, dilation 2, kernel 2 -> out = (2-1)*1 + 2*(2-1)+1 = 4
+        assert_eq!(session.tensor_shape(via_module).expect("shape"), vec![1, 3, 4, 4]);
+        let via_fn = session
+            .functional_conv_transpose2d_dilated(
+                x,
+                deconv.weight(),
+                deconv.bias(),
+                (1, 1),
+                (0, 0),
+                (0, 0),
+                (2, 2),
+                1,
+            )
+            .expect("functional");
+        assert_eq!(
+            session.tensor_values(via_module).expect("m"),
+            session.tensor_values(via_fn).expect("f"),
+        );
     }
 
     #[test]
