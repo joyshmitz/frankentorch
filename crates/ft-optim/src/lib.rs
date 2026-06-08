@@ -1382,6 +1382,7 @@ pub struct RAdam {
     beta2: f64,
     eps: f64,
     weight_decay: f64,
+    decoupled_weight_decay: bool,
     maximize: bool,
     step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
@@ -1401,6 +1402,7 @@ impl RAdam {
             beta2: 0.999,
             eps: 1e-8,
             weight_decay: 0.0,
+            decoupled_weight_decay: false,
             maximize: false,
             step_counts: vec![0; n],
             m: vec![None; n],
@@ -1421,6 +1423,17 @@ impl RAdam {
     #[must_use]
     pub fn maximize(mut self, maximize: bool) -> Self {
         self.maximize = maximize;
+        self
+    }
+
+    /// Use decoupled weight decay (default: false), matching
+    /// `torch.optim.RAdam(decoupled_weight_decay=...)` (added in torch 2.1).
+    /// When true, weight decay scales the parameter directly
+    /// (`param *= 1 - lr*weight_decay`, AdamW-style) rather than being folded
+    /// into the gradient as L2 regularization.
+    #[must_use]
+    pub fn decoupled_weight_decay(mut self, decoupled: bool) -> Self {
+        self.decoupled_weight_decay = decoupled;
         self
     }
 
@@ -1500,10 +1513,21 @@ impl Optimizer for RAdam {
                 }
             }
 
-            // Apply weight decay: grad += weight_decay * param
+            // Apply weight decay. torch RAdam: when decoupled, scale the param
+            // directly (param *= 1 - lr*wd, AdamW-style) and leave the gradient
+            // raw; otherwise fold it into the gradient as L2. The rectified
+            // update depends only on the moments (not the param value), so the
+            // decoupled scaling composes as `param*(1-lr*wd) - update`.
             if self.weight_decay != 0.0 {
-                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
-                    *g += self.weight_decay * p;
+                if self.decoupled_weight_decay {
+                    let decay = self.lr * self.weight_decay;
+                    let decay_update: Vec<f64> =
+                        param_values.iter().map(|p| decay * p).collect();
+                    apply_param_update(session, param, &decay_update)?;
+                } else {
+                    for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
+                        *g += self.weight_decay * p;
+                    }
                 }
             }
 
@@ -4656,6 +4680,7 @@ pub struct NAdam {
     eps: f64,
     weight_decay: f64,
     momentum_decay: f64,
+    decoupled_weight_decay: bool,
     maximize: bool,
     step_counts: Vec<u64>,
     m: Vec<Option<Vec<f64>>>,
@@ -4682,6 +4707,7 @@ impl NAdam {
             eps: 1e-8,
             weight_decay: 0.0,
             momentum_decay: 0.004,
+            decoupled_weight_decay: false,
             maximize: false,
             step_counts: vec![0; n],
             m: vec![None; n],
@@ -4719,6 +4745,17 @@ impl NAdam {
     #[must_use]
     pub fn momentum_decay(mut self, momentum_decay: f64) -> Self {
         self.momentum_decay = momentum_decay;
+        self
+    }
+
+    /// Use decoupled weight decay (default: false), matching
+    /// `torch.optim.NAdam(decoupled_weight_decay=...)` (added in torch 2.1).
+    /// When true, weight decay scales the parameter directly
+    /// (`param *= 1 - lr*weight_decay`, AdamW-style) rather than being folded
+    /// into the gradient as L2 regularization.
+    #[must_use]
+    pub fn decoupled_weight_decay(mut self, decoupled: bool) -> Self {
+        self.decoupled_weight_decay = decoupled;
         self
     }
 
@@ -4792,9 +4829,22 @@ impl Optimizer for NAdam {
                 }
             }
 
+            // torch NAdam: when decoupled, scale the param directly
+            // (param *= 1 - lr*wd, AdamW-style) and leave the gradient raw;
+            // otherwise fold weight decay into the gradient as L2. The NAdam
+            // update depends only on the moments and raw gradient (not the param
+            // value), so the decoupled scaling composes as
+            // `param*(1-lr*wd) - update`.
             if self.weight_decay != 0.0 {
-                for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
-                    *g += self.weight_decay * p;
+                if self.decoupled_weight_decay {
+                    let decay = self.lr * self.weight_decay;
+                    let decay_update: Vec<f64> =
+                        param_values.iter().map(|p| decay * p).collect();
+                    apply_param_update(session, param, &decay_update)?;
+                } else {
+                    for (g, p) in effective_grad.iter_mut().zip(param_values.iter()) {
+                        *g += self.weight_decay * p;
+                    }
                 }
             }
 
@@ -6170,6 +6220,30 @@ mod tests {
             [1.1, 2.1],
             [1.22, 2.22],
             [1.364, 2.364],
+        ]);
+
+        // decoupled_weight_decay= (torch 2.1+). With wd=0.1: dwd=False is L2
+        // (grad += wd*param), dwd=True scales the param (param *= 1 - lr*wd).
+        // Goldens from torch 2.12 (loss=sum(x^2), grad=2x, x0=[1,2], lr=0.1).
+        trial!("nadam_wd_l2", |x| NAdam::new(vec![x], 0.1).weight_decay(0.1), [
+            [0.89435482137, 1.894354821118],
+            [0.819973069097, 1.817897529255],
+            [0.752729265083, 1.747508499949],
+        ]);
+        trial!("nadam_wd_decoupled", |x| NAdam::new(vec![x], 0.1).weight_decay(0.1).decoupled_weight_decay(true), [
+            [0.884354821395, 1.874354821131],
+            [0.801542038243, 1.779533894298],
+            [0.727008098102, 1.69201969524],
+        ]);
+        trial!("radam_wd_l2", |x| RAdam::new(vec![x], 0.1).weight_decay(0.1), [
+            [0.79, 1.58],
+            [0.603210526316, 1.206421052632],
+            [0.438603806564, 0.877207613129],
+        ]);
+        trial!("radam_wd_decoupled", |x| RAdam::new(vec![x], 0.1).weight_decay(0.1).decoupled_weight_decay(true), [
+            [0.79, 1.58],
+            [0.604205263158, 1.208410526316],
+            [0.441321493688, 0.882642987376],
         ]);
 
         let f = fails.borrow();
