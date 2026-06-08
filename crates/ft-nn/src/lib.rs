@@ -6684,6 +6684,8 @@ pub struct MaxPool2d {
     kernel_w: usize,
     stride_h: usize,
     stride_w: usize,
+    padding_h: usize,
+    padding_w: usize,
 }
 
 impl MaxPool2d {
@@ -6699,7 +6701,19 @@ impl MaxPool2d {
             kernel_w: kw,
             stride_h: if sh == 0 { kh } else { sh },
             stride_w: if sw == 0 { kw } else { sw },
+            padding_h: 0,
+            padding_w: 0,
         }
+    }
+
+    /// Set symmetric zero-padding (default `(0, 0)`), matching
+    /// `torch.nn.MaxPool2d(padding=...)`. Padded cells use `-inf` so they never
+    /// win the max. Each padding value must be at most half its kernel size.
+    #[must_use]
+    pub fn padding(mut self, padding: (usize, usize)) -> Self {
+        self.padding_h = padding.0;
+        self.padding_w = padding.1;
+        self
     }
 }
 
@@ -6726,8 +6740,34 @@ impl Module for MaxPool2d {
 
         let batch_size = input_shape[0];
         let channels = input_shape[1];
-        let h_in = input_shape[2];
-        let w_in = input_shape[3];
+
+        // Apply -inf padding (so padded cells never win the max) before pooling.
+        // The downstream patch loop then operates on the padded tensor with the
+        // padded spatial extents.
+        let (input, h_in, w_in) = if self.padding_h > 0 || self.padding_w > 0 {
+            if self.padding_h * 2 > self.kernel_h || self.padding_w * 2 > self.kernel_w {
+                return Err(AutogradError::Dispatch(DispatchError::Key(
+                    DispatchKeyError::IncompatibleSet {
+                        reason: "MaxPool2d padding should be at most half of kernel_size",
+                    },
+                )));
+            }
+            let padded = session.tensor_pad(
+                input,
+                &[
+                    self.padding_w,
+                    self.padding_w,
+                    self.padding_h,
+                    self.padding_h,
+                ],
+                f64::NEG_INFINITY,
+            )?;
+            let h_in = checked_add(input_shape[2], 2 * self.padding_h, "MaxPool2d padded height overflow")?;
+            let w_in = checked_add(input_shape[3], 2 * self.padding_w, "MaxPool2d padded width overflow")?;
+            (padded, h_in, w_in)
+        } else {
+            (input, input_shape[2], input_shape[3])
+        };
 
         if h_in < self.kernel_h || w_in < self.kernel_w {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -22576,6 +22616,36 @@ mod tests {
     }
 
     // ── MaxPool2d tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn maxpool2d_with_padding_matches_torch() {
+        // torch nn.MaxPool2d(3, stride=2, padding=1) on arange(1..=25)[1,1,5,5]
+        //   = [[7,9,10],[17,19,20],[22,24,25]]  (padded cells are -inf).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let data: Vec<f64> = (1..=25).map(|v| v as f64).collect();
+        let x = session
+            .tensor_variable(data, vec![1, 1, 5, 5], false)
+            .expect("variable");
+        let pool = MaxPool2d::new((3, 3), (2, 2)).padding((1, 1));
+        let y = pool.forward(&mut session, x).expect("forward");
+        let (vals, meta) = session.tensor_values_meta(y).expect("values");
+        assert_eq!(meta.shape(), &[1, 1, 3, 3]);
+        let want = [7.0, 9.0, 10.0, 17.0, 19.0, 20.0, 22.0, 24.0, 25.0];
+        for (g, w) in vals.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 1e-12, "got {vals:?} want {want:?}");
+        }
+    }
+
+    #[test]
+    fn maxpool2d_padding_rejects_pad_gt_half_kernel() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session
+            .tensor_variable(vec![1.0; 25], vec![1, 1, 5, 5], false)
+            .expect("variable");
+        // padding 2 exceeds kernel 2 / 2 = 1.
+        let pool = MaxPool2d::new((2, 2), (2, 2)).padding((2, 2));
+        assert!(pool.forward(&mut session, x).is_err());
+    }
 
     #[test]
     fn maxpool2d_forward_basic() {
