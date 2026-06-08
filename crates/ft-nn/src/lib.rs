@@ -26088,6 +26088,65 @@ mod tests {
     }
 
     #[test]
+    fn reflection_replication_pad_modules_unbatched_match_torch() {
+        // torch nn.ReflectionPad / ReplicationPad accept an unbatched [C, ...] input
+        // (padding the last spatial dims). ft pads the last `ndim-1/-2/-3` dims, so
+        // unbatched input already works — these torch 2.12 goldens lock in that the
+        // `ndim`-relative index arithmetic stays bit-exact on the unbatched path.
+        let chk = |s: &mut FrankenTorchSession, out, want_shape: Vec<usize>, want: &[f64]| {
+            assert_eq!(s.tensor_shape(out).unwrap(), want_shape, "shape");
+            assert_eq!(s.tensor_values(out).unwrap(), want, "values");
+        };
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+
+        // ReflectionPad1d (2,1) on [C=1, L=4]
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 4], false).unwrap();
+        let o = ReflectionPad1d::new((2, 1)).forward(&mut s, x).unwrap();
+        chk(&mut s, o, vec![1, 7], &[3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0]);
+
+        // ReplicationPad1d (2,1) on [C=1, L=4]
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![1, 4], false).unwrap();
+        let o = ReplicationPad1d::new((2, 1)).forward(&mut s, x).unwrap();
+        chk(&mut s, o, vec![1, 7], &[1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 4.0]);
+
+        // ReflectionPad2d (1,1,1,1) on [C=1, H=3, W=3]
+        let x = s.tensor_variable((1..=9).map(|v| v as f64).collect(), vec![1, 3, 3], false).unwrap();
+        let o = ReflectionPad2d::new((1, 1, 1, 1)).forward(&mut s, x).unwrap();
+        chk(&mut s, o, vec![1, 5, 5], &[
+            5.0, 4.0, 5.0, 6.0, 5.0, 2.0, 1.0, 2.0, 3.0, 2.0, 5.0, 4.0, 5.0, 6.0, 5.0,
+            8.0, 7.0, 8.0, 9.0, 8.0, 5.0, 4.0, 5.0, 6.0, 5.0,
+        ]);
+
+        // ReplicationPad2d (1,1,1,1) on [C=1, H=3, W=3]
+        let x = s.tensor_variable((1..=9).map(|v| v as f64).collect(), vec![1, 3, 3], false).unwrap();
+        let o = ReplicationPad2d::new((1, 1, 1, 1)).forward(&mut s, x).unwrap();
+        chk(&mut s, o, vec![1, 5, 5], &[
+            1.0, 1.0, 2.0, 3.0, 3.0, 1.0, 1.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0, 6.0, 6.0,
+            7.0, 7.0, 8.0, 9.0, 9.0, 7.0, 7.0, 8.0, 9.0, 9.0,
+        ]);
+
+        // ReflectionPad2d (1,1,1,1) on MULTICHANNEL unbatched [C=2, H=3, W=3]
+        let x = s.tensor_variable((1..=18).map(|v| v as f64).collect(), vec![2, 3, 3], false).unwrap();
+        let o = ReflectionPad2d::new((1, 1, 1, 1)).forward(&mut s, x).unwrap();
+        chk(&mut s, o, vec![2, 5, 5], &[
+            5.0, 4.0, 5.0, 6.0, 5.0, 2.0, 1.0, 2.0, 3.0, 2.0, 5.0, 4.0, 5.0, 6.0, 5.0,
+            8.0, 7.0, 8.0, 9.0, 8.0, 5.0, 4.0, 5.0, 6.0, 5.0,
+            14.0, 13.0, 14.0, 15.0, 14.0, 11.0, 10.0, 11.0, 12.0, 11.0, 14.0, 13.0, 14.0, 15.0, 14.0,
+            17.0, 16.0, 17.0, 18.0, 17.0, 14.0, 13.0, 14.0, 15.0, 14.0,
+        ]);
+
+        // ReplicationPad3d (1,1,1,1,1,1) on [C=1, D=2, H=2, W=2]
+        let x = s.tensor_variable((1..=8).map(|v| v as f64).collect(), vec![1, 2, 2, 2], false).unwrap();
+        let o = ReplicationPad3d::new((1, 1, 1, 1, 1, 1)).forward(&mut s, x).unwrap();
+        chk(&mut s, o, vec![1, 4, 4, 4], &[
+            1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0,
+            1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0,
+            5.0, 5.0, 6.0, 6.0, 5.0, 5.0, 6.0, 6.0, 7.0, 7.0, 8.0, 8.0, 7.0, 7.0, 8.0, 8.0,
+            5.0, 5.0, 6.0, 6.0, 5.0, 5.0, 6.0, 6.0, 7.0, 7.0, 8.0, 8.0, 7.0, 7.0, 8.0, 8.0,
+        ]);
+    }
+
+    #[test]
     fn constant_pad3d_forward() {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let pad = ConstantPad3d::new((1, 0, 0, 1, 1, 0), -2.0);
