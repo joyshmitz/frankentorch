@@ -4817,6 +4817,59 @@ impl MultiheadAttention {
         self.forward_qkv_masked(session, query, key, value, None, is_causal)
     }
 
+    /// Self/cross attention with a per-batch key-padding mask, matching
+    /// `torch.nn.MultiheadAttention(..., key_padding_mask=...)`.
+    ///
+    /// `key_padding_mask` is an ADDITIVE float mask of shape `[N, S_k]` (0.0 to
+    /// attend, `-inf` to ignore that key position) — the standard way to batch
+    /// variable-length sequences. It is broadcast to every head and query
+    /// position (`[N, S_k] -> [N*num_heads, S_q, S_k]`) and summed with the
+    /// optional broadcastable `attn_mask` before the scaled-dot-product attention.
+    pub fn forward_qkv_key_padding(
+        &self,
+        session: &mut FrankenTorchSession,
+        query: TensorNodeId,
+        key: TensorNodeId,
+        value: TensorNodeId,
+        attn_mask: Option<TensorNodeId>,
+        key_padding_mask: TensorNodeId,
+        is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let q_shape = session.tensor_shape(query)?;
+        let k_shape = session.tensor_shape(key)?;
+        if q_shape.len() != 3 || k_shape.len() != 3 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MultiheadAttention expects 3D input [N, S, E]",
+                },
+            )));
+        }
+        let (n, seq_q, seq_k) = (q_shape[0], q_shape[1], k_shape[1]);
+
+        let kpm_shape = session.tensor_shape(key_padding_mask)?;
+        if kpm_shape != vec![n, seq_k] {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "MultiheadAttention key_padding_mask must have shape [N, S_k]",
+                },
+            )));
+        }
+
+        // [N, S_k] -> [N, 1, 1, S_k] -> expand [N, heads, S_q, S_k]
+        //          -> [N*heads, S_q, S_k] (the collapsed attention-score layout).
+        let kpm = session.tensor_reshape(key_padding_mask, vec![n, 1, 1, seq_k])?;
+        let kpm = session.tensor_expand(kpm, vec![n, self.num_heads, seq_q, seq_k])?;
+        let kpm = session.tensor_contiguous(kpm)?;
+        let kpm = session.tensor_reshape(kpm, vec![n * self.num_heads, seq_q, seq_k])?;
+
+        // Sum with the broadcastable attn_mask if present (both additive).
+        let combined = match attn_mask {
+            Some(am) => session.tensor_add(kpm, am)?,
+            None => kpm,
+        };
+        self.forward_qkv_masked(session, query, key, value, Some(combined), is_causal)
+    }
+
     /// Self/cross attention over `[N, S, E]` inputs with masking, matching the
     /// masked forms of `torch.nn.MultiheadAttention`.
     ///
@@ -22717,6 +22770,84 @@ mod tests {
                 "explicit causal mask != is_causal: {c} vs {m}"
             );
         }
+    }
+
+    #[test]
+    fn mha_key_padding_mask_matches_broadcast_attn_mask() {
+        // key_padding_mask [N, S_k] must equal the equivalent additive attn_mask
+        // broadcast to [N*heads, S_q, S_k] (same -inf columns on every head/query).
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha"); // heads=2
+        let data: Vec<f64> = (0..12).map(|i| (i as f64 - 6.0) * 0.1).collect();
+        let x = session.tensor_variable(data, vec![1, 3, 4], false).expect("var");
+        let ninf = f64::NEG_INFINITY;
+
+        // Ignore key position 1 for the whole batch.
+        let kpm = session
+            .tensor_variable(vec![0.0, ninf, 0.0], vec![1, 3], false)
+            .expect("kpm");
+        let via_kpm = mha
+            .forward_qkv_key_padding(&mut session, x, x, x, None, kpm, false)
+            .expect("kpm forward");
+
+        // Explicit [N*heads=2, S_q=3, S_k=3] mask: column 1 = -inf everywhere.
+        let mut mask_vals = Vec::new();
+        for _ in 0..(2 * 3) {
+            mask_vals.extend_from_slice(&[0.0, ninf, 0.0]);
+        }
+        let mask = session
+            .tensor_variable(mask_vals, vec![2, 3, 3], false)
+            .expect("mask");
+        let via_mask = mha
+            .forward_qkv_masked(&mut session, x, x, x, Some(mask), false)
+            .expect("mask forward");
+
+        let a = session.tensor_values(via_kpm).expect("a");
+        let b = session.tensor_values(via_mask).expect("b");
+        for (u, v) in a.iter().zip(b.iter()) {
+            assert!(
+                (u - v).abs() < 1e-12,
+                "key_padding_mask != broadcast attn_mask: {u} vs {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn mha_zero_key_padding_mask_is_noop() {
+        // An all-zero key_padding_mask must equal the unmasked forward.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let data: Vec<f64> = (0..12).map(|i| (i as f64 - 6.0) * 0.1).collect();
+        let x = session.tensor_variable(data, vec![1, 3, 4], false).expect("var");
+        let kpm = session
+            .tensor_variable(vec![0.0, 0.0, 0.0], vec![1, 3], false)
+            .expect("kpm");
+        let masked = mha
+            .forward_qkv_key_padding(&mut session, x, x, x, None, kpm, false)
+            .expect("kpm forward");
+        let unmasked = mha.forward_qkv(&mut session, x, x, x).expect("unmasked");
+        let a = session.tensor_values(masked).expect("a");
+        let b = session.tensor_values(unmasked).expect("b");
+        for (u, v) in a.iter().zip(b.iter()) {
+            assert!((u - v).abs() < 1e-9, "zero kpm changed output: {u} vs {v}");
+        }
+    }
+
+    #[test]
+    fn mha_key_padding_mask_rejects_wrong_shape() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let mha = MultiheadAttention::new(&mut session, 4, 2).expect("mha");
+        let x = session
+            .tensor_variable(vec![0.0; 12], vec![1, 3, 4], false)
+            .expect("var");
+        // [N, S_q] instead of [N, S_k] is still [1,3] here; use a genuinely wrong
+        // length to exercise the shape guard.
+        let bad = session
+            .tensor_variable(vec![0.0; 2], vec![1, 2], false)
+            .expect("bad");
+        assert!(mha
+            .forward_qkv_key_padding(&mut session, x, x, x, None, bad, false)
+            .is_err());
     }
 
     #[test]
