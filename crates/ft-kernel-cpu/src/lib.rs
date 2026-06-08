@@ -10399,46 +10399,77 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
             continue;
         }
 
-        // Apply H = I - 2vv^T/|v|^2 to H from left and right
-        // H := H - 2 * (v v^T H) / |v|^2
-        // H := H - 2 * (H v v^T) / |v|^2
+        // Apply H = I - 2vv^T/|v|^2 to H from left and right. The reflector only
+        // spans rows/cols (k+1):, so each row update is independent and
+        // row-contiguous — parallelized BIT-EXACTLY (each row keeps the scalar
+        // path's per-row dot/scale expression and arithmetic order). The big
+        // Hessenberg O(n^3) phase of the non-symmetric eig (frankentorch-l9xod).
+        let m_sub = n - k - 1;
+        let par = n >= 64;
 
-        // Left multiply: H[(k+1):, :] -= 2 * v @ (v^T @ H[(k+1):, :]) / |v|^2
-        for j in 0..n {
+        // Left multiply: H[(k+1):, :] -= 2 * v @ (v^T @ H[(k+1):, :]) / |v|^2.
+        // Precompute per-column scale = 2*(v^T H)[j]/|v|^2 from the UNMODIFIED H in
+        // the same i-order as the scalar dot (bit-exact), then row-parallel update:
+        // row (k+1+i) only needs scale[j] and v[i].
+        let mut left_scale = vec![0.0f64; n];
+        for (j, slot) in left_scale.iter_mut().enumerate() {
             let mut dot = 0.0;
-            for i in 0..(n - k - 1) {
+            for i in 0..m_sub {
                 dot += v[i] * h[(k + 1 + i) * n + j];
             }
-            let scale = 2.0 * dot / v_norm_sq;
-            for i in 0..(n - k - 1) {
-                h[(k + 1 + i) * n + j] -= scale * v[i];
+            *slot = 2.0 * dot / v_norm_sq;
+        }
+        {
+            let rows = &mut h[(k + 1) * n..];
+            let upd = |(i, row): (usize, &mut [f64])| {
+                let vi = v[i];
+                for (j, cell) in row.iter_mut().enumerate() {
+                    *cell -= left_scale[j] * vi;
+                }
+            };
+            if par {
+                rows.par_chunks_mut(n).enumerate().for_each(upd);
+            } else {
+                rows.chunks_mut(n).enumerate().for_each(upd);
             }
         }
 
-        // Right multiply: H[:, (k+1):] -= 2 * (H[:, (k+1):] @ v) @ v^T / |v|^2
-        for i in 0..n {
-            let mut dot = 0.0;
-            for j in 0..(n - k - 1) {
-                dot += h[i * n + (k + 1 + j)] * v[j];
-            }
-            let scale = 2.0 * dot / v_norm_sq;
-            for j in 0..(n - k - 1) {
-                h[i * n + (k + 1 + j)] -= scale * v[j];
+        // Right multiply: H[:, (k+1):] -= 2 * (H[:, (k+1):] @ v) @ v^T / |v|^2.
+        {
+            let upd = |row: &mut [f64]| {
+                let mut dot = 0.0;
+                for j in 0..m_sub {
+                    dot += row[k + 1 + j] * v[j];
+                }
+                let scale = 2.0 * dot / v_norm_sq;
+                for j in 0..m_sub {
+                    row[k + 1 + j] -= scale * v[j];
+                }
+            };
+            if par {
+                h.par_chunks_mut(n).for_each(upd);
+            } else {
+                h.chunks_mut(n).for_each(upd);
             }
         }
 
         // Accumulate Q: Q[:, (k+1):] -= 2 * (Q[:, (k+1):] @ v) @ v^T / |v|^2.
         // Pure eigenvector work — skip when only eigenvalues are requested.
         if want_vectors {
-            for i in 0..n {
+            let upd = |row: &mut [f64]| {
                 let mut dot = 0.0;
-                for j in 0..(n - k - 1) {
-                    dot += q_acc[i * n + (k + 1 + j)] * v[j];
+                for j in 0..m_sub {
+                    dot += row[k + 1 + j] * v[j];
                 }
                 let scale = 2.0 * dot / v_norm_sq;
-                for j in 0..(n - k - 1) {
-                    q_acc[i * n + (k + 1 + j)] -= scale * v[j];
+                for j in 0..m_sub {
+                    row[k + 1 + j] -= scale * v[j];
                 }
+            };
+            if par {
+                q_acc.par_chunks_mut(n).for_each(upd);
+            } else {
+                q_acc.chunks_mut(n).for_each(upd);
             }
         }
     }
@@ -10672,14 +10703,19 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
                         h[i * n + k] -= p2;
                     }
                     if want_vectors {
-                        for i in 0..n {
-                            let mut p2 = xr * q_acc[i * n + k] + yr * q_acc[i * n + (k + 1)];
+                        let update_q_row = |row: &mut [f64]| {
+                            let mut p2 = xr * row[k] + yr * row[k + 1];
                             if notlast {
-                                p2 += zr * q_acc[i * n + (k + 2)];
-                                q_acc[i * n + (k + 2)] -= p2 * r_s;
+                                p2 += zr * row[k + 2];
+                                row[k + 2] -= p2 * r_s;
                             }
-                            q_acc[i * n + (k + 1)] -= p2 * q_s;
-                            q_acc[i * n + k] -= p2;
+                            row[k + 1] -= p2 * q_s;
+                            row[k] -= p2;
+                        };
+                        if n >= 64 {
+                            q_acc.par_chunks_mut(n).for_each(update_q_row);
+                        } else {
+                            q_acc.chunks_mut(n).for_each(update_q_row);
                         }
                     }
                     k += 1;
@@ -21111,6 +21147,39 @@ mod tests {
         let vals_only = super::eigvals_contiguous_f64(&a, &meta).unwrap();
         for (full_val, vals_val) in full.eigenvalues.iter().zip(&vals_only).take(4) {
             assert!((full_val - vals_val).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn eig_parallel_schur_vector_update_matches_single_thread_bit_exact() {
+        let n = 64usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = ((i * 41 + j * 13 + 5) % 17) as f64 * 0.01 - 0.08;
+            }
+            a[i * n + i] = (i as f64) + 1.0;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let one_thread = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let four_threads = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+
+        let serial = one_thread.install(|| super::eig_contiguous_f64(&a, &meta).unwrap());
+        let parallel = four_threads.install(|| super::eig_contiguous_f64(&a, &meta).unwrap());
+        assert_eq!(serial.n, parallel.n);
+        for (i, (&s, &p)) in serial.eigenvalues.iter().zip(&parallel.eigenvalues).enumerate() {
+            assert_eq!(
+                s.to_bits(),
+                p.to_bits(),
+                "eigenvalue bit mismatch at interleaved slot {i}: {s} vs {p}"
+            );
+        }
+        for (i, (&s, &p)) in serial.eigenvectors.iter().zip(&parallel.eigenvectors).enumerate() {
+            assert_eq!(
+                s.to_bits(),
+                p.to_bits(),
+                "eigenvector bit mismatch at flat slot {i}: {s} vs {p}"
+            );
         }
     }
 
