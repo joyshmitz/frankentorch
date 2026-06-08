@@ -14247,26 +14247,88 @@ impl TransformerDecoderLayer {
     ///
     /// * `tgt` - target sequence `[batch, tgt_len, d_model]`
     /// * `memory` - encoder output `[batch, src_len, d_model]`
+    /// Run one attention block through the masked MHA: routes to
+    /// `forward_qkv_key_padding` when a key-padding mask is present, else
+    /// `forward_qkv_masked` (which with `mask=None, is_causal=false` is plain
+    /// attention). Used for both the self- and cross-attention of the decoder.
+    #[allow(clippy::too_many_arguments)]
+    fn decoder_attn(
+        &self,
+        session: &mut FrankenTorchSession,
+        mha: &MultiheadAttention,
+        query: TensorNodeId,
+        key: TensorNodeId,
+        value: TensorNodeId,
+        mask: Option<TensorNodeId>,
+        key_padding_mask: Option<TensorNodeId>,
+        is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        match key_padding_mask {
+            Some(kpm) => {
+                mha.forward_qkv_key_padding(session, query, key, value, mask, kpm, is_causal)
+            }
+            None => mha.forward_qkv_masked(session, query, key, value, mask, is_causal),
+        }
+    }
+
+    /// Decoder layer forward (no masking). Delegates to
+    /// [`Self::forward_layer_masked`].
     pub fn forward_layer(
         &self,
         session: &mut FrankenTorchSession,
         tgt: TensorNodeId,
         memory: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        self.forward_layer_masked(session, tgt, memory, None, None, None, None, false, false)
+    }
+
+    /// Decoder layer forward with masking, matching
+    /// `torch.nn.TransformerDecoderLayer.forward(tgt, memory, tgt_mask,
+    /// memory_mask, tgt_key_padding_mask, memory_key_padding_mask, tgt_is_causal,
+    /// memory_is_causal)`. The `tgt_*` masks apply to the target self-attention
+    /// (causal for autoregressive decoding); the `memory_*` masks apply to the
+    /// cross-attention over the encoder memory (key-padding for padded source).
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_layer_masked(
+        &self,
+        session: &mut FrankenTorchSession,
+        tgt: TensorNodeId,
+        memory: TensorNodeId,
+        tgt_mask: Option<TensorNodeId>,
+        memory_mask: Option<TensorNodeId>,
+        tgt_key_padding_mask: Option<TensorNodeId>,
+        memory_key_padding_mask: Option<TensorNodeId>,
+        tgt_is_causal: bool,
+        memory_is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
         if self.norm_first {
             // Pre-norm: self-attention
             let normed1 = self.norm1.forward(session, tgt)?;
-            let sa_out = self
-                .self_attn
-                .forward_qkv(session, normed1, normed1, normed1)?;
+            let sa_out = self.decoder_attn(
+                session,
+                &self.self_attn,
+                normed1,
+                normed1,
+                normed1,
+                tgt_mask,
+                tgt_key_padding_mask,
+                tgt_is_causal,
+            )?;
             let sa_out = self.dropout1.forward(session, sa_out)?;
             let x = session.tensor_add(tgt, sa_out)?;
 
             // Pre-norm: cross-attention
             let normed2 = self.norm2.forward(session, x)?;
-            let ca_out = self
-                .cross_attn
-                .forward_qkv(session, normed2, memory, memory)?;
+            let ca_out = self.decoder_attn(
+                session,
+                &self.cross_attn,
+                normed2,
+                memory,
+                memory,
+                memory_mask,
+                memory_key_padding_mask,
+                memory_is_causal,
+            )?;
             let ca_out = self.dropout2.forward(session, ca_out)?;
             let x = session.tensor_add(x, ca_out)?;
 
@@ -14277,13 +14339,31 @@ impl TransformerDecoderLayer {
             session.tensor_add(x, ff_out)
         } else {
             // Post-norm: self-attention
-            let sa_out = self.self_attn.forward_qkv(session, tgt, tgt, tgt)?;
+            let sa_out = self.decoder_attn(
+                session,
+                &self.self_attn,
+                tgt,
+                tgt,
+                tgt,
+                tgt_mask,
+                tgt_key_padding_mask,
+                tgt_is_causal,
+            )?;
             let sa_out = self.dropout1.forward(session, sa_out)?;
             let x = session.tensor_add(tgt, sa_out)?;
             let x = self.norm1.forward(session, x)?;
 
             // Post-norm: cross-attention
-            let ca_out = self.cross_attn.forward_qkv(session, x, memory, memory)?;
+            let ca_out = self.decoder_attn(
+                session,
+                &self.cross_attn,
+                x,
+                memory,
+                memory,
+                memory_mask,
+                memory_key_padding_mask,
+                memory_is_causal,
+            )?;
             let ca_out = self.dropout2.forward(session, ca_out)?;
             let x = session.tensor_add(x, ca_out)?;
             let x = self.norm2.forward(session, x)?;
@@ -14410,9 +14490,40 @@ impl TransformerDecoder {
         tgt: TensorNodeId,
         memory: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
+        self.forward_decoder_masked(session, tgt, memory, None, None, None, None, false, false)
+    }
+
+    /// Decoder stack forward with masking, matching
+    /// `torch.nn.TransformerDecoder.forward(tgt, memory, tgt_mask, memory_mask,
+    /// tgt_key_padding_mask, memory_key_padding_mask, tgt_is_causal,
+    /// memory_is_causal)`. The masks are threaded into every layer's self- and
+    /// cross-attention, then the optional final LayerNorm.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_decoder_masked(
+        &self,
+        session: &mut FrankenTorchSession,
+        tgt: TensorNodeId,
+        memory: TensorNodeId,
+        tgt_mask: Option<TensorNodeId>,
+        memory_mask: Option<TensorNodeId>,
+        tgt_key_padding_mask: Option<TensorNodeId>,
+        memory_key_padding_mask: Option<TensorNodeId>,
+        tgt_is_causal: bool,
+        memory_is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
         let mut output = tgt;
         for layer in &self.layers {
-            output = layer.forward_layer(session, output, memory)?;
+            output = layer.forward_layer_masked(
+                session,
+                output,
+                memory,
+                tgt_mask,
+                memory_mask,
+                tgt_key_padding_mask,
+                memory_key_padding_mask,
+                tgt_is_causal,
+                memory_is_causal,
+            )?;
         }
         if let Some(ref norm) = self.final_norm {
             output = norm.forward(session, output)?;
@@ -14551,8 +14662,47 @@ impl Transformer {
         src: TensorNodeId,
         tgt: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
-        let memory = self.encoder.forward(session, src)?;
-        self.decoder.forward_decoder(session, tgt, memory)
+        self.forward_transformer_masked(
+            session, src, tgt, None, None, None, None, None, None, false,
+        )
+    }
+
+    /// Full encoder-decoder forward with masking, matching
+    /// `torch.nn.Transformer.forward(src, tgt, src_mask, tgt_mask, memory_mask,
+    /// src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask, ...)`.
+    /// The encoder is run with `src_mask` / `src_key_padding_mask`; the decoder
+    /// self-attention uses `tgt_mask` / `tgt_key_padding_mask` (`tgt_is_causal`
+    /// for autoregressive decoding) and the cross-attention uses `memory_mask` /
+    /// `memory_key_padding_mask` (the source padding is reused as the memory
+    /// key-padding mask, per torch).
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_transformer_masked(
+        &self,
+        session: &mut FrankenTorchSession,
+        src: TensorNodeId,
+        tgt: TensorNodeId,
+        src_mask: Option<TensorNodeId>,
+        tgt_mask: Option<TensorNodeId>,
+        memory_mask: Option<TensorNodeId>,
+        src_key_padding_mask: Option<TensorNodeId>,
+        tgt_key_padding_mask: Option<TensorNodeId>,
+        memory_key_padding_mask: Option<TensorNodeId>,
+        tgt_is_causal: bool,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let memory = self
+            .encoder
+            .forward_masked(session, src, src_mask, src_key_padding_mask, false)?;
+        self.decoder.forward_decoder_masked(
+            session,
+            tgt,
+            memory,
+            tgt_mask,
+            memory_mask,
+            tgt_key_padding_mask,
+            memory_key_padding_mask,
+            tgt_is_causal,
+            false,
+        )
     }
 
     /// Get the model dimension.
@@ -30697,6 +30847,103 @@ mod tests {
             .expect("forward");
         let shape = session.tensor_shape(output).expect("shape");
         assert_eq!(shape, vec![2, 3, 8]);
+    }
+
+    #[test]
+    fn transformer_decoder_layer_masked_noop_matches_plain() {
+        // forward_layer_masked with all-None masks must equal forward_layer.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let layer =
+            TransformerDecoderLayer::new(&mut session, 4, 2, 8, 0.0, TransformerActivation::Relu, false)
+                .expect("layer");
+        let tgt = session
+            .tensor_variable((0..12).map(|i| (i as f64 - 6.0) * 0.1).collect(), vec![1, 3, 4], false)
+            .expect("tgt");
+        let memory = session
+            .tensor_variable((0..16).map(|i| (i as f64 - 8.0) * 0.1).collect(), vec![1, 4, 4], false)
+            .expect("memory");
+        let plain = layer.forward_layer(&mut session, tgt, memory).expect("plain");
+        let masked = layer
+            .forward_layer_masked(&mut session, tgt, memory, None, None, None, None, false, false)
+            .expect("masked");
+        let a = session.tensor_values(plain).expect("a");
+        let b = session.tensor_values(masked).expect("b");
+        for (p, m) in a.iter().zip(b.iter()) {
+            assert!((p - m).abs() < 1e-12, "decoder masked no-op differs: {p} vs {m}");
+        }
+    }
+
+    #[test]
+    fn transformer_decoder_layer_causal_self_attn_independent_of_future_tgt() {
+        // With tgt_is_causal, decoder output at tgt position 0 must not depend on
+        // later tgt tokens (cross-attention over fixed memory is unaffected). Same
+        // layer + memory, two targets differing only at the last token.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let layer =
+            TransformerDecoderLayer::new(&mut session, 4, 2, 8, 0.0, TransformerActivation::Relu, false)
+                .expect("layer");
+        let memory = session
+            .tensor_variable((0..16).map(|i| (i as f64 - 8.0) * 0.1).collect(), vec![1, 4, 4], false)
+            .expect("memory");
+        let base: Vec<f64> = (0..8).map(|i| i as f64 * 0.1).collect();
+
+        let mut d1 = base.clone();
+        d1.extend_from_slice(&[0.5, -0.3, 0.2, 0.9]);
+        let t1 = session.tensor_variable(d1, vec![1, 3, 4], false).expect("t1");
+        let o1 = layer
+            .forward_layer_masked(&mut session, t1, memory, None, None, None, None, true, false)
+            .expect("o1");
+        let v1 = session.tensor_values(o1).expect("v1");
+
+        let mut d2 = base;
+        d2.extend_from_slice(&[9.0, -9.0, 4.0, -2.0]);
+        let t2 = session.tensor_variable(d2, vec![1, 3, 4], false).expect("t2");
+        let o2 = layer
+            .forward_layer_masked(&mut session, t2, memory, None, None, None, None, true, false)
+            .expect("o2");
+        let v2 = session.tensor_values(o2).expect("v2");
+
+        for i in 0..4 {
+            assert!(
+                (v1[i] - v2[i]).abs() < 1e-12,
+                "causal decoder tgt-0 changed with future tgt token: {} vs {}",
+                v1[i],
+                v2[i]
+            );
+        }
+        assert!(
+            (8..12).any(|i| (v1[i] - v2[i]).abs() > 1e-6),
+            "last tgt position output should depend on its input"
+        );
+    }
+
+    #[test]
+    fn transformer_masked_noop_matches_plain() {
+        // Top-level Transformer: forward_transformer_masked with no masks must
+        // equal forward_transformer.
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let transformer =
+            Transformer::new(&mut session, 4, 2, 2, 2, 8, 0.0, TransformerActivation::Relu, false)
+                .expect("transformer");
+        let src = session
+            .tensor_variable((0..16).map(|i| (i as f64 - 8.0) * 0.1).collect(), vec![1, 4, 4], false)
+            .expect("src");
+        let tgt = session
+            .tensor_variable((0..12).map(|i| (i as f64 - 6.0) * 0.1).collect(), vec![1, 3, 4], false)
+            .expect("tgt");
+        let plain = transformer
+            .forward_transformer(&mut session, src, tgt)
+            .expect("plain");
+        let masked = transformer
+            .forward_transformer_masked(
+                &mut session, src, tgt, None, None, None, None, None, None, false,
+            )
+            .expect("masked");
+        let a = session.tensor_values(plain).expect("a");
+        let b = session.tensor_values(masked).expect("b");
+        for (p, m) in a.iter().zip(b.iter()) {
+            assert!((p - m).abs() < 1e-12, "transformer masked no-op differs: {p} vs {m}");
+        }
     }
 
     #[test]
