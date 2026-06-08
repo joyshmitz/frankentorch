@@ -4094,6 +4094,14 @@ impl Module for Conv1d {
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
 
+        // torch nn.Conv1d accepts an unbatched [C_in, L] input and returns
+        // [C_out, L_out] — equivalent to unsqueeze(0) -> conv -> squeeze(0).
+        if input_shape.len() == 2 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
+
         if input_shape.len() != 3 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
                 DispatchKeyError::IncompatibleSet {
@@ -6962,6 +6970,14 @@ impl Module for Conv2d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
+
+        // torch nn.Conv2d accepts an unbatched [C_in, H, W] input and returns
+        // [C_out, H_out, W_out] — equivalent to unsqueeze(0) -> conv -> squeeze(0).
+        if input_shape.len() == 3 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
 
         if input_shape.len() != 4 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -10580,6 +10596,14 @@ impl Module for Conv3d {
         input: TensorNodeId,
     ) -> Result<TensorNodeId, AutogradError> {
         let input_shape = { session.tensor_shape(input)? };
+
+        // torch nn.Conv3d accepts an unbatched [C_in, D, H, W] input and returns
+        // [C_out, ...] — equivalent to unsqueeze(0) -> conv -> squeeze(0).
+        if input_shape.len() == 4 {
+            let batched = session.tensor_unsqueeze(input, 0)?;
+            let out = self.forward(session, batched)?;
+            return session.tensor_squeeze(out, 0);
+        }
 
         if input_shape.len() != 5 {
             return Err(AutogradError::Dispatch(DispatchError::Key(
@@ -22874,6 +22898,50 @@ mod tests {
         let y = conv.forward(&mut session, x).expect("forward");
         let (_, meta) = session.tensor_values_meta(y).expect("values");
         assert_eq!(meta.shape(), &[2, 3, 3]);
+    }
+
+    #[test]
+    fn conv_modules_accept_unbatched_input() {
+        // torch nn.Conv{1,2,3}d accept an unbatched [C_in, ...] input and return
+        // an unbatched [C_out, ...] output == unsqueeze(0) -> conv -> squeeze(0).
+        // The batched path is already torch-golden-verified, so this checks the
+        // new unbatched guard is bit-exact with batched-then-squeeze.
+
+        // Conv1d: [C=2, L=5] -> [C_out=3, L_out=4]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv1d::new(&mut s, 2, 3, 2, 1, 0, true).expect("conv1d");
+        let d: Vec<f64> = (0..10).map(|i| (i as f64 * 0.37).sin()).collect();
+        let xu = s.tensor_variable(d.clone(), vec![2, 5], false).unwrap();
+        let xb = s.tensor_variable(d, vec![1, 2, 5], false).unwrap();
+        let yu = conv.forward(&mut s, xu).unwrap();
+        let yb = conv.forward(&mut s, xb).unwrap();
+        assert_eq!(s.tensor_shape(yu).unwrap(), vec![3, 4]);
+        let ybs = s.tensor_squeeze(yb, 0).unwrap();
+        assert_eq!(s.tensor_values(yu).unwrap(), s.tensor_values(ybs).unwrap());
+
+        // Conv2d: [C=2, H=4, W=4] -> [3, 3, 3]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv2d::new(&mut s, 2, 3, (2, 2), (1, 1), (0, 0), true).expect("conv2d");
+        let d: Vec<f64> = (0..32).map(|i| (i as f64 * 0.21).cos()).collect();
+        let xu = s.tensor_variable(d.clone(), vec![2, 4, 4], false).unwrap();
+        let xb = s.tensor_variable(d, vec![1, 2, 4, 4], false).unwrap();
+        let yu = conv.forward(&mut s, xu).unwrap();
+        let yb = conv.forward(&mut s, xb).unwrap();
+        assert_eq!(s.tensor_shape(yu).unwrap(), vec![3, 3, 3]);
+        let ybs = s.tensor_squeeze(yb, 0).unwrap();
+        assert_eq!(s.tensor_values(yu).unwrap(), s.tensor_values(ybs).unwrap());
+
+        // Conv3d: [C=2, D=3, H=3, W=3] -> [3, 2, 2, 2]
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv3d::new(&mut s, 2, 3, (2, 2, 2), (1, 1, 1), (0, 0, 0), true).expect("conv3d");
+        let d: Vec<f64> = (0..54).map(|i| (i as f64 * 0.13).sin()).collect();
+        let xu = s.tensor_variable(d.clone(), vec![2, 3, 3, 3], false).unwrap();
+        let xb = s.tensor_variable(d, vec![1, 2, 3, 3, 3], false).unwrap();
+        let yu = conv.forward(&mut s, xu).unwrap();
+        let yb = conv.forward(&mut s, xb).unwrap();
+        assert_eq!(s.tensor_shape(yu).unwrap(), vec![3, 2, 2, 2]);
+        let ybs = s.tensor_squeeze(yb, 0).unwrap();
+        assert_eq!(s.tensor_values(yu).unwrap(), s.tensor_values(ybs).unwrap());
     }
 
     #[test]
