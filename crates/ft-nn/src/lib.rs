@@ -10047,6 +10047,10 @@ pub struct Conv3d {
     padding_d: usize,
     padding_h: usize,
     padding_w: usize,
+    groups: usize,
+    dilation_d: usize,
+    dilation_h: usize,
+    dilation_w: usize,
 }
 
 impl Conv3d {
@@ -10123,7 +10127,114 @@ impl Conv3d {
             padding_d: pd,
             padding_h: ph,
             padding_w: pw,
+            groups: 1,
+            dilation_d: 1,
+            dilation_h: 1,
+            dilation_w: 1,
         })
+    }
+
+    /// Create a grouped Conv3d, matching `torch.nn.Conv3d(..., groups=g)`. The
+    /// weight is shaped `[out_channels, in_channels / groups, kD, kH, kW]`; both
+    /// channel counts must be divisible by `groups`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_grouped(
+        session: &mut FrankenTorchSession,
+        in_channels: usize,
+        out_channels: usize,
+        kernel_size: (usize, usize, usize),
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        use_bias: bool,
+        groups: usize,
+    ) -> Result<Self, AutogradError> {
+        let (kd, kh, kw) = kernel_size;
+        let (sd, sh, sw) = stride;
+        let (pd, ph, pw) = padding;
+
+        if in_channels == 0 || out_channels == 0 || kd == 0 || kh == 0 || kw == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Conv3d requires positive in_channels, out_channels, kernel_size",
+                },
+            )));
+        }
+        if sd == 0 || sh == 0 || sw == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Conv3d requires stride > 0",
+                },
+            )));
+        }
+        if groups == 0 || in_channels % groups != 0 || out_channels % groups != 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "Conv3d groups must be > 0 and divide both in_channels and out_channels",
+                },
+            )));
+        }
+
+        let in_per_group = in_channels / groups;
+        let kernel_plane = checked_mul(kd, kh, "Conv3d kernel size overflow")?;
+        let kernel_volume = checked_mul(kernel_plane, kw, "Conv3d kernel size overflow")?;
+        let fan_in = checked_mul(in_per_group, kernel_volume, "Conv3d fan_in overflow")?;
+        let bound = 1.0 / (fan_in as f64).sqrt();
+        let numel = checked_mul(out_channels, fan_in, "Conv3d weight size overflow")?;
+
+        let w_rand = session.rand(vec![numel], false)?;
+        let w_scale = session.full(vec![numel], 2.0 * bound, false)?;
+        let w_scaled = session.tensor_mul(w_rand, w_scale)?;
+        let w_shift = session.full(vec![numel], bound, false)?;
+        let w_shifted = session.tensor_sub(w_scaled, w_shift)?;
+        let w_values = session.tensor_values(w_shifted)?;
+        let weight = session.tensor_variable(
+            w_values,
+            vec![out_channels, in_per_group, kd, kh, kw],
+            true,
+        )?;
+
+        let bias = if use_bias {
+            let b_rand = session.rand(vec![out_channels], false)?;
+            let b_scale = session.full(vec![out_channels], 2.0 * bound, false)?;
+            let b_scaled = session.tensor_mul(b_rand, b_scale)?;
+            let b_shift = session.full(vec![out_channels], bound, false)?;
+            let b_shifted = session.tensor_sub(b_scaled, b_shift)?;
+            let b_values = session.tensor_values(b_shifted)?;
+            Some(session.tensor_variable(b_values, vec![out_channels], true)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            weight,
+            bias,
+            in_channels,
+            out_channels,
+            kernel_d: kd,
+            kernel_h: kh,
+            kernel_w: kw,
+            stride_d: sd,
+            stride_h: sh,
+            stride_w: sw,
+            padding_d: pd,
+            padding_h: ph,
+            padding_w: pw,
+            groups,
+            dilation_d: 1,
+            dilation_h: 1,
+            dilation_w: 1,
+        })
+    }
+
+    /// Set the dilation (à-trous spacing), matching
+    /// `torch.nn.Conv3d(..., dilation=(dD, dH, dW))` (default `(1, 1, 1)`).
+    /// Composes with `groups`.
+    #[must_use]
+    pub fn dilation(mut self, dilation: (usize, usize, usize)) -> Self {
+        self.dilation_d = dilation.0;
+        self.dilation_h = dilation.1;
+        self.dilation_w = dilation.2;
+        self
     }
 
     /// Access the weight parameter.
@@ -10163,6 +10274,25 @@ impl Module for Conv3d {
                     reason: "Conv3d input channels do not match in_channels",
                 },
             )));
+        }
+
+        // Dilation and/or groups route through the fused functional (3-axis
+        // zero-stuffed kernel for dilation, channel slicing for groups). The
+        // plain case keeps the composed path below.
+        if self.dilation_d > 1
+            || self.dilation_h > 1
+            || self.dilation_w > 1
+            || self.groups > 1
+        {
+            return session.functional_conv3d_dilated(
+                input,
+                self.weight,
+                self.bias,
+                (self.stride_d, self.stride_h, self.stride_w),
+                (self.padding_d, self.padding_h, self.padding_w),
+                (self.dilation_d, self.dilation_h, self.dilation_w),
+                self.groups,
+            );
         }
 
         let d_in = input_shape[2];
@@ -25652,6 +25782,66 @@ mod tests {
     }
 
     // ── Conv3d Tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn conv3d_grouped_module_matches_functional() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv3d::new_grouped(&mut session, 4, 6, (2, 2, 2), (1, 1, 1), (0, 0, 0), true, 2)
+            .expect("grouped conv3d");
+        assert_eq!(
+            session.tensor_shape(conv.weight()).expect("wshape"),
+            vec![6, 2, 2, 2, 2],
+            "grouped weight is [C_out, C_in/groups, kD, kH, kW]"
+        );
+        let x = session
+            .tensor_variable((1..=128).map(|i| i as f64 * 0.01).collect(), vec![1, 4, 4, 4, 2], false)
+            .expect("variable");
+        let via_module = conv.forward(&mut session, x).expect("module forward");
+        let via_fn = session
+            .functional_conv3d_dilated(
+                x,
+                conv.weight(),
+                conv.bias(),
+                (1, 1, 1),
+                (0, 0, 0),
+                (1, 1, 1),
+                2,
+            )
+            .expect("functional");
+        assert_eq!(
+            session.tensor_values(via_module).expect("m"),
+            session.tensor_values(via_fn).expect("f"),
+        );
+    }
+
+    #[test]
+    fn conv3d_dilation_module_matches_functional() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let conv = Conv3d::new(&mut session, 2, 3, (2, 2, 2), (1, 1, 1), (0, 0, 0), false)
+            .expect("conv3d")
+            .dilation((2, 2, 2));
+        let x = session
+            .tensor_variable((1..=128).map(|i| i as f64 * 0.01).collect(), vec![1, 2, 4, 4, 4], false)
+            .expect("variable");
+        let via_module = conv.forward(&mut session, x).expect("module forward");
+        // input 4, kernel 2, dilation 2 -> effective 3 -> out (4-3)/1+1 = 2 each.
+        assert_eq!(session.tensor_shape(via_module).expect("shape"), vec![1, 3, 2, 2, 2]);
+        let via_fn = session
+            .functional_conv3d_dilated(
+                x,
+                conv.weight(),
+                conv.bias(),
+                (1, 1, 1),
+                (0, 0, 0),
+                (2, 2, 2),
+                1,
+            )
+            .expect("functional");
+        assert_eq!(
+            session.tensor_values(via_module).expect("m"),
+            session.tensor_values(via_fn).expect("f"),
+        );
+    }
 
     #[test]
     fn conv3d_forward_basic() {
