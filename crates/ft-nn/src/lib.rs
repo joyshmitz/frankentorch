@@ -3948,6 +3948,7 @@ pub struct Conv1d {
     padding: usize,
     groups: usize,
     dilation: usize,
+    padding_mode: PaddingMode,
 }
 
 impl Conv1d {
@@ -4015,6 +4016,7 @@ impl Conv1d {
             padding,
             groups: 1,
             dilation: 1,
+            padding_mode: PaddingMode::Zeros,
         })
     }
 
@@ -4091,6 +4093,7 @@ impl Conv1d {
             padding,
             groups,
             dilation: 1,
+            padding_mode: PaddingMode::Zeros,
         })
     }
 
@@ -4099,6 +4102,15 @@ impl Conv1d {
     #[must_use]
     pub fn dilation(mut self, dilation: usize) -> Self {
         self.dilation = dilation;
+        self
+    }
+
+    /// Set the padding mode, matching `torch.nn.Conv1d(..., padding_mode=...)`.
+    /// Non-`Zeros` modes pad the input by `padding` with the chosen mode and then
+    /// convolve with zero internal padding (default `Zeros`).
+    #[must_use]
+    pub fn padding_mode(mut self, mode: PaddingMode) -> Self {
+        self.padding_mode = mode;
         self
     }
 
@@ -4147,6 +4159,27 @@ impl Module for Conv1d {
                     reason: "Conv1d input channels do not match in_channels",
                 },
             )));
+        }
+
+        // Non-zero padding_mode (reflect / replicate / circular): pad the input by
+        // `padding` along the length dim with the chosen mode, then convolve with
+        // zero internal padding — matching torch's nn.Conv1d(padding_mode=...).
+        if self.padding_mode != PaddingMode::Zeros && self.padding > 0 {
+            let padded =
+                session.functional_pad_mode(input, &[self.padding, self.padding], self.padding_mode.pad_str(), 0.0)?;
+            let zero_pad_conv = Conv1d {
+                weight: self.weight,
+                bias: self.bias,
+                in_channels: self.in_channels,
+                out_channels: self.out_channels,
+                kernel_size: self.kernel_size,
+                stride: self.stride,
+                padding: 0,
+                groups: self.groups,
+                dilation: self.dilation,
+                padding_mode: PaddingMode::Zeros,
+            };
+            return zero_pad_conv.forward(session, padded);
         }
 
         // Dilation and/or groups route through the fused functional (conv1d ==
@@ -10604,6 +10637,7 @@ pub struct Conv3d {
     dilation_d: usize,
     dilation_h: usize,
     dilation_w: usize,
+    padding_mode: PaddingMode,
 }
 
 impl Conv3d {
@@ -10684,6 +10718,7 @@ impl Conv3d {
             dilation_d: 1,
             dilation_h: 1,
             dilation_w: 1,
+            padding_mode: PaddingMode::Zeros,
         })
     }
 
@@ -10776,6 +10811,7 @@ impl Conv3d {
             dilation_d: 1,
             dilation_h: 1,
             dilation_w: 1,
+            padding_mode: PaddingMode::Zeros,
         })
     }
 
@@ -10787,6 +10823,15 @@ impl Conv3d {
         self.dilation_d = dilation.0;
         self.dilation_h = dilation.1;
         self.dilation_w = dilation.2;
+        self
+    }
+
+    /// Set the padding mode, matching `torch.nn.Conv3d(..., padding_mode=...)`.
+    /// Non-`Zeros` modes pad the input by `padding` with the chosen mode and then
+    /// convolve with zero internal padding (default `Zeros`).
+    #[must_use]
+    pub fn padding_mode(mut self, mode: PaddingMode) -> Self {
+        self.padding_mode = mode;
         self
     }
 
@@ -10835,6 +10880,49 @@ impl Module for Conv3d {
                     reason: "Conv3d input channels do not match in_channels",
                 },
             )));
+        }
+
+        // Non-zero padding_mode (reflect / replicate / circular): pad D/H/W by
+        // `padding` with the chosen mode, then convolve with zero internal padding
+        // — matching torch's nn.Conv3d(padding_mode=...).
+        if self.padding_mode != PaddingMode::Zeros
+            && (self.padding_d > 0 || self.padding_h > 0 || self.padding_w > 0)
+        {
+            // torch pad order is innermost-first: W, H, D.
+            let padded = session.functional_pad_mode(
+                input,
+                &[
+                    self.padding_w,
+                    self.padding_w,
+                    self.padding_h,
+                    self.padding_h,
+                    self.padding_d,
+                    self.padding_d,
+                ],
+                self.padding_mode.pad_str(),
+                0.0,
+            )?;
+            let zero_pad_conv = Conv3d {
+                weight: self.weight,
+                bias: self.bias,
+                in_channels: self.in_channels,
+                out_channels: self.out_channels,
+                kernel_d: self.kernel_d,
+                kernel_h: self.kernel_h,
+                kernel_w: self.kernel_w,
+                stride_d: self.stride_d,
+                stride_h: self.stride_h,
+                stride_w: self.stride_w,
+                padding_d: 0,
+                padding_h: 0,
+                padding_w: 0,
+                groups: self.groups,
+                dilation_d: self.dilation_d,
+                dilation_h: self.dilation_h,
+                dilation_w: self.dilation_w,
+                padding_mode: PaddingMode::Zeros,
+            };
+            return zero_pad_conv.forward(session, padded);
         }
 
         // Dilation and/or groups route through the fused functional (3-axis
@@ -24451,6 +24539,79 @@ mod tests {
             zeros_out = Some(zvals);
         }
         assert!(zeros_out.is_some());
+    }
+
+    #[test]
+    fn conv1d_padding_mode_matches_mode_pad_plus_conv() {
+        // torch nn.Conv1d(padding_mode=...) pads L by `padding` with the mode then
+        // convolves with zero padding. Module must equal manual pad + functional
+        // conv on its own weight, and differ from zeros.
+        let data: Vec<f64> = (0..1 * 2 * 6).map(|i| (i as f64 * 0.4).sin()).collect();
+        for (mode, pad_str) in [
+            (PaddingMode::Reflect, "reflect"),
+            (PaddingMode::Replicate, "replicate"),
+            (PaddingMode::Circular, "circular"),
+        ] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let conv = Conv1d::new(&mut s, 2, 3, 2, 1, 1, true).expect("conv1d").padding_mode(mode);
+            let x = s.tensor_variable(data.clone(), vec![1, 2, 6], false).unwrap();
+            let via_module = conv.forward(&mut s, x).unwrap();
+
+            let x2 = s.tensor_variable(data.clone(), vec![1, 2, 6], false).unwrap();
+            let padded = s.functional_pad_mode(x2, &[1, 1], pad_str, 0.0).unwrap();
+            let via_fn = s.functional_conv1d(padded, conv.weight(), conv.bias(), 1, 0).unwrap();
+            assert_eq!(
+                s.tensor_values(via_module).unwrap(),
+                s.tensor_values(via_fn).unwrap(),
+                "Conv1d padding_mode {mode:?}"
+            );
+
+            let x3 = s.tensor_variable(data.clone(), vec![1, 2, 6], false).unwrap();
+            let zpad = s.functional_pad_mode(x3, &[1, 1], "constant", 0.0).unwrap();
+            let zout = s.functional_conv1d(zpad, conv.weight(), conv.bias(), 1, 0).unwrap();
+            let zv = s.tensor_values(zout).unwrap();
+            let mv = s.tensor_values(via_module).unwrap();
+            assert!(zv.iter().zip(&mv).any(|(z, m)| (z - m).abs() > 1e-9), "Conv1d {mode:?} vs zeros");
+        }
+    }
+
+    #[test]
+    fn conv3d_padding_mode_matches_mode_pad_plus_conv() {
+        // torch nn.Conv3d(padding_mode=...) pads D/H/W then convolves with zero
+        // padding. Module must equal manual pad + functional conv on its weight.
+        let data: Vec<f64> = (0..1 * 1 * 4 * 4 * 4).map(|i| (i as f64 * 0.13).cos()).collect();
+        for (mode, pad_str) in [
+            (PaddingMode::Reflect, "reflect"),
+            (PaddingMode::Replicate, "replicate"),
+            (PaddingMode::Circular, "circular"),
+        ] {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let conv = Conv3d::new(&mut s, 1, 2, (2, 2, 2), (1, 1, 1), (1, 1, 1), true)
+                .expect("conv3d")
+                .padding_mode(mode);
+            let x = s.tensor_variable(data.clone(), vec![1, 1, 4, 4, 4], false).unwrap();
+            let via_module = conv.forward(&mut s, x).unwrap();
+
+            let x2 = s.tensor_variable(data.clone(), vec![1, 1, 4, 4, 4], false).unwrap();
+            let padded = s.functional_pad_mode(x2, &[1, 1, 1, 1, 1, 1], pad_str, 0.0).unwrap();
+            let via_fn = s
+                .functional_conv3d(padded, conv.weight(), conv.bias(), (1, 1, 1), (0, 0, 0))
+                .unwrap();
+            assert_eq!(
+                s.tensor_values(via_module).unwrap(),
+                s.tensor_values(via_fn).unwrap(),
+                "Conv3d padding_mode {mode:?}"
+            );
+
+            let x3 = s.tensor_variable(data.clone(), vec![1, 1, 4, 4, 4], false).unwrap();
+            let zpad = s.functional_pad_mode(x3, &[1, 1, 1, 1, 1, 1], "constant", 0.0).unwrap();
+            let zout = s
+                .functional_conv3d(zpad, conv.weight(), conv.bias(), (1, 1, 1), (0, 0, 0))
+                .unwrap();
+            let zv = s.tensor_values(zout).unwrap();
+            let mv = s.tensor_values(via_module).unwrap();
+            assert!(zv.iter().zip(&mv).any(|(z, m)| (z - m).abs() > 1e-9), "Conv3d {mode:?} vs zeros");
+        }
     }
 
     #[test]
