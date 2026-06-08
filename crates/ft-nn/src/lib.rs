@@ -9822,6 +9822,8 @@ pub struct ConvTranspose1d {
     stride: usize,
     padding: usize,
     output_padding: usize,
+    groups: usize,
+    dilation: usize,
 }
 
 impl ConvTranspose1d {
@@ -9896,7 +9898,102 @@ impl ConvTranspose1d {
             stride,
             padding,
             output_padding,
+            groups: 1,
+            dilation: 1,
         })
+    }
+
+    /// Create a grouped ConvTranspose1d, matching
+    /// `torch.nn.ConvTranspose1d(..., groups=g)`. The weight is shaped
+    /// `[in_channels, out_channels / groups, K]`; both channel counts must be
+    /// divisible by `groups`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_grouped(
+        session: &mut FrankenTorchSession,
+        in_channels: usize,
+        out_channels: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+        use_bias: bool,
+        groups: usize,
+    ) -> Result<Self, AutogradError> {
+        if in_channels == 0 || out_channels == 0 || kernel_size == 0 || stride == 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "ConvTranspose1d requires positive dimensions and stride",
+                },
+            )));
+        }
+        if output_padding >= stride {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason: "ConvTranspose1d output_padding must be < stride",
+                },
+            )));
+        }
+        if groups == 0 || in_channels % groups != 0 || out_channels % groups != 0 {
+            return Err(AutogradError::Dispatch(DispatchError::Key(
+                DispatchKeyError::IncompatibleSet {
+                    reason:
+                        "ConvTranspose1d groups must be > 0 and divide both in_channels and out_channels",
+                },
+            )));
+        }
+
+        let out_per_group = out_channels / groups;
+        let fan_in = checked_mul(out_per_group, kernel_size, "ConvTranspose1d fan_in overflow")?;
+        let bound = 1.0 / (fan_in as f64).sqrt();
+        let numel = checked_mul(
+            in_channels,
+            out_per_group,
+            "ConvTranspose1d weight size overflow",
+        )?;
+        let numel = checked_mul(numel, kernel_size, "ConvTranspose1d weight size overflow")?;
+
+        let w_rand = session.rand(vec![numel], false)?;
+        let w_scale = session.full(vec![numel], 2.0 * bound, false)?;
+        let w_scaled = session.tensor_mul(w_rand, w_scale)?;
+        let w_shift = session.full(vec![numel], bound, false)?;
+        let w_shifted = session.tensor_sub(w_scaled, w_shift)?;
+        let w_values = session.tensor_values(w_shifted)?;
+        let weight =
+            session.tensor_variable(w_values, vec![in_channels, out_per_group, kernel_size], true)?;
+
+        let bias = if use_bias {
+            let b_rand = session.rand(vec![out_channels], false)?;
+            let b_scale = session.full(vec![out_channels], 2.0 * bound, false)?;
+            let b_scaled = session.tensor_mul(b_rand, b_scale)?;
+            let b_shift = session.full(vec![out_channels], bound, false)?;
+            let b_shifted = session.tensor_sub(b_scaled, b_shift)?;
+            let b_values = session.tensor_values(b_shifted)?;
+            Some(session.tensor_variable(b_values, vec![out_channels], true)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            weight,
+            bias,
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            output_padding,
+            groups,
+            dilation: 1,
+        })
+    }
+
+    /// Set the dilation (à-trous spacing), matching
+    /// `torch.nn.ConvTranspose1d(..., dilation=d)` (default `1`). Composes with
+    /// `groups`.
+    #[must_use]
+    pub fn dilation(mut self, dilation: usize) -> Self {
+        self.dilation = dilation;
+        self
     }
 
     /// Access the weight parameter.
@@ -9937,6 +10034,23 @@ impl Module for ConvTranspose1d {
                 },
             )));
         }
+
+        // Dilation and/or groups route through the fused functional (zero-stuffed
+        // kernel for dilation, channel slicing for groups). The plain case keeps
+        // the composed path below.
+        if self.dilation > 1 || self.groups > 1 {
+            return session.functional_conv_transpose1d_dilated(
+                input,
+                self.weight,
+                self.bias,
+                self.stride,
+                self.padding,
+                self.output_padding,
+                self.dilation,
+                self.groups,
+            );
+        }
+
         let l_in = input_shape[2];
 
         let l_out = checked_conv_transpose_output_dim(
@@ -25609,6 +25723,50 @@ mod tests {
     }
 
     // ── ConvTranspose1d Tests ──────────────────────────────────────────
+
+    #[test]
+    fn conv_transpose1d_grouped_module_matches_functional() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv = ConvTranspose1d::new_grouped(&mut session, 4, 6, 2, 1, 0, 0, true, 2)
+            .expect("grouped deconv1d");
+        assert_eq!(
+            session.tensor_shape(deconv.weight()).expect("wshape"),
+            vec![4, 3, 2],
+            "grouped deconv weight is [C_in, C_out/groups, K]"
+        );
+        let x = session
+            .tensor_variable((1..=20).map(|i| i as f64 * 0.1).collect(), vec![1, 4, 5], false)
+            .expect("variable");
+        let via_module = deconv.forward(&mut session, x).expect("module forward");
+        let via_fn = session
+            .functional_conv_transpose1d_dilated(x, deconv.weight(), deconv.bias(), 1, 0, 0, 1, 2)
+            .expect("functional");
+        assert_eq!(
+            session.tensor_values(via_module).expect("m"),
+            session.tensor_values(via_fn).expect("f"),
+        );
+    }
+
+    #[test]
+    fn conv_transpose1d_dilation_module_matches_functional() {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let deconv = ConvTranspose1d::new(&mut session, 2, 3, 2, 1, 0, 0, false)
+            .expect("deconv1d")
+            .dilation(2);
+        let x = session
+            .tensor_variable((1..=8).map(|i| i as f64 * 0.1).collect(), vec![1, 2, 4], false)
+            .expect("variable");
+        let via_module = deconv.forward(&mut session, x).expect("module forward");
+        // input 4, stride 1, dilation 2, kernel 2 -> out = (4-1)*1 + 2*(2-1)+1 = 6
+        assert_eq!(session.tensor_shape(via_module).expect("shape"), vec![1, 3, 6]);
+        let via_fn = session
+            .functional_conv_transpose1d_dilated(x, deconv.weight(), deconv.bias(), 1, 0, 0, 2, 1)
+            .expect("functional");
+        assert_eq!(
+            session.tensor_values(via_module).expect("m"),
+            session.tensor_values(via_fn).expect("f"),
+        );
+    }
 
     #[test]
     fn conv_transpose1d_output_shape() {
