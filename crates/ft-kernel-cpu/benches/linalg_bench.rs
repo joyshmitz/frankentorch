@@ -218,7 +218,13 @@ fn bench_svdvals(c: &mut Criterion) {
 }
 
 fn bench_svd(c: &mut Criterion) {
-    // Tall and square cases; SVD reduces to a symmetric eigenproblem on A^T A.
+    // Tall and square cases. NOTE: the `(i*31+j*17)%97` matrix is RANK-DEFICIENT
+    // (rank <= 97), which triggers a clustered/zero singular-value convergence
+    // pathology in the Golub-Reinsch implicit-QR sweep — svd_f64_256x256 here is
+    // ~12x slower than a well-conditioned 256x256 (frankentorch-yyylo). The
+    // `_wellcond` case below measures representative SVD perf so the
+    // bidiagonalization-vs-sweep balance (and any parallelization win) is visible
+    // instead of being swamped by the pathological sweep on the degenerate input.
     for &(m, n) in &[(256usize, 128usize), (256usize, 256usize)] {
         let mut a = vec![0.0_f64; m * n];
         for i in 0..m {
@@ -228,6 +234,24 @@ fn bench_svd(c: &mut Criterion) {
         }
         let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
         c.bench_function(&format!("svd_f64_{m}x{n}"), |bch| {
+            bch.iter(|| black_box(svd_contiguous_f64(black_box(&a), &meta, false).unwrap()))
+        });
+    }
+
+    // Well-conditioned full-rank square case (deterministic xorshift), the
+    // representative real-world SVD workload.
+    {
+        let (m, n) = (256usize, 256usize);
+        let mut a = vec![0.0_f64; m * n];
+        let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
+        for x in a.iter_mut() {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            *x = (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
+        }
+        let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        c.bench_function(&format!("svd_f64_{m}x{n}_wellcond"), |bch| {
             bch.iter(|| black_box(svd_contiguous_f64(black_box(&a), &meta, false).unwrap()))
         });
     }
