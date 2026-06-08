@@ -1,0 +1,12 @@
+  [2m2026-06-08T18:27:30.096840Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mExecuting command remotely: cargo bench -p ft-api --bench ops_bench -- conv1d/nograd_L --warm-up-time 1 --measurement-time 5 --sample-size 20[0m
+Benchmarking conv1d/nograd_L/1024
+Benchmarking conv1d/nograd_L/1024: Warming up for 1.0000 s
+Benchmarking conv1d/nograd_L/1024: Collecting 20 samples in estimated 9.1181 s (210 iterations)
+Benchmarking conv1d/nograd_L/1024: Analyzing
+conv1d/nograd_L/1024    time:   [30.051 ms 31.719 ms 33.328 ms]
+Benchmarking conv1d/nograd_L/4096
+Benchmarking conv1d/nograd_L/4096: Warming up for 1.0000 s
+Benchmarking conv1d/nograd_L/4096: Collecting 20 samples in estimated 5.8217 s (40 iterations)
+Benchmarking conv1d/nograd_L/4096: Analyzing
+conv1d/nograd_L/4096    time:   [158.86 ms 181.27 ms 204.67 ms]
+[RCH] remote vmi1156319 (205.6s)
