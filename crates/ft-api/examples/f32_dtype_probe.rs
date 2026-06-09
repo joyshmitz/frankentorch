@@ -111,5 +111,32 @@ fn main() {
     un1!("polygamma", pos(), |s: &mut FrankenTorchSession, t| s.tensor_polygamma(1, t));
     un1!("multigammaln", vec![1.5f32, 2.0, 3.0, 4.0], |s: &mut FrankenTorchSession, t| s.tensor_multigammaln(t, 2));
 
+    // batch 3: unary specials
+    un!("special_airy_ai", tensor_special_airy_ai, genv());
+    un!("special_spherical_bessel_j0", tensor_special_spherical_bessel_j0, pos());
+
+    // batch 3: binary composites (both f32 -> f32 in torch)
+    macro_rules! bin {
+        ($name:literal, $a:expr, $b:expr, $call:expr) => {{
+            let x = s.tensor_variable_f32($a, vec![4], false).unwrap();
+            let y = s.tensor_variable_f32($b, vec![4], false).unwrap();
+            match $call(&mut s, x, y) {
+                Ok(r) => match s.tensor_dtype(r) {
+                    Ok(DType::F32) => {}
+                    Ok(d) => { println!("{:<28} UPCAST -> {:?}", $name, d); bugs += 1; }
+                    Err(e) => println!("{:<28} dtype-err {e:?}", $name),
+                },
+                Err(e) => { println!("{:<28} ERR {e:?}", $name); bugs += 1; }
+            }
+        }};
+    }
+    let p4 = || vec![0.5f32, 1.0, 2.0, 3.0];
+    bin!("xlogy", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_xlogy(x, y));
+    bin!("xlog1py", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_xlog1py(x, y));
+    bin!("special_zeta", vec![2.0f32, 3.0, 4.0, 5.0], p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_special_zeta(x, y));
+    bin!("rel_entr", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_rel_entr(x, y));
+    bin!("special_gammainc", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_special_gammainc(x, y));
+    bin!("special_gammaincc", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_special_gammaincc(x, y));
+
     println!("\nf32 UPCAST/ERR bugs: {bugs}");
 }
