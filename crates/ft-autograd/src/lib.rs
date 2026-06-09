@@ -14128,6 +14128,128 @@ impl TensorTape {
                         rule: "d(prod_dim(x))/dx_i=grad*prod_excl_i (cg)",
                     });
                 }
+                TensorNodeOp::IndexPut {
+                    input,
+                    values,
+                    indices,
+                    input_shape,
+                    accumulate,
+                    suffix_size,
+                } => {
+                    // Both gradients are LINEAR in the incoming gradient with a fixed
+                    // structure (positions/active-slots/broadcast) computable here at
+                    // backward time:
+                    //   grad_input: accumulate -> passthrough; else zero the written
+                    //     positions (mask * grad).
+                    //   grad_values: gather grad at the written positions (index_select,
+                    //     whose first-order backward scatters — the adjoint), with the
+                    //     last-write-wins active-slot mask and scalar-broadcast collapse.
+                    let input_numel = Self::checked_shape_numel(
+                        &input_shape,
+                        "index_put create_graph input shape overflow",
+                    )?;
+                    let n_indices = indices.first().map_or(0, Vec::len);
+                    let num_indexed = indices.len();
+                    let mut indexed_strides = vec![0usize; num_indexed];
+                    for d in 0..num_indexed {
+                        indexed_strides[d] = Self::checked_shape_numel(
+                            &input_shape[d + 1..],
+                            "index_put create_graph stride overflow",
+                        )?;
+                    }
+                    let mut bases = Vec::with_capacity(n_indices);
+                    for i in 0..n_indices {
+                        let mut base = 0usize;
+                        for d in 0..num_indexed {
+                            let idx = Self::normalize_wrapped_index_float(
+                                indices[d][i],
+                                input_shape[d],
+                                "index_put create_graph received invalid index value",
+                                "index_put create_graph received out-of-bounds index value",
+                                "index_put create_graph index conversion overflow",
+                            )?;
+                            base += idx * indexed_strides[d];
+                        }
+                        bases.push(base);
+                    }
+
+                    // grad_input
+                    if accumulate {
+                        self.cg_accumulate(input, &mut grad_nodes, incoming_id)?;
+                    } else {
+                        let mut mask_in = vec![1.0; input_numel];
+                        for &base in &bases {
+                            for s in 0..suffix_size {
+                                mask_in[base + s] = 0.0;
+                            }
+                        }
+                        let mask_node = self.leaf(mask_in, input_shape.clone(), false)?;
+                        let grad_input = self.cg_mul(incoming_id, mask_node)?;
+                        self.cg_accumulate(input, &mut grad_nodes, grad_input)?;
+                    }
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+
+                    // grad_values: gather grad at the written positions.
+                    let values_needed = Self::checked_mul_usize(
+                        n_indices,
+                        suffix_size,
+                        "index_put create_graph values shape overflow",
+                    )?;
+                    let values_numel = self.nodes[values.0].tensor.meta().numel();
+                    let values_shape = self.nodes[values.0].tensor.meta().shape().to_vec();
+                    let scalar_broadcast = values_numel == 1 && values_needed > 1;
+
+                    // last-write-wins active-slot mask (non-accumulate only).
+                    let mut active = vec![true; values_needed];
+                    if !accumulate {
+                        let mut last_slot_for_output = vec![None; input_numel];
+                        for (i, &base) in bases.iter().enumerate() {
+                            for s in 0..suffix_size {
+                                let output_slot = base + s;
+                                let value_slot = i * suffix_size + s;
+                                if let Some(prev) = last_slot_for_output[output_slot] {
+                                    active[prev] = false;
+                                }
+                                last_slot_for_output[output_slot] = Some(value_slot);
+                            }
+                        }
+                    }
+
+                    let mut positions = Vec::with_capacity(values_needed);
+                    for &base in &bases {
+                        for s in 0..suffix_size {
+                            #[allow(clippy::cast_precision_loss)]
+                            positions.push((base + s) as f64);
+                        }
+                    }
+                    let flat_grad = self.cg_reshape(incoming_id, vec![input_numel])?;
+                    let mut gathered = self.index_select(flat_grad, 0, &positions)?;
+                    if active.iter().any(|&a| !a) {
+                        let mask_vals: Vec<f64> =
+                            active.iter().map(|&a| if a { 1.0 } else { 0.0 }).collect();
+                        let mask_node = self.leaf(mask_vals, vec![values_needed], false)?;
+                        gathered = self.cg_mul(gathered, mask_node)?;
+                    }
+                    let grad_values = if scalar_broadcast {
+                        let (summed, _) = self.sum(gathered, ExecutionMode::Strict)?;
+                        self.cg_reshape(summed, values_shape)?
+                    } else if values_numel == values_needed {
+                        self.cg_reshape(gathered, values_shape)?
+                    } else {
+                        // values_numel > values_needed: pad trailing zeros, then reshape.
+                        let padded =
+                            self.pad(gathered, &[0usize, values_numel - values_needed], 0.0)?;
+                        self.cg_reshape(padded, values_shape)?
+                    };
+                    self.cg_accumulate(values, &mut grad_nodes, grad_values)?;
+                    Self::complete_dependency(&mut pending, values, &mut queue)?;
+
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(index_put(x,v))/d:x=passthrough_or_masked,v=gather (cg)",
+                    });
+                }
                 TensorNodeOp::Div { lhs, rhs } => {
                     // d(a/b)/da = grad/b, d(a/b)/db = -a*grad/b^2
                     let grad_lhs = self.cg_div(incoming_id, rhs)?;
@@ -24240,6 +24362,103 @@ mod tests {
                 .zip(expected.iter())
                 .all(|(g, e)| (g - e).abs() < 1e-9),
             "grad_x should be {expected:?} (no NaN/inf), got {grad_x:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_index_put() {
+        // non-accumulate: out = index_put([10,20,30,40], [2,7], idx=[1,3]) = [10,2,30,7].
+        // f=sum(out^2): grad_input zeros the written positions -> [20,0,60,0]; grad_values
+        // gathers grad at the positions -> [4,14]. Second backward of grad_input
+        // (=2*input at passthrough positions) gives [2,0,2,0].
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf(vec![10.0, 20.0, 30.0, 40.0], vec![4], true)
+            .expect("input");
+        let values = tape.leaf(vec![2.0, 7.0], vec![2], true).expect("values");
+        let out = tape
+            .index_put(input, values, &[vec![1.0, 3.0]], &[2.0, 7.0], false)
+            .expect("index_put");
+        let (z, _) = tape.mul(out, out, ExecutionMode::Strict).expect("out^2");
+        let (loss, _) = tape.sum(z, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support IndexPut");
+        let gi = report1.gradient(input).expect("input gradient");
+        let gv = report1.gradient(values).expect("values gradient");
+        let exp_gi = [20.0, 0.0, 60.0, 0.0];
+        let exp_gv = [4.0, 14.0];
+        assert!(
+            gi.iter()
+                .zip(exp_gi.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "grad_input should be {exp_gi:?}, got {gi:?}"
+        );
+        assert!(
+            gv.iter()
+                .zip(exp_gv.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "grad_values should be {exp_gv:?}, got {gv:?}"
+        );
+        let dx_node = report1
+            .gradient_node(input)
+            .expect("gradient node for input");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2 = report2.gradient(input).expect("input second gradient");
+        let exp_g2 = [2.0, 0.0, 2.0, 0.0];
+        assert!(
+            g2.iter()
+                .zip(exp_g2.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "f''(input) should be {exp_g2:?}, got {g2:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_index_put_accumulate() {
+        // accumulate: out = [10,20,30,40] + scatter([2,7]@[1,3]) = [10,22,30,47].
+        // f=sum(out^2): grad_input is passthrough = 2*out = [20,44,60,94]; grad_values
+        // gathers = [44,94].
+        let mut tape = TensorTape::new();
+        let input = tape
+            .leaf(vec![10.0, 20.0, 30.0, 40.0], vec![4], true)
+            .expect("input");
+        let values = tape.leaf(vec![2.0, 7.0], vec![2], true).expect("values");
+        let out = tape
+            .index_put(input, values, &[vec![1.0, 3.0]], &[2.0, 7.0], true)
+            .expect("index_put accumulate");
+        let (z, _) = tape.mul(out, out, ExecutionMode::Strict).expect("out^2");
+        let (loss, _) = tape.sum(z, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support IndexPut accumulate");
+        let gi = report1.gradient(input).expect("input gradient");
+        let gv = report1.gradient(values).expect("values gradient");
+        let exp_gi = [20.0, 44.0, 60.0, 94.0];
+        let exp_gv = [44.0, 94.0];
+        assert!(
+            gi.iter()
+                .zip(exp_gi.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "grad_input should be {exp_gi:?}, got {gi:?}"
+        );
+        assert!(
+            gv.iter()
+                .zip(exp_gv.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "grad_values should be {exp_gv:?}, got {gv:?}"
         );
     }
 
