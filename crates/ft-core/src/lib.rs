@@ -1461,15 +1461,39 @@ impl DenseTensor {
         };
         let start = self.meta.storage_offset();
         let end = Self::storage_span_required_len(&self.meta)?;
+        // Per-channel layout (`channel_count` = shape[axis], `inner` =
+        // shape[axis+1..].product()) is shape/axis-derived, NOT element-dependent.
+        // Hoist it out of the per-element closure so the inner-dims product loop
+        // runs ONCE instead of for every element (was O(numel * rank); now O(numel)
+        // + O(rank) once). Bit-for-bit identical to the prior `channel_index_for_flat`
+        // path: the same Option checks and the same per-element index formula
+        // `(flat_idx / inner) % channel_count` are preserved, only the product
+        // recomputation moves out.
+        let rank = self.meta.shape().len();
+        let channel_layout = qparams.axis().map(|axis| {
+            let shape = self.meta.shape();
+            let channel_count = shape.get(axis).copied();
+            let inner = shape
+                .get(axis.saturating_add(1)..)
+                .map(|rest| rest.iter().copied().product::<usize>());
+            (axis, channel_count, inner)
+        });
         let dequantize = |flat_idx: usize, qvalue: f64| -> Result<f64, DenseTensorError> {
-            let channel = match qparams.axis() {
-                Some(axis) => Self::channel_index_for_flat(self.meta.shape(), axis, flat_idx)
-                    .ok_or(DenseTensorError::Meta(
-                        TensorMetaError::InvalidQuantizationAxis {
+            let channel = match channel_layout {
+                Some((axis, channel_count, inner)) => {
+                    let invalid_axis = || {
+                        DenseTensorError::Meta(TensorMetaError::InvalidQuantizationAxis {
                             axis,
-                            rank: self.meta.shape().len(),
-                        },
-                    ))?,
+                            rank,
+                        })
+                    };
+                    let channel_count = channel_count.ok_or_else(invalid_axis)?;
+                    let inner = inner.ok_or_else(invalid_axis)?;
+                    if channel_count == 0 || inner == 0 {
+                        return Err(invalid_axis());
+                    }
+                    (flat_idx / inner) % channel_count
+                }
                 None => 0,
             };
             let scale = qparams.scale_at(channel).ok_or(DenseTensorError::Meta(
@@ -1504,19 +1528,6 @@ impl DenseTensor {
                 .collect::<Result<Vec<_>, _>>()?),
             _ => Err(DenseTensorError::UnsupportedDType(self.meta.dtype())),
         }
-    }
-
-    fn channel_index_for_flat(shape: &[usize], axis: usize, flat_idx: usize) -> Option<usize> {
-        let &channel_count = shape.get(axis)?;
-        let inner: usize = shape
-            .get(axis.saturating_add(1)..)?
-            .iter()
-            .copied()
-            .product();
-        if channel_count == 0 || inner == 0 {
-            return None;
-        }
-        Some((flat_idx / inner) % channel_count)
     }
 
     #[must_use]
@@ -3537,6 +3548,29 @@ mod tests {
                 .dequantized_values_as_f64()
                 .expect("dequantized per-channel qint8"),
             vec![0.0, 0.5, 1.0, 0.5, 0.75, 1.0]
+        );
+    }
+
+    #[test]
+    fn dense_tensor_dequantizes_per_channel_mid_axis_rank3() {
+        // axis=1 on a rank-3 [2,2,2] tensor: `inner` = product(shape[2..]) = 2 spans
+        // the trailing dim, exercising the hoisted multi-dim inner-product path.
+        // channel index = (flat_idx / 2) % 2.
+        let tensor = DenseTensor::from_contiguous_values_quint8_per_channel(
+            vec![2, 4, 6, 8, 10, 12, 14, 16],
+            vec![2, 2, 2],
+            Device::Cpu,
+            vec![0.5, 0.25],
+            vec![0, 0],
+            1,
+        )
+        .expect("per-channel quint8 rank-3 dense tensor");
+
+        assert_eq!(
+            tensor
+                .dequantized_values_as_f64()
+                .expect("dequantized per-channel quint8 rank-3"),
+            vec![1.0, 2.0, 1.5, 2.0, 5.0, 6.0, 3.5, 4.0]
         );
     }
 
