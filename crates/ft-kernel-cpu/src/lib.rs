@@ -924,12 +924,27 @@ fn powf_torch_signed_zero_f64(value: f64, exponent: f64) -> f64 {
     // -0 to match an older torch convention, but current libm and
     // torch both return +0 (per IEEE 754-2008 §9.2.1). Pinned by
     // torch_pow_ieee754_subprocess_conformance (vgj2).
+    //
+    // torch additionally normalizes a NEGATIVE base raised to a NON-INTEGER
+    // power to NaN (a real-valued root of a negative number does not exist).
+    // libm already returns NaN for a FINITE negative base, but for
+    // value == -inf the IEEE special case pow(-inf, y>0, y not an odd integer)
+    // returns +inf, diverging from torch (torch.float_power(-inf, 0.5) = NaN).
+    // Override only that case — a finite, non-integer exponent — so integer and
+    // ±inf exponents keep libm's (torch-matching) results (frankentorch-pqwbs).
+    if value == f64::NEG_INFINITY && exponent.is_finite() && exponent.fract() != 0.0 {
+        return f64::NAN;
+    }
     value.powf(exponent)
 }
 
 fn powf_torch_signed_zero_f32(value: f32, exponent: f32) -> f32 {
     // Match libm convention: pow(-0, fractional > 0) returns +0.
-    // See powf_torch_signed_zero_f64 for the rationale.
+    // See powf_torch_signed_zero_f64 for the rationale, including the torch
+    // negative-infinity-base normalization to NaN (frankentorch-pqwbs).
+    if value == f32::NEG_INFINITY && exponent.is_finite() && exponent.fract() != 0.0 {
+        return f32::NAN;
+    }
     value.powf(exponent)
 }
 
@@ -18561,6 +18576,35 @@ mod tests {
             pow_tensor_contiguous_f32(&input, &meta, 0.5).expect("fractional pow should succeed");
         assert_eq!(out[0].to_bits(), 0.0f32.to_bits());
         assert_eq!(out[1].to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn pow_tensor_negative_infinity_base_fractional_exponent_is_nan() {
+        // torch normalizes a negative base raised to a non-integer power to NaN.
+        // libm already returns NaN for finite negative bases, but pow(-inf, 0.5)
+        // is the IEEE special case +inf — torch returns NaN. Integer and ±inf
+        // exponents keep libm's torch-matching results (frankentorch-pqwbs).
+        // Verified against torch 2.12: float_power(-inf, 0.5) = nan,
+        // (-inf)^2 = inf, (-inf)^3 = -inf, (-inf)^inf = inf.
+        let meta = TensorMeta::from_shape(vec![1], DType::F64, Device::Cpu);
+        let ninf = vec![f64::NEG_INFINITY];
+        assert!(pow_tensor_contiguous_f64(&ninf, &meta, 0.5).unwrap()[0].is_nan());
+        assert!(pow_tensor_contiguous_f64(&ninf, &meta, 2.5).unwrap()[0].is_nan());
+        assert_eq!(
+            pow_tensor_contiguous_f64(&ninf, &meta, 2.0).unwrap()[0],
+            f64::INFINITY
+        );
+        assert_eq!(
+            pow_tensor_contiguous_f64(&ninf, &meta, 3.0).unwrap()[0],
+            f64::NEG_INFINITY
+        );
+        assert_eq!(
+            pow_tensor_contiguous_f64(&ninf, &meta, f64::INFINITY).unwrap()[0],
+            f64::INFINITY
+        );
+        // f32 companion.
+        let meta32 = TensorMeta::from_shape(vec![1], DType::F32, Device::Cpu);
+        assert!(pow_tensor_contiguous_f32(&[f32::NEG_INFINITY], &meta32, 0.5).unwrap()[0].is_nan());
     }
 
     #[test]
