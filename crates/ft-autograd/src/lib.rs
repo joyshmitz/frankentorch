@@ -13845,6 +13845,34 @@ impl TensorTape {
                         rule: "d(roll(x,s,d))/dx=roll(grad,-s,d) (cg)",
                     });
                 }
+                TensorNodeOp::Lerp { start, end, weight } => {
+                    // lerp(s,e,w)=(1-w)*s + w*e: d/ds=(1-w)*grad, d/de=w*grad.
+                    let grad_start = self.cg_mul_scalar(incoming_id, 1.0 - weight)?;
+                    let grad_end = self.cg_mul_scalar(incoming_id, weight)?;
+                    self.cg_accumulate(start, &mut grad_nodes, grad_start)?;
+                    self.cg_accumulate(end, &mut grad_nodes, grad_end)?;
+                    Self::complete_dependency(&mut pending, start, &mut queue)?;
+                    Self::complete_dependency(&mut pending, end, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(lerp(s,e,w))/ds=(1-w)*grad,d/de=w*grad (cg)",
+                    });
+                }
+                TensorNodeOp::CastF32 { input }
+                | TensorNodeOp::CastF64 { input }
+                | TensorNodeOp::CastF16 { input }
+                | TensorNodeOp::CastBF16 { input } => {
+                    // Cast is identity for gradients (create_graph backward operates
+                    // in f64), so the upstream gradient passes straight through.
+                    self.cg_accumulate(input, &mut grad_nodes, incoming_id)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(cast)/d_input=grad (identity, cg)",
+                    });
+                }
                 TensorNodeOp::Div { lhs, rhs } => {
                     // d(a/b)/da = grad/b, d(a/b)/db = -a*grad/b^2
                     let grad_lhs = self.cg_div(incoming_id, rhs)?;
@@ -23485,6 +23513,73 @@ mod tests {
         assert!(
             grad2_x.iter().all(|&g| (g - 2.0).abs() < 1e-10),
             "f''(x) should be [2,2,2], got {grad2_x:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_lerp() {
+        // lerp(s,e,0.25)=0.75*s+0.25*e. f=sum(y^2): grad_s=2y*0.75, second
+        // derivative d(grad_s)/ds = 1.5*0.75 = 1.125 (constant).
+        let mut tape = TensorTape::new();
+        let s = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("s");
+        let e = tape.leaf(vec![3.0, 4.0], vec![2], true).expect("e");
+        let (y, _) = tape.lerp(s, e, 0.25, ExecutionMode::Strict).expect("lerp");
+        let (z, _) = tape.mul(y, y, ExecutionMode::Strict).expect("y*y");
+        let (loss, _) = tape.sum(z, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support Lerp");
+        // y=[1.5,2.5], grad_s=2y*0.75=[2.25,3.75]
+        let grad_s = report1.gradient(s).expect("s gradient");
+        assert!(
+            (grad_s[0] - 2.25).abs() < 1e-10 && (grad_s[1] - 3.75).abs() < 1e-10,
+            "grad_s should be [2.25,3.75], got {grad_s:?}"
+        );
+        let ds_node = report1.gradient_node(s).expect("gradient node for s");
+        let report2 = tape.backward(ds_node).expect("second backward");
+        let grad2_s = report2.gradient(s).expect("s second gradient");
+        assert!(
+            grad2_s.iter().all(|&g| (g - 1.125).abs() < 1e-10),
+            "f''(s) should be [1.125,1.125], got {grad2_s:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_cast() {
+        // Cast is identity for gradients. x -> f32 -> f64 -> square. 2.0/3.0 round
+        // trip exactly through f32, so grad_x=2x=[4,6] and 2nd derivative is [2,2].
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![2.0, 3.0], vec![2], true).expect("x");
+        let xf = tape.to_f32(x).expect("to_f32");
+        let xb = tape.to_f64(xf).expect("to_f64");
+        let (z, _) = tape.mul(xb, xb, ExecutionMode::Strict).expect("square");
+        let (loss, _) = tape.sum(z, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support Cast");
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!(
+            (grad_x[0] - 4.0).abs() < 1e-10 && (grad_x[1] - 6.0).abs() < 1e-10,
+            "grad_x should be [4,6], got {grad_x:?}"
+        );
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2_x = report2.gradient(x).expect("x second gradient");
+        assert!(
+            grad2_x.iter().all(|&g| (g - 2.0).abs() < 1e-10),
+            "f''(x) should be [2,2], got {grad2_x:?}"
         );
     }
 
