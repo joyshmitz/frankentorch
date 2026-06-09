@@ -807,8 +807,16 @@ impl Optimizer for AdamW {
         self.validate_hyperparams()?;
 
         for (i, &param) in self.params.iter().enumerate() {
-            let grad = match load_param_gradient(session, param)? {
-                Some(g) => g,
+            // Zero-clone gradient access: read the gradient length via the cheap
+            // tape accessor and fold the live gradient slice straight into the
+            // fused update closure, exactly as `Adam::step` already does. This
+            // removes the per-parameter gradient clone (`load_param_gradient`
+            // -> Vec<f64>): one heap allocation + one full 8·numel-byte copy per
+            // parameter per step. Bit-for-bit identical — same arithmetic, same
+            // order, same state-commit order; only the gradient buffer's
+            // provenance changes (live tape slice vs. an owned copy of it).
+            let grad_len = match session.tensor_accumulated_gradient_len(param)? {
+                Some(len) => len,
                 None => continue,
             };
             let current_step = *self
@@ -818,26 +826,11 @@ impl Optimizer for AdamW {
             let t = checked_next_step_count(current_step, "adamw step counter overflow")?;
 
             let param_len = session.tensor_values_len(param)?;
-            ensure_grad_len_matches_param(param, param_len, grad.len())?;
+            ensure_grad_len_matches_param(param, param_len, grad_len)?;
 
             // Bias-corrected estimates
             let bias_correction1 = adam_bias_correction(self.beta1, t);
             let bias_correction2 = adam_bias_correction(self.beta2, t);
-
-            if let Some(m) = self.m[i].as_deref() {
-                ensure_state_len(
-                    grad.len(),
-                    m.len(),
-                    "adamw first-moment state length mismatch with gradient length",
-                )?;
-            }
-            if let Some(v) = self.v[i].as_deref() {
-                ensure_state_len(
-                    grad.len(),
-                    v.len(),
-                    "adamw second-moment state length mismatch with gradient length",
-                )?;
-            }
 
             let beta1 = self.beta1;
             let beta2 = self.beta2;
@@ -847,109 +840,128 @@ impl Optimizer for AdamW {
             let amsgrad = self.amsgrad;
             let maximize = self.maximize;
             if amsgrad {
-                if let Some(vm) = self.v_max[i].as_deref() {
-                    ensure_state_len(
-                        grad.len(),
-                        vm.len(),
-                        "adamw max-second-moment state length mismatch with gradient length",
-                    )?;
-                }
-                let m_slot = &mut self.m[i];
-                let v_slot = &mut self.v[i];
-                let vmax_slot = &mut self.v_max[i];
+                let m = self.m[i].get_or_insert_with(|| vec![0.0; grad_len]);
+                ensure_state_len(
+                    grad_len,
+                    m.len(),
+                    "adamw first-moment state length mismatch with gradient length",
+                )?;
+                let v = self.v[i].get_or_insert_with(|| vec![0.0; grad_len]);
+                ensure_state_len(
+                    grad_len,
+                    v.len(),
+                    "adamw second-moment state length mismatch with gradient length",
+                )?;
+                let vmax = self.v_max[i].get_or_insert_with(|| vec![0.0; grad_len]);
+                ensure_state_len(
+                    grad_len,
+                    vmax.len(),
+                    "adamw max-second-moment state length mismatch with gradient length",
+                )?;
                 // AMSGrad path (separate so the non-amsgrad fused loop is byte-identical).
-                session.tensor_update_param_values_f64_with(param, |param_values| {
-                    let m = m_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
-                    let v = v_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
-                    let vmax = vmax_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
-                    let body = |p: &mut f64,
-                                g: f64,
-                                m_val: &mut f64,
-                                v_val: &mut f64,
-                                vmax_val: &mut f64| {
-                        // maximize: negate the gradient first (torch parity).
-                        let g = if maximize { -g } else { g };
-                        *m_val = beta1 * *m_val + (1.0 - beta1) * g;
-                        *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
-                        if *vmax_val < *v_val {
-                            *vmax_val = *v_val;
-                        }
-                        let m_hat = *m_val / bias_correction1;
-                        let v_hat = *vmax_val / bias_correction2;
-                        let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
-                        let decay_delta = if weight_decay == 0.0 {
-                            0.0
-                        } else {
-                            *p * lr * weight_decay
+                session.tensor_update_param_values_f64_with_accumulated_gradient(
+                    param,
+                    |grad, param_values| {
+                        let body = |p: &mut f64,
+                                    g: f64,
+                                    m_val: &mut f64,
+                                    v_val: &mut f64,
+                                    vmax_val: &mut f64| {
+                            // maximize: negate the gradient first (torch parity).
+                            let g = if maximize { -g } else { g };
+                            *m_val = beta1 * *m_val + (1.0 - beta1) * g;
+                            *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
+                            if *vmax_val < *v_val {
+                                *vmax_val = *v_val;
+                            }
+                            let m_hat = *m_val / bias_correction1;
+                            let v_hat = *vmax_val / bias_correction2;
+                            let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
+                            let decay_delta = if weight_decay == 0.0 {
+                                0.0
+                            } else {
+                                *p * lr * weight_decay
+                            };
+                            *p -= decay_delta + adam_delta;
                         };
-                        *p -= decay_delta + adam_delta;
-                    };
-                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
-                        use rayon::prelude::*;
-                        param_values
-                            .par_iter_mut()
-                            .zip(grad.par_iter())
-                            .zip(m.par_iter_mut())
-                            .zip(v.par_iter_mut())
-                            .zip(vmax.par_iter_mut())
-                            .for_each(|((((p, g), m_val), v_val), vmax_val)| {
+                        if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                            use rayon::prelude::*;
+                            param_values
+                                .par_iter_mut()
+                                .zip(grad.par_iter())
+                                .zip(m.par_iter_mut())
+                                .zip(v.par_iter_mut())
+                                .zip(vmax.par_iter_mut())
+                                .for_each(|((((p, g), m_val), v_val), vmax_val)| {
+                                    body(p, *g, m_val, v_val, vmax_val);
+                                });
+                        } else {
+                            for ((((p, g), m_val), v_val), vmax_val) in param_values
+                                .iter_mut()
+                                .zip(grad.iter())
+                                .zip(m.iter_mut())
+                                .zip(v.iter_mut())
+                                .zip(vmax.iter_mut())
+                            {
                                 body(p, *g, m_val, v_val, vmax_val);
-                            });
-                    } else {
-                        for ((((p, g), m_val), v_val), vmax_val) in param_values
-                            .iter_mut()
-                            .zip(grad.iter())
-                            .zip(m.iter_mut())
-                            .zip(v.iter_mut())
-                            .zip(vmax.iter_mut())
-                        {
-                            body(p, *g, m_val, v_val, vmax_val);
+                            }
                         }
-                    }
-                })?;
+                    },
+                )?;
             } else {
-                let m_slot = &mut self.m[i];
-                let v_slot = &mut self.v[i];
-                session.tensor_update_param_values_f64_with(param, |param_values| {
-                    let m = m_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
-                    let v = v_slot.get_or_insert_with(|| vec![0.0; grad.len()]);
-                    // Per-element AdamW update — fully independent, so parallelize over
-                    // elements for large tensors (bit-for-bit identical to the serial
-                    // loop; same arithmetic/order). frankentorch-optpar.
-                    let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
-                        // maximize: negate the gradient first (torch parity).
-                        let g = if maximize { -g } else { g };
-                        *m_val = beta1 * *m_val + (1.0 - beta1) * g;
-                        *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
-                        let m_hat = *m_val / bias_correction1;
-                        let v_hat = *v_val / bias_correction2;
-                        let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
-                        let decay_delta = if weight_decay == 0.0 {
-                            0.0
-                        } else {
-                            *p * lr * weight_decay
+                let m = self.m[i].get_or_insert_with(|| vec![0.0; grad_len]);
+                ensure_state_len(
+                    grad_len,
+                    m.len(),
+                    "adamw first-moment state length mismatch with gradient length",
+                )?;
+                let v = self.v[i].get_or_insert_with(|| vec![0.0; grad_len]);
+                ensure_state_len(
+                    grad_len,
+                    v.len(),
+                    "adamw second-moment state length mismatch with gradient length",
+                )?;
+                session.tensor_update_param_values_f64_with_accumulated_gradient(
+                    param,
+                    |grad, param_values| {
+                        // Per-element AdamW update — fully independent, so parallelize over
+                        // elements for large tensors (bit-for-bit identical to the serial
+                        // loop; same arithmetic/order). frankentorch-optpar.
+                        let body = |p: &mut f64, g: f64, m_val: &mut f64, v_val: &mut f64| {
+                            // maximize: negate the gradient first (torch parity).
+                            let g = if maximize { -g } else { g };
+                            *m_val = beta1 * *m_val + (1.0 - beta1) * g;
+                            *v_val = beta2 * *v_val + (1.0 - beta2) * g * g;
+                            let m_hat = *m_val / bias_correction1;
+                            let v_hat = *v_val / bias_correction2;
+                            let adam_delta = lr * m_hat / (v_hat.sqrt() + eps);
+                            let decay_delta = if weight_decay == 0.0 {
+                                0.0
+                            } else {
+                                *p * lr * weight_decay
+                            };
+                            *p -= decay_delta + adam_delta;
                         };
-                        *p -= decay_delta + adam_delta;
-                    };
-                    if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
-                        use rayon::prelude::*;
-                        param_values
-                            .par_iter_mut()
-                            .zip(grad.par_iter())
-                            .zip(m.par_iter_mut())
-                            .zip(v.par_iter_mut())
-                            .for_each(|(((p, g), m_val), v_val)| body(p, *g, m_val, v_val));
-                    } else {
-                        for (((p, g), m_val), v_val) in param_values
-                            .iter_mut()
-                            .zip(grad.iter())
-                            .zip(m.iter_mut())
-                            .zip(v.iter_mut())
-                        {
-                            body(p, *g, m_val, v_val);
+                        if param_values.len() >= OPTIM_PARALLEL_THRESHOLD {
+                            use rayon::prelude::*;
+                            param_values
+                                .par_iter_mut()
+                                .zip(grad.par_iter())
+                                .zip(m.par_iter_mut())
+                                .zip(v.par_iter_mut())
+                                .for_each(|(((p, g), m_val), v_val)| body(p, *g, m_val, v_val));
+                        } else {
+                            for (((p, g), m_val), v_val) in param_values
+                                .iter_mut()
+                                .zip(grad.iter())
+                                .zip(m.iter_mut())
+                                .zip(v.iter_mut())
+                            {
+                                body(p, *g, m_val, v_val);
+                            }
                         }
-                    }
-                })?;
+                    },
+                )?;
             }
 
             self.step_counts[i] = t;
