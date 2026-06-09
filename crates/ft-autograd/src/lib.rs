@@ -13902,6 +13902,35 @@ impl TensorTape {
                         rule: "d(split(x))/dx=zero_pad_grad (cg)",
                     });
                 }
+                TensorNodeOp::Pad {
+                    input,
+                    padding,
+                    original_shape,
+                } => {
+                    // grad = unpad: narrow out the original region along each padded
+                    // dim (PyTorch innermost-first padding pairs). Narrow's first-order
+                    // backward (place-into-zeros) is the adjoint pad, so chaining
+                    // narrows is correct for a further backward.
+                    let ndim = original_shape.len();
+                    let num_pad_dims = padding.len() / 2;
+                    let mut grad = incoming_id;
+                    for i in 0..num_pad_dims {
+                        let before = padding[i * 2];
+                        let after = padding[i * 2 + 1];
+                        if before == 0 && after == 0 {
+                            continue;
+                        }
+                        let dim = ndim - 1 - i;
+                        grad = self.narrow(grad, dim, before, original_shape[dim])?;
+                    }
+                    self.cg_accumulate(input, &mut grad_nodes, grad)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(pad(x))/dx=unpad(grad) (cg)",
+                    });
+                }
                 TensorNodeOp::Div { lhs, rhs } => {
                     // d(a/b)/da = grad/b, d(a/b)/db = -a*grad/b^2
                     let grad_lhs = self.cg_div(incoming_id, rhs)?;
@@ -23651,6 +23680,39 @@ mod tests {
                 && (grad2_x[2] - 2.0).abs() < 1e-10
                 && (grad2_x[3] - 2.0).abs() < 1e-10,
             "f''(x) should be [0,0,2,2], got {grad2_x:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_pad() {
+        // y=pad([1,2],[1,1])=[0,1,2,0]. f=sum(y^2)=x0^2+x1^2, so grad_x=[2x0,2x1]=
+        // [2,4] (upstream 2y unpadded back to x) and 2nd derivative [2,2]. Exercises
+        // create_graph for Pad (recorded as a Narrow / unpad).
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let y = tape.pad(x, &[1, 1], 0.0).expect("pad");
+        let (z, _) = tape.mul(y, y, ExecutionMode::Strict).expect("y*y");
+        let (loss, _) = tape.sum(z, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support Pad");
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!(
+            (grad_x[0] - 2.0).abs() < 1e-10 && (grad_x[1] - 4.0).abs() < 1e-10,
+            "grad_x should be [2,4], got {grad_x:?}"
+        );
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2_x = report2.gradient(x).expect("x second gradient");
+        assert!(
+            grad2_x.iter().all(|&g| (g - 2.0).abs() < 1e-10),
+            "f''(x) should be [2,2], got {grad2_x:?}"
         );
     }
 
