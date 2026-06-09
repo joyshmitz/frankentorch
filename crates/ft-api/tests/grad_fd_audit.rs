@@ -328,3 +328,78 @@ fn layer_norm_backward_grads_match_finite_diff() {
         s.tensor_sum(z).unwrap()
     });
 }
+
+// ── Pooling / distance / softmax / loss (recently-developed, non-trivial grads) ──
+
+#[test]
+fn max_pool2d_backward_grad_matches_finite_diff() {
+    // input[1,1,4,4], 2x2 kernel/stride. Distinct values -> no argmax ties, so max is
+    // locally smooth and FD-valid; backward routes each output grad to its argmax.
+    let input: Vec<f64> = (0..16).map(|v| (v as f64) * 0.37 + 0.11).collect();
+    fd_check(&input, &[1, 1, 4, 4], |s, xn| {
+        let o = s.tensor_max_pool2d(xn, (2, 2), (2, 2)).unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
+
+#[test]
+fn avg_pool2d_backward_grad_matches_finite_diff() {
+    let input: Vec<f64> = (0..16).map(|v| (v as f64) * 0.37 + 0.11).collect();
+    fd_check(&input, &[1, 1, 4, 4], |s, xn| {
+        let o = s
+            .tensor_avg_pool2d(xn, (2, 2), (2, 2), (0, 0), false, true)
+            .unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
+
+#[test]
+fn cdist_backward_grad_matches_finite_diff() {
+    // x1[2,3], x2[2,3], p=2. Well-separated points (no zero distance -> smooth).
+    let x1 = vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0];
+    let x2 = vec![4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    let x2c = x2.clone();
+    fd_check(&x1, &[2, 3], move |s, xn| {
+        let x2n = s.tensor_variable(x2c.clone(), vec![2, 3], false).unwrap();
+        let d = s.tensor_cdist(xn, x2n, 2.0).unwrap();
+        let z = s.tensor_mul(d, d).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
+
+#[test]
+fn pdist_backward_grad_matches_finite_diff() {
+    // input[3,2], p=2 -> 3 pairwise distances; well-separated points.
+    let input = vec![0.0, 0.0, 3.0, 1.0, 1.0, 4.0];
+    fd_check(&input, &[3, 2], |s, xn| {
+        let d = s.tensor_pdist(xn, 2.0).unwrap();
+        let z = s.tensor_mul(d, d).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
+
+#[test]
+fn softmax_backward_grad_matches_finite_diff() {
+    let input = vec![0.5, -1.0, 2.0, 0.1, 0.3, -0.7];
+    fd_check(&input, &[2, 3], |s, xn| {
+        let sm = s.tensor_softmax(xn, 1).unwrap();
+        let z = s.tensor_mul(sm, sm).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
+
+#[test]
+fn cross_entropy_soft_label_backward_grad_matches_finite_diff() {
+    // soft-label CE: input[2,3] logits, target[2,3] (rows sum to 1, constant).
+    let logits = vec![0.5, -1.0, 2.0, 0.1, 0.3, -0.7];
+    let target = vec![0.2, 0.3, 0.5, 0.6, 0.1, 0.3];
+    fd_check(&logits, &[2, 3], move |s, xn| {
+        let tn = s
+            .tensor_variable(target.clone(), vec![2, 3], false)
+            .unwrap();
+        let ce = s.tensor_cross_entropy(xn, tn, "mean").unwrap();
+        s.tensor_sum(ce).unwrap()
+    });
+}
