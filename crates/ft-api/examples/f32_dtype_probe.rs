@@ -75,5 +75,41 @@ fn main() {
     un!("nanmean", tensor_nanmean, genv());
     un!("prod", tensor_prod, pos());
 
+    // batch 2: activation composites + remaining special fns
+    un!("elu", tensor_elu, genv());
+    un!("selu", tensor_selu, genv());
+    un!("hardsigmoid", tensor_hardsigmoid, genv());
+    un!("hardswish", tensor_hardswish, genv());
+    un!("relu6", tensor_relu6, vec![-1.0f32, 2.0, 5.0, 8.0]);
+    un!("tanhshrink", tensor_tanhshrink, genv());
+    un!("logsigmoid", tensor_logsigmoid, genv());
+    un!("hardtanh", tensor_hardtanh, genv());
+    un!("special_entr", tensor_special_entr, unit());
+    un!("special_bessel_j1", tensor_special_bessel_j1, pos());
+    un!("special_bessel_y1", tensor_special_bessel_y1, pos());
+    un!("special_modified_bessel_k1", tensor_special_modified_bessel_k1, pos());
+    un!("special_scaled_modified_bessel_k0", tensor_special_scaled_modified_bessel_k0, pos());
+
+    // parameterized (direct calls)
+    macro_rules! un1 {
+        ($name:literal, $vals:expr, $call:expr) => {{
+            let t = s.tensor_variable_f32($vals, vec![4], false).unwrap();
+            match $call(&mut s, t) {
+                Ok(r) => match s.tensor_dtype(r) {
+                    Ok(DType::F32) => {}
+                    Ok(d) => { println!("{:<28} UPCAST -> {:?}", $name, d); bugs += 1; }
+                    Err(e) => println!("{:<28} dtype-err {e:?}", $name),
+                },
+                Err(e) => { println!("{:<28} ERR {e:?}", $name); bugs += 1; }
+            }
+        }};
+    }
+    un1!("celu", genv(), |s: &mut FrankenTorchSession, t| s.tensor_celu(t, 1.0));
+    un1!("softshrink", genv(), |s: &mut FrankenTorchSession, t| s.tensor_softshrink(t, 0.5));
+    un1!("hardshrink", genv(), |s: &mut FrankenTorchSession, t| s.tensor_hardshrink(t, 0.5));
+    un1!("logit", unit(), |s: &mut FrankenTorchSession, t| s.tensor_logit(t, None));
+    un1!("polygamma", pos(), |s: &mut FrankenTorchSession, t| s.tensor_polygamma(1, t));
+    un1!("multigammaln", vec![1.5f32, 2.0, 3.0, 4.0], |s: &mut FrankenTorchSession, t| s.tensor_multigammaln(t, 2));
+
     println!("\nf32 UPCAST/ERR bugs: {bugs}");
 }
