@@ -403,3 +403,70 @@ fn cross_entropy_soft_label_backward_grad_matches_finite_diff() {
         s.tensor_sum(ce).unwrap()
     });
 }
+
+// ── Normalization + activations (rms_norm had recent churn; high bug potential) ──
+
+#[test]
+fn rms_norm_backward_grads_match_finite_diff() {
+    // input[2,3] normalized over [3] with affine weight[3]. RMSNorm backward had
+    // recent churn (fad7c rstd-stats rejection) — worth an independent FD check.
+    let input = vec![1.0, 2.0, 4.0, -1.0, 0.5, 3.0];
+    let weight = vec![1.1, 0.9, 1.3];
+    let w1 = weight.clone();
+    fd_check(&input, &[2, 3], move |s, xn| {
+        let wn = s.tensor_variable(w1.clone(), vec![3], false).unwrap();
+        let o = s.tensor_rms_norm(xn, vec![3], Some(wn), 1e-6).unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+    let i1 = input.clone();
+    fd_check(&weight, &[3], move |s, wn| {
+        let xn = s.tensor_variable(i1.clone(), vec![2, 3], false).unwrap();
+        let o = s.tensor_rms_norm(xn, vec![3], Some(wn), 1e-6).unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
+
+#[test]
+fn group_norm_backward_grads_match_finite_diff() {
+    // input[2,4,3] (N=2,C=4,L=3), num_groups=2, affine weight[4]+bias[4].
+    let input: Vec<f64> = (0..24).map(|v| (v as f64) * 0.21 - 2.0).collect();
+    let weight = vec![1.1, 0.9, 1.2, 0.8];
+    let bias = vec![0.1, -0.2, 0.05, 0.3];
+    let (w1, b1) = (weight.clone(), bias.clone());
+    fd_check(&input, &[2, 4, 3], move |s, xn| {
+        let wn = s.tensor_variable(w1.clone(), vec![4], false).unwrap();
+        let bn = s.tensor_variable(b1.clone(), vec![4], false).unwrap();
+        let o = s
+            .tensor_group_norm(xn, 2, Some(wn), Some(bn), 1e-5)
+            .unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+    let (i1, b2) = (input.clone(), bias.clone());
+    fd_check(&weight, &[4], move |s, wn| {
+        let xn = s.tensor_variable(i1.clone(), vec![2, 4, 3], false).unwrap();
+        let bn = s.tensor_variable(b2.clone(), vec![4], false).unwrap();
+        let o = s
+            .tensor_group_norm(xn, 2, Some(wn), Some(bn), 1e-5)
+            .unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
+
+#[test]
+fn gelu_silu_backward_grads_match_finite_diff() {
+    let x = vec![-2.0, -0.5, 0.3, 1.0, 2.5];
+    fd_check(&x, &[5], |s, xn| {
+        let o = s.tensor_gelu(xn).unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+    fd_check(&x, &[5], |s, xn| {
+        let o = s.tensor_silu(xn).unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
