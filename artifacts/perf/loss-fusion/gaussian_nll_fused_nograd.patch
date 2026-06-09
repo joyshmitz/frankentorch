@@ -1,0 +1,45 @@
+diff --git a/crates/ft-api/src/lib.rs b/crates/ft-api/src/lib.rs
+index fc51bf6e..75bf327f 100644
+--- a/crates/ft-api/src/lib.rs
++++ b/crates/ft-api/src/lib.rs
+@@ -9768,10 +9768,37 @@ impl FrankenTorchSession {
+             && self.tensor_shape(target)? == in_shape
+             && self.tensor_shape(var)? == in_shape
+         {
+-            let per = if self.tensor_tape.tensor_requires_grad(input)?
++            let needs_grad = self.tensor_tape.tensor_requires_grad(input)?
+                 || self.tensor_tape.tensor_requires_grad(target)?
+-                || self.tensor_tape.tensor_requires_grad(var)?
+-            {
++                || self.tensor_tape.tensor_requires_grad(var)?;
++            // No-grad mean/sum: fuse the per-element NLL + reduction into a single
++            // scalar with NO retained per-element session tensor (the op-graph path
++            // materializes an 8M `per` node every call — on a long-lived session
++            // that retention dominates, frankentorch-gmuml). Zero-copy borrow the
++            // contiguous inputs (no tensor_values clone), reduce with the SAME
++            // kernel tensor_mean/tensor_sum use, so bit-identical to the
++            // tensor_mean(per) path. Mirrors smooth_l1's fast path.
++            if !needs_grad && matches!(reduction, "mean" | "sum") {
++                let x_t = self.tensor_tape.tensor(input)?;
++                let t_t = self.tensor_tape.tensor(target)?;
++                let v_t = self.tensor_tape.tensor(var)?;
++                let xv = x_t.contiguous_values()?;
++                let tv = t_t.contiguous_values()?;
++                let vv = v_t.contiguous_values()?;
++                let out = ft_kernel_cpu::gaussian_nll_forward_f64(xv, tv, vv, full);
++                let meta = TensorMeta::from_shape(
++                    in_shape.clone(),
++                    DType::F64,
++                    Device::Cpu,
++                );
++                let value = if reduction == "mean" {
++                    ft_kernel_cpu::mean_tensor_contiguous_f64(&out, &meta)?
++                } else {
++                    ft_kernel_cpu::sum_tensor_contiguous_f64(&out, &meta)?
++                };
++                return self.tensor_variable(vec![value], vec![1], false);
++            }
++            let per = if needs_grad {
+                 let fl = full;
+                 self.tensor_apply_function(
+                     &[input, target, var],

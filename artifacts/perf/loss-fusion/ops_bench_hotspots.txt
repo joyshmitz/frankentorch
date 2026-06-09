@@ -1,0 +1,7 @@
+max_pool2d/grad ms 57.077
+avg_pool2d/grad ms 55.109
+rms_norm/grad_2048x1024 ms 157.57
+smooth_l1/nograd_8m ms 94.701
+smooth_l1/grad_8m s 1.2587
+gaussian_nll/nograd_8m ms 178.12
+gaussian_nll/grad_8m s 1.8748
