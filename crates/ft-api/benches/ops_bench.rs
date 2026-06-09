@@ -1517,6 +1517,32 @@ fn bench_rfft2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_rfftn(c: &mut Criterion) {
+    // Same-worker A/B for the rfftn real-input fast path (real-FFT along the
+    // contiguous last axis + complex FFT on the halved remaining dims) vs the
+    // full-complex baseline (fftn over all dims, then narrow the last dim).
+    // Both run in this one binary => same worker, directly comparable.
+    let mut group = c.benchmark_group("rfftn");
+    let shape = vec![16usize, 64usize, 128usize]; // even last dim -> fast path
+    let total: usize = shape.iter().product();
+    let half = shape[2] / 2 + 1;
+    group.throughput(Throughput::Elements(total as u64));
+    group.bench_function("16x64x128_fast", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(shape.clone(), false).unwrap();
+        b.iter(|| black_box(session.tensor_rfftn(black_box(x), None, None).unwrap()));
+    });
+    group.bench_function("16x64x128_baseline_full_complex", |b| {
+        let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = session.tensor_randn(shape.clone(), false).unwrap();
+        b.iter(|| {
+            let full = session.tensor_fftn(black_box(x), None, None).unwrap();
+            black_box(session.tensor_narrow(full, 2, 0, half).unwrap())
+        });
+    });
+    group.finish();
+}
+
 fn bench_fft_1d(c: &mut Criterion) {
     let mut group = c.benchmark_group("fft_1d");
     // Single large power-of-two 1-D FFT: isolates dft_inplace_1d (one lane, no
@@ -1787,6 +1813,7 @@ criterion_group!(
     bench_stft,
     bench_irfft2,
     bench_rfft2,
+    bench_rfftn,
     bench_fft_1d,
     bench_fftn,
 );
