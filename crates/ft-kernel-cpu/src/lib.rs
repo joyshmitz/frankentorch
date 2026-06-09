@@ -11220,6 +11220,23 @@ fn golub_reinsch_svd(
     m: usize,
     n: usize,
 ) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+    golub_reinsch_svd_impl(a, m, n, true)
+}
+
+fn golub_reinsch_svd_right_only(
+    a: &mut [f64],
+    m: usize,
+    n: usize,
+) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+    golub_reinsch_svd_impl(a, m, n, false)
+}
+
+fn golub_reinsch_svd_impl(
+    a: &mut [f64],
+    m: usize,
+    n: usize,
+    track_left: bool,
+) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
     let mut w = vec![0.0f64; n];
     let mut v = vec![0.0f64; n * n];
     let mut rv1 = vec![0.0f64; n];
@@ -11328,34 +11345,36 @@ fn golub_reinsch_svd(
         g = rv1[i];
     }
 
-    // --- Accumulation of left-hand transformations (U, overwriting a) ---
-    for i in (0..n).rev() {
-        let l = i + 1;
-        g = w[i];
-        for j in l..n {
-            a[i * n + j] = 0.0;
-        }
-        if g != 0.0 {
-            g = 1.0 / g;
+    if track_left {
+        // --- Accumulation of left-hand transformations (U, overwriting a) ---
+        for i in (0..n).rev() {
+            let l = i + 1;
+            g = w[i];
             for j in l..n {
-                let mut s = 0.0;
-                for k in l..m {
-                    s += a[k * n + i] * a[k * n + j];
+                a[i * n + j] = 0.0;
+            }
+            if g != 0.0 {
+                g = 1.0 / g;
+                for j in l..n {
+                    let mut s = 0.0;
+                    for k in l..m {
+                        s += a[k * n + i] * a[k * n + j];
+                    }
+                    let f = (s / a[i * n + i]) * g;
+                    for k in i..m {
+                        a[k * n + j] += f * a[k * n + i];
+                    }
                 }
-                let f = (s / a[i * n + i]) * g;
-                for k in i..m {
-                    a[k * n + j] += f * a[k * n + i];
+                for j in i..m {
+                    a[j * n + i] *= g;
+                }
+            } else {
+                for j in i..m {
+                    a[j * n + i] = 0.0;
                 }
             }
-            for j in i..m {
-                a[j * n + i] *= g;
-            }
-        } else {
-            for j in i..m {
-                a[j * n + i] = 0.0;
-            }
+            a[i * n + i] += 1.0;
         }
-        a[i * n + i] += 1.0;
     }
 
     // --- Diagonalization of the bidiagonal form: QR with implicit shifts ---
@@ -11409,11 +11428,13 @@ fn golub_reinsch_svd(
                     let hinv = 1.0 / h;
                     c = g * hinv;
                     s = -f * hinv;
-                    for j in 0..m {
-                        let y = a[j * n + nm];
-                        let z = a[j * n + i];
-                        a[j * n + nm] = y * c + z * s;
-                        a[j * n + i] = z * c - y * s;
+                    if track_left {
+                        for j in 0..m {
+                            let y = a[j * n + nm];
+                            let z = a[j * n + i];
+                            a[j * n + nm] = y * c + z * s;
+                            a[j * n + i] = z * c - y * s;
+                        }
                     }
                 }
             }
@@ -11472,11 +11493,13 @@ fn golub_reinsch_svd(
                 }
                 f = c * g + s * y;
                 x = c * y - s * g;
-                for jj in 0..m {
-                    let yu = a[jj * n + j];
-                    let zu = a[jj * n + i];
-                    a[jj * n + j] = yu * c + zu * s;
-                    a[jj * n + i] = zu * c - yu * s;
+                if track_left {
+                    for jj in 0..m {
+                        let yu = a[jj * n + j];
+                        let zu = a[jj * n + i];
+                        a[jj * n + j] = yu * c + zu * s;
+                        a[jj * n + i] = zu * c - yu * s;
+                    }
                 }
             }
             rv1[l] = 0.0;
@@ -11996,12 +12019,73 @@ fn svd_rank_deficient_square_fast_path(
     }
 }
 
+fn svd_full_rank_square_deferred_left_fast_path(
+    a: &[f64],
+    m: usize,
+    n: usize,
+    full_matrices: bool,
+) -> Result<Option<SvdResult>, KernelError> {
+    // For well-conditioned reduced square SVD, V and S determine U as A*V/S.
+    // That avoids the expensive left-Givens accumulation in the QR sweep.
+    if full_matrices || m != n || n < 64 {
+        return Ok(None);
+    }
+    if !a.iter().all(|value| value.is_finite()) {
+        return Ok(None);
+    }
+
+    let mut scratch = a.to_vec();
+    let (w_bidiag, v) = golub_reinsch_svd_right_only(&mut scratch, m, n)?;
+    if !w_bidiag.iter().all(|value| value.is_finite()) || !v.iter().all(|value| value.is_finite()) {
+        return Ok(None);
+    }
+    let max_s = w_bidiag.iter().copied().fold(0.0f64, f64::max);
+    let min_s = w_bidiag.iter().copied().fold(f64::INFINITY, f64::min);
+    let rank_tol = f64::EPSILON.sqrt() * max_s.max(1.0);
+    if min_s <= rank_tol {
+        return Ok(None);
+    }
+
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&lhs, &rhs| w_bidiag[rhs].total_cmp(&w_bidiag[lhs]));
+
+    let mut av = vec![0.0f64; m * n];
+    gemm::dgemm(m, n, n, a, &v, &mut av);
+
+    let mut s = Vec::with_capacity(n);
+    let mut u = vec![0.0f64; m * n];
+    let mut vh = vec![0.0f64; n * n];
+
+    for (new_col, &old_col) in order.iter().enumerate() {
+        s.push(w_bidiag[old_col]);
+        let inv_s = 1.0 / w_bidiag[old_col];
+        for row in 0..m {
+            u[row * n + new_col] = av[row * n + old_col] * inv_s;
+        }
+        for col in 0..n {
+            vh[new_col * n + col] = v[col * n + old_col];
+        }
+    }
+
+    Ok(Some(SvdResult {
+        u,
+        s,
+        vh,
+        m,
+        n,
+        k: n,
+    }))
+}
+
 /// SVD for tall/square matrices (m >= n) via Golub-Reinsch bidiagonalization.
 fn svd_tall(a: &[f64], m: usize, n: usize, full_matrices: bool) -> Result<SvdResult, KernelError> {
     let k = n; // since m >= n, k = min(m,n) = n
     let tol = 1e-15;
 
     if let Some(result) = svd_rank_deficient_square_fast_path(a, m, n, full_matrices)? {
+        return Ok(result);
+    }
+    if let Some(result) = svd_full_rank_square_deferred_left_fast_path(a, m, n, full_matrices)? {
         return Ok(result);
     }
 
@@ -21744,6 +21828,18 @@ mod tests {
 
     // ---- SVD tests (bd-2drq.3) ----
 
+    fn svd_wellconditioned_square_fixture(n: usize) -> Vec<f64> {
+        let mut a = vec![0.0_f64; n * n];
+        for row in 0..n {
+            for col in 0..n {
+                let diag = if row == col { 4.0 } else { 0.0 };
+                let off = ((row * 17 + col * 31 + 7) % 23) as f64 * 0.001;
+                a[row * n + col] = diag + off;
+            }
+        }
+        a
+    }
+
     #[test]
     fn svd_identity_2x2() {
         let meta = TensorMeta::from_shape(vec![2, 2], DType::F64, Device::Cpu);
@@ -21980,6 +22076,85 @@ mod tests {
                 .is_none(),
             "full-rank well-conditioned matrices must stay on the strict path"
         );
+    }
+
+    #[test]
+    fn svd_deferred_left_full_rank_square_contract_96() {
+        let n = 96usize;
+        let a = svd_wellconditioned_square_fixture(n);
+        let fast = super::svd_full_rank_square_deferred_left_fast_path(&a, n, n, false)
+            .unwrap()
+            .expect("well-conditioned square matrix should take deferred-left path");
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let values_only = super::svdvals_contiguous_f64(&a, &meta).unwrap();
+
+        for (idx, (&fast_s, &reference_s)) in fast.s.iter().zip(values_only.iter()).enumerate() {
+            let scale = fast_s.abs().max(reference_s.abs()).max(1.0);
+            assert!(
+                (fast_s - reference_s).abs() <= 1e-10 * scale,
+                "singular value {idx}: deferred {fast_s} vs values-only {reference_s}"
+            );
+        }
+
+        let (reconstruction, frob) = super::svd_reconstruction_error(&a, &fast);
+        assert!(
+            reconstruction <= 1e-10 * frob.max(1.0),
+            "deferred-left reconstruction error {reconstruction}, frob {frob}"
+        );
+        assert!(
+            super::svd_columns_orthogonality_error(&fast.u, n, n) <= 1e-10,
+            "deferred-left U lost orthogonality"
+        );
+        assert!(
+            super::svd_rows_orthogonality_error(&fast.vh, n, n) <= 1e-10,
+            "deferred-left Vh lost orthogonality"
+        );
+    }
+
+    #[test]
+    fn svd_deferred_left_rejects_rank_deficient_square() {
+        let n = 64usize;
+        let mut a = svd_wellconditioned_square_fixture(n);
+        for row in 0..n {
+            a[row * n + (n - 1)] = a[row * n];
+        }
+        assert!(
+            super::svd_full_rank_square_deferred_left_fast_path(&a, n, n, false)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn svd_deferred_left_thread_count_bit_exact() {
+        let n = 96usize;
+        let a = svd_wellconditioned_square_fixture(n);
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let one_thread = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let four_threads = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+
+        let serial = one_thread.install(|| super::svd_contiguous_f64(&a, &meta, false).unwrap());
+        let parallel =
+            four_threads.install(|| super::svd_contiguous_f64(&a, &meta, false).unwrap());
+
+        assert_eq!(serial.m, parallel.m);
+        assert_eq!(serial.n, parallel.n);
+        assert_eq!(serial.k, parallel.k);
+        for (idx, (&lhs, &rhs)) in serial.s.iter().zip(parallel.s.iter()).enumerate() {
+            assert_eq!(lhs.to_bits(), rhs.to_bits(), "s bit mismatch at {idx}");
+        }
+        for (idx, (&lhs, &rhs)) in serial.u.iter().zip(parallel.u.iter()).enumerate() {
+            assert_eq!(lhs.to_bits(), rhs.to_bits(), "u bit mismatch at {idx}");
+        }
+        for (idx, (&lhs, &rhs)) in serial.vh.iter().zip(parallel.vh.iter()).enumerate() {
+            assert_eq!(lhs.to_bits(), rhs.to_bits(), "vh bit mismatch at {idx}");
+        }
     }
 
     #[test]

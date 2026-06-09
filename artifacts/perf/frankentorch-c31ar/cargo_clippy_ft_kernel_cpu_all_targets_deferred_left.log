@@ -1,0 +1,287 @@
+  2026-06-09T05:58:44.598738Z  INFO rch::hook: Selected worker: vmi1227854 at root@109.123.245.77 (0 slots remaining after reservation, speed 50.0)
+    at rch/src/hook.rs:514 on ThreadId(1)
+
+  2026-06-09T05:58:44.867986Z  INFO rch::hook: Starting remote compilation pipeline for frankentorch (hash: 78ab156102a58c4c)
+    at rch/src/hook.rs:5994 on ThreadId(1)
+
+  2026-06-09T05:58:44.868038Z  INFO rch::hook: Prepared dependency sync manifest for 13 roots
+    at rch/src/hook.rs:6016 on ThreadId(1)
+
+  2026-06-09T05:58:46.558619Z  INFO rch::hook: Syncing project to worker vmi1227854...
+    at rch/src/hook.rs:6046 on ThreadId(1)
+
+  2026-06-09T05:58:46.558675Z  INFO rch::transfer: Syncing /data/projects/frankentorch -> /data/projects/frankentorch on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:58:53.900626Z  INFO rch::transfer: Sync completed in 7341ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:58:53.900708Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-api -> /data/projects/frankentorch/crates/ft-api on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:58:55.893987Z  INFO rch::transfer: Sync completed in 1993ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:58:55.894068Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-autograd -> /data/projects/frankentorch/crates/ft-autograd on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:58:57.726898Z  INFO rch::transfer: Sync completed in 1832ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:58:57.726972Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-conformance -> /data/projects/frankentorch/crates/ft-conformance on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:58:59.588896Z  INFO rch::transfer: Sync completed in 1861ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:58:59.588980Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-core -> /data/projects/frankentorch/crates/ft-core on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:01.451933Z  INFO rch::transfer: Sync completed in 1862ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:01.452011Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-data -> /data/projects/frankentorch/crates/ft-data on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:03.279140Z  INFO rch::transfer: Sync completed in 1827ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:03.279223Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-device -> /data/projects/frankentorch/crates/ft-device on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:05.053406Z  INFO rch::transfer: Sync completed in 1774ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:05.053496Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-dispatch -> /data/projects/frankentorch/crates/ft-dispatch on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:06.973284Z  INFO rch::transfer: Sync completed in 1919ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:06.973367Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-kernel-cpu -> /data/projects/frankentorch/crates/ft-kernel-cpu on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:08.824272Z  INFO rch::transfer: Sync completed in 1850ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:08.824369Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-nn -> /data/projects/frankentorch/crates/ft-nn on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:10.625681Z  INFO rch::transfer: Sync completed in 1801ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:10.625791Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-optim -> /data/projects/frankentorch/crates/ft-optim on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:12.520671Z  INFO rch::transfer: Sync completed in 1894ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:12.520807Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-runtime -> /data/projects/frankentorch/crates/ft-runtime on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:14.436342Z  INFO rch::transfer: Sync completed in 1915ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:14.436419Z  INFO rch::transfer: Syncing /data/projects/frankentorch/crates/ft-serialize -> /data/projects/frankentorch/crates/ft-serialize on vmi1227854
+    at rch/src/transfer.rs:1434 on ThreadId(1)
+
+  2026-06-09T05:59:16.417212Z  INFO rch::transfer: Sync completed in 1980ms
+    at rch/src/transfer.rs:1503 on ThreadId(1)
+
+  2026-06-09T05:59:16.417261Z  INFO rch::hook: Sync complete: 51196 files, 1823116 bytes in 29849ms
+    at rch/src/hook.rs:6209 on ThreadId(1)
+
+  2026-06-09T05:59:20.819072Z  INFO rch::hook: Executing command remotely: cargo clippy -p ft-kernel-cpu --all-targets -- -D warnings
+    at rch/src/hook.rs:6252 on ThreadId(1)
+
+  2026-06-09T05:59:20.819121Z  INFO rch::transfer: Rewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/tmp/cargo-target -> /data/projects/frankentorch/.rch-target-vmi1227854-job-29879662679163599-1780984726558612077-0
+    at rch/src/transfer.rs:712 on ThreadId(1)
+
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded bitflags v2.11.1
+  Downloaded autocfg v1.5.0
+  Downloaded bit-vec v0.8.0
+  Downloaded anstyle v1.0.14
+  Downloaded aho-corasick v1.1.4
+  Downloaded tinytemplate v1.2.1
+  Downloaded bit-set v0.8.0
+  Downloaded anes v0.1.6
+  Downloaded bytemuck v1.25.0
+  Downloaded errno v0.3.14
+  Downloaded insta v1.47.2
+  Downloaded serde_core v1.0.228
+  Downloaded libm v0.2.16
+  Downloaded zmij v1.0.21
+  Downloaded clap v4.6.1
+  Downloaded itoa v1.0.18
+  Downloaded ciborium-io v0.2.2
+  Downloaded same-file v1.0.6
+  Downloaded rawpointer v0.2.1
+  Downloaded rand_xorshift v0.4.0
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded cfg-if v1.0.4
+  Downloaded cast v0.3.0
+  Downloaded quick-error v1.2.3
+  Downloaded plotters-backend v0.3.7
+  Downloaded clap_lex v1.1.0
+  Downloaded unarray v0.1.4
+  Downloaded num-traits v0.2.19
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded is-terminal v0.4.17
+  Downloaded fnv v1.0.7
+  Downloaded either v1.15.0
+  Downloaded rusty-fork v0.3.1
+  Downloaded criterion-plot v0.5.0
+  Downloaded rand_chacha v0.9.0
+  Downloaded plotters-svg v0.3.7
+  Downloaded ciborium-ll v0.2.2
+  Downloaded walkdir v2.5.0
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded console v0.16.3
+  Downloaded bytemuck_derive v1.10.2
+  Downloaded ciborium v0.2.2
+  Downloaded wait-timeout v0.2.1
+  Downloaded once_cell v1.21.4
+  Downloaded similar v2.7.0
+  Downloaded serde_derive v1.0.228
+  Downloaded safe_arch v0.7.4
+  Downloaded zerocopy-derive v0.8.48
+  Downloaded rand v0.9.4
+  Downloaded proc-macro2 v1.0.106
+  Downloaded wide v0.7.33
+  Downloaded itertools v0.10.5
+  Downloaded criterion v0.5.1
+  Downloaded clap_builder v4.6.0
+  Downloaded serde_json v1.0.149
+  Downloaded regex v1.12.3
+  Downloaded rayon v1.12.0
+  Downloaded memchr v2.8.0
+  Downloaded proptest v1.11.0
+  Downloaded serde v1.0.228
+  Downloaded rayon-core v1.13.0
+  Downloaded zerocopy v0.8.48
+  Downloaded syn v2.0.117
+  Downloaded plotters v0.3.7
+  Downloaded regex-syntax v0.8.10
+  Downloaded matrixmultiply v0.3.10
+  Downloaded half v2.7.1
+  Downloaded getrandom v0.3.4
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded unicode-ident v1.0.24
+  Downloaded rustix v1.1.4
+  Downloaded tempfile v3.27.0
+  Downloaded rand_core v0.9.5
+  Downloaded quote v1.0.45
+  Downloaded oorandom v11.1.5
+  Downloaded num-complex v0.4.6
+  Downloaded fastrand v2.4.1
+  Downloaded regex-automata v0.4.14
+  Downloaded libc v0.2.185
+  Downloaded linux-raw-sys v0.12.1
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+    Checking cfg-if v1.0.4
+   Compiling libc v0.2.185
+   Compiling autocfg v1.5.0
+   Compiling zerocopy v0.8.48
+   Compiling getrandom v0.3.4
+   Compiling crossbeam-utils v0.8.21
+   Compiling serde_core v1.0.228
+   Compiling rustix v1.1.4
+    Checking once_cell v1.21.4
+    Checking linux-raw-sys v0.12.1
+    Checking bitflags v2.11.1
+    Checking either v1.15.0
+   Compiling rayon-core v1.13.0
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+    Checking regex-syntax v0.8.10
+    Checking fastrand v2.4.1
+    Checking crossbeam-epoch v0.9.18
+   Compiling serde_json v1.0.149
+   Compiling num-traits v0.2.19
+   Compiling matrixmultiply v0.3.10
+    Checking crossbeam-deque v0.8.6
+    Checking anstyle v1.0.14
+   Compiling syn v2.0.117
+    Checking ciborium-io v0.2.2
+    Checking clap_lex v1.1.0
+    Checking memchr v2.8.0
+    Checking plotters-backend v0.3.7
+    Checking itoa v1.0.18
+   Compiling libm v0.2.16
+    Checking plotters-svg v0.3.7
+    Checking rayon v1.12.0
+    Checking clap_builder v4.6.0
+    Checking num-complex v0.4.6
+    Checking wait-timeout v0.2.1
+    Checking rand_core v0.9.5
+    Checking itertools v0.10.5
+    Checking same-file v1.0.6
+    Checking rawpointer v0.2.1
+    Checking bit-vec v0.8.0
+    Checking tempfile v3.27.0
+    Checking quick-error v1.2.3
+    Checking cast v0.3.0
+    Checking fnv v1.0.7
+    Checking rand v0.9.4
+    Checking bit-set v0.8.0
+    Checking rusty-fork v0.3.1
+    Checking rand_xorshift v0.4.0
+    Checking walkdir v2.5.0
+    Checking regex-automata v0.4.14
+    Checking criterion-plot v0.5.0
+    Checking console v0.16.3
+    Checking is-terminal v0.4.17
+    Checking plotters v0.3.7
+    Checking oorandom v11.1.5
+    Checking unarray v0.1.4
+    Checking similar v2.7.0
+    Checking anes v0.1.6
+    Checking clap v4.6.1
+    Checking regex v1.12.3
+    Checking insta v1.47.2
+   Compiling zerocopy-derive v0.8.48
+   Compiling bytemuck_derive v1.10.2
+   Compiling serde_derive v1.0.228
+    Checking bytemuck v1.25.0
+    Checking safe_arch v0.7.4
+    Checking wide v0.7.33
+    Checking tinytemplate v1.2.1
+    Checking half v2.7.1
+    Checking ppv-lite86 v0.2.21
+    Checking rand_chacha v0.9.0
+    Checking ciborium-ll v0.2.2
+    Checking ft-core v0.1.0 (/data/projects/frankentorch/crates/ft-core)
+    Checking ciborium v0.2.2
+    Checking proptest v1.11.0
+    Checking ft-kernel-cpu v0.1.0 (/data/projects/frankentorch/crates/ft-kernel-cpu)
+    Checking criterion v0.5.1
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 30.34s
+  2026-06-09T05:59:52.938178Z  INFO rch::hook: Remote command finished: exit=0 in 32118ms
+    at rch/src/hook.rs:6376 on ThreadId(1)
+
+  2026-06-09T05:59:52.938588Z  INFO rch::hook: Retrieving build artifacts...
+    at rch/src/hook.rs:6425 on ThreadId(1)
+
+  2026-06-09T05:59:52.938613Z  INFO rch::transfer: Retrieving artifacts from /data/projects/frankentorch on vmi1227854
+    at rch/src/transfer.rs:2106 on ThreadId(1)
+
+  2026-06-09T05:59:54.839143Z  INFO rch::transfer: Artifacts retrieved in 1900ms (5 files, 1709 bytes)
+    at rch/src/transfer.rs:2145 on ThreadId(1)
+
+  2026-06-09T05:59:54.839174Z  INFO rch::hook: Artifacts retrieved: 5 files, 1709 bytes in 1900ms
+    at rch/src/hook.rs:6458 on ThreadId(1)
+
+  2026-06-09T05:59:54.839258Z  INFO rch::transfer: Retrieving artifacts from /data/projects/frankentorch/.rch-target-vmi1227854-job-29879662679163599-1780984726558612077-0 on vmi1227854
+    at rch/src/transfer.rs:2106 on ThreadId(1)
+
+  2026-06-09T05:59:58.916351Z  INFO rch::transfer: Artifacts retrieved in 4077ms (1005 files, 770943 bytes)
+    at rch/src/transfer.rs:2145 on ThreadId(1)
+
+  2026-06-09T05:59:58.916386Z  INFO rch::hook: Custom CARGO_TARGET_DIR artifacts retrieved: 1005 files, 770943 bytes in 4077ms
+    at rch/src/hook.rs:6582 on ThreadId(1)
+
+[RCH] remote vmi1227854 (74.3s)

@@ -1,0 +1,11 @@
+artifacts/perf/frankentorch-c31ar/report.md: OK
+artifacts/perf/frankentorch-c31ar/baseline_svd_dense_current_vmi1227854_rerun3.log: OK
+artifacts/perf/frankentorch-c31ar/after_svd_deferred_left_vmi1227854_final.log: OK
+artifacts/perf/frankentorch-c31ar/test_svd_deferred_left_final_rch.log: OK
+artifacts/perf/frankentorch-c31ar/test_svd_all_deferred_left_final_rch.log: OK
+artifacts/perf/frankentorch-c31ar/cargo_check_ft_kernel_cpu_all_targets_deferred_left.log: OK
+artifacts/perf/frankentorch-c31ar/cargo_clippy_ft_kernel_cpu_all_targets_deferred_left.log: OK
+artifacts/perf/frankentorch-c31ar/cargo_fmt_ft_kernel_cpu_check_deferred_left_final.log: OK
+artifacts/perf/frankentorch-c31ar/git_diff_check_deferred_left.log: OK
+artifacts/perf/frankentorch-c31ar/ubs_ft_kernel_cpu_deferred_left.log: OK
+artifacts/perf/frankentorch-c31ar/test_ft_conformance_svd_numpy_deferred_left.log: OK
