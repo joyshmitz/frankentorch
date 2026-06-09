@@ -14250,6 +14250,35 @@ impl TensorTape {
                         rule: "d(index_put(x,v))/d:x=passthrough_or_masked,v=gather (cg)",
                     });
                 }
+                TensorNodeOp::CumProd { input, dim } => {
+                    // grad_x = reverse_cumsum(grad_y * y) / x, where y is the cumprod
+                    // output (node_id). This division form is exact and differentiable
+                    // when no input element is zero (the common case). The zero case
+                    // needs a weighted reverse-scan primitive not yet available, so it
+                    // errors loudly (rather than producing NaN/inf — parity-safe).
+                    let x_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
+                    if x_vals.iter().any(|&v| v == 0.0) {
+                        return Err(AutogradError::Dispatch(
+                            DispatchKeyError::IncompatibleSet {
+                                reason:
+                                    "create_graph for cumprod with zero inputs is not yet supported",
+                            }
+                            .into(),
+                        ));
+                    }
+                    let gy_y = self.cg_mul(incoming_id, node_id)?;
+                    let flipped = self.cg_flip(gy_y, vec![dim])?;
+                    let (cs, _) = self.cumsum(flipped, dim, ExecutionMode::Strict)?;
+                    let rev_cumsum = self.cg_flip(cs, vec![dim])?;
+                    let grad_x = self.cg_div(rev_cumsum, input)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_x)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(cumprod(x))/dx=reverse_cumsum(grad*y)/x (cg, nonzero)",
+                    });
+                }
                 TensorNodeOp::Div { lhs, rhs } => {
                     // d(a/b)/da = grad/b, d(a/b)/db = -a*grad/b^2
                     let grad_lhs = self.cg_div(incoming_id, rhs)?;
@@ -24459,6 +24488,63 @@ mod tests {
                 .zip(exp_gv.iter())
                 .all(|(a, b)| (a - b).abs() < 1e-9),
             "grad_values should be {exp_gv:?}, got {gv:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_cumprod() {
+        // x=[2,3,4], y=cumprod=[2,6,24]. f=sum(y)=x0+x0x1+x0x1x2. grad_x = [1+x1+x1x2,
+        // x0+x0x2, x0x1] = [16,10,6]. Second backward = row sums of the Hessian
+        // [[0,1+x2,x1],[1+x2,0,x0],[x1,x0,0]] = [8,7,5].
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![2.0, 3.0, 4.0], vec![3], true).expect("x");
+        let (y, _) = tape.cumprod(x, 0, ExecutionMode::Strict).expect("cumprod");
+        let (loss, _) = tape.sum(y, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support CumProd");
+        let gx = report1.gradient(x).expect("x gradient");
+        let exp = [16.0, 10.0, 6.0];
+        assert!(
+            gx.iter().zip(exp.iter()).all(|(a, b)| (a - b).abs() < 1e-9),
+            "grad_x should be {exp:?}, got {gx:?}"
+        );
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2 = report2.gradient(x).expect("x second gradient");
+        let exp2 = [8.0, 7.0, 5.0];
+        assert!(
+            g2.iter()
+                .zip(exp2.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "f''(x) should be {exp2:?}, got {g2:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_cumprod_with_zero_errors_cleanly() {
+        // The division form is invalid with zeros; create_graph must error loudly
+        // (not produce NaN/inf). Parity-safe documented limitation.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![2.0, 0.0, 4.0], vec![3], true).expect("x");
+        let (y, _) = tape.cumprod(x, 0, ExecutionMode::Strict).expect("cumprod");
+        let (loss, _) = tape.sum(y, ExecutionMode::Strict).expect("sum");
+        let result = tape.backward_with_options(
+            loss,
+            BackwardOptions {
+                create_graph: true,
+                ..BackwardOptions::strict_default()
+            },
+        );
+        assert!(
+            result.is_err(),
+            "create_graph cumprod with a zero input should error, not produce NaN"
         );
     }
 
