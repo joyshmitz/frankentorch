@@ -196,5 +196,41 @@ fn main() {
         s.tensor_lstsq(a, b)
     });
 
+    // batch 6: tuple-output factorizations — torch keeps f32 on EVERY output.
+    macro_rules! chk {
+        ($name:literal, $r:expr) => {{
+            match s.tensor_dtype($r) {
+                Ok(DType::F32) => {}
+                Ok(d) => { println!("{:<28} UPCAST -> {:?}", $name, d); bugs += 1; }
+                Err(e) => println!("{:<28} dtype-err {e:?}", $name),
+            }
+        }};
+    }
+    let m = spd(&mut s);
+    match s.tensor_linalg_eigh(m) {
+        Ok((v, q)) => { chk!("eigh.values", v); chk!("eigh.vectors", q); }
+        Err(e) => { println!("{:<28} ERR {e:?}", "eigh"); bugs += 1; }
+    }
+    let m = s.tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false).unwrap();
+    match s.tensor_linalg_svd(m, false) {
+        Ok((u, sv, vh)) => { chk!("svd.U", u); chk!("svd.S", sv); chk!("svd.Vh", vh); }
+        Err(e) => { println!("{:<28} ERR {e:?}", "svd"); bugs += 1; }
+    }
+    let m = s.tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false).unwrap();
+    match s.tensor_linalg_qr(m, false) {
+        Ok((q, r)) => { chk!("qr.Q", q); chk!("qr.R", r); }
+        Err(e) => { println!("{:<28} ERR {e:?}", "qr"); bugs += 1; }
+    }
+    let m = spd(&mut s);
+    match s.tensor_linalg_lu(m) {
+        Ok((p, l, u)) => { chk!("lu.P", p); chk!("lu.L", l); chk!("lu.U", u); }
+        Err(e) => { println!("{:<28} ERR {e:?}", "linalg_lu"); bugs += 1; }
+    }
+    let m = spd(&mut s);
+    match s.tensor_lu_factor(m) {
+        Ok((lu, _piv)) => { chk!("lu_factor.LU", lu); }
+        Err(e) => { println!("{:<28} ERR {e:?}", "lu_factor"); bugs += 1; }
+    }
+
     println!("\nf32 UPCAST/ERR bugs: {bugs}");
 }
