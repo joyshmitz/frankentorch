@@ -10296,8 +10296,13 @@ impl TensorTape {
                 }
                 TensorNodeOp::Sub { lhs, rhs } => {
                     Self::accumulate_tensor_gradient(lhs, &mut grads[lhs.0], &incoming)?;
-                    let rhs_contrib = incoming.iter().map(|value| -*value).collect::<Vec<_>>();
-                    Self::accumulate_tensor_gradient(rhs, &mut grads[rhs.0], &rhs_contrib)?;
+                    // rhs grad = -incoming, accumulated inline (no scratch Vec).
+                    Self::accumulate_tensor_gradient_with(
+                        rhs,
+                        &mut grads[rhs.0],
+                        incoming.len(),
+                        |index| -incoming[index],
+                    )?;
 
                     Self::complete_dependency(&mut pending, lhs, &mut queue)?;
                     Self::complete_dependency(&mut pending, rhs, &mut queue)?;
@@ -10309,27 +10314,29 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Div { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
+                    let lhs_values = Self::operand_values_cow(&self.nodes[lhs.0].tensor)?;
+                    let rhs_values = Self::operand_values_cow(&self.nodes[rhs.0].tensor)?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
                     Self::ensure_tensor_len(rhs, rhs_values.len(), incoming.len())?;
 
-                    let lhs_contrib = incoming
-                        .iter()
-                        .zip(rhs_values.iter())
-                        .map(|(grad, rhs_value)| grad / rhs_value)
-                        .collect::<Vec<_>>();
-                    let rhs_contrib = incoming
-                        .iter()
-                        .zip(lhs_values.iter())
-                        .zip(rhs_values.iter())
-                        .map(|((grad, lhs_value), rhs_value)| {
-                            -grad * lhs_value / (rhs_value * rhs_value)
-                        })
-                        .collect::<Vec<_>>();
-
-                    Self::accumulate_tensor_gradient(lhs, &mut grads[lhs.0], &lhs_contrib)?;
-                    Self::accumulate_tensor_gradient(rhs, &mut grads[rhs.0], &rhs_contrib)?;
+                    // d(a/b)/da = 1/b ; d(a/b)/db = -a/b^2. Same per-element f64
+                    // expressions and ascending order as before, accumulated inline
+                    // (no lhs/rhs contrib Vecs; operands borrowed zero-copy for f64).
+                    Self::accumulate_tensor_gradient_with(
+                        lhs,
+                        &mut grads[lhs.0],
+                        incoming.len(),
+                        |index| incoming[index] / rhs_values[index],
+                    )?;
+                    Self::accumulate_tensor_gradient_with(
+                        rhs,
+                        &mut grads[rhs.0],
+                        incoming.len(),
+                        |index| {
+                            -incoming[index] * lhs_values[index]
+                                / (rhs_values[index] * rhs_values[index])
+                        },
+                    )?;
 
                     Self::complete_dependency(&mut pending, lhs, &mut queue)?;
                     Self::complete_dependency(&mut pending, rhs, &mut queue)?;
@@ -10341,24 +10348,26 @@ impl TensorTape {
                     });
                 }
                 TensorNodeOp::Mul { lhs, rhs } => {
-                    let lhs_values = self.nodes[lhs.0].tensor.contiguous_values_as_f64()?;
-                    let rhs_values = self.nodes[rhs.0].tensor.contiguous_values_as_f64()?;
+                    let lhs_values = Self::operand_values_cow(&self.nodes[lhs.0].tensor)?;
+                    let rhs_values = Self::operand_values_cow(&self.nodes[rhs.0].tensor)?;
                     Self::ensure_tensor_len(lhs, lhs_values.len(), incoming.len())?;
                     Self::ensure_tensor_len(rhs, rhs_values.len(), incoming.len())?;
 
-                    let lhs_contrib = incoming
-                        .iter()
-                        .zip(rhs_values.iter())
-                        .map(|(grad, rhs_value)| grad * rhs_value)
-                        .collect::<Vec<_>>();
-                    let rhs_contrib = incoming
-                        .iter()
-                        .zip(lhs_values.iter())
-                        .map(|(grad, lhs_value)| grad * lhs_value)
-                        .collect::<Vec<_>>();
-
-                    Self::accumulate_tensor_gradient(lhs, &mut grads[lhs.0], &lhs_contrib)?;
-                    Self::accumulate_tensor_gradient(rhs, &mut grads[rhs.0], &rhs_contrib)?;
+                    // d(a*b)/da = b ; d(a*b)/db = a. Same per-element f64 products
+                    // and ascending order as before, accumulated inline (no lhs/rhs
+                    // contrib Vecs; operands borrowed zero-copy for f64).
+                    Self::accumulate_tensor_gradient_with(
+                        lhs,
+                        &mut grads[lhs.0],
+                        incoming.len(),
+                        |index| incoming[index] * rhs_values[index],
+                    )?;
+                    Self::accumulate_tensor_gradient_with(
+                        rhs,
+                        &mut grads[rhs.0],
+                        incoming.len(),
+                        |index| incoming[index] * lhs_values[index],
+                    )?;
 
                     Self::complete_dependency(&mut pending, lhs, &mut queue)?;
                     Self::complete_dependency(&mut pending, rhs, &mut queue)?;
@@ -17766,6 +17775,43 @@ impl TensorTape {
             *target_value += value;
         }
         Ok(())
+    }
+
+    /// Accumulate a per-element gradient contribution computed lazily, without
+    /// materialising it into an intermediate `Vec`. `contribution(i)` yields the
+    /// i-th contribution; the running sum `target[i] += contribution(i)` is the
+    /// bit-for-bit identical operation to the prior
+    /// `accumulate_tensor_gradient(node, target, &collected)` form (same ascending
+    /// index order, same f64 arithmetic), it just skips the allocation + the
+    /// write-then-read round trip through the scratch buffer.
+    fn accumulate_tensor_gradient_with<F: FnMut(usize) -> f64>(
+        node: TensorNodeId,
+        target: &mut [f64],
+        contribution_len: usize,
+        mut contribution: F,
+    ) -> Result<(), AutogradError> {
+        Self::ensure_tensor_len(node, target.len(), contribution_len)?;
+        for (index, target_value) in target.iter_mut().enumerate() {
+            *target_value += contribution(index);
+        }
+        Ok(())
+    }
+
+    /// Borrow a node's contiguous values as `&[f64]` with zero copy when the
+    /// tensor is already contiguous f64 (the common case in backward); otherwise
+    /// fall back to the converting clone. Behaviour matches the prior
+    /// `contiguous_values_as_f64()` call exactly: contiguous f64 yields the same
+    /// values it would have cloned, non-f64 still converts, and any non-contiguous
+    /// tensor returns the identical `UnsupportedLayout` error (both accessors
+    /// reject non-contiguous layouts).
+    fn operand_values_cow(
+        tensor: &DenseTensor,
+    ) -> Result<std::borrow::Cow<'_, [f64]>, AutogradError> {
+        if tensor.meta().dtype() == DType::F64 {
+            Ok(std::borrow::Cow::Borrowed(tensor.contiguous_values()?))
+        } else {
+            Ok(std::borrow::Cow::Owned(tensor.contiguous_values_as_f64()?))
+        }
     }
 
     fn check_gradient_anomaly(
