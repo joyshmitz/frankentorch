@@ -24939,6 +24939,72 @@ mod tests {
     }
 
     #[test]
+    fn permute_backward_grad_matches_finite_diff_3cycle() {
+        // 3-cycle permutation [1,2,0] on [2,3,4]: a forward-vs-inverse permutation bug
+        // in backward is masked by 2-cycle/square tests (self-inverse) but exposed here
+        // — distinct values + a non-self-inverse permutation.
+        let x: Vec<f64> = (1..=24).map(|v| v as f64 * 0.25).collect();
+        fd_grad_check(x, vec![2, 3, 4], |t, xn| {
+            let y = t.permute(xn, vec![1, 2, 0]).unwrap();
+            let (z, _) = t.mul(y, y, ExecutionMode::Strict).unwrap();
+            t.sum(z, ExecutionMode::Strict).unwrap().0
+        });
+    }
+
+    #[test]
+    fn transpose_backward_grad_matches_finite_diff_nonsquare() {
+        let x: Vec<f64> = (1..=8).map(|v| v as f64 * 0.3).collect();
+        fd_grad_check(x, vec![2, 4], |t, xn| {
+            let y = t.transpose(xn, 0, 1).unwrap();
+            let (z, _) = t.mul(y, y, ExecutionMode::Strict).unwrap();
+            t.sum(z, ExecutionMode::Strict).unwrap().0
+        });
+    }
+
+    #[test]
+    fn reductions_backward_grads_match_finite_diff_middle_dim() {
+        // Reduce along the MIDDLE dim of a non-square [2,3,4] — exercises the
+        // outer/inner stride split that default-dim/2D tests don't.
+        let x: Vec<f64> = (1..=24).map(|v| v as f64 * 0.1 + 0.05).collect();
+        fd_grad_check(x.clone(), vec![2, 3, 4], |t, xn| {
+            let (y, _) = t.sum_dim(xn, 1, ExecutionMode::Strict).unwrap();
+            let (z, _) = t.mul(y, y, ExecutionMode::Strict).unwrap();
+            t.sum(z, ExecutionMode::Strict).unwrap().0
+        });
+        fd_grad_check(x.clone(), vec![2, 3, 4], |t, xn| {
+            let (y, _) = t.mean_dim(xn, 1, ExecutionMode::Strict).unwrap();
+            let (z, _) = t.mul(y, y, ExecutionMode::Strict).unwrap();
+            t.sum(z, ExecutionMode::Strict).unwrap().0
+        });
+        fd_grad_check(x, vec![2, 3, 4], |t, xn| {
+            // distinct values -> no argmax ties, so max is locally smooth for FD
+            let (y, _) = t.max_dim(xn, 1).unwrap();
+            let (z, _) = t.mul(y, y, ExecutionMode::Strict).unwrap();
+            t.sum(z, ExecutionMode::Strict).unwrap().0
+        });
+    }
+
+    #[test]
+    fn gather_index_select_backward_grads_match_finite_diff() {
+        let x: Vec<f64> = (1..=12).map(|v| v as f64 * 0.5).collect(); // [3,4]
+        // index_select dim 1 with a REPEATED index (col 2 twice) -> backward must
+        // scatter-ADD, a case single-pick tests miss.
+        fd_grad_check(x.clone(), vec![3, 4], |t, xn| {
+            let y = t.index_select(xn, 1, &[3.0, 1.0, 2.0, 0.0, 2.0]).unwrap();
+            let (z, _) = t.mul(y, y, ExecutionMode::Strict).unwrap();
+            t.sum(z, ExecutionMode::Strict).unwrap().0
+        });
+        // gather dim 1, index shape [3,2]
+        fd_grad_check(x, vec![3, 4], |t, xn| {
+            let y = t
+                .gather(xn, 1, &[0.0, 3.0, 2.0, 1.0, 3.0, 0.0], vec![3, 2])
+                .unwrap();
+            let (z, _) = t.mul(y, y, ExecutionMode::Strict).unwrap();
+            t.sum(z, ExecutionMode::Strict).unwrap().0
+        });
+    }
+
+    #[test]
     fn addmm_backward_mat1_grad_uses_mat2_transpose() {
         // Regression for a transpose bug in the REGULAR addmm grad_mat1 (it computed
         // grad_out @ mat2 instead of grad_out @ mat2^T — wrong for any non-symmetric
