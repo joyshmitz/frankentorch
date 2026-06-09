@@ -13873,6 +13873,35 @@ impl TensorTape {
                         rule: "d(cast)/d_input=grad (identity, cg)",
                     });
                 }
+                TensorNodeOp::Split {
+                    input,
+                    dim,
+                    start,
+                    original_shape,
+                    ..
+                } => {
+                    // grad places the chunk gradient back into zeros at offset `start`
+                    // along `dim` — a constant zero-pad. Pad's first-order backward
+                    // (unpad) is its exact adjoint, so record the gradient as a Pad
+                    // node via the public pad() (PyTorch innermost-first padding).
+                    let ndim = original_shape.len();
+                    let chunk_len = self.nodes[incoming_id.0].tensor.meta().shape()[dim];
+                    let after = original_shape[dim]
+                        .saturating_sub(start)
+                        .saturating_sub(chunk_len);
+                    let mut padding = vec![0usize; 2 * (ndim - dim)];
+                    let pair = ndim - 1 - dim;
+                    padding[2 * pair] = start;
+                    padding[2 * pair + 1] = after;
+                    let grad_input = self.pad(incoming_id, &padding, 0.0)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_input)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(split(x))/dx=zero_pad_grad (cg)",
+                    });
+                }
                 TensorNodeOp::Div { lhs, rhs } => {
                     // d(a/b)/da = grad/b, d(a/b)/db = -a*grad/b^2
                     let grad_lhs = self.cg_div(incoming_id, rhs)?;
@@ -23580,6 +23609,48 @@ mod tests {
         assert!(
             grad2_x.iter().all(|&g| (g - 2.0).abs() < 1e-10),
             "f''(x) should be [2,2], got {grad2_x:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_second_derivative_split() {
+        // split([1,2,3,4],[2,2],0)[1]=[3,4] (start=2). f=sum(chunk^2): grad routes
+        // 2*chunk back into zeros at offset 2 -> grad_x=[0,0,6,8]; second derivative
+        // [0,0,2,2]. Exercises create_graph for Split (recorded as a Pad node).
+        let mut tape = TensorTape::new();
+        let x = tape
+            .leaf(vec![1.0, 2.0, 3.0, 4.0], vec![4], true)
+            .expect("x");
+        let chunks = tape.split(x, &[2, 2], 0).expect("split");
+        let y = chunks[1];
+        let (z, _) = tape.mul(y, y, ExecutionMode::Strict).expect("y*y");
+        let (loss, _) = tape.sum(z, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support Split");
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!(
+            grad_x[0].abs() < 1e-10
+                && grad_x[1].abs() < 1e-10
+                && (grad_x[2] - 6.0).abs() < 1e-10
+                && (grad_x[3] - 8.0).abs() < 1e-10,
+            "grad_x should be [0,0,6,8], got {grad_x:?}"
+        );
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2_x = report2.gradient(x).expect("x second gradient");
+        assert!(
+            grad2_x[0].abs() < 1e-10
+                && grad2_x[1].abs() < 1e-10
+                && (grad2_x[2] - 2.0).abs() < 1e-10
+                && (grad2_x[3] - 2.0).abs() < 1e-10,
+            "f''(x) should be [0,0,2,2], got {grad2_x:?}"
         );
     }
 
