@@ -175,5 +175,26 @@ fn main() {
         s.tensor_pdist(x, 2.0)
     });
 
+    // batch 5: more linalg (det / solve / factorizations) — torch keeps f32.
+    mat!("det", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_det(m) });
+    mat!("inverse", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_inverse(m) });
+    mat!("eigvalsh", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_eigvalsh(m) });
+    mat!("cholesky", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_cholesky(m, false) });
+    mat!("linalg_solve", |s: &mut FrankenTorchSession| {
+        let a = spd(s);
+        let b = s.tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
+        s.tensor_linalg_solve(a, b)
+    });
+    mat!("triangular_solve", |s: &mut FrankenTorchSession| {
+        let a = s.tensor_variable_f32(vec![2.0, 0.0, 0.0, 0.5, 1.6, 0.0, 0.0, 0.6, 1.3], vec![3, 3], false).unwrap();
+        let b = s.tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
+        s.tensor_triangular_solve(a, b, false)
+    });
+    mat!("lstsq", |s: &mut FrankenTorchSession| {
+        let a = s.tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false).unwrap();
+        let b = s.tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
+        s.tensor_lstsq(a, b)
+    });
+
     println!("\nf32 UPCAST/ERR bugs: {bugs}");
 }
