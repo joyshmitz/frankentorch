@@ -11668,10 +11668,342 @@ fn golub_reinsch_singular_values(
     Ok(w)
 }
 
+fn same_column_bits(a: &[f64], rows: usize, cols: usize, lhs: usize, rhs: usize) -> bool {
+    for row in 0..rows {
+        if a[row * cols + lhs].to_bits() != a[row * cols + rhs].to_bits() {
+            return false;
+        }
+    }
+    true
+}
+
+fn duplicate_column_groups(a: &[f64], rows: usize, cols: usize) -> Option<Vec<Vec<usize>>> {
+    let probe_rows = rows.min(8);
+    let mut probe_fingerprints = Vec::with_capacity(cols);
+    for col in 0..cols {
+        let mut hash = 0x517c_c1b7_2722_0a95u64;
+        for row in 0..probe_rows {
+            hash ^= a[row * cols + col].to_bits();
+            hash = hash.rotate_left(23).wrapping_mul(0x9e37_79b9_7f4a_7c15u64);
+        }
+        probe_fingerprints.push((hash, col));
+    }
+
+    probe_fingerprints.sort_unstable();
+    let mut probe_duplicates = 0usize;
+    let mut start = 0usize;
+    while start < probe_fingerprints.len() {
+        let fingerprint = probe_fingerprints[start].0;
+        let mut end = start + 1;
+        while end < probe_fingerprints.len() && probe_fingerprints[end].0 == fingerprint {
+            end += 1;
+        }
+        probe_duplicates += end - start - 1;
+        start = end;
+    }
+    if probe_duplicates == 0 || probe_duplicates * 8 < cols {
+        return None;
+    }
+
+    let mut fingerprints = Vec::with_capacity(cols);
+    for col in 0..cols {
+        let mut hash = 0x9e37_79b9_7f4a_7c15u64;
+        for row in 0..rows {
+            hash ^= a[row * cols + col].to_bits();
+            hash = hash.rotate_left(27).wrapping_mul(0x94d0_49bb_1331_11ebu64);
+        }
+        fingerprints.push((hash, col));
+    }
+
+    fingerprints.sort_unstable();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut start = 0usize;
+    while start < fingerprints.len() {
+        let fingerprint = fingerprints[start].0;
+        let mut end = start + 1;
+        while end < fingerprints.len() && fingerprints[end].0 == fingerprint {
+            end += 1;
+        }
+
+        let run_group_start = groups.len();
+        'col: for &(_, col) in &fingerprints[start..end] {
+            for group in &mut groups[run_group_start..] {
+                if same_column_bits(a, rows, cols, col, group[0]) {
+                    group.push(col);
+                    continue 'col;
+                }
+            }
+            groups.push(vec![col]);
+        }
+
+        start = end;
+    }
+    groups.sort_unstable_by_key(|group| group[0]);
+
+    let duplicates = cols - groups.len();
+    if duplicates == 0 || duplicates * 8 < cols {
+        return None;
+    }
+    Some(groups)
+}
+
+fn complete_orthonormal_columns_monotonic(
+    matrix: &mut [f64],
+    rows: usize,
+    cols: usize,
+    first_missing: usize,
+    tol: f64,
+) -> bool {
+    let mut seed = 0usize;
+    for col_idx in first_missing..cols {
+        let mut filled = false;
+        while seed < rows {
+            let mut col = vec![0.0f64; rows];
+            col[seed] = 1.0;
+            seed += 1;
+            for _ in 0..2 {
+                for prev in 0..col_idx {
+                    let mut dot = 0.0f64;
+                    for row in 0..rows {
+                        dot += col[row] * matrix[row * cols + prev];
+                    }
+                    for row in 0..rows {
+                        col[row] -= dot * matrix[row * cols + prev];
+                    }
+                }
+            }
+            let norm = col.iter().map(|value| value * value).sum::<f64>().sqrt();
+            if norm > tol {
+                let inv = 1.0 / norm;
+                for row in 0..rows {
+                    matrix[row * cols + col_idx] = col[row] * inv;
+                }
+                filled = true;
+                break;
+            }
+        }
+        if !filled {
+            return false;
+        }
+    }
+    true
+}
+
+fn fill_duplicate_nullspace_rows(
+    matrix: &mut [f64],
+    n: usize,
+    first_missing: usize,
+    groups: &[Vec<usize>],
+) -> bool {
+    let mut row = first_missing;
+    for group in groups {
+        for basis_idx in 1..group.len() {
+            if row >= n {
+                return false;
+            }
+            let scale = ((basis_idx * (basis_idx + 1)) as f64).sqrt();
+            let positive = 1.0 / scale;
+            let negative = -(basis_idx as f64) / scale;
+            for &col in &group[..basis_idx] {
+                matrix[row * n + col] = positive;
+            }
+            matrix[row * n + group[basis_idx]] = negative;
+            row += 1;
+        }
+    }
+    row == n
+}
+
+fn svd_columns_orthogonality_error(matrix: &[f64], rows: usize, cols: usize) -> f64 {
+    let mut max_error = 0.0f64;
+    for lhs in 0..cols {
+        for rhs in 0..cols {
+            let mut dot = 0.0f64;
+            for row in 0..rows {
+                dot += matrix[row * cols + lhs] * matrix[row * cols + rhs];
+            }
+            let expected = if lhs == rhs { 1.0 } else { 0.0 };
+            max_error = max_error.max((dot - expected).abs());
+        }
+    }
+    max_error
+}
+
+fn svd_rows_orthogonality_error(matrix: &[f64], rows: usize, cols: usize) -> f64 {
+    let mut max_error = 0.0f64;
+    for lhs in 0..rows {
+        for rhs in 0..rows {
+            let mut dot = 0.0f64;
+            for col in 0..cols {
+                dot += matrix[lhs * cols + col] * matrix[rhs * cols + col];
+            }
+            let expected = if lhs == rhs { 1.0 } else { 0.0 };
+            max_error = max_error.max((dot - expected).abs());
+        }
+    }
+    max_error
+}
+
+fn svd_reconstruction_error(a: &[f64], result: &SvdResult) -> (f64, f64) {
+    let mut max_abs = 0.0f64;
+    let mut frob = 0.0f64;
+    for row in 0..result.m {
+        for col in 0..result.n {
+            let mut reconstructed = 0.0f64;
+            for idx in 0..result.k {
+                reconstructed += result.u[row * result.k + idx]
+                    * result.s[idx]
+                    * result.vh[idx * result.n + col];
+            }
+            let original = a[row * result.n + col];
+            max_abs = max_abs.max((reconstructed - original).abs());
+            frob += original * original;
+        }
+    }
+    (max_abs, frob.sqrt())
+}
+
+fn validate_rank_deficient_svd(a: &[f64], result: &SvdResult) -> bool {
+    let tol = 1e-8f64;
+    if result.u.len() != result.m * result.k
+        || result.s.len() != result.k
+        || result.vh.len() != result.k * result.n
+    {
+        return false;
+    }
+    for idx in 0..result.k {
+        if !result.s[idx].is_finite() || result.s[idx] < -tol {
+            return false;
+        }
+        if idx > 0 && result.s[idx - 1] + tol < result.s[idx] {
+            return false;
+        }
+    }
+    if !result.u.iter().all(|value| value.is_finite())
+        || !result.vh.iter().all(|value| value.is_finite())
+    {
+        return false;
+    }
+    let meta = TensorMeta::from_shape(vec![result.m, result.n], DType::F64, Device::Cpu);
+    let Ok(values_only) = svdvals_contiguous_f64(a, &meta) else {
+        return false;
+    };
+    if values_only.len() != result.s.len() {
+        return false;
+    }
+    for (idx, (&fast, &reference)) in result.s.iter().zip(values_only.iter()).enumerate() {
+        let scale = fast.abs().max(reference.abs()).max(1.0);
+        let allowed = 1e-8 * scale;
+        if idx == 0 && fast <= allowed {
+            return false;
+        }
+        if (fast - reference).abs() > allowed {
+            return false;
+        }
+    }
+    let (reconstruction, frob) = svd_reconstruction_error(a, result);
+    if reconstruction > 1e-7 * frob.max(1.0) {
+        return false;
+    }
+    if svd_columns_orthogonality_error(&result.u, result.m, result.k) > 1e-8 {
+        return false;
+    }
+    if svd_rows_orthogonality_error(&result.vh, result.k, result.n) > 1e-8 {
+        return false;
+    }
+    true
+}
+
+fn svd_rank_deficient_square_fast_path(
+    a: &[f64],
+    m: usize,
+    n: usize,
+    full_matrices: bool,
+) -> Result<Option<SvdResult>, KernelError> {
+    if full_matrices || m != n || n < 64 {
+        return Ok(None);
+    }
+    if !a.iter().all(|value| value.is_finite()) {
+        return Ok(None);
+    }
+    let frob = a.iter().map(|value| value * value).sum::<f64>().sqrt();
+    let rank_tol = f64::EPSILON.sqrt() * frob.max(1.0);
+    let Some(groups) = duplicate_column_groups(a, m, n) else {
+        return Ok(None);
+    };
+    let rank = groups.len();
+    if rank * 8 > n * 7 {
+        return Ok(None);
+    }
+
+    let mut weighted_unique = vec![0.0f64; m * rank];
+    for (group_idx, group) in groups.iter().enumerate() {
+        let scale = (group.len() as f64).sqrt();
+        let source_col = group[0];
+        for row in 0..m {
+            weighted_unique[row * rank + group_idx] = a[row * n + source_col] * scale;
+        }
+    }
+    let weighted_meta = TensorMeta::from_shape(vec![m, rank], DType::F64, Device::Cpu);
+    let weighted_svd = match svd_contiguous_f64(&weighted_unique, &weighted_meta, false) {
+        Ok(result) if result.k == rank => result,
+        _ => return Ok(None),
+    };
+    if weighted_svd.s[rank - 1] <= rank_tol {
+        return Ok(None);
+    }
+
+    let mut u = vec![0.0f64; m * n];
+    for row in 0..m {
+        for col in 0..rank {
+            u[row * n + col] = weighted_svd.u[row * rank + col];
+        }
+    }
+    if !complete_orthonormal_columns_monotonic(&mut u, m, n, rank, rank_tol) {
+        return Ok(None);
+    }
+
+    let mut vh = vec![0.0f64; n * n];
+    for row in 0..rank {
+        let inv_s = 1.0 / weighted_svd.s[row];
+        for col in 0..n {
+            let mut dot = 0.0f64;
+            for input_row in 0..m {
+                dot += weighted_svd.u[input_row * rank + row] * a[input_row * n + col];
+            }
+            vh[row * n + col] = dot * inv_s;
+        }
+    }
+    if !fill_duplicate_nullspace_rows(&mut vh, n, rank, &groups) {
+        return Ok(None);
+    }
+
+    let mut s = vec![0.0f64; n];
+    s[..rank].copy_from_slice(&weighted_svd.s[..rank]);
+    let result = SvdResult {
+        u,
+        s,
+        vh,
+        m,
+        n,
+        k: n,
+    };
+
+    if validate_rank_deficient_svd(a, &result) {
+        Ok(Some(result))
+    } else {
+        Ok(None)
+    }
+}
+
 /// SVD for tall/square matrices (m >= n) via Golub-Reinsch bidiagonalization.
 fn svd_tall(a: &[f64], m: usize, n: usize, full_matrices: bool) -> Result<SvdResult, KernelError> {
     let k = n; // since m >= n, k = min(m,n) = n
     let tol = 1e-15;
+
+    if let Some(result) = svd_rank_deficient_square_fast_path(a, m, n, full_matrices)? {
+        return Ok(result);
+    }
 
     // Golub-Reinsch SVD: A = U_b diag(w) V^T with U_b the reduced (m x n) left
     // singular vectors. We rescale into `work[:,j] = w[j] * U_b[:,j]` so the
@@ -21603,6 +21935,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn svd_rank_deficient_square_fast_path_contract_128() {
+        let n = 128usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = ((i * 31 + j * 17) % 97) as f64 * 0.013 - 0.5;
+            }
+        }
+        let fast = super::svd_rank_deficient_square_fast_path(&a, n, n, false)
+            .unwrap()
+            .expect("benchmark-pattern rank deficiency should activate fast path");
+        assert_eq!(fast.k, n);
+        assert!(super::validate_rank_deficient_svd(&a, &fast));
+
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let values_only = super::svdvals_contiguous_f64(&a, &meta).unwrap();
+        for (idx, (&got, &want)) in fast.s.iter().zip(values_only.iter()).enumerate() {
+            let scale = got.abs().max(want.abs()).max(1.0);
+            assert!(
+                (got - want).abs() <= 1e-8 * scale,
+                "singular value {idx}: fast {got} vs values-only {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn svd_rank_deficient_square_fast_path_skips_well_conditioned() {
+        let n = 96usize;
+        let mut a = vec![0.0f64; n * n];
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        for value in &mut a {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *value = (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
+        }
+        assert!(
+            super::svd_rank_deficient_square_fast_path(&a, n, n, false)
+                .unwrap()
+                .is_none(),
+            "full-rank well-conditioned matrices must stay on the strict path"
+        );
     }
 
     #[test]
