@@ -177,3 +177,97 @@ fn qr_backward_r_grad_matches_finite_diff_nonsymmetric() {
         s.tensor_sum(z).unwrap()
     });
 }
+
+// ── Fused backward kernels ─────────────────────────────────────────────────
+// These (SDPA, conv2d, layer_norm) are the highest remaining addmm-class bug risk:
+// fused custom-op backwards full of matmuls/transposes/reductions, on general
+// (non-symmetric) inputs so finite differences are clean.
+
+#[test]
+fn sdpa_backward_grads_match_finite_diff() {
+    // Q/K/V [bh=1, seq=3, dim=2]. The fused sdpa_backward is matmul/transpose-heavy:
+    // dV=P^T@dOut, dP=dOut@V^T, dQ=scale*dU@K, dK=scale*dU^T@Q.
+    let q = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+    let k = vec![0.2, 0.1, 0.05, 0.3, 0.15, 0.25];
+    let v = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let sh = vec![1usize, 3, 2];
+    let loss = |s: &mut FrankenTorchSession, qn, kn, vn| {
+        let o = s
+            .tensor_scaled_dot_product_attention(qn, kn, vn, None, false, None)
+            .unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    };
+    let (k1, v1, sh1) = (k.clone(), v.clone(), sh.clone());
+    fd_check(&q, &sh, move |s, qn| {
+        let kn = s.tensor_variable(k1.clone(), sh1.clone(), false).unwrap();
+        let vn = s.tensor_variable(v1.clone(), sh1.clone(), false).unwrap();
+        loss(s, qn, kn, vn)
+    });
+    let (q1, v2, sh2) = (q.clone(), v.clone(), sh.clone());
+    fd_check(&k, &sh, move |s, kn| {
+        let qn = s.tensor_variable(q1.clone(), sh2.clone(), false).unwrap();
+        let vn = s.tensor_variable(v2.clone(), sh2.clone(), false).unwrap();
+        loss(s, qn, kn, vn)
+    });
+    let (q2, k2, sh3) = (q.clone(), k.clone(), sh.clone());
+    fd_check(&v, &sh, move |s, vn| {
+        let qn = s.tensor_variable(q2.clone(), sh3.clone(), false).unwrap();
+        let kn = s.tensor_variable(k2.clone(), sh3.clone(), false).unwrap();
+        loss(s, qn, kn, vn)
+    });
+}
+
+#[test]
+fn conv2d_backward_grads_match_finite_diff() {
+    // input[1,1,3,3] * weight[1,1,2,2] -> [1,1,2,2]. Weight gradient (correlation /
+    // transpose of the kernel windows) is the addmm-class risk.
+    let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    let weight = vec![0.5, -0.3, 0.2, 0.7];
+    let w1 = weight.clone();
+    fd_check(&input, &[1, 1, 3, 3], move |s, xn| {
+        let wn = s
+            .tensor_variable(w1.clone(), vec![1, 1, 2, 2], false)
+            .unwrap();
+        let o = s.tensor_conv2d(xn, wn, None, (1, 1), (0, 0)).unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+    let i1 = input.clone();
+    fd_check(&weight, &[1, 1, 2, 2], move |s, wn| {
+        let xn = s
+            .tensor_variable(i1.clone(), vec![1, 1, 3, 3], false)
+            .unwrap();
+        let o = s.tensor_conv2d(xn, wn, None, (1, 1), (0, 0)).unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
+
+#[test]
+fn layer_norm_backward_grads_match_finite_diff() {
+    // input[2,3] normalized over [3], affine weight[3] + bias[3].
+    let input = vec![1.0, 2.0, 4.0, -1.0, 0.5, 3.0];
+    let weight = vec![1.1, 0.9, 1.3];
+    let bias = vec![0.2, -0.1, 0.05];
+    let (w1, b1) = (weight.clone(), bias.clone());
+    fd_check(&input, &[2, 3], move |s, xn| {
+        let wn = s.tensor_variable(w1.clone(), vec![3], false).unwrap();
+        let bn = s.tensor_variable(b1.clone(), vec![3], false).unwrap();
+        let o = s
+            .tensor_layer_norm(xn, vec![3], Some(wn), Some(bn), 1e-5)
+            .unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+    let (i1, b2) = (input.clone(), bias.clone());
+    fd_check(&weight, &[3], move |s, wn| {
+        let xn = s.tensor_variable(i1.clone(), vec![2, 3], false).unwrap();
+        let bn = s.tensor_variable(b2.clone(), vec![3], false).unwrap();
+        let o = s
+            .tensor_layer_norm(xn, vec![3], Some(wn), Some(bn), 1e-5)
+            .unwrap();
+        let z = s.tensor_mul(o, o).unwrap();
+        s.tensor_sum(z).unwrap()
+    });
+}
