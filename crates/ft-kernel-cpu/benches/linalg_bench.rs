@@ -6,12 +6,11 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
-    cholesky_contiguous_f64, cholesky_solve_contiguous_f64, det_contiguous_f64,
-    eig_contiguous_f64, eigh_contiguous_f64,
-    eigvals_contiguous_f64, eigvalsh_contiguous_f64, inv_tensor_contiguous_f64,
-    lobpcg_contiguous_f64, lu_factor_contiguous_f64, lu_solve_contiguous_f64,
-    lu_solve_mixed_refine_contiguous_f64, matrix_exp_contiguous_f64, qr_contiguous_f64,
-    svd_contiguous_f64, svd_lowrank_contiguous_f64, svdvals_contiguous_f64,
+    cholesky_contiguous_f64, cholesky_solve_contiguous_f64, det_contiguous_f64, eig_contiguous_f64,
+    eigh_contiguous_f64, eigvals_contiguous_f64, eigvalsh_contiguous_f64,
+    inv_tensor_contiguous_f64, lobpcg_contiguous_f64, lu_factor_contiguous_f64,
+    lu_solve_contiguous_f64, lu_solve_mixed_refine_contiguous_f64, matrix_exp_contiguous_f64,
+    qr_contiguous_f64, svd_contiguous_f64, svd_lowrank_contiguous_f64, svdvals_contiguous_f64,
     symmetric_rank2k_lower_update_f64,
 };
 
@@ -391,7 +390,8 @@ fn bench_cholesky_solve(c: &mut Criterion) {
         c.bench_function(&format!("cholesky_solve_f64_{n}x{n}_nrhs"), |bch| {
             bch.iter(|| {
                 black_box(
-                    cholesky_solve_contiguous_f64(&factor, black_box(&id), &id_meta, false).unwrap(),
+                    cholesky_solve_contiguous_f64(&factor, black_box(&id), &id_meta, false)
+                        .unwrap(),
                 )
             })
         });
