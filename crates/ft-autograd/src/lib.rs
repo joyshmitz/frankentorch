@@ -7576,10 +7576,16 @@ impl TensorTape {
                 TensorStorage::F32(Arc::new(values.into_iter().map(|v| v as f32).collect()))
             }
             DType::F16 => TensorStorage::F16(Arc::new(
-                values.into_iter().map(|v| Float16::from_f32(v as f32)).collect(),
+                values
+                    .into_iter()
+                    .map(|v| Float16::from_f32(v as f32))
+                    .collect(),
             )),
             DType::BF16 => TensorStorage::BF16(Arc::new(
-                values.into_iter().map(|v| BFloat16::from_f32(v as f32)).collect(),
+                values
+                    .into_iter()
+                    .map(|v| BFloat16::from_f32(v as f32))
+                    .collect(),
             )),
             _ => TensorStorage::F64(Arc::new(values)),
         }
@@ -10030,8 +10036,16 @@ impl TensorTape {
         let n = a.len().max(b.len());
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
-            let ad = if i + a.len() < n { 1 } else { a[i + a.len() - n] };
-            let bd = if i + b.len() < n { 1 } else { b[i + b.len() - n] };
+            let ad = if i + a.len() < n {
+                1
+            } else {
+                a[i + a.len() - n]
+            };
+            let bd = if i + b.len() < n {
+                1
+            } else {
+                b[i + b.len() - n]
+            };
             let d = if ad == bd {
                 ad
             } else if ad == 1 {
@@ -11919,7 +11933,8 @@ impl TensorTape {
                         if norm_val != 0.0 {
                             for i in 0..input_numel {
                                 if input_values[i].abs() == norm_val {
-                                    norm_contrib[i] = grad_scalar * Self::torch_sign(input_values[i]);
+                                    norm_contrib[i] =
+                                        grad_scalar * Self::torch_sign(input_values[i]);
                                 }
                             }
                         }
@@ -11986,7 +12001,8 @@ impl TensorTape {
                                 for r in 0..reduce_size {
                                     let idx =
                                         outer * reduce_size * inner_size + r * inner_size + inner;
-                                    norm_dim_contrib[idx] = grad_val * Self::torch_sign(input_values[idx]);
+                                    norm_dim_contrib[idx] =
+                                        grad_val * Self::torch_sign(input_values[idx]);
                                 }
                             } else if p.is_infinite() {
                                 if norm_val != 0.0 {
@@ -13816,6 +13832,17 @@ impl TensorTape {
                         node: node_id,
                         incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
                         rule: "d(flip(x,dims))/dx=flip(grad,dims) (cg)",
+                    });
+                }
+                TensorNodeOp::Roll { input, shift, dim } => {
+                    // roll is a permutation: grad_input = roll(grad_out, -shift, dim).
+                    let grad_input = self.cg_roll(incoming_id, shift, dim)?;
+                    self.cg_accumulate(input, &mut grad_nodes, grad_input)?;
+                    Self::complete_dependency(&mut pending, input, &mut queue)?;
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "d(roll(x,s,d))/dx=roll(grad,-s,d) (cg)",
                     });
                 }
                 TensorNodeOp::Div { lhs, rhs } => {
@@ -16352,6 +16379,73 @@ impl TensorTape {
             tensor: DenseTensor::from_storage(meta, result)?,
             requires_grad,
             op: TensorNodeOp::Flip { input, dims },
+        });
+        Ok(out)
+    }
+
+    /// Helper: roll-gradient for create_graph backward. The gradient of
+    /// `roll(x, shift, dim)` is the inverse roll `roll(grad, -shift, dim)` (roll is
+    /// a permutation). This replicates the first-order Roll backward index map
+    /// exactly (so values are bit-identical) and records a `Roll{shift:-shift}` op
+    /// so a further backward differentiates it correctly (the adjoint of the
+    /// inverse roll is the forward roll). `shift` here is the ORIGINAL forward shift.
+    fn cg_roll(
+        &mut self,
+        input: TensorNodeId,
+        shift: isize,
+        dim: usize,
+    ) -> Result<TensorNodeId, AutogradError> {
+        let (requires_grad, data, shape, dtype, device) = {
+            let node = self.node(input)?;
+            (
+                node.requires_grad,
+                node.tensor.contiguous_values_as_f64()?,
+                node.tensor.meta().shape().to_vec(),
+                node.tensor.meta().dtype(),
+                node.tensor.meta().device(),
+            )
+        };
+        let strides = ft_core::contiguous_strides(&shape);
+        let ndim = shape.len();
+        let dim_size = shape[dim];
+        let numel = data.len();
+        let mut result = vec![0.0; numel];
+        if dim_size > 0 {
+            let dim_size_i = isize::try_from(dim_size).map_err(|_| {
+                Self::shape_overflow_error("roll create_graph dimension size exceeds isize range")
+            })?;
+            let shift_mod = Self::normalized_roll_shift(
+                shift,
+                dim_size_i,
+                "roll create_graph shift normalization overflow",
+            )?;
+            let inverse_shift_mod = Self::inverse_normalized_roll_shift(shift_mod, dim_size);
+            for flat in 0..numel {
+                let mut remaining = flat;
+                let mut coords = vec![0usize; ndim];
+                for d in 0..ndim {
+                    coords[d] = remaining / strides[d];
+                    remaining %= strides[d];
+                }
+                coords[dim] =
+                    Self::add_normalized_roll_shift(coords[dim], inverse_shift_mod, dim_size);
+                let mut dst_flat = 0;
+                for d in 0..ndim {
+                    dst_flat += coords[d] * strides[d];
+                }
+                result[dst_flat] = data[flat];
+            }
+        }
+        let meta = ft_core::TensorMeta::from_shape(shape, dtype, device);
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(meta, result)?,
+            requires_grad,
+            op: TensorNodeOp::Roll {
+                input,
+                shift: shift.wrapping_neg(),
+                dim,
+            },
         });
         Ok(out)
     }
@@ -23356,6 +23450,45 @@ mod tests {
     }
 
     #[test]
+    fn create_graph_second_derivative_roll() {
+        // f(x) = sum(roll(x,1,0)^2). roll([a,b,c],1)=[c,a,b], squares sum = a^2+b^2+c^2,
+        // so grad_x = [2a,2b,2c] (the upstream grad 2*roll(x,1) routed back via
+        // roll(-1)) and the second derivative is constant [2,2,2]. Exercises
+        // create_graph for Roll in both backward passes.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![2.0, 3.0, 4.0], vec![3], true).expect("x");
+        let y = tape.roll(x, 1, 0).expect("roll(x,1,0)");
+        let (z, _) = tape.mul(y, y, ExecutionMode::Strict).expect("y*y");
+        let (loss, _) = tape.sum(z, ExecutionMode::Strict).expect("sum");
+
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support Roll");
+
+        let grad_x = report1.gradient(x).expect("x gradient");
+        assert!(
+            (grad_x[0] - 4.0).abs() < 1e-10
+                && (grad_x[1] - 6.0).abs() < 1e-10
+                && (grad_x[2] - 8.0).abs() < 1e-10,
+            "f'(x) should be [2a,2b,2c]=[4,6,8], got {grad_x:?}"
+        );
+
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let grad2_x = report2.gradient(x).expect("x second gradient");
+        assert!(
+            grad2_x.iter().all(|&g| (g - 2.0).abs() < 1e-10),
+            "f''(x) should be [2,2,2], got {grad2_x:?}"
+        );
+    }
+
+    #[test]
     fn create_graph_second_derivative_exp() {
         // f(x) = exp(x), f'(x) = exp(x), f''(x) = exp(x)
         // At x=1: f(1) = e, f'(1) = e, f''(1) = e
@@ -24372,7 +24505,10 @@ mod tests {
         for (idx, (got, want)) in vals.iter().take(3).zip(expected).enumerate() {
             assert_eq!(got.to_bits(), want.to_bits(), "cumprod f32 @{idx}");
         }
-        assert!(vals[3].is_nan(), "cumprod f32 NaN payload should remain NaN");
+        assert!(
+            vals[3].is_nan(),
+            "cumprod f32 NaN payload should remain NaN"
+        );
     }
 
     #[test]
