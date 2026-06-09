@@ -1462,6 +1462,21 @@ type AutogradFunctionBackwardWithBorrowedInputs = dyn Fn(
     + Sync
     + 'static;
 
+/// A tape-building second-order backward for a custom function: given the output
+/// gradient node(s), the original input node(s), and the tape, it constructs the
+/// input-gradient node(s) using ordinary differentiable tape ops, so a further
+/// backward (create_graph) flows through them. Unlike the first-order backward
+/// (raw `Vec<f64>`), this is what makes a custom function double-backward-able.
+type AutogradFunctionCreateGraphBackward = dyn Fn(
+        &FunctionCtx,
+        &[TensorNodeId],
+        &[TensorNodeId],
+        &mut TensorTape,
+    ) -> Result<Vec<Option<TensorNodeId>>, AutogradError>
+    + Send
+    + Sync
+    + 'static;
+
 #[derive(Clone)]
 enum CustomFunctionBackward {
     Owned(Arc<AutogradFunctionBackward>),
@@ -1473,6 +1488,8 @@ struct CustomFunctionRecord {
     ctx: FunctionCtx,
     backward: CustomFunctionBackward,
     input_numel: Vec<usize>,
+    /// Optional tape-building backward enabling create_graph (double-backward).
+    create_graph_backward: Option<Arc<AutogradFunctionCreateGraphBackward>>,
 }
 
 impl fmt::Debug for CustomFunctionRecord {
@@ -8378,6 +8395,111 @@ impl TensorTape {
                 ctx,
                 backward: CustomFunctionBackward::Owned(Arc::new(backward_fn)),
                 input_numel: input_numels,
+                create_graph_backward: None,
+            },
+        );
+
+        self.nodes.push(TensorNode {
+            tensor: Self::tensor_from_f64_values(
+                ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
+                output_values,
+            )?,
+            requires_grad: any_requires_grad,
+            op: TensorNodeOp::CustomFunction {
+                inputs: inputs_owned,
+                function_id,
+            },
+        });
+        Ok(out)
+    }
+
+    /// Like [`apply_function`], but also registers a tape-building create_graph
+    /// backward so the custom function supports double-backward. The first-order
+    /// `backward_fn` (raw `Vec<f64>`) drives ordinary backward; the
+    /// `create_graph_backward_fn` builds gradient *nodes* (from the output-gradient
+    /// nodes + input nodes via differentiable tape ops) so a second backward flows
+    /// through them. This is the only way a custom function can be double-backward-able
+    /// (a custom function's backward is otherwise opaque/raw and cannot be auto-derived).
+    pub fn apply_function_with_create_graph<F, B, CG>(
+        &mut self,
+        inputs: &[TensorNodeId],
+        forward_fn: F,
+        backward_fn: B,
+        create_graph_backward_fn: CG,
+    ) -> Result<TensorNodeId, AutogradError>
+    where
+        F: FnOnce(
+            &mut FunctionCtx,
+            &[(&[f64], &[usize])],
+        ) -> Result<(Vec<f64>, Vec<usize>), AutogradError>,
+        B: Fn(&FunctionCtx, &[&[f64]]) -> Result<Vec<Option<Vec<f64>>>, AutogradError>
+            + Send
+            + Sync
+            + 'static,
+        CG: Fn(
+                &FunctionCtx,
+                &[TensorNodeId],
+                &[TensorNodeId],
+                &mut TensorTape,
+            ) -> Result<Vec<Option<TensorNodeId>>, AutogradError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let mut needs_input_grad = Vec::with_capacity(inputs.len());
+        let mut input_data: Vec<(Vec<f64>, Vec<usize>)> = Vec::with_capacity(inputs.len());
+        let mut input_numels: Vec<usize> = Vec::with_capacity(inputs.len());
+        let mut any_requires_grad = false;
+        let mut output_dtype = DType::F64;
+        let mut output_device = Device::Cpu;
+
+        for &input_id in inputs {
+            let node = self.node(input_id)?;
+            let rg = node.requires_grad && self.grad_enabled;
+            needs_input_grad.push(rg);
+            if rg {
+                any_requires_grad = true;
+            }
+            let vals = node.tensor.contiguous_values_as_f64()?;
+            let shape = node.tensor.meta().shape().to_vec();
+            input_numels.push(vals.len());
+            output_dtype = node.tensor.meta().dtype();
+            output_device = node.tensor.meta().device();
+            input_data.push((vals, shape));
+        }
+
+        let mut ctx = FunctionCtx::new(needs_input_grad);
+        let refs: Vec<(&[f64], &[usize])> = input_data
+            .iter()
+            .map(|(v, s)| (v.as_slice(), s.as_slice()))
+            .collect();
+        let (output_values, output_shape) = forward_fn(&mut ctx, &refs)?;
+
+        let inputs_owned = inputs.to_vec();
+        let out = TensorNodeId(self.nodes.len());
+
+        if !any_requires_grad || !self.grad_enabled {
+            self.nodes.push(TensorNode {
+                tensor: Self::tensor_from_f64_values(
+                    ft_core::TensorMeta::from_shape(output_shape, output_dtype, output_device),
+                    output_values,
+                )?,
+                requires_grad: false,
+                op: TensorNodeOp::Leaf,
+            });
+            return Ok(out);
+        }
+
+        let function_id = self.next_custom_function_id;
+        self.next_custom_function_id += 1;
+
+        self.custom_functions.insert(
+            function_id,
+            CustomFunctionRecord {
+                ctx,
+                backward: CustomFunctionBackward::Owned(Arc::new(backward_fn)),
+                input_numel: input_numels,
+                create_graph_backward: Some(Arc::new(create_graph_backward_fn)),
             },
         );
 
@@ -8466,6 +8588,7 @@ impl TensorTape {
                 ctx,
                 backward: CustomFunctionBackward::BorrowedInputsF64(Arc::new(backward_fn)),
                 input_numel: input_numels,
+                create_graph_backward: None,
             },
         );
 
@@ -14257,7 +14380,7 @@ impl TensorTape {
                     // needs a weighted reverse-scan primitive not yet available, so it
                     // errors loudly (rather than producing NaN/inf — parity-safe).
                     let x_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
-                    if x_vals.iter().any(|&v| v == 0.0) {
+                    if x_vals.contains(&0.0) {
                         return Err(AutogradError::Dispatch(
                             DispatchKeyError::IncompatibleSet {
                                 reason:
@@ -16285,13 +16408,50 @@ impl TensorTape {
                         rule: "d(std_dim(x))/dx=(x-mean)/((n-1)*std) (cg)",
                     });
                 }
-                // For unsupported ops, fall back to non-differentiable gradient
-                _ => {
-                    return Err(AutogradError::Dispatch(ft_dispatch::DispatchError::Key(
-                        ft_dispatch::DispatchKeyError::IncompatibleSet {
-                            reason: "create_graph not yet supported for this operation",
-                        },
-                    )));
+                TensorNodeOp::CustomFunction {
+                    inputs,
+                    function_id,
+                } => {
+                    // Custom functions are opaque, so create_graph requires a
+                    // user-provided tape-building backward (registered via
+                    // apply_function_with_create_graph). If present, call it to build
+                    // the input-gradient nodes; otherwise error (can't auto-derive).
+                    let (cg_backward, ctx) = {
+                        let record = self
+                            .custom_functions
+                            .get(&function_id)
+                            .ok_or(AutogradError::UnknownTensorNode(node_id))?;
+                        (record.create_graph_backward.clone(), record.ctx.clone())
+                    };
+                    let Some(cg) = cg_backward else {
+                        return Err(AutogradError::Dispatch(
+                            DispatchKeyError::IncompatibleSet {
+                                reason:
+                                    "create_graph for this custom function requires a create_graph backward (register via apply_function_with_create_graph)",
+                            }
+                            .into(),
+                        ));
+                    };
+                    let grad_results = cg(&ctx, &[incoming_id], &inputs, self)?;
+                    if grad_results.len() != inputs.len() {
+                        return Err(AutogradError::TensorGradientShapeMismatch {
+                            node: node_id,
+                            expected: inputs.len(),
+                            actual: grad_results.len(),
+                        });
+                    }
+                    for (i, maybe_grad) in grad_results.into_iter().enumerate() {
+                        let input_id = inputs[i];
+                        if let Some(grad_node) = maybe_grad {
+                            self.cg_accumulate(input_id, &mut grad_nodes, grad_node)?;
+                        }
+                        Self::complete_dependency(&mut pending, input_id, &mut queue)?;
+                    }
+                    steps.push(TensorBackwardStep {
+                        node: node_id,
+                        incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
+                        rule: "custom_function (cg, user-provided tape backward)",
+                    });
                 }
             }
         }
@@ -16872,6 +17032,7 @@ impl TensorTape {
     /// flip of the upstream gradient over the same dims. The gather form
     /// `result[flat] = data[flip(flat)]` is identical to the scatter the
     /// first-order Flip backward produces (flip is an involution).
+    #[allow(clippy::needless_range_loop)]
     fn cg_flip(
         &mut self,
         input: TensorNodeId,
@@ -16922,6 +17083,7 @@ impl TensorTape {
     /// exactly (so values are bit-identical) and records a `Roll{shift:-shift}` op
     /// so a further backward differentiates it correctly (the adjoint of the
     /// inverse roll is the forward roll). `shift` here is the ORIGINAL forward shift.
+    #[allow(clippy::needless_range_loop)]
     fn cg_roll(
         &mut self,
         input: TensorNodeId,
@@ -24545,6 +24707,100 @@ mod tests {
         assert!(
             result.is_err(),
             "create_graph cumprod with a zero input should error, not produce NaN"
+        );
+    }
+
+    #[test]
+    fn create_graph_custom_function_double_backward() {
+        // Custom y=x^2 registered with a tape-building create_graph backward
+        // (grad_x = 2*x*grad_out, built from tape ops). f=sum(y): grad_x=2x=[2,4,6];
+        // second derivative is the constant [2,2,2]. Exercises create_graph for a
+        // user-defined CustomFunction via apply_function_with_create_graph.
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0, 3.0], vec![3], true).expect("x");
+        let y = tape
+            .apply_function_with_create_graph(
+                &[x],
+                |ctx, ins| {
+                    let (xv, shape) = ins[0];
+                    ctx.save_for_backward(xv.to_vec(), shape.to_vec());
+                    Ok((xv.iter().map(|v| v * v).collect(), shape.to_vec()))
+                },
+                |ctx, grad_outputs| {
+                    let xv = &ctx.saved_tensors()[0];
+                    let go = grad_outputs[0];
+                    Ok(vec![Some(
+                        xv.iter().zip(go.iter()).map(|(a, b)| 2.0 * a * b).collect(),
+                    )])
+                },
+                |_ctx, grad_outputs, inputs, tape| {
+                    let g = grad_outputs[0];
+                    let xn = inputs[0];
+                    let (gx, _) = tape.mul(g, xn, ExecutionMode::Strict)?;
+                    let (gx2, _) = tape.mul_scalar(gx, 2.0)?;
+                    Ok(vec![Some(gx2)])
+                },
+            )
+            .expect("custom square");
+        let (loss, _) = tape.sum(y, ExecutionMode::Strict).expect("sum");
+        let report1 = tape
+            .backward_with_options(
+                loss,
+                BackwardOptions {
+                    create_graph: true,
+                    ..BackwardOptions::strict_default()
+                },
+            )
+            .expect("first backward (create_graph) must support custom function with hook");
+        let gx = report1.gradient(x).expect("x gradient");
+        let exp = [2.0, 4.0, 6.0];
+        assert!(
+            gx.iter().zip(exp.iter()).all(|(a, b)| (a - b).abs() < 1e-9),
+            "grad_x should be {exp:?}, got {gx:?}"
+        );
+        let dx_node = report1.gradient_node(x).expect("gradient node for x");
+        let report2 = tape.backward(dx_node).expect("second backward");
+        let g2 = report2.gradient(x).expect("x second gradient");
+        assert!(
+            g2.iter().all(|&g| (g - 2.0).abs() < 1e-9),
+            "f''(x) should be [2,2,2], got {g2:?}"
+        );
+    }
+
+    #[test]
+    fn create_graph_custom_function_without_hook_errors() {
+        // A custom function registered without a create_graph backward must error
+        // loudly under create_graph (cannot auto-derive an opaque backward).
+        let mut tape = TensorTape::new();
+        let x = tape.leaf(vec![1.0, 2.0], vec![2], true).expect("x");
+        let y = tape
+            .apply_function(
+                &[x],
+                |ctx, ins| {
+                    let (xv, shape) = ins[0];
+                    ctx.save_for_backward(xv.to_vec(), shape.to_vec());
+                    Ok((xv.iter().map(|v| v * v).collect(), shape.to_vec()))
+                },
+                |ctx, grad_outputs| {
+                    let xv = &ctx.saved_tensors()[0];
+                    let go = grad_outputs[0];
+                    Ok(vec![Some(
+                        xv.iter().zip(go.iter()).map(|(a, b)| 2.0 * a * b).collect(),
+                    )])
+                },
+            )
+            .expect("custom square (no hook)");
+        let (loss, _) = tape.sum(y, ExecutionMode::Strict).expect("sum");
+        let res = tape.backward_with_options(
+            loss,
+            BackwardOptions {
+                create_graph: true,
+                ..BackwardOptions::strict_default()
+            },
+        );
+        assert!(
+            res.is_err(),
+            "custom function without a create_graph backward should error under create_graph"
         );
     }
 
