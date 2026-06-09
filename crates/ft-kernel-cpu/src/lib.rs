@@ -2278,6 +2278,11 @@ fn pairwise_sum_f64_par(values: &[f64]) -> f64 {
 
 /// `pairwise_sum_f64`, parallelised only for large FULL reductions.
 const SUM_PARALLEL_THRESHOLD: usize = 1 << 19; // 524288
+// Measured crossover (64-core worker, release): the rayon::join parallel
+// pairwise sum is SLOWER than serial below ~512k (memory-bound; join overhead
+// dominates — 0.33-0.88x at 32k-262k) and only wins at >=524288 (2.37x) and
+// 1M (5.3x). So 1<<19 is the tuned crossover; do NOT lower it (regresses the
+// medium band). See sum_parallel_crossover_probe. frankentorch parallel-threshold-vein.
 
 #[inline]
 fn pairwise_sum_f64_maybe_par(values: &[f64]) -> f64 {
@@ -16158,6 +16163,68 @@ pub fn sparse_coo_add(
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+
+    #[test]
+    fn sum_parallel_is_bit_identical_to_serial() {
+        // The rayon::join parallel pairwise sum splits the SAME mid-tree as the
+        // serial path, so it MUST be bit-for-bit identical (the entire point of
+        // gating on SUM_PARALLEL_THRESHOLD rather than using a different reduction
+        // order). Guard that invariant across sizes that straddle PAR_BLOCK and the
+        // threshold, including non-power-of-two lengths (uneven splits).
+        for &n in &[1usize, 127, 16384, 16385, 32768, 100_000, 524_289, 1_000_003] {
+            let data: Vec<f64> = (0..n).map(|i| ((i * 31 + 7) % 1009) as f64 * 0.013 - 6.5).collect();
+            assert_eq!(
+                super::pairwise_sum_f64(&data).to_bits(),
+                super::pairwise_sum_f64_par(&data).to_bits(),
+                "parallel pairwise sum diverged from serial at n={n}"
+            );
+            let sq = |x: f64| x * x;
+            assert_eq!(
+                super::pairwise_sum_map_f64(&data, sq).to_bits(),
+                super::pairwise_sum_map_f64_par(&data, sq).to_bits(),
+                "parallel pairwise sum_map diverged from serial at n={n}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf probe: SUM_PARALLEL_THRESHOLD crossover (run with --ignored --nocapture)"]
+    fn sum_parallel_crossover_probe() {
+        use std::time::Instant;
+        let cores = rayon::current_num_threads().max(2);
+        let p1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let pn = rayon::ThreadPoolBuilder::new().num_threads(cores).build().unwrap();
+        println!("cores={cores}");
+        for &n in &[16384usize, 32768, 65536, 131072, 262144, 524288, 1_048_576] {
+            let data: Vec<f64> = (0..n).map(|i| ((i % 97) as f64) * 0.01 - 0.5).collect();
+            let iters = 300u32;
+            let t = Instant::now();
+            for _ in 0..iters {
+                std::hint::black_box(super::pairwise_sum_f64(std::hint::black_box(&data)));
+            }
+            let ser = t.elapsed().as_secs_f64() / f64::from(iters);
+            let t = Instant::now();
+            pn.install(|| {
+                for _ in 0..iters {
+                    std::hint::black_box(super::pairwise_sum_f64_par(std::hint::black_box(&data)));
+                }
+            });
+            let parn = t.elapsed().as_secs_f64() / f64::from(iters);
+            // bit-exact check: parallel tree == serial tree
+            let _ = &p1;
+            assert_eq!(
+                super::pairwise_sum_f64(&data).to_bits(),
+                super::pairwise_sum_f64_par(&data).to_bits(),
+                "parallel sum must be bit-identical at n={n}"
+            );
+            println!(
+                "n={n:>8} serial={:>8.2}us parN={:>8.2}us speedup={:.2}x",
+                ser * 1e6,
+                parn * 1e6,
+                ser / parn
+            );
+        }
+    }
 
     #[test]
     fn kernels_do_not_dirty_mxcsr() {
