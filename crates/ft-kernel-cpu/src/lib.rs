@@ -10824,7 +10824,17 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
                         h[i * n + k] -= p2;
                     }
                     if want_vectors {
-                        let update_q_row = |row: &mut [f64]| {
+                        // Apply the bulge-chase Givens rotation to the Schur-vector
+                        // columns (k, k+1, k+2) across all n rows. This is O(n) work
+                        // (3 cols/row) called O(n^2) times over the QR sweeps, so a
+                        // per-k rayon dispatch costs FAR more in scheduling overhead
+                        // than the 3-flop/row update saves — the previous
+                        // par_chunks_mut here was the dominant cost of eig-with-vectors
+                        // (~10x: eig_256 820ms -> 82ms, ovh-a same-worker). Serial is
+                        // strictly faster for this fine granularity; a beneficial
+                        // parallel form needs per-sweep rotation accumulation applied
+                        // as one blocked GEMM (dlaqr5-style), not per-k. (l9xod)
+                        for row in q_acc.chunks_mut(n) {
                             let mut p2 = xr * row[k] + yr * row[k + 1];
                             if notlast {
                                 p2 += zr * row[k + 2];
