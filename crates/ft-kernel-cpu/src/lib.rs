@@ -8776,6 +8776,129 @@ pub fn lu_solve_contiguous_f64(
     Ok(x)
 }
 
+/// Native f32 LU solve — applies the pivot permutation then a forward (unit
+/// lower L) + back (upper U) substitution entirely in `f32`. `lu` is the packed
+/// n×n LU factor row-major and `pivots[i]` the row swapped to position `i`
+/// (LAPACK `getrf` order), e.g. from a factor converted out of
+/// `lu_factor_contiguous_f64`. A triangular solve streams the factor, so f32
+/// halves the memory traffic vs the f64-upcast path (~2x in the serial regime)
+/// and matches torch's f32 LAPACK precision. Pairs with the existing f32 LU to
+/// make a native f32 `inv` / `linalg_solve`. b3o90.
+pub fn lu_solve_contiguous_f32(
+    lu: &[f32],
+    pivots: &[usize],
+    n: usize,
+    b_data: &[f32],
+    b_meta: &TensorMeta,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(b_data, b_meta)?;
+    let b_shape = b_meta.shape();
+    let (b_rows, num_rhs) = match b_shape.len() {
+        1 => (b_shape[0], 1usize),
+        2 => (b_shape[0], b_shape[1]),
+        _ => {
+            return Err(KernelError::ShapeMismatch {
+                lhs: vec![n],
+                rhs: b_shape.to_vec(),
+            });
+        }
+    };
+    if b_rows != n {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![n],
+            rhs: vec![b_rows],
+        });
+    }
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    let offset = b_meta.storage_offset();
+    let mut x: Vec<f32> = b_data[offset..offset + n * num_rhs].to_vec();
+
+    // Apply the pivot permutation to each RHS column.
+    for rhs in 0..num_rhs {
+        let mut permuted = vec![0.0f32; n];
+        for i in 0..n {
+            permuted[i] = x[pivots[i] * num_rhs + rhs];
+        }
+        for i in 0..n {
+            x[i * num_rhs + rhs] = permuted[i];
+        }
+    }
+
+    // Column-parallel path for large multi-RHS (mirror of the f64 gate / order).
+    let par_gate = num_rhs >= 8 && (n as u128) * (n as u128) * (num_rhs as u128) >= (1u128 << 26);
+    if par_gate {
+        let mut xt = vec![0.0f32; num_rhs * n];
+        for i in 0..n {
+            for rhs in 0..num_rhs {
+                xt[rhs * n + i] = x[i * num_rhs + rhs];
+            }
+        }
+        xt.par_chunks_mut(n).for_each(|col| {
+            for i in 0..n {
+                let mut acc = col[i];
+                let row = i * n;
+                for k in 0..i {
+                    acc -= lu[row + k] * col[k];
+                }
+                col[i] = acc;
+            }
+            for i in (0..n).rev() {
+                let diag = lu[i * n + i];
+                if diag.abs() < f32::EPSILON * 1e3 {
+                    col[i] = 0.0;
+                    continue;
+                }
+                let mut acc = col[i];
+                let row = i * n;
+                for k in ((i + 1)..n).rev() {
+                    acc -= lu[row + k] * col[k];
+                }
+                col[i] = acc / diag;
+            }
+        });
+        for i in 0..n {
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] = xt[rhs * n + i];
+            }
+        }
+        return Ok(x);
+    }
+
+    // Forward substitution: L * y = P * b.
+    for k in 0..n {
+        for i in (k + 1)..n {
+            let l_ik = lu[i * n + k];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] -= l_ik * x[k * num_rhs + rhs];
+            }
+        }
+    }
+    // Back substitution: U * x = y.
+    for k in (0..n).rev() {
+        let diag = lu[k * n + k];
+        if diag.abs() < f32::EPSILON * 1e3 {
+            for rhs in 0..num_rhs {
+                x[k * num_rhs + rhs] = 0.0;
+            }
+            continue;
+        }
+        for rhs in 0..num_rhs {
+            x[k * num_rhs + rhs] /= diag;
+        }
+        for i in 0..k {
+            let u_ik = lu[i * n + k];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] -= u_ik * x[k * num_rhs + rhs];
+            }
+        }
+    }
+
+    Ok(x)
+}
+
 fn lu_solve_f32_factor_to_f64(
     factor: &LuFactorF32,
     b_data: &[f64],
@@ -24308,6 +24431,42 @@ mod tests {
             let want = if i == j { 1.0 } else { 0.0 };
             assert!(
                 (dot - want).abs() < 1e-3,
+                "(A·A^-1)[{i},{j}]={dot} expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn lu_solve_f32_inverts_general_matrix() {
+        // Native f32 LU solve (b3o90): factor a general well-conditioned A in f64,
+        // convert the factor to f32, solve A X = I in f32, verify A·X ≈ I at f32 tol.
+        let n = 96usize;
+        let mut a = vec![0.0f32; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                a[i * n + j] = ((i * 31 + j * 17) % 97) as f32 * 0.013 - 0.5;
+            }
+            a[i * n + i] += n as f32;
+        }
+        let a64: Vec<f64> = a.iter().map(|&v| v as f64).collect();
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let factor = super::lu_factor_contiguous_f64(&a64, &meta).expect("lu");
+        let lu32: Vec<f32> = factor.lu.iter().map(|&v| v as f32).collect();
+        let mut id = vec![0.0f32; n * n];
+        for i in 0..n {
+            id[i * n + i] = 1.0;
+        }
+        let meta32 = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+        let x = super::lu_solve_contiguous_f32(&lu32, &factor.pivots, n, &id, &meta32)
+            .expect("lu solve f32");
+        for &(i, j) in &[(0usize, 0usize), (10, 10), (3, 50), (95, 95), (40, 7)] {
+            let mut dot = 0.0f32;
+            for k in 0..n {
+                dot += a[i * n + k] * x[k * n + j];
+            }
+            let want = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (dot - want).abs() < 2e-3,
                 "(A·A^-1)[{i},{j}]={dot} expected {want}"
             );
         }

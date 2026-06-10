@@ -10,10 +10,10 @@ use ft_kernel_cpu::{
     cholesky_solve_contiguous_f32, cholesky_solve_contiguous_f64, det_contiguous_f64,
     eig_contiguous_f64, eigh_contiguous_f64, eigvals_contiguous_f64, eigvalsh_contiguous_f64,
     eigvalsh_two_stage_f64, inv_tensor_contiguous_f64, lobpcg_contiguous_f64,
-    lu_factor_contiguous_f64, lu_solve_contiguous_f64, lu_solve_mixed_refine_contiguous_f64,
-    matrix_exp_contiguous_f32, matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64,
-    svd_lowrank_contiguous_f64, svdvals_contiguous_f64, symmetric_rank2k_lower_update_f64,
-    symmetric_to_banded_f64,
+    lu_factor_contiguous_f64, lu_solve_contiguous_f32, lu_solve_contiguous_f64,
+    lu_solve_mixed_refine_contiguous_f64, matrix_exp_contiguous_f32, matrix_exp_contiguous_f64,
+    qr_contiguous_f64, svd_contiguous_f64, svd_lowrank_contiguous_f64, svdvals_contiguous_f64,
+    symmetric_rank2k_lower_update_f64, symmetric_to_banded_f64,
 };
 
 fn symmetric_rank2k_lower_update_scalar(n: usize, k: usize, v: &[f64], w: &[f64], a: &mut [f64]) {
@@ -185,6 +185,49 @@ fn bench_lu_solve(c: &mut Criterion) {
             )
         })
     });
+
+    // Native f32 LU solve (frankentorch-b3o90) vs f64, SOLVE-ONLY (factor
+    // precomputed), n-RHS = the inverse workload, serial regime (n²·nrhs < 2^26).
+    // A triangular solve streams the factor -> f32 halves the bytes -> ~2x.
+    {
+        let n2 = 384usize;
+        let mut a2 = vec![0.0_f64; n2 * n2];
+        for i in 0..n2 {
+            for j in 0..n2 {
+                a2[i * n2 + j] = ((i * 31 + j * 17) % 97) as f64 * 0.013 - 0.5;
+            }
+            a2[i * n2 + i] += n2 as f64;
+        }
+        let meta_a2 = TensorMeta::from_shape(vec![n2, n2], DType::F64, Device::Cpu);
+        let factor = lu_factor_contiguous_f64(&a2, &meta_a2).unwrap();
+        let mut id = vec![0.0_f64; n2 * n2];
+        for i in 0..n2 {
+            id[i * n2 + i] = 1.0;
+        }
+        let id_meta = TensorMeta::from_shape(vec![n2, n2], DType::F64, Device::Cpu);
+        c.bench_function("lu_solve_f64_384x384_nrhs", |bch| {
+            bch.iter(|| {
+                black_box(lu_solve_contiguous_f64(&factor, black_box(&id), &id_meta).unwrap())
+            })
+        });
+        let lu32: Vec<f32> = factor.lu.iter().map(|&v| v as f32).collect();
+        let id32: Vec<f32> = id.iter().map(|&v| v as f32).collect();
+        let id_meta32 = TensorMeta::from_shape(vec![n2, n2], DType::F32, Device::Cpu);
+        c.bench_function("lu_solve_f32_384x384_nrhs", |bch| {
+            bch.iter(|| {
+                black_box(
+                    lu_solve_contiguous_f32(
+                        &lu32,
+                        &factor.pivots,
+                        n2,
+                        black_box(&id32),
+                        &id_meta32,
+                    )
+                    .unwrap(),
+                )
+            })
+        });
+    }
 }
 
 fn bench_matrix_exp(c: &mut Criterion) {
