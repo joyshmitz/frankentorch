@@ -10130,8 +10130,9 @@ pub fn symmetric_to_banded_f64(
             v[t] *= inv;
         }
 
-        // Left apply: m[r0.., :] := (I - tau v v^T) m[r0.., :].
-        for c in 0..n {
+        // Left apply over the active trailing window only (peer cod, pass4):
+        // columns `< k` are already outside the band for the affected rows.
+        for c in k..n {
             let mut w = 0.0;
             for t in 0..mlen {
                 w += v[t] * m[(r0 + t) * n + c];
@@ -10141,8 +10142,8 @@ pub fn symmetric_to_banded_f64(
                 m[(r0 + t) * n + c] -= v[t] * tw;
             }
         }
-        // Right apply: m[:, r0..] := m[:, r0..] (I - tau v v^T).
-        for r in 0..n {
+        // Right apply over the same active window (peer cod, pass4).
+        for r in k..n {
             let base = r * n + r0;
             let mut w = 0.0;
             for t in 0..mlen {
@@ -10180,6 +10181,226 @@ pub fn symmetric_to_banded_f64(
     }
 
     Ok((m, q))
+}
+
+/// Values-only stage-1 dense -> banded reduction (no `Q` accumulation) using a
+/// **BLAS-3 blocked panel** (successive-band-reduction / DLATRD-style).
+///
+/// Returns the symmetric banded matrix (`n*n`, row-major, every entry with
+/// `|row - col| > b` exactly `0.0`). Mathematically equivalent — to reduction
+/// rounding (`~1e-9`) — to `symmetric_to_banded_f64(a, n, b).0`, but it does NOT
+/// accumulate the orthogonal `Q`, so it is the fast stage-1 for the
+/// eigenvalues-only two-stage path ([`eigvalsh_two_stage_f64`]); the eigenvector
+/// path keeps the unblocked [`symmetric_to_banded_f64`].
+///
+/// Why this is level-3 and bit-stable: the band gap `b` decouples reflector
+/// *formation* from the trailing block. Column `k`'s reflector annihilates rows
+/// `[k + b, n)`, so within a width-`b` panel `[s, s+b)` no reflector's support
+/// reaches another panel column before it is formed — each panel is therefore a
+/// plain Householder QR of the sub-band block `M[s+b.., s..s+w]`, and its
+/// reflectors are **bit-identical** to the unblocked sweep's (which forms them
+/// from the same left-applied columns). Only the trailing symmetric update
+/// `M[R,R] := Qp^T M[R,R] Qp` (and the coupling rows above it) is re-associated
+/// into compact-WY GEMMs `Qp = I - V T V^T`, changing float association but not
+/// the answer beyond rounding.
+#[allow(clippy::needless_range_loop)]
+pub fn symmetric_to_banded_values_f64(
+    a: &[f64],
+    n: usize,
+    b: usize,
+) -> Result<Vec<f64>, KernelError> {
+    if a.len() < n * n {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![a.len()],
+            rhs: vec![n * n],
+        });
+    }
+    let mut m = a[..n * n].to_vec();
+    if n == 0 || b == 0 {
+        return Ok(m);
+    }
+    // Reflector columns are `k in 0..(n - b - 1)` (`mlen = n - k - b >= 2`).
+    // `b < 2` (tridiagonal target — single-column panels give no level-3 win) and
+    // small/degenerate shapes fall back to the unblocked scalar sweep, which is
+    // also the proof oracle.
+    let ncols = n.saturating_sub(b + 1);
+    if b < 2 || n < 32 || ncols == 0 {
+        return Ok(symmetric_to_banded_f64(a, n, b)?.0);
+    }
+
+    let mut s = 0usize;
+    while s < ncols {
+        let w = b.min(ncols - s); // panel width (<= b)
+        let r0 = s + b; // first row of the active region R = [r0, n)
+        if r0 >= n {
+            break;
+        }
+        let h = n - r0; // |R|
+        if h == 0 {
+            break;
+        }
+
+        // --- Phase 1: Householder QR of the panel block A21 = M[r0.., s..s+w].
+        // Produces V (h x w, unit-lower-trapezoidal) and tau[0..w], left-applied
+        // in place to the `w` panel columns (band edge + zeros below). Identical
+        // arithmetic to the unblocked reflector formation + within-panel applies.
+        let mut vmat = vec![0.0f64; h * w]; // row-major h x w
+        let mut taus = vec![0.0f64; w];
+        for j in 0..w {
+            let col = s + j;
+            let len = h - j; // reflector length, over block-rows [j, h)
+            vmat[j * w + j] = 1.0;
+            if len < 1 {
+                continue;
+            }
+            let mut xnorm_sq = 0.0;
+            for t in 0..len {
+                let val = m[(r0 + j + t) * n + col];
+                xnorm_sq += val * val;
+            }
+            let xnorm = xnorm_sq.sqrt();
+            if xnorm == 0.0 {
+                continue;
+            }
+            let alpha = m[(r0 + j) * n + col];
+            let beta = if alpha >= 0.0 { -xnorm } else { xnorm };
+            let tau = (beta - alpha) / beta;
+            let inv = 1.0 / (alpha - beta);
+            taus[j] = tau;
+            for t in 1..len {
+                vmat[(j + t) * w + j] = m[(r0 + j + t) * n + col] * inv;
+            }
+            // Reduce the panel column to band form directly.
+            m[(r0 + j) * n + col] = beta;
+            for t in 1..len {
+                m[(r0 + j + t) * n + col] = 0.0;
+            }
+            // Left-apply reflector j to the remaining panel columns only.
+            for c in (col + 1)..(s + w) {
+                let mut dot = 0.0;
+                for t in 0..len {
+                    dot += vmat[(j + t) * w + j] * m[(r0 + j + t) * n + c];
+                }
+                let td = tau * dot;
+                for t in 0..len {
+                    m[(r0 + j + t) * n + c] -= vmat[(j + t) * w + j] * td;
+                }
+            }
+        }
+
+        // --- Compact-WY factor T (w x w upper-tri) s.t. Qp = I - V T V^T,
+        // Qp = H_0 H_1 ... H_{w-1} (LAPACK dlarft, direction 'F', storev 'C').
+        let mut tmat = vec![0.0f64; w * w];
+        for j in 0..w {
+            let tau = taus[j];
+            tmat[j * w + j] = tau;
+            if tau == 0.0 {
+                continue;
+            }
+            for p in 0..j {
+                // z_p = (V[:,p]^T V[:,j]) over block-rows [j, h) (V unit at j).
+                let mut z = 0.0;
+                for i in j..h {
+                    z += vmat[i * w + p] * vmat[i * w + j];
+                }
+                tmat[p * w + j] = z; // stash z; overwrite with product below
+            }
+            // T[0:j, j] := -tau * T[0:j, 0:j] @ z  (z currently in T[0:j, j]).
+            let mut tcol = vec![0.0f64; j];
+            for p in 0..j {
+                let mut acc = 0.0;
+                for q in p..j {
+                    acc += tmat[p * w + q] * tmat[q * w + j];
+                }
+                tcol[p] = -tau * acc;
+            }
+            for p in 0..j {
+                tmat[p * w + j] = tcol[p];
+            }
+        }
+
+        // --- Phase 2: two-sided block update Qp = I - V T V^T over rows R.
+        // Transposed reflector / factor buffers for the A^T @ B GEMMs.
+        let mut vt = vec![0.0f64; w * h]; // V^T (w x h)
+        for i in 0..h {
+            for jj in 0..w {
+                vt[jj * h + i] = vmat[i * w + jj];
+            }
+        }
+        let mut tt = vec![0.0f64; w * w]; // T^T (w x w)
+        for i in 0..w {
+            for jj in 0..w {
+                tt[jj * w + i] = tmat[i * w + jj];
+            }
+        }
+
+        // Left apply: M[R, lc..n] := Qp^T M[R, lc..n], where `lc = s + w`. The
+        // columns are `[s+w, n)` (panel columns `[s, s+w)` were finalized in
+        // Phase 1; when the panel is partial, `w < b`, the "gap" columns
+        // `[s+w, r0)` carry in-band entries that the reflectors' left apply must
+        // still touch — they would be missed if we updated only `[r0, n)`).
+        let lc = s + w;
+        let hc = n - lc; // left-apply column count
+        {
+            let mut lmat = vec![0.0f64; h * hc];
+            for i in 0..h {
+                let src = (r0 + i) * n + lc;
+                lmat[i * hc..i * hc + hc].copy_from_slice(&m[src..src + hc]);
+            }
+            let mut y1 = vec![0.0f64; w * hc];
+            gemm::dgemm(w, h, hc, &vt, &lmat, &mut y1); // V^T L
+            let mut y2 = vec![0.0f64; w * hc];
+            gemm::dgemm(w, w, hc, &tt, &y1, &mut y2); // T^T (V^T L)
+            let mut upd = vec![0.0f64; h * hc];
+            gemm::dgemm(h, w, hc, &vmat, &y2, &mut upd); // V (T^T V^T L)
+            for i in 0..h {
+                let dst = (r0 + i) * n + lc;
+                for c in 0..hc {
+                    m[dst + c] -= upd[i * hc + c];
+                }
+            }
+        }
+
+        // Right apply: M[s..n, r0..n] := M[s..n, r0..n] Qp. Re-gather so the
+        // already-left-applied trailing block `M[R,R]` is read back in.
+        let g = n - s;
+        {
+            let mut cmat = vec![0.0f64; g * h];
+            for i in 0..g {
+                let src = (s + i) * n + r0;
+                cmat[i * h..i * h + h].copy_from_slice(&m[src..src + h]);
+            }
+            let mut z1 = vec![0.0f64; g * w];
+            gemm::dgemm(g, h, w, &cmat, &vmat, &mut z1); // C V
+            let mut z2 = vec![0.0f64; g * w];
+            gemm::dgemm(g, w, w, &z1, &tmat, &mut z2); // (C V) T
+            let mut upd = vec![0.0f64; g * h];
+            gemm::dgemm_bt(g, w, h, &z2, &vmat, &mut upd); // (C V T) V^T
+            for i in 0..g {
+                let dst = (s + i) * n + r0;
+                for c in 0..h {
+                    m[dst + c] -= upd[i * h + c];
+                }
+            }
+        }
+
+        s += w;
+    }
+
+    // Symmetrize within the band (the lower band edge comes from the panel QR,
+    // the upper from the coupling-row right-apply; mirror lower -> upper so the
+    // result is exactly symmetric) and pin out-of-band entries to exact zero.
+    for r in 0..n {
+        for c in 0..n {
+            match c.abs_diff(r) {
+                d if d > b => m[r * n + c] = 0.0,
+                _ if c < r => m[c * n + r] = m[r * n + c],
+                _ => {}
+            }
+        }
+    }
+
+    Ok(m)
 }
 
 /// Reduce a symmetric **banded** matrix (`band`, row-major `n*n`, half-bandwidth
@@ -10307,7 +10528,8 @@ pub fn eigvalsh_two_stage_f64(a: &[f64], n: usize, b: usize) -> Result<Vec<f64>,
         return Ok(Vec::new());
     }
     let bw = b.clamp(1, n.saturating_sub(1).max(1));
-    let (band, _q) = symmetric_to_banded_f64(a, n, bw)?;
+    // Values-only stage-1: BLAS-3 blocked panel reduction (no Q accumulation).
+    let band = symmetric_to_banded_values_f64(a, n, bw)?;
     let (mut d, mut e) = banded_to_tridiagonal_f64(&band, n, bw);
     eigh_tql2_values_only(n, &mut d, &mut e);
     d.sort_by(f64::total_cmp);
@@ -18551,6 +18773,74 @@ mod tests {
     fn symmetric_to_banded_rejects_short_input() {
         let err = super::symmetric_to_banded_f64(&[1.0, 2.0, 3.0], 3, 1);
         assert!(matches!(err, Err(super::KernelError::ShapeMismatch { .. })));
+    }
+
+    #[test]
+    fn symmetric_to_banded_values_matches_unblocked() {
+        // The BLAS-3 blocked values-only stage-1 must agree with the unblocked
+        // reference band (a) elementwise to reduction tolerance, (b) be exactly
+        // banded + symmetric, and (c) preserve the spectrum. frankentorch-5oqum.
+        for &(n, b) in &[
+            (32usize, 2usize),
+            (32, 4),
+            (40, 5),
+            (48, 8),
+            (64, 8),
+            (64, 16),
+            (96, 12),
+            (128, 16),
+        ] {
+            let mut a = vec![0.0f64; n * n];
+            for i in 0..n {
+                for j in 0..=i {
+                    let val = ((i * 13 + j * 7 + 2) % 31) as f64 * 0.29 - 4.7 + (i as f64) * 0.011
+                        - (j as f64) * 0.017;
+                    a[i * n + j] = val;
+                    a[j * n + i] = val;
+                }
+            }
+            let reference = super::symmetric_to_banded_f64(&a, n, b).unwrap().0;
+            let blocked = super::symmetric_to_banded_values_f64(&a, n, b).unwrap();
+
+            // Build a tolerance from the band magnitude (the reduction is a
+            // similarity transform; absolute entry error scales with ||A||).
+            let scale = reference
+                .iter()
+                .fold(0.0f64, |m, &x| m.max(x.abs()))
+                .max(1.0);
+            let tol = 1e-9 * scale;
+            for i in 0..n {
+                for j in 0..n {
+                    // (b) exactly banded + symmetric.
+                    if i.abs_diff(j) > b {
+                        assert_eq!(blocked[i * n + j], 0.0, "n={n} b={b}: ({i},{j}) not zeroed");
+                    }
+                    assert!(
+                        (blocked[i * n + j] - blocked[j * n + i]).abs() < 1e-12,
+                        "n={n} b={b}: blocked band not symmetric at ({i},{j})"
+                    );
+                    // (a) elementwise agreement with the unblocked reference.
+                    assert!(
+                        (blocked[i * n + j] - reference[i * n + j]).abs() <= tol,
+                        "n={n} b={b}: band entry ({i},{j}) blocked={} reference={} (tol {tol})",
+                        blocked[i * n + j],
+                        reference[i * n + j]
+                    );
+                }
+            }
+
+            // (c) spectrum preserved (the strongest invariant).
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let spec_ref = super::eigvalsh_contiguous_f64(&a, &meta).unwrap();
+            let spec_blk = super::eigvalsh_contiguous_f64(&blocked, &meta).unwrap();
+            for (idx, (&lr, &lb)) in spec_ref.iter().zip(spec_blk.iter()).enumerate() {
+                let etol = 1e-7 + 1e-8 * lr.abs();
+                assert!(
+                    (lr - lb).abs() <= etol,
+                    "n={n} b={b}: eigenvalue[{idx}] ref={lr} blocked={lb} (tol {etol})"
+                );
+            }
+        }
     }
 
     #[test]
