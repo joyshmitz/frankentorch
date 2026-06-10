@@ -6,12 +6,13 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
-    cholesky_contiguous_f64, cholesky_solve_contiguous_f64, det_contiguous_f64, eig_contiguous_f64,
-    eigh_contiguous_f64, eigvals_contiguous_f64, eigvalsh_contiguous_f64,
-    inv_tensor_contiguous_f64, lobpcg_contiguous_f64, lu_factor_contiguous_f64,
-    lu_solve_contiguous_f64, lu_solve_mixed_refine_contiguous_f64, matrix_exp_contiguous_f64,
-    qr_contiguous_f64, svd_contiguous_f64, svd_lowrank_contiguous_f64, svdvals_contiguous_f64,
-    symmetric_rank2k_lower_update_f64,
+    banded_to_tridiagonal_f64, cholesky_contiguous_f64, cholesky_solve_contiguous_f64,
+    det_contiguous_f64, eig_contiguous_f64, eigh_contiguous_f64, eigvals_contiguous_f64,
+    eigvalsh_contiguous_f64, eigvalsh_two_stage_f64, inv_tensor_contiguous_f64,
+    lobpcg_contiguous_f64, lu_factor_contiguous_f64, lu_solve_contiguous_f64,
+    lu_solve_mixed_refine_contiguous_f64, matrix_exp_contiguous_f64, qr_contiguous_f64,
+    svd_contiguous_f64, svd_lowrank_contiguous_f64, svdvals_contiguous_f64,
+    symmetric_rank2k_lower_update_f64, symmetric_to_banded_f64,
 };
 
 fn symmetric_rank2k_lower_update_scalar(n: usize, k: usize, v: &[f64], w: &[f64], a: &mut [f64]) {
@@ -281,6 +282,32 @@ fn bench_eigh(c: &mut Criterion) {
     }
 }
 
+fn bench_eigvalsh_two_stage(c: &mut Criterion) {
+    for &(n, b) in &[(128usize, 16usize), (256usize, 32usize)] {
+        // Same matrix family as `bench_eigh`, so public live and two-stage rows
+        // compare the eigensolver algorithm rather than input conditioning.
+        let mut a = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let bij = ((i * 31 + j * 17) % 97) as f64 * 0.013 - 0.5;
+                let bji = ((j * 31 + i * 17) % 97) as f64 * 0.013 - 0.5;
+                a[i * n + j] = 0.5 * (bij + bji);
+            }
+            a[i * n + i] += n as f64;
+        }
+        c.bench_function(&format!("eigvalsh_two_stage_f64_{n}x{n}_b{b}"), |bch| {
+            bch.iter(|| black_box(eigvalsh_two_stage_f64(black_box(&a), n, b).unwrap()))
+        });
+        c.bench_function(&format!("sym_to_banded_f64_{n}x{n}_b{b}"), |bch| {
+            bch.iter(|| black_box(symmetric_to_banded_f64(black_box(&a), n, b).unwrap()))
+        });
+        let (band, _q) = symmetric_to_banded_f64(&a, n, b).unwrap();
+        c.bench_function(&format!("banded_to_tridiag_f64_{n}x{n}_b{b}"), |bch| {
+            bch.iter(|| black_box(banded_to_tridiagonal_f64(black_box(&band), n, b)))
+        });
+    }
+}
+
 fn bench_symmetric_rank2k_update(c: &mut Criterion) {
     let (n, k) = (256usize, 32usize);
     let v: Vec<f64> = (0..n * k)
@@ -405,6 +432,7 @@ criterion_group!(
     bench_cholesky,
     bench_cholesky_solve,
     bench_eigh,
+    bench_eigvalsh_two_stage,
     bench_symmetric_rank2k_update,
     bench_lobpcg,
     bench_eig_general,
