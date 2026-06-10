@@ -10182,6 +10182,124 @@ pub fn symmetric_to_banded_f64(
     Ok((m, q))
 }
 
+/// Reduce a symmetric **banded** matrix (`band`, row-major `n*n`, half-bandwidth
+/// `b`, entries outside the band assumed zero) to symmetric **tridiagonal** form
+/// by Givens-rotation bulge chasing, returning the tridiagonal `(d, e)` in the
+/// convention `eigh_tql2_values_only` consumes: `d[i] == T[i][i]` and
+/// `e[i] == T[i][i-1]` for `i >= 1` with `e[0] == 0`.
+///
+/// This is **stage 2** of the two-stage symmetric eigensolver
+/// (frankentorch-5oqum). It is orthogonal-similarity preserving, so the
+/// eigenvalues of `(d, e)` equal those of `band` (and hence of the original
+/// matrix `band` was reduced from). Values-only: rotations are not accumulated
+/// into an eigenvector matrix.
+///
+/// Bandwidth is peeled one diagonal at a time (`bw` from `b` down to `2`). For
+/// each leading position the outermost band entry `A[i+bw][i]` is annihilated by
+/// a rotation in the plane `(i+bw-1, i+bw)`; the symmetric application spills a
+/// single bulge to `(i+2bw, i+bw-1)`, which is chased down the band by the same
+/// rule (`tr += bw`, `tc = tr-1`) until it runs off the matrix.
+///
+/// NOTE: the rotations are applied to the full `n`-length rows/columns for
+/// clarity and provable correctness; a band-packed apply (touching only the
+/// `O(b)` affected entries, giving the textbook `O(n^2 b)` cost) is the perf
+/// follow-up. Not yet wired into the live solver.
+#[allow(clippy::needless_range_loop)]
+pub fn banded_to_tridiagonal_f64(band: &[f64], n: usize, b: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut m = if band.len() >= n * n {
+        band[..n * n].to_vec()
+    } else {
+        let mut v = vec![0.0f64; n * n];
+        v[..band.len()].copy_from_slice(band);
+        v
+    };
+
+    // Apply the symmetric Givens rotation `M := G^T M G` in the plane `(p, q)`
+    // with `[row_p'; row_q'] = [[c, s]; [-s, c]] [row_p; row_q]` (and the same on
+    // columns), full-length for correctness.
+    let apply = |m: &mut [f64], p: usize, q: usize, c: f64, s: f64| {
+        for col in 0..n {
+            let mp = m[p * n + col];
+            let mq = m[q * n + col];
+            m[p * n + col] = c * mp + s * mq;
+            m[q * n + col] = -s * mp + c * mq;
+        }
+        for row in 0..n {
+            let mp = m[row * n + p];
+            let mq = m[row * n + q];
+            m[row * n + p] = c * mp + s * mq;
+            m[row * n + q] = -s * mp + c * mq;
+        }
+    };
+
+    if n > 2 {
+        for bw in (2..=b.min(n - 1)).rev() {
+            for i in 0..n.saturating_sub(bw) {
+                let mut tr = i + bw;
+                let mut tc = i;
+                while tr < n {
+                    let piv = m[(tr - 1) * n + tc];
+                    let kill = m[tr * n + tc];
+                    if kill == 0.0 {
+                        break;
+                    }
+                    let r = piv.hypot(kill);
+                    let c = piv / r;
+                    let s = kill / r;
+                    apply(&mut m, tr - 1, tr, c, s);
+                    // The annihilated entry is now exactly zero; pin it (the
+                    // rotation leaves a rounding-scale residue otherwise).
+                    m[tr * n + tc] = 0.0;
+                    m[tc * n + tr] = 0.0;
+                    tc = tr - 1;
+                    tr += bw;
+                }
+            }
+        }
+    }
+
+    let mut d = vec![0.0f64; n];
+    let mut e = vec![0.0f64; n];
+    for i in 0..n {
+        d[i] = m[i * n + i];
+    }
+    for i in 1..n {
+        e[i] = m[i * n + (i - 1)];
+    }
+    (d, e)
+}
+
+/// Eigenvalues of a real-symmetric matrix via the full two-stage path:
+/// stage-1 dense->banded ([`symmetric_to_banded_f64`]) at half-bandwidth `b`,
+/// stage-2 banded->tridiagonal bulge chase ([`banded_to_tridiagonal_f64`]),
+/// then the shared implicit-shift QL ([`eigh_tql2_values_only`]). Eigenvalues
+/// are returned sorted ascending.
+///
+/// This is the **end-to-end correctness vehicle** for the two-stage swing
+/// (frankentorch-5oqum): it must agree with the live [`eigvalsh_contiguous_f64`]
+/// to reduction tolerance (proven by `eigvalsh_two_stage_matches_live`). It is
+/// NOT yet faster — stage-1 is still the unblocked reference and the rotations
+/// are full-length — and is NOT wired into the live dispatch. Once stage-1 gains
+/// its BLAS-3 blocked panel and stage-2 a band-packed apply, this becomes the
+/// drop-in fast path (gated behind a same-worker Score>=2.0 + golden-SHA check).
+pub fn eigvalsh_two_stage_f64(a: &[f64], n: usize, b: usize) -> Result<Vec<f64>, KernelError> {
+    if a.len() < n * n {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![a.len()],
+            rhs: vec![n * n],
+        });
+    }
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let bw = b.clamp(1, n.saturating_sub(1).max(1));
+    let (band, _q) = symmetric_to_banded_f64(a, n, bw)?;
+    let (mut d, mut e) = banded_to_tridiagonal_f64(&band, n, bw);
+    eigh_tql2_values_only(n, &mut d, &mut e);
+    d.sort_by(f64::total_cmp);
+    Ok(d)
+}
+
 /// Compute eigendecomposition of a symmetric matrix using the Jacobi eigenvalue algorithm.
 ///
 /// Returns eigenvalues sorted ascending and corresponding orthonormal eigenvectors.
@@ -18419,6 +18537,78 @@ mod tests {
     fn symmetric_to_banded_rejects_short_input() {
         let err = super::symmetric_to_banded_f64(&[1.0, 2.0, 3.0], 3, 1);
         assert!(matches!(err, Err(super::KernelError::ShapeMismatch { .. })));
+    }
+
+    #[test]
+    fn eigvalsh_two_stage_matches_live() {
+        // The full two-stage path (dense -> banded -> tridiagonal -> QL) must
+        // reproduce the live eigenvalues to reduction tolerance across several
+        // (n, b) shapes, proving stage 2 (bulge chase) + the end-to-end wiring
+        // are orthogonal-similarity correct. frankentorch-5oqum.
+        for &(n, b) in &[
+            (10usize, 2usize),
+            (12, 3),
+            (16, 4),
+            (20, 5),
+            (24, 6),
+            (32, 8),
+        ] {
+            let mut a = vec![0.0f64; n * n];
+            for i in 0..n {
+                for j in 0..=i {
+                    let val = ((i * 11 + j * 5 + 3) % 23) as f64 * 0.41 - 4.3 + (i as f64) * 0.07
+                        - (j as f64) * 0.05;
+                    a[i * n + j] = val;
+                    a[j * n + i] = val;
+                }
+            }
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+            let live = super::eigvalsh_contiguous_f64(&a, &meta).unwrap();
+            let two = super::eigvalsh_two_stage_f64(&a, n, b).unwrap();
+            assert_eq!(live.len(), two.len(), "n={n} b={b}: length mismatch");
+            for (idx, (&l, &t)) in live.iter().zip(two.iter()).enumerate() {
+                let tol = 1e-7 + 1e-8 * l.abs();
+                assert!(
+                    (l - t).abs() <= tol,
+                    "n={n} b={b}: eigenvalue[{idx}] live={l} two-stage={t} (tol {tol})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn banded_to_tridiagonal_preserves_eigenvalues() {
+        // Stage 2 in isolation: feed an already-banded matrix (built by stage 1)
+        // and confirm the tridiagonal it produces has the same spectrum as the
+        // band, via the QL eigenvalue iteration.
+        let n = 18usize;
+        let b = 5usize;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let val = (((i + 2) * (j + 1)) % 19) as f64 * 0.3 - 2.0;
+                a[i * n + j] = val;
+                a[j * n + i] = val;
+            }
+        }
+        let (band, _q) = super::symmetric_to_banded_f64(&a, n, b).unwrap();
+
+        // Spectrum of the band directly (dense path).
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let band_spectrum = super::eigvalsh_contiguous_f64(&band, &meta).unwrap();
+
+        // Spectrum via stage-2 tridiagonalization + QL.
+        let (mut d, mut e) = super::banded_to_tridiagonal_f64(&band, n, b);
+        super::eigh_tql2_values_only(n, &mut d, &mut e);
+        d.sort_by(f64::total_cmp);
+
+        for (idx, (&bsp, &tsp)) in band_spectrum.iter().zip(d.iter()).enumerate() {
+            let tol = 1e-7 + 1e-8 * bsp.abs();
+            assert!(
+                (bsp - tsp).abs() <= tol,
+                "eigenvalue[{idx}] band={bsp} tridiag={tsp} (tol {tol})"
+            );
+        }
     }
 
     #[test]
