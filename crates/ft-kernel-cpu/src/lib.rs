@@ -10015,6 +10015,157 @@ pub fn cholesky_solve_contiguous_f64(
     Ok(x)
 }
 
+/// Native f32 Cholesky solve — two triangular solves (`L Y = B`, `L^T X = Y`)
+/// computed in `f32`. `factor` is the n×n lower (or upper, if `upper`) factor
+/// row-major (e.g. from [`cholesky_contiguous_f32`]); `b_data` is `[n]` or
+/// `[n, num_rhs]`. A triangular solve streams the factor, so f32 HALVES the
+/// memory traffic vs the f64-upcast path → ~2x, and matches torch's f32
+/// precision. b3o90.
+pub fn cholesky_solve_contiguous_f32(
+    factor: &[f32],
+    n: usize,
+    b_data: &[f32],
+    b_meta: &TensorMeta,
+    upper: bool,
+) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(b_data, b_meta)?;
+    let b_shape = b_meta.shape();
+    let (b_rows, num_rhs) = match b_shape.len() {
+        1 => (b_shape[0], 1usize),
+        2 => (b_shape[0], b_shape[1]),
+        _ => {
+            return Err(KernelError::ShapeMismatch {
+                lhs: vec![n],
+                rhs: b_shape.to_vec(),
+            });
+        }
+    };
+    if b_rows != n {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![n],
+            rhs: vec![b_rows],
+        });
+    }
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    let b_offset = b_meta.storage_offset();
+    let l = factor;
+    let mut x = vec![0.0f32; n * num_rhs];
+    for i in 0..n {
+        for rhs in 0..num_rhs {
+            x[i * num_rhs + rhs] = b_data[b_offset + i * num_rhs + rhs];
+        }
+    }
+
+    // Column-parallel path for large multi-RHS (mirror of the f64 gate / order).
+    let par_gate = num_rhs >= 8 && (n as u128) * (n as u128) * (num_rhs as u128) >= (1u128 << 29);
+    if par_gate {
+        let mut xt = vec![0.0f32; num_rhs * n];
+        for i in 0..n {
+            for rhs in 0..num_rhs {
+                xt[rhs * n + i] = x[i * num_rhs + rhs];
+            }
+        }
+        xt.par_chunks_mut(n).for_each(|col| {
+            if upper {
+                for i in 0..n {
+                    let mut acc = col[i];
+                    for k in 0..i {
+                        acc -= l[k * n + i] * col[k];
+                    }
+                    col[i] = acc / l[i * n + i];
+                }
+                for i in (0..n).rev() {
+                    let mut acc = col[i];
+                    let row = i * n;
+                    for k in (i + 1)..n {
+                        acc -= l[row + k] * col[k];
+                    }
+                    col[i] = acc / l[row + i];
+                }
+            } else {
+                for i in 0..n {
+                    let mut acc = col[i];
+                    let row = i * n;
+                    for k in 0..i {
+                        acc -= l[row + k] * col[k];
+                    }
+                    col[i] = acc / l[row + i];
+                }
+                for i in (0..n).rev() {
+                    let mut acc = col[i];
+                    for k in (i + 1)..n {
+                        acc -= l[k * n + i] * col[k];
+                    }
+                    col[i] = acc / l[i * n + i];
+                }
+            }
+        });
+        for i in 0..n {
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] = xt[rhs * n + i];
+            }
+        }
+        return Ok(x);
+    }
+
+    if upper {
+        for i in 0..n {
+            for k in 0..i {
+                let u_ki = l[k * n + i];
+                for rhs in 0..num_rhs {
+                    x[i * num_rhs + rhs] -= u_ki * x[k * num_rhs + rhs];
+                }
+            }
+            let diag = l[i * n + i];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] /= diag;
+            }
+        }
+        for i in (0..n).rev() {
+            for k in (i + 1)..n {
+                let u_ik = l[i * n + k];
+                for rhs in 0..num_rhs {
+                    x[i * num_rhs + rhs] -= u_ik * x[k * num_rhs + rhs];
+                }
+            }
+            let diag = l[i * n + i];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] /= diag;
+            }
+        }
+    } else {
+        for i in 0..n {
+            for k in 0..i {
+                let l_ik = l[i * n + k];
+                for rhs in 0..num_rhs {
+                    x[i * num_rhs + rhs] -= l_ik * x[k * num_rhs + rhs];
+                }
+            }
+            let diag = l[i * n + i];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] /= diag;
+            }
+        }
+        for i in (0..n).rev() {
+            for k in (i + 1)..n {
+                let l_ki = l[k * n + i];
+                for rhs in 0..num_rhs {
+                    x[i * num_rhs + rhs] -= l_ki * x[k * num_rhs + rhs];
+                }
+            }
+            let diag = l[i * n + i];
+            for rhs in 0..num_rhs {
+                x[i * num_rhs + rhs] /= diag;
+            }
+        }
+    }
+
+    Ok(x)
+}
+
 /// Matrix exponential via scaling-and-squaring with Padé [6/6] approximation.
 ///
 /// exp(A) is computed by:
@@ -24114,6 +24265,50 @@ mod tests {
                 (dot - a[i * n + j]).abs() < tol,
                 "(L·L^T)[{i},{j}]={dot} expected {} (tol {tol})",
                 a[i * n + j]
+            );
+        }
+    }
+
+    #[test]
+    fn cholesky_solve_f32_solves_spd_system() {
+        // Native f32 Cholesky solve (b3o90): factor an SPD A in f32, solve A X = I,
+        // and verify A·X ≈ I at f32 tolerance (X = A^-1).
+        let n = 96usize;
+        // A = B^T B + n*I (well-conditioned SPD), in f32.
+        let mut b = vec![0.0f32; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                b[i * n + j] = ((i * 31 + j * 17) % 97) as f32 * 0.013 - 0.5;
+            }
+        }
+        let mut a = vec![0.0f32; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut s = 0.0f32;
+                for k in 0..n {
+                    s += b[k * n + i] * b[k * n + j];
+                }
+                a[i * n + j] = s;
+            }
+            a[i * n + i] += n as f32;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+        let factor = super::cholesky_contiguous_f32(&a, &meta, false).expect("chol f32");
+        let mut id = vec![0.0f32; n * n];
+        for i in 0..n {
+            id[i * n + i] = 1.0;
+        }
+        let x = super::cholesky_solve_contiguous_f32(&factor, n, &id, &meta, false).expect("solve");
+        // A·X should reconstruct I.
+        for &(i, j) in &[(0usize, 0usize), (10, 10), (3, 50), (95, 95), (40, 7)] {
+            let mut dot = 0.0f32;
+            for k in 0..n {
+                dot += a[i * n + k] * x[k * n + j];
+            }
+            let want = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (dot - want).abs() < 1e-3,
+                "(A·A^-1)[{i},{j}]={dot} expected {want}"
             );
         }
     }

@@ -7,12 +7,13 @@ use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main
 use ft_core::{DType, Device, TensorMeta};
 use ft_kernel_cpu::{
     banded_to_tridiagonal_f64, cholesky_contiguous_f32, cholesky_contiguous_f64,
-    cholesky_solve_contiguous_f64, det_contiguous_f64, eig_contiguous_f64, eigh_contiguous_f64,
-    eigvals_contiguous_f64, eigvalsh_contiguous_f64, eigvalsh_two_stage_f64,
-    inv_tensor_contiguous_f64, lobpcg_contiguous_f64, lu_factor_contiguous_f64,
-    lu_solve_contiguous_f64, lu_solve_mixed_refine_contiguous_f64, matrix_exp_contiguous_f32,
-    matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64, svd_lowrank_contiguous_f64,
-    svdvals_contiguous_f64, symmetric_rank2k_lower_update_f64, symmetric_to_banded_f64,
+    cholesky_solve_contiguous_f32, cholesky_solve_contiguous_f64, det_contiguous_f64,
+    eig_contiguous_f64, eigh_contiguous_f64, eigvals_contiguous_f64, eigvalsh_contiguous_f64,
+    eigvalsh_two_stage_f64, inv_tensor_contiguous_f64, lobpcg_contiguous_f64,
+    lu_factor_contiguous_f64, lu_solve_contiguous_f64, lu_solve_mixed_refine_contiguous_f64,
+    matrix_exp_contiguous_f32, matrix_exp_contiguous_f64, qr_contiguous_f64, svd_contiguous_f64,
+    svd_lowrank_contiguous_f64, svdvals_contiguous_f64, symmetric_rank2k_lower_update_f64,
+    symmetric_to_banded_f64,
 };
 
 fn symmetric_rank2k_lower_update_scalar(n: usize, k: usize, v: &[f64], w: &[f64], a: &mut [f64]) {
@@ -442,6 +443,25 @@ fn bench_cholesky_solve(c: &mut Criterion) {
                 black_box(
                     cholesky_solve_contiguous_f64(&factor, black_box(&id), &id_meta, false)
                         .unwrap(),
+                )
+            })
+        });
+        // Native f32 path (frankentorch-b3o90): a triangular solve streams the
+        // factor, so f32 halves the memory traffic -> ~2x vs the f64-upcast path.
+        let factor32: Vec<f32> = factor.factor.iter().map(|&v| v as f32).collect();
+        let id32: Vec<f32> = id.iter().map(|&v| v as f32).collect();
+        let id_meta32 = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+        c.bench_function(&format!("cholesky_solve_f32_{n}x{n}_nrhs"), |bch| {
+            bch.iter(|| {
+                black_box(
+                    cholesky_solve_contiguous_f32(
+                        &factor32,
+                        n,
+                        black_box(&id32),
+                        &id_meta32,
+                        false,
+                    )
+                    .unwrap(),
                 )
             })
         });
