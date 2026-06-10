@@ -11620,116 +11620,122 @@ fn eig_impl(data: &[f64], meta: &TensorMeta, want_vectors: bool) -> Result<EigRe
         q_acc[i * n + i] = 1.0;
     }
 
-    // Step 1: Reduce to upper Hessenberg form H = Q^T A Q
-    // Using Householder reflections
-    for k in 0..(n.saturating_sub(2)) {
-        // Compute Householder vector for column k below diagonal
-        let mut col_norm_sq = 0.0;
-        for i in (k + 1)..n {
-            col_norm_sq += h[i * n + k] * h[i * n + k];
-        }
-        if col_norm_sq < 1e-30 {
-            continue;
-        }
-        let col_norm = col_norm_sq.sqrt();
-        let sign = if h[(k + 1) * n + k] >= 0.0 { 1.0 } else { -1.0 };
-        let v0 = h[(k + 1) * n + k] + sign * col_norm;
-        let mut v = vec![0.0f64; n - k - 1];
-        v[0] = v0;
-        for i in 1..(n - k - 1) {
-            v[i] = h[(k + 2 + i - 1) * n + k];
-        }
-        let v_norm_sq: f64 = v.iter().map(|x| x * x).sum();
-        if v_norm_sq < 1e-30 {
-            continue;
-        }
-
-        // Apply H = I - 2vv^T/|v|^2 to H from left and right. The reflector only
-        // spans rows/cols (k+1):, so each row update is independent and
-        // row-contiguous — parallelized BIT-EXACTLY (each row keeps the scalar
-        // path's per-row dot/scale expression and arithmetic order). The big
-        // Hessenberg O(n^3) phase of the non-symmetric eig (frankentorch-l9xod).
-        let m_sub = n - k - 1;
-        let par = n >= 64;
-
-        // Left multiply. For eigvals-only, columns before k are outside the
-        // active Hessenberg band and are never read by the QR phase; skipping
-        // them preserves the exact scalar arithmetic for every live slot. Full
-        // eig keeps the legacy full-column update so the vector path is unchanged.
-        // Precompute per-column scale = 2*(v^T H)[j]/|v|^2 from the UNMODIFIED H in
-        // the same i-order as the scalar dot (bit-exact), then row-parallel update:
-        // row (k+1+i) only needs scale[j] and v[i].
-        // Each column j's dot v^T H[(k+1):, j] is independent and reads the
-        // UNMODIFIED `h` (mutated only by the row update below), so this sweep —
-        // the serial O(n^2)-per-step companion to the already row-parallel update,
-        // i.e. the remaining Amdahl tail of the Hessenberg phase — parallelizes
-        // BIT-EXACTLY: each slot keeps the scalar path's i-order dot (l9xod).
-        let left_start = if want_vectors { 0 } else { k };
-        let mut left_scale = vec![0.0f64; n - left_start];
-        let col_scale = |(j_rel, slot): (usize, &mut f64)| {
-            let j = left_start + j_rel;
-            let mut dot = 0.0;
-            for i in 0..m_sub {
-                dot += v[i] * h[(k + 1 + i) * n + j];
+    // Step 1: Reduce to upper Hessenberg form H = Q^T A Q.
+    // Large n uses the compact-WY BLOCKED reduction (BLAS-3 GEMM trailing, ~2x;
+    // the Hessenberg dominates eigvals at ~74%); small n keeps the per-reflector
+    // scalar sweep (no panel/GEMM overhead, byte-identical). frankentorch-9y5bi.
+    if n >= 128 {
+        hessenberg_reduce_blocked(&mut h, &mut q_acc, n, want_vectors);
+    } else {
+        for k in 0..(n.saturating_sub(2)) {
+            // Compute Householder vector for column k below diagonal
+            let mut col_norm_sq = 0.0;
+            for i in (k + 1)..n {
+                col_norm_sq += h[i * n + k] * h[i * n + k];
             }
-            *slot = 2.0 * dot / v_norm_sq;
-        };
-        if par {
-            left_scale.par_iter_mut().enumerate().for_each(col_scale);
-        } else {
-            left_scale.iter_mut().enumerate().for_each(col_scale);
-        }
-        {
-            let rows = &mut h[(k + 1) * n..];
-            let upd = |(i, row): (usize, &mut [f64])| {
-                let vi = v[i];
-                for j in left_start..n {
-                    row[j] -= left_scale[j - left_start] * vi;
-                }
-            };
-            if par {
-                rows.par_chunks_mut(n).enumerate().for_each(upd);
-            } else {
-                rows.chunks_mut(n).enumerate().for_each(upd);
+            if col_norm_sq < 1e-30 {
+                continue;
             }
-        }
+            let col_norm = col_norm_sq.sqrt();
+            let sign = if h[(k + 1) * n + k] >= 0.0 { 1.0 } else { -1.0 };
+            let v0 = h[(k + 1) * n + k] + sign * col_norm;
+            let mut v = vec![0.0f64; n - k - 1];
+            v[0] = v0;
+            for i in 1..(n - k - 1) {
+                v[i] = h[(k + 2 + i - 1) * n + k];
+            }
+            let v_norm_sq: f64 = v.iter().map(|x| x * x).sum();
+            if v_norm_sq < 1e-30 {
+                continue;
+            }
 
-        // Right multiply: H[:, (k+1):] -= 2 * (H[:, (k+1):] @ v) @ v^T / |v|^2.
-        {
-            let upd = |row: &mut [f64]| {
+            // Apply H = I - 2vv^T/|v|^2 to H from left and right. The reflector only
+            // spans rows/cols (k+1):, so each row update is independent and
+            // row-contiguous — parallelized BIT-EXACTLY (each row keeps the scalar
+            // path's per-row dot/scale expression and arithmetic order). The big
+            // Hessenberg O(n^3) phase of the non-symmetric eig (frankentorch-l9xod).
+            let m_sub = n - k - 1;
+            let par = n >= 64;
+
+            // Left multiply. For eigvals-only, columns before k are outside the
+            // active Hessenberg band and are never read by the QR phase; skipping
+            // them preserves the exact scalar arithmetic for every live slot. Full
+            // eig keeps the legacy full-column update so the vector path is unchanged.
+            // Precompute per-column scale = 2*(v^T H)[j]/|v|^2 from the UNMODIFIED H in
+            // the same i-order as the scalar dot (bit-exact), then row-parallel update:
+            // row (k+1+i) only needs scale[j] and v[i].
+            // Each column j's dot v^T H[(k+1):, j] is independent and reads the
+            // UNMODIFIED `h` (mutated only by the row update below), so this sweep —
+            // the serial O(n^2)-per-step companion to the already row-parallel update,
+            // i.e. the remaining Amdahl tail of the Hessenberg phase — parallelizes
+            // BIT-EXACTLY: each slot keeps the scalar path's i-order dot (l9xod).
+            let left_start = if want_vectors { 0 } else { k };
+            let mut left_scale = vec![0.0f64; n - left_start];
+            let col_scale = |(j_rel, slot): (usize, &mut f64)| {
+                let j = left_start + j_rel;
                 let mut dot = 0.0;
-                for j in 0..m_sub {
-                    dot += row[k + 1 + j] * v[j];
+                for i in 0..m_sub {
+                    dot += v[i] * h[(k + 1 + i) * n + j];
                 }
-                let scale = 2.0 * dot / v_norm_sq;
-                for j in 0..m_sub {
-                    row[k + 1 + j] -= scale * v[j];
-                }
+                *slot = 2.0 * dot / v_norm_sq;
             };
             if par {
-                h.par_chunks_mut(n).for_each(upd);
+                left_scale.par_iter_mut().enumerate().for_each(col_scale);
             } else {
-                h.chunks_mut(n).for_each(upd);
+                left_scale.iter_mut().enumerate().for_each(col_scale);
             }
-        }
+            {
+                let rows = &mut h[(k + 1) * n..];
+                let upd = |(i, row): (usize, &mut [f64])| {
+                    let vi = v[i];
+                    for j in left_start..n {
+                        row[j] -= left_scale[j - left_start] * vi;
+                    }
+                };
+                if par {
+                    rows.par_chunks_mut(n).enumerate().for_each(upd);
+                } else {
+                    rows.chunks_mut(n).enumerate().for_each(upd);
+                }
+            }
 
-        // Accumulate Q: Q[:, (k+1):] -= 2 * (Q[:, (k+1):] @ v) @ v^T / |v|^2.
-        // Pure eigenvector work — skip when only eigenvalues are requested.
-        if want_vectors {
-            let upd = |row: &mut [f64]| {
-                let mut dot = 0.0;
-                for j in 0..m_sub {
-                    dot += row[k + 1 + j] * v[j];
+            // Right multiply: H[:, (k+1):] -= 2 * (H[:, (k+1):] @ v) @ v^T / |v|^2.
+            {
+                let upd = |row: &mut [f64]| {
+                    let mut dot = 0.0;
+                    for j in 0..m_sub {
+                        dot += row[k + 1 + j] * v[j];
+                    }
+                    let scale = 2.0 * dot / v_norm_sq;
+                    for j in 0..m_sub {
+                        row[k + 1 + j] -= scale * v[j];
+                    }
+                };
+                if par {
+                    h.par_chunks_mut(n).for_each(upd);
+                } else {
+                    h.chunks_mut(n).for_each(upd);
                 }
-                let scale = 2.0 * dot / v_norm_sq;
-                for j in 0..m_sub {
-                    row[k + 1 + j] -= scale * v[j];
+            }
+
+            // Accumulate Q: Q[:, (k+1):] -= 2 * (Q[:, (k+1):] @ v) @ v^T / |v|^2.
+            // Pure eigenvector work — skip when only eigenvalues are requested.
+            if want_vectors {
+                let upd = |row: &mut [f64]| {
+                    let mut dot = 0.0;
+                    for j in 0..m_sub {
+                        dot += row[k + 1 + j] * v[j];
+                    }
+                    let scale = 2.0 * dot / v_norm_sq;
+                    for j in 0..m_sub {
+                        row[k + 1 + j] -= scale * v[j];
+                    }
+                };
+                if par {
+                    q_acc.par_chunks_mut(n).for_each(upd);
+                } else {
+                    q_acc.chunks_mut(n).for_each(upd);
                 }
-            };
-            if par {
-                q_acc.par_chunks_mut(n).for_each(upd);
-            } else {
-                q_acc.chunks_mut(n).for_each(upd);
             }
         }
     }
@@ -13815,6 +13821,187 @@ pub struct QrResult {
 /// - R: upper triangular matrix (m x n) for `reduced=false`, or (k x n) for `reduced=true`
 ///
 /// The matrix must be 2-D.
+/// Compact-WY BLOCKED upper-Hessenberg reduction (LAPACK `dgehrd`/`dlahr2` shape)
+/// of `h` (n×n, row-major), accumulating the orthogonal Q into `q` (starts as I).
+/// Replaces the per-reflector BLAS-2 two-sided sweep — which dominates the
+/// non-symmetric eigensolver (Hessenberg ~= 74% of eigvals) — with NB-wide panels
+/// whose trailing two-sided update `H := PᵀH P` is four cache-blocked parallel
+/// `gemm::dgemm` groups (BLAS-3). The key to a tractable two-sided block: keep the
+/// pre-panel matrix `H0` FIXED during a panel and form each column on demand via
+/// `Y = H0·V` matvecs against the fixed `H0`, sidestepping the trailing-state
+/// circular dependency. Reassociates panel-by-panel, so it matches the unblocked
+/// sweep only to TOLERANCE — validated by reconstruction (Q·H·Qᵀ = A) +
+/// orthonormality, not bit-for-bit. frankentorch-9y5bi.
+fn hessenberg_reduce_blocked(h: &mut [f64], q: &mut [f64], n: usize, accumulate_q: bool) {
+    if n <= 2 {
+        return;
+    }
+    const NB: usize = 32;
+    let kmax = n - 2; // columns 0..kmax-1 get a reflector
+    let mut ib = 0;
+    while ib < kmax {
+        let pe = (ib + NB).min(kmax);
+        let nb = pe - ib; // panel width (active reflectors)
+        // H0 = the current matrix, FIXED for the duration of this panel.
+        let h0 = h.to_vec();
+        let mut vmat = vec![0.0f64; n * nb]; // V[:, c] = reflector c (full length n)
+        let mut ymat = vec![0.0f64; n * nb]; // Y[:, c] = H0 · V[:, c]
+        let mut tmat = vec![0.0f64; nb * nb]; // compact-WY T (upper triangular)
+        for c in 0..nb {
+            let jcol = ib + c;
+            // --- col_c = Pᵀ_c (H0[:,jcol] - Y_c·(T_c·r)),  r = row(jcol) of V_c.
+            let mut s = vec![0.0f64; c]; // s = T_c · r  (c-vector)
+            for i in 0..c {
+                let mut acc = 0.0;
+                for l in i..c {
+                    // T upper-tri: T[i][l]==0 for l<i; r[l] = V[jcol][l]
+                    acc += tmat[i * nb + l] * vmat[jcol * nb + l];
+                }
+                s[i] = acc;
+            }
+            let mut col = vec![0.0f64; n];
+            for rr in 0..n {
+                let mut acc = h0[rr * n + jcol];
+                for l in 0..c {
+                    acc -= ymat[rr * nb + l] * s[l];
+                }
+                col[rr] = acc; // col = w (before the left Pᵀ_c)
+            }
+            // p = V_cᵀ w  (c-vector); q_lin = T_cᵀ p; col -= V_c · q_lin.
+            let mut pvec = vec![0.0f64; c];
+            for l in 0..c {
+                let mut acc = 0.0;
+                for rr in 0..n {
+                    acc += vmat[rr * nb + l] * col[rr];
+                }
+                pvec[l] = acc;
+            }
+            let mut qlin = vec![0.0f64; c];
+            for i in 0..c {
+                let mut acc = 0.0;
+                for l in 0..=i {
+                    // qlin = Tᵀ p; Tᵀ is LOWER-tri so (Tᵀ)[i][l] = T[l][i] ≠ 0 for l<=i
+                    acc += tmat[l * nb + i] * pvec[l];
+                }
+                qlin[i] = acc;
+            }
+            for rr in 0..n {
+                let mut acc = col[rr];
+                for l in 0..c {
+                    acc -= vmat[rr * nb + l] * qlin[l];
+                }
+                col[rr] = acc;
+            }
+            // --- Form the Householder reflector zeroing col[jcol+2:] (rows below
+            //     subdiagonal), matching the existing eig convention exactly.
+            let mut cn2 = 0.0;
+            for &x in &col[jcol + 1..n] {
+                cn2 += x * x;
+            }
+            if cn2 < 1e-30 {
+                continue; // tau[c]=0 (T col stays 0, V col stays 0)
+            }
+            let col_norm = cn2.sqrt();
+            let sign = if col[jcol + 1] >= 0.0 { 1.0 } else { -1.0 };
+            vmat[(jcol + 1) * nb + c] = col[jcol + 1] + sign * col_norm;
+            for rr in (jcol + 2)..n {
+                vmat[rr * nb + c] = col[rr];
+            }
+            let mut vn2 = 0.0;
+            for rr in (jcol + 1)..n {
+                let x = vmat[rr * nb + c];
+                vn2 += x * x;
+            }
+            if vn2 < 1e-30 {
+                for rr in (jcol + 1)..n {
+                    vmat[rr * nb + c] = 0.0;
+                }
+                continue;
+            }
+            let tau_c = 2.0 / vn2;
+            // --- Y[:, c] = H0 · v_c  (one O(n^2) matvec against the FIXED H0).
+            for rr in 0..n {
+                let mut acc = 0.0;
+                for jj in (jcol + 1)..n {
+                    acc += h0[rr * n + jj] * vmat[jj * nb + c];
+                }
+                ymat[rr * nb + c] = acc;
+            }
+            // --- T column c (dlarft forward): T[c][c]=tau; T[0:c,c]=-tau (Vᵀ v_c);
+            //     then T[0:c,c] = T_c · T[0:c,c].
+            tmat[c * nb + c] = tau_c;
+            let mut tcol = vec![0.0f64; c];
+            for i in 0..c {
+                let mut dot = 0.0;
+                for rr in (jcol + 1)..n {
+                    dot += vmat[rr * nb + i] * vmat[rr * nb + c];
+                }
+                tcol[i] = -tau_c * dot;
+            }
+            for i in 0..c {
+                let mut acc = 0.0;
+                for l in i..c {
+                    acc += tmat[i * nb + l] * tcol[l];
+                }
+                tmat[i * nb + c] = acc;
+            }
+        }
+        // --- Trailing two-sided update: H := PᵀH0 P = (I - V Tᵀ Vᵀ) H0 (I - V T Vᵀ).
+        let mut vt = vec![0.0f64; nb * n];
+        for rr in 0..n {
+            for c in 0..nb {
+                vt[c * n + rr] = vmat[rr * nb + c];
+            }
+        }
+        let mut tt = vec![0.0f64; nb * nb];
+        for i in 0..nb {
+            for j in 0..nb {
+                tt[i * nb + j] = tmat[j * nb + i];
+            }
+        }
+        // H1 = H0 - V (Tᵀ (Vᵀ H0))
+        let mut w = vec![0.0f64; nb * n];
+        gemm::dgemm(nb, n, n, &vt, &h0, &mut w); // Vᵀ H0
+        let mut ttw = vec![0.0f64; nb * n];
+        gemm::dgemm(nb, nb, n, &tt, &w, &mut ttw); // Tᵀ (Vᵀ H0)
+        let mut vttw = vec![0.0f64; n * n];
+        gemm::dgemm(n, nb, n, &vmat, &ttw, &mut vttw); // V (...)
+        for x in 0..n * n {
+            h[x] = h0[x] - vttw[x];
+        }
+        // H = H1 - (H1 V) T Vᵀ
+        let mut z = vec![0.0f64; n * nb];
+        gemm::dgemm(n, n, nb, h, &vmat, &mut z); // H1 V
+        let mut zt = vec![0.0f64; n * nb];
+        gemm::dgemm(n, nb, nb, &z, &tmat, &mut zt); // (H1 V) T
+        let mut ztvt = vec![0.0f64; n * n];
+        gemm::dgemm_bt(n, nb, n, &zt, &vmat, &mut ztvt); // (...) Vᵀ
+        for x in 0..n * n {
+            h[x] -= ztvt[x];
+        }
+        // --- Q := Q · (I - V T Vᵀ) = Q - ((Q V) T) Vᵀ.  (eigenvector work only)
+        if accumulate_q {
+            let mut qv = vec![0.0f64; n * nb];
+            gemm::dgemm(n, n, nb, q, &vmat, &mut qv);
+            let mut qvt = vec![0.0f64; n * nb];
+            gemm::dgemm(n, nb, nb, &qv, &tmat, &mut qvt);
+            let mut qupd = vec![0.0f64; n * n];
+            gemm::dgemm_bt(n, nb, n, &qvt, &vmat, &mut qupd);
+            for x in 0..n * n {
+                q[x] -= qupd[x];
+            }
+        }
+        ib = pe;
+    }
+    // Clean the strict-below-subdiagonal of the reduced columns (the GEMM trailing
+    // update leaves ~round-off there; the QR phase expects a clean Hessenberg band).
+    for j in 0..kmax {
+        for i in (j + 2)..n {
+            h[i * n + j] = 0.0;
+        }
+    }
+}
+
 /// Compact-WY BLOCKED Householder QR (LAPACK `dgeqrf`+`dorgqr` shape). Replaces
 /// the per-reflector BLAS-2 sweep — whose trailing R/Q updates are memory-bound
 /// (~60x off LAPACK) — with NB-wide panels whose block reflector `I - V T Vᵀ` is
@@ -25010,6 +25197,62 @@ mod tests {
             assert!(
                 (dot - expected).abs() < 1e-9,
                 "Q^T Q[{c1},{c2}]={dot} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn hessenberg_blocked_reconstructs_and_is_hessenberg() {
+        // n=80 > NB=32 exercises multiple panels of the blocked Hessenberg reduction.
+        // Proof obligations at tolerance: H upper-Hessenberg, Q orthonormal, and
+        // Q·H·Qᵀ = A (similarity). frankentorch-9y5bi.
+        let n = 80usize;
+        let mut a = vec![0.0f64; n * n];
+        let mut state = 0x1234_5678_9abc_def0u64;
+        for x in a.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *x = (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
+        }
+        let mut h = a.clone();
+        let mut q = vec![0.0f64; n * n];
+        for i in 0..n {
+            q[i * n + i] = 1.0;
+        }
+        super::hessenberg_reduce_blocked(&mut h, &mut q, n, true);
+        // H is upper-Hessenberg (strictly below subdiagonal == 0).
+        for i in 0..n {
+            for j in 0..n {
+                if i > j + 1 {
+                    assert_eq!(h[i * n + j], 0.0, "H not Hessenberg at ({i},{j})");
+                }
+            }
+        }
+        // Q orthonormal: QᵀQ = I on a sample.
+        for &(c1, c2) in &[(0usize, 0usize), (5, 5), (3, 40), (79, 78)] {
+            let mut dot = 0.0;
+            for t in 0..n {
+                dot += q[t * n + c1] * q[t * n + c2];
+            }
+            let want = if c1 == c2 { 1.0 } else { 0.0 };
+            assert!((dot - want).abs() < 1e-9, "QᵀQ[{c1},{c2}]={dot} vs {want}");
+        }
+        // Q·H·Qᵀ = A on a sample. (QH)[i][k] = sum_t Q[i][t] H[t][k];
+        // then (QH·Qᵀ)[i][j] = sum_k (QH)[i][k] Q[j][k].
+        for &(i, j) in &[(0usize, 0usize), (10, 40), (79, 1), (33, 33), (50, 7)] {
+            let mut acc = 0.0;
+            for k in 0..n {
+                let mut qh = 0.0;
+                for t in 0..n {
+                    qh += q[i * n + t] * h[t * n + k];
+                }
+                acc += qh * q[j * n + k];
+            }
+            assert!(
+                (acc - a[i * n + j]).abs() < 1e-9,
+                "(QHQᵀ)[{i},{j}]={acc} vs {}",
+                a[i * n + j]
             );
         }
     }
