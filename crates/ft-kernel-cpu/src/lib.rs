@@ -10054,6 +10054,134 @@ pub fn symmetric_rank2k_lower_update_f64(
     Ok(())
 }
 
+/// Reduce a real-symmetric `n x n` matrix (row-major, **full** storage; the
+/// caller must pass an already-symmetric matrix) to symmetric **banded** form
+/// with half-bandwidth `b` (`b` sub- and super-diagonals) via a sequence of
+/// two-sided Householder reflections `A := H A H`. Returns `(band, q)`:
+///   * `band` — the resulting symmetric banded matrix (`n*n`; every entry with
+///     `|row - col| > b` is exactly `0.0`);
+///   * `q` — the accumulated orthogonal transform (`n*n`, row-major) such that
+///     `q @ band @ q^T == a` to rounding and `q^T @ q == I`.
+///
+/// This is **stage 1** of the two-stage full -> banded -> tridiagonal symmetric
+/// eigensolver (frankentorch-5oqum). It is an unblocked *reference* reduction:
+/// correct and reconstruction-tested, but the BLAS-3 blocked panel (grouping
+/// `b` reflectors into one rank-2b `symmetric_rank2k_lower_update_f64` GEMM
+/// trailing update) and stage 2 (bulge-chasing band -> tridiagonal) land
+/// separately. It is NOT yet wired into `eigh`/`eigvalsh`, so the live
+/// eigensolver arithmetic — and the autograd that depends on it — is unchanged.
+///
+/// With `b == 1` the output `band` is already symmetric tridiagonal, which is
+/// exactly the form `eigh_tql2_*` consumes; that case is exercised by the unit
+/// test alongside wider bands.
+#[allow(clippy::needless_range_loop)]
+pub fn symmetric_to_banded_f64(
+    a: &[f64],
+    n: usize,
+    b: usize,
+) -> Result<(Vec<f64>, Vec<f64>), KernelError> {
+    if a.len() < n * n {
+        return Err(KernelError::ShapeMismatch {
+            lhs: vec![a.len()],
+            rhs: vec![n * n],
+        });
+    }
+    let mut m = a[..n * n].to_vec();
+    let mut q = vec![0.0f64; n * n];
+    for i in 0..n {
+        q[i * n + i] = 1.0;
+    }
+    // `b == 0` is not a meaningful band reduction (it would request a diagonal
+    // matrix from a dense one); return the inputs unchanged with `q == I`.
+    if n == 0 || b == 0 {
+        return Ok((m, q));
+    }
+
+    // Reflector support buffer, reused across columns (length <= n).
+    let mut v = vec![0.0f64; n];
+
+    // Column `k` has every entry below row `k + b` annihilated by one reflector
+    // acting on rows `[k + b, n)`.
+    let last = n.saturating_sub(b + 1);
+    for k in 0..last {
+        let r0 = k + b;
+        let mlen = n - r0;
+        if mlen <= 1 {
+            continue;
+        }
+        // x = m[r0.., k]; build the Householder reflector that maps x -> beta e_1
+        // (LAPACK `dlarfg` convention: v[0] == 1, H = I - tau v v^T).
+        let mut xnorm_sq = 0.0;
+        for t in 0..mlen {
+            let val = m[(r0 + t) * n + k];
+            v[t] = val;
+            xnorm_sq += val * val;
+        }
+        let xnorm = xnorm_sq.sqrt();
+        if xnorm == 0.0 {
+            continue;
+        }
+        let alpha = v[0];
+        let beta = if alpha >= 0.0 { -xnorm } else { xnorm };
+        let tau = (beta - alpha) / beta;
+        let inv = 1.0 / (alpha - beta);
+        v[0] = 1.0;
+        for t in 1..mlen {
+            v[t] *= inv;
+        }
+
+        // Left apply: m[r0.., :] := (I - tau v v^T) m[r0.., :].
+        for c in 0..n {
+            let mut w = 0.0;
+            for t in 0..mlen {
+                w += v[t] * m[(r0 + t) * n + c];
+            }
+            let tw = tau * w;
+            for t in 0..mlen {
+                m[(r0 + t) * n + c] -= v[t] * tw;
+            }
+        }
+        // Right apply: m[:, r0..] := m[:, r0..] (I - tau v v^T).
+        for r in 0..n {
+            let base = r * n + r0;
+            let mut w = 0.0;
+            for t in 0..mlen {
+                w += m[base + t] * v[t];
+            }
+            let tw = tau * w;
+            for t in 0..mlen {
+                m[base + t] -= tw * v[t];
+            }
+        }
+        // Accumulate Q := Q (I - tau v v^T) on columns [r0, n), so that the
+        // running product is Q = H_0 H_1 ... and Q band Q^T == a.
+        for r in 0..n {
+            let base = r * n + r0;
+            let mut w = 0.0;
+            for t in 0..mlen {
+                w += q[base + t] * v[t];
+            }
+            let tw = tau * w;
+            for t in 0..mlen {
+                q[base + t] -= tw * v[t];
+            }
+        }
+    }
+
+    // The reflections drive out-of-band entries to ~0; pin them to exact zero so
+    // the band structure callers/tests rely on is exact (the discarded values
+    // are at rounding scale and stay within reconstruction tolerance).
+    for r in 0..n {
+        for c in 0..n {
+            if c.abs_diff(r) > b {
+                m[r * n + c] = 0.0;
+            }
+        }
+    }
+
+    Ok((m, q))
+}
+
 /// Compute eigendecomposition of a symmetric matrix using the Jacobi eigenvalue algorithm.
 ///
 /// Returns eigenvalues sorted ascending and corresponding orthonormal eigenvectors.
@@ -18199,6 +18327,98 @@ mod tests {
                 "non-finite fallback rank2k path diverged at {idx}: got {g:?}, expected {e:?}"
             );
         }
+    }
+
+    #[test]
+    fn symmetric_to_banded_reconstructs_and_is_banded() {
+        // Stage-1 of the two-stage symmetric eigensolver (frankentorch-5oqum):
+        // the unblocked full -> banded Householder reduction must (1) produce an
+        // exactly banded, symmetric `band`, (2) accumulate an orthogonal `q`,
+        // and (3) reconstruct the input via `q @ band @ q^T`. Exercise several
+        // half-bandwidths including `b == 1` (the tridiagonal case the QL step
+        // ultimately consumes).
+        let n = 13usize;
+        // Deterministic symmetric input (no RNG), reasonably general.
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let val = ((i * 7 + j * 3 + 1) % 17) as f64 * 0.37 - 2.1
+                    + (i as f64) * (j as f64) * 0.013;
+                a[i * n + j] = val;
+                a[j * n + i] = val;
+            }
+        }
+
+        for &b in &[1usize, 2, 4, 7] {
+            let (band, q) = super::symmetric_to_banded_f64(&a, n, b).unwrap();
+
+            // (1a) exactly banded.
+            for i in 0..n {
+                for j in 0..n {
+                    if i.abs_diff(j) > b {
+                        assert_eq!(
+                            band[i * n + j],
+                            0.0,
+                            "b={b}: out-of-band entry ({i},{j}) not zeroed"
+                        );
+                    }
+                }
+            }
+            // (1b) symmetric.
+            for i in 0..n {
+                for j in 0..n {
+                    assert!(
+                        (band[i * n + j] - band[j * n + i]).abs() < 1e-12,
+                        "b={b}: band not symmetric at ({i},{j})"
+                    );
+                }
+            }
+            // (2) q orthogonal: q^T q == I.
+            for i in 0..n {
+                for j in 0..n {
+                    let mut s = 0.0;
+                    for r in 0..n {
+                        s += q[r * n + i] * q[r * n + j];
+                    }
+                    let expect = if i == j { 1.0 } else { 0.0 };
+                    assert!(
+                        (s - expect).abs() < 1e-9,
+                        "b={b}: q not orthogonal at ({i},{j}): {s}"
+                    );
+                }
+            }
+            // (3) reconstruction: q @ band @ q^T == a.
+            // bt = band @ q^T : bt[p,j] = sum_k band[p,k] q[j,k]
+            let mut bt = vec![0.0f64; n * n];
+            for p in 0..n {
+                for j in 0..n {
+                    let mut s = 0.0;
+                    for k in 0..n {
+                        s += band[p * n + k] * q[j * n + k];
+                    }
+                    bt[p * n + j] = s;
+                }
+            }
+            for i in 0..n {
+                for j in 0..n {
+                    let mut s = 0.0;
+                    for p in 0..n {
+                        s += q[i * n + p] * bt[p * n + j];
+                    }
+                    assert!(
+                        (s - a[i * n + j]).abs() < 1e-9,
+                        "b={b}: reconstruction mismatch at ({i},{j}): {s} vs {}",
+                        a[i * n + j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn symmetric_to_banded_rejects_short_input() {
+        let err = super::symmetric_to_banded_f64(&[1.0, 2.0, 3.0], 3, 1);
+        assert!(matches!(err, Err(super::KernelError::ShapeMismatch { .. })));
     }
 
     #[test]
