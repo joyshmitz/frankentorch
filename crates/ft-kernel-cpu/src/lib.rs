@@ -13815,6 +13815,160 @@ pub struct QrResult {
 /// - R: upper triangular matrix (m x n) for `reduced=false`, or (k x n) for `reduced=true`
 ///
 /// The matrix must be 2-D.
+/// Compact-WY BLOCKED Householder QR (LAPACK `dgeqrf`+`dorgqr` shape). Replaces
+/// the per-reflector BLAS-2 sweep — whose trailing R/Q updates are memory-bound
+/// (~60x off LAPACK) — with NB-wide panels whose block reflector `I - V T Vᵀ` is
+/// applied to the trailing R columns and to Q through the cache-blocked parallel
+/// `gemm::dgemm` (BLAS-3). Reassociates the trailing sums panel-by-panel (like the
+/// blocked LU/Cholesky), so it matches the unblocked sweep only to TOLERANCE —
+/// validated by reconstruction (A = Q·R) + orthonormality, not bit-for-bit.
+/// `r_mat` starts as A (m×n) and becomes R; `q_mat` starts as I (m×m) and becomes
+/// Q. frankentorch-ct2yy.
+fn qr_householder_panel_blocked(
+    r_mat: &mut [f64],
+    q_mat: &mut [f64],
+    m: usize,
+    n: usize,
+    k: usize,
+) {
+    const NB: usize = 32;
+    let tiny = f64::EPSILON * 1e6;
+    let mut p = 0;
+    while p < k {
+        let pe = (p + NB).min(k);
+        let nb = pe - p;
+
+        // --- Panel factorization: build V (m×nb) and tau, applying each reflector
+        //     only to the remaining PANEL columns (the trailing [pe,n) is deferred).
+        let mut vmat = vec![0.0f64; m * nb];
+        let mut tau = vec![0.0f64; nb];
+        for c in 0..nb {
+            let j = p + c;
+            let col_len = m - j;
+            let mut nrm2 = 0.0;
+            for t in 0..col_len {
+                let x = r_mat[(j + t) * n + j];
+                nrm2 += x * x;
+            }
+            let norm_v = nrm2.sqrt();
+            if norm_v < tiny {
+                continue;
+            }
+            let v0 = r_mat[j * n + j];
+            let sign = if v0 >= 0.0 { 1.0 } else { -1.0 };
+            vmat[j * nb + c] = v0 + sign * norm_v;
+            for t in 1..col_len {
+                vmat[(j + t) * nb + c] = r_mat[(j + t) * n + j];
+            }
+            let mut nv2 = 0.0;
+            for t in 0..col_len {
+                let x = vmat[(j + t) * nb + c];
+                nv2 += x * x;
+            }
+            if nv2 < tiny {
+                for t in 0..col_len {
+                    vmat[(j + t) * nb + c] = 0.0;
+                }
+                continue;
+            }
+            let tau_c = 2.0 / nv2;
+            tau[c] = tau_c;
+            // Reflected column j: diagonal = -sign*norm, below-diagonal = 0.
+            r_mat[j * n + j] = -sign * norm_v;
+            for t in 1..col_len {
+                r_mat[(j + t) * n + j] = 0.0;
+            }
+            for col in (j + 1)..pe {
+                let mut dot = 0.0;
+                for t in 0..col_len {
+                    dot += vmat[(j + t) * nb + c] * r_mat[(j + t) * n + col];
+                }
+                let factor = tau_c * dot;
+                for t in 0..col_len {
+                    r_mat[(j + t) * n + col] -= factor * vmat[(j + t) * nb + c];
+                }
+            }
+        }
+
+        // --- Compact-WY T (nb×nb upper triangular, LAPACK dlarft forward) so that
+        //     H_p H_{p+1} ... H_{pe-1} = I - V T Vᵀ.
+        let mut tmat = vec![0.0f64; nb * nb];
+        for c in 0..nb {
+            if tau[c] == 0.0 {
+                continue;
+            }
+            tmat[c * nb + c] = tau[c];
+            for i in 0..c {
+                let mut dot = 0.0;
+                for row in 0..m {
+                    dot += vmat[row * nb + i] * vmat[row * nb + c];
+                }
+                tmat[i * nb + c] = -tau[c] * dot;
+            }
+            let mut newcol = vec![0.0f64; c];
+            for i in 0..c {
+                let mut s = 0.0;
+                for l in i..c {
+                    s += tmat[i * nb + l] * tmat[l * nb + c];
+                }
+                newcol[i] = s;
+            }
+            for i in 0..c {
+                tmat[i * nb + c] = newcol[i];
+            }
+        }
+
+        // --- Apply block reflector to the trailing R[:, pe:n]: R -= V (Tᵀ (Vᵀ R)).
+        let nt = n - pe;
+        if nt > 0 {
+            let mut rt = vec![0.0f64; m * nt];
+            for i in 0..m {
+                let base = i * n + pe;
+                let dst = i * nt;
+                rt[dst..dst + nt].copy_from_slice(&r_mat[base..base + nt]);
+            }
+            let mut vt = vec![0.0f64; nb * m];
+            for row in 0..m {
+                for c in 0..nb {
+                    vt[c * m + row] = vmat[row * nb + c];
+                }
+            }
+            let mut w = vec![0.0f64; nb * nt];
+            gemm::dgemm(nb, m, nt, &vt, &rt, &mut w); // Vᵀ R
+            let mut tt = vec![0.0f64; nb * nb];
+            for i in 0..nb {
+                for jj in 0..nb {
+                    tt[i * nb + jj] = tmat[jj * nb + i];
+                }
+            }
+            let mut w2 = vec![0.0f64; nb * nt];
+            gemm::dgemm(nb, nb, nt, &tt, &w, &mut w2); // Tᵀ (Vᵀ R)
+            let mut upd = vec![0.0f64; m * nt];
+            gemm::dgemm(m, nb, nt, &vmat, &w2, &mut upd); // V (...)
+            for i in 0..m {
+                let base = i * n + pe;
+                let src = i * nt;
+                for t in 0..nt {
+                    r_mat[base + t] -= upd[src + t];
+                }
+            }
+        }
+
+        // --- Accumulate Q := Q · (I - V T Vᵀ) = Q - ((Q V) T) Vᵀ.
+        let mut qv = vec![0.0f64; m * nb];
+        gemm::dgemm(m, m, nb, q_mat, &vmat, &mut qv); // Q V
+        let mut qvt = vec![0.0f64; m * nb];
+        gemm::dgemm(m, nb, nb, &qv, &tmat, &mut qvt); // (Q V) T
+        let mut qupd = vec![0.0f64; m * m];
+        gemm::dgemm_bt(m, nb, m, &qvt, &vmat, &mut qupd); // ((Q V) T) Vᵀ
+        for x in 0..m * m {
+            q_mat[x] -= qupd[x];
+        }
+
+        p = pe;
+    }
+}
+
 pub fn qr_contiguous_f64(
     data: &[f64],
     meta: &TensorMeta,
@@ -13851,6 +14005,39 @@ pub fn qr_contiguous_f64(
     let mut q_mat = vec![0.0; m * m];
     for i in 0..m {
         q_mat[i * m + i] = 1.0;
+    }
+
+    // Blocked compact-WY path (BLAS-3) for sizes where the GEMM trailing update
+    // beats the per-reflector BLAS-2 sweep; small matrices stay on the scalar
+    // sweep (no panel/GEMM overhead). frankentorch-ct2yy.
+    if m >= 128 && k >= 16 {
+        qr_householder_panel_blocked(&mut r_mat, &mut q_mat, m, n, k);
+        for i in 0..m {
+            for jj in 0..i.min(n) {
+                r_mat[i * n + jj] = 0.0;
+            }
+        }
+        if reduced {
+            let mut q_reduced = vec![0.0; m * k];
+            for i in 0..m {
+                for j in 0..k {
+                    q_reduced[i * k + j] = q_mat[i * m + j];
+                }
+            }
+            let r_reduced = r_mat[..k * n].to_vec();
+            return Ok(QrResult {
+                q: q_reduced,
+                r: r_reduced,
+                m: k,
+                n,
+            });
+        }
+        return Ok(QrResult {
+            q: q_mat,
+            r: r_mat,
+            m,
+            n,
+        });
     }
 
     for j in 0..k {
@@ -24809,6 +24996,50 @@ mod tests {
             let expected = if c1 == c2 { 1.0 } else { 0.0 };
             assert!(
                 (dot - expected).abs() < 1e-9,
+                "Q^T Q[{c1},{c2}]={dot} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn qr_blocked_tall_reconstructs_and_orthonormal() {
+        // Tall m=256 > n=96 exercises the compact-WY blocked path (m>=128) with
+        // k=n reflectors and reduced Q (m×k). Proof obligations at tolerance:
+        // A = Q·R and the reduced Q has orthonormal columns. frankentorch-ct2yy.
+        let (m, n) = (256usize, 96usize);
+        let mut a = vec![0.0f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                a[i * n + j] = (((i * 53 + j * 31) % 97) as f64 - 48.0) * 0.1;
+            }
+        }
+        for j in 0..n {
+            a[j * n + j] += m as f64;
+        }
+        let meta = TensorMeta::from_shape(vec![m, n], DType::F64, Device::Cpu);
+        let r = super::qr_contiguous_f64(&a, &meta, true).expect("qr");
+        let k = n; // reduced: Q is m×k, R is k×n
+        // A = Q·R
+        for &(i, j) in &[(0usize, 0usize), (5, 90), (255, 1), (130, 40), (200, 17)] {
+            let mut dot = 0.0;
+            for t in 0..k {
+                dot += r.q[i * k + t] * r.r[t * n + j];
+            }
+            assert!(
+                (dot - a[i * n + j]).abs() < 1e-6,
+                "(QR)[{i},{j}]={dot} vs {}",
+                a[i * n + j]
+            );
+        }
+        // Reduced Q has orthonormal columns.
+        for &(c1, c2) in &[(0usize, 0usize), (10, 10), (3, 90), (95, 94)] {
+            let mut dot = 0.0;
+            for t in 0..m {
+                dot += r.q[t * k + c1] * r.q[t * k + c2];
+            }
+            let expected = if c1 == c2 { 1.0 } else { 0.0 };
+            assert!(
+                (dot - expected).abs() < 1e-8,
                 "Q^T Q[{c1},{c2}]={dot} vs {expected}"
             );
         }
