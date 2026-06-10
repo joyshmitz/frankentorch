@@ -10200,10 +10200,13 @@ pub fn symmetric_to_banded_f64(
 /// single bulge to `(i+2bw, i+bw-1)`, which is chased down the band by the same
 /// rule (`tr += bw`, `tc = tr-1`) until it runs off the matrix.
 ///
-/// NOTE: the rotations are applied to the full `n`-length rows/columns for
-/// clarity and provable correctness; a band-packed apply (touching only the
-/// `O(b)` affected entries, giving the textbook `O(n^2 b)` cost) is the perf
-/// follow-up. Not yet wired into the live solver.
+/// The rotations are applied band-packed: each adjacent-plane rotation touches
+/// only the `O(b)` band entries it can change (everything outside `[p-(b+1),
+/// q+(b+1)]` is exactly zero, so writing the rotated zero back is a bitwise
+/// no-op), giving the textbook `O(n^2 b)` cost instead of `O(n^3)`. The result
+/// is bit-identical to the full-length apply (proven by
+/// `banded_to_tridiagonal_band_packed_is_bit_exact`). Not yet wired into the
+/// live solver.
 #[allow(clippy::needless_range_loop)]
 pub fn banded_to_tridiagonal_f64(band: &[f64], n: usize, b: usize) -> (Vec<f64>, Vec<f64>) {
     let mut m = if band.len() >= n * n {
@@ -10216,15 +10219,26 @@ pub fn banded_to_tridiagonal_f64(band: &[f64], n: usize, b: usize) -> (Vec<f64>,
 
     // Apply the symmetric Givens rotation `M := G^T M G` in the plane `(p, q)`
     // with `[row_p'; row_q'] = [[c, s]; [-s, c]] [row_p; row_q]` (and the same on
-    // columns), full-length for correctness.
+    // columns). Bulge chasing only ever uses adjacent planes (`q == p + 1`), and
+    // during the chase the matrix stays banded with transient half-bandwidth at
+    // most `b + 1` (the spilled bulge sits one diagonal beyond the band). So rows
+    // `p, q` and columns `p, q` are nonzero only within `[p - (b+1), q + (b+1)]`;
+    // every cell outside that window is exactly `0.0`, and `c*0 + s*0 == 0.0`
+    // bitwise, so writing it back is a no-op. Restricting the sweep to that band
+    // window is therefore bit-identical to the full-length apply at `O(b)` rather
+    // than `O(n)` cost — the textbook `O(n^2 b)` band reduction. A `+2` margin is
+    // used for headroom; correctness is independent of the exact width as long as
+    // it covers `b + 1`.
     let apply = |m: &mut [f64], p: usize, q: usize, c: f64, s: f64| {
-        for col in 0..n {
+        let lo = p.saturating_sub(b + 2);
+        let hi = (q + b + 2).min(n - 1);
+        for col in lo..=hi {
             let mp = m[p * n + col];
             let mq = m[q * n + col];
             m[p * n + col] = c * mp + s * mq;
             m[q * n + col] = -s * mp + c * mq;
         }
-        for row in 0..n {
+        for row in lo..=hi {
             let mp = m[row * n + p];
             let mq = m[row * n + q];
             m[row * n + p] = c * mp + s * mq;
@@ -18607,6 +18621,99 @@ mod tests {
             assert!(
                 (bsp - tsp).abs() <= tol,
                 "eigenvalue[{idx}] band={bsp} tridiag={tsp} (tol {tol})"
+            );
+        }
+    }
+
+    #[test]
+    fn banded_to_tridiagonal_band_packed_is_bit_exact() {
+        // The band-packed apply (touching only `[p-(b+2), q+(b+2)]`) must produce
+        // a tridiagonal `(d, e)` BIT-IDENTICAL to the full-length `O(n^3)`
+        // reference, since every cell it skips is exactly `0.0`. This is the
+        // isomorphism proof for the stage-2 band-packing lever (frankentorch-5oqum).
+
+        // Full-length reference: the original `0..n` sweep, inlined verbatim.
+        fn reference(band: &[f64], n: usize, b: usize) -> (Vec<f64>, Vec<f64>) {
+            let mut m = band[..n * n].to_vec();
+            let apply = |m: &mut [f64], p: usize, q: usize, c: f64, s: f64| {
+                for col in 0..n {
+                    let mp = m[p * n + col];
+                    let mq = m[q * n + col];
+                    m[p * n + col] = c * mp + s * mq;
+                    m[q * n + col] = -s * mp + c * mq;
+                }
+                for row in 0..n {
+                    let mp = m[row * n + p];
+                    let mq = m[row * n + q];
+                    m[row * n + p] = c * mp + s * mq;
+                    m[row * n + q] = -s * mp + c * mq;
+                }
+            };
+            if n > 2 {
+                for bw in (2..=b.min(n - 1)).rev() {
+                    for i in 0..n.saturating_sub(bw) {
+                        let mut tr = i + bw;
+                        let mut tc = i;
+                        while tr < n {
+                            let piv = m[(tr - 1) * n + tc];
+                            let kill = m[tr * n + tc];
+                            if kill == 0.0 {
+                                break;
+                            }
+                            let r = piv.hypot(kill);
+                            let c = piv / r;
+                            let s = kill / r;
+                            apply(&mut m, tr - 1, tr, c, s);
+                            m[tr * n + tc] = 0.0;
+                            m[tc * n + tr] = 0.0;
+                            tc = tr - 1;
+                            tr += bw;
+                        }
+                    }
+                }
+            }
+            let mut d = vec![0.0f64; n];
+            let mut e = vec![0.0f64; n];
+            for i in 0..n {
+                d[i] = m[i * n + i];
+            }
+            for i in 1..n {
+                e[i] = m[i * n + (i - 1)];
+            }
+            (d, e)
+        }
+
+        for &(n, b) in &[
+            (10usize, 2usize),
+            (16, 4),
+            (20, 5),
+            (24, 6),
+            (32, 8),
+            (40, 12),
+            (48, 16),
+        ] {
+            let mut a = vec![0.0f64; n * n];
+            for i in 0..n {
+                for j in 0..=i {
+                    let val = ((i * 7 + j * 13 + 5) % 29) as f64 * 0.37 - 5.1 + (i as f64) * 0.03
+                        - (j as f64) * 0.02;
+                    a[i * n + j] = val;
+                    a[j * n + i] = val;
+                }
+            }
+            let (band, _q) = super::symmetric_to_banded_f64(&a, n, b).unwrap();
+            let (d_packed, e_packed) = super::banded_to_tridiagonal_f64(&band, n, b);
+            let (d_ref, e_ref) = reference(&band, n, b);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
+            assert_eq!(
+                bits(&d_packed),
+                bits(&d_ref),
+                "n={n} b={b}: diagonal not bit-exact vs full-length reference"
+            );
+            assert_eq!(
+                bits(&e_packed),
+                bits(&e_ref),
+                "n={n} b={b}: sub-diagonal not bit-exact vs full-length reference"
             );
         }
     }
