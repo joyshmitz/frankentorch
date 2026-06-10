@@ -257,6 +257,12 @@ fn bench_svd(c: &mut Criterion) {
         c.bench_function(&format!("svd_f64_{m}x{n}_wellcond"), |bch| {
             bch.iter(|| black_box(svd_contiguous_f64(black_box(&a), &meta, false).unwrap()))
         });
+        // full_matrices=true (torch default): U and V are both accumulated in the
+        // bidiagonal-QR sweep (no deferred-left GEMM), so this exercises the
+        // sweep's left+right Givens streams directly.
+        c.bench_function(&format!("svd_full_f64_{m}x{n}_wellcond"), |bch| {
+            bch.iter(|| black_box(svd_contiguous_f64(black_box(&a), &meta, true).unwrap()))
+        });
     }
 }
 

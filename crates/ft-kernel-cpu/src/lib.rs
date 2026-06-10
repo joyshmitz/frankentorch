@@ -11904,6 +11904,16 @@ fn golub_reinsch_svd_right_only(
     golub_reinsch_svd_impl(a, m, n, false)
 }
 
+/// One deferred right-singular-vector (V) operation from the bidiagonal-QR
+/// sweep: either a Givens rotation of adjacent columns `(j, j+1)` or a
+/// convergence sign-flip of column `k`. The sweep's recurrence never reads V, so
+/// the whole ordered stream is collected first and replayed row-parallel.
+#[derive(Clone, Copy)]
+enum SvdVOp {
+    Rot(usize, f64, f64),
+    Neg(usize),
+}
+
 fn golub_reinsch_svd_impl(
     a: &mut [f64],
     m: usize,
@@ -12051,23 +12061,26 @@ fn golub_reinsch_svd_impl(
     }
 
     // --- Diagonalization of the bidiagonal form: QR with implicit shifts ---
-    // PERF NOTE: this implicit-QR sweep is the DOMINANT cost of the full SVD
-    // (svd_f64_256x256 ~1.6s, ~300x slower than LAPACK dgesdd). It is a long
-    // sequence of BLAS-1 Givens rotations applied to U (m rows) and V (n rows)
-    // every iteration; the rotation loops touch only 2 elements per row, so
-    // row-parallelizing them is memory-bound (would regress, cf. grid_sample).
-    // Parallelizing the upstream Householder bidiagonalization / U,V accumulation
-    // (the apply pattern that won 6.4x on QR `f832ce77`) was MEASURED here and
-    // REGRESSED svd/svdvals (the applies are a small fraction vs this sweep, and
-    // the two-phase restructure adds overhead at the benched 128-256 sizes).
-    // Transposing U/V so the rotations hit contiguous rows was also MEASURED and
-    // REGRESSED (~1.4x slower): the two rotated columns are ADJACENT (j, j+1), so
-    // in row-major they already share a cache line per row — transposing puts them
-    // `stride` apart, doubling the cache lines touched. So the sweep is NOT
-    // cache-bound; it is just an O(n^3) BLAS-1 rotation stream. The real lever is
-    // ALGORITHMIC: a divide-and-conquer bidiagonal SVD (dbdsdc) or a BLAS-3
-    // back-transformation (accumulate each sweep's rotations into a banded
-    // orthogonal block, apply to U/V via dgemm), not micro-tuning the stream.
+    // PERF NOTE: this implicit-QR sweep is the DOMINANT cost of the full SVD — a
+    // long sequence of BLAS-1 Givens rotations applied to U (m rows) and V (n
+    // rows). An earlier attempt row-parallelized each rotation individually (2
+    // elements/row/fork-join) and regressed: memory-bound, O(n^2) fork/joins.
+    // Transposing U/V also regressed (~1.4x): the two rotated columns are adjacent
+    // (j, j+1) and already share a cache line in row-major; transposing splits
+    // them `stride` apart.
+    //
+    // LEVER (bit-exact, DEFERRED whole-stream replay): the entire recurrence
+    // (singular values + split/convergence decisions) reads only w/rv1, never U
+    // or V. So log the COMPLETE ordered operation stream first, then replay it
+    // across rows in a SINGLE parallel pass each — two fork/joins for the whole
+    // O(n^3) back-transform, not one per rotation (the regressing attempt) or per
+    // sweep (still O(n) fork/joins, ~1.1x net). Each of the n (m) rows independently
+    // replays the whole log in order, so every entry is bit-for-bit identical to
+    // the inline form. V's stream is rotations + convergence sign-flips; U's is the
+    // cancellation + main-chase rotations (its own (c,s), distinct columns).
+    // Same-worker RAYON A/B @256: full_matrices=true 2.26x, deferred-left 2.15x.
+    let mut v_ops: Vec<SvdVOp> = Vec::new();
+    let mut u_ops: Vec<(usize, usize, f64, f64)> = Vec::new();
     for k in (0..n).rev() {
         for _its in 0..30 {
             let mut flag = true;
@@ -12102,12 +12115,7 @@ fn golub_reinsch_svd_impl(
                     c = g * hinv;
                     s = -f * hinv;
                     if track_left {
-                        for j in 0..m {
-                            let y = a[j * n + nm];
-                            let z = a[j * n + i];
-                            a[j * n + nm] = y * c + z * s;
-                            a[j * n + i] = z * c - y * s;
-                        }
+                        u_ops.push((nm, i, c, s));
                     }
                 }
             }
@@ -12116,9 +12124,7 @@ fn golub_reinsch_svd_impl(
                 // Convergence: make the singular value non-negative.
                 if z < 0.0 {
                     w[k] = -z;
-                    for j in 0..n {
-                        v[j * n + k] = -v[j * n + k];
-                    }
+                    v_ops.push(SvdVOp::Neg(k));
                 }
                 break;
             }
@@ -12134,7 +12140,9 @@ fn golub_reinsch_svd_impl(
             let mut f = ((y - z) * (y + z) + (g - h) * (g + h)) / (2.0 * h * y);
             g = eigh_pythag(f, 1.0);
             f = ((x - z) * (x + z) + h * ((y / (f + nr_sign(g, f))) - h)) / x;
-            // Next QR transformation (Givens rotations).
+            // Next QR transformation (Givens rotations). Log the rotation chain
+            // from the (U/V-independent) recurrence; it is replayed after the
+            // whole sweep. V uses the first (c,s) of each step, U the second.
             let mut c = 1.0;
             let mut s = 1.0;
             for j in l..=nm {
@@ -12151,12 +12159,7 @@ fn golub_reinsch_svd_impl(
                 g = g * c - x * s;
                 h = y * s;
                 y *= c;
-                for jj in 0..n {
-                    let xv = v[jj * n + j];
-                    let zv = v[jj * n + i];
-                    v[jj * n + j] = xv * c + zv * s;
-                    v[jj * n + i] = zv * c - xv * s;
-                }
+                v_ops.push(SvdVOp::Rot(j, c, s));
                 zz = eigh_pythag(f, h);
                 w[j] = zz;
                 if zz != 0.0 {
@@ -12167,18 +12170,48 @@ fn golub_reinsch_svd_impl(
                 f = c * g + s * y;
                 x = c * y - s * g;
                 if track_left {
-                    for jj in 0..m {
-                        let yu = a[jj * n + j];
-                        let zu = a[jj * n + i];
-                        a[jj * n + j] = yu * c + zu * s;
-                        a[jj * n + i] = zu * c - yu * s;
-                    }
+                    u_ops.push((j, i, c, s));
                 }
             }
             rv1[l] = 0.0;
             rv1[k] = f;
             w[k] = x;
         }
+    }
+
+    // Replay the full V operation stream: each of the n rows applies the entire
+    // ordered log (rotations + sign-flips) independently, so this whole O(n^3)
+    // back-transform is one parallel pass. Bit-identical to the inline form
+    // because the recurrence above never read V.
+    if !v_ops.is_empty() {
+        let ops = &v_ops;
+        v.par_chunks_mut(n).for_each(|row| {
+            for &op in ops {
+                match op {
+                    SvdVOp::Rot(j, c, s) => {
+                        let xv = row[j];
+                        let zv = row[j + 1];
+                        row[j] = xv * c + zv * s;
+                        row[j + 1] = zv * c - xv * s;
+                    }
+                    SvdVOp::Neg(k) => {
+                        row[k] = -row[k];
+                    }
+                }
+            }
+        });
+    }
+    // Replay the U (left-vector) rotation stream the same way over the m rows.
+    if track_left && !u_ops.is_empty() {
+        let ops = &u_ops;
+        a.par_chunks_mut(n).for_each(|row| {
+            for &(c0, c1, c, s) in ops {
+                let yu = row[c0];
+                let zu = row[c1];
+                row[c0] = yu * c + zu * s;
+                row[c1] = zu * c - yu * s;
+            }
+        });
     }
 
     Ok((w, v))
