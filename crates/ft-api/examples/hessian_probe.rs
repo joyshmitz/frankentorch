@@ -79,6 +79,8 @@ fn main() {
     probe!("ndtri", tensor_ndtri, unit);
     probe!("entr", tensor_entr);
     probe!("sinc", tensor_sinc);
+    probe!("log_ndtr", tensor_log_ndtr);
+    probe!("log_ndtr_n", tensor_log_ndtr, genv);
     probe!("gelu_tanh", tensor_gelu_tanh, genv);
     probe!("softsign", tensor_softsign, genv);
     probe!("tanhshrink", tensor_tanhshrink, genv);
