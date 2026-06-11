@@ -14436,6 +14436,19 @@ pub struct QrResult {
     pub n: usize,
 }
 
+/// Native f32 QR result (the f32 companion to [`QrResult`]). frankentorch-b3o90.
+#[derive(Debug, Clone)]
+pub struct QrResultF32 {
+    /// Orthogonal matrix Q in row-major order, f32.
+    pub q: Vec<f32>,
+    /// Upper triangular matrix R in row-major order, f32.
+    pub r: Vec<f32>,
+    /// Number of rows (m).
+    pub m: usize,
+    /// Number of columns (n).
+    pub n: usize,
+}
+
 /// Internal timing split for the compact-WY QR path.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -14869,6 +14882,293 @@ fn qr_householder_panel_blocked(
     qcols: usize,
 ) -> Vec<f64> {
     qr_householder_panel_blocked_profiled(r_mat, m, n, k, qcols, None)
+}
+
+/// Native f32 compact-WY blocked QR panel factorization (the f32 companion to
+/// `qr_householder_panel_blocked_profiled`, profiling stripped). Reduces `r_mat`
+/// in place and returns Q (m×qcols) via a reverse dorgqr, with `gemm::sgemm`
+/// trailing/Q updates. frankentorch-b3o90.
+fn qr_householder_panel_blocked_f32(
+    r_mat: &mut [f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    qcols: usize,
+) -> Vec<f32> {
+    const NB: usize = 32;
+    let tiny = f32::EPSILON * 1e6;
+    let mut panels: Vec<(usize, Vec<f32>, Vec<f32>)> = Vec::new();
+    let mut p = 0;
+    while p < k {
+        let pe = (p + NB).min(k);
+        let nb = pe - p;
+
+        let mut vmat = vec![0.0f32; m * nb];
+        let mut tau = vec![0.0f32; nb];
+        for c in 0..nb {
+            let j = p + c;
+            let col_len = m - j;
+            let mut nrm2 = 0.0f32;
+            for t in 0..col_len {
+                let x = r_mat[(j + t) * n + j];
+                nrm2 += x * x;
+            }
+            let norm_v = nrm2.sqrt();
+            if norm_v < tiny {
+                continue;
+            }
+            let v0 = r_mat[j * n + j];
+            let sign = if v0 >= 0.0 { 1.0 } else { -1.0 };
+            vmat[j * nb + c] = v0 + sign * norm_v;
+            for t in 1..col_len {
+                vmat[(j + t) * nb + c] = r_mat[(j + t) * n + j];
+            }
+            let mut nv2 = 0.0f32;
+            for t in 0..col_len {
+                let x = vmat[(j + t) * nb + c];
+                nv2 += x * x;
+            }
+            if nv2 < tiny {
+                for t in 0..col_len {
+                    vmat[(j + t) * nb + c] = 0.0;
+                }
+                continue;
+            }
+            let tau_c = 2.0 / nv2;
+            tau[c] = tau_c;
+            r_mat[j * n + j] = -sign * norm_v;
+            for t in 1..col_len {
+                r_mat[(j + t) * n + j] = 0.0;
+            }
+            for col in (j + 1)..pe {
+                let mut dot = 0.0f32;
+                for t in 0..col_len {
+                    dot += vmat[(j + t) * nb + c] * r_mat[(j + t) * n + col];
+                }
+                let factor = tau_c * dot;
+                for t in 0..col_len {
+                    r_mat[(j + t) * n + col] -= factor * vmat[(j + t) * nb + c];
+                }
+            }
+        }
+
+        let mut tmat = vec![0.0f32; nb * nb];
+        for c in 0..nb {
+            if tau[c] == 0.0 {
+                continue;
+            }
+            tmat[c * nb + c] = tau[c];
+            for i in 0..c {
+                let mut dot = 0.0f32;
+                for row in 0..m {
+                    dot += vmat[row * nb + i] * vmat[row * nb + c];
+                }
+                tmat[i * nb + c] = -tau[c] * dot;
+            }
+            let mut newcol = vec![0.0f32; c];
+            for i in 0..c {
+                let mut s = 0.0f32;
+                for l in i..c {
+                    s += tmat[i * nb + l] * tmat[l * nb + c];
+                }
+                newcol[i] = s;
+            }
+            for i in 0..c {
+                tmat[i * nb + c] = newcol[i];
+            }
+        }
+
+        let nt = n - pe;
+        if nt > 0 {
+            let mut rt = vec![0.0f32; m * nt];
+            for i in 0..m {
+                let base = i * n + pe;
+                let dst = i * nt;
+                rt[dst..dst + nt].copy_from_slice(&r_mat[base..base + nt]);
+            }
+            let mut vt = vec![0.0f32; nb * m];
+            for row in 0..m {
+                for c in 0..nb {
+                    vt[c * m + row] = vmat[row * nb + c];
+                }
+            }
+            let mut w = vec![0.0f32; nb * nt];
+            gemm::sgemm(nb, m, nt, &vt, &rt, &mut w); // Vᵀ R
+            let mut tt = vec![0.0f32; nb * nb];
+            for i in 0..nb {
+                for jj in 0..nb {
+                    tt[i * nb + jj] = tmat[jj * nb + i];
+                }
+            }
+            let mut w2 = vec![0.0f32; nb * nt];
+            gemm::sgemm(nb, nb, nt, &tt, &w, &mut w2); // Tᵀ (Vᵀ R)
+            let mut upd = vec![0.0f32; m * nt];
+            gemm::sgemm(m, nb, nt, &vmat, &w2, &mut upd); // V (...)
+            for i in 0..m {
+                let base = i * n + pe;
+                let src = i * nt;
+                for t in 0..nt {
+                    r_mat[base + t] -= upd[src + t];
+                }
+            }
+        }
+
+        panels.push((nb, vmat, tmat));
+        p = pe;
+    }
+
+    let mut x = vec![0.0f32; m * qcols];
+    for i in 0..m.min(qcols) {
+        x[i * qcols + i] = 1.0;
+    }
+    for (nb, vmat, tmat) in panels.iter().rev() {
+        let nb = *nb;
+        let mut vt = vec![0.0f32; nb * m];
+        for row in 0..m {
+            for c in 0..nb {
+                vt[c * m + row] = vmat[row * nb + c];
+            }
+        }
+        let mut w1 = vec![0.0f32; nb * qcols];
+        gemm::sgemm(nb, m, qcols, &vt, &x, &mut w1); // Vᵀ X
+        let mut w2 = vec![0.0f32; nb * qcols];
+        gemm::sgemm(nb, nb, qcols, tmat, &w1, &mut w2); // T (Vᵀ X)
+        let mut upd = vec![0.0f32; m * qcols];
+        gemm::sgemm(m, nb, qcols, vmat, &w2, &mut upd); // V (...)
+        for t in 0..m * qcols {
+            x[t] -= upd[t];
+        }
+    }
+    x
+}
+
+/// Native f32 QR factorization — the f32 companion to [`qr_contiguous_f64`].
+/// Blocked compact-WY (BLAS-3 `gemm::sgemm`) for m>=128 && k>=16; scalar
+/// Householder sweep below that. Computed entirely in f32 so the public f32 QR
+/// avoids the f32->f64->f32 round trip and matches torch's f32 QR (tolerance
+/// parity: blocked WY reassociates). frankentorch-b3o90.
+pub fn qr_contiguous_f32(
+    data: &[f32],
+    meta: &TensorMeta,
+    reduced: bool,
+) -> Result<QrResultF32, KernelError> {
+    ensure_unary_layout_and_storage_f32(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![shape.len()],
+        });
+    }
+    let m = shape[0];
+    let n = shape[1];
+
+    if m == 0 || n == 0 {
+        let k = if reduced { m.min(n) } else { m };
+        return Ok(QrResultF32 {
+            q: vec![0.0; m * k],
+            r: vec![0.0; k * n],
+            m: k,
+            n,
+        });
+    }
+
+    let k = m.min(n);
+    let offset = meta.storage_offset();
+    let mut r_mat = data[offset..offset + m * n].to_vec();
+
+    if m >= 128 && k >= 16 {
+        let qcols = if reduced { k } else { m };
+        let q = qr_householder_panel_blocked_f32(&mut r_mat, m, n, k, qcols);
+        for i in 0..m {
+            for jj in 0..i.min(n) {
+                r_mat[i * n + jj] = 0.0;
+            }
+        }
+        if reduced {
+            let r_reduced = r_mat[..k * n].to_vec();
+            return Ok(QrResultF32 {
+                q,
+                r: r_reduced,
+                m: k,
+                n,
+            });
+        }
+        return Ok(QrResultF32 { q, r: r_mat, m, n });
+    }
+
+    let mut q_mat = vec![0.0f32; m * m];
+    for i in 0..m {
+        q_mat[i * m + i] = 1.0;
+    }
+
+    for j in 0..k {
+        let col_len = m - j;
+        let mut v = vec![0.0f32; col_len];
+        for i in 0..col_len {
+            v[i] = r_mat[(i + j) * n + j];
+        }
+        let norm_v: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm_v < f32::EPSILON * 1e6 {
+            continue;
+        }
+        let sign = if v[0] >= 0.0 { 1.0 } else { -1.0 };
+        v[0] += sign * norm_v;
+        let norm_v2: f32 = v.iter().map(|x| x * x).sum();
+        if norm_v2 < f32::EPSILON * 1e6 {
+            continue;
+        }
+        let inv_norm = 1.0 / norm_v2;
+        for col in 0..n {
+            let mut dot = 0.0f32;
+            for i in 0..col_len {
+                dot += v[i] * r_mat[(i + j) * n + col];
+            }
+            let factor = 2.0 * dot * inv_norm;
+            for i in 0..col_len {
+                r_mat[(i + j) * n + col] -= factor * v[i];
+            }
+        }
+        for row in 0..m {
+            let mut dot = 0.0f32;
+            for i in 0..col_len {
+                dot += q_mat[row * m + (i + j)] * v[i];
+            }
+            let factor = 2.0 * dot * inv_norm;
+            for i in 0..col_len {
+                q_mat[row * m + (i + j)] -= factor * v[i];
+            }
+        }
+    }
+
+    for i in 0..m {
+        for j in 0..i.min(n) {
+            r_mat[i * n + j] = 0.0;
+        }
+    }
+
+    if reduced {
+        let mut q_reduced = vec![0.0f32; m * k];
+        for i in 0..m {
+            for j in 0..k {
+                q_reduced[i * k + j] = q_mat[i * m + j];
+            }
+        }
+        let r_reduced = r_mat[..k * n].to_vec();
+        Ok(QrResultF32 {
+            q: q_reduced,
+            r: r_reduced,
+            m: k,
+            n,
+        })
+    } else {
+        Ok(QrResultF32 {
+            q: q_mat,
+            r: r_mat,
+            m,
+            n,
+        })
+    }
 }
 
 pub fn qr_contiguous_f64(
@@ -24147,6 +24447,52 @@ mod tests {
             }
         }
         assert_mat_approx_eq(&ax, &b, 1e-10, "A * x should equal b");
+    }
+
+    #[test]
+    fn qr_f32_native_reconstructs_and_orthonormal() {
+        // Native f32 QR (frankentorch-b3o90): test BOTH regimes — n=8 (scalar
+        // Householder sweep) and n=160 (blocked compact-WY sgemm path). QR is
+        // non-unique (sign conventions vary vs LAPACK), so verify the
+        // convention-independent invariants: Q·R == A and Qᵀ·Q == I (f32 tol).
+        for &n in &[8usize, 160] {
+            let meta = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+            let mut a = vec![0.0f32; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    a[i * n + j] = (((i * 29 + j * 7) % 11) as f32) * 0.1 - 0.5;
+                }
+                a[i * n + i] += 1.5;
+            }
+            let qr = super::qr_contiguous_f32(&a, &meta, true).expect("qr_f32");
+            assert_eq!(qr.m, n);
+            assert_eq!(qr.n, n);
+            // Q·R == A
+            for i in 0..n {
+                for j in 0..n {
+                    let mut acc = 0.0f32;
+                    for t in 0..n {
+                        acc += qr.q[i * n + t] * qr.r[t * n + j];
+                    }
+                    let diff = (acc - a[i * n + j]).abs();
+                    assert!(diff < 5e-3, "n={n} Q·R != A at ({i},{j}): {diff}");
+                }
+            }
+            // Qᵀ·Q == I
+            for i in 0..n {
+                for j in 0..n {
+                    let mut acc = 0.0f32;
+                    for t in 0..n {
+                        acc += qr.q[t * n + i] * qr.q[t * n + j];
+                    }
+                    let want = if i == j { 1.0 } else { 0.0 };
+                    assert!(
+                        (acc - want).abs() < 5e-3,
+                        "n={n} QᵀQ != I at ({i},{j}): {acc}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
