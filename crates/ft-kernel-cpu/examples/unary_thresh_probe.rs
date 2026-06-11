@@ -30,9 +30,26 @@ fn t<F: FnMut()>(mut f: F, it: usize) -> f64 {
 fn main() {
     println!("threads={}", rayon::current_num_threads());
     for &n in &[131072usize, 262144, 524288] {
-        let d: Vec<f64> = (0..n).map(|i| ((i * 7 % 1000) as f64) * 0.01 - 5.0).collect();
-        let ser = t(|| { let r: Vec<f64> = d.iter().map(|v| costly(*v)).collect(); std::hint::black_box(r); }, 80);
-        let par = t(|| { let r: Vec<f64> = d.par_iter().map(|v| costly(*v)).collect(); std::hint::black_box(r); }, 80);
-        println!("n={n:<7} serial={ser:7.1}us par={par:7.1}us speedup={:.2}x", ser / par);
+        let d: Vec<f64> = (0..n)
+            .map(|i| ((i * 7 % 1000) as f64) * 0.01 - 5.0)
+            .collect();
+        let ser = t(
+            || {
+                let r: Vec<f64> = d.iter().map(|v| costly(*v)).collect();
+                std::hint::black_box(r);
+            },
+            80,
+        );
+        let par = t(
+            || {
+                let r: Vec<f64> = d.par_iter().map(|v| costly(*v)).collect();
+                std::hint::black_box(r);
+            },
+            80,
+        );
+        println!(
+            "n={n:<7} serial={ser:7.1}us par={par:7.1}us speedup={:.2}x",
+            ser / par
+        );
     }
 }
