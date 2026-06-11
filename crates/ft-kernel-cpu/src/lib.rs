@@ -4800,6 +4800,36 @@ pub fn conv_transpose2d_forward_f64(
     ph: usize,
     pw: usize,
 ) -> Vec<f64> {
+    // Channels-last reorg: the per-output inner product `Σ_ic input·weight` strides
+    // both operands by `ih·iw` and `out_ch·kh·kw` over `ic`, so at large `in_ch`
+    // every ic step is a cache miss (~20 GFLOP/s on 64 cores). Transpose `input`
+    // to channels-last `[N,H,W,Cin]` and `weight` to `[Cout,kh,kw,Cin]` ONCE
+    // (O(input)+O(weight), cheap vs the O(out·k²·in_ch) compute) so each `Σ_ic`
+    // reads two CONTIGUOUS Cin-vectors. The sum stays SEQUENTIAL over `ic`, so the
+    // result is BIT-FOR-BIT identical to the strided form. frankentorch-ctp-cl.
+    let mut input_cl = vec![0.0f64; batch * ih * iw * in_ch];
+    input_cl
+        .par_chunks_mut(ih * iw * in_ch)
+        .enumerate()
+        .for_each(|(n, dst)| {
+            for ic in 0..in_ch {
+                let src_base = (n * in_ch + ic) * ih * iw;
+                for s in 0..ih * iw {
+                    dst[s * in_ch + ic] = input[src_base + s];
+                }
+            }
+        });
+    let mut weight_cl = vec![0.0f64; out_ch * kh * kw * in_ch];
+    for ic in 0..in_ch {
+        for oc in 0..out_ch {
+            for kr in 0..kh {
+                for kc in 0..kw {
+                    weight_cl[((oc * kh + kr) * kw + kc) * in_ch + ic] =
+                        weight[(((ic * out_ch + oc) * kh + kr) * kw) + kc];
+                }
+            }
+        }
+    }
     let mut out = vec![0.0f64; batch * out_ch * oh * ow];
     out.par_chunks_mut(oh * ow)
         .enumerate()
@@ -4807,6 +4837,8 @@ pub fn conv_transpose2d_forward_f64(
             let n = idx / out_ch;
             let oc = idx % out_ch;
             let b0 = bias.map_or(0.0, |b| b[oc]);
+            let wbase = oc * kh * kw * in_ch;
+            let nbase = n * ih * iw * in_ch;
             for oy in 0..oh {
                 for ox in 0..ow {
                     let mut acc = b0;
@@ -4836,11 +4868,11 @@ pub fn conv_transpose2d_forward_f64(
                             if ix >= iw {
                                 continue;
                             }
+                            let ivec = &input_cl[nbase + (iy * iw + ix) * in_ch..][..in_ch];
+                            let wvec = &weight_cl[wbase + (kr * kw + kc) * in_ch..][..in_ch];
                             let mut s = 0.0f64;
                             for ic in 0..in_ch {
-                                let iv = input[((n * in_ch + ic) * ih + iy) * iw + ix];
-                                let wv = weight[(((ic * out_ch + oc) * kh + kr) * kw) + kc];
-                                s += iv * wv;
+                                s += ivec[ic] * wvec[ic];
                             }
                             acc += s;
                         }
@@ -4876,6 +4908,32 @@ pub fn conv_transpose2d_forward_f32(
     ph: usize,
     pw: usize,
 ) -> Vec<f32> {
+    // Channels-last reorg — see conv_transpose2d_forward_f64 for the rationale and
+    // bit-exactness (the Σ_ic stays sequential, only the memory layout changes).
+    // frankentorch-ctp-cl.
+    let mut input_cl = vec![0.0f32; batch * ih * iw * in_ch];
+    input_cl
+        .par_chunks_mut(ih * iw * in_ch)
+        .enumerate()
+        .for_each(|(n, dst)| {
+            for ic in 0..in_ch {
+                let src_base = (n * in_ch + ic) * ih * iw;
+                for s in 0..ih * iw {
+                    dst[s * in_ch + ic] = input[src_base + s];
+                }
+            }
+        });
+    let mut weight_cl = vec![0.0f32; out_ch * kh * kw * in_ch];
+    for ic in 0..in_ch {
+        for oc in 0..out_ch {
+            for kr in 0..kh {
+                for kc in 0..kw {
+                    weight_cl[((oc * kh + kr) * kw + kc) * in_ch + ic] =
+                        weight[(((ic * out_ch + oc) * kh + kr) * kw) + kc];
+                }
+            }
+        }
+    }
     let mut out = vec![0.0f32; batch * out_ch * oh * ow];
     out.par_chunks_mut(oh * ow)
         .enumerate()
@@ -4883,6 +4941,8 @@ pub fn conv_transpose2d_forward_f32(
             let n = idx / out_ch;
             let oc = idx % out_ch;
             let b0 = bias.map_or(0.0, |b| b[oc]);
+            let wbase = oc * kh * kw * in_ch;
+            let nbase = n * ih * iw * in_ch;
             for oy in 0..oh {
                 for ox in 0..ow {
                     let mut acc = b0;
@@ -4912,11 +4972,11 @@ pub fn conv_transpose2d_forward_f32(
                             if ix >= iw {
                                 continue;
                             }
+                            let ivec = &input_cl[nbase + (iy * iw + ix) * in_ch..][..in_ch];
+                            let wvec = &weight_cl[wbase + (kr * kw + kc) * in_ch..][..in_ch];
                             let mut s = 0.0f32;
                             for ic in 0..in_ch {
-                                let iv = input[((n * in_ch + ic) * ih + iy) * iw + ix];
-                                let wv = weight[(((ic * out_ch + oc) * kh + kr) * kw) + kc];
-                                s += iv * wv;
+                                s += ivec[ic] * wvec[ic];
                             }
                             acc += s;
                         }
