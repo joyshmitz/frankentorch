@@ -1,0 +1,7 @@
+  [2m2026-06-11T14:49:53.943879Z[0m [34mDEBUG[0m [1;34mrch::verbose[0m[34m: [34mverbose output enabled, [1;34mmode[0m[34m: Plain, [1;34mformat[0m[34m: json[0m
+    [2;3mat[0m rch/src/main.rs:1722 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-11T14:49:53.943917Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mexec called with non-compilation command: sh -lc 'cargo run -q -p ft-kernel-cpu --release --example eigvals_golden > artifacts/perf/frankentorch-fql10/pass2_eigvals_golden_remote.stdout'[0m
+    [2;3mat[0m rch/src/hook.rs:402 [2;3mon[0m ThreadId(1)
+
+[RCH] remote required; refusing local fallback (non-compilation command)
