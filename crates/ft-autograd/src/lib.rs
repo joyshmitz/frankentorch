@@ -15211,27 +15211,38 @@ impl TensorTape {
                 }
                 TensorNodeOp::Gelu { input } => {
                     // Exact erf-form derivative (matches PyTorch approximate="none"):
-                    // d(gelu(x))/dx = 0.5*(1+erf(x/sqrt(2))) + x*(1/sqrt(2*pi))*exp(-x^2/2)
+                    //   d(gelu)/dx = 0.5*(1+erf(x/sqrt2)) + x*(1/sqrt(2pi))*exp(-x^2/2)
+                    //              = Phi(x) + x*pdf(x).
+                    // Compose it from cg primitives CONNECTED TO `input` (erf/exp/mul/
+                    // add), not a detached leaf of raw input values: otherwise the
+                    // derivative is constant w.r.t. x and the second derivative
+                    // (gelu''(x) = pdf(x)*(2 - x^2)) collapses to 0 under double-
+                    // backward. frankentorch-m9hew.
                     let shape = self.nodes[input.0].tensor.meta().shape().to_vec();
+                    let numel = Self::checked_shape_numel(&shape, "gelu backward shape overflow")?;
                     let inv_sqrt_two = std::f64::consts::FRAC_1_SQRT_2;
                     let inv_sqrt_two_pi =
                         std::f64::consts::FRAC_1_SQRT_2 * std::f64::consts::FRAC_2_SQRT_PI * 0.5;
-                    let input_vals = self.nodes[input.0].tensor.contiguous_values_as_f64()?;
-                    let deriv_data: Vec<f64> = input_vals
-                        .iter()
-                        .map(|&x| {
-                            let phi = inv_sqrt_two_pi * (-0.5 * x * x).exp();
-                            0.5 * (1.0 + libm::erf(x * inv_sqrt_two)) + x * phi
-                        })
-                        .collect();
-                    let deriv_node = self.leaf(deriv_data, shape, true)?;
-                    let grad_in = self.cg_mul(incoming_id, deriv_node)?;
+                    // Phi(x) = 0.5 + 0.5*erf(x/sqrt2)
+                    let erf_arg = self.cg_mul_scalar(input, inv_sqrt_two)?;
+                    let erf_node = self.cg_erf(erf_arg)?;
+                    let half_erf = self.cg_mul_scalar(erf_node, 0.5)?;
+                    let half = self.leaf(vec![0.5; numel], shape.clone(), false)?;
+                    let cap_phi = self.cg_add(half_erf, half)?;
+                    // x*pdf(x), pdf(x) = inv_sqrt_two_pi * exp(-0.5*x^2)
+                    let x_sq = self.cg_mul(input, input)?;
+                    let neg_half_x_sq = self.cg_mul_scalar(x_sq, -0.5)?;
+                    let exp_term = self.cg_exp(neg_half_x_sq)?;
+                    let pdf = self.cg_mul_scalar(exp_term, inv_sqrt_two_pi)?;
+                    let x_pdf = self.cg_mul(input, pdf)?;
+                    let deriv = self.cg_add(cap_phi, x_pdf)?;
+                    let grad_in = self.cg_mul(incoming_id, deriv)?;
                     self.cg_accumulate(input, &mut grad_nodes, grad_in)?;
                     Self::complete_dependency(&mut pending, input, &mut queue)?;
                     steps.push(TensorBackwardStep {
                         node: node_id,
                         incoming_grad_len: self.nodes[incoming_id.0].tensor.meta().numel(),
-                        rule: "d(gelu(x))/dx (cg)",
+                        rule: "d(gelu(x))/dx=Phi(x)+x*pdf(x) (cg)",
                     });
                 }
                 TensorNodeOp::Narrow {
@@ -17311,6 +17322,31 @@ impl TensorTape {
             tensor: DenseTensor::from_storage(meta, result)?,
             requires_grad,
             op: TensorNodeOp::Exp { input },
+        });
+        Ok(out)
+    }
+
+    /// Helper: elementwise erf for create_graph backward. Produces a
+    /// differentiable `Erf` node (mirrors `cg_exp`) so derivatives that contain
+    /// `erf` (e.g. the exact GELU backward) stay connected to `input` and the
+    /// second derivative survives double-backward.
+    fn cg_erf(&mut self, input: TensorNodeId) -> Result<TensorNodeId, AutogradError> {
+        let (requires_grad, result, shape, dtype, device) = {
+            let node = self.node(input)?;
+            let data = node.tensor.contiguous_values_as_f64()?;
+            let shape = node.tensor.meta().shape().to_vec();
+            let dtype = node.tensor.meta().dtype();
+            let device = node.tensor.meta().device();
+            let result = data.iter().map(|&v| libm::erf(v)).collect();
+            (node.requires_grad, result, shape, dtype, device)
+        };
+
+        let meta = ft_core::TensorMeta::from_shape(shape, dtype, device);
+        let out = TensorNodeId(self.nodes.len());
+        self.nodes.push(TensorNode {
+            tensor: DenseTensor::from_storage(meta, result)?,
+            requires_grad,
+            op: TensorNodeOp::Erf { input },
         });
         Ok(out)
     }
