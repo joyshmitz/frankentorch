@@ -12114,6 +12114,183 @@ pub fn eigvalsh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<Vec<f6
     Ok(d)
 }
 
+fn eigh_pythag_f32(a: f32, b: f32) -> f32 {
+    let absa = a.abs();
+    let absb = b.abs();
+    if absa > absb {
+        absa * (1.0 + (absb / absa).powi(2)).sqrt()
+    } else if absb == 0.0 {
+        0.0
+    } else {
+        absb * (1.0 + (absa / absb).powi(2)).sqrt()
+    }
+}
+
+/// Native f32 values-only Householder tridiagonalization (packed lower) — the f32
+/// transcription of `eigh_tred2_values_only`. frankentorch-b6pem.
+fn eigh_tred2_values_only_f32(n: usize, lower: &mut [f32], d: &mut [f32], e: &mut [f32]) {
+    for i in (1..n).rev() {
+        let l = i - 1;
+        let row_i_start = lower_packed_index(i, 0);
+        let mut h = 0.0f32;
+        let mut scale = 0.0f32;
+        if l > 0 {
+            let (previous_rows, current_and_after) = lower.split_at_mut(row_i_start);
+            let row_i = &mut current_and_after[..=i];
+            for &value in &row_i[..=l] {
+                scale += value.abs();
+            }
+            if scale == 0.0 {
+                e[i] = row_i[l];
+            } else {
+                for value in &mut row_i[..=l] {
+                    *value /= scale;
+                    h += *value * *value;
+                }
+                let mut f = row_i[l];
+                let g = if f >= 0.0 { -h.sqrt() } else { h.sqrt() };
+                e[i] = scale * g;
+                h -= f * g;
+                row_i[l] = f - g;
+                f = 0.0;
+                for j in 0..=l {
+                    let mut gg = 0.0f32;
+                    let row_j_start = lower_packed_index(j, 0);
+                    let row_j = &previous_rows[row_j_start..=row_j_start + j];
+                    for k in 0..=j {
+                        gg += row_j[k] * row_i[k];
+                    }
+                    let mut lower_col_offset = lower_packed_index(j + 1, j);
+                    for k in (j + 1)..=l {
+                        gg += previous_rows[lower_col_offset] * row_i[k];
+                        lower_col_offset += k + 1;
+                    }
+                    e[j] = gg / h;
+                    f += e[j] * row_i[j];
+                }
+                let hh = f / (h + h);
+                for j in 0..=l {
+                    f = row_i[j];
+                    let gg = e[j] - hh * f;
+                    e[j] = gg;
+                    let row_j_start = lower_packed_index(j, 0);
+                    let row_j = &mut previous_rows[row_j_start..=row_j_start + j];
+                    for k in 0..=j {
+                        row_j[k] -= f * e[k] + gg * row_i[k];
+                    }
+                }
+            }
+        } else {
+            e[i] = lower[row_i_start + l];
+        }
+        d[i] = h;
+    }
+    d[0] = 0.0;
+    e[0] = 0.0;
+    for i in 0..n {
+        d[i] = lower[lower_packed_index(i, i)];
+    }
+}
+
+/// Native f32 implicit-shift QL eigenvalue iteration — the f32 transcription of
+/// `eigh_tql2_values_only` (f32::EPSILON convergence test). frankentorch-b6pem.
+fn eigh_tql2_values_only_f32(n: usize, d: &mut [f32], e: &mut [f32]) {
+    if n == 0 {
+        return;
+    }
+    for i in 1..n {
+        e[i - 1] = e[i];
+    }
+    e[n - 1] = 0.0;
+    for l in 0..n {
+        let mut iter = 0;
+        loop {
+            let mut m = l;
+            while m < n - 1 {
+                let dd = d[m].abs() + d[m + 1].abs();
+                if e[m].abs() <= f32::EPSILON * dd {
+                    break;
+                }
+                m += 1;
+            }
+            if m == l {
+                break;
+            }
+            if iter >= 50 {
+                break;
+            }
+            iter += 1;
+            let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+            let mut r = eigh_pythag_f32(g, 1.0);
+            let sr = if g >= 0.0 { r.abs() } else { -r.abs() };
+            g = d[m] - d[l] + e[l] / (g + sr);
+            let mut s = 1.0f32;
+            let mut c = 1.0f32;
+            let mut p = 0.0f32;
+            let mut bailed = false;
+            for i in (l..m).rev() {
+                let f = s * e[i];
+                let b = c * e[i];
+                r = eigh_pythag_f32(f, g);
+                e[i + 1] = r;
+                if r == 0.0 {
+                    d[i + 1] -= p;
+                    e[m] = 0.0;
+                    bailed = true;
+                    break;
+                }
+                s = f / r;
+                c = g / r;
+                g = d[i + 1] - p;
+                r = (d[i] - g) * s + 2.0 * c * b;
+                p = s * r;
+                d[i + 1] = g + p;
+                g = c * r - b;
+            }
+            if bailed {
+                continue;
+            }
+            d[l] -= p;
+            e[l] = g;
+            e[m] = 0.0;
+        }
+    }
+}
+
+/// Native f32 eigenvalues of a symmetric matrix (sorted ascending) — the f32
+/// companion to [`eigvalsh_contiguous_f64`]. Reduction runs in f32 (≈half the
+/// memory traffic of the f64 packed sweep — the reduction is bandwidth-bound),
+/// so the public f32 eigvalsh avoids the f32->f64->f32 round trip and matches
+/// torch's f32 eigvalsh (tolerance parity: f32 eigenvalues are ~f32-accurate, the
+/// expected contract for an f32 input). frankentorch-b6pem.
+pub fn eigvalsh_contiguous_f32(data: &[f32], meta: &TensorMeta) -> Result<Vec<f32>, KernelError> {
+    ensure_unary_layout_and_storage_f32(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 || shape[0] != shape[1] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![2],
+        });
+    }
+    let n = shape[0];
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let offset = meta.storage_offset();
+    let mut lower = vec![0.0f32; n * (n + 1) / 2];
+    for i in 0..n {
+        let dst = lower_packed_index(i, 0);
+        let src = offset + i * n;
+        lower[dst..=dst + i].copy_from_slice(&data[src..=src + i]);
+    }
+    let mut d = vec![0.0f32; n];
+    let mut e = vec![0.0f32; n];
+    eigh_tred2_values_only_f32(n, &mut lower, &mut d, &mut e);
+    eigh_tql2_values_only_f32(n, &mut d, &mut e);
+    d.sort_by(f32::total_cmp);
+    Ok(d)
+}
+
 /// Eigenvalues of a symmetric matrix via the compact-WY BLOCKED `dsytrd`
 /// reduction (`eigh_tridiag_reduce_blocked`) + implicit-shift QL.
 ///
@@ -24447,6 +24624,56 @@ mod tests {
             }
         }
         assert_mat_approx_eq(&ax, &b, 1e-10, "A * x should equal b");
+    }
+
+    #[test]
+    fn eigvalsh_f32_native_matches_torch_and_f64() {
+        // Native f32 eigvalsh (frankentorch-b6pem): (1) fixed 4x4 vs torch 2.12 f32
+        // goldens; (2) larger n=80 vs the f64 reference within f32 tolerance (the
+        // reduction runs in f32 — eigenvalues are ~f32-accurate, the f32 contract).
+        let meta4 = TensorMeta::from_shape(vec![4, 4], DType::F32, Device::Cpu);
+        #[rustfmt::skip]
+        let a4 = vec![
+            4.0f32, 1.0, 2.0, 0.5,
+            1.0, 5.0, 1.5, 1.0,
+            2.0, 1.5, 6.0, 2.0,
+            0.5, 1.0, 2.0, 7.0,
+        ];
+        let ev = super::eigvalsh_contiguous_f32(&a4, &meta4).expect("eigvalsh_f32");
+        let want = [2.64587f32, 3.99457, 5.43426, 9.9253];
+        for i in 0..4 {
+            assert!(
+                (ev[i] - want[i]).abs() < 1e-3,
+                "ev[{i}]={} want {}",
+                ev[i],
+                want[i]
+            );
+        }
+
+        // n=80 symmetric: compare f32 eigvalsh to the f64 reference.
+        let n = 80usize;
+        let mut a = vec![0.0f32; n * n];
+        for i in 0..n {
+            for j in 0..=i {
+                let v = (((i * 13 + j * 7) % 17) as f32) * 0.1 - 0.8;
+                a[i * n + j] = v;
+                a[j * n + i] = v;
+            }
+            a[i * n + i] += n as f32;
+        }
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+        let ev_f32 = super::eigvalsh_contiguous_f32(&a, &meta).expect("eigvalsh_f32 n");
+        let a64: Vec<f64> = a.iter().map(|&x| x as f64).collect();
+        let meta64 = TensorMeta::from_shape(vec![n, n], DType::F64, Device::Cpu);
+        let ev_f64 = super::eigvalsh_contiguous_f64(&a64, &meta64).expect("eigvalsh_f64 n");
+        for i in 0..n {
+            let diff = (ev_f32[i] as f64 - ev_f64[i]).abs();
+            // f32 reduction backward error ~eps_f32 * ||A|| (||A|| ~ n+ here).
+            assert!(
+                diff < 1e-2 * (1.0 + ev_f64[i].abs()),
+                "n=80 ev[{i}] diff {diff}"
+            );
+        }
     }
 
     #[test]
