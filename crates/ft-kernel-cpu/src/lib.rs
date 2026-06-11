@@ -782,7 +782,9 @@ pub fn leaky_relu_scalar(input: &ScalarTensor) -> ScalarTensor {
 }
 
 fn elu_value(x: f64) -> f64 {
-    if x > 0.0 { x } else { x.exp() - 1.0 }
+    // Negative branch uses expm1 (not exp(x)-1.0) to avoid catastrophic
+    // cancellation near 0 and match torch's elu bit-for-bit. frankentorch-0f609.
+    if x > 0.0 { x } else { x.exp_m1() }
 }
 
 pub fn elu_scalar(input: &ScalarTensor) -> ScalarTensor {
@@ -15591,7 +15593,8 @@ fn leaky_relu_value_f32(x: f32) -> f32 {
 }
 
 fn elu_value_f32(x: f32) -> f32 {
-    if x > 0.0f32 { x } else { x.exp() - 1.0f32 }
+    // expm1 (not exp(x)-1.0): avoids cancellation near 0, matches torch. frankentorch-0f609.
+    if x > 0.0f32 { x } else { x.exp_m1() }
 }
 
 fn erf_value_f32(x: f32) -> f32 {
@@ -18333,6 +18336,25 @@ pub fn sparse_coo_add(
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+
+    #[test]
+    fn elu_value_uses_expm1_bit_exact_torch() {
+        // Regression (frankentorch-0f609): the negative branch was exp(x)-1.0,
+        // which loses precision to cancellation near 0 and diverged from torch.
+        // torch.nn.functional.elu uses expm1. Bits captured from torch 2.12 f64/f32.
+        // f64 elu(x) at small x:
+        assert_eq!(super::elu_value(-0.1).to_bits(), 0xbfb8_5c93_3156_a62c);
+        assert_eq!(super::elu_value(-0.001).to_bits(), 0xbf50_6035_21ca_c48c);
+        assert_eq!(super::elu_value(-1e-7).to_bits(), 0xbe7a_d7f2_8438_13ce);
+        assert_eq!(super::elu_value(-2.0).to_bits(), 0xbfeb_ab55_5710_1f8d);
+        // x > 0 is the identity.
+        assert_eq!(super::elu_value(3.5), 3.5);
+        // f32 elu(x) (torch f32 bits, little-endian -> u32):
+        assert_eq!(super::elu_value_f32(-0.1).to_bits(), 0xbdc2_e49a);
+        assert_eq!(super::elu_value_f32(-0.001).to_bits(), 0xba83_01a9);
+        assert_eq!(super::elu_value_f32(-2.0).to_bits(), 0xbf5d_5aab);
+        assert_eq!(super::elu_value_f32(-5.0).to_bits(), 0xbf7e_466c);
+    }
 
     #[test]
     fn max_pool2d_indices_preserve_first_tie_backward() {
