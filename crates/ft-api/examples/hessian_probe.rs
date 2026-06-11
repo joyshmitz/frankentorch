@@ -78,4 +78,34 @@ fn main() {
     let neg = vec![-2.0f64, -1.0, -0.5, -0.1];
     probe!("elu_neg", tensor_elu, neg);
     probe!("selu_neg", tensor_selu, neg);
+
+    // --- composite / multi-arg ops (2nd derivative via create_graph) ---
+    // torch goldens: pow3 [3,6,9,12]; recip [16,2,.5926,.25]; softmax [0,0,0,0];
+    // logsoftmax [-.3649,-.5575,-.7993,-.9919]; prod [0,0,0,0]; sumsq [2,2,2,2].
+    let mut cp =
+        |name: &str,
+         build: &dyn Fn(
+            &mut FrankenTorchSession,
+            ft_autograd::TensorNodeId,
+        )
+            -> Result<ft_autograd::TensorNodeId, ft_autograd::AutogradError>| {
+            let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+            let x = s.tensor_variable(x0.clone(), vec![4], true).unwrap();
+            match build(&mut s, x)
+                .and_then(|y| s.tensor_sum(y))
+                .and_then(|out| s.tensor_functional_hessian(out, x))
+            {
+                Ok(h) => {
+                    let d: Vec<f64> = (0..4).map(|i| (h[i * 4 + i] * 1e6).round() / 1e6).collect();
+                    println!("{:<11} {:?}", name, d);
+                }
+                Err(e) => println!("{:<11} ERR {:?}", name, e),
+            }
+        };
+    cp("pow3", &|s, x| s.tensor_pow(x, 3.0));
+    cp("recip2", &|s, x| s.tensor_reciprocal(x));
+    cp("softmax", &|s, x| s.tensor_softmax(x, 0));
+    cp("logsoftmax", &|s, x| s.tensor_log_softmax(x, 0));
+    cp("prod", &|s, x| s.tensor_prod(x));
+    cp("sumsq", &|s, x| s.tensor_mul(x, x));
 }
