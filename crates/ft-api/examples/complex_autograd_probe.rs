@@ -53,6 +53,48 @@ fn main() {
         );
     }
 
+    // Chain D: real -> fft -> sum(real(y)*a + imag(y)*b); grad matches torch.
+    {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+        let y = s.tensor_fft(x, None).unwrap();
+        let re = s.tensor_real(y).unwrap();
+        let im = s.tensor_imag(y).unwrap();
+        let a = s.tensor_variable(vec![0.1, 0.2, 0.3, 0.4], vec![4], false).unwrap();
+        let b = s.tensor_variable(vec![0.5, 0.6, 0.7, 0.8], vec![4], false).unwrap();
+        let ra = s.tensor_mul(re, a).unwrap();
+        let ib = s.tensor_mul(im, b).unwrap();
+        let sum = s.tensor_add(ra, ib).unwrap();
+        let out = s.tensor_sum(sum).unwrap();
+        let rep = s.tensor_backward(out).unwrap();
+        println!(
+            "D fft x.grad {:?}  (torch [1.0,0.0,-0.2,-0.4])",
+            r(s.tensor_gradient(&rep, x).unwrap())
+        );
+    }
+
+    // Chains E/F: fft with padding (n=6) and truncation (n=2).
+    for (label, nval, golden) in [
+        ("E pad n=6", 6usize, "[2.1,2.298076,0.566025,-0.3]"),
+        ("F trunc n=2", 2usize, "[0.3,-0.1,0.0,0.0]"),
+    ] {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let x = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+        let y = s.tensor_fft(x, Some(nval)).unwrap();
+        let re = s.tensor_real(y).unwrap();
+        let im = s.tensor_imag(y).unwrap();
+        let av: Vec<f64> = (1..=nval).map(|k| k as f64 * 0.1).collect();
+        let bv: Vec<f64> = (1..=nval).map(|k| k as f64 * 0.5).collect();
+        let a = s.tensor_variable(av, vec![nval], false).unwrap();
+        let b = s.tensor_variable(bv, vec![nval], false).unwrap();
+        let ra = s.tensor_mul(re, a).unwrap();
+        let ib = s.tensor_mul(im, b).unwrap();
+        let sum = s.tensor_add(ra, ib).unwrap();
+        let out = s.tensor_sum(sum).unwrap();
+        let rep = s.tensor_backward(out).unwrap();
+        println!("{label} x.grad {:?}  (torch {golden})", r(s.tensor_gradient(&rep, x).unwrap()));
+    }
+
     // Chain C: r[...,2] -> view_as_complex -> view_as_real -> *w -> sum; grad r = w.
     {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
