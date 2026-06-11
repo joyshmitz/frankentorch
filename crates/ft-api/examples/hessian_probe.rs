@@ -70,6 +70,15 @@ fn main() {
     probe!("acos", tensor_acos, unit);
     probe!("atanh", tensor_atanh, unit);
     probe!("erfinv", tensor_erfinv, unit);
+    probe!("i0", tensor_i0);
+    probe!("i0e", tensor_i0e);
+    probe!("i1", tensor_i1);
+    probe!("i1e", tensor_i1e);
+    probe!("erfcx", tensor_erfcx);
+    probe!("ndtr", tensor_ndtr);
+    probe!("ndtri", tensor_ndtri, unit);
+    probe!("entr", tensor_entr);
+    probe!("sinc", tensor_sinc);
     probe!("gelu_tanh", tensor_gelu_tanh, genv);
     probe!("softsign", tensor_softsign, genv);
     probe!("tanhshrink", tensor_tanhshrink, genv);
