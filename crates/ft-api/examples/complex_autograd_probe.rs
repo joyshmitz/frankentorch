@@ -95,6 +95,41 @@ fn main() {
         println!("{label} x.grad {:?}  (torch {golden})", r(s.tensor_gradient(&rep, x).unwrap()));
     }
 
+    // Chains G/H: real,imag -> complex -> ifft(n) -> sum(real*a + imag*b).
+    for (label, nval, gr_golden, gi_golden) in [
+        (
+            "G ifft n=4",
+            4usize,
+            "[0.25,-0.1,-0.05,-0.0]",
+            "[0.65,0.0,-0.05,-0.1]",
+        ),
+        (
+            "H ifft pad n=6",
+            6usize,
+            "[0.35,-0.483013,-0.194338,-0.05]",
+            "[1.75,-0.163397,-0.221132,-0.25]",
+        ),
+    ] {
+        let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
+        let xr = s.tensor_variable(vec![1.0, 2.0, 3.0, 4.0], vec![4], true).unwrap();
+        let xi = s.tensor_variable(vec![0.5, 1.0, 1.5, 2.0], vec![4], true).unwrap();
+        let z = s.tensor_complex(xr, xi).unwrap();
+        let y = s.tensor_ifft(z, Some(nval)).unwrap();
+        let re = s.tensor_real(y).unwrap();
+        let im = s.tensor_imag(y).unwrap();
+        let av: Vec<f64> = (1..=nval).map(|k| k as f64 * 0.1).collect();
+        let bv: Vec<f64> = (1..=nval).map(|k| k as f64 * 0.5).collect();
+        let a = s.tensor_variable(av, vec![nval], false).unwrap();
+        let b = s.tensor_variable(bv, vec![nval], false).unwrap();
+        let ra = s.tensor_mul(re, a).unwrap();
+        let ib = s.tensor_mul(im, b).unwrap();
+        let sum = s.tensor_add(ra, ib).unwrap();
+        let out = s.tensor_sum(sum).unwrap();
+        let rep = s.tensor_backward(out).unwrap();
+        println!("{label} xr.grad {:?}  (torch {gr_golden})", r(s.tensor_gradient(&rep, xr).unwrap()));
+        println!("{label} xi.grad {:?}  (torch {gi_golden})", r(s.tensor_gradient(&rep, xi).unwrap()));
+    }
+
     // Chain C: r[...,2] -> view_as_complex -> view_as_real -> *w -> sum; grad r = w.
     {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
