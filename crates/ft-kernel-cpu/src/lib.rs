@@ -10853,6 +10853,18 @@ pub struct EighResult {
     pub n: usize,
 }
 
+/// Native f32 symmetric eigendecomposition result (the f32 companion to
+/// [`EighResult`]). frankentorch-b6pem (f32-parity follow-up).
+#[derive(Debug, Clone)]
+pub struct EighResultF32 {
+    /// Eigenvalues sorted ascending, f32.
+    pub eigenvalues: Vec<f32>,
+    /// Eigenvectors as columns of V (n x n, row-major), f32.
+    pub eigenvectors: Vec<f32>,
+    /// Matrix dimension.
+    pub n: usize,
+}
+
 /// Apply the lower triangle of a symmetric rank-2k update:
 ///
 /// `A := A - (V @ W^T + W @ V^T)`
@@ -12001,6 +12013,256 @@ fn eigh_tql2_values_only(n: usize, d: &mut [f64], e: &mut [f64]) {
             e[m] = 0.0;
         }
     }
+}
+
+fn eigh_tred2_reduce_packed_full_f32(
+    n: usize,
+    lower: &mut [f32],
+    scaled_reflectors: &mut [f32],
+    d: &mut [f32],
+    e: &mut [f32],
+) {
+    for i in (1..n).rev() {
+        let l = i - 1;
+        let row_i_start = lower_packed_index(i, 0);
+        let mut h = 0.0f32;
+        let mut scale = 0.0f32;
+        if l > 0 {
+            let (previous_rows, current_and_after) = lower.split_at_mut(row_i_start);
+            let row_i = &mut current_and_after[..=i];
+            for &value in &row_i[..=l] {
+                scale += value.abs();
+            }
+            if scale == 0.0 {
+                e[i] = row_i[l];
+            } else {
+                for value in &mut row_i[..=l] {
+                    *value /= scale;
+                    h += *value * *value;
+                }
+                let mut f = row_i[l];
+                let g = if f >= 0.0 { -h.sqrt() } else { h.sqrt() };
+                e[i] = scale * g;
+                h -= f * g;
+                row_i[l] = f - g;
+                f = 0.0;
+                for j in 0..=l {
+                    scaled_reflectors[lower_packed_index(i, j)] = row_i[j] / h;
+                    let mut gg = 0.0f32;
+                    let row_j_start = lower_packed_index(j, 0);
+                    let row_j = &previous_rows[row_j_start..=row_j_start + j];
+                    for k in 0..=j {
+                        gg += row_j[k] * row_i[k];
+                    }
+                    let mut lower_col_offset = lower_packed_index(j + 1, j);
+                    for k in (j + 1)..=l {
+                        gg += previous_rows[lower_col_offset] * row_i[k];
+                        lower_col_offset += k + 1;
+                    }
+                    e[j] = gg / h;
+                    f += e[j] * row_i[j];
+                }
+                let hh = f / (h + h);
+                for j in 0..=l {
+                    f = row_i[j];
+                    let gg = e[j] - hh * f;
+                    e[j] = gg;
+                    let row_j_start = lower_packed_index(j, 0);
+                    let row_j = &mut previous_rows[row_j_start..=row_j_start + j];
+                    for k in 0..=j {
+                        row_j[k] -= f * e[k] + gg * row_i[k];
+                    }
+                }
+            }
+        } else {
+            e[i] = lower[row_i_start + l];
+        }
+        d[i] = h;
+    }
+    d[0] = 0.0;
+    e[0] = 0.0;
+}
+
+fn eigh_tred2_backtransform_f32(n: usize, z: &mut [f32], d: &mut [f32]) {
+    let mut projections: Vec<f32> = Vec::with_capacity(n);
+    for i in 0..n {
+        if d[i] != 0.0 {
+            projections.clear();
+            let row_i_start = i * n;
+            let (previous_rows, current_and_after) = z.split_at_mut(row_i_start);
+            let row_i = &current_and_after[..i];
+            projections.resize(i, 0.0);
+            for k in 0..i {
+                let row_factor = row_i[k];
+                let row = &previous_rows[k * n..k * n + i];
+                for j in 0..i {
+                    projections[j] += row_factor * row[j];
+                }
+            }
+            for k in 0..i {
+                let reflector = previous_rows[k * n + i];
+                let row = &mut previous_rows[k * n..k * n + i];
+                for j in 0..i {
+                    row[j] -= projections[j] * reflector;
+                }
+            }
+        }
+        d[i] = z[i * n + i];
+        z[i * n + i] = 1.0;
+        for j in 0..i {
+            z[j * n + i] = 0.0;
+            z[i * n + j] = 0.0;
+        }
+    }
+}
+
+fn eigh_tred2_packed_full_f32(
+    n: usize,
+    lower: &mut [f32],
+    d: &mut [f32],
+    e: &mut [f32],
+) -> Vec<f32> {
+    let mut scaled_reflectors = vec![0.0f32; lower.len()];
+    eigh_tred2_reduce_packed_full_f32(n, lower, &mut scaled_reflectors, d, e);
+    let mut z = vec![0.0f32; n * n];
+    for i in 0..n {
+        let row_start = i * n;
+        let lower_start = lower_packed_index(i, 0);
+        z[row_start..=row_start + i].copy_from_slice(&lower[lower_start..=lower_start + i]);
+        for j in 0..i {
+            z[j * n + i] = scaled_reflectors[lower_packed_index(i, j)];
+        }
+    }
+    eigh_tred2_backtransform_f32(n, &mut z, d);
+    z
+}
+
+fn eigh_tql2_transposed_f32(n: usize, d: &mut [f32], e: &mut [f32], zt: &mut [f32]) {
+    if n == 0 {
+        return;
+    }
+    for i in 1..n {
+        e[i - 1] = e[i];
+    }
+    e[n - 1] = 0.0;
+    for l in 0..n {
+        let mut iter = 0;
+        loop {
+            let mut m = l;
+            while m < n - 1 {
+                let dd = d[m].abs() + d[m + 1].abs();
+                if e[m].abs() <= f32::EPSILON * dd {
+                    break;
+                }
+                m += 1;
+            }
+            if m == l {
+                break;
+            }
+            if iter >= 50 {
+                break;
+            }
+            iter += 1;
+            let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+            let mut r = eigh_pythag_f32(g, 1.0);
+            let sr = if g >= 0.0 { r.abs() } else { -r.abs() };
+            g = d[m] - d[l] + e[l] / (g + sr);
+            let mut s = 1.0f32;
+            let mut c = 1.0f32;
+            let mut p = 0.0f32;
+            let mut bailed = false;
+            for i in (l..m).rev() {
+                let mut f = s * e[i];
+                let b = c * e[i];
+                r = eigh_pythag_f32(f, g);
+                e[i + 1] = r;
+                if r == 0.0 {
+                    d[i + 1] -= p;
+                    e[m] = 0.0;
+                    bailed = true;
+                    break;
+                }
+                s = f / r;
+                c = g / r;
+                g = d[i + 1] - p;
+                r = (d[i] - g) * s + 2.0 * c * b;
+                p = s * r;
+                d[i + 1] = g + p;
+                g = c * r - b;
+                let col_i = i * n;
+                let col_next = (i + 1) * n;
+                for k in 0..n {
+                    f = zt[col_next + k];
+                    let left = zt[col_i + k];
+                    zt[col_next + k] = s * left + c * f;
+                    zt[col_i + k] = c * left - s * f;
+                }
+            }
+            if bailed {
+                continue;
+            }
+            d[l] -= p;
+            e[l] = g;
+            e[m] = 0.0;
+        }
+    }
+}
+
+/// Native f32 symmetric eigendecomposition (eigenvalues + eigenvectors) — the f32
+/// companion to [`eigh_contiguous_f64`]. f32 Householder reduction (tred2) + f32
+/// implicit-shift QL with rotation accumulation, so the public f32 eigh avoids the
+/// f32->f64->f32 round trip and matches torch's f32 dtype contract (eigenvectors
+/// non-unique up to sign; eigenvalues f32-accurate). frankentorch-b6pem follow-up.
+pub fn eigh_contiguous_f32(data: &[f32], meta: &TensorMeta) -> Result<EighResultF32, KernelError> {
+    ensure_unary_layout_and_storage_f32(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 || shape[0] != shape[1] {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![2],
+        });
+    }
+    let n = shape[0];
+    if n == 0 {
+        return Ok(EighResultF32 {
+            eigenvalues: Vec::new(),
+            eigenvectors: Vec::new(),
+            n: 0,
+        });
+    }
+    let offset = meta.storage_offset();
+    let mut lower = vec![0.0f32; n * (n + 1) / 2];
+    for i in 0..n {
+        let dst = lower_packed_index(i, 0);
+        let src = offset + i * n;
+        lower[dst..=dst + i].copy_from_slice(&data[src..=src + i]);
+    }
+    let mut d = vec![0.0f32; n];
+    let mut e = vec![0.0f32; n];
+    let z = eigh_tred2_packed_full_f32(n, &mut lower, &mut d, &mut e);
+    let mut zt = vec![0.0f32; n * n];
+    for row in 0..n {
+        let row_start = row * n;
+        for col in 0..n {
+            zt[col * n + row] = z[row_start + col];
+        }
+    }
+    eigh_tql2_transposed_f32(n, &mut d, &mut e, &mut zt);
+    let mut eigen_pairs: Vec<(f32, usize)> = (0..n).map(|i| (d[i], i)).collect();
+    eigen_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let eigenvalues: Vec<f32> = eigen_pairs.iter().map(|(val, _)| *val).collect();
+    let mut eigenvectors = vec![0.0f32; n * n];
+    for (new_col, &(_, old_col)) in eigen_pairs.iter().enumerate() {
+        let old_col_start = old_col * n;
+        for row in 0..n {
+            eigenvectors[row * n + new_col] = zt[old_col_start + row];
+        }
+    }
+    Ok(EighResultF32 {
+        eigenvalues,
+        eigenvectors,
+        n,
+    })
 }
 
 pub fn eigh_contiguous_f64(data: &[f64], meta: &TensorMeta) -> Result<EighResult, KernelError> {
@@ -24624,6 +24886,48 @@ mod tests {
             }
         }
         assert_mat_approx_eq(&ax, &b, 1e-10, "A * x should equal b");
+    }
+
+    #[test]
+    fn eigh_f32_native_reconstructs_and_matches_torch() {
+        // Native f32 eigh (frankentorch-b6pem follow-up): eigenvectors are
+        // non-unique (sign), so verify the convention-independent invariants —
+        // A = V·diag(λ)·Vᵀ and VᵀV = I (f32 tol) — plus eigenvalues vs torch f32.
+        let n = 4usize;
+        #[rustfmt::skip]
+        let a = vec![
+            4.0f32, 1.0, 2.0, 0.5,
+            1.0, 5.0, 1.5, 1.0,
+            2.0, 1.5, 6.0, 2.0,
+            0.5, 1.0, 2.0, 7.0,
+        ];
+        let meta = TensorMeta::from_shape(vec![n, n], DType::F32, Device::Cpu);
+        let r = super::eigh_contiguous_f32(&a, &meta).expect("eigh_f32");
+        let want = [2.64587f32, 3.99457, 5.43426, 9.9253];
+        for i in 0..n {
+            assert!((r.eigenvalues[i] - want[i]).abs() < 1e-3, "λ[{i}]");
+        }
+        // V·diag(λ)·Vᵀ == A  (V columns are eigenvectors: V[r*n+c]).
+        for i in 0..n {
+            for j in 0..n {
+                let mut acc = 0.0f32;
+                for k in 0..n {
+                    acc += r.eigenvectors[i * n + k] * r.eigenvalues[k] * r.eigenvectors[j * n + k];
+                }
+                assert!((acc - a[i * n + j]).abs() < 5e-3, "recon ({i},{j}): {acc}");
+            }
+        }
+        // VᵀV == I (columns orthonormal).
+        for i in 0..n {
+            for j in 0..n {
+                let mut acc = 0.0f32;
+                for k in 0..n {
+                    acc += r.eigenvectors[k * n + i] * r.eigenvectors[k * n + j];
+                }
+                let w = if i == j { 1.0 } else { 0.0 };
+                assert!((acc - w).abs() < 5e-3, "VtV ({i},{j}): {acc}");
+            }
+        }
     }
 
     #[test]
