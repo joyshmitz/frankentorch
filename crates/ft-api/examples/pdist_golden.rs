@@ -26,8 +26,7 @@ fn dump_case(out: &mut String, n: usize, m: usize, p: f64) -> GoldenResult<()> {
     let input: Vec<f64> = (0..n * m).map(|i| (i as f64 * 0.011).sin() - 0.2).collect();
 
     let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-    let reference_input = session
-        .tensor_variable(input.clone(), vec![n, m], true)?;
+    let reference_input = session.tensor_variable(input.clone(), vec![n, m], true)?;
     let reference = session.tensor_pdist(reference_input, p)?;
     let reference_values = session.tensor_values(reference)?;
 

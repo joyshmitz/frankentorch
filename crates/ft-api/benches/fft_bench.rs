@@ -49,7 +49,9 @@ fn bench_fft(c: &mut Criterion) {
 
         c.bench_function(&format!("fft_bluestein/{n}"), |b| {
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-            let x = session.tensor_variable(signal.clone(), vec![n], false).unwrap();
+            let x = session
+                .tensor_variable(signal.clone(), vec![n], false)
+                .unwrap();
             b.iter(|| black_box(session.tensor_fft(black_box(x), None).unwrap()));
         });
     }

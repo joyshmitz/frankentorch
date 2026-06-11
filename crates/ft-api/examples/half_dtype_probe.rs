@@ -25,10 +25,16 @@ fn main() {
             match s.$m(t) {
                 Ok(r) => match s.tensor_dtype(r) {
                     Ok(DType::F16) => {}
-                    Ok(d) => { println!("{:<24} UPCAST -> {:?}", $name, d); bugs += 1; }
+                    Ok(d) => {
+                        println!("{:<24} UPCAST -> {:?}", $name, d);
+                        bugs += 1;
+                    }
                     Err(e) => println!("{:<24} dtype-err {e:?}", $name),
                 },
-                Err(e) => { println!("{:<24} ERR {e:?}", $name); bugs += 1; }
+                Err(e) => {
+                    println!("{:<24} ERR {e:?}", $name);
+                    bugs += 1;
+                }
             }
         }};
     }
@@ -59,29 +65,60 @@ fn main() {
             match $call(&mut s, x, y) {
                 Ok(r) => match s.tensor_dtype(r) {
                     Ok(DType::F16) => {}
-                    Ok(d) => { println!("{:<24} UPCAST -> {:?}", $name, d); bugs += 1; }
+                    Ok(d) => {
+                        println!("{:<24} UPCAST -> {:?}", $name, d);
+                        bugs += 1;
+                    }
                     Err(e) => println!("{:<24} dtype-err {e:?}", $name),
                 },
-                Err(e) => { println!("{:<24} ERR {e:?}", $name); bugs += 1; }
+                Err(e) => {
+                    println!("{:<24} ERR {e:?}", $name);
+                    bugs += 1;
+                }
             }
         }};
     }
-    bin!("add", |s: &mut FrankenTorchSession, x, y| s.tensor_add(x, y));
-    bin!("mul", |s: &mut FrankenTorchSession, x, y| s.tensor_mul(x, y));
-    bin!("div", |s: &mut FrankenTorchSession, x, y| s.tensor_div(x, y));
-    bin!("sub", |s: &mut FrankenTorchSession, x, y| s.tensor_sub(x, y));
-    bin!("matmul", |s: &mut FrankenTorchSession, x, y| s.tensor_matmul(x, y));
+    bin!("add", |s: &mut FrankenTorchSession, x, y| s
+        .tensor_add(x, y));
+    bin!("mul", |s: &mut FrankenTorchSession, x, y| s
+        .tensor_mul(x, y));
+    bin!("div", |s: &mut FrankenTorchSession, x, y| s
+        .tensor_div(x, y));
+    bin!("sub", |s: &mut FrankenTorchSession, x, y| s
+        .tensor_sub(x, y));
+    bin!("matmul", |s: &mut FrankenTorchSession, x, y| s
+        .tensor_matmul(x, y));
 
     // dim ops
     let t = h4!(s, p());
     match s.tensor_softmax(t, 0) {
-        Ok(r) => { if s.tensor_dtype(r).unwrap() != DType::F16 { println!("{:<24} UPCAST -> {:?}", "softmax", s.tensor_dtype(r).unwrap()); bugs += 1; } }
-        Err(e) => { println!("{:<24} ERR {e:?}", "softmax"); bugs += 1; }
+        Ok(r) => {
+            if s.tensor_dtype(r).unwrap() != DType::F16 {
+                println!(
+                    "{:<24} UPCAST -> {:?}",
+                    "softmax",
+                    s.tensor_dtype(r).unwrap()
+                );
+                bugs += 1;
+            }
+        }
+        Err(e) => {
+            println!("{:<24} ERR {e:?}", "softmax");
+            bugs += 1;
+        }
     }
     let t = h4!(s, p());
     match s.tensor_pow(t, 2.0) {
-        Ok(r) => { if s.tensor_dtype(r).unwrap() != DType::F16 { println!("{:<24} UPCAST -> {:?}", "pow", s.tensor_dtype(r).unwrap()); bugs += 1; } }
-        Err(e) => { println!("{:<24} ERR {e:?}", "pow"); bugs += 1; }
+        Ok(r) => {
+            if s.tensor_dtype(r).unwrap() != DType::F16 {
+                println!("{:<24} UPCAST -> {:?}", "pow", s.tensor_dtype(r).unwrap());
+                bugs += 1;
+            }
+        }
+        Err(e) => {
+            println!("{:<24} ERR {e:?}", "pow");
+            bugs += 1;
+        }
     }
 
     println!("\nf16 UPCAST/ERR bugs: {bugs}");

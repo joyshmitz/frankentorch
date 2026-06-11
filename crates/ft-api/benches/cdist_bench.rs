@@ -155,5 +155,11 @@ fn bench_pdist_p1(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_cdist, bench_pdist, bench_cdist_p1, bench_pdist_p1);
+criterion_group!(
+    benches,
+    bench_cdist,
+    bench_pdist,
+    bench_cdist_p1,
+    bench_pdist_p1
+);
 criterion_main!(benches);

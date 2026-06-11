@@ -61,33 +61,43 @@ fn main() {
     // floor_divide: comprehensive sign/zero/inf/nan edge set (frankentorch-bh6bh).
     // torch uses aten div_floor_floating, NOT floor(a/b): ±inf dividend -> NaN,
     // -5/+inf -> -1, but inf/0 -> inf (b==0 short-circuit).
-    let fa = s.tensor_variable(
-        vec![
-            1.0, -1.0, 0.0, INF, -INF, INF, -INF, INF, -INF, NAN, 1.0, INF, 5.0, -5.0, 7.0, -7.0,
-            0.3, 2.5, -0.0, 6.5, -6.5,
-        ],
-        vec![21],
-        false,
-    ).unwrap();
-    let fb = s.tensor_variable(
-        vec![
-            0.0, 0.0, 0.0, 1.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, NAN, INF, INF, INF, 2.0, 2.0, 0.1,
-            0.5, 3.0, 2.0, 2.0,
-        ],
-        vec![21],
-        false,
-    ).unwrap();
+    let fa = s
+        .tensor_variable(
+            vec![
+                1.0, -1.0, 0.0, INF, -INF, INF, -INF, INF, -INF, NAN, 1.0, INF, 5.0, -5.0, 7.0,
+                -7.0, 0.3, 2.5, -0.0, 6.5, -6.5,
+            ],
+            vec![21],
+            false,
+        )
+        .unwrap();
+    let fb = s
+        .tensor_variable(
+            vec![
+                0.0, 0.0, 0.0, 1.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, NAN, INF, INF, INF, 2.0, 2.0,
+                0.1, 0.5, 3.0, 2.0, 2.0,
+            ],
+            vec![21],
+            false,
+        )
+        .unwrap();
     bin!("floor_divide_edge", tensor_floor_divide, fa, fb);
 
     // xlogy: x*log(y), with the x==0 short-circuit (0*log(0)=0, 0*log(-1)=0).
-    let xx = s.tensor_variable(vec![0.0, 0.0, 2.0, 3.0, 0.5, 1.0], vec![6], false).unwrap();
-    let yy = s.tensor_variable(vec![0.0, -1.0, 0.0, 2.0, 4.0, -3.0], vec![6], false).unwrap();
+    let xx = s
+        .tensor_variable(vec![0.0, 0.0, 2.0, 3.0, 0.5, 1.0], vec![6], false)
+        .unwrap();
+    let yy = s
+        .tensor_variable(vec![0.0, -1.0, 0.0, 2.0, 4.0, -3.0], vec![6], false)
+        .unwrap();
     bin!("xlogy", tensor_xlogy, xx, yy);
 
     // unary / scalar-arg
     let r = s.tensor_signbit(av).unwrap();
     println!("signbit|{}", fmt(&val(&mut s, r)));
-    let c = s.tensor_variable(vec![0.0, 0.5, 1.0, -1.0, 2.0, -0.5], vec![6], false).unwrap();
+    let c = s
+        .tensor_variable(vec![0.0, 0.5, 1.0, -1.0, 2.0, -0.5], vec![6], false)
+        .unwrap();
     let r = s.tensor_sinc(c).unwrap();
     println!("sinc|{}", fmt(&val(&mut s, r)));
     let r = s.tensor_float_power(av, 0.5).unwrap();
@@ -99,18 +109,36 @@ fn main() {
 
     // ── batch 2: NaN-propagation + domain edges ──────────────────────────
     // maximum/minimum PROPAGATE NaN (unlike fmax/fmin which ignore it).
-    let ma = s.tensor_variable(vec![NAN, 1.0, NAN, -INF, INF, 3.0], vec![6], false).unwrap();
-    let mb = s.tensor_variable(vec![1.0, NAN, NAN, 5.0, 5.0, -3.0], vec![6], false).unwrap();
+    let ma = s
+        .tensor_variable(vec![NAN, 1.0, NAN, -INF, INF, 3.0], vec![6], false)
+        .unwrap();
+    let mb = s
+        .tensor_variable(vec![1.0, NAN, NAN, 5.0, 5.0, -3.0], vec![6], false)
+        .unwrap();
     bin!("maximum", tensor_maximum, ma, mb);
     bin!("minimum", tensor_minimum, ma, mb);
 
     // atan2(y, x): quadrant/edge behavior.
-    let ya = s.tensor_variable(vec![0.0, -0.0, 1.0, -1.0, INF, INF, 0.0, NAN], vec![8], false).unwrap();
-    let xa = s.tensor_variable(vec![1.0, 1.0, 0.0, 0.0, INF, -INF, -1.0, 1.0], vec![8], false).unwrap();
+    let ya = s
+        .tensor_variable(
+            vec![0.0, -0.0, 1.0, -1.0, INF, INF, 0.0, NAN],
+            vec![8],
+            false,
+        )
+        .unwrap();
+    let xa = s
+        .tensor_variable(
+            vec![1.0, 1.0, 0.0, 0.0, INF, -INF, -1.0, 1.0],
+            vec![8],
+            false,
+        )
+        .unwrap();
     bin!("atan2", tensor_atan2, ya, xa);
 
     // clamp(x, 0, 1) incl NaN input; and clamp(x, 1, 0) (min>max).
-    let cl = s.tensor_variable(vec![-1.0, 0.5, 2.0, NAN, INF, -INF], vec![6], false).unwrap();
+    let cl = s
+        .tensor_variable(vec![-1.0, 0.5, 2.0, NAN, INF, -INF], vec![6], false)
+        .unwrap();
     let r = s.tensor_clamp(cl, 0.0, 1.0).unwrap();
     println!("clamp01|{}", fmt(&val(&mut s, r)));
     let r = s.tensor_clamp(cl, 1.0, 0.0).unwrap();
@@ -131,10 +159,24 @@ fn main() {
     un!("rsqrt", tensor_rsqrt, vec![0.0, 4.0, -1.0, INF, -0.0, NAN]);
     un!("log1p", tensor_log1p, vec![-2.0, -1.0, 0.0, INF, -0.5, NAN]);
     un!("expm1", tensor_expm1, vec![-INF, 0.0, INF, -1.0, 1.0, NAN]);
-    un!("lgamma", tensor_lgamma, vec![0.0, -1.0, -2.0, 0.5, INF, -INF]);
-    un!("digamma", tensor_digamma, vec![0.0, -1.0, -2.0, 0.5, 1.0, INF]);
-    un!("erfinv", tensor_erfinv, vec![1.0, -1.0, 2.0, -2.0, 0.0, NAN]);
-    let t = s.tensor_variable(vec![0.0, 1.0, 0.5, -0.1, 1.1, NAN], vec![6], false).unwrap();
+    un!(
+        "lgamma",
+        tensor_lgamma,
+        vec![0.0, -1.0, -2.0, 0.5, INF, -INF]
+    );
+    un!(
+        "digamma",
+        tensor_digamma,
+        vec![0.0, -1.0, -2.0, 0.5, 1.0, INF]
+    );
+    un!(
+        "erfinv",
+        tensor_erfinv,
+        vec![1.0, -1.0, 2.0, -2.0, 0.0, NAN]
+    );
+    let t = s
+        .tensor_variable(vec![0.0, 1.0, 0.5, -0.1, 1.1, NAN], vec![6], false)
+        .unwrap();
     let r = s.tensor_logit(t, None).unwrap();
     println!("logit|{}", fmt(&val(&mut s, r)));
 
@@ -144,7 +186,11 @@ fn main() {
     macro_rules! un8 {
         ($name:literal, $m:ident) => {{
             let t = s
-                .tensor_variable(vec![-INF, -100.0, -1.0, 0.0, 1.0, 50.0, 100.0, INF, NAN], vec![9], false)
+                .tensor_variable(
+                    vec![-INF, -100.0, -1.0, 0.0, 1.0, 50.0, 100.0, INF, NAN],
+                    vec![9],
+                    false,
+                )
                 .unwrap();
             let r = s.$m(t).unwrap();
             println!("{}|{}", $name, fmt(&val(&mut s, r)));
@@ -184,7 +230,11 @@ fn main() {
     macro_rules! unl {
         ($name:literal, $m:ident) => {{
             let t = s
-                .tensor_variable(vec![-INF, -1.0, 0.0, -0.0, 1.0, 2.0, 8.0, 710.0, INF, NAN], vec![10], false)
+                .tensor_variable(
+                    vec![-INF, -1.0, 0.0, -0.0, 1.0, 2.0, 8.0, 710.0, INF, NAN],
+                    vec![10],
+                    false,
+                )
                 .unwrap();
             let r = s.$m(t).unwrap();
             println!("{}|{}", $name, fmt(&val(&mut s, r)));
@@ -240,10 +290,16 @@ fn main() {
     pr!("norm2_inf", s.tensor_norm(t, 2.0).unwrap());
     let a = mk(&mut s, vec![NAN, 1.0, INF, -INF]);
     let b = mk(&mut s, vec![NAN, 1.0, INF, -INF]);
-    pr!("isclose_eqnanF", s.tensor_isclose(a, b, 1e-5, 1e-8, false).unwrap());
+    pr!(
+        "isclose_eqnanF",
+        s.tensor_isclose(a, b, 1e-5, 1e-8, false).unwrap()
+    );
     let a = mk(&mut s, vec![NAN, 1.0, INF, -INF]);
     let b = mk(&mut s, vec![NAN, 1.0, INF, -INF]);
-    pr!("isclose_eqnanT", s.tensor_isclose(a, b, 1e-5, 1e-8, true).unwrap());
+    pr!(
+        "isclose_eqnanT",
+        s.tensor_isclose(a, b, 1e-5, 1e-8, true).unwrap()
+    );
 
     // ── batch 6: special-function ACCURACY (Cephes vs torch, tight tol) ──
     // Positive in-domain points; flagging only gaps >> 1 ULP (real accuracy
@@ -274,10 +330,14 @@ fn main() {
     sp!("bessel_k0", tensor_special_modified_bessel_k0);
     sp!("erfcx", tensor_erfcx);
     // ndtr over a centered range; ndtri over (0,1).
-    let t = s.tensor_variable(vec![-3.0, -1.0, 0.0, 1.0, 2.0, 3.0], vec![6], false).unwrap();
+    let t = s
+        .tensor_variable(vec![-3.0, -1.0, 0.0, 1.0, 2.0, 3.0], vec![6], false)
+        .unwrap();
     let r = s.tensor_ndtr(t).unwrap();
     println!("ndtr|{}", fmt(&val(&mut s, r)));
-    let t = s.tensor_variable(vec![0.01, 0.1, 0.25, 0.5, 0.9, 0.99], vec![6], false).unwrap();
+    let t = s
+        .tensor_variable(vec![0.01, 0.1, 0.25, 0.5, 0.9, 0.99], vec![6], false)
+        .unwrap();
     let r = s.tensor_ndtri(t).unwrap();
     println!("ndtri|{}", fmt(&val(&mut s, r)));
 }

@@ -89,7 +89,9 @@ fn bench_max_pool3d(c: &mut Criterion) {
         let xv: Vec<f32> = (0..n * ch * d * h * w)
             .map(|i| (i % 251) as f32 * 0.001 - 0.12)
             .collect();
-        let x = s.tensor_variable_f32(xv, vec![n, ch, d, h, w], false).unwrap();
+        let x = s
+            .tensor_variable_f32(xv, vec![n, ch, d, h, w], false)
+            .unwrap();
         b.iter(|| black_box(s.functional_max_pool3d(x, (2, 2, 2), (2, 2, 2)).unwrap()));
     });
     group.bench_function("grad", |b| {
@@ -147,7 +149,12 @@ fn bench_avg_pool2d(c: &mut Criterion) {
     group.bench_function("nograd", |b| {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s.tensor_randn(vec![n, ch, h, w], false).unwrap();
-        b.iter(|| black_box(s.functional_avg_pool2d(x, (2, 2), (2, 2), (0, 0), false, true).unwrap()));
+        b.iter(|| {
+            black_box(
+                s.functional_avg_pool2d(x, (2, 2), (2, 2), (0, 0), false, true)
+                    .unwrap(),
+            )
+        });
     });
     // F32 no-grad (dominant ML dtype): fused avg_pool2d_forward_f32 vs the f32
     // op-graph (narrow/sum/div/cat, also upcast to f64) it fell through to.
@@ -157,13 +164,20 @@ fn bench_avg_pool2d(c: &mut Criterion) {
             .map(|i| (i % 251) as f32 * 0.001 - 0.12)
             .collect();
         let x = s.tensor_variable_f32(xv, vec![n, ch, h, w], false).unwrap();
-        b.iter(|| black_box(s.functional_avg_pool2d(x, (2, 2), (2, 2), (0, 0), false, true).unwrap()));
+        b.iter(|| {
+            black_box(
+                s.functional_avg_pool2d(x, (2, 2), (2, 2), (0, 0), false, true)
+                    .unwrap(),
+            )
+        });
     });
     group.bench_function("grad", |b| {
         b.iter(|| {
             let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
             let x = s.tensor_randn(vec![n, ch, h, w], true).unwrap();
-            let out = s.functional_avg_pool2d(x, (2, 2), (2, 2), (0, 0), false, true).unwrap();
+            let out = s
+                .functional_avg_pool2d(x, (2, 2), (2, 2), (0, 0), false, true)
+                .unwrap();
             let loss = s.tensor_sum(out).unwrap();
             black_box(s.tensor_backward(loss).unwrap())
         });
@@ -229,7 +243,9 @@ fn bench_conv_transpose2d(c: &mut Criterion) {
             .map(|i| (i % 97) as f32 * 0.002 - 0.1)
             .collect();
         let x = s.tensor_variable_f32(xv, vec![n, ic, h, w], false).unwrap();
-        let wt = s.tensor_variable_f32(wv, vec![ic, oc, k, k], false).unwrap();
+        let wt = s
+            .tensor_variable_f32(wv, vec![ic, oc, k, k], false)
+            .unwrap();
         b.iter(|| {
             black_box(
                 s.tensor_conv_transpose2d(x, wt, None, (2, 2), (1, 1), (1, 1))
@@ -272,8 +288,12 @@ fn bench_conv3d(c: &mut Criterion) {
         let wv: Vec<f32> = (0..oc * ic * k * k * k)
             .map(|i| (i % 97) as f32 * 0.002 - 0.1)
             .collect();
-        let x = s.tensor_variable_f32(xv, vec![n, ic, d, h, w], false).unwrap();
-        let wt = s.tensor_variable_f32(wv, vec![oc, ic, k, k, k], false).unwrap();
+        let x = s
+            .tensor_variable_f32(xv, vec![n, ic, d, h, w], false)
+            .unwrap();
+        let wt = s
+            .tensor_variable_f32(wv, vec![oc, ic, k, k, k], false)
+            .unwrap();
         b.iter(|| black_box(s.tensor_conv3d(x, wt, None, (1, 1, 1), (1, 1, 1)).unwrap()));
     });
     group.bench_function("grad", |b| {
@@ -379,7 +399,9 @@ fn bench_conv2d(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("grad_hw", h), &h, |b, &h| {
             b.iter(|| {
                 let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-                let input = session.tensor_randn(vec![batch, in_ch, h, h], true).unwrap();
+                let input = session
+                    .tensor_randn(vec![batch, in_ch, h, h], true)
+                    .unwrap();
                 let weight = session
                     .tensor_randn(vec![out_ch, in_ch, kh, kw], true)
                     .unwrap();
@@ -579,10 +601,18 @@ fn bench_layer_norm(c: &mut Criterion) {
             .map(|i| (i % 251) as f32 * 0.001 - 0.12)
             .collect();
         let wv: Vec<f32> = (0..hidden).map(|j| 1.0 + (j % 17) as f32 * 0.01).collect();
-        let bv: Vec<f32> = (0..hidden).map(|j| (j % 13) as f32 * 0.005 - 0.03).collect();
-        let x = session.tensor_variable_f32(xv, vec![rows, hidden], false).unwrap();
-        let w = session.tensor_variable_f32(wv, vec![hidden], false).unwrap();
-        let bias = session.tensor_variable_f32(bv, vec![hidden], false).unwrap();
+        let bv: Vec<f32> = (0..hidden)
+            .map(|j| (j % 13) as f32 * 0.005 - 0.03)
+            .collect();
+        let x = session
+            .tensor_variable_f32(xv, vec![rows, hidden], false)
+            .unwrap();
+        let w = session
+            .tensor_variable_f32(wv, vec![hidden], false)
+            .unwrap();
+        let bias = session
+            .tensor_variable_f32(bv, vec![hidden], false)
+            .unwrap();
         b.iter(|| {
             black_box(
                 session
@@ -627,7 +657,14 @@ fn bench_batch_norm(c: &mut Criterion) {
                 black_box(
                     session
                         .functional_batch_norm2d(
-                            x, Some(rm), Some(rv), Some(wt), Some(bias), training, 0.1, 1e-5,
+                            x,
+                            Some(rm),
+                            Some(rv),
+                            Some(wt),
+                            Some(bias),
+                            training,
+                            0.1,
+                            1e-5,
                         )
                         .unwrap(),
                 )
@@ -642,7 +679,9 @@ fn bench_batch_norm(c: &mut Criterion) {
             let xv: Vec<f32> = (0..n * ch * h * w)
                 .map(|i| (i % 251) as f32 * 0.001 - 0.12)
                 .collect();
-            let x = session.tensor_variable_f32(xv, vec![n, ch, h, w], false).unwrap();
+            let x = session
+                .tensor_variable_f32(xv, vec![n, ch, h, w], false)
+                .unwrap();
             let rm = session
                 .tensor_variable_f32(vec![0.0f32; ch], vec![ch], false)
                 .unwrap();
@@ -650,7 +689,11 @@ fn bench_batch_norm(c: &mut Criterion) {
                 .tensor_variable_f32(vec![1.0f32; ch], vec![ch], false)
                 .unwrap();
             let wt = session
-                .tensor_variable_f32((0..ch).map(|j| 0.8 + (j % 17) as f32 * 0.01).collect(), vec![ch], false)
+                .tensor_variable_f32(
+                    (0..ch).map(|j| 0.8 + (j % 17) as f32 * 0.01).collect(),
+                    vec![ch],
+                    false,
+                )
                 .unwrap();
             let bias = session
                 .tensor_variable_f32(vec![0.0f32; ch], vec![ch], false)
@@ -659,7 +702,14 @@ fn bench_batch_norm(c: &mut Criterion) {
                 black_box(
                     session
                         .functional_batch_norm2d(
-                            x, Some(rm), Some(rv), Some(wt), Some(bias), training, 0.1, 1e-5,
+                            x,
+                            Some(rm),
+                            Some(rv),
+                            Some(wt),
+                            Some(bias),
+                            training,
+                            0.1,
+                            1e-5,
                         )
                         .unwrap(),
                 )
@@ -678,8 +728,17 @@ fn bench_batch_norm(c: &mut Criterion) {
             let bias = s.tensor_randn(vec![bc], false).unwrap();
             b.iter(|| {
                 black_box(
-                    s.functional_batch_norm1d(x, Some(rm), Some(rv), Some(wt), Some(bias), true, 0.1, 1e-5)
-                        .unwrap(),
+                    s.functional_batch_norm1d(
+                        x,
+                        Some(rm),
+                        Some(rv),
+                        Some(wt),
+                        Some(bias),
+                        true,
+                        0.1,
+                        1e-5,
+                    )
+                    .unwrap(),
                 )
             });
         });
@@ -692,7 +751,16 @@ fn bench_batch_norm(c: &mut Criterion) {
                 let wt = s.tensor_randn(vec![bc], true).unwrap();
                 let bias = s.tensor_randn(vec![bc], true).unwrap();
                 let (out, _, _) = s
-                    .functional_batch_norm1d(x, Some(rm), Some(rv), Some(wt), Some(bias), true, 0.1, 1e-5)
+                    .functional_batch_norm1d(
+                        x,
+                        Some(rm),
+                        Some(rv),
+                        Some(wt),
+                        Some(bias),
+                        true,
+                        0.1,
+                        1e-5,
+                    )
                     .unwrap();
                 let loss = s.tensor_sum(out).unwrap();
                 black_box(s.tensor_backward(loss).unwrap())
@@ -709,8 +777,17 @@ fn bench_batch_norm(c: &mut Criterion) {
         let bias = s.tensor_randn(vec![64], false).unwrap();
         b.iter(|| {
             black_box(
-                s.functional_batch_norm3d(x, Some(rm), Some(rv), Some(wt), Some(bias), true, 0.1, 1e-5)
-                    .unwrap(),
+                s.functional_batch_norm3d(
+                    x,
+                    Some(rm),
+                    Some(rv),
+                    Some(wt),
+                    Some(bias),
+                    true,
+                    0.1,
+                    1e-5,
+                )
+                .unwrap(),
             )
         });
     });
@@ -726,7 +803,16 @@ fn bench_batch_norm(c: &mut Criterion) {
             let wt = session.tensor_randn(vec![ch], true).unwrap();
             let bias = session.tensor_randn(vec![ch], true).unwrap();
             let (out, _, _) = session
-                .functional_batch_norm2d(x, Some(rm), Some(rv), Some(wt), Some(bias), true, 0.1, 1e-5)
+                .functional_batch_norm2d(
+                    x,
+                    Some(rm),
+                    Some(rv),
+                    Some(wt),
+                    Some(bias),
+                    true,
+                    0.1,
+                    1e-5,
+                )
                 .unwrap();
             let loss = session.tensor_sum(out).unwrap();
             black_box(session.tensor_backward(loss).unwrap())
@@ -762,7 +848,9 @@ fn bench_group_norm(c: &mut Criterion) {
             .collect();
         let wv: Vec<f32> = (0..ch).map(|j| 0.8 + (j % 17) as f32 * 0.01).collect();
         let bv: Vec<f32> = (0..ch).map(|j| (j % 13) as f32 * 0.005 - 0.03).collect();
-        let x = session.tensor_variable_f32(xv, vec![n, ch, h, w], false).unwrap();
+        let x = session
+            .tensor_variable_f32(xv, vec![n, ch, h, w], false)
+            .unwrap();
         let wt = session.tensor_variable_f32(wv, vec![ch], false).unwrap();
         let bias = session.tensor_variable_f32(bv, vec![ch], false).unwrap();
         b.iter(|| {
@@ -846,14 +934,18 @@ fn bench_cross_entropy(c: &mut Criterion) {
     group.bench_function("nograd_4096x8192", |b| {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session.tensor_randn(vec![batch, classes], false).unwrap();
-        let t = session.tensor_variable(targets.clone(), vec![batch], false).unwrap();
+        let t = session
+            .tensor_variable(targets.clone(), vec![batch], false)
+            .unwrap();
         b.iter(|| black_box(session.functional_cross_entropy(x, t, "mean").unwrap()));
     });
     group.bench_function("grad_4096x8192", |b| {
         b.iter(|| {
             let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
             let x = session.tensor_randn(vec![batch, classes], true).unwrap();
-            let t = session.tensor_variable(targets.clone(), vec![batch], false).unwrap();
+            let t = session
+                .tensor_variable(targets.clone(), vec![batch], false)
+                .unwrap();
             let loss = session.functional_cross_entropy(x, t, "mean").unwrap();
             black_box(session.tensor_backward(loss).unwrap())
         });
@@ -885,8 +977,12 @@ fn bench_rms_norm(c: &mut Criterion) {
             .map(|i| (i % 251) as f32 * 0.001 - 0.12)
             .collect();
         let wv: Vec<f32> = (0..hidden).map(|j| 0.8 + (j % 17) as f32 * 0.01).collect();
-        let x = session.tensor_variable_f32(xv, vec![rows, hidden], false).unwrap();
-        let w = session.tensor_variable_f32(wv, vec![hidden], false).unwrap();
+        let x = session
+            .tensor_variable_f32(xv, vec![rows, hidden], false)
+            .unwrap();
+        let w = session
+            .tensor_variable_f32(wv, vec![hidden], false)
+            .unwrap();
         b.iter(|| {
             black_box(
                 session
@@ -972,7 +1068,9 @@ fn bench_linear_train(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("hidden", h), &h, |b, &h| {
             b.iter(|| {
                 let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-                let x = session.tensor_randn(vec![batch, in_features], true).unwrap();
+                let x = session
+                    .tensor_randn(vec![batch, in_features], true)
+                    .unwrap();
                 let w = session.tensor_randn(vec![h, in_features], true).unwrap();
                 let bias = session.tensor_randn(vec![h], true).unwrap();
                 let y = session.tensor_linear(x, w, Some(bias)).unwrap();
@@ -1222,7 +1320,9 @@ fn bench_fft2(c: &mut Criterion) {
     group.throughput(Throughput::Elements((batch * rows * cols) as u64));
     group.bench_function("32x128x128", |b| {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_randn(vec![batch, rows, cols], false).unwrap();
+        let x = session
+            .tensor_randn(vec![batch, rows, cols], false)
+            .unwrap();
         b.iter(|| black_box(session.tensor_fft2(black_box(x)).unwrap()));
     });
     group.finish();
@@ -1238,7 +1338,13 @@ fn bench_vander(c: &mut Criterion) {
     group.bench_function("2048x256", |b| {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session.tensor_rand(vec![rows], false).unwrap();
-        b.iter(|| black_box(session.tensor_vander(black_box(x), Some(cols), true).unwrap()));
+        b.iter(|| {
+            black_box(
+                session
+                    .tensor_vander(black_box(x), Some(cols), true)
+                    .unwrap(),
+            )
+        });
     });
     group.finish();
 }
@@ -1306,7 +1412,13 @@ fn bench_supcon_loss(c: &mut Criterion) {
         let emb = session.tensor_randn(vec![n, d], false).unwrap();
         let labels_v: Vec<f64> = (0..n).map(|i| (i % 8) as f64).collect();
         let labels = session.tensor_variable(labels_v, vec![n], false).unwrap();
-        b.iter(|| black_box(session.supcon_loss(black_box(emb), black_box(labels), 0.07).unwrap()));
+        b.iter(|| {
+            black_box(
+                session
+                    .supcon_loss(black_box(emb), black_box(labels), 0.07)
+                    .unwrap(),
+            )
+        });
     });
     // Same-binary A/B baseline: the pre-fusion op-graph (L2-normalize + gram
     // matmul + two [N,N] mask leaves + masked log-sum-exp + masked positive-mean
@@ -1439,8 +1551,12 @@ fn bench_istft(c: &mut Criterion) {
     group.throughput(Throughput::Elements((freq_bins * frames) as u64));
     group.bench_function("nfft512_frames256", |b| {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let re = session.tensor_randn(vec![freq_bins, frames], false).unwrap();
-        let im = session.tensor_randn(vec![freq_bins, frames], false).unwrap();
+        let re = session
+            .tensor_randn(vec![freq_bins, frames], false)
+            .unwrap();
+        let im = session
+            .tensor_randn(vec![freq_bins, frames], false)
+            .unwrap();
         let spec = session.tensor_complex(re, im).unwrap();
         b.iter(|| {
             black_box(
@@ -1493,11 +1609,17 @@ fn bench_irfft2(c: &mut Criterion) {
     // Inverse 2-D real FFT from a complex half-spectrum [batch, rows, cols/2+1]
     // -> real [batch, rows, cols]. Same row+col compute-bound passes.
     let (batch, rows, in_cols) = (32usize, 128usize, 65usize); // out_cols = 128
-    group.throughput(Throughput::Elements((batch * rows * (in_cols - 1) * 2) as u64));
+    group.throughput(Throughput::Elements(
+        (batch * rows * (in_cols - 1) * 2) as u64,
+    ));
     group.bench_function("32x128x128", |b| {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let re = session.tensor_randn(vec![batch, rows, in_cols], false).unwrap();
-        let im = session.tensor_randn(vec![batch, rows, in_cols], false).unwrap();
+        let re = session
+            .tensor_randn(vec![batch, rows, in_cols], false)
+            .unwrap();
+        let im = session
+            .tensor_randn(vec![batch, rows, in_cols], false)
+            .unwrap();
         let cplx = session.tensor_complex(re, im).unwrap();
         b.iter(|| black_box(session.tensor_irfft2(black_box(cplx), None).unwrap()));
     });
@@ -1511,7 +1633,9 @@ fn bench_rfft2(c: &mut Criterion) {
     group.throughput(Throughput::Elements((batch * rows * cols) as u64));
     group.bench_function("32x128x128", |b| {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
-        let x = session.tensor_randn(vec![batch, rows, cols], false).unwrap();
+        let x = session
+            .tensor_randn(vec![batch, rows, cols], false)
+            .unwrap();
         b.iter(|| black_box(session.tensor_rfft2(black_box(x)).unwrap()));
     });
     group.finish();
@@ -1578,7 +1702,9 @@ fn bench_interpolate_trilinear(c: &mut Criterion) {
     // ~24 mults/output: compute-bound with cache-friendly local access, parallel
     // over output rows.
     let (n, ch, d, h, w) = (2usize, 8usize, 16usize, 16usize, 16usize);
-    group.throughput(Throughput::Elements((n * ch * d * 2 * h * 2 * w * 2) as u64));
+    group.throughput(Throughput::Elements(
+        (n * ch * d * 2 * h * 2 * w * 2) as u64,
+    ));
     group.bench_function("2x8x16x16x16_2x", |b| {
         let mut session = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = session.tensor_randn(vec![n, ch, d, h, w], false).unwrap();
@@ -1687,7 +1813,10 @@ fn bench_triangular_solve(c: &mut Criterion) {
         let b = s.tensor_randn(vec![n, n], false).unwrap();
         group.bench_function(format!("nrhs_{n}x{n}"), |bch| {
             bch.iter(|| {
-                black_box(s.tensor_triangular_solve(black_box(a), black_box(b), false).unwrap())
+                black_box(
+                    s.tensor_triangular_solve(black_box(a), black_box(b), false)
+                        .unwrap(),
+                )
             });
         });
     }

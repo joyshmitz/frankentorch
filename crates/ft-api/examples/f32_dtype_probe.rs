@@ -61,7 +61,11 @@ fn main() {
     un!("special_bessel_j0", tensor_special_bessel_j0, pos());
     un!("special_bessel_j1", tensor_special_bessel_j1, pos());
     un!("special_bessel_y0", tensor_special_bessel_y0, pos());
-    un!("special_modified_bessel_k0", tensor_special_modified_bessel_k0, pos());
+    un!(
+        "special_modified_bessel_k0",
+        tensor_special_modified_bessel_k0,
+        pos()
+    );
     un!("gelu", tensor_gelu, genv());
     un!("silu", tensor_silu, genv());
     un!("mish", tensor_mish, genv());
@@ -87,8 +91,16 @@ fn main() {
     un!("special_entr", tensor_special_entr, unit());
     un!("special_bessel_j1", tensor_special_bessel_j1, pos());
     un!("special_bessel_y1", tensor_special_bessel_y1, pos());
-    un!("special_modified_bessel_k1", tensor_special_modified_bessel_k1, pos());
-    un!("special_scaled_modified_bessel_k0", tensor_special_scaled_modified_bessel_k0, pos());
+    un!(
+        "special_modified_bessel_k1",
+        tensor_special_modified_bessel_k1,
+        pos()
+    );
+    un!(
+        "special_scaled_modified_bessel_k0",
+        tensor_special_scaled_modified_bessel_k0,
+        pos()
+    );
 
     // parameterized (direct calls)
     macro_rules! un1 {
@@ -97,23 +109,42 @@ fn main() {
             match $call(&mut s, t) {
                 Ok(r) => match s.tensor_dtype(r) {
                     Ok(DType::F32) => {}
-                    Ok(d) => { println!("{:<28} UPCAST -> {:?}", $name, d); bugs += 1; }
+                    Ok(d) => {
+                        println!("{:<28} UPCAST -> {:?}", $name, d);
+                        bugs += 1;
+                    }
                     Err(e) => println!("{:<28} dtype-err {e:?}", $name),
                 },
-                Err(e) => { println!("{:<28} ERR {e:?}", $name); bugs += 1; }
+                Err(e) => {
+                    println!("{:<28} ERR {e:?}", $name);
+                    bugs += 1;
+                }
             }
         }};
     }
-    un1!("celu", genv(), |s: &mut FrankenTorchSession, t| s.tensor_celu(t, 1.0));
-    un1!("softshrink", genv(), |s: &mut FrankenTorchSession, t| s.tensor_softshrink(t, 0.5));
-    un1!("hardshrink", genv(), |s: &mut FrankenTorchSession, t| s.tensor_hardshrink(t, 0.5));
-    un1!("logit", unit(), |s: &mut FrankenTorchSession, t| s.tensor_logit(t, None));
-    un1!("polygamma", pos(), |s: &mut FrankenTorchSession, t| s.tensor_polygamma(1, t));
-    un1!("multigammaln", vec![1.5f32, 2.0, 3.0, 4.0], |s: &mut FrankenTorchSession, t| s.tensor_multigammaln(t, 2));
+    un1!("celu", genv(), |s: &mut FrankenTorchSession, t| s
+        .tensor_celu(t, 1.0));
+    un1!("softshrink", genv(), |s: &mut FrankenTorchSession, t| s
+        .tensor_softshrink(t, 0.5));
+    un1!("hardshrink", genv(), |s: &mut FrankenTorchSession, t| s
+        .tensor_hardshrink(t, 0.5));
+    un1!("logit", unit(), |s: &mut FrankenTorchSession, t| s
+        .tensor_logit(t, None));
+    un1!("polygamma", pos(), |s: &mut FrankenTorchSession, t| s
+        .tensor_polygamma(1, t));
+    un1!(
+        "multigammaln",
+        vec![1.5f32, 2.0, 3.0, 4.0],
+        |s: &mut FrankenTorchSession, t| s.tensor_multigammaln(t, 2)
+    );
 
     // batch 3: unary specials
     un!("special_airy_ai", tensor_special_airy_ai, genv());
-    un!("special_spherical_bessel_j0", tensor_special_spherical_bessel_j0, pos());
+    un!(
+        "special_spherical_bessel_j0",
+        tensor_special_spherical_bessel_j0,
+        pos()
+    );
 
     // batch 3: binary composites (both f32 -> f32 in torch)
     macro_rules! bin {
@@ -123,20 +154,50 @@ fn main() {
             match $call(&mut s, x, y) {
                 Ok(r) => match s.tensor_dtype(r) {
                     Ok(DType::F32) => {}
-                    Ok(d) => { println!("{:<28} UPCAST -> {:?}", $name, d); bugs += 1; }
+                    Ok(d) => {
+                        println!("{:<28} UPCAST -> {:?}", $name, d);
+                        bugs += 1;
+                    }
                     Err(e) => println!("{:<28} dtype-err {e:?}", $name),
                 },
-                Err(e) => { println!("{:<28} ERR {e:?}", $name); bugs += 1; }
+                Err(e) => {
+                    println!("{:<28} ERR {e:?}", $name);
+                    bugs += 1;
+                }
             }
         }};
     }
     let p4 = || vec![0.5f32, 1.0, 2.0, 3.0];
-    bin!("xlogy", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_xlogy(x, y));
-    bin!("xlog1py", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_xlog1py(x, y));
-    bin!("special_zeta", vec![2.0f32, 3.0, 4.0, 5.0], p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_special_zeta(x, y));
-    bin!("rel_entr", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_rel_entr(x, y));
-    bin!("special_gammainc", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_special_gammainc(x, y));
-    bin!("special_gammaincc", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s.tensor_special_gammaincc(x, y));
+    bin!("xlogy", p4(), p4(), |s: &mut FrankenTorchSession, x, y| s
+        .tensor_xlogy(x, y));
+    bin!("xlog1py", p4(), p4(), |s: &mut FrankenTorchSession,
+                                 x,
+                                 y| s
+        .tensor_xlog1py(x, y));
+    bin!(
+        "special_zeta",
+        vec![2.0f32, 3.0, 4.0, 5.0],
+        p4(),
+        |s: &mut FrankenTorchSession, x, y| s.tensor_special_zeta(x, y)
+    );
+    bin!(
+        "rel_entr",
+        p4(),
+        p4(),
+        |s: &mut FrankenTorchSession, x, y| s.tensor_rel_entr(x, y)
+    );
+    bin!(
+        "special_gammainc",
+        p4(),
+        p4(),
+        |s: &mut FrankenTorchSession, x, y| s.tensor_special_gammainc(x, y)
+    );
+    bin!(
+        "special_gammaincc",
+        p4(),
+        p4(),
+        |s: &mut FrankenTorchSession, x, y| s.tensor_special_gammaincc(x, y)
+    );
 
     // batch 4: matrix / distance ops (2D f32 inputs -> torch keeps f32)
     macro_rules! mat {
@@ -144,55 +205,121 @@ fn main() {
             match $build(&mut s) {
                 Ok(r) => match s.tensor_dtype(r) {
                     Ok(DType::F32) => {}
-                    Ok(d) => { println!("{:<28} UPCAST -> {:?}", $name, d); bugs += 1; }
+                    Ok(d) => {
+                        println!("{:<28} UPCAST -> {:?}", $name, d);
+                        bugs += 1;
+                    }
                     Err(e) => println!("{:<28} dtype-err {e:?}", $name),
                 },
-                Err(e) => { println!("{:<28} ERR {e:?}", $name); bugs += 1; }
+                Err(e) => {
+                    println!("{:<28} ERR {e:?}", $name);
+                    bugs += 1;
+                }
             }
         }};
     }
     // SPD 3x3 for the square-matrix ops.
     let spd = |s: &mut FrankenTorchSession| {
-        s.tensor_variable_f32(vec![4.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0], vec![3, 3], false).unwrap()
+        s.tensor_variable_f32(
+            vec![4.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0],
+            vec![3, 3],
+            false,
+        )
+        .unwrap()
     };
-    mat!("pinv", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_pinv(m) });
-    mat!("matrix_power", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_matrix_power(m, 3) });
-    mat!("matrix_exp", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_matrix_exp(m) });
-    mat!("logdet", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_logdet(m) });
-    mat!("trace", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_trace(m) });
+    mat!("pinv", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_pinv(m)
+    });
+    mat!("matrix_power", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_matrix_power(m, 3)
+    });
+    mat!("matrix_exp", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_matrix_exp(m)
+    });
+    mat!("logdet", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_logdet(m)
+    });
+    mat!("trace", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_trace(m)
+    });
     mat!("cholesky_solve", |s: &mut FrankenTorchSession| {
-        let b = s.tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
-        let l = s.tensor_variable_f32(vec![2.0, 0.0, 0.0, 0.5, 1.6, 0.0, 0.0, 0.6, 1.3], vec![3, 3], false).unwrap();
+        let b = s
+            .tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false)
+            .unwrap();
+        let l = s
+            .tensor_variable_f32(
+                vec![2.0, 0.0, 0.0, 0.5, 1.6, 0.0, 0.0, 0.6, 1.3],
+                vec![3, 3],
+                false,
+            )
+            .unwrap();
         s.tensor_cholesky_solve(b, l, false)
     });
     mat!("cdist", |s: &mut FrankenTorchSession| {
-        let x1 = s.tensor_variable_f32(vec![0.0, 0.0, 1.0, 1.0], vec![2, 2], false).unwrap();
-        let x2 = s.tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false).unwrap();
+        let x1 = s
+            .tensor_variable_f32(vec![0.0, 0.0, 1.0, 1.0], vec![2, 2], false)
+            .unwrap();
+        let x2 = s
+            .tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0], vec![2, 2], false)
+            .unwrap();
         s.tensor_cdist(x1, x2, 2.0)
     });
     mat!("pdist", |s: &mut FrankenTorchSession| {
-        let x = s.tensor_variable_f32(vec![0.0, 0.0, 1.0, 1.0, 2.0, 0.0], vec![3, 2], false).unwrap();
+        let x = s
+            .tensor_variable_f32(vec![0.0, 0.0, 1.0, 1.0, 2.0, 0.0], vec![3, 2], false)
+            .unwrap();
         s.tensor_pdist(x, 2.0)
     });
 
     // batch 5: more linalg (det / solve / factorizations) — torch keeps f32.
-    mat!("det", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_det(m) });
-    mat!("inverse", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_inverse(m) });
-    mat!("eigvalsh", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_eigvalsh(m) });
-    mat!("cholesky", |s: &mut FrankenTorchSession| { let m = spd(s); s.tensor_cholesky(m, false) });
+    mat!("det", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_det(m)
+    });
+    mat!("inverse", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_inverse(m)
+    });
+    mat!("eigvalsh", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_eigvalsh(m)
+    });
+    mat!("cholesky", |s: &mut FrankenTorchSession| {
+        let m = spd(s);
+        s.tensor_cholesky(m, false)
+    });
     mat!("linalg_solve", |s: &mut FrankenTorchSession| {
         let a = spd(s);
-        let b = s.tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
+        let b = s
+            .tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false)
+            .unwrap();
         s.tensor_linalg_solve(a, b)
     });
     mat!("triangular_solve", |s: &mut FrankenTorchSession| {
-        let a = s.tensor_variable_f32(vec![2.0, 0.0, 0.0, 0.5, 1.6, 0.0, 0.0, 0.6, 1.3], vec![3, 3], false).unwrap();
-        let b = s.tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
+        let a = s
+            .tensor_variable_f32(
+                vec![2.0, 0.0, 0.0, 0.5, 1.6, 0.0, 0.0, 0.6, 1.3],
+                vec![3, 3],
+                false,
+            )
+            .unwrap();
+        let b = s
+            .tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false)
+            .unwrap();
         s.tensor_triangular_solve(a, b, false)
     });
     mat!("lstsq", |s: &mut FrankenTorchSession| {
-        let a = s.tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false).unwrap();
-        let b = s.tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false).unwrap();
+        let a = s
+            .tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false)
+            .unwrap();
+        let b = s
+            .tensor_variable_f32(vec![1.0, 2.0, 3.0], vec![3, 1], false)
+            .unwrap();
         s.tensor_lstsq(a, b)
     });
 
@@ -201,35 +328,73 @@ fn main() {
         ($name:literal, $r:expr) => {{
             match s.tensor_dtype($r) {
                 Ok(DType::F32) => {}
-                Ok(d) => { println!("{:<28} UPCAST -> {:?}", $name, d); bugs += 1; }
+                Ok(d) => {
+                    println!("{:<28} UPCAST -> {:?}", $name, d);
+                    bugs += 1;
+                }
                 Err(e) => println!("{:<28} dtype-err {e:?}", $name),
             }
         }};
     }
     let m = spd(&mut s);
     match s.tensor_linalg_eigh(m) {
-        Ok((v, q)) => { chk!("eigh.values", v); chk!("eigh.vectors", q); }
-        Err(e) => { println!("{:<28} ERR {e:?}", "eigh"); bugs += 1; }
+        Ok((v, q)) => {
+            chk!("eigh.values", v);
+            chk!("eigh.vectors", q);
+        }
+        Err(e) => {
+            println!("{:<28} ERR {e:?}", "eigh");
+            bugs += 1;
+        }
     }
-    let m = s.tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false).unwrap();
+    let m = s
+        .tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false)
+        .unwrap();
     match s.tensor_linalg_svd(m, false) {
-        Ok((u, sv, vh)) => { chk!("svd.U", u); chk!("svd.S", sv); chk!("svd.Vh", vh); }
-        Err(e) => { println!("{:<28} ERR {e:?}", "svd"); bugs += 1; }
+        Ok((u, sv, vh)) => {
+            chk!("svd.U", u);
+            chk!("svd.S", sv);
+            chk!("svd.Vh", vh);
+        }
+        Err(e) => {
+            println!("{:<28} ERR {e:?}", "svd");
+            bugs += 1;
+        }
     }
-    let m = s.tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false).unwrap();
+    let m = s
+        .tensor_variable_f32(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![3, 2], false)
+        .unwrap();
     match s.tensor_linalg_qr(m, false) {
-        Ok((q, r)) => { chk!("qr.Q", q); chk!("qr.R", r); }
-        Err(e) => { println!("{:<28} ERR {e:?}", "qr"); bugs += 1; }
+        Ok((q, r)) => {
+            chk!("qr.Q", q);
+            chk!("qr.R", r);
+        }
+        Err(e) => {
+            println!("{:<28} ERR {e:?}", "qr");
+            bugs += 1;
+        }
     }
     let m = spd(&mut s);
     match s.tensor_linalg_lu(m) {
-        Ok((p, l, u)) => { chk!("lu.P", p); chk!("lu.L", l); chk!("lu.U", u); }
-        Err(e) => { println!("{:<28} ERR {e:?}", "linalg_lu"); bugs += 1; }
+        Ok((p, l, u)) => {
+            chk!("lu.P", p);
+            chk!("lu.L", l);
+            chk!("lu.U", u);
+        }
+        Err(e) => {
+            println!("{:<28} ERR {e:?}", "linalg_lu");
+            bugs += 1;
+        }
     }
     let m = spd(&mut s);
     match s.tensor_lu_factor(m) {
-        Ok((lu, _piv)) => { chk!("lu_factor.LU", lu); }
-        Err(e) => { println!("{:<28} ERR {e:?}", "lu_factor"); bugs += 1; }
+        Ok((lu, _piv)) => {
+            chk!("lu_factor.LU", lu);
+        }
+        Err(e) => {
+            println!("{:<28} ERR {e:?}", "lu_factor");
+            bugs += 1;
+        }
     }
 
     println!("\nf32 UPCAST/ERR bugs: {bugs}");

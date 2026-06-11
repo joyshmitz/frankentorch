@@ -83,7 +83,12 @@ fn bench_special(c: &mut Criterion) {
     c.bench_function("legendre_p64_256k", |b| {
         let mut s = FrankenTorchSession::new(ExecutionMode::Strict);
         let x = s.tensor_randn(vec![np], false).unwrap();
-        b.iter(|| black_box(s.tensor_special_legendre_polynomial_p(black_box(x), 64).unwrap()));
+        b.iter(|| {
+            black_box(
+                s.tensor_special_legendre_polynomial_p(black_box(x), 64)
+                    .unwrap(),
+            )
+        });
     });
 }
 
