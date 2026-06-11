@@ -1,0 +1,24 @@
+  [2m2026-06-11T04:48:06.354364Z[0m [34mDEBUG[0m [1;34mrch::verbose[0m[34m: [34mverbose output enabled, [1;34mmode[0m[34m: Plain, [1;34mformat[0m[34m: json[0m
+    [2;3mat[0m rch/src/main.rs:1722 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-11T04:48:06.354484Z[0m [34mDEBUG[0m [1;34mrch::hook::config_cache[0m[34m: [34mconfig.cache.hit, [1;34mpath[0m[34m: /home/ubuntu/.cache/rch/config.cache.json, [1;34mbytes[0m[34m: 2928[0m
+    [2;3mat[0m rch/src/config.rs:196 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-11T04:48:06.354531Z[0m [34mDEBUG[0m [1;34mrch::hook[0m[34m: [34m[RCH] project identity normalization: received_input=/data/projects/frankentorch[0m
+    [2;3mat[0m rch/src/hook.rs:2875 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-11T04:48:06.354537Z[0m [34mDEBUG[0m [1;34mrch::hook[0m[34m: [34m[RCH] project identity normalization: verified_absolute_input=/data/projects/frankentorch[0m
+    [2;3mat[0m rch/src/hook.rs:2875 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-11T04:48:06.354541Z[0m [34mDEBUG[0m [1;34mrch::hook[0m[34m: [34m[RCH] project identity normalization: canonical_root_resolved=/data/projects[0m
+    [2;3mat[0m rch/src/hook.rs:2875 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-11T04:48:06.354545Z[0m [34mDEBUG[0m [1;34mrch::hook[0m[34m: [34m[RCH] project identity normalization: canonical_input_resolved=/data/projects/frankentorch[0m
+    [2;3mat[0m rch/src/hook.rs:2875 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-11T04:48:06.354548Z[0m [34mDEBUG[0m [1;34mrch::hook[0m[34m: [34m[RCH] project identity normalization: verified_within_root=/data/projects/frankentorch root=/data/projects[0m
+    [2;3mat[0m rch/src/hook.rs:2875 [2;3mon[0m ThreadId(1)
+
+[RCH] local (no admissible workers: critical_pressure=1,insufficient_slots=1)
+qr_stage_split shape=512x512 rows=512 cols=512 reduced=true samples=7 blocked=true matches_production=true digest_fnv64=f992bdf9491faa9f total_ns=57325985 copy_zeroing_ns=1121044 copy_zeroing_pct=1.956 panel_and_t_ns=26125605 panel_and_t_pct=45.574 trailing_r_ns=10207956 trailing_r_pct=17.807 reverse_q_ns=18460106 reverse_q_pct=32.202 unaccounted_ns=1411274 unaccounted_pct=2.462
+qr_stage_split shape=2048x128 rows=2048 cols=128 reduced=true samples=7 blocked=true matches_production=true digest_fnv64=c17059ed3c2794db total_ns=28419791 copy_zeroing_ns=148602 copy_zeroing_pct=0.523 panel_and_t_ns=19988422 panel_and_t_pct=70.333 trailing_r_ns=2838627 trailing_r_pct=9.988 reverse_q_ns=5381774 reverse_q_pct=18.937 unaccounted_ns=62366 unaccounted_pct=0.219

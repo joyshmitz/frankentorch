@@ -14273,6 +14273,44 @@ pub struct QrResult {
     pub n: usize,
 }
 
+/// Internal timing split for the compact-WY QR path.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QrStageTimings {
+    /// Input copy, final lower-triangle zeroing, and reduced-R copy time.
+    pub copy_zeroing_ns: u128,
+    /// Panel Householder factorization plus compact-WY T construction time.
+    pub panel_and_t_ns: u128,
+    /// Trailing R compact-WY update time.
+    pub trailing_r_ns: u128,
+    /// Reverse dorgqr Q construction time.
+    pub reverse_q_ns: u128,
+    /// Total profiled helper time.
+    pub total_ns: u128,
+}
+
+impl QrStageTimings {
+    /// Time not attributed to the four named stage buckets.
+    #[must_use]
+    pub fn unaccounted_ns(self) -> u128 {
+        let accounted =
+            self.copy_zeroing_ns + self.panel_and_t_ns + self.trailing_r_ns + self.reverse_q_ns;
+        self.total_ns.saturating_sub(accounted)
+    }
+}
+
+/// Internal QR profile result for stage-split probes.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct QrStageProfile {
+    /// QR output from the same algorithm being profiled.
+    pub result: QrResult,
+    /// Stage timings in nanoseconds.
+    pub timings: QrStageTimings,
+    /// Whether the compact-WY blocked QR path was exercised.
+    pub used_blocked_path: bool,
+}
+
 /// Compute the QR decomposition of an (m x n) matrix via Householder reflections.
 ///
 /// Returns `(Q, R)` such that `A = Q @ R`:
@@ -14470,15 +14508,27 @@ fn hessenberg_reduce_blocked(h: &mut [f64], q: &mut [f64], n: usize, accumulate_
 /// validated by reconstruction (A = Q·R) + orthonormality, not bit-for-bit.
 /// `r_mat` starts as A (m×n) and becomes R; `q_mat` starts as I (m×m) and becomes
 /// Q. frankentorch-ct2yy.
-fn qr_householder_panel_blocked(
+fn qr_profile_stage_start(enabled: bool) -> Option<std::time::Instant> {
+    enabled.then(std::time::Instant::now)
+}
+
+fn qr_profile_record_ns(slot: &mut u128, start: Option<std::time::Instant>) {
+    if let Some(start) = start {
+        *slot += start.elapsed().as_nanos();
+    }
+}
+
+fn qr_householder_panel_blocked_profiled(
     r_mat: &mut [f64],
     m: usize,
     n: usize,
     k: usize,
     qcols: usize,
+    mut timings: Option<&mut QrStageTimings>,
 ) -> Vec<f64> {
     const NB: usize = 32;
     let tiny = f64::EPSILON * 1e6;
+    let profile_enabled = timings.is_some();
     // Forward pass reduces R and stores each panel's (V, T); Q is then built
     // (m×qcols) by a reverse dorgqr — so REDUCED tall matrices (qcols=k<m) cost
     // O(m·k²) instead of building the full m×m Q (O(m²·k)). frankentorch-ct2yy.
@@ -14490,6 +14540,7 @@ fn qr_householder_panel_blocked(
 
         // --- Panel factorization: build V (m×nb) and tau, applying each reflector
         //     only to the remaining PANEL columns (the trailing [pe,n) is deferred).
+        let panel_start = qr_profile_stage_start(profile_enabled);
         let mut vmat = vec![0.0f64; m * nb];
         let mut tau = vec![0.0f64; nb];
         for c in 0..nb {
@@ -14567,10 +14618,14 @@ fn qr_householder_panel_blocked(
                 tmat[i * nb + c] = newcol[i];
             }
         }
+        if let Some(timings) = timings.as_mut() {
+            qr_profile_record_ns(&mut timings.panel_and_t_ns, panel_start);
+        }
 
         // --- Apply block reflector to the trailing R[:, pe:n]: R -= V (Tᵀ (Vᵀ R)).
         let nt = n - pe;
         if nt > 0 {
+            let trailing_start = qr_profile_stage_start(profile_enabled);
             let mut rt = vec![0.0f64; m * nt];
             for i in 0..m {
                 let base = i * n + pe;
@@ -14602,6 +14657,9 @@ fn qr_householder_panel_blocked(
                     r_mat[base + t] -= upd[src + t];
                 }
             }
+            if let Some(timings) = timings.as_mut() {
+                qr_profile_record_ns(&mut timings.trailing_r_ns, trailing_start);
+            }
         }
 
         panels.push((nb, vmat, tmat));
@@ -14611,6 +14669,7 @@ fn qr_householder_panel_blocked(
     // --- Reverse dorgqr: Q (m×qcols) = H_0 H_1 ... H_{k-1} · I[:, :qcols].
     // Start X = I[:, :qcols]; apply blocks innermost-first (reverse panel order),
     // each Q_block · X = X - V (T (Vᵀ X)).
+    let reverse_start = qr_profile_stage_start(profile_enabled);
     let mut x = vec![0.0f64; m * qcols];
     for i in 0..m.min(qcols) {
         x[i * qcols + i] = 1.0;
@@ -14633,7 +14692,20 @@ fn qr_householder_panel_blocked(
             x[t] -= upd[t];
         }
     }
+    if let Some(timings) = timings.as_mut() {
+        qr_profile_record_ns(&mut timings.reverse_q_ns, reverse_start);
+    }
     x
+}
+
+fn qr_householder_panel_blocked(
+    r_mat: &mut [f64],
+    m: usize,
+    n: usize,
+    k: usize,
+    qcols: usize,
+) -> Vec<f64> {
+    qr_householder_panel_blocked_profiled(r_mat, m, n, k, qcols, None)
 }
 
 pub fn qr_contiguous_f64(
@@ -14822,6 +14894,92 @@ pub fn qr_contiguous_f64(
             n,
         })
     }
+}
+
+/// Profile the existing QR implementation without changing public QR dispatch.
+#[doc(hidden)]
+pub fn qr_contiguous_f64_stage_profile(
+    data: &[f64],
+    meta: &TensorMeta,
+    reduced: bool,
+) -> Result<QrStageProfile, KernelError> {
+    let total_start = std::time::Instant::now();
+    ensure_unary_layout_and_storage(data, meta)?;
+    let shape = meta.shape();
+    if shape.len() != 2 {
+        return Err(KernelError::ShapeMismatch {
+            lhs: shape.to_vec(),
+            rhs: vec![shape.len()],
+        });
+    }
+    let m = shape[0];
+    let n = shape[1];
+
+    if m == 0 || n == 0 {
+        let k = if reduced { m.min(n) } else { m };
+        let result = QrResult {
+            q: vec![0.0; m * k],
+            r: vec![0.0; k * n],
+            m: k,
+            n,
+        };
+        return Ok(QrStageProfile {
+            result,
+            timings: QrStageTimings {
+                total_ns: total_start.elapsed().as_nanos(),
+                ..QrStageTimings::default()
+            },
+            used_blocked_path: false,
+        });
+    }
+
+    let k = m.min(n);
+    if m < 128 || k < 16 {
+        let result = qr_contiguous_f64(data, meta, reduced)?;
+        return Ok(QrStageProfile {
+            result,
+            timings: QrStageTimings {
+                total_ns: total_start.elapsed().as_nanos(),
+                ..QrStageTimings::default()
+            },
+            used_blocked_path: false,
+        });
+    }
+
+    let mut timings = QrStageTimings::default();
+    let offset = meta.storage_offset();
+    let copy_start = std::time::Instant::now();
+    let mut r_mat = data[offset..offset + m * n].to_vec();
+    qr_profile_record_ns(&mut timings.copy_zeroing_ns, Some(copy_start));
+
+    let qcols = if reduced { k } else { m };
+    let q = qr_householder_panel_blocked_profiled(&mut r_mat, m, n, k, qcols, Some(&mut timings));
+
+    let zero_start = std::time::Instant::now();
+    for i in 0..m {
+        for jj in 0..i.min(n) {
+            r_mat[i * n + jj] = 0.0;
+        }
+    }
+    let result = if reduced {
+        let r_reduced = r_mat[..k * n].to_vec();
+        QrResult {
+            q,
+            r: r_reduced,
+            m: k,
+            n,
+        }
+    } else {
+        QrResult { q, r: r_mat, m, n }
+    };
+    qr_profile_record_ns(&mut timings.copy_zeroing_ns, Some(zero_start));
+    timings.total_ns = total_start.elapsed().as_nanos();
+
+    Ok(QrStageProfile {
+        result,
+        timings,
+        used_blocked_path: true,
+    })
 }
 
 // =========================================================================
