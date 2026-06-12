@@ -97,3 +97,37 @@
   [2m2026-06-12T22:17:44.332045Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRewriting CARGO_TARGET_DIR for remote execution (worker-scoped path): /data/tmp/cargo-target -> /data/projects/frankentorch/.rch-target-vmi1227854-job-29884606035525840-1781302629179438084-0[0m
     [2;3mat[0m rch/src/transfer.rs:712 [2;3mon[0m ThreadId(1)
 
+threads=10
+n=128   eigvals=    4.20ms  eig=    7.48ms  (vec_machinery=3.28ms)
+profile n=128   sweeps=173 defl1=28 defl2=50 fallback=0 exceptional=0 max_width=128 samples=173 truncated=false first_shift=[0..127 x=6.690e1 y=5.117e1 w=1.724e0 exceptional=false]
+n=256   eigvals=   28.63ms  eig=   46.30ms  (vec_machinery=17.67ms)
+profile n=256   sweeps=319 defl1=14 defl2=121 fallback=0 exceptional=0 max_width=256 samples=319 truncated=false first_shift=[0..255 x=1.290e2 y=1.240e2 w=6.569e1 exceptional=false]
+n=512   eigvals=  382.99ms  eig=  533.77ms  (vec_machinery=150.77ms)
+profile n=512   sweeps=583 defl1=10 defl2=251 fallback=0 exceptional=0 max_width=512 samples=583 truncated=false first_shift=[0..511 x=2.554e2 y=2.588e2 w=5.377e1 exceptional=false]
+n=1024  eigvals= 2870.73ms  eig= 4375.77ms  (vec_machinery=1505.04ms)
+profile n=1024  sweeps=1132 defl1=18 defl2=503 fallback=0 exceptional=0 max_width=1024 samples=1132 truncated=false first_shift=[0..1023 x=5.118e2 y=5.120e2 w=1.282e2 exceptional=false]
+  [2m2026-06-12T22:21:00.493127Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mRemote command finished: exit=0 in 196161ms[0m
+    [2;3mat[0m rch/src/hook.rs:6376 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-12T22:21:00.493433Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mRetrieving build artifacts...[0m
+    [2;3mat[0m rch/src/hook.rs:6425 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-12T22:21:00.493447Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRetrieving artifacts from /data/projects/frankentorch on vmi1227854[0m
+    [2;3mat[0m rch/src/transfer.rs:2106 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-12T22:21:02.447839Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mArtifacts retrieved in 1954ms (5 files, 1709 bytes)[0m
+    [2;3mat[0m rch/src/transfer.rs:2145 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-12T22:21:02.447874Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mArtifacts retrieved: 5 files, 1709 bytes in 1954ms[0m
+    [2;3mat[0m rch/src/hook.rs:6458 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-12T22:21:02.447994Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mRetrieving artifacts from /data/projects/frankentorch/.rch-target-vmi1227854-job-29884606035525840-1781302629179438084-0 on vmi1227854[0m
+    [2;3mat[0m rch/src/transfer.rs:2106 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-12T22:21:05.794344Z[0m [32m INFO[0m [1;32mrch::transfer[0m[32m: [32mArtifacts retrieved in 3346ms (930 files, 998032 bytes)[0m
+    [2;3mat[0m rch/src/transfer.rs:2145 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-12T22:21:05.794381Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mCustom CARGO_TARGET_DIR artifacts retrieved: 930 files, 998032 bytes in 3346ms[0m
+    [2;3mat[0m rch/src/hook.rs:6582 [2;3mon[0m ThreadId(1)
+
+[RCH] remote vmi1227854 (238.5s)
