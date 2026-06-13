@@ -1,0 +1,15 @@
+  [2m2026-06-13T16:27:03.977841Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mSelected worker: vmi1149989 at root@212.90.121.76 (4 slots remaining after reservation, speed 50.0)[0m
+    [2;3mat[0m rch/src/hook.rs:514 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T16:27:04.247875Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mStarting remote compilation pipeline for frankentorch-gxpb2-pass10-20260613122123 (hash: 625b80231f3e5618)[0m
+    [2;3mat[0m rch/src/hook.rs:5994 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T16:27:04.247915Z[0m [32m INFO[0m [1;32mrch::hook[0m[32m: [32mPrepared dependency sync manifest for 13 roots[0m
+    [2;3mat[0m rch/src/hook.rs:6016 [2;3mon[0m ThreadId(1)
+
+  [2m2026-06-13T16:27:04.500073Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mRemote execution failed: remote topology preflight failed on vmi1149989 (status Some(255)): stdout='' stderr='kex_exchange_identification: read: Connection reset by peer
+Connection reset by 212.90.121.76 port 22', running locally[0m
+    [2;3mat[0m rch/src/hook.rs:658 [2;3mon[0m ThreadId(1)
+
+[RCH] local (remote execution failed)
+[RCH] remote required; refusing local fallback (remote execution failed)
